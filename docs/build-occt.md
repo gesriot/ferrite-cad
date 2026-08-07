@@ -39,9 +39,14 @@ versions and checksums are fixed before the dependency is used
 ### Producing the record
 
 Run the **OCCT pin** workflow from the Actions tab with the candidate tag, e.g.
-`V7_9_0`. It builds OCCT from source on Linux, Windows and macOS, runs
+`V8_0_0`. It resolves that tag once, downloads the source snapshot by the
+resulting immutable commit, builds OCCT on Linux, Windows and macOS, runs
 [`tools/occt-smoke`](../tools/occt-smoke) against each build, and prints a
 filled-in version of the table above in the run summary.
+
+Commit-based download is deliberate. Downloading by tag after recording its
+commit leaves a race in which a moved tag can make the table name one commit
+while the runners compile another.
 
 Prefer it to a manual run on one machine. The deliverable here is not "it
 compiled" but the record of *which* compiler and CMake produced that result, and
@@ -51,6 +56,12 @@ covers platforms you may not have to hand.
 A tag is pinnable only when all three platforms pass. Two green platforms and
 one that was never run is not a pin, and the workflow fails rather than
 reporting a partial result as a success.
+
+Build-cache reuse is optional. Cached installs carry the CMake version,
+configured compiler and original runner identity that produced them; a reused
+build reports that stored provenance rather than incorrectly attributing the
+binary to the current runner. The cache key also includes the resolved commit,
+platform and runner architecture.
 
 ## Required OCCT modules
 

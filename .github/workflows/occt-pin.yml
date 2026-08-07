@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       occt_tag:
-        description: 'OCCT git tag, e.g. V7_9_0'
+        description: 'OCCT git tag, e.g. V8_0_0'
         required: true
         type: string
       expected_sha256:
@@ -57,20 +57,36 @@ jobs:
           set -euo pipefail
           tag="$TAG"
 
+          if ! git check-ref-format "refs/tags/${tag}" >/dev/null; then
+            echo "::error::${tag} is not a valid git tag name"
+            exit 1
+          fi
+
           # An annotated tag points at a tag object, not a commit; ^{} peels it.
-          # Both forms are tried so the workflow does not depend on how the OCCT
-          # maintainers happened to create the tag.
-          commit="$(git ls-remote "$OCCT_REPO" "refs/tags/${tag}^{}" | cut -f1)"
+          # Match the returned ref name exactly as well: ls-remote accepts ref
+          # patterns, while this workflow accepts one concrete tag.
+          remote_refs="$(git ls-remote \
+            "$OCCT_REPO" "refs/tags/${tag}" "refs/tags/${tag}^{}")"
+          commit="$(printf '%s\n' "$remote_refs" \
+            | awk -F '\t' -v ref="refs/tags/${tag}^{}" '$2 == ref { print $1; exit }')"
           if [ -z "$commit" ]; then
-            commit="$(git ls-remote "$OCCT_REPO" "refs/tags/${tag}" | cut -f1)"
+            commit="$(printf '%s\n' "$remote_refs" \
+              | awk -F '\t' -v ref="refs/tags/${tag}" '$2 == ref { print $1; exit }')"
           fi
           if [ -z "$commit" ]; then
             echo "::error::tag ${tag} does not exist in ${OCCT_REPO}"
             exit 1
           fi
+          if ! printf '%s\n' "$commit" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::tag ${tag} did not resolve to one SHA-1 commit: ${commit}"
+            exit 1
+          fi
 
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
-          echo "archive_url=${OCCT_REPO}/archive/refs/tags/${tag}.tar.gz" >> "$GITHUB_OUTPUT"
+          # Download by immutable commit, not by the tag a second time. If the
+          # tag moves between this step and curl, the report must not name one
+          # commit while the runners compile another.
+          echo "archive_url=${OCCT_REPO}/archive/${commit}.tar.gz" >> "$GITHUB_OUTPUT"
           echo "tag ${tag} is commit ${commit}"
 
       - name: Download the source archive and checksum it
@@ -149,22 +165,6 @@ jobs:
               ;;
           esac
 
-      - name: Record toolchain versions
-        id: toolchain
-        run: |
-          set -euo pipefail
-          cmake_version="$(cmake --version | head -1)"
-          echo "cmake=$cmake_version" >> "$GITHUB_OUTPUT"
-
-          case '${{ matrix.name }}' in
-            linux)   compiler="$(c++ --version | head -1)" ;;
-            macos)   compiler="$(clang++ --version | head -1)" ;;
-            windows) compiler="$(cmake --system-information 2>/dev/null | grep -m1 '^CMAKE_CXX_COMPILER_VERSION ' || echo 'MSVC, version reported by the configure step')" ;;
-          esac
-          echo "compiler=$compiler" >> "$GITHUB_OUTPUT"
-          echo "cmake:    $cmake_version"
-          echo "compiler: $compiler"
-
       - name: Restore a cached OCCT build
         id: cache
         if: ${{ inputs.keep_build_cache }}
@@ -172,8 +172,10 @@ jobs:
         with:
           path: vendor/install
           # Keyed on the commit rather than the tag: a moved tag must not
-          # silently reuse the previous build.
-          key: occt-${{ needs.resolve.outputs.commit }}-${{ matrix.name }}-v1
+          # silently reuse the previous build. Architecture is independent of
+          # OS, and v2 means the cache includes build provenance and the licence
+          # report. Bump the schema when the OCCT configuration changes.
+          key: occt-${{ needs.resolve.outputs.commit }}-${{ matrix.name }}-${{ runner.arch }}-v2
 
       - name: Fetch and verify the source archive
         if: steps.cache.outputs.cache-hit != 'true'
@@ -268,26 +270,97 @@ jobs:
           echo "config: $config_dir"
           echo "libs:   $lib_dir"
 
+      - name: Record OCCT build provenance
+        id: provenance
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+          RUNNER_LABEL: ${{ matrix.os }}
+          CURRENT_RUNNER_OS: ${{ runner.os }}
+          CURRENT_RUNNER_ARCH: ${{ runner.arch }}
+        run: |
+          set -euo pipefail
+          metadata='vendor/install/.ferritecad-build-provenance'
+
+          if [ "$CACHE_HIT" != 'true' ]; then
+            compiler_file="$(find occt-build -name 'CMakeCXXCompiler.cmake' -print -quit)"
+            if [ -z "$compiler_file" ]; then
+              echo "::error::CMake compiler record not found under occt-build"
+              exit 1
+            fi
+
+            compiler_id="$(sed -n 's/^set(CMAKE_CXX_COMPILER_ID "\(.*\)")$/\1/p' "$compiler_file")"
+            compiler_version="$(sed -n 's/^set(CMAKE_CXX_COMPILER_VERSION "\(.*\)")$/\1/p' "$compiler_file")"
+            compiler_path="$(sed -n 's/^set(CMAKE_CXX_COMPILER "\(.*\)")$/\1/p' "$compiler_file")"
+            if [ -z "$compiler_id" ] || [ -z "$compiler_version" ]; then
+              echo "::error::configured C++ compiler identity is incomplete"
+              cat "$compiler_file"
+              exit 1
+            fi
+
+            cmake_version="$(cmake --version | head -1)"
+            compiler="${compiler_id} ${compiler_version} (${compiler_path})"
+            runner="${RUNNER_LABEL} (${CURRENT_RUNNER_OS}/${CURRENT_RUNNER_ARCH}; ${ImageOS:-image unknown} ${ImageVersion:-version unknown})"
+            {
+              printf 'cmake=%s\n' "$cmake_version"
+              printf 'compiler=%s\n' "$compiler"
+              printf 'runner=%s\n' "$runner"
+            } > "$metadata"
+          fi
+
+          if [ ! -f "$metadata" ]; then
+            echo "::error::cached OCCT build has no provenance record"
+            exit 1
+          fi
+
+          value() {
+            sed -n "s/^$1=//p" "$metadata"
+          }
+          cmake_version="$(value cmake)"
+          compiler="$(value compiler)"
+          runner="$(value runner)"
+          if [ -z "$cmake_version" ] || [ -z "$compiler" ] || [ -z "$runner" ]; then
+            echo "::error::OCCT build provenance is incomplete"
+            cat "$metadata"
+            exit 1
+          fi
+
+          echo "cmake=$cmake_version" >> "$GITHUB_OUTPUT"
+          echo "compiler=$compiler" >> "$GITHUB_OUTPUT"
+          echo "runner=$runner" >> "$GITHUB_OUTPUT"
+          cat "$metadata"
+
       - name: Record OCCT licence files
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
         run: |
           set -euo pipefail
           # THIRD_PARTY_LICENSES.md makes shipping the LGPL text and the OCCT
           # exception a release gate. Record that they exist, so packaging is
           # not the first time anyone looks for them.
           #
-          # Written to a file rather than a step output: the text contains
-          # backticks, and a step output is interpolated into the next script
-          # before bash sees it, where a backtick is a command substitution.
-          : > licences.md
-          for name in LICENSE_LGPL_21.txt OCCT_LGPL_EXCEPTION.txt; do
-            path="$(find occt vendor/install -name "$name" -print -quit 2>/dev/null || true)"
-            if [ -n "$path" ]; then
-              printf -- '- `%s` present\n' "$name" >> licences.md
-            else
-              printf -- '- `%s` NOT FOUND\n' "$name" >> licences.md
-              echo "::warning::${name} was not found in the OCCT tree"
-            fi
-          done
+          # Keep the record inside vendor/install so a cache hit reports what
+          # was present in the source tree that produced that cached build.
+          # Otherwise the missing (and deliberately uncached) source directory
+          # would create a false licence warning on every reused build.
+          report='vendor/install/.ferritecad-licence-report.md'
+          if [ "$CACHE_HIT" != 'true' ]; then
+            : > "$report"
+            for name in LICENSE_LGPL_21.txt OCCT_LGPL_EXCEPTION.txt; do
+              path="$(find occt vendor/install -name "$name" -print -quit 2>/dev/null || true)"
+              if [ -n "$path" ]; then
+                printf -- '- `%s` present\n' "$name" >> "$report"
+              else
+                printf -- '- `%s` NOT FOUND\n' "$name" >> "$report"
+                echo "::warning::${name} was not found in the OCCT tree"
+              fi
+            done
+          fi
+
+          if [ ! -f "$report" ]; then
+            echo "::error::cached OCCT build has no licence report"
+            exit 1
+          fi
+          cp "$report" licences.md
           cat licences.md
 
       - name: Build the smoke test
@@ -338,11 +411,11 @@ jobs:
         if: always()
         env:
           PLATFORM: ${{ matrix.name }}
-          RUNNER_IMAGE: ${{ matrix.os }}
+          RUNNER_IMAGE: ${{ steps.provenance.outputs.runner }}
           JOB_STATUS: ${{ job.status }}
-          CMAKE_VERSION: ${{ steps.toolchain.outputs.cmake }}
-          COMPILER_VERSION: ${{ steps.toolchain.outputs.compiler }}
-          CACHE_STATE: ${{ steps.cache.outputs.cache-hit == 'true' && 'reused' || 'built from source' }}
+          CMAKE_VERSION: ${{ steps.provenance.outputs.cmake }}
+          COMPILER_VERSION: ${{ steps.provenance.outputs.compiler }}
+          CACHE_STATE: ${{ steps.cache.outputs.cache-hit == 'true' && 'reused' || 'cache miss (build attempted)' }}
         run: |
           set -euo pipefail
           {
@@ -387,6 +460,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
+        id: download
+        if: needs.resolve.result == 'success'
+        continue-on-error: true
         with:
           pattern: occt-pin-*
           path: reports
@@ -396,6 +472,7 @@ jobs:
           TAG: ${{ inputs.occt_tag }}
           COMMIT: ${{ needs.resolve.outputs.commit }}
           SHA256: ${{ needs.resolve.outputs.sha256 }}
+          RESOLVE_RESULT: ${{ needs.resolve.result }}
           BUILD_RESULT: ${{ needs.build.result }}
         run: |
           set -euo pipefail
@@ -411,18 +488,25 @@ jobs:
             printf '| Tag | `%s` |\n' "$TAG"
             printf '| Commit | `%s` |\n' "$COMMIT"
             printf '| Source archive SHA-256 | `%s` |\n' "$SHA256"
+            printf '| Resolve result | %s |\n' "$RESOLVE_RESULT"
             printf '| Build result | %s |\n' "$BUILD_RESULT"
             echo
             echo "The commit is the authoritative pin. The archive checksum"
             echo "covers one download of a tarball GitHub generates on demand."
             echo
-            for report in reports/*/pin-report-*.md; do
-              [ -f "$report" ] && cat "$report"
-            done
+            shopt -s nullglob
+            reports=(reports/*/pin-report-*.md)
+            if [ "${#reports[@]}" -eq 0 ]; then
+              echo '_No platform reports were uploaded._'
+            else
+              for report in "${reports[@]}"; do
+                cat "$report"
+              done
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fail if any platform did not pass
-        if: needs.build.result != 'success'
+        if: always() && (needs.resolve.result != 'success' || needs.build.result != 'success' || steps.download.outcome == 'failure')
         run: |
-          echo "::error::not every platform passed; this tag is not pinnable yet"
+          echo "::error::not every platform passed or the pin record is incomplete; this tag is not pinnable yet"
           exit 1
