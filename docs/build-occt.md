@@ -108,8 +108,18 @@ that might later be copied into a release.
 Toolchain: GCC 12 or newer, or Clang 15 or newer.
 
 ```sh
-sudo apt install build-essential cmake ninja-build
+sudo apt install build-essential cmake ninja-build \
+  libx11-dev libxext-dev libxmu-dev libxi-dev \
+  libgl1-mesa-dev libglu1-mesa-dev
 ```
+
+The X11 and GL headers are not optional, despite FerriteCAD rendering through
+`wgpu` and never opening an OCCT viewer. XCAF links against the Visualization
+toolkits, so `TKService` is compiled whatever the `USE_*` flags say, and it
+includes `X11/Xlib.h`. Without these packages the build fails partway through
+with `fatal error: X11/Xlib.h: No such file or directory` — around fifteen
+minutes in, after 1700 other objects have compiled. macOS and Windows use their
+native windowing headers and need nothing extra.
 
 Libraries install to `vendor/install/lib` as `libTK*.so`. At run time they are
 found through `RPATH=$ORIGIN/../lib` baked into the executable, so the

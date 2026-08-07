@@ -53,10 +53,10 @@ jobs:
         # text spliced into the script. A tag containing a quote would otherwise
         # be running commands rather than naming a release.
         env:
-          TAG: ${{ inputs.occt_tag }}
+          FCAD_TAG: ${{ inputs.occt_tag }}
         run: |
           set -euo pipefail
-          tag="$TAG"
+          tag="$FCAD_TAG"
 
           if ! git check-ref-format "refs/tags/${tag}" >/dev/null; then
             echo "::error::${tag} is not a valid git tag name"
@@ -93,18 +93,18 @@ jobs:
       - name: Download the source archive and checksum it
         id: checksum
         env:
-          ARCHIVE_URL: ${{ steps.resolve.outputs.archive_url }}
-          EXPECTED: ${{ inputs.expected_sha256 }}
+          FCAD_ARCHIVE_URL: ${{ steps.resolve.outputs.archive_url }}
+          FCAD_EXPECTED: ${{ inputs.expected_sha256 }}
         run: |
           set -euo pipefail
-          curl -fsSL --retry 3 -o occt.tar.gz "$ARCHIVE_URL"
+          curl -fsSL --retry 3 -o occt.tar.gz "$FCAD_ARCHIVE_URL"
           sha256="$(sha256sum occt.tar.gz | cut -d' ' -f1)"
           bytes="$(stat -c%s occt.tar.gz)"
           echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
           echo "archive is $bytes bytes, sha256 $sha256"
 
-          if [ -n "$EXPECTED" ] && [ "$EXPECTED" != "$sha256" ]; then
-            echo "::error::archive checksum is $sha256 but $EXPECTED was expected"
+          if [ -n "$FCAD_EXPECTED" ] && [ "$FCAD_EXPECTED" != "$sha256" ]; then
+            echo "::error::archive checksum is $sha256 but $FCAD_EXPECTED was expected"
             exit 1
           fi
 
@@ -165,7 +165,15 @@ jobs:
           case '${{ matrix.name }}' in
             linux)
               sudo apt-get update
-              sudo apt-get install -y --no-install-recommends ninja-build
+              # X11 and GL headers are needed even though FerriteCAD renders
+              # through wgpu and never opens an OCCT viewer: XCAF links against
+              # the Visualization toolkits, so TKService is built regardless and
+              # it includes X11/Xlib.h. macOS and Windows use their native
+              # windowing headers and need nothing extra.
+              sudo apt-get install -y --no-install-recommends \
+                ninja-build \
+                libx11-dev libxext-dev libxmu-dev libxi-dev \
+                libgl1-mesa-dev libglu1-mesa-dev
               ;;
             macos)
               brew install ninja
@@ -194,9 +202,17 @@ jobs:
         if: matrix.name == 'windows'
         run: |
           set -euo pipefail
-          # `set` also dumps the `=C:` style drive variables, whose names the
-          # environment file cannot represent; keep only ordinary names.
-          grep -E '^[A-Za-z_][A-Za-z0-9_()]*=' vcvars-env.txt >> "$GITHUB_ENV"
+          # Only the variables the compiler and linker actually need.
+          #
+          # Exporting the whole vcvars environment was a mistake: it publishes
+          # around fifty names into every later step, one of which is the
+          # generic `Platform`. Windows environment variables are
+          # case-insensitive, so that entry displaced this workflow's own
+          # FCAD_PLATFORM and a later step died on an unbound variable — after the
+          # build and the smoke test had already succeeded. An allow-list keeps
+          # the blast radius to names no one else would choose.
+          grep -E '^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir|VCToolsVersion|VSINSTALLDIR|WindowsSdkDir|WindowsSDKVersion|UCRTVersion|UniversalCRTSdkDir)=' \
+            vcvars-env.txt >> "$GITHUB_ENV"
           rm -f vcvars-env.txt
           echo "MSVC environment exported to subsequent steps"
 
@@ -215,13 +231,13 @@ jobs:
       - name: Fetch and verify the source archive
         if: steps.cache.outputs.cache-hit != 'true'
         env:
-          ARCHIVE_URL: ${{ needs.resolve.outputs.archive_url }}
-          EXPECTED: ${{ needs.resolve.outputs.sha256 }}
+          FCAD_ARCHIVE_URL: ${{ needs.resolve.outputs.archive_url }}
+          FCAD_EXPECTED: ${{ needs.resolve.outputs.sha256 }}
         run: |
           set -euo pipefail
-          curl -fsSL --retry 3 -o occt.tar.gz "$ARCHIVE_URL"
+          curl -fsSL --retry 3 -o occt.tar.gz "$FCAD_ARCHIVE_URL"
 
-          expected="$EXPECTED"
+          expected="$FCAD_EXPECTED"
           case '${{ matrix.name }}' in
             macos) actual="$(shasum -a 256 occt.tar.gz | cut -d' ' -f1)" ;;
             *)     actual="$(sha256sum occt.tar.gz | cut -d' ' -f1)" ;;
@@ -319,15 +335,15 @@ jobs:
       - name: Record OCCT build provenance
         id: provenance
         env:
-          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
-          RUNNER_LABEL: ${{ matrix.os }}
-          CURRENT_RUNNER_OS: ${{ runner.os }}
-          CURRENT_RUNNER_ARCH: ${{ runner.arch }}
+          FCAD_CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+          FCAD_RUNNER_LABEL: ${{ matrix.os }}
+          FCAD_CURRENT_RUNNER_OS: ${{ runner.os }}
+          FCAD_CURRENT_RUNNER_ARCH: ${{ runner.arch }}
         run: |
           set -euo pipefail
           metadata='vendor/install/.ferritecad-build-provenance'
 
-          if [ "$CACHE_HIT" != 'true' ]; then
+          if [ "$FCAD_CACHE_HIT" != 'true' ]; then
             compiler_file="$(find occt-build -name 'CMakeCXXCompiler.cmake' -print -quit)"
             if [ -z "$compiler_file" ]; then
               echo "::error::CMake compiler record not found under occt-build"
@@ -345,7 +361,7 @@ jobs:
 
             cmake_version="$(cmake --version | head -1)"
             compiler="${compiler_id} ${compiler_version} (${compiler_path})"
-            runner="${RUNNER_LABEL} (${CURRENT_RUNNER_OS}/${CURRENT_RUNNER_ARCH}; ${ImageOS:-image unknown} ${ImageVersion:-version unknown})"
+            runner="${FCAD_RUNNER_LABEL} (${FCAD_CURRENT_RUNNER_OS}/${FCAD_CURRENT_RUNNER_ARCH}; ${ImageOS:-image unknown} ${ImageVersion:-version unknown})"
             {
               printf 'cmake=%s\n' "$cmake_version"
               printf 'compiler=%s\n' "$compiler"
@@ -379,7 +395,7 @@ jobs:
 
       - name: Record OCCT licence files
         env:
-          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+          FCAD_CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
         run: |
           set -euo pipefail
           # THIRD_PARTY_LICENSES.md makes shipping the LGPL text and the OCCT
@@ -394,7 +410,7 @@ jobs:
           # The backticks in the printf formats below are Markdown code spans,
           # not command substitution; single quotes are what keeps them literal.
           # shellcheck disable=SC2016
-          if [ "$CACHE_HIT" != 'true' ]; then
+          if [ "$FCAD_CACHE_HIT" != 'true' ]; then
             : > "$report"
             for name in LICENSE_LGPL_21.txt OCCT_LGPL_EXCEPTION.txt; do
               path="$(find occt vendor/install -name "$name" -print -quit 2>/dev/null || true)"
@@ -416,8 +432,8 @@ jobs:
 
       - name: Build the smoke test
         env:
-          OCCT_CONFIG_DIR: ${{ steps.occt.outputs.config_dir }}
-          OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+          FCAD_OCCT_CONFIG_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
         run: |
           set -euo pipefail
           # CMAKE_BUILD_RPATH bakes the OCCT location into the binary. On macOS
@@ -426,19 +442,19 @@ jobs:
           # exactly where it looks like it should work.
           cmake -S tools/occt-smoke -B smoke-build -G Ninja ${{ matrix.cmake_extra }} \
             -DCMAKE_BUILD_TYPE=Release \
-            -DOpenCASCADE_DIR="$OCCT_CONFIG_DIR" \
-            -DCMAKE_BUILD_RPATH="$OCCT_LIB_DIR"
+            -DOpenCASCADE_DIR="$FCAD_OCCT_CONFIG_DIR" \
+            -DCMAKE_BUILD_RPATH="$FCAD_OCCT_LIB_DIR"
           cmake --build smoke-build --parallel
 
       - name: Run the smoke test
         id: smoke
         env:
-          OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
         run: |
           set -euo pipefail
           if [ '${{ matrix.name }}' = windows ]; then
             # RPATH is a no-op on Windows; the loader searches PATH.
-            export PATH="$OCCT_LIB_DIR:$PATH"
+            export PATH="$FCAD_OCCT_LIB_DIR:$PATH"
           fi
 
           # Located rather than assumed, so the step does not silently depend on
@@ -460,24 +476,24 @@ jobs:
       - name: Write the pin report
         if: always()
         env:
-          PLATFORM: ${{ matrix.name }}
-          RUNNER_IMAGE: ${{ steps.provenance.outputs.runner }}
-          JOB_STATUS: ${{ job.status }}
-          CMAKE_VERSION: ${{ steps.provenance.outputs.cmake }}
-          COMPILER_VERSION: ${{ steps.provenance.outputs.compiler }}
-          CACHE_STATE: ${{ steps.cache.outputs.cache-hit == 'true' && 'reused' || 'cache miss (build attempted)' }}
+          FCAD_PLATFORM: ${{ matrix.name }}
+          FCAD_RUNNER_IMAGE: ${{ steps.provenance.outputs.runner }}
+          FCAD_JOB_STATUS: ${{ job.status }}
+          FCAD_CMAKE_VERSION: ${{ steps.provenance.outputs.cmake }}
+          FCAD_COMPILER_VERSION: ${{ steps.provenance.outputs.compiler }}
+          FCAD_CACHE_STATE: ${{ steps.cache.outputs.cache-hit == 'true' && 'reused' || 'cache miss (build attempted)' }}
         run: |
           set -euo pipefail
           # Backticks in the printf formats are Markdown code spans.
           # shellcheck disable=SC2016
           {
-            printf '### %s (`%s`)\n\n' "$PLATFORM" "$RUNNER_IMAGE"
+            printf '### %s (`%s`)\n\n' "$FCAD_PLATFORM" "$FCAD_RUNNER_IMAGE"
             echo "| Field | Value |"
             echo "| --- | --- |"
-            printf '| Result | %s |\n' "$JOB_STATUS"
-            printf '| CMake | %s |\n' "$CMAKE_VERSION"
-            printf '| Compiler | %s |\n' "$COMPILER_VERSION"
-            printf '| OCCT build cache | %s |\n' "$CACHE_STATE"
+            printf '| Result | %s |\n' "$FCAD_JOB_STATUS"
+            printf '| CMake | %s |\n' "$FCAD_CMAKE_VERSION"
+            printf '| Compiler | %s |\n' "$FCAD_COMPILER_VERSION"
+            printf '| OCCT build cache | %s |\n' "$FCAD_CACHE_STATE"
             echo
             echo "Licence files:"
             echo
@@ -491,9 +507,9 @@ jobs:
             echo
             echo "</details>"
             echo
-          } > "pin-report-${PLATFORM}.md"
+          } > "pin-report-${FCAD_PLATFORM}.md"
 
-          cat "pin-report-${PLATFORM}.md" >> "$GITHUB_STEP_SUMMARY"
+          cat "pin-report-${FCAD_PLATFORM}.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the pin report
         if: always()
@@ -521,11 +537,11 @@ jobs:
 
       - name: Assemble the pin record
         env:
-          TAG: ${{ inputs.occt_tag }}
-          COMMIT: ${{ needs.resolve.outputs.commit }}
-          SHA256: ${{ needs.resolve.outputs.sha256 }}
-          RESOLVE_RESULT: ${{ needs.resolve.result }}
-          BUILD_RESULT: ${{ needs.build.result }}
+          FCAD_TAG: ${{ inputs.occt_tag }}
+          FCAD_COMMIT: ${{ needs.resolve.outputs.commit }}
+          FCAD_SHA256: ${{ needs.resolve.outputs.sha256 }}
+          FCAD_RESOLVE_RESULT: ${{ needs.resolve.result }}
+          FCAD_BUILD_RESULT: ${{ needs.build.result }}
         run: |
           set -euo pipefail
           # Backticks in the printf formats are Markdown code spans.
@@ -539,11 +555,11 @@ jobs:
             echo
             echo "| Field | Value |"
             echo "| --- | --- |"
-            printf '| Tag | `%s` |\n' "$TAG"
-            printf '| Commit | `%s` |\n' "$COMMIT"
-            printf '| Source archive SHA-256 | `%s` |\n' "$SHA256"
-            printf '| Resolve result | %s |\n' "$RESOLVE_RESULT"
-            printf '| Build result | %s |\n' "$BUILD_RESULT"
+            printf '| Tag | `%s` |\n' "$FCAD_TAG"
+            printf '| Commit | `%s` |\n' "$FCAD_COMMIT"
+            printf '| Source archive SHA-256 | `%s` |\n' "$FCAD_SHA256"
+            printf '| Resolve result | %s |\n' "$FCAD_RESOLVE_RESULT"
+            printf '| Build result | %s |\n' "$FCAD_BUILD_RESULT"
             echo
             echo "The commit is the authoritative pin. The archive checksum"
             echo "covers one download of a tarball GitHub generates on demand."
