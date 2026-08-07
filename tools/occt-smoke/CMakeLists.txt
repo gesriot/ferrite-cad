@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 # Standalone OCCT smoke test. Dynamic linkage only (LGPL).
 cmake_minimum_required(VERSION 3.16)
 project(occt_smoke LANGUAGES CXX)

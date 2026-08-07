@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 use std::collections::BTreeSet;
 
 use ferritecad_document::{Dependency, Document};

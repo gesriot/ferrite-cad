@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! Checks that a document is rebuildable before anything tries to rebuild it.
 //!
 //! Every check here answers a question a user would otherwise discover as a

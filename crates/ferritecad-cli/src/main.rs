@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! `ferritecad` — inspection and validation tools for native documents.
 //!
 //! These commands exist before the user interface does, so the document format

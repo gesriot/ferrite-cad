@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 use thiserror::Error;
 
 /// Boxed source error, used to keep the original cause reachable through

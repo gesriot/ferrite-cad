@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! The regenerable cache sidecar.
 //!
 //! Everything here can be deleted at any moment without changing what a

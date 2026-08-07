@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Standalone OCCT smoke test: prove shared Open CASCADE works before any Rust
 // binding depends on it. Every step catches Standard_Failure and std::exception;
 // main never lets an exception escape. Exit code = number of failed steps.

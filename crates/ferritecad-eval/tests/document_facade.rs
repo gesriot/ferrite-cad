@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! Planning against a real document.
 //!
 //! The unit tests work on bare identifiers and edges. These check the one thing

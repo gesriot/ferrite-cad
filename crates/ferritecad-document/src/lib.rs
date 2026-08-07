@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! The FerriteCAD native document.
 //!
 //! A document is a single SQLite file with the extension `.fcad`. It holds

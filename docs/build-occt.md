@@ -138,11 +138,31 @@ dynamic libraries to be signed individually.
 
 ### Windows
 
-Toolchain: MSVC from Visual Studio 2022 Build Tools.
+Toolchain: the MSVC C++ toolset, from Visual Studio Build Tools or any Visual
+Studio edition that includes it. **Do not name a Visual Studio generator.**
 
-```powershell
-cmake -S occt -B build -G "Visual Studio 17 2022" -A x64 <flags above>
+`-G "Visual Studio 17 2022"` fails with *"could not find any instance of Visual
+Studio"* on machines that have moved past VS 2022, which now includes both
+current developer installs and the GitHub runner image. A generator that names
+one Visual Studio release has to be edited on every release, and CMake cannot
+target a Visual Studio it does not yet know about.
+
+Use Ninja instead. It names no version, so the build follows whichever MSVC is
+installed, and it is single-config, so `--config` disappears:
+
+```bat
+:: from a developer prompt, or after calling vcvars64.bat
+cmake -S occt -B build -G Ninja ^
+  -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl ^
+  <flags above>
+cmake --build build --parallel
+cmake --install build
 ```
+
+`cl` is selected explicitly because a MinGW toolchain earlier on `PATH` will
+otherwise be picked ahead of MSVC once the generator no longer implies a
+compiler. This is not hypothetical: it happens on machines with MinGW installed
+and on the CI runners.
 
 `TK*.dll` files are placed beside the executable. The debug and release C
 runtimes cannot be mixed, so a debug FerriteCAD build needs a debug OCCT build.

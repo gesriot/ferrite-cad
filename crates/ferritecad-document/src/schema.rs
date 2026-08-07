@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 use ferritecad_types::{CadError, Result};
 use rusqlite::Connection;
 

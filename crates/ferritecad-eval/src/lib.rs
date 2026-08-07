@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! Deciding what to rebuild, and in what order.
 //!
 //! This crate answers two questions and nothing else: given that some objects

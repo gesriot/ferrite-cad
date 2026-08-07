@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! Types shared by every FerriteCAD crate.
 //!
 //! This crate deliberately knows nothing about geometry kernels, storage or

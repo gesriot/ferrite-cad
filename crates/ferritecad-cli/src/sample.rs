@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! The smallest model that exercises the whole document layer.
 //!
 //! A datum plane, a rectangular profile on it, and an extrusion producing a

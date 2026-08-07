@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! End-to-end checks on the document format.
 //!
 //! These are the stage 1 gate: a document must survive a full save, reload and

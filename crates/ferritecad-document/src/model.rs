@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! The typed objects a document stores.
 //!
 //! These are the source of truth: parameters, sketch geometry, feature inputs

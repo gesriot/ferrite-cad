@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 name: OCCT pin
 
 # Builds Open CASCADE from source on all three product platforms, runs the

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! Human-readable output for the inspection commands.
 
 use std::collections::BTreeMap;
