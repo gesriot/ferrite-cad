@@ -126,19 +126,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Ninja on every platform, including Windows.
+        #
+        # A "Visual Studio <n> <year>" generator names one Visual Studio
+        # release, and both the GitHub runner image and a current developer
+        # machine have already moved past 2022 — a hardcoded generator fails
+        # with "could not find any instance of Visual Studio" and would have to
+        # be edited on every VS release. Ninja names no version, so the build
+        # follows whichever MSVC is installed, and the run records which one
+        # that was. It is also single-config, which removes --config from every
+        # build and install line.
         include:
           - os: ubuntu-latest
             name: linux
-            generator: -G Ninja
-            config_arg: ''
+            cmake_extra: ''
           - os: windows-latest
             name: windows
-            generator: -G "Visual Studio 17 2022" -A x64
-            config_arg: --config Release
+            # MinGW is on PATH on the runners, and CMake would otherwise pick
+            # it over MSVC once Ninja is the generator.
+            cmake_extra: -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
           - os: macos-latest
             name: macos
-            generator: -G Ninja
-            config_arg: ''
+            cmake_extra: ''
 
     defaults:
       run:
@@ -161,9 +170,34 @@ jobs:
               brew install ninja
               ;;
             windows)
-              : # MSVC and CMake are preinstalled on the runner image.
+              # MSVC and CMake are preinstalled; Ninja is not guaranteed to be
+              # on PATH outside a Visual Studio developer prompt.
+              choco install ninja -y --no-progress
               ;;
           esac
+
+      - name: Locate MSVC
+        if: matrix.name == 'windows'
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+          if not defined VSPATH (
+            echo ::error::vswhere found no Visual Studio with the C++ toolset
+            exit /b 1
+          )
+          echo Visual Studio at %VSPATH%
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          set > vcvars-env.txt
+
+      - name: Export the MSVC environment
+        if: matrix.name == 'windows'
+        run: |
+          set -euo pipefail
+          # `set` also dumps the `=C:` style drive variables, whose names the
+          # environment file cannot represent; keep only ordinary names.
+          grep -E '^[A-Za-z_][A-Za-z0-9_()]*=' vcvars-env.txt >> "$GITHUB_ENV"
+          rm -f vcvars-env.txt
+          echo "MSVC environment exported to subsequent steps"
 
       - name: Restore a cached OCCT build
         id: cache
@@ -201,7 +235,7 @@ jobs:
 
           mkdir -p occt
           tar -xzf occt.tar.gz -C occt --strip-components=1
-          echo "extracted $(ls occt | wc -l) entries"
+          echo "extracted $(find occt -mindepth 1 -maxdepth 1 | wc -l) top-level entries"
 
       - name: Configure OCCT
         if: steps.cache.outputs.cache-hit != 'true'
@@ -210,7 +244,7 @@ jobs:
           # These flags mirror docs/build-occt.md exactly. If configuring fails,
           # report it — do not reach for -DBUILD_LIBRARY_TYPE=Static, which
           # would change the licence position of the whole product.
-          cmake -S occt -B occt-build ${{ matrix.generator }} \
+          cmake -S occt -B occt-build -G Ninja ${{ matrix.cmake_extra }} \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_LIBRARY_TYPE=Shared \
             -DBUILD_MODULE_Draw=OFF \
@@ -222,11 +256,22 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          # Read it back from the cache rather than trusting that the flag was
-          # accepted: an unknown option is only a warning to CMake.
-          if ! grep -q '^BUILD_LIBRARY_TYPE:STRING=Shared$' occt-build/CMakeCache.txt; then
-            echo "::error::OCCT did not configure as a shared build"
-            grep '^BUILD_LIBRARY_TYPE' occt-build/CMakeCache.txt || true
+          # Read the value back rather than trusting that the flag was accepted:
+          # an unknown option is only a warning to CMake.
+          #
+          # The cache *type* is deliberately not checked. OCCT declares
+          # BUILD_LIBRARY_TYPE as a CACHE STRING only inside `if (NOT
+          # BUILD_LIBRARY_TYPE)`, so passing the flag on the command line skips
+          # that branch and leaves the entry UNINITIALIZED. Requiring
+          # `:STRING=` therefore fails precisely when the flag *was* set.
+          # What matters is the value, which OCCT then turns into
+          # BUILD_SHARED_LIBS. The produced binaries are checked separately
+          # below, and that is the stronger evidence.
+          value="$(grep -E '^BUILD_LIBRARY_TYPE:[A-Z]+=' occt-build/CMakeCache.txt \
+            | head -1 | cut -d= -f2-)"
+          if [ "$value" != "Shared" ]; then
+            echo "::error::OCCT configured with BUILD_LIBRARY_TYPE=${value:-<unset>}, not Shared"
+            grep -E '^BUILD_(LIBRARY_TYPE|SHARED_LIBS)' occt-build/CMakeCache.txt || true
             exit 1
           fi
           echo "BUILD_LIBRARY_TYPE=Shared confirmed"
@@ -235,8 +280,8 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          cmake --build occt-build ${{ matrix.config_arg }} --parallel
-          cmake --install occt-build ${{ matrix.config_arg }}
+          cmake --build occt-build --parallel
+          cmake --install occt-build
 
       - name: Locate the install
         id: occt
@@ -324,9 +369,11 @@ jobs:
             exit 1
           fi
 
-          echo "cmake=$cmake_version" >> "$GITHUB_OUTPUT"
-          echo "compiler=$compiler" >> "$GITHUB_OUTPUT"
-          echo "runner=$runner" >> "$GITHUB_OUTPUT"
+          {
+            echo "cmake=$cmake_version"
+            echo "compiler=$compiler"
+            echo "runner=$runner"
+          } >> "$GITHUB_OUTPUT"
           cat "$metadata"
 
       - name: Record OCCT licence files
@@ -343,6 +390,9 @@ jobs:
           # Otherwise the missing (and deliberately uncached) source directory
           # would create a false licence warning on every reused build.
           report='vendor/install/.ferritecad-licence-report.md'
+          # The backticks in the printf formats below are Markdown code spans,
+          # not command substitution; single quotes are what keeps them literal.
+          # shellcheck disable=SC2016
           if [ "$CACHE_HIT" != 'true' ]; then
             : > "$report"
             for name in LICENSE_LGPL_21.txt OCCT_LGPL_EXCEPTION.txt; do
@@ -373,11 +423,11 @@ jobs:
           # that matters: SIP strips DYLD_LIBRARY_PATH when a protected shell
           # spawns a process, so the environment-variable route is unreliable
           # exactly where it looks like it should work.
-          cmake -S tools/occt-smoke -B smoke-build ${{ matrix.generator }} \
+          cmake -S tools/occt-smoke -B smoke-build -G Ninja ${{ matrix.cmake_extra }} \
             -DCMAKE_BUILD_TYPE=Release \
             -DOpenCASCADE_DIR="$OCCT_CONFIG_DIR" \
             -DCMAKE_BUILD_RPATH="$OCCT_LIB_DIR"
-          cmake --build smoke-build ${{ matrix.config_arg }} --parallel
+          cmake --build smoke-build --parallel
 
       - name: Run the smoke test
         id: smoke
@@ -385,21 +435,20 @@ jobs:
           OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
         run: |
           set -euo pipefail
-          case '${{ matrix.name }}' in
-            windows)
-              export PATH="$OCCT_LIB_DIR:$PATH"
-              binary='smoke-build/Release/occt_smoke.exe'
-              ;;
-            *)
-              binary='smoke-build/occt_smoke'
-              ;;
-          esac
+          if [ '${{ matrix.name }}' = windows ]; then
+            # RPATH is a no-op on Windows; the loader searches PATH.
+            export PATH="$OCCT_LIB_DIR:$PATH"
+          fi
 
-          if [ ! -x "$binary" ]; then
-            echo "::error::smoke binary not found at $binary"
-            find smoke-build -name 'occt_smoke*' -type f
+          # Located rather than assumed, so the step does not silently depend on
+          # the generator staying single-config.
+          binary="$(find smoke-build -type f -name 'occt_smoke' -o -type f -name 'occt_smoke.exe' | head -1)"
+          if [ -z "$binary" ] || [ ! -x "$binary" ]; then
+            echo "::error::no executable smoke binary under smoke-build"
+            find smoke-build -name 'occt_smoke*' -type f || true
             exit 1
           fi
+          echo "running $binary"
 
           # Failures are reported, never worked around. A step that does not
           # pass is a real limit of this OCCT version on this platform, and
@@ -418,6 +467,8 @@ jobs:
           CACHE_STATE: ${{ steps.cache.outputs.cache-hit == 'true' && 'reused' || 'cache miss (build attempted)' }}
         run: |
           set -euo pipefail
+          # Backticks in the printf formats are Markdown code spans.
+          # shellcheck disable=SC2016
           {
             printf '### %s (`%s`)\n\n' "$PLATFORM" "$RUNNER_IMAGE"
             echo "| Field | Value |"
@@ -476,6 +527,8 @@ jobs:
           BUILD_RESULT: ${{ needs.build.result }}
         run: |
           set -euo pipefail
+          # Backticks in the printf formats are Markdown code spans.
+          # shellcheck disable=SC2016
           {
             echo "## OCCT pin candidate"
             echo
