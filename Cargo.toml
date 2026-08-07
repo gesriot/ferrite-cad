@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/ferritecad-types",
+    "crates/ferritecad-document",
+    "crates/ferritecad-eval",
+    "crates/ferritecad-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+repository = "https://github.com/ferrite-cad/ferrite-cad"
+authors = ["FerriteCAD contributors"]
+
+[workspace.dependencies]
+ferritecad-types = { path = "crates/ferritecad-types", version = "0.0.1" }
+ferritecad-document = { path = "crates/ferritecad-document", version = "0.0.1" }
+ferritecad-eval = { path = "crates/ferritecad-eval", version = "0.0.1" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+# Errors from external input must never be handled with unwrap/expect.
+# `expect` remains allowed for internal invariants; see CLAUDE.md 5.2.
+unwrap_used = "deny"
+panic = "warn"

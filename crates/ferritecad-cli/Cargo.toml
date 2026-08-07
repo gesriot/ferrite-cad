@@ -1,0 +1,25 @@
+[package]
+name = "ferritecad-cli"
+description = "Command line tools for inspecting and validating FerriteCAD documents"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "ferritecad"
+path = "src/main.rs"
+
+[dependencies]
+ferritecad-document.workspace = true
+ferritecad-types.workspace = true
+
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

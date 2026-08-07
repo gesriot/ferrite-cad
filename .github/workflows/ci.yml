@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # A warning that only appears locally is a warning nobody fixes.
+  RUSTFLAGS: -D warnings
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Formatting and lints are platform-independent, so they run once rather
+  # than three times.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # All three are product targets. macOS is not a courtesy build: a
+        # failure here blocks the merge exactly as the others do.
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --all-targets
+      - run: cargo test --workspace
+
+      # The document format must behave identically on every platform, so the
+      # command-line path is exercised rather than only the library tests.
+      - name: Round-trip a document through the CLI
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cargo run --quiet -p ferritecad-cli -- create part.fcad --sample
+          cargo run --quiet -p ferritecad-cli -- validate part.fcad
+          cargo run --quiet -p ferritecad-cli -- inspect part.fcad
+          cargo run --quiet -p ferritecad-cli -- dump-graph part.fcad --format dot
+          cargo run --quiet -p ferritecad-cli -- clear-cache part.fcad
+
+  # Licences and advisories gate the merge, so a dependency cannot arrive
+  # first and be justified afterwards.
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

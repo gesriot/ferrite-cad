@@ -1,0 +1,20 @@
+/target
+**/*.rs.bk
+
+# Native documents and their regenerable cache sidecars
+*.fcad
+*.fcad-cache
+*.fcad-cache-wal
+*.fcad-cache-shm
+
+# Local OCCT build tree (see docs/build-occt.md)
+/vendor/occt
+/vendor/install
+
+# CMake build trees (tools/occt-smoke and others)
+/build/
+
+# Per-machine tool settings; shared settings belong in .claude/settings.json
+.claude/settings.local.json
+
+.DS_Store

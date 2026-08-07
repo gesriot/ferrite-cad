@@ -1,0 +1,18 @@
+[package]
+name = "ferritecad-types"
+description = "Shared identifiers, units, tolerances, errors and canonical hashing for FerriteCAD"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+blake3 = "1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+uuid = { version = "1", features = ["v7", "serde"] }
+
+[lints]
+workspace = true

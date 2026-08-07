@@ -1,0 +1,50 @@
+# cargo-deny configuration for FerriteCAD.
+#
+# Policy (docs/implementation-plan.md, 4.4):
+#   - own code is MIT;
+#   - GPL/AGPL code is never linked into the application process;
+#   - OCCT is LGPL-2.1-with-exception and is linked dynamically only,
+#     from the C++ side, so it never appears in this graph.
+
+[graph]
+all-features = true
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "MPL-2.0",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+# Nothing GPL/AGPL may enter the application process. Listed explicitly so a
+# transitive pull-in fails the build with an obvious reason rather than a
+# generic licence rejection.
+deny = [
+    { crate = "slvs", reason = "SolveSpace solver is GPL-3.0; see implementation-plan 4.4" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -1,0 +1,115 @@
+# OCCT smoke test
+
+Standalone C++17 program that proves a **dynamically** linked Open CASCADE
+Technology install works the way FerriteCAD expects, **before** any Rust code
+depends on it.
+
+It exercises: box volume, extrude, boolean cut, fillet, B-Rep string
+round-trip, **STEP via XDE** (name + colour + units — the step that most often
+fails quietly), STEP write/read round-trip, and tessellation with explicit
+deflections.
+
+No dependencies other than OCCT and a C++17 toolchain.
+
+## Prerequisites
+
+- CMake ≥ 3.16
+- C++17 compiler: GCC/Clang (Linux), MSVC 2022 (Windows), Apple Clang (macOS)
+- OCCT built and installed as **shared** libraries with at least:
+  - `FoundationClasses`, `ModelingData`, `ModelingAlgorithms`
+  - `DataExchange` (STEP + XDE)
+  - `ApplicationFramework` (XCAF documents for `STEPCAFControl_*` / `XCAFDoc`)
+  - `Visualization` as a **CMake component only**: stock OCCT packages
+    `INTERFACE_LINK` XCAF/STEP against `TKService`/`TKV3d`. The smoke program
+    never creates a viewer; if you build OCCT yourself you can still disable
+    optional viewer backends (VTK/Qt/FreeType samples) per `docs/build-occt.md`.
+
+The CMake package must explicitly declare a shared OCCT build; on Unix each
+resolved toolkit is additionally checked to reject `.a` archives.
+
+A recipe for building OCCT itself lives in [`docs/build-occt.md`](../../docs/build-occt.md).
+
+Point CMake at the install with `OpenCASCADE_DIR` (directory that contains
+`OpenCASCADEConfig.cmake`).
+
+## Sample STEP
+
+`data/sample_named_colored.step` is the classic AS1 PE assembly (AP203 with
+styled colours and product names). It is large enough to exercise XDE properly
+and small enough to keep in-tree. Any other STEP that carries **at least one
+shape name and one colour** also works as the first argument.
+
+## Build & run
+
+### Linux (GCC or Clang)
+
+```sh
+export OpenCASCADE_DIR=/path/to/occt/install/lib/cmake/opencascade
+
+cmake -S tools/occt-smoke -B build/occt-smoke \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DOpenCASCADE_DIR="$OpenCASCADE_DIR"
+
+cmake --build build/occt-smoke --parallel
+
+# If RPATH was not enough for a non-standard prefix:
+# export LD_LIBRARY_PATH=/path/to/occt/install/lib:$LD_LIBRARY_PATH
+
+./build/occt-smoke/occt_smoke tools/occt-smoke/data/sample_named_colored.step
+```
+
+### macOS (Apple Clang)
+
+```sh
+export OpenCASCADE_DIR=/path/to/occt/install/lib/cmake/opencascade
+
+cmake -S tools/occt-smoke -B build/occt-smoke \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DOpenCASCADE_DIR="$OpenCASCADE_DIR"
+
+cmake --build build/occt-smoke --parallel
+
+# If needed:
+# export DYLD_LIBRARY_PATH=/path/to/occt/install/lib:$DYLD_LIBRARY_PATH
+
+./build/occt-smoke/occt_smoke tools/occt-smoke/data/sample_named_colored.step
+```
+
+### Windows (MSVC 2022)
+
+From an “x64 Native Tools” or VS 2022 developer prompt:
+
+```powershell
+$env:OpenCASCADE_DIR = "C:\path\to\occt\install\cmake"
+# Some installs use lib\cmake\opencascade — use the folder with OpenCASCADEConfig.cmake
+
+cmake -S tools/occt-smoke -B build/occt-smoke `
+  -G "Visual Studio 17 2022" -A x64 `
+  -DOpenCASCADE_DIR="$env:OpenCASCADE_DIR"
+
+cmake --build build/occt-smoke --config Release --parallel
+
+# DLLs must be on PATH (or next to the .exe):
+$env:PATH = "C:\path\to\occt\install\win64\vc14\bin;" + $env:PATH
+
+.\build\occt-smoke\Release\occt_smoke.exe tools\occt-smoke\data\sample_named_colored.step
+```
+
+## Expected output
+
+1. First line: `OCC_VERSION_COMPLETE=...`
+2. Eight lines with `[PASS]` / `[FAIL]`, step name, and milliseconds
+3. A summary table `step | status | ms`
+4. Exit code **0** if every step passed, otherwise the **number of failed steps**
+
+Step 6 prints file units, at least one shape name, and at least one RGB colour.
+Step 7 writes a temporary STEP under the system temp directory and checks that
+name and colour survive the round trip.
+
+## Policy reminders
+
+- Link **only** shared OCCT (LGPL + Open CASCADE exception).
+- Every algorithm call that accepts a tolerance or deflection passes an
+  explicit value and prints it.
+- Exceptions (`Standard_Failure` and `std::exception`) are caught per step;
+  none leave `main`.
