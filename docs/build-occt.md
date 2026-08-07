@@ -15,19 +15,42 @@ The architecture RFC names OCCT 8.0. Treat that as the intent, not the fact:
 on all three platforms**, recorded here with its checksum before any code
 depends on it.
 
-Fill in on first successful build:
+Fill in once all three platforms have passed:
 
 | Field | Value |
 | --- | --- |
 | Tag | _to be recorded_ |
+| Commit | _to be recorded_ |
 | Source archive SHA-256 | _to be recorded_ |
 | CMake version used | _to be recorded_ |
 | Compiler per platform | _to be recorded_ |
+
+**The commit is the authoritative pin, not the archive checksum.** GitHub
+generates tag archives on demand rather than storing them, and their bytes have
+changed before when the underlying archive format changed. The SHA-256 records
+one particular download and is worth verifying; a build script that must still
+be reproducible in three years should clone the commit.
 
 Until this table is filled in, no build script may download OCCT. An unpinned
 third-party C++ archive is a supply-chain hole, and the plan's rule is that
 versions and checksums are fixed before the dependency is used
 (implementation-plan.md, 4.4).
+
+### Producing the record
+
+Run the **OCCT pin** workflow from the Actions tab with the candidate tag, e.g.
+`V7_9_0`. It builds OCCT from source on Linux, Windows and macOS, runs
+[`tools/occt-smoke`](../tools/occt-smoke) against each build, and prints a
+filled-in version of the table above in the run summary.
+
+Prefer it to a manual run on one machine. The deliverable here is not "it
+compiled" but the record of *which* compiler and CMake produced that result, and
+a workflow log states that where a person's recollection does not. It also
+covers platforms you may not have to hand.
+
+A tag is pinnable only when all three platforms pass. Two green platforms and
+one that was never run is not a pin, and the workflow fails rather than
+reporting a partial result as a success.
 
 ## Required OCCT modules
 

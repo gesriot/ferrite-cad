@@ -1,0 +1,428 @@
+name: OCCT pin
+
+# Builds Open CASCADE from source on all three product platforms, runs the
+# smoke test against it, and reports everything needed to fill in the pin table
+# in docs/build-occt.md.
+#
+# This is deliberately not part of CI. It takes tens of minutes per platform and
+# is run when a version is being chosen or changed, not on every pull request.
+#
+# The deliverable is not "it compiled". It is the record: tag, commit, archive
+# checksum and the exact toolchain each platform used. A pin established by hand
+# rests on someone's memory of which compiler they had; this rests on the log.
+
+on:
+  workflow_dispatch:
+    inputs:
+      occt_tag:
+        description: 'OCCT git tag, e.g. V7_9_0'
+        required: true
+        type: string
+      expected_sha256:
+        description: 'Optional: SHA-256 the source archive must match. Leave empty to discover it.'
+        required: false
+        type: string
+      keep_build_cache:
+        description: 'Reuse a cached OCCT build for this tag when one exists'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  OCCT_REPO: https://github.com/Open-Cascade-SAS/OCCT
+
+jobs:
+  # Resolves the tag once so all three platforms provably build the same bytes.
+  # Letting each runner download independently would mean three unverified
+  # downloads and no way to tell a mirror hiccup from a retagged release.
+  resolve:
+    name: Resolve tag and checksum
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
+      sha256: ${{ steps.checksum.outputs.sha256 }}
+      archive_url: ${{ steps.resolve.outputs.archive_url }}
+    steps:
+      - name: Resolve tag to a commit
+        id: resolve
+        # Dispatch inputs reach the shell as environment variables, never as
+        # text spliced into the script. A tag containing a quote would otherwise
+        # be running commands rather than naming a release.
+        env:
+          TAG: ${{ inputs.occt_tag }}
+        run: |
+          set -euo pipefail
+          tag="$TAG"
+
+          # An annotated tag points at a tag object, not a commit; ^{} peels it.
+          # Both forms are tried so the workflow does not depend on how the OCCT
+          # maintainers happened to create the tag.
+          commit="$(git ls-remote "$OCCT_REPO" "refs/tags/${tag}^{}" | cut -f1)"
+          if [ -z "$commit" ]; then
+            commit="$(git ls-remote "$OCCT_REPO" "refs/tags/${tag}" | cut -f1)"
+          fi
+          if [ -z "$commit" ]; then
+            echo "::error::tag ${tag} does not exist in ${OCCT_REPO}"
+            exit 1
+          fi
+
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "archive_url=${OCCT_REPO}/archive/refs/tags/${tag}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "tag ${tag} is commit ${commit}"
+
+      - name: Download the source archive and checksum it
+        id: checksum
+        env:
+          ARCHIVE_URL: ${{ steps.resolve.outputs.archive_url }}
+          EXPECTED: ${{ inputs.expected_sha256 }}
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o occt.tar.gz "$ARCHIVE_URL"
+          sha256="$(sha256sum occt.tar.gz | cut -d' ' -f1)"
+          bytes="$(stat -c%s occt.tar.gz)"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+          echo "archive is $bytes bytes, sha256 $sha256"
+
+          if [ -n "$EXPECTED" ] && [ "$EXPECTED" != "$sha256" ]; then
+            echo "::error::archive checksum is $sha256 but $EXPECTED was expected"
+            exit 1
+          fi
+
+      - name: Warn that a GitHub source archive is a weak pin
+        run: |
+          cat <<'NOTE'
+          ::warning::GitHub generates tag archives on demand rather than storing
+          them, and their bytes have changed before when the git archive format
+          changed. Treat the commit SHA as the authoritative pin and the archive
+          SHA-256 as a check on one particular download. A build script that
+          must be reproducible for years should clone the commit, not fetch the
+          tarball.
+          NOTE
+
+  build:
+    name: ${{ matrix.name }}
+    needs: resolve
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux
+            generator: -G Ninja
+            config_arg: ''
+          - os: windows-latest
+            name: windows
+            generator: -G "Visual Studio 17 2022" -A x64
+            config_arg: --config Release
+          - os: macos-latest
+            name: macos
+            generator: -G Ninja
+            config_arg: ''
+
+    defaults:
+      run:
+        # One shell everywhere, so the build steps are the same text on all
+        # three platforms and a difference in behaviour is a real difference.
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          set -euo pipefail
+          case '${{ matrix.name }}' in
+            linux)
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends ninja-build
+              ;;
+            macos)
+              brew install ninja
+              ;;
+            windows)
+              : # MSVC and CMake are preinstalled on the runner image.
+              ;;
+          esac
+
+      - name: Record toolchain versions
+        id: toolchain
+        run: |
+          set -euo pipefail
+          cmake_version="$(cmake --version | head -1)"
+          echo "cmake=$cmake_version" >> "$GITHUB_OUTPUT"
+
+          case '${{ matrix.name }}' in
+            linux)   compiler="$(c++ --version | head -1)" ;;
+            macos)   compiler="$(clang++ --version | head -1)" ;;
+            windows) compiler="$(cmake --system-information 2>/dev/null | grep -m1 '^CMAKE_CXX_COMPILER_VERSION ' || echo 'MSVC, version reported by the configure step')" ;;
+          esac
+          echo "compiler=$compiler" >> "$GITHUB_OUTPUT"
+          echo "cmake:    $cmake_version"
+          echo "compiler: $compiler"
+
+      - name: Restore a cached OCCT build
+        id: cache
+        if: ${{ inputs.keep_build_cache }}
+        uses: actions/cache@v4
+        with:
+          path: vendor/install
+          # Keyed on the commit rather than the tag: a moved tag must not
+          # silently reuse the previous build.
+          key: occt-${{ needs.resolve.outputs.commit }}-${{ matrix.name }}-v1
+
+      - name: Fetch and verify the source archive
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          ARCHIVE_URL: ${{ needs.resolve.outputs.archive_url }}
+          EXPECTED: ${{ needs.resolve.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o occt.tar.gz "$ARCHIVE_URL"
+
+          expected="$EXPECTED"
+          case '${{ matrix.name }}' in
+            macos) actual="$(shasum -a 256 occt.tar.gz | cut -d' ' -f1)" ;;
+            *)     actual="$(sha256sum occt.tar.gz | cut -d' ' -f1)" ;;
+          esac
+
+          # Every platform must build byte-identical sources, or the pin means
+          # nothing.
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::archive checksum is $actual, the resolve job saw $expected"
+            exit 1
+          fi
+
+          mkdir -p occt
+          tar -xzf occt.tar.gz -C occt --strip-components=1
+          echo "extracted $(ls occt | wc -l) entries"
+
+      - name: Configure OCCT
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          # These flags mirror docs/build-occt.md exactly. If configuring fails,
+          # report it — do not reach for -DBUILD_LIBRARY_TYPE=Static, which
+          # would change the licence position of the whole product.
+          cmake -S occt -B occt-build ${{ matrix.generator }} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_LIBRARY_TYPE=Shared \
+            -DBUILD_MODULE_Draw=OFF \
+            -DUSE_TK=OFF -DUSE_TCL=OFF -DUSE_FREETYPE=OFF -DUSE_VTK=OFF \
+            -DBUILD_DOC_Overview=OFF \
+            -DCMAKE_INSTALL_PREFIX="$PWD/vendor/install"
+
+      - name: Assert the build is shared
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          # Read it back from the cache rather than trusting that the flag was
+          # accepted: an unknown option is only a warning to CMake.
+          if ! grep -q '^BUILD_LIBRARY_TYPE:STRING=Shared$' occt-build/CMakeCache.txt; then
+            echo "::error::OCCT did not configure as a shared build"
+            grep '^BUILD_LIBRARY_TYPE' occt-build/CMakeCache.txt || true
+            exit 1
+          fi
+          echo "BUILD_LIBRARY_TYPE=Shared confirmed"
+
+      - name: Build and install OCCT
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          cmake --build occt-build ${{ matrix.config_arg }} --parallel
+          cmake --install occt-build ${{ matrix.config_arg }}
+
+      - name: Locate the install
+        id: occt
+        run: |
+          set -euo pipefail
+          # OCCT's install layout differs by platform and by version, so the
+          # package config and library directories are discovered rather than
+          # assumed. This keeps the workflow working when the tag input changes.
+          config="$(find vendor/install -name 'OpenCASCADEConfig.cmake' -print -quit)"
+          if [ -z "$config" ]; then
+            echo "::error::OpenCASCADEConfig.cmake not found under vendor/install"
+            find vendor/install -maxdepth 3 -type d | head -40
+            exit 1
+          fi
+          config_dir="$(cd "$(dirname "$config")" && pwd)"
+          echo "config_dir=$config_dir" >> "$GITHUB_OUTPUT"
+
+          case '${{ matrix.name }}' in
+            windows) pattern='TKernel.dll' ;;
+            macos)   pattern='libTKernel*.dylib' ;;
+            *)       pattern='libTKernel.so*' ;;
+          esac
+          lib="$(find vendor/install -name "$pattern" -print -quit)"
+          if [ -z "$lib" ]; then
+            echo "::error::no shared TKernel found; the install is not a shared build"
+            exit 1
+          fi
+          lib_dir="$(cd "$(dirname "$lib")" && pwd)"
+          echo "lib_dir=$lib_dir" >> "$GITHUB_OUTPUT"
+
+          echo "config: $config_dir"
+          echo "libs:   $lib_dir"
+
+      - name: Record OCCT licence files
+        run: |
+          set -euo pipefail
+          # THIRD_PARTY_LICENSES.md makes shipping the LGPL text and the OCCT
+          # exception a release gate. Record that they exist, so packaging is
+          # not the first time anyone looks for them.
+          #
+          # Written to a file rather than a step output: the text contains
+          # backticks, and a step output is interpolated into the next script
+          # before bash sees it, where a backtick is a command substitution.
+          : > licences.md
+          for name in LICENSE_LGPL_21.txt OCCT_LGPL_EXCEPTION.txt; do
+            path="$(find occt vendor/install -name "$name" -print -quit 2>/dev/null || true)"
+            if [ -n "$path" ]; then
+              printf -- '- `%s` present\n' "$name" >> licences.md
+            else
+              printf -- '- `%s` NOT FOUND\n' "$name" >> licences.md
+              echo "::warning::${name} was not found in the OCCT tree"
+            fi
+          done
+          cat licences.md
+
+      - name: Build the smoke test
+        env:
+          OCCT_CONFIG_DIR: ${{ steps.occt.outputs.config_dir }}
+          OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          # CMAKE_BUILD_RPATH bakes the OCCT location into the binary. On macOS
+          # that matters: SIP strips DYLD_LIBRARY_PATH when a protected shell
+          # spawns a process, so the environment-variable route is unreliable
+          # exactly where it looks like it should work.
+          cmake -S tools/occt-smoke -B smoke-build ${{ matrix.generator }} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOpenCASCADE_DIR="$OCCT_CONFIG_DIR" \
+            -DCMAKE_BUILD_RPATH="$OCCT_LIB_DIR"
+          cmake --build smoke-build ${{ matrix.config_arg }} --parallel
+
+      - name: Run the smoke test
+        id: smoke
+        env:
+          OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          case '${{ matrix.name }}' in
+            windows)
+              export PATH="$OCCT_LIB_DIR:$PATH"
+              binary='smoke-build/Release/occt_smoke.exe'
+              ;;
+            *)
+              binary='smoke-build/occt_smoke'
+              ;;
+          esac
+
+          if [ ! -x "$binary" ]; then
+            echo "::error::smoke binary not found at $binary"
+            find smoke-build -name 'occt_smoke*' -type f
+            exit 1
+          fi
+
+          # Failures are reported, never worked around. A step that does not
+          # pass is a real limit of this OCCT version on this platform, and
+          # that is exactly what the pin decision needs to know.
+          "$binary" tools/occt-smoke/data/sample_named_colored.step \
+            | tee smoke-output.txt
+
+      - name: Write the pin report
+        if: always()
+        env:
+          PLATFORM: ${{ matrix.name }}
+          RUNNER_IMAGE: ${{ matrix.os }}
+          JOB_STATUS: ${{ job.status }}
+          CMAKE_VERSION: ${{ steps.toolchain.outputs.cmake }}
+          COMPILER_VERSION: ${{ steps.toolchain.outputs.compiler }}
+          CACHE_STATE: ${{ steps.cache.outputs.cache-hit == 'true' && 'reused' || 'built from source' }}
+        run: |
+          set -euo pipefail
+          {
+            printf '### %s (`%s`)\n\n' "$PLATFORM" "$RUNNER_IMAGE"
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            printf '| Result | %s |\n' "$JOB_STATUS"
+            printf '| CMake | %s |\n' "$CMAKE_VERSION"
+            printf '| Compiler | %s |\n' "$COMPILER_VERSION"
+            printf '| OCCT build cache | %s |\n' "$CACHE_STATE"
+            echo
+            echo "Licence files:"
+            echo
+            cat licences.md 2>/dev/null || echo '- (not recorded; the build did not reach that step)'
+            echo
+            echo "<details><summary>Smoke test output</summary>"
+            echo
+            echo '```'
+            cat smoke-output.txt 2>/dev/null || echo '(the smoke test did not produce output)'
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+          } > "pin-report-${PLATFORM}.md"
+
+          cat "pin-report-${PLATFORM}.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the pin report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: occt-pin-${{ matrix.name }}
+          path: |
+            pin-report-${{ matrix.name }}.md
+            smoke-output.txt
+          if-no-files-found: warn
+
+  report:
+    name: Pin summary
+    needs: [resolve, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: occt-pin-*
+          path: reports
+
+      - name: Assemble the pin record
+        env:
+          TAG: ${{ inputs.occt_tag }}
+          COMMIT: ${{ needs.resolve.outputs.commit }}
+          SHA256: ${{ needs.resolve.outputs.sha256 }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## OCCT pin candidate"
+            echo
+            echo "Paste into the table in \`docs/build-occt.md\` only if all three"
+            echo "platforms passed. A pin recorded from two green platforms and one"
+            echo "skipped is not a pin."
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            printf '| Tag | `%s` |\n' "$TAG"
+            printf '| Commit | `%s` |\n' "$COMMIT"
+            printf '| Source archive SHA-256 | `%s` |\n' "$SHA256"
+            printf '| Build result | %s |\n' "$BUILD_RESULT"
+            echo
+            echo "The commit is the authoritative pin. The archive checksum"
+            echo "covers one download of a tarball GitHub generates on demand."
+            echo
+            for report in reports/*/pin-report-*.md; do
+              [ -f "$report" ] && cat "$report"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail if any platform did not pass
+        if: needs.build.result != 'success'
+        run: |
+          echo "::error::not every platform passed; this tag is not pinnable yet"
+          exit 1
