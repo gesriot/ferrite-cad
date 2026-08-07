@@ -147,7 +147,7 @@ jobs:
         shell: bash
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install build tools
         run: |
@@ -168,7 +168,7 @@ jobs:
       - name: Restore a cached OCCT build
         id: cache
         if: ${{ inputs.keep_build_cache }}
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: vendor/install
           # Keyed on the commit rather than the tag: a moved tag must not
@@ -445,7 +445,7 @@ jobs:
 
       - name: Upload the pin report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: occt-pin-${{ matrix.name }}
           path: |
@@ -459,7 +459,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         id: download
         if: needs.resolve.result == 'success'
         continue-on-error: true
