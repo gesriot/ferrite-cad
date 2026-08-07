@@ -211,7 +211,10 @@ jobs:
           # FCAD_PLATFORM and a later step died on an unbound variable — after the
           # build and the smoke test had already succeeded. An allow-list keeps
           # the blast radius to names no one else would choose.
-          grep -E '^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir|VCToolsVersion|VSINSTALLDIR|WindowsSdkDir|WindowsSDKVersion|UCRTVersion|UniversalCRTSdkDir)=' \
+          # Matched case-insensitively: Windows spells it `Path`, not `PATH`,
+          # and a case-sensitive pattern silently drops it — leaving cl.exe
+          # off PATH and CMake unable to find any compiler at all.
+          grep -Ei '^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir|VCToolsVersion|VSINSTALLDIR|WindowsSdkDir|WindowsSDKVersion|UCRTVersion|UniversalCRTSdkDir)=' \
             vcvars-env.txt >> "$GITHUB_ENV"
           rm -f vcvars-env.txt
           echo "MSVC environment exported to subsequent steps"
@@ -452,10 +455,27 @@ jobs:
           FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
         run: |
           set -euo pipefail
-          if [ '${{ matrix.name }}' = windows ]; then
-            # RPATH is a no-op on Windows; the loader searches PATH.
-            export PATH="$FCAD_OCCT_LIB_DIR:$PATH"
-          fi
+          # The binary is built with an RPATH pointing at the OCCT libraries,
+          # which is enough for what it links directly and not always enough
+          # for what those libraries link in turn.
+          case '${{ matrix.name }}' in
+            windows)
+              # RPATH does not exist on Windows; the loader searches PATH.
+              export PATH="$FCAD_OCCT_LIB_DIR:$PATH"
+              ;;
+            linux)
+              # Modern linkers emit RUNPATH rather than RPATH, and RUNPATH is
+              # not transitive: it resolves the binary's own dependencies but
+              # not theirs. OCCT toolkits pull each other in, so a library the
+              # smoke test never names directly — libTKDE, for one — goes
+              # unfound. LD_LIBRARY_PATH applies to the whole resolution.
+              export LD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              ;;
+            macos)
+              # RPATH suffices, and DYLD_LIBRARY_PATH would not help: SIP
+              # strips DYLD_* when a protected shell spawns a process.
+              ;;
+          esac
 
           # Located rather than assumed, so the step does not silently depend on
           # the generator staying single-config.
