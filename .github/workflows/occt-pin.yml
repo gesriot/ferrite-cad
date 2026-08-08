@@ -227,9 +227,9 @@ jobs:
           path: vendor/install
           # Keyed on the commit rather than the tag: a moved tag must not
           # silently reuse the previous build. Architecture is independent of
-          # OS, and v2 means the cache includes build provenance and the licence
+          # OS, and v3 means the cache includes build provenance and the licence
           # report. Bump the schema when the OCCT configuration changes.
-          key: occt-${{ needs.resolve.outputs.commit }}-${{ matrix.name }}-${{ runner.arch }}-v2
+          key: occt-${{ needs.resolve.outputs.commit }}-${{ matrix.name }}-${{ runner.arch }}-v3
 
       - name: Fetch and verify the source archive
         if: steps.cache.outputs.cache-hit != 'true'
@@ -287,8 +287,7 @@ jobs:
           # What matters is the value, which OCCT then turns into
           # BUILD_SHARED_LIBS. The produced binaries are checked separately
           # below, and that is the stronger evidence.
-          value="$(grep -E '^BUILD_LIBRARY_TYPE:[A-Z]+=' occt-build/CMakeCache.txt \
-            | head -1 | cut -d= -f2-)"
+          value="$(sed -n 's/^BUILD_LIBRARY_TYPE:[^=]*=//p' occt-build/CMakeCache.txt)"
           if [ "$value" != "Shared" ]; then
             echo "::error::OCCT configured with BUILD_LIBRARY_TYPE=${value:-<unset>}, not Shared"
             grep -E '^BUILD_(LIBRARY_TYPE|SHARED_LIBS)' occt-build/CMakeCache.txt || true
@@ -421,7 +420,7 @@ jobs:
                 printf -- '- `%s` present\n' "$name" >> "$report"
               else
                 printf -- '- `%s` NOT FOUND\n' "$name" >> "$report"
-                echo "::warning::${name} was not found in the OCCT tree"
+                echo "::error::${name} was not found in the OCCT tree"
               fi
             done
           fi
@@ -432,6 +431,10 @@ jobs:
           fi
           cp "$report" licences.md
           cat licences.md
+          if grep -qF 'NOT FOUND' "$report"; then
+            echo "::error::OCCT licence files are incomplete"
+            exit 1
+          fi
 
       - name: Build the smoke test
         env:
@@ -472,14 +475,15 @@ jobs:
               export LD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               ;;
             macos)
-              # RPATH suffices, and DYLD_LIBRARY_PATH would not help: SIP
-              # strips DYLD_* when a protected shell spawns a process.
+              # The in-place smoke test uses OCCT's absolute install names.
+              # This proves the install tree, not a relocatable app bundle;
+              # packaging must rewrite those names to @rpath separately.
               ;;
           esac
 
           # Located rather than assumed, so the step does not silently depend on
           # the generator staying single-config.
-          binary="$(find smoke-build -type f -name 'occt_smoke' -o -type f -name 'occt_smoke.exe' | head -1)"
+          binary="$(find smoke-build -type f \( -name 'occt_smoke' -o -name 'occt_smoke.exe' \) -print -quit)"
           if [ -z "$binary" ] || [ ! -x "$binary" ]; then
             echo "::error::no executable smoke binary under smoke-build"
             find smoke-build -name 'occt_smoke*' -type f || true

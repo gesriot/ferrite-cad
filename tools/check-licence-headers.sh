@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 #
-# Checks that every file FerriteCAD authors declares its licence.
+# Checks that every FerriteCAD-authored source and build file declares its
+# licence.
 #
 # The repository is MIT and says so in LICENSE, in README and in every crate
 # manifest. That is enough for a person reading the repository and not enough
@@ -18,7 +19,7 @@ readonly SPDX='SPDX-License-Identifier: MIT'
 missing=()
 checked=0
 
-while IFS= read -r file; do
+while IFS= read -r -d '' file; do
     case "$file" in
         # Cargo manifests declare `license` as a structured field, which is what
         # cargo, crates.io and cargo-deny actually read. A comment would be a
@@ -27,17 +28,18 @@ while IFS= read -r file; do
     esac
 
     case "$file" in
-        *.rs | *.cpp | *.hpp | *.h | *.yml | *.yaml | *.toml | *.sh | */CMakeLists.txt | CMakeLists.txt) ;;
+        *.rs | *.c | *.cc | *.cpp | *.cxx | *.h | *.hpp | *.hxx | *.cmake | \
+            *.yml | *.yaml | *.toml | *.sh | */CMakeLists.txt | CMakeLists.txt) ;;
         *) continue ;;
     esac
 
     checked=$((checked + 1))
     # Only the opening lines: a mention buried in the middle of a file is
     # prose about licensing, not a declaration of this file's licence.
-    if ! head -5 "$file" | grep -qF "$SPDX"; then
+    if ! head -n 5 "./$file" | grep -qF "$SPDX"; then
         missing+=("$file")
     fi
-done < <(git ls-files)
+done < <(git ls-files -z)
 
 if [ ${#missing[@]} -gt 0 ]; then
     echo "error: ${#missing[@]} file(s) do not declare '$SPDX' in their first 5 lines:" >&2

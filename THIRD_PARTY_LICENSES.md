@@ -1,8 +1,8 @@
 # Third-party licences
 
-FerriteCAD's own code is MIT (see [LICENSE](LICENSE)). Every file the project
-authors says so itself, through an `SPDX-License-Identifier: MIT` header or, for
-Cargo manifests, the structured `license` field. `tools/check-licence-headers.sh`
+FerriteCAD's own code is MIT (see [LICENSE](LICENSE)). Every authored source and
+build file says so itself through an `SPDX-License-Identifier: MIT` header; Cargo
+manifests use the structured `license` field. `tools/check-licence-headers.sh`
 enforces this in CI, because a source file copied out of the repository carries
 no licence at all unless it declares one.
 
@@ -25,14 +25,11 @@ post-release fix (implementation-plan.md, 11).
 
 ### OCCT is LGPL-2.1 *only*
 
-Verified by reading the licence header carried by every OCCT source file
-(checked against the V8.0.1 tree, e.g.
-`src/FoundationClasses/TKernel/Standard/Standard_DefineException.hxx`):
-
-> This library is free software; you can redistribute it and/or modify it under
-> the terms of the GNU Lesser General Public License version 2.1 as published by
-> the Free Software Foundation, with special exception defined in the file
-> OCCT_LGPL_EXCEPTION.txt.
+Verified against the OCCT README and representative source headers at the
+currently pinned V8.0.0 commit, including
+`src/FoundationClasses/TKernel/Standard/Standard_DefineException.hxx`. They
+state LGPL version 2.1 with the Open CASCADE exception and separately offer
+commercial terms.
 
 There is no "or (at your option) any later version". That phrase appears only in
 the boilerplate at the end of `LICENSE_LGPL_21.txt`, which is the FSF's template

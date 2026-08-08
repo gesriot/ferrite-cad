@@ -79,14 +79,19 @@ platform and runner architecture.
 
 ## Required OCCT modules
 
-Only what the adapter actually calls, to keep the shipped library set small:
+The adapter directly calls only this subset:
 
 - `FoundationClasses` — collections, `Standard_Failure`, `Message_ProgressRange`
 - `ModelingData` — `TopoDS`, `BRep`, `Geom`
 - `ModelingAlgorithms` — booleans, fillet, chamfer, shell, `BRepTools_History`
-- `Visualization` is **not** required: FerriteCAD renders through `wgpu` and
-  takes only tessellation data from OCCT
+- `Visualization` has no direct FerriteCAD API use: rendering goes through
+  `wgpu`, and the adapter takes only tessellation data from OCCT
 - `DataExchange` — STEP through XDE
+
+That does not make the Visualization module optional in the stock OCCT build.
+XCAF/DataExchange toolkits link to Visualization toolkits such as `TKService`,
+so they remain transitive build and run-time dependencies even though
+FerriteCAD never opens an OCCT viewer.
 
 Optional third-party dependencies (Tcl/Tk, FreeType, VTK, Qt, OpenGL samples)
 are all disabled.
@@ -135,9 +140,16 @@ with `fatal error: X11/Xlib.h: No such file or directory` — around fifteen
 minutes in, after 1700 other objects have compiled. macOS and Windows use their
 native windowing headers and need nothing extra.
 
-Libraries install to `vendor/install/lib` as `libTK*.so`. At run time they are
-found through `RPATH=$ORIGIN/../lib` baked into the executable, so the
-application never depends on the user's `LD_LIBRARY_PATH`.
+Libraries install to `vendor/install/lib` as `libTK*.so`. The raw install used
+by the pin workflow currently needs `LD_LIBRARY_PATH` for its smoke test:
+modern linkers emit non-transitive `RUNPATH`, while OCCT toolkits load other
+OCCT toolkits that the executable does not name directly.
+
+A distributed application must not depend on the user's environment. The
+packaging stage must give every shipped OCCT library an `$ORIGIN`-relative
+search path (or apply an equivalent, verified loader layout) and test the
+result from a clean environment. That release property is not established by
+the pin workflow alone.
 
 ### macOS
 
