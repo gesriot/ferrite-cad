@@ -255,6 +255,7 @@ name = "ferritecad-eval"
 version = "0.0.1"
 dependencies = [
  "ferritecad-document",
+ "ferritecad-kernel",
  "ferritecad-types",
  "tempfile",
 ]

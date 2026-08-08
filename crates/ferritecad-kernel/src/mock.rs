@@ -78,6 +78,16 @@ impl MockKernel {
         }
     }
 
+    /// How many shapes this session is still holding.
+    ///
+    /// A test affordance, and the only way to check that a caller released
+    /// what it created: handles are opaque, so "did anything leak" cannot be
+    /// answered from outside without asking the session. A real adapter is
+    /// free to offer the same, and it is worth having for the same reason.
+    pub fn live_shape_count(&self) -> usize {
+        self.shapes.len()
+    }
+
     fn store(&mut self, prism: Prism) -> ShapeHandle {
         let index = self.next_index;
         self.next_index += 1;

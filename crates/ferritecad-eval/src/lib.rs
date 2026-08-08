@@ -25,10 +25,14 @@
 //! it — that clean result is exactly what a cache is for. Independent branches
 //! of the graph are untouched.
 
+mod cold;
+mod convert;
 mod dirty;
 mod document_graph;
 mod plan;
 
+pub use cold::{ColdRebuild, ExtrudeCaps, rebuild_cold};
+pub use convert::{extrude_request, plane_from_datum, profile_from_sketch};
 pub use dirty::{DependentIndex, dirty_set};
 pub use document_graph::DocumentGraph;
 pub use plan::{RebuildPlan, plan_full_rebuild, plan_rebuild};
