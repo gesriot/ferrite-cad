@@ -1,6 +1,6 @@
 # Building Open CASCADE for FerriteCAD
 
-**Status:** stage 0 recipe, not yet exercised by CI.
+**Status:** pinned and verified on Linux, Windows and macOS.
 
 FerriteCAD links Open CASCADE **dynamically and only dynamically**. This is a
 licence requirement, not a preference: OCCT is LGPL-2.1 with the Open CASCADE
@@ -10,31 +10,45 @@ FerriteCAD's own code distributable under MIT. See
 
 ## Pinning the version
 
-The architecture RFC names OCCT 8.0. Treat that as the intent, not the fact:
-**the pinned version is whichever tag actually builds and passes the smoke test
-on all three platforms**, recorded here with its checksum before any code
-depends on it.
-
-Fill in once all three platforms have passed:
+The architecture RFC names OCCT 8.0 as the intent. The pin below is the fact:
+the tag that actually built and passed the smoke test on all three platforms.
 
 | Field | Value |
 | --- | --- |
-| Tag | _to be recorded_ |
-| Commit | _to be recorded_ |
-| Source archive SHA-256 | _to be recorded_ |
-| CMake version used | _to be recorded_ |
-| Compiler per platform | _to be recorded_ |
+| Tag | `V8_0_0` |
+| Commit | `d3056ef80c9668f395da40f5fd7be186cae4501f` |
+| Source archive | `https://github.com/Open-Cascade-SAS/OCCT/archive/d3056ef80c9668f395da40f5fd7be186cae4501f.tar.gz` |
+| Source archive SHA-256 | `7b7ad86852227907d30513584d9e7aa8395ead203e1d81d810977b54aba55c64` |
+| Source archive size | 44 989 827 bytes |
+| Reported version | `OCC_VERSION_COMPLETE=8.0.0` |
+| Verified by | [run 31227437597](https://github.com/gesriot/ferrite-cad/actions/runs/31227437597), 2026-08-07 |
+
+Toolchain each platform actually used, as recorded by that run:
+
+| Platform | Runner image | CMake | Compiler |
+| --- | --- | --- | --- |
+| Linux | `ubuntu24 20260720.247.2` (x64) | 3.31.6 | GNU 13.3.0 |
+| Windows | `win25-vs2026 20260803.193.1` (x64) | 4.4.2 | MSVC 19.51.36252.0, toolset 14.51.36231 |
+| macOS | `macos26 20260728.0273.1` (arm64) | 4.4.0 | AppleClang 21.0.0.21000101 |
+
+All eight smoke-test steps passed on all three. Steps 6 and 7 — the ones that
+matter and the ones that fail quietly — confirmed that a STEP round trip through
+XDE preserves the shape name `AS1_PE_ASM`, the colour `RGB(0,1,0)` and the unit
+declaration `length_unit_mm=1`. Tessellation produced 284 triangles on every
+platform. `LICENSE_LGPL_21.txt` and `OCCT_LGPL_EXCEPTION.txt` were present in
+all three source trees.
 
 **The commit is the authoritative pin, not the archive checksum.** GitHub
 generates tag archives on demand rather than storing them, and their bytes have
-changed before when the underlying archive format changed. The SHA-256 records
-one particular download and is worth verifying; a build script that must still
-be reproducible in three years should clone the commit.
+changed before when the underlying archive format changed. The checksum above
+is of the *commit* archive, which is what the workflow downloads; a checksum
+taken from `.../archive/refs/tags/V8_0_0.tar.gz`, or from the `.zip`, will
+differ without anything being wrong. A build script that must still be
+reproducible in three years should clone the commit.
 
-Until this table is filled in, no build script may download OCCT. An unpinned
-third-party C++ archive is a supply-chain hole, and the plan's rule is that
-versions and checksums are fixed before the dependency is used
-(implementation-plan.md, 4.4).
+Re-running the pin workflow for a new tag is how this table changes. It should
+not be edited by hand from a single machine: a pin is a claim about three
+platforms.
 
 ### Producing the record
 
