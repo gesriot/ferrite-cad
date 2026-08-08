@@ -57,13 +57,20 @@ struct ShapeRecord {
   std::vector<uint64_t> end_cap;
   /// Identifier to sub-shape. The identifiers mean nothing outside this
   /// session, which is exactly what the Rust side promises about them.
-  std::unordered_map<uint64_t, TopoDS_Shape> sub_shapes;
-  uint64_t next_sub_shape = 0;
+  std::vector<TopoDS_Shape> sub_shapes;
 
   uint64_t remember(const TopoDS_Shape &sub) {
-    const uint64_t id = next_sub_shape++;
-    sub_shapes.emplace(id, sub);
-    return id;
+    // The same OCCT face can be reported through more than one route. It must
+    // still have one session-local identity; otherwise two handles compare
+    // different even though they name the same topology, hiding precisely the
+    // silent retargeting the naming layer is meant to catch.
+    for (size_t i = 0; i < sub_shapes.size(); ++i) {
+      if (sub_shapes[i].IsSame(sub)) {
+        return static_cast<uint64_t>(i);
+      }
+    }
+    sub_shapes.push_back(sub);
+    return static_cast<uint64_t>(sub_shapes.size() - 1);
   }
 };
 
@@ -166,10 +173,10 @@ struct FcOcctSession {
 
 extern "C" {
 
-const char *fc_occt_version(void) { return OCC_VERSION_COMPLETE; }
+const char *fc_occt_version(void) noexcept { return OCC_VERSION_COMPLETE; }
 
 FcOcctStatus fc_occt_session_create(FcOcctSession **out_session,
-                                    FcOcctError *out_error) {
+                                    FcOcctError *out_error) noexcept {
   return guarded(out_error, [&]() -> FcOcctStatus {
     if (out_session == nullptr) {
       write_error(out_error, "fc_occt_session_create needs somewhere to put "
@@ -181,14 +188,14 @@ FcOcctStatus fc_occt_session_create(FcOcctSession **out_session,
   });
 }
 
-void fc_occt_session_destroy(FcOcctSession *session) { delete session; }
+void fc_occt_session_destroy(FcOcctSession *session) noexcept { delete session; }
 
 FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                              const FcOcctSegment *segments,
                              size_t segment_count, double base_offset,
                              double top_offset, FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
-                             FcOcctError *out_error) {
+                             FcOcctError *out_error) noexcept {
   return guarded(out_error, [&]() -> FcOcctStatus {
     if (session == nullptr || plane == nullptr || segments == nullptr ||
         out_shape == nullptr) {
@@ -402,7 +409,7 @@ FcOcctStatus fc_occt_extrude_side_faces(FcOcctSession *session, uint64_t shape,
                                         size_t segment_index,
                                         uint64_t *out_ids, size_t capacity,
                                         size_t *out_count,
-                                        FcOcctError *out_error) {
+                                        FcOcctError *out_error) noexcept {
   return guarded(out_error, [&]() -> FcOcctStatus {
     if (session == nullptr) {
       write_error(out_error, "no session");
@@ -427,7 +434,7 @@ FcOcctStatus fc_occt_extrude_side_faces(FcOcctSession *session, uint64_t shape,
 FcOcctStatus fc_occt_extrude_cap_faces(FcOcctSession *session, uint64_t shape,
                                        int32_t which, uint64_t *out_ids,
                                        size_t capacity, size_t *out_count,
-                                       FcOcctError *out_error) {
+                                       FcOcctError *out_error) noexcept {
   return guarded(out_error, [&]() -> FcOcctStatus {
     if (session == nullptr) {
       write_error(out_error, "no session");
@@ -451,7 +458,7 @@ FcOcctStatus fc_occt_extrude_cap_faces(FcOcctSession *session, uint64_t shape,
 
 FcOcctStatus fc_occt_shape_stats(FcOcctSession *session, uint64_t shape,
                                  uint64_t *out_face_count, double *out_volume,
-                                 FcOcctError *out_error) {
+                                 FcOcctError *out_error) noexcept {
   return guarded(out_error, [&]() -> FcOcctStatus {
     if (session == nullptr || out_face_count == nullptr ||
         out_volume == nullptr) {
@@ -479,13 +486,13 @@ FcOcctStatus fc_occt_shape_stats(FcOcctSession *session, uint64_t shape,
   });
 }
 
-void fc_occt_release_shape(FcOcctSession *session, uint64_t shape) {
+void fc_occt_release_shape(FcOcctSession *session, uint64_t shape) noexcept {
   if (session != nullptr) {
     session->shapes.erase(shape);
   }
 }
 
-size_t fc_occt_live_shape_count(const FcOcctSession *session) {
+size_t fc_occt_live_shape_count(const FcOcctSession *session) noexcept {
   return session == nullptr ? 0 : session->shapes.size();
 }
 

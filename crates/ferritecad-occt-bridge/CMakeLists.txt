@@ -50,17 +50,68 @@ endif()
 
 # Refuse a static Open CASCADE. A static build changes the licensing,
 # packaging and testing path entirely, and must not enter a release by way of
-# a local experiment.
-if(DEFINED OpenCASCADE_BUILD_SHARED_LIBS AND NOT OpenCASCADE_BUILD_SHARED_LIBS)
+# a local experiment. An absent declaration is not accepted: that would make
+# the check cosmetic on exactly the third-party package that needs it most.
+set(_occt_shared_build FALSE)
+if(DEFINED OpenCASCADE_BUILD_SHARED_LIBS AND OpenCASCADE_BUILD_SHARED_LIBS)
+  set(_occt_shared_build TRUE)
+elseif(DEFINED OpenCASCADE_BUILD_SHARED_LIBS)
   message(FATAL_ERROR
-    "Static Open CASCADE is forbidden: FerriteCAD links it dynamically only.")
+    "Static Open CASCADE is forbidden (OpenCASCADE_BUILD_SHARED_LIBS=OFF). "
+    "Rebuild with -DBUILD_LIBRARY_TYPE=Shared.")
+endif()
+if(DEFINED OpenCASCADE_LIBRARY_TYPE)
+  string(TOUPPER "${OpenCASCADE_LIBRARY_TYPE}" _occt_lib_type)
+  if(_occt_lib_type STREQUAL "SHARED")
+    set(_occt_shared_build TRUE)
+  else()
+    message(FATAL_ERROR
+      "Open CASCADE must declare shared libraries, found "
+      "OpenCASCADE_LIBRARY_TYPE=${OpenCASCADE_LIBRARY_TYPE}. Rebuild OCCT with "
+      "-DBUILD_LIBRARY_TYPE=Shared and reinstall.")
+  endif()
+endif()
+if(NOT _occt_shared_build)
+  message(FATAL_ERROR
+    "Cannot verify that Open CASCADE is shared. Its CMake package must set "
+    "OpenCASCADE_BUILD_SHARED_LIBS=ON or OpenCASCADE_LIBRARY_TYPE=Shared.")
+endif()
+
+# On Unix, resolve the actual files too and reject an archive even if a package
+# variable claimed the build was shared.
+if(UNIX)
+  foreach(_occt_lib IN LISTS _occt_link_libs)
+    if(IS_ABSOLUTE "${_occt_lib}")
+      set(_occt_resolved_lib "${_occt_lib}")
+    else()
+      unset(_occt_resolved_lib CACHE)
+      find_library(_occt_resolved_lib NAMES "${_occt_lib}"
+        HINTS "${OpenCASCADE_LIBRARY_DIR}" NO_DEFAULT_PATH)
+    endif()
+    if(NOT _occt_resolved_lib)
+      message(FATAL_ERROR
+        "Could not resolve OCCT toolkit ${_occt_lib} to verify linkage.")
+    endif()
+    if(_occt_resolved_lib MATCHES "\\.a$")
+      message(FATAL_ERROR
+        "Static OCCT archive resolved for ${_occt_lib}: ${_occt_resolved_lib}. "
+        "Rebuild OCCT with -DBUILD_LIBRARY_TYPE=Shared.")
+    endif()
+  endforeach()
 endif()
 
 add_library(ferritecad_occt_bridge STATIC src/bridge.cpp)
 
-target_include_directories(ferritecad_occt_bridge
-  PUBLIC include
-  PRIVATE ${OpenCASCADE_INCLUDE_DIR})
+target_include_directories(ferritecad_occt_bridge PUBLIC include)
+if(OpenCASCADE_INCLUDE_DIR)
+  target_include_directories(ferritecad_occt_bridge
+    PRIVATE ${OpenCASCADE_INCLUDE_DIR})
+elseif(OpenCASCADE_INCLUDE_DIRS)
+  target_include_directories(ferritecad_occt_bridge
+    PRIVATE ${OpenCASCADE_INCLUDE_DIRS})
+else()
+  message(FATAL_ERROR "Open CASCADE package reported no include directory.")
+endif()
 target_link_directories(ferritecad_occt_bridge PRIVATE ${OpenCASCADE_LIBRARY_DIR})
 target_link_libraries(ferritecad_occt_bridge PRIVATE ${_occt_link_libs})
 

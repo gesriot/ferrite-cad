@@ -515,8 +515,8 @@ jobs:
 
           case '${{ matrix.name }}' in
             windows)
-              # No RPATH on Windows: both the bridge and OCCT must be findable
-              # on PATH when the test binary runs.
+              # No RPATH on Windows: the OCCT DLLs must be findable on PATH
+              # when the test binary runs. The bridge itself is static.
               export PATH="$FCAD_OCCT_LIB_DIR:$PATH"
 
               # Git Bash prepends its own /usr/bin, which contains a GNU
@@ -569,6 +569,7 @@ jobs:
           binary="$(cargo test -p ferritecad-occt --no-run --message-format=json 2>/dev/null \
             | jq -r 'select(.reason == "compiler-artifact")
                      | select(.manifest_path | test("ferritecad-occt/Cargo.toml$"))
+                     | select(.target.name == "occt_kernel")
                      | .executable // empty' \
             | head -1)"
           if [ -z "$binary" ]; then

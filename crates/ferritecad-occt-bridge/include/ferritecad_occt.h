@@ -29,7 +29,11 @@ extern "C" {
  * has bigger problems than its wording. */
 #define FC_OCCT_ERROR_CAPACITY 512
 
-typedef enum FcOcctStatus {
+/* Fixed-width rather than a C enum: an enum's underlying type is an
+ * implementation choice, which is exactly what a cross-compiler ABI must not
+ * contain. */
+typedef int32_t FcOcctStatus;
+enum {
   FC_OCCT_OK = 0,
   /* The request is malformed: a degenerate profile, a bad plane. */
   FC_OCCT_INVALID_INPUT = 1,
@@ -43,7 +47,7 @@ typedef enum FcOcctStatus {
   FC_OCCT_UNKNOWN_HANDLE = 5,
   /* An exception that is not Standard_Failure or std::exception. */
   FC_OCCT_INTERNAL = 6
-} FcOcctStatus;
+};
 
 /* Caller-owned error detail. Always NUL-terminated after a failed call, and
  * left untouched after a successful one. */
@@ -51,10 +55,11 @@ typedef struct FcOcctError {
   char message[FC_OCCT_ERROR_CAPACITY];
 } FcOcctError;
 
-typedef enum FcOcctSegmentKind {
+typedef int32_t FcOcctSegmentKind;
+enum {
   FC_OCCT_SEGMENT_LINE = 0,
   FC_OCCT_SEGMENT_ARC = 1
-} FcOcctSegmentKind;
+};
 
 /* One profile segment, in the sketch plane's own 2D coordinates.
  *
@@ -86,16 +91,22 @@ typedef int32_t (*FcOcctCancelFn)(void *context);
 /* An opaque kernel session. Shapes belong to the session that made them. */
 typedef struct FcOcctSession FcOcctSession;
 
+#ifdef __cplusplus
+#define FC_OCCT_NOEXCEPT noexcept
+#else
+#define FC_OCCT_NOEXCEPT
+#endif
+
 /* The Open CASCADE version this bridge was compiled against, e.g. "7.9.3".
  * Static storage; never freed. Reported rather than assumed, because it is
  * part of every cache key. */
-const char *fc_occt_version(void);
+const char *fc_occt_version(void) FC_OCCT_NOEXCEPT;
 
 FcOcctStatus fc_occt_session_create(FcOcctSession **out_session,
-                                    FcOcctError *out_error);
+                                    FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /* Destroys a session and every shape it still holds. Null is accepted. */
-void fc_occt_session_destroy(FcOcctSession *session);
+void fc_occt_session_destroy(FcOcctSession *session) FC_OCCT_NOEXCEPT;
 
 /*
  * Sweeps a closed planar profile into a solid.
@@ -118,7 +129,7 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                              size_t segment_count, double base_offset,
                              double top_offset, FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
-                             FcOcctError *out_error);
+                             FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*
  * The faces the sweep raised from one profile segment.
@@ -130,13 +141,13 @@ FcOcctStatus fc_occt_extrude_side_faces(FcOcctSession *session, uint64_t shape,
                                         size_t segment_index,
                                         uint64_t *out_ids, size_t capacity,
                                         size_t *out_count,
-                                        FcOcctError *out_error);
+                                        FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /* The cap faces. `which` is 0 for the start cap and 1 for the end cap. */
 FcOcctStatus fc_occt_extrude_cap_faces(FcOcctSession *session, uint64_t shape,
                                        int32_t which, uint64_t *out_ids,
                                        size_t capacity, size_t *out_count,
-                                       FcOcctError *out_error);
+                                       FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*
  * Face count and volume of a shape.
@@ -147,19 +158,22 @@ FcOcctStatus fc_occt_extrude_cap_faces(FcOcctSession *session, uint64_t shape,
  */
 FcOcctStatus fc_occt_shape_stats(FcOcctSession *session, uint64_t shape,
                                  uint64_t *out_face_count, double *out_volume,
-                                 FcOcctError *out_error);
+                                 FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /* Drops a shape. Releasing an unknown or already-released identifier is not an
  * error: an unwinding caller must be able to release everything it might hold
  * without first working out what it actually holds. */
-void fc_occt_release_shape(FcOcctSession *session, uint64_t shape);
+void fc_occt_release_shape(FcOcctSession *session,
+                           uint64_t shape) FC_OCCT_NOEXCEPT;
 
 /* How many shapes the session still holds. For tests: handles are opaque, so
  * "did anything leak" cannot be answered from outside without asking. */
-size_t fc_occt_live_shape_count(const FcOcctSession *session);
+size_t fc_occt_live_shape_count(const FcOcctSession *session) FC_OCCT_NOEXCEPT;
 
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
+
+#undef FC_OCCT_NOEXCEPT
 
 #endif /* FERRITECAD_OCCT_H */

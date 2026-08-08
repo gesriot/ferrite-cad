@@ -123,34 +123,48 @@ impl GeometryKernel for OcctKernel {
         context.progress().report(1.0);
 
         let shape = ShapeHandle::new(self.session_id, raw);
+        let assembled = (|| -> Result<ExtrudeResult> {
+            // A progress callback may cancel at the completion report. The
+            // bridge has already handed us a shape at that point, so the error
+            // path below must release it rather than returning a cancelled
+            // operation with a live, unreachable solid.
+            context.check_cancelled()?;
 
-        let mut history = History::new();
-        for (index, segment) in outer.iter().enumerate() {
-            for face in self.session.side_faces(raw, index)? {
-                history
-                    .record_generated(HistoryInput::Segment(segment.label), self.face(shape, face));
+            let mut history = History::new();
+            for (index, segment) in outer.iter().enumerate() {
+                for face in self.session.side_faces(raw, index)? {
+                    history.record_generated(
+                        HistoryInput::Segment(segment.label),
+                        self.face(shape, face),
+                    );
+                }
             }
+
+            let start_cap = self
+                .session
+                .cap_faces(raw, 0)?
+                .into_iter()
+                .map(|id| self.face(shape, id))
+                .collect();
+            let end_cap = self
+                .session
+                .cap_faces(raw, 1)?
+                .into_iter()
+                .map(|id| self.face(shape, id))
+                .collect();
+
+            Ok(ExtrudeResult {
+                shape,
+                history,
+                start_cap,
+                end_cap,
+            })
+        })();
+
+        if assembled.is_err() {
+            self.session.release(raw);
         }
-
-        let start_cap = self
-            .session
-            .cap_faces(raw, 0)?
-            .into_iter()
-            .map(|id| self.face(shape, id))
-            .collect();
-        let end_cap = self
-            .session
-            .cap_faces(raw, 1)?
-            .into_iter()
-            .map(|id| self.face(shape, id))
-            .collect();
-
-        Ok(ExtrudeResult {
-            shape,
-            history,
-            start_cap,
-            end_cap,
-        })
+        assembled
     }
 
     fn transform(

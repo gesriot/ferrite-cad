@@ -294,6 +294,33 @@ fn cancelling_as_the_operation_starts_is_honoured() {
 }
 
 #[test]
+fn cancelling_at_completion_releases_the_finished_shape() {
+    let mut kernel = kernel_or_skip!();
+    let plate = rectangle(10.0, 10.0, 2.0).expect("a valid rectangle");
+
+    let token = CancelToken::new();
+    let trigger = token.clone();
+    let context = OperationContext::default()
+        .with_cancel(token)
+        .with_progress(ProgressSink::new(move |fraction| {
+            if fraction >= 1.0 {
+                trigger.cancel();
+            }
+        }));
+
+    let err = kernel
+        .extrude(&plate.request, &context)
+        .expect_err("cancelling at the completion report still cancels the operation");
+
+    assert!(matches!(err, CadError::Cancelled));
+    assert_eq!(
+        kernel.live_shape_count(),
+        0,
+        "the solid already returned by the bridge must be released"
+    );
+}
+
+#[test]
 fn releasing_gives_the_shape_back_and_releasing_twice_is_harmless() {
     let mut kernel = kernel_or_skip!();
     let plate = rectangle(10.0, 10.0, 2.0).expect("a valid rectangle");
