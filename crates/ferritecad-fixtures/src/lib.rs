@@ -40,6 +40,9 @@ use ferritecad_document::{
     SemanticRole, Sketch, SketchCurve, SketchGeometry,
 };
 use ferritecad_eval::RebuildResult;
+use ferritecad_kernel::{
+    GeometryKernel, Mesh, OperationContext, SubShapeHandle, TessellationParams,
+};
 use ferritecad_types::{CadError, Result, StableEntityId};
 
 /// The committed plate: 60 x 40 x 10, one datum, one four-segment sketch, one
@@ -82,7 +85,13 @@ pub fn open_plate(directory: &Path) -> Result<Document> {
 /// build — and a run on another machine, or against another kernel — produce
 /// the same text or a readable difference. This deliberately does not identify
 /// the geometry of a resolved face; see the crate-level limitation.
-pub fn render_manifest(document: &Document, built: &RebuildResult) -> Result<String> {
+pub fn render_manifest(
+    document: &Document,
+    built: &RebuildResult,
+    kernel: &mut dyn GeometryKernel,
+) -> Result<String> {
+    let mesh = draw(document, built, kernel)?;
+    let mesh = &mesh;
     let mut out = String::new();
     out.push_str(
         "# What the committed plate resolves to.\n\
@@ -92,8 +101,13 @@ pub fn render_manifest(document: &Document, built: &RebuildResult) -> Result<Str
          #\n\
          # No handles, face indices or session ids appear here on purpose: they\n\
          # differ every run, and a fixture that recorded them would be asserting\n\
-         # something it has no business knowing. This gate detects missing,\n\
-         # ambiguous or collapsed names, but not a one-to-one face permutation.\n\n",
+         # something it has no business knowing.\n\
+         #\n\
+         # Each face is measured from its own triangles instead. Counts alone\n\
+         # could not tell a build that exchanged two names from a correct one,\n\
+         # because six names still reached six faces; an area and a middle are\n\
+         # properties of the geometry, so exchanging two names moves two of\n\
+         # these numbers.\n\n",
     );
 
     let objects = document.objects()?;
@@ -102,26 +116,46 @@ pub fn render_manifest(document: &Document, built: &RebuildResult) -> Result<Str
     writeln!(out, "references {}\n", references.len()).expect("writing to a String cannot fail");
 
     let mut faces = BTreeSet::new();
-    let mut lines = Vec::new();
+    let mut blocks = Vec::new();
     for reference in &references {
-        let resolved = built.resolve(reference).map(|found| {
-            faces.extend(found.iter().copied());
-            found.len()
-        });
-        lines.push(format!(
-            "{:<46}{:<56}{}",
-            describe_role(&reference.output_role),
-            describe_selection(&reference.selection),
-            match resolved {
-                Ok(1) => "1 face".to_owned(),
-                Ok(count) => format!("{count} faces"),
-                Err(error) => format!("unresolved: {}", first_sentence(&error.to_string())),
+        let mut block = format!("{}\n", describe_role(&reference.output_role));
+        writeln!(block, "    {}", describe_selection(&reference.selection))
+            .expect("writing to a String cannot fail");
+
+        match built.resolve(reference) {
+            Ok(found) => {
+                faces.extend(found.iter().copied());
+                writeln!(
+                    block,
+                    "    {} face{}",
+                    found.len(),
+                    if found.len() == 1 { "" } else { "s" }
+                )
+                .expect("writing to a String cannot fail");
+                for face in found {
+                    match measure(mesh, face) {
+                        Some((area, centroid)) => writeln!(
+                            block,
+                            "    area {:.3} mm^2   middle ({:.3}, {:.3}, {:.3})",
+                            area, centroid[0], centroid[1], centroid[2]
+                        ),
+                        None => writeln!(block, "    not drawn"),
+                    }
+                    .expect("writing to a String cannot fail");
+                }
             }
-        ));
+            Err(error) => writeln!(
+                block,
+                "    unresolved: {}",
+                first_sentence(&error.to_string())
+            )
+            .expect("writing to a String cannot fail"),
+        }
+        blocks.push(block);
     }
-    lines.sort();
-    for line in lines {
-        writeln!(out, "{}", line.trim_end()).expect("writing to a String cannot fail");
+    blocks.sort();
+    for block in blocks {
+        out.push_str(&block);
     }
 
     writeln!(out, "\ndistinct faces {}", faces.len()).expect("writing to a String cannot fail");
@@ -326,6 +360,95 @@ pub fn write_plate(path: &Path) -> Result<()> {
         Ok(())
     })?;
     document.close()
+}
+
+/// Draws every solid this rebuild produced, into one mesh.
+///
+/// Part of rendering the manifest rather than something a caller supplies, so
+/// the two gates cannot measure faces with different settings and then compare
+/// the results.
+fn draw(
+    document: &Document,
+    built: &RebuildResult,
+    kernel: &mut dyn GeometryKernel,
+) -> Result<Mesh> {
+    let mut combined = Mesh::default();
+    for object in document.objects()? {
+        if !matches!(object.payload, ObjectPayload::Extrude(_)) {
+            continue;
+        }
+        let Some(shape) = built.shape(object.id) else {
+            continue;
+        };
+
+        let mesh = kernel.tessellate(
+            shape,
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )?;
+        let vertex_offset = u32::try_from(combined.positions.len() / 3)
+            .map_err(|_| CadError::kernel("this rebuild drew more vertices than can be indexed"))?;
+        let index_offset = u32::try_from(combined.indices.len()).map_err(|_| {
+            CadError::kernel("this rebuild drew more triangles than can be indexed")
+        })?;
+
+        combined.positions.extend_from_slice(&mesh.positions);
+        combined.normals.extend_from_slice(&mesh.normals);
+        combined
+            .indices
+            .extend(mesh.indices.iter().map(|index| index + vertex_offset));
+        combined
+            .faces
+            .extend(mesh.faces.into_iter().map(|mut range| {
+                range.first_index += index_offset;
+                range
+            }));
+    }
+    Ok(combined)
+}
+
+/// One face's triangle area, and the area-weighted middle of those triangles.
+///
+/// Measured from the mesh rather than asked of the kernel: the point is to
+/// check that the triangles filed under a name are the ones that name means,
+/// and a kernel's own answer about a face it also chose would not test that.
+fn measure(mesh: &Mesh, face: SubShapeHandle) -> Option<(f64, [f64; 3])> {
+    let range = mesh.faces.iter().find(|range| range.face == face)?;
+    let point = |index: u32| -> [f64; 3] {
+        let at = index as usize * 3;
+        [
+            f64::from(mesh.positions[at]),
+            f64::from(mesh.positions[at + 1]),
+            f64::from(mesh.positions[at + 2]),
+        ]
+    };
+
+    let mut area = 0.0;
+    let mut middle = [0.0f64; 3];
+    let first = range.first_index as usize;
+    for triangle in mesh.indices[first..first + range.index_count as usize].chunks_exact(3) {
+        let (a, b, c) = (point(triangle[0]), point(triangle[1]), point(triangle[2]));
+        let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let cross = [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ];
+        let piece = (cross[0].powi(2) + cross[1].powi(2) + cross[2].powi(2)).sqrt() / 2.0;
+        area += piece;
+        for axis in 0..3 {
+            middle[axis] += (a[axis] + b[axis] + c[axis]) / 3.0 * piece;
+        }
+    }
+
+    if area <= 0.0 {
+        return None;
+    }
+    for value in &mut middle {
+        *value /= area;
+    }
+    Some((area, middle))
 }
 
 fn describe_role(role: &SemanticRole) -> String {

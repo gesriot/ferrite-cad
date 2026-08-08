@@ -211,6 +211,48 @@ FcOcctStatus fc_occt_decode_shape(FcOcctSession *session,
  * `sub_shape_count`. The bytes follow the usual two-call protocol: pass a zero
  * capacity to learn the length.
  */
+/*
+ * Triangulates a shape, reporting which face each triangle belongs to.
+ *
+ * Two calls. Pass zero capacities to learn the three counts, then call again
+ * with buffers that large. The second call is cheap: Open CASCADE stores the
+ * triangulation on the shape itself, and re-meshing with the same deflection
+ * finds the work already done.
+ *
+ * `vertex_capacity` counts vertices, not floats; `out_positions` and
+ * `out_normals` each need three floats per vertex. Vertices are never shared
+ * between faces, so every triangle belongs to exactly one range and a caller
+ * can draw one face without touching another's data.
+ *
+ * The face of each range is reported as a sub-shape identifier of this
+ * session, the same kind `fc_occt_extrude` hands out, so a caller that already
+ * knows which face its name refers to can find that face's triangles without
+ * comparing geometry.
+ *
+ * Normals are computed here rather than read back: on OCCT 7.9.3 the
+ * triangulation a mesher produces carries none. A node's normal is the
+ * average of the triangles meeting at it within its own face, which is exact
+ * for a plane and smooth across a cylinder.
+ *
+ * Orientation is applied, not assumed. Five of a prism's six faces come back
+ * REVERSED, so a caller that trusted the stored winding would light most of
+ * the solid inside out. Reversed faces have their winding swapped and their
+ * normals negated here, and each face's location is applied to its nodes.
+ *
+ * Cancellation: unlike a prism, the mesher does poll the progress indicator —
+ * 32 times for a six-faced box on 7.9.3 — so `cancel` can stop this operation
+ * partway rather than only between operations.
+ */
+FcOcctStatus fc_occt_tessellate(
+    FcOcctSession *session, uint64_t shape, double linear_deflection,
+    double angular_deflection, uint8_t relative, FcOcctCancelFn cancel,
+    void *cancel_context, float *out_positions, float *out_normals,
+    size_t vertex_capacity, uint32_t *out_indices, size_t index_capacity,
+    uint64_t *out_face_shapes, uint32_t *out_face_first,
+    uint32_t *out_face_index_count, size_t face_capacity,
+    size_t *out_vertex_count, size_t *out_index_count, size_t *out_face_count,
+    FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
 FcOcctStatus fc_occt_encode_shape_named(
     FcOcctSession *session, uint64_t shape, const uint64_t *sub_shapes,
     size_t sub_shape_count, uint32_t *out_slots, uint8_t *out_bytes,

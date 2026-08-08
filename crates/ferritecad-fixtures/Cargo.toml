@@ -15,10 +15,10 @@ publish = false
 [dependencies]
 ferritecad-document.workspace = true
 ferritecad-eval.workspace = true
+ferritecad-kernel.workspace = true
 ferritecad-types.workspace = true
 
 [dev-dependencies]
-ferritecad-kernel.workspace = true
 tempfile = "3"
 
 [lints]

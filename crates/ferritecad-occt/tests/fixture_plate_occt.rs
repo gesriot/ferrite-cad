@@ -33,7 +33,7 @@ fn open_cascade_resolves_the_committed_plate_as_recorded() {
     // The same file the mock is held to. Lost, ambiguous or collapsed names
     // differ here; geometrically identifying each face is a later gate.
     assert_eq!(
-        render_manifest(&document, &built).expect("renders"),
+        render_manifest(&document, &built, &mut kernel).expect("renders"),
         plate_manifest().expect("the committed manifest is readable")
     );
 
@@ -65,7 +65,7 @@ fn open_cascade_agrees_with_itself_warm_and_cold() {
     let mut writer = OcctKernel::new().expect("opens");
     let mut cache = open_cache(dir.path(), &writer, document_id);
     let (cold, _) = rebuild_cached(&document, &mut writer, &mut cache, &context).expect("rebuilds");
-    let manifest = render_manifest(&document, &cold).expect("renders");
+    let manifest = render_manifest(&document, &cold, &mut writer).expect("renders");
     cold.release_all(&mut writer);
     drop(cache);
 
@@ -81,7 +81,7 @@ fn open_cascade_agrees_with_itself_warm_and_cold() {
     );
     assert_eq!(
         manifest,
-        render_manifest(&document, &warm).expect("renders")
+        render_manifest(&document, &warm, &mut reader).expect("renders")
     );
 
     let (faces, volume) = reader

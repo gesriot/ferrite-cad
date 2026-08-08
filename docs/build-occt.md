@@ -345,6 +345,46 @@ This v2 framing, the build identity and 25 adapter tests against real geometry
 were verified with pinned OCCT 8.0.1 on Linux, Windows and macOS in
 [run 31275991427](https://github.com/gesriot/ferrite-cad/actions/runs/31275991427).
 
+## What meshing does, and does not, do
+
+Three things about `BRepMesh_IncrementalMesh` that the adapter depends on,
+measured on 7.9.3.
+
+**It polls the progress indicator.** A six-faced box asked for 32 user-break
+checks. This is the opposite of `BRepPrimAPI_MakePrism`, which polls zero
+times, so tessellation can be stopped partway rather than only between
+operations. Worth knowing before assuming the whole family behaves alike.
+
+**The triangulation carries no normals.** `Poly_Triangulation::HasNormals()`
+is false for every face of a freshly meshed prism, so the adapter computes
+them: a node's normal is the average of the triangles meeting at it inside its
+own face, which is exact for a plane and smooth across a cylinder.
+
+**Orientation is not applied for you.** Five of a prism's six faces come back
+`TopAbs_REVERSED`, and the top cap has a non-identity location. A caller that
+took the stored winding at face value would light most of the solid inside out
+and put one face in the wrong place. The adapter swaps the winding and negates
+the normals of reversed faces, and transforms every node by its face's
+location.
+
+## Drawing a solid changes the bytes it serialises to
+
+`BinTools::Write` is asked for no triangles and no normals, and meshing a
+shape still changes what it writes. Open CASCADE keeps the triangulation on
+the shape itself, and something the writer emits — evidently not the triangles
+— differs once it is there. A prism's payload before and after meshing has the
+same length and a different checksum.
+
+Nothing currently depends on those bytes being stable. A cache key is computed
+from the request, not from the blob; two blobs of the same solid decode to the
+same solid; and the archive's own checksum is taken when the archive is made.
+It is recorded here because it is surprising, and because the first thing that
+does depend on blob stability will fail for this reason.
+
+Taking a mesh-free copy first does not help: `BRepBuilderAPI_Copy` with
+`copyMesh` off produced a payload twice the size and still not stable across
+meshing.
+
 ## A shape-set index is not a name
 
 The obvious way to point at a face inside a cached B-Rep is `BinTools_ShapeSet`:

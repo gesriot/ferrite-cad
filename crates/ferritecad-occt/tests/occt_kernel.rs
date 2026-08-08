@@ -612,20 +612,22 @@ fn the_operations_this_slice_omits_say_so() {
 
     let moved =
         Transform::from_translation(Vec3::new(1.0, 0.0, 0.0).expect("finite")).expect("finite");
-    for err in [
-        kernel
-            .transform(result.shape, &moved, &context)
-            .map(|_| ())
-            .expect_err("transform is not implemented"),
+    let err = kernel
+        .transform(result.shape, &moved, &context)
+        .map(|_| ())
+        .expect_err("transform is not implemented");
+
+    // Refusing is the honest answer; the alternative is a plausible wrong one
+    // that nobody notices until much later.
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+
+    // Tessellation used to be in this list and is not any more; see
+    // tests/tessellation_occt.rs for what it now has to get right.
+    assert!(
         kernel
             .tessellate(result.shape, &TessellationParams::default(), &context)
-            .map(|_| ())
-            .expect_err("tessellation is not implemented"),
-    ] {
-        // Refusing is the honest answer; the alternative is a plausible wrong
-        // one that nobody notices until much later.
-        assert_eq!(err.kind(), ErrorKind::Unsupported);
-    }
+            .is_ok()
+    );
 
     kernel.release(result.shape);
 }

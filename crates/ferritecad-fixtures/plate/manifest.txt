@@ -5,17 +5,40 @@
 #
 # No handles, face indices or session ids appear here on purpose: they
 # differ every run, and a fixture that recorded them would be asserting
-# something it has no business knowing. This gate detects missing,
-# ambiguous or collapsed names, but not a one-to-one face permutation.
+# something it has no business knowing.
+#
+# Each face is measured from its own triangles instead. Counts alone
+# could not tell a build that exchanged two names from a correct one,
+# because six names still reached six faces; an area and a middle are
+# properties of the geometry, so exchanging two names moves two of
+# these numbers.
 
 objects 4
 references 6
 
-cap end                                       exact                                                   1 face
-cap start                                     exact                                                   1 face
-side 019fe39c-0c09-78a1-80d3-908ab8eb3619     all derived from 019fe39c-0c09-78a1-80d3-908ab8eb3619   1 face
-side 019fe39c-0c09-78a1-80d3-909aaed4f042     all derived from 019fe39c-0c09-78a1-80d3-909aaed4f042   1 face
-side 019fe39c-0c09-78a1-80d3-90a60fdbc01a     all derived from 019fe39c-0c09-78a1-80d3-90a60fdbc01a   1 face
-side 019fe39c-0c09-78a1-80d3-90be2a82933c     all derived from 019fe39c-0c09-78a1-80d3-90be2a82933c   1 face
+cap end
+    exact
+    1 face
+    area 2400.000 mm^2   middle (30.000, 20.000, 10.000)
+cap start
+    exact
+    1 face
+    area 2400.000 mm^2   middle (30.000, 20.000, 0.000)
+side 019fe39c-0c09-78a1-80d3-908ab8eb3619
+    all derived from 019fe39c-0c09-78a1-80d3-908ab8eb3619
+    1 face
+    area 600.000 mm^2   middle (30.000, 0.000, 5.000)
+side 019fe39c-0c09-78a1-80d3-909aaed4f042
+    all derived from 019fe39c-0c09-78a1-80d3-909aaed4f042
+    1 face
+    area 400.000 mm^2   middle (60.000, 20.000, 5.000)
+side 019fe39c-0c09-78a1-80d3-90a60fdbc01a
+    all derived from 019fe39c-0c09-78a1-80d3-90a60fdbc01a
+    1 face
+    area 600.000 mm^2   middle (30.000, 40.000, 5.000)
+side 019fe39c-0c09-78a1-80d3-90be2a82933c
+    all derived from 019fe39c-0c09-78a1-80d3-90be2a82933c
+    1 face
+    area 400.000 mm^2   middle (0.000, 20.000, 5.000)
 
 distinct faces 6

@@ -159,6 +159,30 @@ unsafe extern "C" {
         out_error: *mut RawError,
     ) -> i32;
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
+    fn fc_occt_tessellate(
+        session: *mut RawSession,
+        shape: u64,
+        linear_deflection: f64,
+        angular_deflection: f64,
+        relative: u8,
+        cancel: Option<CancelFn>,
+        cancel_context: *mut c_void,
+        out_positions: *mut f32,
+        out_normals: *mut f32,
+        vertex_capacity: usize,
+        out_indices: *mut u32,
+        index_capacity: usize,
+        out_face_shapes: *mut u64,
+        out_face_first: *mut u32,
+        out_face_index_count: *mut u32,
+        face_capacity: usize,
+        out_vertex_count: *mut usize,
+        out_index_count: *mut usize,
+        out_face_count: *mut usize,
+        out_error: *mut RawError,
+    ) -> i32;
+
     fn fc_occt_encode_shape_named(
         session: *mut RawSession,
         shape: u64,
@@ -235,6 +259,16 @@ pub(crate) fn version() -> String {
 #[derive(Debug)]
 pub(crate) struct Session {
     raw: *mut RawSession,
+}
+
+/// A mesh exactly as the bridge produced it, before any naming is attached.
+pub(crate) struct RawMesh {
+    pub(crate) positions: Vec<f32>,
+    pub(crate) normals: Vec<f32>,
+    pub(crate) indices: Vec<u32>,
+    pub(crate) face_shapes: Vec<u64>,
+    pub(crate) face_first: Vec<u32>,
+    pub(crate) face_index_count: Vec<u32>,
 }
 
 impl Session {
@@ -386,6 +420,103 @@ impl Session {
     }
 
     /// Archives a shape with the sub-shapes to be found again.
+    /// Triangles, their normals, and which face each triangle belongs to.
+    ///
+    /// Two calls, as the bridge documents: the first learns the sizes and the
+    /// second fills the buffers. Re-meshing between them is nearly free
+    /// because Open CASCADE keeps the triangulation on the shape.
+    pub(crate) fn tessellate(
+        &mut self,
+        shape: u64,
+        linear_deflection: f64,
+        angular_deflection: f64,
+        relative: bool,
+        cancel: &CancelToken,
+    ) -> Result<RawMesh> {
+        let context = cancel as *const CancelToken as *mut c_void;
+        let mut error = RawError::empty();
+        let (mut vertices, mut indices, mut faces) = (0usize, 0usize, 0usize);
+
+        // SAFETY: every out-parameter is valid; passing no buffers with zero
+        // capacity is the size query the bridge documents.
+        let status = unsafe {
+            fc_occt_tessellate(
+                self.raw,
+                shape,
+                linear_deflection,
+                angular_deflection,
+                u8::from(relative),
+                Some(cancel_trampoline),
+                context,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+                &mut vertices,
+                &mut indices,
+                &mut faces,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "measuring a tessellation")?;
+
+        let mut mesh = RawMesh {
+            positions: vec![0.0; vertices * 3],
+            normals: vec![0.0; vertices * 3],
+            indices: vec![0; indices],
+            face_shapes: vec![0; faces],
+            face_first: vec![0; faces],
+            face_index_count: vec![0; faces],
+        };
+        if vertices == 0 && indices == 0 && faces == 0 {
+            return Ok(mesh);
+        }
+
+        let (mut got_vertices, mut got_indices, mut got_faces) = (0usize, 0usize, 0usize);
+        // SAFETY: each buffer was allocated at the size the call above
+        // reported, and the capacities passed match those allocations.
+        let status = unsafe {
+            fc_occt_tessellate(
+                self.raw,
+                shape,
+                linear_deflection,
+                angular_deflection,
+                u8::from(relative),
+                Some(cancel_trampoline),
+                context,
+                mesh.positions.as_mut_ptr(),
+                mesh.normals.as_mut_ptr(),
+                vertices,
+                mesh.indices.as_mut_ptr(),
+                indices,
+                mesh.face_shapes.as_mut_ptr(),
+                mesh.face_first.as_mut_ptr(),
+                mesh.face_index_count.as_mut_ptr(),
+                faces,
+                &mut got_vertices,
+                &mut got_indices,
+                &mut got_faces,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "reading a tessellation")?;
+
+        // A second mesher pass that produced different counts would mean the
+        // triangulation is not stable, and the buffers above would be part
+        // filled with no way to tell which part.
+        if (got_vertices, got_indices, got_faces) != (vertices, indices, faces) {
+            return Err(CadError::kernel(format!(
+                "tessellating the same shape twice gave {vertices}/{indices}/{faces} then                  {got_vertices}/{got_indices}/{got_faces}; the mesh is not reproducible"
+            )));
+        }
+        Ok(mesh)
+    }
+
     pub(crate) fn encode_shape_named(
         &mut self,
         shape: u64,

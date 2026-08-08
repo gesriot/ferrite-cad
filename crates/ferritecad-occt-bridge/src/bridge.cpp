@@ -26,6 +26,7 @@
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepGProp.hxx>
+#include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepTools_History.hxx>
 #include <GC_MakeArcOfCircle.hxx>
@@ -45,6 +46,8 @@
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Iterator.hxx>
 #include <TopoDS_Wire.hxx>
+#include <Poly_Triangulation.hxx>
+#include <TopLoc_Location.hxx>
 #include <gp_Ax3.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
@@ -591,6 +594,180 @@ FcOcctStatus fc_occt_decode_shape(FcOcctSession *session, const uint8_t *bytes,
     const uint64_t id = session->next_shape++;
     session->shapes.emplace(id, std::move(record));
     *out_shape = id;
+    return FC_OCCT_OK;
+  });
+}
+
+FcOcctStatus fc_occt_tessellate(
+    FcOcctSession *session, uint64_t shape, double linear_deflection,
+    double angular_deflection, uint8_t relative, FcOcctCancelFn cancel,
+    void *cancel_context, float *out_positions, float *out_normals,
+    size_t vertex_capacity, uint32_t *out_indices, size_t index_capacity,
+    uint64_t *out_face_shapes, uint32_t *out_face_first,
+    uint32_t *out_face_index_count, size_t face_capacity,
+    size_t *out_vertex_count, size_t *out_index_count, size_t *out_face_count,
+    FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr || out_vertex_count == nullptr ||
+        out_index_count == nullptr || out_face_count == nullptr) {
+      write_error(out_error, "fc_occt_tessellate was given a null argument");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    if (!std::isfinite(linear_deflection) || linear_deflection <= 0.0 ||
+        !std::isfinite(angular_deflection) || angular_deflection <= 0.0) {
+      write_error(out_error,
+                  "tessellation needs positive, finite deflections");
+      return FC_OCCT_INVALID_INPUT;
+    }
+
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    if (cancelled(cancel, cancel_context)) {
+      return FC_OCCT_CANCELLED;
+    }
+
+    ShapeRecord &record = found->second;
+    Handle(CancelIndicator) indicator = new CancelIndicator(cancel, cancel_context);
+
+    // Explicit on every axis. The defaults differ between Open CASCADE
+    // releases, and a mesh whose fineness quietly changed with the kernel
+    // would invalidate every cached tessellation without saying so.
+    BRepMesh_IncrementalMesh mesher;
+    mesher.SetShape(record.shape);
+    IMeshTools_Parameters parameters;
+    parameters.Deflection = linear_deflection;
+    parameters.Angle = angular_deflection;
+    parameters.Relative = relative != 0 ? Standard_True : Standard_False;
+    parameters.InParallel = Standard_False;
+    mesher.ChangeParameters() = parameters;
+    mesher.Perform(indicator->Start());
+
+    if (cancelled(cancel, cancel_context)) {
+      return FC_OCCT_CANCELLED;
+    }
+
+    std::vector<float> positions;
+    std::vector<float> normals;
+    std::vector<uint32_t> indices;
+    std::vector<uint64_t> face_shapes;
+    std::vector<uint32_t> face_first;
+    std::vector<uint32_t> face_index_count;
+
+    for (TopExp_Explorer it(record.shape, TopAbs_FACE); it.More(); it.Next()) {
+      const TopoDS_Face face = TopoDS::Face(it.Current());
+      TopLoc_Location location;
+      const Handle(Poly_Triangulation) triangulation =
+          BRep_Tool::Triangulation(face, location);
+      if (triangulation.IsNull() || triangulation->NbTriangles() == 0) {
+        // A face the mesher could not triangulate is reported as absent
+        // rather than as an empty range: a range of no triangles would look
+        // like a face that is genuinely invisible.
+        continue;
+      }
+
+      const gp_Trsf transform = location.Transformation();
+      const bool reversed = face.Orientation() == TopAbs_REVERSED;
+      const int node_count = triangulation->NbNodes();
+      const uint32_t base = static_cast<uint32_t>(positions.size() / 3);
+
+      std::vector<gp_Pnt> nodes;
+      nodes.reserve(static_cast<size_t>(node_count));
+      for (int i = 1; i <= node_count; ++i) {
+        nodes.push_back(triangulation->Node(i).Transformed(transform));
+      }
+
+      // Accumulated from the triangles meeting at each node, which is exact
+      // for a plane and smooth across a cylinder. The triangulation itself
+      // carries no normals on the versions this bridge is built against.
+      std::vector<gp_Vec> accumulated(static_cast<size_t>(node_count),
+                                      gp_Vec(0.0, 0.0, 0.0));
+      const uint32_t first_index = static_cast<uint32_t>(indices.size());
+
+      for (int t = 1; t <= triangulation->NbTriangles(); ++t) {
+        int a = 0;
+        int b = 0;
+        int c = 0;
+        triangulation->Triangle(t).Get(a, b, c);
+        if (reversed) {
+          std::swap(b, c);
+        }
+
+        const gp_Vec edge1(nodes[a - 1], nodes[b - 1]);
+        const gp_Vec edge2(nodes[a - 1], nodes[c - 1]);
+        const gp_Vec cross = edge1.Crossed(edge2);
+        if (cross.SquareMagnitude() > 1.0e-24) {
+          accumulated[a - 1] += cross;
+          accumulated[b - 1] += cross;
+          accumulated[c - 1] += cross;
+        }
+
+        indices.push_back(base + static_cast<uint32_t>(a - 1));
+        indices.push_back(base + static_cast<uint32_t>(b - 1));
+        indices.push_back(base + static_cast<uint32_t>(c - 1));
+      }
+
+      for (int i = 0; i < node_count; ++i) {
+        const gp_Pnt &point = nodes[static_cast<size_t>(i)];
+        positions.push_back(static_cast<float>(point.X()));
+        positions.push_back(static_cast<float>(point.Y()));
+        positions.push_back(static_cast<float>(point.Z()));
+
+        gp_Vec normal = accumulated[static_cast<size_t>(i)];
+        if (normal.SquareMagnitude() > 1.0e-24) {
+          normal.Normalize();
+        } else {
+          // Every triangle at this node was degenerate. Say so with a zero
+          // rather than inventing a direction that would light it wrongly.
+          normal = gp_Vec(0.0, 0.0, 0.0);
+        }
+        normals.push_back(static_cast<float>(normal.X()));
+        normals.push_back(static_cast<float>(normal.Y()));
+        normals.push_back(static_cast<float>(normal.Z()));
+      }
+
+      face_shapes.push_back(record.remember(face));
+      face_first.push_back(first_index);
+      face_index_count.push_back(static_cast<uint32_t>(indices.size()) -
+                                 first_index);
+    }
+
+    *out_vertex_count = positions.size() / 3;
+    *out_index_count = indices.size();
+    *out_face_count = face_shapes.size();
+
+    if (vertex_capacity == 0 && index_capacity == 0 && face_capacity == 0) {
+      return FC_OCCT_OK;
+    }
+    if (vertex_capacity < positions.size() / 3 ||
+        index_capacity < indices.size() || face_capacity < face_shapes.size()) {
+      write_error(out_error, "the mesh buffers are too small: " +
+                                 std::to_string(positions.size() / 3) +
+                                 " vertices, " + std::to_string(indices.size()) +
+                                 " indices, " + std::to_string(face_shapes.size()) +
+                                 " faces are needed");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    if (out_positions == nullptr || out_normals == nullptr ||
+        out_indices == nullptr || out_face_shapes == nullptr ||
+        out_face_first == nullptr || out_face_index_count == nullptr) {
+      write_error(out_error,
+                  "fc_occt_tessellate was given capacity but no buffer");
+      return FC_OCCT_INVALID_INPUT;
+    }
+
+    std::memcpy(out_positions, positions.data(), positions.size() * sizeof(float));
+    std::memcpy(out_normals, normals.data(), normals.size() * sizeof(float));
+    std::memcpy(out_indices, indices.data(), indices.size() * sizeof(uint32_t));
+    std::memcpy(out_face_shapes, face_shapes.data(),
+                face_shapes.size() * sizeof(uint64_t));
+    std::memcpy(out_face_first, face_first.data(),
+                face_first.size() * sizeof(uint32_t));
+    std::memcpy(out_face_index_count, face_index_count.data(),
+                face_index_count.size() * sizeof(uint32_t));
     return FC_OCCT_OK;
   });
 }

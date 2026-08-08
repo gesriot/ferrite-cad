@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 use ferritecad_kernel::{
     ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, ExtrudeResult, GeometryKernel, History,
-    HistoryInput, KernelIdentity, Mesh, OperationContext, SegmentGeometry, SessionId, ShapeHandle,
-    SketchPlane, SubShapeHandle, SubShapeKind, TessellationParams,
+    HistoryInput, KernelIdentity, Mesh, MeshFaceRange, OperationContext, SegmentGeometry,
+    SessionId, ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind, TessellationParams,
 };
 use ferritecad_types::{CadError, ContentHash, Result, Transform};
 
@@ -291,13 +291,45 @@ impl GeometryKernel for OcctKernel {
 
     fn tessellate(
         &mut self,
-        _shape: ShapeHandle,
-        _params: &TessellationParams,
-        _context: &OperationContext,
+        shape: ShapeHandle,
+        params: &TessellationParams,
+        context: &OperationContext,
     ) -> Result<Mesh> {
-        Err(CadError::unsupported(
-            "the Open CASCADE adapter does not implement tessellation yet",
-        ))
+        context.check_cancelled()?;
+        let raw = self.raw(shape)?;
+
+        let mesh = self.session.tessellate(
+            raw,
+            params.linear_deflection(),
+            params.angular_deflection(),
+            params.relative(),
+            context.cancel(),
+        )?;
+
+        let faces = mesh
+            .face_shapes
+            .iter()
+            .zip(mesh.face_first.iter().zip(mesh.face_index_count.iter()))
+            .map(|(id, (first, count))| MeshFaceRange {
+                face: SubShapeHandle::new(shape, SubShapeKind::Face, *id),
+                first_index: *first,
+                index_count: *count,
+            })
+            .collect();
+
+        let mesh = Mesh {
+            positions: mesh.positions,
+            normals: mesh.normals,
+            indices: mesh.indices,
+            faces,
+        };
+
+        // Checked here rather than trusted: a mesh that fails this renders as
+        // garbage or takes a driver down, and the cause would be a long way
+        // from the symptom.
+        mesh.validate()?;
+        context.check_cancelled()?;
+        Ok(mesh)
     }
 
     fn encode_shape_with(

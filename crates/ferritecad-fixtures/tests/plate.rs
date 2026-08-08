@@ -30,7 +30,7 @@ fn the_committed_plate_still_means_what_it_meant() {
         .expect("a stored document rebuilds");
 
     assert_eq!(
-        render_manifest(&document, &built).expect("renders"),
+        render_manifest(&document, &built, &mut kernel).expect("renders"),
         plate_manifest().expect("the committed manifest is readable"),
         "the plate resolves differently than it used to; if this is intended, \
          regenerate the manifest and say why in the commit"
@@ -49,7 +49,7 @@ fn a_warm_rebuild_resolves_exactly_what_a_cold_one_does() {
     // Cold, in a session of its own.
     let mut cold_kernel = MockKernel::new();
     let cold = rebuild_cold(&document, &mut cold_kernel, &context).expect("rebuilds");
-    let cold_manifest = render_manifest(&document, &cold).expect("renders");
+    let cold_manifest = render_manifest(&document, &cold, &mut cold_kernel).expect("renders");
     let cold_faces = faces(&document, &cold);
     cold.release_all(&mut cold_kernel);
 
@@ -70,7 +70,7 @@ fn a_warm_rebuild_resolves_exactly_what_a_cold_one_does() {
     assert_eq!(reader.extrude_count(), 0, "the third session should hit");
     assert!(events.iter().all(|e| e.outcome == CacheOutcome::Hit));
     assert_eq!(
-        render_manifest(&document, &warm).expect("renders"),
+        render_manifest(&document, &warm, &mut reader).expect("renders"),
         cold_manifest,
         "a warm rebuild must be indistinguishable from a cold one"
     );
@@ -101,17 +101,26 @@ fn changing_the_height_keeps_every_name_and_no_handle() {
     let mut kernel = MockKernel::new();
 
     let before = rebuild_cold(&document, &mut kernel, &context).expect("rebuilds");
-    let manifest = render_manifest(&document, &before).expect("renders");
+    let before_manifest = render_manifest(&document, &before, &mut kernel).expect("renders");
     let before_faces = faces(&document, &before);
     before.release_all(&mut kernel);
 
     set_height(&mut document, 25.0).expect("the plate is made taller");
 
     let after = rebuild_cold(&document, &mut kernel, &context).expect("rebuilds taller");
+    let after_manifest = render_manifest(&document, &after, &mut kernel).expect("renders");
+
+    // Every name still reaches exactly one face, and the same names as before.
     assert_eq!(
-        render_manifest(&document, &after).expect("renders"),
-        manifest,
-        "a different distance is not a different set of faces"
+        names_only(&before_manifest),
+        names_only(&after_manifest),
+        "a different distance is not a different set of names"
+    );
+
+    // And the plate really did change, so the comparison above is not vacuous.
+    assert_ne!(
+        before_manifest, after_manifest,
+        "a taller plate has taller faces; if these match, nothing was rebuilt"
     );
 
     let after_faces = faces(&document, &after);
@@ -122,6 +131,14 @@ fn changing_the_height_keeps_every_name_and_no_handle() {
     );
 
     after.release_all(&mut kernel);
+}
+
+/// A manifest with the measurements removed: what each name is, not where.
+fn names_only(manifest: &str) -> Vec<&str> {
+    manifest
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("area "))
+        .collect()
 }
 
 #[test]
@@ -177,30 +194,32 @@ fn dropping_a_segment_loses_that_name_and_no_other() {
     built.release_all(&mut kernel);
 }
 
-/// Writes the fixture and its manifest. Not part of the gate.
+/// Rewrites the manifest from the document that is already committed.
 ///
-/// Run deliberately, and expect the identifiers in the manifest to change: a
-/// regenerated document is a new document. Review the diff before committing
-/// it — that review is the only thing standing between an intended change and
-/// an accidental one.
+/// Not part of the gate, and deliberately does *not* touch the `.fcad`: that
+/// file is a document an earlier build wrote, and rewriting it would trade the
+/// only property that makes it a regression fixture for a fresh set of
+/// identifiers. It is written once, by [`write_plate`], if it is ever lost.
+///
+/// Review the diff before committing it. That review is the only thing between
+/// an intended change in meaning and an accidental one.
 #[test]
-#[ignore = "rewrites the committed fixture; run it on purpose"]
-fn regenerate_the_committed_plate() {
-    let path = ferritecad_fixtures::plate_source();
-    if path.exists() {
-        std::fs::remove_file(&path).expect("removes the old fixture");
+#[ignore = "rewrites the committed manifest; run it on purpose"]
+fn regenerate_the_committed_manifest() {
+    let source = ferritecad_fixtures::plate_source();
+    if !source.exists() {
+        write_plate(&source).expect("writes a plate where none was");
     }
-    write_plate(&path).expect("writes the plate");
 
     let dir = tempfile::tempdir().expect("temp dir");
-    let document = open_plate(dir.path()).expect("reopens what was just written");
+    let document = open_plate(dir.path()).expect("the fixture opens");
     let mut kernel = MockKernel::new();
     let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
-        .expect("the new fixture rebuilds");
+        .expect("the fixture rebuilds");
 
     std::fs::write(
         plate_manifest_path(),
-        render_manifest(&document, &built).expect("renders"),
+        render_manifest(&document, &built, &mut kernel).expect("renders"),
     )
     .expect("writes the manifest");
     built.release_all(&mut kernel);
