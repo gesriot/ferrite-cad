@@ -112,8 +112,8 @@ fn history_and_mesh_are_reproducible() {
     assert_eq!(one_mesh.indices, other_mesh.indices);
 
     // History compares by structure: same inputs, same number of outputs each.
-    let one_inputs: Vec<_> = one.history.inputs().copied().collect();
-    let other_inputs: Vec<_> = other.history.inputs().copied().collect();
+    let one_inputs: Vec<_> = one.history.inputs().collect();
+    let other_inputs: Vec<_> = other.history.inputs().collect();
     assert_eq!(one_inputs, other_inputs);
     for input in &one_inputs {
         assert_eq!(
@@ -325,7 +325,7 @@ fn a_transform_preserves_every_face_as_modified() {
         .expect("transforms");
 
     // Six faces in, six correspondences out; a transform destroys nothing.
-    let inputs: Vec<_> = moved.history.inputs().copied().collect();
+    let inputs: Vec<_> = moved.history.inputs().collect();
     assert_eq!(inputs.len(), 6);
     for input in &inputs {
         assert_eq!(moved.history.modified(input).count(), 1);
@@ -373,6 +373,43 @@ fn an_unbuildable_profile_is_refused_rather_than_approximated() {
         .extrude(&request, &OperationContext::default())
         .expect_err("a degenerate profile has no solid");
     assert_eq!(err.kind(), ErrorKind::Kernel);
+}
+
+#[test]
+fn the_mock_refuses_holes_instead_of_silently_filling_them() {
+    fn square_loop(min: f64, max: f64) -> ProfileLoop {
+        let points = [
+            PlanarPoint::new(min, min).expect("finite"),
+            PlanarPoint::new(max, min).expect("finite"),
+            PlanarPoint::new(max, max).expect("finite"),
+            PlanarPoint::new(min, max).expect("finite"),
+        ];
+        let segments = points
+            .iter()
+            .enumerate()
+            .map(|(index, start)| {
+                ProfileSegment::new(
+                    StableEntityId::new(),
+                    SegmentGeometry::line(*start, points[(index + 1) % points.len()])
+                        .expect("distinct"),
+                )
+            })
+            .collect();
+        ProfileLoop::new(segments).expect("closes")
+    }
+
+    let profile = Profile::new(
+        SketchPlane::world_xy(),
+        square_loop(0.0, 10.0),
+        vec![square_loop(2.0, 4.0)],
+    )
+    .expect("valid profile with one hole");
+    let request = ExtrudeRequest::new(profile, ExtrudeExtent::blind(5.0).expect("positive"), false);
+
+    let err = MockKernel::new()
+        .extrude(&request, &OperationContext::default())
+        .expect_err("the mock must not erase the hole");
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
 }
 
 #[test]

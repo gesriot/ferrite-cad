@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ferritecad_types::{CadError, ContentHash, Result, StableEntityId};
 
-use crate::handle::{ShapeHandle, SubShapeHandle};
+use crate::handle::{ShapeHandle, SubShapeHandle, SubShapeKind};
 use crate::identity::KernelIdentity;
 
 /// What an operation consumed, as history refers back to it.
@@ -74,11 +74,15 @@ impl History {
         self.deleted.contains(input)
     }
 
-    pub fn inputs(&self) -> impl Iterator<Item = &HistoryInput> {
+    /// Every input mentioned by the history, once and in a stable order.
+    pub fn inputs(&self) -> impl Iterator<Item = HistoryInput> {
         self.generated
             .keys()
             .chain(self.modified.keys())
             .chain(self.deleted.iter())
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -234,7 +238,44 @@ impl Mesh {
         }
 
         let mut covered = 0u32;
+        let mut shape = None;
+        let mut seen_faces = BTreeSet::new();
         for range in &self.faces {
+            if range.face.kind() != SubShapeKind::Face {
+                return Err(CadError::kernel(format!(
+                    "mesh range names {}, which is not a face",
+                    range.face
+                )));
+            }
+            if range.index_count == 0 || !range.index_count.is_multiple_of(3) {
+                return Err(CadError::kernel(format!(
+                    "mesh face {} owns {} indices, which is not a non-empty whole number of triangles",
+                    range.face, range.index_count
+                )));
+            }
+            if !range.first_index.is_multiple_of(3) {
+                return Err(CadError::kernel(format!(
+                    "mesh face {} starts at index {}, in the middle of a triangle",
+                    range.face, range.first_index
+                )));
+            }
+            if !seen_faces.insert(range.face) {
+                return Err(CadError::kernel(format!(
+                    "mesh contains more than one range for face {}",
+                    range.face
+                )));
+            }
+            if let Some(expected) = shape {
+                if range.face.shape() != expected {
+                    return Err(CadError::kernel(format!(
+                        "mesh mixes faces from {} and {}",
+                        expected,
+                        range.face.shape()
+                    )));
+                }
+            } else {
+                shape = Some(range.face.shape());
+            }
             if range.first_index != covered {
                 return Err(CadError::kernel(format!(
                     "mesh face ranges are not contiguous: expected to continue at {covered}, \
@@ -315,6 +356,17 @@ mod tests {
             forwards.inputs().collect::<Vec<_>>(),
             backwards.inputs().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn history_lists_an_input_only_once_across_all_outcomes() {
+        let input = HistoryInput::Segment(StableEntityId::new());
+        let mut history = History::new();
+        history.record_generated(input, face(1));
+        history.record_modified(input, face(2));
+        history.record_deleted(input);
+
+        assert_eq!(history.inputs().collect::<Vec<_>>(), vec![input]);
     }
 
     #[test]
@@ -399,6 +451,45 @@ mod tests {
                 face: face(0),
                 first_index: 1,
                 index_count: 2,
+            }],
+        };
+        assert!(mesh.validate().is_err());
+    }
+
+    #[test]
+    fn a_mesh_face_range_cannot_split_a_triangle() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let mesh = Mesh {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: vec![0, 1, 2],
+            faces: vec![
+                MeshFaceRange {
+                    face: SubShapeHandle::new(shape, SubShapeKind::Face, 0),
+                    first_index: 0,
+                    index_count: 1,
+                },
+                MeshFaceRange {
+                    face: SubShapeHandle::new(shape, SubShapeKind::Face, 1),
+                    first_index: 1,
+                    index_count: 2,
+                },
+            ],
+        };
+        assert!(mesh.validate().is_err());
+    }
+
+    #[test]
+    fn a_mesh_range_must_name_a_face() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let mesh = Mesh {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: vec![0, 1, 2],
+            faces: vec![MeshFaceRange {
+                face: SubShapeHandle::new(shape, SubShapeKind::Edge, 0),
+                first_index: 0,
+                index_count: 3,
             }],
         };
         assert!(mesh.validate().is_err());

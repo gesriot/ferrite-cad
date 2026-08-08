@@ -97,15 +97,19 @@ pub fn extrude_cache_key(
 /// The cache key for a tessellation of an already-keyed shape.
 ///
 /// Takes the shape's own key rather than its handle: a handle is
-/// session-local and would key the same solid differently on every run.
+/// session-local and would key the same solid differently on every run. The
+/// operation tolerance is included as well because the adapter receives it and
+/// may use it while preparing geometry for meshing.
 pub fn tessellation_cache_key(
     kernel: &KernelIdentity,
     shape_key: &ContentHash,
     params: &TessellationParams,
+    context: &OperationContext,
 ) -> ContentHash {
     let mut hasher = CanonicalHasher::new("kernel.tessellation");
     hasher.algorithm_version(ALGORITHM_VERSION);
     kernel.feed(&mut hasher);
+    context.tolerance().feed(&mut hasher);
     hasher.field("shape").hash(shape_key);
     params.feed(&mut hasher);
     hasher.finish()
@@ -215,8 +219,22 @@ mod tests {
         let coarse = TessellationParams::new(0.5, 0.5, false).expect("positive");
 
         assert_ne!(
-            tessellation_cache_key(&kernel, &shape_key, &fine),
-            tessellation_cache_key(&kernel, &shape_key, &coarse)
+            tessellation_cache_key(&kernel, &shape_key, &fine, &OperationContext::default()),
+            tessellation_cache_key(&kernel, &shape_key, &coarse, &OperationContext::default())
+        );
+    }
+
+    #[test]
+    fn the_tolerance_changes_the_mesh_key() {
+        let kernel = KernelIdentity::new("occt", "8.0.1", "").expect("valid");
+        let shape_key = ContentHash::of_bytes(b"a solid");
+        let params = TessellationParams::default();
+        let fine = OperationContext::new(Tolerance::default());
+        let coarse = OperationContext::new(Tolerance::new(1e-3, 1e-6).expect("positive"));
+
+        assert_ne!(
+            tessellation_cache_key(&kernel, &shape_key, &params, &fine),
+            tessellation_cache_key(&kernel, &shape_key, &params, &coarse)
         );
     }
 
@@ -226,8 +244,18 @@ mod tests {
         let params = TessellationParams::default();
 
         assert_ne!(
-            tessellation_cache_key(&kernel, &ContentHash::of_bytes(b"one"), &params),
-            tessellation_cache_key(&kernel, &ContentHash::of_bytes(b"other"), &params)
+            tessellation_cache_key(
+                &kernel,
+                &ContentHash::of_bytes(b"one"),
+                &params,
+                &OperationContext::default()
+            ),
+            tessellation_cache_key(
+                &kernel,
+                &ContentHash::of_bytes(b"other"),
+                &params,
+                &OperationContext::default()
+            )
         );
     }
 

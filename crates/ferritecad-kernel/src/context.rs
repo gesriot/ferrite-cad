@@ -51,7 +51,9 @@ impl CancelToken {
 ///
 /// Optional by design: an operation that reports nothing is merely quiet, never
 /// broken. Fractions are clamped to `0.0..=1.0` so a badly behaved adapter
-/// cannot drive a progress bar backwards or past the end.
+/// cannot report outside the range. Monotonicity remains the adapter's
+/// responsibility because nested kernel operations may map their own progress
+/// scopes into this one.
 #[derive(Clone, Default)]
 pub struct ProgressSink {
     sink: Option<Arc<dyn Fn(f64) + Send + Sync>>,
