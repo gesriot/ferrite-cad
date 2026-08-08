@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       occt_tag:
-        description: 'OCCT git tag, e.g. V8_0_0'
+        description: 'OCCT git tag, e.g. V8_0_1'
         required: true
         type: string
       expected_sha256:

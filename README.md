@@ -92,5 +92,5 @@ scope until that works.
 ## Licence
 
 MIT, see [`LICENSE`](LICENSE). Open CASCADE is LGPL-2.1 with the Open CASCADE
-exception and is linked dynamically only; see
+exception and, by project policy, will be linked dynamically only; see
 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).

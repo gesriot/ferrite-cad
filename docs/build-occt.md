@@ -2,10 +2,11 @@
 
 **Status:** pinned and verified on Linux, Windows and macOS.
 
-FerriteCAD links Open CASCADE **dynamically and only dynamically**. This is a
-licence requirement, not a preference: OCCT is LGPL-2.1 with the Open CASCADE
-exception, and dynamic linkage with a documented replacement path is what keeps
-FerriteCAD's own code distributable under MIT. See
+FerriteCAD's engineering policy is to link Open CASCADE **dynamically and only
+dynamically**. OCCT is LGPL-2.1 with the Open CASCADE exception. LGPL-2.1 also
+describes compliance paths for other forms of linking, but FerriteCAD does not
+support those distribution and relinking obligations. Shared libraries with a
+documented replacement path are the one path this project builds and tests. See
 [`THIRD_PARTY_LICENSES.md`](../THIRD_PARTY_LICENSES.md).
 
 ## Pinning the version
@@ -135,9 +136,10 @@ XCAF imports link against them; disable optional viewer backends with the
 `USE_*` flags above rather than assuming the whole module can be omitted on
 every platform.
 
-`BUILD_LIBRARY_TYPE=Shared` is not optional. A static build would change the
-licence position entirely and must not be used, even for a local experiment
-that might later be copied into a release.
+`BUILD_LIBRARY_TYPE=Shared` is not optional under FerriteCAD's distribution
+policy. A static build would require a different compliance, packaging and
+testing path that this project does not support; do not let one enter a release
+by way of a local experiment.
 
 ## Per-platform notes
 
@@ -272,5 +274,5 @@ future IPC explicit rather than hiding them behind generated glue.
 
 The OCCT notice, the full LGPL-2.1 text and instructions for replacing the
 library must ship in every package. This is a release gate
-(implementation-plan.md, 11), and it is the condition on which the dynamic
-linkage argument rests.
+(implementation-plan.md, 11), and it is part of the project's chosen
+shared-library compliance path.

@@ -17,7 +17,12 @@ is added only with a licence, an owner and a stated reason
 
 | Component | Version | Licence | Linkage | Notes |
 | --- | --- | --- | --- | --- |
-| Open CASCADE Technology | pinned in `docs/build-occt.md` | LGPL-2.1 with the Open CASCADE exception | dynamic only | Never statically linked. The shipped notice must tell users how to obtain and replace the library. |
+| Open CASCADE Technology | pinned in `docs/build-occt.md` | LGPL-2.1 with the Open CASCADE exception | dynamic only | Project policy: never statically linked. The shipped notice must tell users how to obtain and replace the library. |
+
+“Dynamic only” is FerriteCAD's engineering and distribution policy, not a claim
+that LGPL-2.1 permits no other form of linking. Section 6 of the bundled licence
+describes alternative obligations; this project deliberately does not build or
+support that separate compliance path.
 
 The OCCT notice, the full LGPL-2.1 text and replacement instructions must be
 present in every distributed package. This is a release gate, not a
