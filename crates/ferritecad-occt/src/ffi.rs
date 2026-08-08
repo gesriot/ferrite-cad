@@ -1,0 +1,334 @@
+// SPDX-License-Identifier: MIT
+//! The only unsafe code in FerriteCAD.
+//!
+//! Everything below is a thin, checked wrapper over the flat C ABI in
+//! `crates/ferritecad-occt-bridge`. Callers of this module see ordinary Rust
+//! functions returning [`Result`]; the pointers, the fixed buffers and the
+//! two-call length protocol stop here.
+//!
+//! The workspace denies `unsafe_code`, so the exception is declared once, in
+//! writing, and is greppable.
+#![allow(
+    unsafe_code,
+    reason = "the FFI boundary to Open CASCADE; confined to this module by design"
+)]
+
+use std::ffi::{CStr, c_char, c_void};
+
+use ferritecad_kernel::CancelToken;
+use ferritecad_types::{CadError, Result};
+
+/// Must match `FC_OCCT_ERROR_CAPACITY` in `ferritecad_occt.h`.
+const ERROR_CAPACITY: usize = 512;
+
+const STATUS_OK: i32 = 0;
+const STATUS_INVALID_INPUT: i32 = 1;
+const STATUS_KERNEL: i32 = 2;
+const STATUS_CANCELLED: i32 = 3;
+const STATUS_UNSUPPORTED: i32 = 4;
+const STATUS_UNKNOWN_HANDLE: i32 = 5;
+const STATUS_INTERNAL: i32 = 6;
+
+pub(crate) const SEGMENT_LINE: i32 = 0;
+pub(crate) const SEGMENT_ARC: i32 = 1;
+
+#[repr(C)]
+struct RawSession {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
+struct RawError {
+    message: [c_char; ERROR_CAPACITY],
+}
+
+impl RawError {
+    fn empty() -> Self {
+        Self {
+            message: [0; ERROR_CAPACITY],
+        }
+    }
+
+    /// Reads the message the bridge wrote, which is always NUL-terminated
+    /// after a failure and all zeroes otherwise.
+    fn text(&self) -> String {
+        // SAFETY: the bridge writes a NUL within the buffer or leaves it
+        // zeroed, so a terminator is present either way.
+        let bytes = unsafe { CStr::from_ptr(self.message.as_ptr()) };
+        bytes.to_string_lossy().into_owned()
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct Plane {
+    pub origin: [f64; 3],
+    pub x_axis: [f64; 3],
+    pub normal: [f64; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct Segment {
+    pub kind: i32,
+    pub start_x: f64,
+    pub start_y: f64,
+    pub end_x: f64,
+    pub end_y: f64,
+    pub center_x: f64,
+    pub center_y: f64,
+    pub radius: f64,
+    pub start_angle: f64,
+    pub end_angle: f64,
+}
+
+impl Segment {
+    pub(crate) fn zeroed() -> Self {
+        Self {
+            kind: SEGMENT_LINE,
+            start_x: 0.0,
+            start_y: 0.0,
+            end_x: 0.0,
+            end_y: 0.0,
+            center_x: 0.0,
+            center_y: 0.0,
+            radius: 0.0,
+            start_angle: 0.0,
+            end_angle: 0.0,
+        }
+    }
+}
+
+type CancelFn = extern "C" fn(*mut c_void) -> i32;
+
+unsafe extern "C" {
+    fn fc_occt_version() -> *const c_char;
+    fn fc_occt_session_create(out_session: *mut *mut RawSession, out_error: *mut RawError) -> i32;
+    fn fc_occt_session_destroy(session: *mut RawSession);
+    #[allow(clippy::too_many_arguments)]
+    fn fc_occt_extrude(
+        session: *mut RawSession,
+        plane: *const Plane,
+        segments: *const Segment,
+        segment_count: usize,
+        base_offset: f64,
+        top_offset: f64,
+        cancel: Option<CancelFn>,
+        cancel_context: *mut c_void,
+        out_shape: *mut u64,
+        out_error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_extrude_side_faces(
+        session: *mut RawSession,
+        shape: u64,
+        segment_index: usize,
+        out_ids: *mut u64,
+        capacity: usize,
+        out_count: *mut usize,
+        out_error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_extrude_cap_faces(
+        session: *mut RawSession,
+        shape: u64,
+        which: i32,
+        out_ids: *mut u64,
+        capacity: usize,
+        out_count: *mut usize,
+        out_error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_shape_stats(
+        session: *mut RawSession,
+        shape: u64,
+        out_face_count: *mut u64,
+        out_volume: *mut f64,
+        out_error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_release_shape(session: *mut RawSession, shape: u64);
+    fn fc_occt_live_shape_count(session: *const RawSession) -> usize;
+}
+
+/// Asks the token whether the caller wants to stop.
+///
+/// Called by C++, so it must not unwind: an atomic load cannot panic, and
+/// nothing else happens here.
+extern "C" fn cancel_trampoline(context: *mut c_void) -> i32 {
+    if context.is_null() {
+        return 0;
+    }
+    // SAFETY: `context` is the `&CancelToken` handed to the call below, which
+    // outlives it — the bridge only invokes this during that call.
+    let token = unsafe { &*(context as *const CancelToken) };
+    i32::from(token.is_cancelled())
+}
+
+fn interpret(status: i32, error: &RawError, what: &str) -> Result<()> {
+    match status {
+        STATUS_OK => Ok(()),
+        STATUS_CANCELLED => Err(CadError::Cancelled),
+        STATUS_INVALID_INPUT => Err(CadError::input(format!("{what}: {}", error.text()))),
+        STATUS_UNSUPPORTED => Err(CadError::unsupported(format!("{what}: {}", error.text()))),
+        STATUS_KERNEL | STATUS_UNKNOWN_HANDLE => {
+            Err(CadError::kernel(format!("{what}: {}", error.text())))
+        }
+        STATUS_INTERNAL => Err(CadError::kernel(format!(
+            "{what}: the bridge caught an exception it could not identify: {}",
+            error.text()
+        ))),
+        other => Err(CadError::kernel(format!(
+            "{what}: the bridge returned an unknown status {other}"
+        ))),
+    }
+}
+
+/// The Open CASCADE version the bridge was compiled against.
+pub(crate) fn version() -> String {
+    // SAFETY: the bridge returns a pointer to static storage.
+    let raw = unsafe { fc_occt_version() };
+    if raw.is_null() {
+        return "unknown".to_owned();
+    }
+    // SAFETY: static, NUL-terminated, never freed.
+    unsafe { CStr::from_ptr(raw) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// An owned Open CASCADE session.
+#[derive(Debug)]
+pub(crate) struct Session {
+    raw: *mut RawSession,
+}
+
+impl Session {
+    pub(crate) fn new() -> Result<Self> {
+        let mut raw: *mut RawSession = std::ptr::null_mut();
+        let mut error = RawError::empty();
+        // SAFETY: both out-parameters are valid for the call.
+        let status = unsafe { fc_occt_session_create(&mut raw, &mut error) };
+        interpret(status, &error, "creating an Open CASCADE session")?;
+
+        if raw.is_null() {
+            return Err(CadError::kernel(
+                "the bridge reported success but produced no session",
+            ));
+        }
+        Ok(Self { raw })
+    }
+
+    pub(crate) fn extrude(
+        &mut self,
+        plane: &Plane,
+        segments: &[Segment],
+        base_offset: f64,
+        top_offset: f64,
+        cancel: &CancelToken,
+    ) -> Result<u64> {
+        let mut shape = 0u64;
+        let mut error = RawError::empty();
+
+        // The token is borrowed for exactly the duration of the call, which is
+        // the only time the bridge may invoke the trampoline.
+        let context = cancel as *const CancelToken as *mut c_void;
+
+        // SAFETY: the slice is non-empty and lives across the call; the
+        // out-parameters are valid; the bridge is noexcept.
+        let status = unsafe {
+            fc_occt_extrude(
+                self.raw,
+                plane,
+                segments.as_ptr(),
+                segments.len(),
+                base_offset,
+                top_offset,
+                Some(cancel_trampoline),
+                context,
+                &mut shape,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "extruding a profile")?;
+        Ok(shape)
+    }
+
+    pub(crate) fn side_faces(&mut self, shape: u64, segment_index: usize) -> Result<Vec<u64>> {
+        self.collect_ids(
+            "reading the faces raised from a profile segment",
+            |s, ids, cap, count, err| {
+                // SAFETY: pointers are valid for the call; see `collect_ids`.
+                unsafe { fc_occt_extrude_side_faces(s, shape, segment_index, ids, cap, count, err) }
+            },
+        )
+    }
+
+    pub(crate) fn cap_faces(&mut self, shape: u64, which: i32) -> Result<Vec<u64>> {
+        self.collect_ids("reading an extrusion cap", |s, ids, cap, count, err| {
+            // SAFETY: pointers are valid for the call; see `collect_ids`.
+            unsafe { fc_occt_extrude_cap_faces(s, shape, which, ids, cap, count, err) }
+        })
+    }
+
+    pub(crate) fn shape_stats(&mut self, shape: u64) -> Result<(u64, f64)> {
+        let mut faces = 0u64;
+        let mut volume = 0.0f64;
+        let mut error = RawError::empty();
+        // SAFETY: all out-parameters are valid for the call.
+        let status =
+            unsafe { fc_occt_shape_stats(self.raw, shape, &mut faces, &mut volume, &mut error) };
+        interpret(status, &error, "measuring a shape")?;
+        Ok((faces, volume))
+    }
+
+    pub(crate) fn release(&mut self, shape: u64) {
+        // SAFETY: releasing an unknown identifier is defined to be harmless.
+        unsafe { fc_occt_release_shape(self.raw, shape) }
+    }
+
+    pub(crate) fn live_shape_count(&self) -> usize {
+        // SAFETY: the session pointer is valid for this object's lifetime.
+        unsafe { fc_occt_live_shape_count(self.raw) }
+    }
+
+    /// Runs the bridge's two-call length protocol: ask for the count, then ask
+    /// again with a buffer that size.
+    fn collect_ids(
+        &mut self,
+        what: &str,
+        mut call: impl FnMut(*mut RawSession, *mut u64, usize, *mut usize, *mut RawError) -> i32,
+    ) -> Result<Vec<u64>> {
+        let mut count = 0usize;
+        let mut error = RawError::empty();
+
+        let status = call(self.raw, std::ptr::null_mut(), 0, &mut count, &mut error);
+        interpret(status, &error, what)?;
+
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut ids = vec![0u64; count];
+        let mut written = 0usize;
+        let status = call(self.raw, ids.as_mut_ptr(), count, &mut written, &mut error);
+        interpret(status, &error, what)?;
+
+        if written != count {
+            return Err(CadError::kernel(format!(
+                "{what}: the bridge first reported {count} entries and then wrote {written}"
+            )));
+        }
+        Ok(ids)
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // SAFETY: the pointer came from `fc_occt_session_create` and is
+        // destroyed exactly once, here.
+        unsafe { fc_occt_session_destroy(self.raw) }
+    }
+}
+
+// A session owns C++ state that no other thread touches, so it may be moved to
+// a worker. It is deliberately not `Sync`: Open CASCADE is not thread-safe, and
+// the contract already says a session is used from one thread at a time.
+// SAFETY: the raw pointer is uniquely owned by this value.
+unsafe impl Send for Session {}

@@ -39,8 +39,8 @@ crates/
   ferritecad-document/       IR, CBOR envelopes, SQLite, миграции, кэш-спутник   [есть]
   ferritecad-eval/           планирование и последовательный cold evaluator       [есть]
   ferritecad-kernel/         GeometryKernel trait и kernel-agnostic типы          [есть]
-  ferritecad-occt/           Rust часть адаптера OCCT
-  ferritecad-occt-bridge/    C++17 `extern "C"` шим и CMake-сборка
+  ferritecad-occt/           Rust часть адаптера OCCT                            [есть]
+  ferritecad-occt-bridge/    C++17 `extern "C"` шим и CMake-сборка               [есть]
   ferritecad-topology/       именование, разрешение ссылок, history mapping
   ferritecad-sketch/         геометрия эскизов, ограничения и solver API
   ferritecad-tessellation/   LOD и перенос данных для GPU
@@ -166,7 +166,7 @@ CLI создаёт документ с эскизом и Extrude, валидир
 ### Работы
 
 1. **[сделано]** Описать `GeometryKernel` и DTO, не содержащие OCCT-типов. Crate `ferritecad-kernel` зависит только от `ferritecad-types`: ни OCCT, ни C/C++, ни `build.rs`, ни FFI, ни document/eval. Определены identity ядра для cache key, плоский профиль с помеченными сегментами, extrude и transform, B-Rep blob, параметры тесселяции и mesh, история generated/modified/deleted, явные tolerance, отмена и progress. Handles ядра не сериализуются и привязаны к сессии. Mock-ядро на арифметике позволяет тестировать вышележащие слои без установленного OCCT.
-2. Реализовать C++ bridge: создание профиля из 2D-контура, extrude, transform, тесселяция, B-Rep encode/decode и запрос history.
+2. **[частично]** Реализовать C++ bridge: создание профиля из 2D-контура, extrude, transform, тесселяция, B-Rep encode/decode и запрос history. Сделано: плоский `extern "C"` ABI с opaque-сессией, кодами состояния и caller-owned буферами; все функции `noexcept` и ловят `Standard_Failure`, `std::exception` и неизвестные исключения. Реальный путь `Line/Arc профиль → Extrude → release` собирает солид, возвращает историю сторон через `BRepTools_History` и крышки через `FirstShape`/`LastShape`. `KernelIdentity` читает версию OCCT из библиотеки. Осталось: `transform`, тесселяция и B-Rep encode/decode — сейчас они явно возвращают `Unsupported`, и это следующие небольшие срезы.
 3. **[частично]** В `ferritecad-eval` реализовать dirty propagation и планирование перестроения. Сделано: обратный индекс зависимостей, транзитивный dirty set от нескольких корней, `RebuildPlan` с порядком и детерминированными уровнями параллелизма, facade `DocumentGraph` над `&Document`, честный отказ на цикле и висячем ребре. Осталось: отменяемый job scheduler. Cold evaluator из пункта 4 исполняет план последовательно; уровни параллелизма `RebuildPlan` вычисляются, но пока никем не исполняются, потому что сессия ядра не разделяема между потоками.
 4. **[частично]** Реализовать feature evaluator для эскиза и extrude. Сделано: последовательный cold evaluator `rebuild_cold` в `ferritecad-eval`, работающий против `dyn GeometryKernel` и проверенный на `MockKernel` без OCCT. Срез — `DatumPlane → Sketch → Extrude → Body`, один замкнутый внешний контур из Line/Arc, только `NewBody` и `Blind`/`Symmetric`. Сегменты эскиза упорядочиваются обходом цепочки, а не берутся в порядке хранения. Всё за пределами среза — `Circle`, точки, отверстия, несколько контуров, booleans, `ThroughAll`, неизвестные типы объектов — возвращает `Unsupported`, а не приближение. Перед обращением к ядру документ проходит semantic validation. Проверены детерминизм повторного и после переоткрытия документа перестроения, отмена до, посреди и на последнем progress-событии, а также освобождение всех shape handles, включая путь через ошибку. Осталось: инкрементальное перестроение по dirty set, отменяемый job scheduler и evaluator поверх реального ядра.
 5. Реализовать `ferritecad-topology`: выпуск семантических имён для эскиза и ExtrudeCap/ExtrudeSide, mapping истории и resolver.
@@ -334,8 +334,8 @@ CLI создаёт документ с эскизом и Extrude, валидир
 7. **[сделано]** Реализовать CBOR envelope с raw unknown preservation.
 8. **[сделано]** Добавить CLI `create`, `inspect`, `validate`, а также `dump-graph` и `clear-cache`.
 9. **[сделано]** Описать `GeometryKernel` без OCCT-типов.
-10. Поднять `extern "C"` bridge и проверить dynamic load OCCT.
-11. Реализовать 2D profile → Extrude → B-Rep.
+10. **[сделано]** Поднять `extern "C"` bridge и проверить dynamic load OCCT. Динамическая линковка проверяется в pin-workflow по самому артефакту (`ldd`/`otool`), а не по флагам CMake.
+11. **[частично]** Реализовать 2D profile → Extrude → B-Rep. Профиль и extrude работают против настоящего OCCT; сериализация B-Rep ещё нет.
 12. Сериализовать B-Rep как опциональный cache blob.
 13. **[сделано]** Реализовать DAG и cold rebuild.
 14. Реализовать `TopologyRef` для сегмента эскиза и cap Extrude.

@@ -68,7 +68,7 @@ fn an_extrusion_reports_a_side_face_for_every_profile_segment() {
     for label in &square.labels {
         let generated: Vec<_> = result
             .history
-            .generated(&HistoryInput::Segment(*label))
+            .generated(HistoryInput::Segment(*label))
             .collect();
         assert_eq!(
             generated.len(),
@@ -117,8 +117,8 @@ fn history_and_mesh_are_reproducible() {
     assert_eq!(one_inputs, other_inputs);
     for input in &one_inputs {
         assert_eq!(
-            one.history.generated(input).count(),
-            other.history.generated(input).count()
+            one.history.generated(*input).count(),
+            other.history.generated(*input).count()
         );
     }
 }
@@ -328,8 +328,8 @@ fn a_transform_preserves_every_face_as_modified() {
     let inputs: Vec<_> = moved.history.inputs().collect();
     assert_eq!(inputs.len(), 6);
     for input in &inputs {
-        assert_eq!(moved.history.modified(input).count(), 1);
-        assert!(!moved.history.is_deleted(input));
+        assert_eq!(moved.history.modified(*input).count(), 1);
+        assert!(!moved.history.is_deleted(*input));
     }
 
     let before = kernel

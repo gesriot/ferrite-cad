@@ -268,6 +268,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferritecad-occt"
+version = "0.0.1"
+dependencies = [
+ "ferritecad-document",
+ "ferritecad-eval",
+ "ferritecad-kernel",
+ "ferritecad-types",
+ "tempfile",
+]
+
+[[package]]
 name = "ferritecad-types"
 version = "0.0.1"
 dependencies = [

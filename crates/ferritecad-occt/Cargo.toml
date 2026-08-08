@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "ferritecad-occt"
+description = "Open CASCADE implementation of the FerriteCAD geometry contract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# No build-dependency on the `cmake` crate: the build script shells out to
+# cmake directly. What that crate mainly provides is generator selection, and
+# the pin workflow already established what this project needs there — a
+# hand-rolled sixty lines beats a dependency whose main value we would override.
+[dependencies]
+ferritecad-kernel.workspace = true
+ferritecad-types.workspace = true
+
+# The end-to-end test drives a real document through the cold evaluator into
+# this adapter, which is the whole point of the slice. Dev-only: nothing in the
+# shipped dependency graph points from the kernel adapter back at the document.
+[dev-dependencies]
+ferritecad-document.workspace = true
+ferritecad-eval.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -160,7 +160,7 @@ fn a_plate_rebuilds_into_a_solid_with_named_faces() {
         .expect("the extrude has history");
     for segment in &plate.segments {
         assert_eq!(
-            history.generated(&HistoryInput::Segment(*segment)).count(),
+            history.generated(HistoryInput::Segment(*segment)).count(),
             1,
             "segment {segment} should have raised one face"
         );

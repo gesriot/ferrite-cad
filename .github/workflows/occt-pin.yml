@@ -497,6 +497,64 @@ jobs:
           "$binary" tools/occt-smoke/data/sample_named_colored.step \
             | tee smoke-output.txt
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test the Open CASCADE adapter against this build
+        id: adapter
+        env:
+          FCAD_OCCT_CONFIG_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          # This is the one place the adapter must exist. Everywhere else a
+          # missing Open CASCADE only warns and the tests skip, which is right
+          # for a contributor without the kernel and wrong for a run whose
+          # purpose is to prove the adapter works against the pinned version.
+          export FERRITECAD_REQUIRE_OCCT=1
+          export OpenCASCADE_DIR="$FCAD_OCCT_CONFIG_DIR"
+
+          case '${{ matrix.name }}' in
+            windows)
+              # No RPATH on Windows: both the bridge and OCCT must be findable
+              # on PATH when the test binary runs.
+              export PATH="$FCAD_OCCT_LIB_DIR:$PATH"
+              ;;
+            linux)
+              # RUNPATH is not transitive, and the OCCT toolkits load each
+              # other; the same reasoning as the smoke test above.
+              export LD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              ;;
+            macos)
+              # OCCT's absolute install names resolve in place.
+              ;;
+          esac
+
+          # The adapter's tests skip themselves when the crate was built
+          # without a kernel, and a skipped test still reports as passed.
+          # FERRITECAD_REQUIRE_OCCT=1 above is what stops a green step from
+          # meaning "skipped": without a kernel the build fails outright.
+          cargo test -p ferritecad-occt --all-targets
+
+      - name: Confirm the adapter links Open CASCADE dynamically
+        env:
+          FCAD_PLATFORM: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          # The licence position rests on dynamic linkage, so it is checked
+          # against the artefact rather than assumed from the CMake flags.
+          bridge="$(find target -name 'libferritecad_occt_bridge.*' -o -name 'ferritecad_occt_bridge.dll' | head -1)"
+          if [ -z "$bridge" ]; then
+            echo "::error::the bridge library was not built"
+            exit 1
+          fi
+          echo "bridge: $bridge"
+
+          case "$FCAD_PLATFORM" in
+            linux)   ldd "$bridge" | grep -i 'libTK' || { echo "::error::no OCCT toolkit is dynamically linked"; exit 1; } ;;
+            macos)   otool -L "$bridge" | grep -i 'libTK' || { echo "::error::no OCCT toolkit is dynamically linked"; exit 1; } ;;
+            windows) echo "note: dependency listing needs dumpbin; the shared build was already asserted from CMakeCache" ;;
+          esac
+
       - name: Write the pin report
         if: always()
         env:

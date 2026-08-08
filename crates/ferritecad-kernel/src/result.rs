@@ -62,16 +62,19 @@ impl History {
         self.deleted.insert(input);
     }
 
-    pub fn generated(&self, input: &HistoryInput) -> impl Iterator<Item = SubShapeHandle> + '_ {
-        self.generated.get(input).into_iter().flatten().copied()
+    /// Taken by value rather than by reference: `HistoryInput` is `Copy`,
+    /// and a reference would tie the returned iterator to the lifetime of a
+    /// temporary at every call site that builds its key inline.
+    pub fn generated(&self, input: HistoryInput) -> impl Iterator<Item = SubShapeHandle> + '_ {
+        self.generated.get(&input).into_iter().flatten().copied()
     }
 
-    pub fn modified(&self, input: &HistoryInput) -> impl Iterator<Item = SubShapeHandle> + '_ {
-        self.modified.get(input).into_iter().flatten().copied()
+    pub fn modified(&self, input: HistoryInput) -> impl Iterator<Item = SubShapeHandle> + '_ {
+        self.modified.get(&input).into_iter().flatten().copied()
     }
 
-    pub fn is_deleted(&self, input: &HistoryInput) -> bool {
-        self.deleted.contains(input)
+    pub fn is_deleted(&self, input: HistoryInput) -> bool {
+        self.deleted.contains(&input)
     }
 
     /// Every input mentioned by the history, once and in a stable order.
@@ -316,9 +319,9 @@ mod tests {
         let mut history = History::new();
         history.record_generated(segment, side);
 
-        assert_eq!(history.generated(&segment).collect::<Vec<_>>(), vec![side]);
-        assert!(history.modified(&segment).next().is_none());
-        assert!(!history.is_deleted(&segment));
+        assert_eq!(history.generated(segment).collect::<Vec<_>>(), vec![side]);
+        assert!(history.modified(segment).next().is_none());
+        assert!(!history.is_deleted(segment));
         assert!(!history.is_empty());
     }
 
@@ -332,8 +335,8 @@ mod tests {
         let mut history = History::new();
         history.record_deleted(segment);
 
-        assert!(history.is_deleted(&segment));
-        assert!(!history.is_deleted(&silent));
+        assert!(history.is_deleted(segment));
+        assert!(!history.is_deleted(silent));
     }
 
     #[test]
@@ -378,7 +381,7 @@ mod tests {
         history.record_generated(segment, side);
         history.record_generated(segment, side);
 
-        assert_eq!(history.generated(&segment).count(), 1);
+        assert_eq!(history.generated(segment).count(), 1);
     }
 
     #[test]

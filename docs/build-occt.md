@@ -249,6 +249,33 @@ packages also list Visualization toolkits (`TKService`/`TKV3d`) as link
 dependencies of XCAF even when no viewer is used — the smoke test’s
 `find_package` accounts for that; the program itself never opens a viewer.
 
+## What Open CASCADE actually does, measured
+
+Two questions the adapter had to answer empirically rather than from
+documentation. Both were measured on OCCT 7.9.3 and are asserted by tests in
+`crates/ferritecad-occt`.
+
+**`BRepBuilderAPI_MakeWire` replaces the edges it welds.** Building four edges,
+adding them to a wire and then asking `BRepTools_History::Generated(edge)`
+which face each raised returns a face for the *first* edge and nothing for the
+rest: MakeWire re-creates the others in order to share vertices between
+neighbours, so the edges we built are no longer in the shape. Creating the
+corner vertices first and building each edge between two of them leaves nothing
+to weld, every edge keeps its identity, and history is complete. A naming layer
+built on the naive version would have silently lost three quarters of its
+references.
+
+**`BRepPrimAPI_MakePrism` never polls the progress indicator.** A
+`Message_ProgressIndicator` whose `UserBreak` returns true is called zero times
+during a prism, and the build completes normally. Cancellation for extrusion is
+therefore checked between steps — before the profile is built and before the
+sweep — and not inside them. The indicator is installed anyway, for the
+algorithms that do poll it, but no claim is made that a long extrusion can be
+interrupted.
+
+`FirstShape()` and `LastShape()` return a `TopoDS_Face` for a prism, which is
+why the adapter reports the caps directly rather than exploring for them.
+
 ## FFI boundary
 
 The Rust side never sees an OCCT type. The first adapter is a flat `extern "C"`
