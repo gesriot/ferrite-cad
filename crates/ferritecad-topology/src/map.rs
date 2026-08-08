@@ -27,17 +27,20 @@ impl FeatureNames {
         self.shape
     }
 
-    /// The faces closing one end of the sweep, in identifier order.
-    pub fn cap(&self, side: CapSide) -> impl ExactSizeIterator<Item = SubShapeHandle> + '_ {
+    /// The faces closing one known end of the sweep, in identifier order.
+    ///
+    /// `None` means this build does not understand the requested side. It must
+    /// not be confused with `Some(empty)`, which means the side is known but
+    /// this rebuild produced no cap for it.
+    pub fn cap(&self, side: CapSide) -> Option<impl ExactSizeIterator<Item = SubShapeHandle> + '_> {
         let set = match side {
             CapSide::Start => &self.start_cap,
             CapSide::End => &self.end_cap,
-            // `CapSide` is non-exhaustive. A side this build does not know is
-            // not the start cap by default; it simply has no faces, and the
-            // resolver turns that into a lost reference rather than a guess.
-            _ => &self.end_cap,
+            // `CapSide` is non-exhaustive. Treating a future side as either
+            // known end would silently retarget the reference.
+            _ => return None,
         };
-        set.iter().copied()
+        Some(set.iter().copied())
     }
 
     /// The faces raised from one profile segment, in identifier order.
@@ -110,17 +113,13 @@ impl TopologyMap {
             ..FeatureNames::default()
         };
 
-        for (side, faces) in [
-            (CapSide::Start, &result.start_cap),
-            (CapSide::End, &result.end_cap),
-        ] {
-            for face in faces {
-                check(*face, result.shape, producer, "an extrusion cap")?;
-                match side {
-                    CapSide::Start => names.start_cap.insert(*face),
-                    _ => names.end_cap.insert(*face),
-                };
-            }
+        for face in &result.start_cap {
+            check(*face, result.shape, producer, "an extrusion start cap")?;
+            names.start_cap.insert(*face);
+        }
+        for face in &result.end_cap {
+            check(*face, result.shape, producer, "an extrusion end cap")?;
+            names.end_cap.insert(*face);
         }
 
         // Only the outer loop: this slice builds no profile with holes, and a
@@ -226,8 +225,20 @@ mod tests {
 
         let names = map.feature(feature).expect("the feature is recorded");
         assert_eq!(names.shape(), Some(result.shape));
-        assert_eq!(names.cap(CapSide::Start).count(), 1);
-        assert_eq!(names.cap(CapSide::End).count(), 1);
+        assert_eq!(
+            names
+                .cap(CapSide::Start)
+                .expect("the start side is known")
+                .count(),
+            1
+        );
+        assert_eq!(
+            names
+                .cap(CapSide::End)
+                .expect("the end side is known")
+                .count(),
+            1
+        );
         for label in &square.labels {
             assert_eq!(names.side(*label).count(), 1, "segment {label}");
         }
@@ -302,6 +313,7 @@ mod tests {
             map.feature(feature)
                 .expect("recorded")
                 .cap(CapSide::Start)
+                .expect("the start side is known")
                 .count(),
             1
         );
@@ -356,12 +368,19 @@ mod tests {
         let names = map.feature(feature).expect("recorded");
         assert_eq!(names.shape(), Some(second.shape));
         assert_eq!(
-            names.cap(CapSide::Start).count(),
+            names
+                .cap(CapSide::Start)
+                .expect("the start side is known")
+                .count(),
             1,
             "no stale cap survives"
         );
         assert_eq!(
-            names.cap(CapSide::Start).next().map(|f| f.shape()),
+            names
+                .cap(CapSide::Start)
+                .expect("the start side is known")
+                .next()
+                .map(|f| f.shape()),
             Some(second.shape)
         );
     }
@@ -380,6 +399,12 @@ mod tests {
 
         let names = map.feature(feature).expect("recorded");
         assert_eq!(names.named_segments().count(), 0);
-        assert_eq!(names.cap(CapSide::End).count(), 1);
+        assert_eq!(
+            names
+                .cap(CapSide::End)
+                .expect("the end side is known")
+                .count(),
+            1
+        );
     }
 }

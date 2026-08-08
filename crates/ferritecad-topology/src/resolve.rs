@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-use ferritecad_document::{EntityKind, SelectionRule, SemanticRole, TopologyRef};
+use ferritecad_document::{CapSide, EntityKind, SelectionRule, SemanticRole, TopologyRef};
 use ferritecad_kernel::SubShapeHandle;
 use ferritecad_types::{CadError, Result};
 
@@ -32,6 +32,16 @@ pub fn resolve(map: &TopologyMap, reference: &TopologyRef) -> Result<Vec<SubShap
     match &reference.output_role {
         SemanticRole::ExtrudeCap { side } => {
             require_kind(reference, EntityKind::Face, "an extrusion cap")?;
+            match side {
+                CapSide::Start | CapSide::End => {}
+                other => {
+                    return Err(CadError::unsupported(format!(
+                        "topology reference {} names extrusion cap side {other:?}, which this \
+                         build does not understand",
+                        reference.id
+                    )));
+                }
+            }
             match reference.selection {
                 SelectionRule::Exact => {}
                 SelectionRule::AllDerivedFrom { .. } => {
@@ -47,7 +57,8 @@ pub fn resolve(map: &TopologyMap, reference: &TopologyRef) -> Result<Vec<SubShap
 
             let faces: Vec<SubShapeHandle> = map
                 .feature(reference.producer_feature)
-                .map(|names| names.cap(*side).collect())
+                .and_then(|names| names.cap(*side))
+                .map(Iterator::collect)
                 .unwrap_or_default();
             exactly_one(reference, faces, &format!("the {side:?} cap"))
         }
@@ -154,7 +165,6 @@ fn unknown_rule(reference: &TopologyRef, rule: &SelectionRule) -> CadError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ferritecad_document::CapSide;
     use ferritecad_kernel::{
         ExtrudeExtent, ExtrudeRequest, ExtrudeResult, GeometryKernel, OperationContext,
         PlanarPoint, Profile, ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane,
