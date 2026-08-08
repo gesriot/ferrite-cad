@@ -392,16 +392,21 @@ fn a_blob_round_trips_inside_one_session() {
 #[test]
 fn a_blob_round_trips_into_a_different_session() {
     // The point of a cache: the session that wrote it is gone.
-    let mut writer = kernel_or_skip!();
     let plate = rectangle(30.0, 20.0, 4.0).expect("a valid rectangle");
 
-    let built = writer
-        .extrude(&plate.request, &OperationContext::default())
-        .expect("builds");
-    let before = writer.shape_stats(built.shape).expect("measures");
-    let blob = writer.encode_shape(built.shape).expect("encodes");
-    writer.release(built.shape);
-    drop(writer);
+    // The writing session ends with this block, which is the situation a cache
+    // exists for. A scope rather than an explicit drop: without Open CASCADE
+    // this type is an uninhabited stub that implements no Drop at all.
+    let (before, blob) = {
+        let mut writer = kernel_or_skip!();
+        let built = writer
+            .extrude(&plate.request, &OperationContext::default())
+            .expect("builds");
+        let stats = writer.shape_stats(built.shape).expect("measures");
+        let blob = writer.encode_shape(built.shape).expect("encodes");
+        writer.release(built.shape);
+        (stats, blob)
+    };
 
     let mut reader = OcctKernel::new().expect("a second session opens");
     let restored = reader.decode_shape(&blob).expect("decodes");
