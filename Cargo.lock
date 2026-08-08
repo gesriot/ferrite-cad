@@ -262,6 +262,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferritecad-fixtures"
+version = "0.0.1"
+dependencies = [
+ "ferritecad-document",
+ "ferritecad-eval",
+ "ferritecad-kernel",
+ "ferritecad-types",
+ "tempfile",
+]
+
+[[package]]
 name = "ferritecad-kernel"
 version = "0.0.1"
 dependencies = [
@@ -275,6 +286,7 @@ dependencies = [
  "blake3",
  "ferritecad-document",
  "ferritecad-eval",
+ "ferritecad-fixtures",
  "ferritecad-kernel",
  "ferritecad-topology",
  "ferritecad-types",

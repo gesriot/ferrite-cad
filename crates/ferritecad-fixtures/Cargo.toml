@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "ferritecad-fixtures"
+description = "Stored documents and their expected names, shared by the regression gates"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Test data, not a product. It ships nothing and exists so the mock-backed and
+# Open CASCADE-backed gates cannot drift apart by being written twice.
+publish = false
+
+[dependencies]
+ferritecad-document.workspace = true
+ferritecad-eval.workspace = true
+ferritecad-types.workspace = true
+
+[dev-dependencies]
+ferritecad-kernel.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true

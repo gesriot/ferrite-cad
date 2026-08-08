@@ -7,6 +7,11 @@
 *.fcad-cache-wal
 *.fcad-cache-shm
 
+# ...except the regression fixture, which is checked in on purpose: it is a
+# document an earlier build wrote, and the point of it is that it does not
+# change. A cache sidecar beside it would be, so those stay ignored.
+!/crates/ferritecad-fixtures/plate/plate.fcad
+
 # Local OCCT build tree (see docs/build-occt.md)
 /vendor/occt
 /vendor/install

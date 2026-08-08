@@ -1,0 +1,20 @@
+# What the committed plate resolves to.
+#
+# Regenerate with:
+#   cargo test -p ferritecad-fixtures -- --ignored regenerate
+#
+# No handles, face indices or session ids appear here on purpose: they
+# differ every run, and a fixture that recorded them would be asserting
+# something it has no business knowing.
+
+objects 4
+references 6
+
+cap end                                       exact                                                   1 face
+cap start                                     exact                                                   1 face
+side 019fe39c-0c09-78a1-80d3-908ab8eb3619     all derived from 019fe39c-0c09-78a1-80d3-908ab8eb3619   1 face
+side 019fe39c-0c09-78a1-80d3-909aaed4f042     all derived from 019fe39c-0c09-78a1-80d3-909aaed4f042   1 face
+side 019fe39c-0c09-78a1-80d3-90a60fdbc01a     all derived from 019fe39c-0c09-78a1-80d3-90a60fdbc01a   1 face
+side 019fe39c-0c09-78a1-80d3-90be2a82933c     all derived from 019fe39c-0c09-78a1-80d3-90be2a82933c   1 face
+
+distinct faces 6

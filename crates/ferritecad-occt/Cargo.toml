@@ -28,6 +28,7 @@ ferritecad-types.workspace = true
 [dev-dependencies]
 ferritecad-document.workspace = true
 ferritecad-eval.workspace = true
+ferritecad-fixtures.workspace = true
 ferritecad-topology.workspace = true
 tempfile = "3"
 
