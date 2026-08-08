@@ -504,6 +504,25 @@ fn a_corrupt_or_foreign_blob_is_refused_rather_than_misread() {
             .is_err()
     );
 
+    // Same length but changed contents: framing alone cannot detect this, so
+    // the payload digest must refuse it before BinTools sees another shape.
+    let mut changed = good.bytes().to_vec();
+    let last = changed.last_mut().expect("a B-Rep has a payload");
+    *last ^= 1;
+    let err = kernel
+        .decode_shape(&BrepBlob::new(identity.clone(), changed))
+        .expect_err("a changed payload must fail its integrity check");
+    assert!(err.to_string().contains("checksum"));
+
+    // A valid shape followed by unrelated bytes is corrupt too.
+    let mut extended = good.bytes().to_vec();
+    extended.push(0);
+    assert!(
+        kernel
+            .decode_shape(&BrepBlob::new(identity.clone(), extended))
+            .is_err()
+    );
+
     // Not our framing at all.
     assert!(
         kernel
@@ -518,7 +537,16 @@ fn a_corrupt_or_foreign_blob_is_refused_rather_than_misread() {
             .is_err()
     );
 
-    // Our framing, a format version this build does not write.
+    // The first framing revision had no length or checksum. It must be named
+    // as unsupported rather than guessed at through the new layout.
+    let mut older = good.bytes().to_vec();
+    older[4..8].copy_from_slice(&1u32.to_le_bytes());
+    let err = kernel
+        .decode_shape(&BrepBlob::new(identity.clone(), older))
+        .expect_err("an older blob format must not be guessed at");
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+
+    // Our framing, a future format version this build does not write.
     let mut future = good.bytes().to_vec();
     future[4..8].copy_from_slice(&9_999u32.to_le_bytes());
     let err = kernel
@@ -547,13 +575,13 @@ fn encoding_a_released_shape_is_refused() {
 }
 
 #[test]
-fn the_build_field_names_the_bridge_and_the_target() {
+fn the_build_field_fingerprints_the_bridge_toolchain_and_names_the_target() {
     let kernel = kernel_or_skip!();
     let build = kernel.identity().build();
 
-    // A digest of the bridge sources and the target triple, not the crate
-    // version: the C++ that computes the geometry moves on edits, and it is
-    // that which must invalidate a cached result.
+    // A digest of the bridge sources, target and C++ toolchain, not the crate
+    // version: the things that compute the geometry move independently from
+    // releases, and it is those which must invalidate a cached result.
     assert!(
         build.starts_with("bridge "),
         "unexpected build field {build:?}"
@@ -564,7 +592,7 @@ fn the_build_field_names_the_bridge_and_the_target() {
         3,
         "expected `bridge <digest> <target>`, got {build:?}"
     );
-    assert_eq!(parts[1].len(), 16);
+    assert_eq!(parts[1].len(), 64);
     assert!(parts[1].chars().all(|c| c.is_ascii_hexdigit()));
     assert!(
         parts[2].contains('-'),

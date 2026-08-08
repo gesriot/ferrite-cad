@@ -416,3 +416,69 @@ impl Drop for Session {
 // the contract already says a session is used from one thread at a time.
 // SAFETY: the raw pointer is uniquely owned by this value.
 unsafe impl Send for Session {}
+
+#[cfg(test)]
+mod tests {
+    use ferritecad_types::ErrorKind;
+
+    use super::*;
+
+    fn rectangle_segments() -> [Segment; 4] {
+        let line = |start_x, start_y, end_x, end_y| Segment {
+            kind: SEGMENT_LINE,
+            start_x,
+            start_y,
+            end_x,
+            end_y,
+            center_x: 0.0,
+            center_y: 0.0,
+            radius: 0.0,
+            start_angle: 0.0,
+            end_angle: 0.0,
+        };
+        [
+            line(0.0, 0.0, 10.0, 0.0),
+            line(10.0, 0.0, 10.0, 5.0),
+            line(10.0, 5.0, 0.0, 5.0),
+            line(0.0, 5.0, 0.0, 0.0),
+        ]
+    }
+
+    #[test]
+    fn the_bridge_rejects_trailing_bytes_and_history_queries_on_a_decoded_shape() {
+        let mut session = Session::new().expect("opens a real OCCT session");
+        let plane = Plane {
+            origin: [0.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        };
+        let original = session
+            .extrude(&plane, &rectangle_segments(), 0.0, 2.0, &CancelToken::new())
+            .expect("builds a prism");
+        let bytes = session.encode_shape(original).expect("encodes");
+
+        let mut with_trailing_byte = bytes.clone();
+        with_trailing_byte.push(0);
+        let err = session
+            .decode_shape(&with_trailing_byte)
+            .expect_err("the C ABI must consume the whole input");
+        assert_eq!(err.kind(), ErrorKind::Input);
+        assert_eq!(session.live_shape_count(), 1);
+
+        let decoded = session.decode_shape(&bytes).expect("decodes");
+        for err in [
+            session
+                .side_faces(decoded, 0)
+                .expect_err("a decoded shape has no operation history"),
+            session
+                .cap_faces(decoded, 0)
+                .expect_err("a decoded shape has no operation caps"),
+        ] {
+            assert_eq!(err.kind(), ErrorKind::Unsupported);
+        }
+
+        session.release(original);
+        session.release(decoded);
+        assert_eq!(session.live_shape_count(), 0);
+    }
+}

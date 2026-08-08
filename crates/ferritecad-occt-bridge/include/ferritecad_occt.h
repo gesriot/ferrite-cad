@@ -167,9 +167,10 @@ FcOcctStatus fc_occt_shape_stats(FcOcctSession *session, uint64_t shape,
  * size, as with the face queries.
  *
  * The bytes are Open CASCADE's own and carry no FerriteCAD framing; the caller
- * adds whatever versioning its cache needs. Triangulation is deliberately not
- * written: a tessellation is cached under its own key, at its own deflection,
- * and embedding one here would tie two independent results together.
+ * adds its version, length and integrity check. Triangulation is deliberately
+ * not written: a tessellation is cached under its own key, at its own
+ * deflection, and embedding one here would tie two independent results
+ * together.
  */
 FcOcctStatus fc_occt_encode_shape(FcOcctSession *session, uint64_t shape,
                                   uint8_t *out_bytes, size_t capacity,

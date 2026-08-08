@@ -310,10 +310,14 @@ CASCADE at run time.
 ## What a cached B-Rep does and does not restore
 
 Shapes are serialised with `BinTools`, Open CASCADE's binary B-Rep format,
-wrapped in a four-byte magic and a format version of FerriteCAD's own. The two
-versions move independently: the kernel identity changes when Open CASCADE or
-the bridge changes, and the blob format version changes when FerriteCAD changes
-what it stores around the kernel's bytes. A blob is refused unless both agree.
+wrapped in a four-byte magic, a format version, the payload length and a
+BLAKE3-256 payload digest of FerriteCAD's own. The length rejects appended and
+truncated data; the digest rejects same-length corruption before untrusted
+bytes reach `BinTools`. The format and kernel versions move independently: the
+kernel identity changes when Open CASCADE or the bridge build changes, while
+the blob format version changes when FerriteCAD changes what it stores around
+the kernel's bytes. A blob is refused unless both agree and its framing is
+internally consistent.
 
 Triangulation is deliberately not written into the blob. A tessellation belongs
 to its own cache key at its own deflection, and bundling one here would tie two
@@ -330,12 +334,12 @@ cached solid is only safe once the topology mapping is stored beside it and
 restored with it; until then a cache hit would produce correct geometry with no
 names, which is worse than a slower rebuild.
 
-The cache key includes a digest of the bridge's own sources, not the crate
-version. The C++ that computes the geometry changes on edits while a crate
-version changes on releases, so keying on the latter would go on serving
-results computed by code that no longer exists. Comment-only edits invalidate
-the cache too; that costs a rebuild, where the alternative costs a wrong answer
-served quickly.
+The cache key includes a full BLAKE3-256 digest of the bridge's own sources,
+target and configured C++ toolchain, not the crate version. The code, compiler
+and flags that produce the geometry change independently from releases, so
+keying on the crate version would go on serving results computed by a build
+that no longer exists. Comment-only edits invalidate the cache too; that costs
+a rebuild, where the alternative costs a wrong answer served quickly.
 
 ## Open CASCADE 8.0 changed things the adapter uses
 

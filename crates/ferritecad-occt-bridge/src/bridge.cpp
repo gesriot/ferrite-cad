@@ -531,6 +531,10 @@ FcOcctStatus fc_occt_encode_shape(FcOcctSession *session, uint64_t shape,
     std::ostringstream buffer(std::ios::out | std::ios::binary);
     BinTools::Write(found->second.shape, buffer, false, false,
                     BinTools_FormatVersion_CURRENT);
+    if (!buffer.good()) {
+      write_error(out_error, "Open CASCADE failed to serialise the shape");
+      return FC_OCCT_KERNEL;
+    }
     const std::string encoded = buffer.str();
 
     *out_length = encoded.size();
@@ -570,6 +574,11 @@ FcOcctStatus fc_occt_decode_shape(FcOcctSession *session, const uint8_t *bytes,
     if (restored.IsNull()) {
       write_error(out_error, "the cached bytes did not describe a shape");
       return FC_OCCT_KERNEL;
+    }
+    if (buffer.peek() != std::char_traits<char>::eof()) {
+      write_error(out_error,
+                  "the cached shape has trailing bytes after its B-Rep");
+      return FC_OCCT_INVALID_INPUT;
     }
 
     ShapeRecord record;

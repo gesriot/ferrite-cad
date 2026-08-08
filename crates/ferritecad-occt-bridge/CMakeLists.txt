@@ -126,4 +126,4 @@ target_link_libraries(ferritecad_occt_bridge PRIVATE ${_occt_link_libs})
 string(REPLACE ";" "," _occt_libs_csv "${_occt_link_libs}")
 file(GENERATE
   OUTPUT "${CMAKE_BINARY_DIR}/ferritecad-bridge-info-$<CONFIG>.txt"
-  CONTENT "occt_library_dir=${OpenCASCADE_LIBRARY_DIR}\nocct_version=${OpenCASCADE_VERSION}\nocct_libraries=${_occt_libs_csv}\nbridge_dir=$<TARGET_FILE_DIR:ferritecad_occt_bridge>\n")
+  CONTENT "occt_library_dir=${OpenCASCADE_LIBRARY_DIR}\nocct_version=${OpenCASCADE_VERSION}\nocct_libraries=${_occt_libs_csv}\nbridge_dir=$<TARGET_FILE_DIR:ferritecad_occt_bridge>\nconfiguration=$<CONFIG>\ngenerator=${CMAKE_GENERATOR}\ncxx_compiler_id=${CMAKE_CXX_COMPILER_ID}\ncxx_compiler_version=${CMAKE_CXX_COMPILER_VERSION}\ncxx_compiler_target=${CMAKE_CXX_COMPILER_TARGET}\ncxx_flags=${CMAKE_CXX_FLAGS}\ncxx_flags_release=${CMAKE_CXX_FLAGS_RELEASE}\n")

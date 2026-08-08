@@ -82,19 +82,6 @@ fn build_bridge() -> Result<(), String> {
         .arg("Release");
     run(build, "building the bridge")?;
 
-    // The cache key must change when the code that produced a cached result
-    // changes. `bridge 0.0.1` did not: the crate version moves on releases,
-    // not on edits to the C++, so a changed algorithm would have gone on
-    // serving results computed by the old one. Hashing the sources ties the
-    // key to what actually ran.
-    //
-    // Comment-only edits invalidate the cache too. That over-invalidates, and
-    // the cost is a rebuild; the alternative under-invalidates, and the cost
-    // is a wrong answer served quickly.
-    let fingerprint = fingerprint_sources(&source_dir)?;
-    let target = env::var("TARGET").unwrap_or_else(|_| "unknown-target".to_owned());
-    println!("cargo::rustc-env=FERRITECAD_BRIDGE_BUILD=bridge {fingerprint} {target}");
-
     let info = read_info(&build_dir)?;
     let bridge_dir = info
         .get("bridge_dir")
@@ -102,6 +89,42 @@ fn build_bridge() -> Result<(), String> {
     let occt_dir = info
         .get("occt_library_dir")
         .ok_or("the bridge did not report where Open CASCADE lives")?;
+
+    // The cache key must change when the code or toolchain that produced a
+    // cached result changes. `bridge 0.0.1` did not: the crate version moves
+    // on releases, not on edits to the C++, so a changed algorithm would have
+    // gone on serving results computed by the old one. A source-only digest
+    // still misses compiler and flag changes, both of which KernelIdentity's
+    // contract explicitly treats as build identity.
+    //
+    // Comment-only edits invalidate the cache too. That over-invalidates, and
+    // the cost is a rebuild; the alternative under-invalidates, and the cost
+    // is a wrong answer served quickly.
+    let target = env::var("TARGET").map_err(|e| format!("Cargo did not provide TARGET: {e}"))?;
+    let determinants = [
+        ("target", target.as_str()),
+        ("configuration", required_info(&info, "configuration")?),
+        ("generator", required_info(&info, "generator")?),
+        ("cxx_compiler_id", required_info(&info, "cxx_compiler_id")?),
+        (
+            "cxx_compiler_version",
+            required_info(&info, "cxx_compiler_version")?,
+        ),
+        (
+            "cxx_compiler_target",
+            info.get("cxx_compiler_target").map_or("", String::as_str),
+        ),
+        (
+            "cxx_flags",
+            info.get("cxx_flags").map_or("", String::as_str),
+        ),
+        (
+            "cxx_flags_release",
+            info.get("cxx_flags_release").map_or("", String::as_str),
+        ),
+    ];
+    let fingerprint = fingerprint_build(&source_dir, &determinants)?;
+    println!("cargo::rustc-env=FERRITECAD_BRIDGE_BUILD=bridge {fingerprint} {target}");
 
     // The shim is static and ends up inside the Rust binary; Open CASCADE
     // stays dynamic behind it, which is where the licence policy applies.
@@ -136,11 +159,11 @@ fn build_bridge() -> Result<(), String> {
     Ok(())
 }
 
-/// A short digest of every bridge source file, in a stable order.
+/// A digest of every bridge source file and build determinant, in stable order.
 ///
 /// Deliberately covers the CMake file as well: a change to the build flags can
 /// change the geometry as surely as a change to the code.
-fn fingerprint_sources(source_dir: &Path) -> Result<String, String> {
+fn fingerprint_build(source_dir: &Path, determinants: &[(&str, &str)]) -> Result<String, String> {
     let mut files: Vec<PathBuf> = Vec::new();
     collect_sources(source_dir, &mut files)?;
     files.sort();
@@ -150,6 +173,7 @@ fn fingerprint_sources(source_dir: &Path) -> Result<String, String> {
     }
 
     let mut hasher = blake3::Hasher::new();
+    hasher.update(b"ferritecad-bridge-build-v1\0");
     for file in &files {
         let name = file
             .strip_prefix(source_dir)
@@ -167,7 +191,27 @@ fn fingerprint_sources(source_dir: &Path) -> Result<String, String> {
         println!("cargo::rerun-if-changed={}", file.display());
     }
 
-    Ok(hasher.finalize().to_hex()[..16].to_owned())
+    for (name, value) in determinants {
+        hasher.update(&(name.len() as u64).to_le_bytes());
+        hasher.update(name.as_bytes());
+        hasher.update(&(value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+
+    // Keep the full BLAKE3-256 value. Truncating to sixteen hex characters
+    // turns a correctness boundary into a 64-bit identifier for no practical
+    // saving: this string appears once in a cache key, not once per triangle.
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn required_info<'a>(
+    info: &'a std::collections::BTreeMap<String, String>,
+    key: &str,
+) -> Result<&'a str, String> {
+    info.get(key)
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("the bridge did not report {key}"))
 }
 
 fn collect_sources(dir: &Path, into: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -249,30 +293,19 @@ fn run(mut command: Command, what: &str) -> Result<(), String> {
     ))
 }
 
-/// Reads the key/value file CMake generated, whichever configuration produced
-/// it.
+/// Reads the key/value file for the configuration the build command selected.
 fn read_info(build_dir: &Path) -> Result<std::collections::BTreeMap<String, String>, String> {
-    let entries = std::fs::read_dir(build_dir)
-        .map_err(|e| format!("cannot read the bridge build directory: {e}"))?;
-
-    let mut candidates: Vec<PathBuf> = entries
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    name.starts_with("ferritecad-bridge-info-") && name.ends_with(".txt")
-                })
-        })
-        .collect();
-    candidates.sort();
-
-    let chosen = candidates
-        .last()
-        .ok_or("the bridge build produced no information file")?;
-    let text = std::fs::read_to_string(chosen)
-        .map_err(|e| format!("cannot read {}: {e}", chosen.display()))?;
+    // Both configure and build above select Release. A multi-config generator
+    // may generate files for several configurations at once; choosing one by
+    // directory or lexical order can therefore key a Release binary with
+    // another configuration's flags.
+    let chosen = build_dir.join("ferritecad-bridge-info-Release.txt");
+    let text = std::fs::read_to_string(&chosen).map_err(|e| {
+        format!(
+            "cannot read the Release bridge information at {}: {e}",
+            chosen.display()
+        )
+    })?;
 
     Ok(text
         .lines()
