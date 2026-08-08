@@ -37,7 +37,7 @@ Beta должна позволять пользователю:
 crates/
   ferritecad-types/          UUID, единицы, допуски, ошибки, канонические хэши   [есть]
   ferritecad-document/       IR, CBOR envelopes, SQLite, миграции, кэш-спутник   [есть]
-  ferritecad-eval/           dirty propagation и планирование перестроения       [есть]
+  ferritecad-eval/           планирование и последовательный cold evaluator       [есть]
   ferritecad-kernel/         GeometryKernel trait и kernel-agnostic типы          [есть]
   ferritecad-occt/           Rust часть адаптера OCCT
   ferritecad-occt-bridge/    C++17 `extern "C"` шим и CMake-сборка
@@ -59,7 +59,7 @@ docs/
 
 Отметка `[есть]` означает crate, существующий в репозитории; остальные появляются в своём этапе.
 
-Топологическая сортировка намеренно осталась в `ferritecad-document`: документ обязан уметь ответить на «в каком порядке это перестраивать» сам по себе, и `evaluation_order` уже покрыт тестами там. `ferritecad-eval` её переиспользует, а не дублирует, поэтому частичный план по построению является подпоследовательностью полного, а не вторым мнением о порядке. Хэши входов фич живут в `ferritecad-types` и `ferritecad-document` по той же причине — они часть определения объекта, а не планировщика. Отменяемый job scheduler в `ferritecad-eval` пока отсутствует: планировать нечего, пока нет ядра.
+Топологическая сортировка намеренно осталась в `ferritecad-document`: документ обязан уметь ответить на «в каком порядке это перестраивать» сам по себе, и `evaluation_order` уже покрыт тестами там. `ferritecad-eval` её переиспользует, а не дублирует, поэтому частичный план по построению является подпоследовательностью полного, а не вторым мнением о порядке. Хэши входов фич живут в `ferritecad-types` и `ferritecad-document` по той же причине — они часть определения объекта, а не планировщика. Последовательный cold evaluator уже исполняет полный план через `GeometryKernel`; отменяемый job scheduler остаётся отдельной работой после появления реального адаптера и модели владения kernel-сессиями у worker'ов.
 
 Прямые зависимости допустимы только вниз: UI не знает OCCT, а document не знает UI и `TopoDS_Shape`. `ferritecad-occt-bridge` — единственное место, где используются заголовки OCCT.
 
@@ -168,7 +168,7 @@ CLI создаёт документ с эскизом и Extrude, валидир
 1. **[сделано]** Описать `GeometryKernel` и DTO, не содержащие OCCT-типов. Crate `ferritecad-kernel` зависит только от `ferritecad-types`: ни OCCT, ни C/C++, ни `build.rs`, ни FFI, ни document/eval. Определены identity ядра для cache key, плоский профиль с помеченными сегментами, extrude и transform, B-Rep blob, параметры тесселяции и mesh, история generated/modified/deleted, явные tolerance, отмена и progress. Handles ядра не сериализуются и привязаны к сессии. Mock-ядро на арифметике позволяет тестировать вышележащие слои без установленного OCCT.
 2. Реализовать C++ bridge: создание профиля из 2D-контура, extrude, transform, тесселяция, B-Rep encode/decode и запрос history.
 3. **[частично]** В `ferritecad-eval` реализовать dirty propagation и планирование перестроения. Сделано: обратный индекс зависимостей, транзитивный dirty set от нескольких корней, `RebuildPlan` с порядком и детерминированными уровнями параллелизма, facade `DocumentGraph` над `&Document`, честный отказ на цикле и висячем ребре. Осталось: отменяемый job scheduler. Cold evaluator из пункта 4 исполняет план последовательно; уровни параллелизма `RebuildPlan` вычисляются, но пока никем не исполняются, потому что сессия ядра не разделяема между потоками.
-4. **[частично]** Реализовать feature evaluator для эскиза и extrude. Сделано: последовательный cold evaluator `rebuild_cold` в `ferritecad-eval`, работающий против `dyn GeometryKernel` и проверенный на `MockKernel` без OCCT. Срез — `DatumPlane → Sketch → Extrude → Body`, один замкнутый внешний контур из Line/Arc, только `NewBody` и `Blind`/`Symmetric`. Сегменты эскиза упорядочиваются обходом цепочки, а не берутся в порядке хранения. Всё за пределами среза — `Circle`, точки, отверстия, несколько контуров, booleans, `ThroughAll`, неизвестные типы объектов — возвращает `Unsupported`, а не приближение. Проверены детерминизм повторного и после переоткрытия документа перестроения, отмена до и посреди прогона, и освобождение всех shape handles, включая путь через ошибку. Осталось: инкрементальное перестроение по dirty set, отменяемый job scheduler и evaluator поверх реального ядра.
+4. **[частично]** Реализовать feature evaluator для эскиза и extrude. Сделано: последовательный cold evaluator `rebuild_cold` в `ferritecad-eval`, работающий против `dyn GeometryKernel` и проверенный на `MockKernel` без OCCT. Срез — `DatumPlane → Sketch → Extrude → Body`, один замкнутый внешний контур из Line/Arc, только `NewBody` и `Blind`/`Symmetric`. Сегменты эскиза упорядочиваются обходом цепочки, а не берутся в порядке хранения. Всё за пределами среза — `Circle`, точки, отверстия, несколько контуров, booleans, `ThroughAll`, неизвестные типы объектов — возвращает `Unsupported`, а не приближение. Перед обращением к ядру документ проходит semantic validation. Проверены детерминизм повторного и после переоткрытия документа перестроения, отмена до, посреди и на последнем progress-событии, а также освобождение всех shape handles, включая путь через ошибку. Осталось: инкрементальное перестроение по dirty set, отменяемый job scheduler и evaluator поверх реального ядра.
 5. Реализовать `ferritecad-topology`: выпуск семантических имён для эскиза и ExtrudeCap/ExtrudeSide, mapping истории и resolver.
 6. Записывать B-Rep и mapping сущностей как опциональный кэш с корректным ключом.
 7. Реализовать CLI: `rebuild --cold`, `export-stl`, `print-topology`.
@@ -337,7 +337,7 @@ CLI создаёт документ с эскизом и Extrude, валидир
 10. Поднять `extern "C"` bridge и проверить dynamic load OCCT.
 11. Реализовать 2D profile → Extrude → B-Rep.
 12. Сериализовать B-Rep как опциональный cache blob.
-13. Реализовать DAG и cold rebuild.
+13. **[сделано]** Реализовать DAG и cold rebuild.
 14. Реализовать `TopologyRef` для сегмента эскиза и cap Extrude.
 15. Добавить topology regression fixtures.
 16. Сделать CLI `rebuild --cold` и `clear-cache`.

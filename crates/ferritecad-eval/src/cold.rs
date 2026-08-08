@@ -34,14 +34,17 @@ pub struct ExtrudeCaps {
 
 /// What a cold rebuild produced.
 ///
-/// # Handles are borrowed, not owned
+/// # Handles are session-owned
 ///
 /// The shapes named here live in the kernel session that built them. Call
 /// [`ColdRebuild::release_all`] when finished; dropping this value instead
 /// leaves the kernel holding the geometry until the session ends. A failed
 /// rebuild needs no such care — it releases everything it made before
 /// returning the error.
-#[derive(Debug, Clone, Default)]
+///
+/// This value is deliberately not cloneable. A copy could release the shapes
+/// while the original continued handing out handles that were no longer live.
+#[derive(Debug, Default)]
 pub struct ColdRebuild {
     shapes: BTreeMap<ObjectId, ShapeHandle>,
     histories: BTreeMap<ObjectId, History>,
@@ -84,7 +87,9 @@ impl ColdRebuild {
 
     /// Hands every shape back to the kernel.
     pub fn release_all(self, kernel: &mut dyn GeometryKernel) {
-        for shape in self.owned {
+        // Later features may share storage with their inputs in a real kernel,
+        // so unwind ownership in the opposite order from construction.
+        for shape in self.owned.into_iter().rev() {
             kernel.release(shape);
         }
     }
@@ -100,6 +105,11 @@ pub fn rebuild_cold(
     kernel: &mut dyn GeometryKernel,
     context: &OperationContext,
 ) -> Result<ColdRebuild> {
+    // Do this before reading or validating the document. Besides avoiding
+    // needless work, it makes cancellation observable for an empty document,
+    // whose evaluation loop has no feature boundary at which to check it.
+    context.check_cancelled()?;
+
     let mut state = ColdRebuild::default();
 
     match run(document, kernel, context, &mut state) {
@@ -117,6 +127,8 @@ fn run(
     context: &OperationContext,
     state: &mut ColdRebuild,
 ) -> Result<()> {
+    ensure_rebuildable(document)?;
+
     let graph = DocumentGraph::read(document)?;
     let plan = graph.plan_full()?;
 
@@ -173,7 +185,12 @@ fn run(
                 let request = extrude_request(feature, profile)?;
                 let result = kernel.extrude(&request, context)?;
 
+                // Register ownership before checking again: a kernel can
+                // finish the operation and then invoke a progress callback
+                // that cancels the rebuild. The resulting shape still belongs
+                // to us and must participate in error cleanup.
                 state.owned.push(result.shape);
+                context.check_cancelled()?;
                 state.shapes.insert(*id, result.shape);
                 state.histories.insert(*id, result.history);
                 state.caps.insert(
@@ -220,5 +237,23 @@ fn run(
         state.order.push(*id);
     }
 
+    // Covers a cancellation concurrent with the final non-kernel feature.
+    context.check_cancelled()?;
     Ok(())
+}
+
+fn ensure_rebuildable(document: &Document) -> Result<()> {
+    let report = document.validate()?;
+    if report.is_ok() {
+        return Ok(());
+    }
+
+    let errors = report
+        .errors()
+        .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(CadError::input(format!(
+        "document validation failed before cold rebuild: {errors}"
+    )))
 }

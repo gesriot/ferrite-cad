@@ -331,6 +331,25 @@ fn cancellation_stops_the_rebuild_and_leaves_nothing_behind() {
 }
 
 #[test]
+fn a_cancelled_empty_document_is_not_reported_as_rebuilt() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let document = Document::create(dir.path().join("part.fcad")).expect("creates");
+    let token = CancelToken::new();
+    token.cancel();
+
+    let mut kernel = MockKernel::new();
+    let err = rebuild_cold(
+        &document,
+        &mut kernel,
+        &OperationContext::default().with_cancel(token),
+    )
+    .expect_err("cancellation applies even when there are no features");
+
+    assert_eq!(err.kind(), ErrorKind::Cancellation);
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
 fn cancelling_partway_through_releases_the_finished_features() {
     let (_dir, document, _plate) = sample();
     let token = CancelToken::new();
@@ -347,6 +366,66 @@ fn cancelling_partway_through_releases_the_finished_features() {
         .expect_err("cancelling mid-rebuild abandons it");
 
     assert_eq!(err.kind(), ErrorKind::Cancellation);
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
+fn cancellation_at_the_last_progress_event_releases_the_result() {
+    let (_dir, mut document, plate) = sample();
+    document
+        .write(|w| {
+            w.remove_dependency(Dependency {
+                dependent: plate.body,
+                dependency: plate.extrude,
+                role: DependencyRole::BodyTip,
+            })?;
+            w.remove_object(plate.body)?;
+            Ok(())
+        })
+        .expect("removes the body so the extrusion is the final object");
+
+    let token = CancelToken::new();
+    let trigger = token.clone();
+    let context = OperationContext::default()
+        .with_cancel(token)
+        .with_progress(ProgressSink::new(move |fraction| {
+            if fraction >= 1.0 {
+                trigger.cancel();
+            }
+        }));
+
+    let mut kernel = MockKernel::new();
+    let err = rebuild_cold(&document, &mut kernel, &context)
+        .expect_err("a cancellation reported as the final shape completes still wins");
+
+    assert_eq!(err.kind(), ErrorKind::Cancellation);
+    assert_eq!(
+        kernel.live_shape_count(),
+        0,
+        "the just-created shape is registered before cancellation cleanup"
+    );
+}
+
+#[test]
+fn a_missing_semantic_dependency_never_reaches_the_kernel() {
+    let (_dir, mut document, plate) = sample();
+    document
+        .write(|w| {
+            w.remove_dependency(Dependency {
+                dependent: plate.extrude,
+                dependency: plate.sketch,
+                role: DependencyRole::Profile,
+            })?;
+            Ok(())
+        })
+        .expect("makes the stored graph semantically invalid");
+
+    let mut kernel = MockKernel::new();
+    let err = rebuild_cold(&document, &mut kernel, &OperationContext::default())
+        .expect_err("payload references must have matching dependency edges");
+
+    assert_eq!(err.kind(), ErrorKind::Input);
+    assert!(err.to_string().contains("reference.missing-edge"));
     assert_eq!(kernel.live_shape_count(), 0);
 }
 
