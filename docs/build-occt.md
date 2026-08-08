@@ -341,6 +341,10 @@ keying on the crate version would go on serving results computed by a build
 that no longer exists. Comment-only edits invalidate the cache too; that costs
 a rebuild, where the alternative costs a wrong answer served quickly.
 
+This v2 framing, the build identity and 25 adapter tests against real geometry
+were verified with pinned OCCT 8.0.1 on Linux, Windows and macOS in
+[run 31275991427](https://github.com/gesriot/ferrite-cad/actions/runs/31275991427).
+
 ## Open CASCADE 8.0 changed things the adapter uses
 
 The bridge compiles against 7.9 and 8.0 alike, because a contributor's
