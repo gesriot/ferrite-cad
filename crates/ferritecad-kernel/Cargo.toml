@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "ferritecad-kernel"
+description = "Kernel-agnostic geometry contract: DTOs, history and the GeometryKernel trait, with no dependency on any geometry kernel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# Deliberately depends on nothing but the shared vocabulary. No geometry
+# kernel, no C or C++, no build script, no FFI, and neither the document nor
+# the evaluator. If this list ever grows, the boundary this crate exists to
+# draw has moved.
+[dependencies]
+ferritecad-types.workspace = true
+
+[lints]
+workspace = true

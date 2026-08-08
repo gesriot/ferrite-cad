@@ -38,7 +38,7 @@ crates/
   ferritecad-types/          UUID, единицы, допуски, ошибки, канонические хэши   [есть]
   ferritecad-document/       IR, CBOR envelopes, SQLite, миграции, кэш-спутник   [есть]
   ferritecad-eval/           dirty propagation и планирование перестроения       [есть]
-  ferritecad-kernel/         GeometryKernel trait и kernel-agnostic типы
+  ferritecad-kernel/         GeometryKernel trait и kernel-agnostic типы          [есть]
   ferritecad-occt/           Rust часть адаптера OCCT
   ferritecad-occt-bridge/    C++17 `extern "C"` шим и CMake-сборка
   ferritecad-topology/       именование, разрешение ссылок, history mapping
@@ -165,7 +165,7 @@ CLI создаёт документ с эскизом и Extrude, валидир
 
 ### Работы
 
-1. Описать `GeometryKernel` и DTO, не содержащие OCCT-типов.
+1. **[сделано]** Описать `GeometryKernel` и DTO, не содержащие OCCT-типов. Crate `ferritecad-kernel` зависит только от `ferritecad-types`: ни OCCT, ни C/C++, ни `build.rs`, ни FFI, ни document/eval. Определены identity ядра для cache key, плоский профиль с помеченными сегментами, extrude и transform, B-Rep blob, параметры тесселяции и mesh, история generated/modified/deleted, явные tolerance, отмена и progress. Handles ядра не сериализуются и привязаны к сессии. Mock-ядро на арифметике позволяет тестировать вышележащие слои без установленного OCCT.
 2. Реализовать C++ bridge: создание профиля из 2D-контура, extrude, transform, тесселяция, B-Rep encode/decode и запрос history.
 3. **[частично]** В `ferritecad-eval` реализовать dirty propagation и планирование перестроения. Сделано: обратный индекс зависимостей, транзитивный dirty set от нескольких корней, `RebuildPlan` с порядком и детерминированными уровнями параллелизма, facade `DocumentGraph` над `&Document`, честный отказ на цикле и висячем ребре. Осталось: отменяемый job scheduler — планировать нечего, пока нет ядра, поэтому он идёт вместе с evaluator'ом в пункте 4.
 4. Реализовать feature evaluator для эскиза и extrude.
@@ -333,7 +333,7 @@ CLI создаёт документ с эскизом и Extrude, валидир
 6. **[сделано]** Создать SQLite schema v1 и мигратор.
 7. **[сделано]** Реализовать CBOR envelope с raw unknown preservation.
 8. **[сделано]** Добавить CLI `create`, `inspect`, `validate`, а также `dump-graph` и `clear-cache`.
-9. Описать `GeometryKernel` без OCCT-типов.
+9. **[сделано]** Описать `GeometryKernel` без OCCT-типов.
 10. Поднять `extern "C"` bridge и проверить dynamic load OCCT.
 11. Реализовать 2D profile → Extrude → B-Rep.
 12. Сериализовать B-Rep как опциональный cache blob.

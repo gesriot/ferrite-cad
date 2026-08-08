@@ -260,6 +260,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferritecad-kernel"
+version = "0.0.1"
+dependencies = [
+ "ferritecad-types",
+]
+
+[[package]]
 name = "ferritecad-types"
 version = "0.0.1"
 dependencies = [
