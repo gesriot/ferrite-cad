@@ -557,27 +557,18 @@ jobs:
               ;;
           esac
 
-          # The adapter's tests skip themselves when the crate was built
-          # without a kernel, and a skipped test still reports as passed.
-          # FERRITECAD_REQUIRE_OCCT=1 above is what stops a green step from
-          # meaning "skipped": without a kernel the build fails outright.
-          cargo test -p ferritecad-occt --all-targets
-
-      - name: Confirm the adapter links Open CASCADE dynamically
-        env:
-          FCAD_PLATFORM: ${{ matrix.name }}
-          FCAD_OCCT_CONFIG_DIR: ${{ steps.occt.outputs.config_dir }}
-        run: |
-          set -euo pipefail
-          # The licence position rests on dynamic linkage, so it is checked
-          # against the artefact rather than assumed from the CMake flags.
+          # Build the tests first so the executable can be inspected before it
+          # is run.
           #
-          # The artefact is the test executable, not the shim: the shim is
-          # static and lives inside it, and it is the executable that names
-          # Open CASCADE at run time.
-          export FERRITECAD_REQUIRE_OCCT=1
-          export OpenCASCADE_DIR="$FCAD_OCCT_CONFIG_DIR"
-
+          # The licence position rests on Open CASCADE being linked
+          # dynamically, so it is checked against the artefact rather than
+          # assumed from the CMake flags. The artefact is the test executable,
+          # not the shim: the shim is static and lives inside it, and it is the
+          # executable that names Open CASCADE at run time.
+          #
+          # Checked here rather than in a step of its own because it needs the
+          # environment established above — on Windows, dumpbin and the MSVC
+          # linker are only on PATH within this shell.
           binary="$(cargo test -p ferritecad-occt --test occt_kernel --no-run --message-format=json 2>/dev/null \
             | jq -r 'select(.reason == "compiler-artifact")
                      | select(.target.name == "occt_kernel")
@@ -589,7 +580,7 @@ jobs:
           fi
           echo "checking $binary"
 
-          case "$FCAD_PLATFORM" in
+          case '${{ matrix.name }}' in
             linux)
               ldd "$binary" | grep -i 'libTK' \
                 || { echo "::error::the adapter names no Open CASCADE toolkit at run time"; exit 1; }
@@ -599,11 +590,19 @@ jobs:
                 || { echo "::error::the adapter names no Open CASCADE toolkit at run time"; exit 1; }
               ;;
             windows)
-              # dumpbin ships with MSVC and is on PATH once vcvars has run.
+              # `//DEPENDENTS` rather than `/DEPENDENTS`: MSYS rewrites a
+              # leading slash into a Windows path, and the doubled form is the
+              # escape that survives it.
               dumpbin //DEPENDENTS "$(cygpath -w "$binary")" | grep -i 'TK.*\.dll' \
                 || { echo "::error::the adapter names no Open CASCADE DLL at run time"; exit 1; }
               ;;
           esac
+
+          # The adapter's tests skip themselves when the crate was built
+          # without a kernel, and a skipped test still reports as passed.
+          # FERRITECAD_REQUIRE_OCCT=1 above is what stops a green step from
+          # meaning "skipped": without a kernel the build fails outright.
+          cargo test -p ferritecad-occt --all-targets
 
       - name: Write the pin report
         if: always()
