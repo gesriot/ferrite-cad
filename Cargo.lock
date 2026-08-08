@@ -271,6 +271,7 @@ dependencies = [
 name = "ferritecad-occt"
 version = "0.0.1"
 dependencies = [
+ "blake3",
  "ferritecad-document",
  "ferritecad-eval",
  "ferritecad-kernel",

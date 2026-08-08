@@ -160,6 +160,36 @@ FcOcctStatus fc_occt_shape_stats(FcOcctSession *session, uint64_t shape,
                                  uint64_t *out_face_count, double *out_volume,
                                  FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
+/*
+ * Serialises a shape into Open CASCADE's binary B-Rep form.
+ *
+ * Call with `capacity` 0 to learn the length, then again with a buffer that
+ * size, as with the face queries.
+ *
+ * The bytes are Open CASCADE's own and carry no FerriteCAD framing; the caller
+ * adds whatever versioning its cache needs. Triangulation is deliberately not
+ * written: a tessellation is cached under its own key, at its own deflection,
+ * and embedding one here would tie two independent results together.
+ */
+FcOcctStatus fc_occt_encode_shape(FcOcctSession *session, uint64_t shape,
+                                  uint8_t *out_bytes, size_t capacity,
+                                  size_t *out_length,
+                                  FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/*
+ * Restores a shape from bytes written by fc_occt_encode_shape.
+ *
+ * The result carries geometry and nothing else. Open CASCADE's B-Rep format
+ * stores shapes, not the history of the operations that made them, so a
+ * decoded shape has no side faces and no caps — and this bridge refuses those
+ * queries on one rather than answering with an empty list. A caller that needs
+ * names must cache the mapping alongside the geometry and restore both.
+ */
+FcOcctStatus fc_occt_decode_shape(FcOcctSession *session,
+                                  const uint8_t *bytes, size_t length,
+                                  uint64_t *out_shape,
+                                  FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
 /* Drops a shape. Releasing an unknown or already-released identifier is not an
  * error: an unwinding caller must be able to release everything it might hold
  * without first working out what it actually holds. */

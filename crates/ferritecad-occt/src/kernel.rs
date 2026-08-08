@@ -8,12 +8,34 @@ use ferritecad_types::{CadError, Result, Transform};
 
 use crate::ffi;
 
+/// Marks FerriteCAD's own framing around Open CASCADE's bytes.
+const BLOB_MAGIC: &[u8; 4] = b"FCBR";
+
+/// Length of FerriteCAD's framing: the magic and the format version.
+const BLOB_HEADER_LEN: usize = BLOB_MAGIC.len() + 4;
+
+/// Version of what FerriteCAD stores around the kernel's bytes.
+///
+/// Separate from [`KernelIdentity`] on purpose. The identity changes when Open
+/// CASCADE or the bridge changes; this changes when FerriteCAD changes the
+/// framing, and one moving must not be mistaken for the other.
+const BLOB_FORMAT_VERSION: u32 = 1;
+
 /// Open CASCADE behind the FerriteCAD geometry contract.
 ///
-/// This slice implements extrusion and release, which is what a
-/// `Sketch → Extrude` rebuild needs. Transform, tessellation and B-Rep
-/// encoding return [`CadError::Unsupported`] until their own slices; refusing
-/// is the honest answer while the alternative would be a plausible wrong one.
+/// This slice implements extrusion, B-Rep encoding and release. Transform and
+/// tessellation return [`CadError::Unsupported`] until their own slices;
+/// refusing is the honest answer while the alternative would be a plausible
+/// wrong one.
+///
+/// # A decoded shape is geometry only
+///
+/// Open CASCADE's B-Rep format stores a shape, not the history of the
+/// operations that produced it. A shape restored by [`Self::decode_shape`]
+/// therefore has no side faces and no caps, and asking for them fails rather
+/// than returning an empty list — a naming layer would read empty as "this
+/// feature produced nothing". Warm-cache rebuilds need the mapping stored
+/// beside the geometry and restored with it.
 #[derive(Debug)]
 pub struct OcctKernel {
     identity: KernelIdentity,
@@ -29,11 +51,11 @@ impl OcctKernel {
             // The version is read from the library rather than assumed. It is
             // part of every cache key, and a build against a different OCCT
             // must not be able to reuse this one's results.
-            identity: KernelIdentity::new(
-                "occt",
-                version,
-                concat!("bridge ", env!("CARGO_PKG_VERSION")),
-            )?,
+            // The build field carries a digest of the bridge sources and the
+            // target triple, not the crate version. A crate version moves on
+            // releases; the C++ that computes the geometry moves on edits, and
+            // it is the latter that must invalidate a cached result.
+            identity: KernelIdentity::new("occt", version, env!("FERRITECAD_BRIDGE_BUILD"))?,
             session: ffi::Session::new()?,
             session_id: SessionId::new(),
         })
@@ -189,16 +211,47 @@ impl GeometryKernel for OcctKernel {
         ))
     }
 
-    fn encode_shape(&mut self, _shape: ShapeHandle) -> Result<BrepBlob> {
-        Err(CadError::unsupported(
-            "the Open CASCADE adapter does not implement B-Rep encoding yet",
-        ))
+    fn encode_shape(&mut self, shape: ShapeHandle) -> Result<BrepBlob> {
+        let raw = self.raw(shape)?;
+        let payload = self.session.encode_shape(raw)?;
+
+        let mut bytes = Vec::with_capacity(BLOB_HEADER_LEN + payload.len());
+        bytes.extend_from_slice(BLOB_MAGIC);
+        bytes.extend_from_slice(&BLOB_FORMAT_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&payload);
+
+        Ok(BrepBlob::new(self.identity.clone(), bytes))
     }
 
-    fn decode_shape(&mut self, _blob: &BrepBlob) -> Result<ShapeHandle> {
-        Err(CadError::unsupported(
-            "the Open CASCADE adapter does not implement B-Rep decoding yet",
-        ))
+    fn decode_shape(&mut self, blob: &BrepBlob) -> Result<ShapeHandle> {
+        // The kernel identity is checked first: a blob written by a different
+        // Open CASCADE, or by a different build of this bridge, describes
+        // geometry this build may compute differently.
+        blob.require_kernel(&self.identity)?;
+
+        let bytes = blob.bytes();
+        if bytes.len() <= BLOB_HEADER_LEN || &bytes[..BLOB_MAGIC.len()] != BLOB_MAGIC {
+            return Err(CadError::kernel(
+                "this cached shape is not in FerriteCAD's B-Rep blob format; discard the cache",
+            ));
+        }
+
+        // Framed separately from the kernel identity because the two move
+        // independently: this version changes when FerriteCAD changes what it
+        // stores, not when Open CASCADE changes.
+        let version = u32::from_le_bytes(
+            bytes[BLOB_MAGIC.len()..BLOB_HEADER_LEN]
+                .try_into()
+                .map_err(|_| CadError::kernel("this cached shape has a truncated header"))?,
+        );
+        if version != BLOB_FORMAT_VERSION {
+            return Err(CadError::unsupported(format!(
+                "this cached shape is in blob format v{version}, and this build writes                  v{BLOB_FORMAT_VERSION}; discard the cache rather than decoding it"
+            )));
+        }
+
+        let raw = self.session.decode_shape(&bytes[BLOB_HEADER_LEN..])?;
+        Ok(ShapeHandle::new(self.session_id, raw))
     }
 
     fn release(&mut self, shape: ShapeHandle) {

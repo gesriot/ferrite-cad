@@ -143,6 +143,21 @@ unsafe extern "C" {
         out_volume: *mut f64,
         out_error: *mut RawError,
     ) -> i32;
+    fn fc_occt_encode_shape(
+        session: *mut RawSession,
+        shape: u64,
+        out_bytes: *mut u8,
+        capacity: usize,
+        out_length: *mut usize,
+        out_error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_decode_shape(
+        session: *mut RawSession,
+        bytes: *const u8,
+        length: usize,
+        out_shape: *mut u64,
+        out_error: *mut RawError,
+    ) -> i32;
     fn fc_occt_release_shape(session: *mut RawSession, shape: u64);
     fn fc_occt_live_shape_count(session: *const RawSession) -> usize;
 }
@@ -276,6 +291,75 @@ impl Session {
             unsafe { fc_occt_shape_stats(self.raw, shape, &mut faces, &mut volume, &mut error) };
         interpret(status, &error, "measuring a shape")?;
         Ok((faces, volume))
+    }
+
+    /// Serialises a shape, using the bridge's two-call length protocol.
+    pub(crate) fn encode_shape(&mut self, shape: u64) -> Result<Vec<u8>> {
+        const WHAT: &str = "encoding a shape for the cache";
+
+        let mut length = 0usize;
+        let mut error = RawError::empty();
+        // SAFETY: a null buffer with zero capacity is the documented way to
+        // ask for the length; the out-parameters are valid for the call.
+        let status = unsafe {
+            fc_occt_encode_shape(
+                self.raw,
+                shape,
+                std::ptr::null_mut(),
+                0,
+                &mut length,
+                &mut error,
+            )
+        };
+        interpret(status, &error, WHAT)?;
+
+        if length == 0 {
+            return Err(CadError::kernel(format!(
+                "{WHAT}: the bridge reported an empty encoding"
+            )));
+        }
+
+        let mut bytes = vec![0u8; length];
+        let mut written = 0usize;
+        // SAFETY: the buffer is exactly `length` bytes and lives across the
+        // call; the out-parameters are valid.
+        let status = unsafe {
+            fc_occt_encode_shape(
+                self.raw,
+                shape,
+                bytes.as_mut_ptr(),
+                length,
+                &mut written,
+                &mut error,
+            )
+        };
+        interpret(status, &error, WHAT)?;
+
+        if written != length {
+            return Err(CadError::kernel(format!(
+                "{WHAT}: the bridge first reported {length} bytes and then wrote {written}"
+            )));
+        }
+        Ok(bytes)
+    }
+
+    /// Restores a shape from bytes the bridge wrote.
+    pub(crate) fn decode_shape(&mut self, bytes: &[u8]) -> Result<u64> {
+        let mut shape = 0u64;
+        let mut error = RawError::empty();
+        // SAFETY: the slice lives across the call and its length is passed
+        // alongside it; the out-parameters are valid.
+        let status = unsafe {
+            fc_occt_decode_shape(
+                self.raw,
+                bytes.as_ptr(),
+                bytes.len(),
+                &mut shape,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "decoding a cached shape")?;
+        Ok(shape)
     }
 
     pub(crate) fn release(&mut self, shape: u64) {

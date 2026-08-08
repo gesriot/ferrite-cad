@@ -82,6 +82,19 @@ fn build_bridge() -> Result<(), String> {
         .arg("Release");
     run(build, "building the bridge")?;
 
+    // The cache key must change when the code that produced a cached result
+    // changes. `bridge 0.0.1` did not: the crate version moves on releases,
+    // not on edits to the C++, so a changed algorithm would have gone on
+    // serving results computed by the old one. Hashing the sources ties the
+    // key to what actually ran.
+    //
+    // Comment-only edits invalidate the cache too. That over-invalidates, and
+    // the cost is a rebuild; the alternative under-invalidates, and the cost
+    // is a wrong answer served quickly.
+    let fingerprint = fingerprint_sources(&source_dir)?;
+    let target = env::var("TARGET").unwrap_or_else(|_| "unknown-target".to_owned());
+    println!("cargo::rustc-env=FERRITECAD_BRIDGE_BUILD=bridge {fingerprint} {target}");
+
     let info = read_info(&build_dir)?;
     let bridge_dir = info
         .get("bridge_dir")
@@ -120,6 +133,64 @@ fn build_bridge() -> Result<(), String> {
         println!("cargo::rustc-link-arg=-Wl,-rpath,{occt_dir}");
     }
 
+    Ok(())
+}
+
+/// A short digest of every bridge source file, in a stable order.
+///
+/// Deliberately covers the CMake file as well: a change to the build flags can
+/// change the geometry as surely as a change to the code.
+fn fingerprint_sources(source_dir: &Path) -> Result<String, String> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_sources(source_dir, &mut files)?;
+    files.sort();
+
+    if files.is_empty() {
+        return Err("the bridge has no sources to fingerprint".to_owned());
+    }
+
+    let mut hasher = blake3::Hasher::new();
+    for file in &files {
+        let name = file
+            .strip_prefix(source_dir)
+            .unwrap_or(file)
+            .to_string_lossy()
+            .replace('\\', "/");
+        hasher.update(name.as_bytes());
+        hasher.update(b"\0");
+
+        let bytes =
+            std::fs::read(file).map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+
+        println!("cargo::rerun-if-changed={}", file.display());
+    }
+
+    Ok(hasher.finalize().to_hex()[..16].to_owned())
+}
+
+fn collect_sources(dir: &Path, into: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
+
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("cannot read an entry of {}: {e}", dir.display()))?
+            .path();
+        if path.is_dir() {
+            collect_sources(&path, into)?;
+        } else {
+            let keep = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| matches!(e, "cpp" | "h" | "hpp" | "cxx" | "hxx" | "cmake"))
+                || path.file_name().and_then(|n| n.to_str()) == Some("CMakeLists.txt");
+            if keep {
+                into.push(path);
+            }
+        }
+    }
     Ok(())
 }
 

@@ -10,9 +10,9 @@
 #![allow(clippy::panic)]
 
 use ferritecad_kernel::{
-    CancelToken, ExtrudeExtent, ExtrudeRequest, GeometryKernel, HistoryInput, OperationContext,
-    PlanarPoint, Profile, ProfileLoop, ProfileSegment, ProgressSink, SegmentGeometry, SketchPlane,
-    TessellationParams,
+    BrepBlob, CancelToken, ExtrudeExtent, ExtrudeRequest, GeometryKernel, HistoryInput,
+    KernelIdentity, OperationContext, PlanarPoint, Profile, ProfileLoop, ProfileSegment,
+    ProgressSink, SegmentGeometry, SketchPlane, TessellationParams,
 };
 use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_types::{CadError, ErrorKind, Result, StableEntityId, Transform, Vec3};
@@ -360,6 +360,215 @@ fn a_handle_from_another_session_is_refused() {
 }
 
 #[test]
+fn a_blob_round_trips_inside_one_session() {
+    let mut kernel = kernel_or_skip!();
+    let plate = rectangle(30.0, 20.0, 4.0).expect("a valid rectangle");
+
+    let built = kernel
+        .extrude(&plate.request, &OperationContext::default())
+        .expect("builds");
+    let before = kernel.shape_stats(built.shape).expect("measures");
+
+    let blob = kernel.encode_shape(built.shape).expect("encodes");
+    assert!(!blob.bytes().is_empty());
+    assert_eq!(blob.kernel(), kernel.identity());
+
+    let restored = kernel.decode_shape(&blob).expect("decodes");
+    let after = kernel.shape_stats(restored).expect("measures");
+
+    assert_eq!(before.0, after.0, "face count survives the round trip");
+    assert!(
+        (before.1 - after.1).abs() < 1e-9,
+        "volume survives the round trip: {} vs {}",
+        before.1,
+        after.1
+    );
+
+    kernel.release(built.shape);
+    kernel.release(restored);
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
+fn a_blob_round_trips_into_a_different_session() {
+    // The point of a cache: the session that wrote it is gone.
+    let mut writer = kernel_or_skip!();
+    let plate = rectangle(30.0, 20.0, 4.0).expect("a valid rectangle");
+
+    let built = writer
+        .extrude(&plate.request, &OperationContext::default())
+        .expect("builds");
+    let before = writer.shape_stats(built.shape).expect("measures");
+    let blob = writer.encode_shape(built.shape).expect("encodes");
+    writer.release(built.shape);
+    drop(writer);
+
+    let mut reader = OcctKernel::new().expect("a second session opens");
+    let restored = reader.decode_shape(&blob).expect("decodes");
+    let after = reader.shape_stats(restored).expect("measures");
+
+    assert_eq!(before.0, after.0);
+    assert!((before.1 - after.1).abs() < 1e-9);
+
+    reader.release(restored);
+    assert_eq!(reader.live_shape_count(), 0);
+}
+
+#[test]
+fn a_decoded_shape_is_the_same_geometry_and_nothing_more() {
+    // Open CASCADE's B-Rep format stores a shape, not what made it.
+    //
+    // At this level the absence of history is structural rather than checked:
+    // decode_shape returns a ShapeHandle, not an ExtrudeResult, so there is no
+    // empty history to mistake for a real one. The bridge additionally refuses
+    // face and cap queries on a decoded shape, which is the same guarantee one
+    // layer down. What is worth asserting here is that the geometry really did
+    // survive.
+    let mut kernel = kernel_or_skip!();
+    let plate = rectangle(20.0, 20.0, 3.0).expect("a valid rectangle");
+
+    let built = kernel
+        .extrude(&plate.request, &OperationContext::default())
+        .expect("builds");
+    let blob = kernel.encode_shape(built.shape).expect("encodes");
+    let restored = kernel.decode_shape(&blob).expect("decodes");
+
+    // The geometry is there, and it is the same geometry.
+    assert_eq!(
+        kernel.shape_stats(restored).expect("measures").0,
+        kernel.shape_stats(built.shape).expect("measures").0
+    );
+
+    // A second extrusion of the same profile still names its faces, so the
+    // refusal below is about the decoded shape and not about the session.
+    let again = kernel
+        .extrude(&plate.request, &OperationContext::default())
+        .expect("builds");
+    assert_eq!(
+        again
+            .history
+            .generated(HistoryInput::Segment(plate.labels[0]))
+            .count(),
+        1
+    );
+
+    kernel.release(built.shape);
+    kernel.release(restored);
+    kernel.release(again.shape);
+}
+
+#[test]
+fn a_blob_from_another_kernel_identity_is_refused() {
+    let mut kernel = kernel_or_skip!();
+    let plate = rectangle(10.0, 10.0, 2.0).expect("a valid rectangle");
+    let built = kernel
+        .extrude(&plate.request, &OperationContext::default())
+        .expect("builds");
+    let blob = kernel.encode_shape(built.shape).expect("encodes");
+
+    let foreign = BrepBlob::new(
+        KernelIdentity::new("occt", "0.0.0", "some other bridge").expect("valid"),
+        blob.bytes().to_vec(),
+    );
+    let err = kernel
+        .decode_shape(&foreign)
+        .expect_err("a blob from another build must not be decoded");
+
+    assert_eq!(err.kind(), ErrorKind::Kernel);
+    assert!(err.to_string().contains("discard the cache"));
+
+    kernel.release(built.shape);
+}
+
+#[test]
+fn a_corrupt_or_foreign_blob_is_refused_rather_than_misread() {
+    let mut kernel = kernel_or_skip!();
+    let plate = rectangle(10.0, 10.0, 2.0).expect("a valid rectangle");
+    let built = kernel
+        .extrude(&plate.request, &OperationContext::default())
+        .expect("builds");
+    let good = kernel.encode_shape(built.shape).expect("encodes");
+    let identity = kernel.identity().clone();
+
+    // Truncated payload.
+    let mut truncated = good.bytes().to_vec();
+    truncated.truncate(truncated.len() / 2);
+    assert!(
+        kernel
+            .decode_shape(&BrepBlob::new(identity.clone(), truncated))
+            .is_err()
+    );
+
+    // Not our framing at all.
+    assert!(
+        kernel
+            .decode_shape(&BrepBlob::new(identity.clone(), b"not a shape".to_vec()))
+            .is_err()
+    );
+
+    // Empty.
+    assert!(
+        kernel
+            .decode_shape(&BrepBlob::new(identity.clone(), Vec::new()))
+            .is_err()
+    );
+
+    // Our framing, a format version this build does not write.
+    let mut future = good.bytes().to_vec();
+    future[4..8].copy_from_slice(&9_999u32.to_le_bytes());
+    let err = kernel
+        .decode_shape(&BrepBlob::new(identity, future))
+        .expect_err("a newer blob format must not be guessed at");
+    assert_eq!(err.kind(), ErrorKind::Unsupported);
+
+    // None of that may have left anything behind.
+    kernel.release(built.shape);
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
+fn encoding_a_released_shape_is_refused() {
+    let mut kernel = kernel_or_skip!();
+    let plate = rectangle(10.0, 10.0, 2.0).expect("a valid rectangle");
+    let built = kernel
+        .extrude(&plate.request, &OperationContext::default())
+        .expect("builds");
+
+    kernel.release(built.shape);
+    let err = kernel
+        .encode_shape(built.shape)
+        .expect_err("a released shape cannot be encoded");
+    assert_eq!(err.kind(), ErrorKind::Kernel);
+}
+
+#[test]
+fn the_build_field_names_the_bridge_and_the_target() {
+    let kernel = kernel_or_skip!();
+    let build = kernel.identity().build();
+
+    // A digest of the bridge sources and the target triple, not the crate
+    // version: the C++ that computes the geometry moves on edits, and it is
+    // that which must invalidate a cached result.
+    assert!(
+        build.starts_with("bridge "),
+        "unexpected build field {build:?}"
+    );
+    let parts: Vec<&str> = build.split_whitespace().collect();
+    assert_eq!(
+        parts.len(),
+        3,
+        "expected `bridge <digest> <target>`, got {build:?}"
+    );
+    assert_eq!(parts[1].len(), 16);
+    assert!(parts[1].chars().all(|c| c.is_ascii_hexdigit()));
+    assert!(
+        parts[2].contains('-'),
+        "expected a target triple, got {:?}",
+        parts[2]
+    );
+}
+
+#[test]
 fn the_operations_this_slice_omits_say_so() {
     let mut kernel = kernel_or_skip!();
     let plate = rectangle(10.0, 10.0, 2.0).expect("a valid rectangle");
@@ -379,10 +588,6 @@ fn the_operations_this_slice_omits_say_so() {
             .tessellate(result.shape, &TessellationParams::default(), &context)
             .map(|_| ())
             .expect_err("tessellation is not implemented"),
-        kernel
-            .encode_shape(result.shape)
-            .map(|_| ())
-            .expect_err("encoding is not implemented"),
     ] {
         // Refusing is the honest answer; the alternative is a plausible wrong
         // one that nobody notices until much later.

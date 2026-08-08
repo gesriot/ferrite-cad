@@ -13,6 +13,11 @@ authors.workspace = true
 # cmake directly. What that crate mainly provides is generator selection, and
 # the pin workflow already established what this project needs there — a
 # hand-rolled sixty lines beats a dependency whose main value we would override.
+# blake3 hashes the bridge sources so the cache key changes when the C++ that
+# produced a result changes. It is already in the tree via ferritecad-types.
+[build-dependencies]
+blake3 = "1"
+
 [dependencies]
 ferritecad-kernel.workspace = true
 ferritecad-types.workspace = true

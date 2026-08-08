@@ -307,6 +307,36 @@ Dynamic linkage is verified in the pin workflow against the **test executable**,
 not the shim: the shim is inside it, and it is the executable that names Open
 CASCADE at run time.
 
+## What a cached B-Rep does and does not restore
+
+Shapes are serialised with `BinTools`, Open CASCADE's binary B-Rep format,
+wrapped in a four-byte magic and a format version of FerriteCAD's own. The two
+versions move independently: the kernel identity changes when Open CASCADE or
+the bridge changes, and the blob format version changes when FerriteCAD changes
+what it stores around the kernel's bytes. A blob is refused unless both agree.
+
+Triangulation is deliberately not written into the blob. A tessellation belongs
+to its own cache key at its own deflection, and bundling one here would tie two
+independent results together.
+
+**A decoded shape carries geometry and nothing else.** The format stores a
+shape, not the history of the operations that produced it, so a restored shape
+has no side faces and no caps. The bridge refuses those queries on a decoded
+shape rather than answering with an empty list, which a naming layer would read
+as "this feature produced nothing".
+
+That is why a warm-cache rebuild is not yet wired to the evaluator. Reusing a
+cached solid is only safe once the topology mapping is stored beside it and
+restored with it; until then a cache hit would produce correct geometry with no
+names, which is worse than a slower rebuild.
+
+The cache key includes a digest of the bridge's own sources, not the crate
+version. The C++ that computes the geometry changes on edits while a crate
+version changes on releases, so keying on the latter would go on serving
+results computed by code that no longer exists. Comment-only edits invalidate
+the cache too; that costs a rebuild, where the alternative costs a wrong answer
+served quickly.
+
 ## Open CASCADE 8.0 changed things the adapter uses
 
 The bridge compiles against 7.9 and 8.0 alike, because a contributor's

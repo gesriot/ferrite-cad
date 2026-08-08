@@ -12,12 +12,14 @@
 
 #include <cmath>
 #include <cstring>
+#include <sstream>
 #include <exception>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include <BRep_Tool.hxx>
+#include <BinTools.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
@@ -51,6 +53,13 @@ namespace {
 /// A shape the session owns, with the sub-shapes the caller may name.
 struct ShapeRecord {
   TopoDS_Shape shape;
+  /// True when the shape came back from a cache blob rather than an operation.
+  ///
+  /// Open CASCADE's B-Rep format stores a shape, not the history of what made
+  /// it, so a decoded shape has no side faces and no caps. Recording that lets
+  /// the queries refuse rather than answer with an empty list, which a naming
+  /// layer would read as "this feature produced nothing".
+  bool decoded = false;
   /// Face identifiers raised from each profile segment, in segment order.
   std::vector<std::vector<uint64_t>> side_faces;
   std::vector<uint64_t> start_cap;
@@ -421,6 +430,13 @@ FcOcctStatus fc_occt_extrude_side_faces(FcOcctSession *session, uint64_t shape,
                                  " was released or never existed");
       return FC_OCCT_UNKNOWN_HANDLE;
     }
+    if (found->second.decoded) {
+      write_error(out_error,
+                  "shape " + std::to_string(shape) +
+                      " was decoded from a cache blob, which carries geometry "
+                      "but no history; rebuild it to name its faces");
+      return FC_OCCT_UNSUPPORTED;
+    }
     if (segment_index >= found->second.side_faces.size()) {
       write_error(out_error, "segment " + std::to_string(segment_index) +
                                  " is outside the profile");
@@ -445,6 +461,13 @@ FcOcctStatus fc_occt_extrude_cap_faces(FcOcctSession *session, uint64_t shape,
       write_error(out_error, "shape " + std::to_string(shape) +
                                  " was released or never existed");
       return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    if (found->second.decoded) {
+      write_error(out_error,
+                  "shape " + std::to_string(shape) +
+                      " was decoded from a cache blob, which carries geometry "
+                      "but no history; rebuild it to name its caps");
+      return FC_OCCT_UNSUPPORTED;
     }
     if (which != 0 && which != 1) {
       write_error(out_error, "cap selector must be 0 or 1");
@@ -482,6 +505,80 @@ FcOcctStatus fc_occt_shape_stats(FcOcctSession *session, uint64_t shape,
 
     *out_face_count = faces;
     *out_volume = properties.Mass();
+    return FC_OCCT_OK;
+  });
+}
+
+FcOcctStatus fc_occt_encode_shape(FcOcctSession *session, uint64_t shape,
+                                  uint8_t *out_bytes, size_t capacity,
+                                  size_t *out_length,
+                                  FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr || out_length == nullptr) {
+      write_error(out_error, "fc_occt_encode_shape was given a null argument");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+
+    // No triangulation and no normals: a tessellation is cached separately,
+    // under its own deflection, and bundling one here would tie two
+    // independent results to a single key.
+    std::ostringstream buffer(std::ios::out | std::ios::binary);
+    BinTools::Write(found->second.shape, buffer, false, false,
+                    BinTools_FormatVersion_CURRENT);
+    const std::string encoded = buffer.str();
+
+    *out_length = encoded.size();
+    if (capacity == 0) {
+      return FC_OCCT_OK;
+    }
+    if (out_bytes == nullptr || capacity < encoded.size()) {
+      write_error(out_error, "the buffer holds " + std::to_string(capacity) +
+                                 " bytes but the shape needs " +
+                                 std::to_string(encoded.size()));
+      return FC_OCCT_INVALID_INPUT;
+    }
+    std::memcpy(out_bytes, encoded.data(), encoded.size());
+    return FC_OCCT_OK;
+  });
+}
+
+FcOcctStatus fc_occt_decode_shape(FcOcctSession *session, const uint8_t *bytes,
+                                  size_t length, uint64_t *out_shape,
+                                  FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr || bytes == nullptr || out_shape == nullptr) {
+      write_error(out_error, "fc_occt_decode_shape was given a null argument");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    if (length == 0) {
+      write_error(out_error, "a cached shape cannot be empty");
+      return FC_OCCT_INVALID_INPUT;
+    }
+
+    std::istringstream buffer(
+        std::string(reinterpret_cast<const char *>(bytes), length),
+        std::ios::in | std::ios::binary);
+
+    TopoDS_Shape restored;
+    BinTools::Read(restored, buffer);
+    if (restored.IsNull()) {
+      write_error(out_error, "the cached bytes did not describe a shape");
+      return FC_OCCT_KERNEL;
+    }
+
+    ShapeRecord record;
+    record.shape = restored;
+    record.decoded = true;
+
+    const uint64_t id = session->next_shape++;
+    session->shapes.emplace(id, std::move(record));
+    *out_shape = id;
     return FC_OCCT_OK;
   });
 }
