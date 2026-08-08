@@ -11,6 +11,7 @@ authors.workspace = true
 [dependencies]
 ferritecad-document.workspace = true
 ferritecad-kernel.workspace = true
+ferritecad-topology.workspace = true
 ferritecad-types.workspace = true
 
 [dev-dependencies]

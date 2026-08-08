@@ -6,6 +6,7 @@ members = [
     "crates/ferritecad-eval",
     "crates/ferritecad-kernel",
     "crates/ferritecad-occt",
+    "crates/ferritecad-topology",
     "crates/ferritecad-cli",
 ]
 
@@ -23,6 +24,7 @@ ferritecad-document = { path = "crates/ferritecad-document", version = "0.0.1" }
 ferritecad-eval = { path = "crates/ferritecad-eval", version = "0.0.1" }
 ferritecad-kernel = { path = "crates/ferritecad-kernel", version = "0.0.1" }
 ferritecad-occt = { path = "crates/ferritecad-occt", version = "0.0.1" }
+ferritecad-topology = { path = "crates/ferritecad-topology", version = "0.0.1" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

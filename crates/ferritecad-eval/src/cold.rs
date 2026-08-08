@@ -13,10 +13,12 @@
 
 use std::collections::BTreeMap;
 
+use ferritecad_document::TopologyRef;
 use ferritecad_document::{Document, ObjectPayload, ObjectRecord};
 use ferritecad_kernel::{
     GeometryKernel, History, OperationContext, Profile, ShapeHandle, SketchPlane, SubShapeHandle,
 };
+use ferritecad_topology::TopologyMap;
 use ferritecad_types::{CadError, ObjectId, Result};
 
 use crate::convert::{extrude_request, plane_from_datum, profile_from_sketch};
@@ -50,6 +52,7 @@ pub struct ColdRebuild {
     histories: BTreeMap<ObjectId, History>,
     caps: BTreeMap<ObjectId, ExtrudeCaps>,
     profiles: BTreeMap<ObjectId, Profile>,
+    topology: TopologyMap,
     order: Vec<ObjectId>,
     owned: Vec<ShapeHandle>,
 }
@@ -73,6 +76,23 @@ impl ColdRebuild {
     /// The profile a sketch converted to.
     pub fn profile(&self, object: ObjectId) -> Option<&Profile> {
         self.profiles.get(&object)
+    }
+
+    /// What each feature's output is called, for this session only.
+    ///
+    /// Read-only: the mapping is built while the geometry is, and nothing
+    /// outside may add to it. It holds kernel handles, which implement no
+    /// serialisation, so it cannot reach a document even by accident.
+    pub fn topology(&self) -> &TopologyMap {
+        &self.topology
+    }
+
+    /// Resolves a reference the document stores against this rebuild.
+    ///
+    /// Fails rather than approximating; see
+    /// [`ferritecad_topology::resolve`] for what each failure means.
+    pub fn resolve(&self, reference: &TopologyRef) -> Result<Vec<SubShapeHandle>> {
+        ferritecad_topology::resolve(&self.topology, reference)
     }
 
     /// The objects that were evaluated, in the order they were evaluated.
@@ -191,6 +211,15 @@ fn run(
                 // to us and must participate in error cleanup.
                 state.owned.push(result.shape);
                 context.check_cancelled()?;
+
+                // Named while the result is still whole. The correspondence
+                // between a segment and the face it raised lives across the
+                // history and the caps, and reassembling it from the separate
+                // fields below would be inventing it rather than recording it.
+                state
+                    .topology
+                    .record_extrude(*id, request.profile(), &result)?;
+
                 state.shapes.insert(*id, result.shape);
                 state.histories.insert(*id, result.history);
                 state.caps.insert(
