@@ -5,7 +5,8 @@
 #
 # No handles, face indices or session ids appear here on purpose: they
 # differ every run, and a fixture that recorded them would be asserting
-# something it has no business knowing.
+# something it has no business knowing. This gate detects missing,
+# ambiguous or collapsed names, but not a one-to-one face permutation.
 
 objects 4
 references 6

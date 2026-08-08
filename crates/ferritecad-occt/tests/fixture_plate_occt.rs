@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 //! The committed plate, against the kernel that ships.
 //!
-//! The mock proves the evaluator keeps its promises; this proves Open CASCADE
-//! keeps the same ones about the same stored document. Both gates compare
-//! against one manifest, so a kernel that names faces differently cannot be
-//! mistaken for a kernel that names them the same.
+//! The mock proves the evaluator keeps its cardinality and uniqueness promises;
+//! this proves Open CASCADE keeps the same ones about the same stored document.
+//! Both gates compare against one manifest. Until a geometric face fingerprint
+//! is added, this does not distinguish a one-to-one permutation of faces.
 
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
@@ -30,8 +30,8 @@ fn open_cascade_resolves_the_committed_plate_as_recorded() {
     let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
         .expect("Open CASCADE rebuilds the stored plate");
 
-    // The same file the mock is held to. A kernel that named a face
-    // differently would differ from the mock here, not silently in a model.
+    // The same file the mock is held to. Lost, ambiguous or collapsed names
+    // differ here; geometrically identifying each face is a later gate.
     assert_eq!(
         render_manifest(&document, &built).expect("renders"),
         plate_manifest().expect("the committed manifest is readable")

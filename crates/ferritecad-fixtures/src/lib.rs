@@ -9,11 +9,20 @@
 //!
 //! # The manifest names nothing that changes
 //!
-//! [`render_manifest`] writes what each stored reference resolved to — the
-//! role, the selection rule, how many faces — and never a handle, a face index
-//! or a session id. Those differ on every run by design, so recording them
-//! would turn the gate into noise and, worse, would make the file look like an
-//! authority on which face is which.
+//! [`render_manifest`] writes whether each stored reference resolved and with
+//! what cardinality — the role, the selection rule, how many faces — and never
+//! a handle, a face index or a session id. Those differ on every run by design,
+//! so recording them would turn the gate into noise and, worse, would make the
+//! file look like an authority on which face is which.
+//!
+//! # Current limit: a bijection is not identity
+//!
+//! Cardinality plus the final distinct-face count catches lost, ambiguous and
+//! collapsed names. It cannot catch a one-to-one permutation of existing
+//! faces: swapping start and end caps would render the same text. The gate must
+//! not claim otherwise. Closing that gap needs a kernel-neutral geometric
+//! fingerprint for each resolved face; the planned face-associated
+//! tessellation can supply one without persisting session-local topology.
 //!
 //! # Nothing opens the committed file in place
 //!
@@ -48,7 +57,7 @@ pub fn plate_manifest_path() -> PathBuf {
         .join("manifest.txt")
 }
 
-/// What the committed manifest says, with trailing whitespace normalised.
+/// What the committed manifest says, with line endings normalised.
 pub fn plate_manifest() -> Result<String> {
     std::fs::read_to_string(plate_manifest_path())
         .map(|text| text.replace("\r\n", "\n"))
@@ -67,11 +76,12 @@ pub fn open_plate(directory: &Path) -> Result<Document> {
     Document::open(target)
 }
 
-/// Writes what a rebuild made of every reference the document stores.
+/// Writes the resolution cardinality of every reference the document stores.
 ///
 /// Deterministic and free of anything session-local, so two runs of the same
 /// build — and a run on another machine, or against another kernel — produce
-/// the same text or a readable difference.
+/// the same text or a readable difference. This deliberately does not identify
+/// the geometry of a resolved face; see the crate-level limitation.
 pub fn render_manifest(document: &Document, built: &RebuildResult) -> Result<String> {
     let mut out = String::new();
     out.push_str(
@@ -82,7 +92,8 @@ pub fn render_manifest(document: &Document, built: &RebuildResult) -> Result<Str
          #\n\
          # No handles, face indices or session ids appear here on purpose: they\n\
          # differ every run, and a fixture that recorded them would be asserting\n\
-         # something it has no business knowing.\n\n",
+         # something it has no business knowing. This gate detects missing,\n\
+         # ambiguous or collapsed names, but not a one-to-one face permutation.\n\n",
     );
 
     let objects = document.objects()?;
