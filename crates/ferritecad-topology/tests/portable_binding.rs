@@ -9,6 +9,8 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
+use std::{collections::BTreeMap, mem::size_of};
+
 use ferritecad_document::{CapSide, EntityKind, SelectionRule, SemanticRole, TopologyRef};
 use ferritecad_kernel::{
     ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, GeometryKernel, KernelIdentity,
@@ -291,6 +293,98 @@ fn a_slot_outside_the_archive_is_refused() {
     let err = restore_feature(&mut reader, &bogus, &mut restored)
         .expect_err("the slot addresses nothing in this archive");
     assert_eq!(err.kind(), ErrorKind::Kernel);
+    assert_eq!(
+        reader.live_shape_count(),
+        0,
+        "a failed decode must not leave an unreachable shape"
+    );
+}
+
+#[test]
+fn two_names_for_one_live_face_are_refused_before_archiving() {
+    let plate = plate().expect("a valid plate");
+    let mut kernel = MockKernel::new();
+    let result = kernel
+        .extrude(&plate.request, &OperationContext::default())
+        .expect("builds");
+
+    let shared = result.start_cap[0];
+    let mut aliased = TopologyMap::new();
+    aliased
+        .record_restored(
+            plate.feature,
+            result.shape,
+            &[shared],
+            &[shared],
+            &BTreeMap::new(),
+        )
+        .expect("the runtime map can express ancestry aliases");
+
+    let err = archive_feature(&mut kernel, &aliased, plate.feature)
+        .expect_err("one archived face may not answer to two durable names");
+    assert_eq!(err.kind(), ErrorKind::Topology);
+    assert!(err.to_string().contains("silent alias"));
+}
+
+#[test]
+fn two_slots_that_decode_to_one_face_are_refused_and_released() {
+    let plate = plate().expect("a valid plate");
+    let mut writer = MockKernel::new();
+    let map = build(&mut writer, &plate);
+    let archived = archive_feature(&mut writer, &map, plate.feature).expect("archives");
+
+    // The mock archive ends with one u64 face identifier per binding. Make
+    // the second slot carry the first slot's face while leaving both slot
+    // numbers distinct, which bypasses a table-only duplicate-slot check.
+    let binding_count = archived.bindings().len();
+    assert!(binding_count >= 2);
+    let mut bytes = archived.blob().bytes().to_vec();
+    let entries_start = bytes.len() - binding_count * size_of::<u64>();
+    let first = bytes[entries_start..entries_start + size_of::<u64>()].to_vec();
+    bytes[entries_start + size_of::<u64>()..entries_start + 2 * size_of::<u64>()]
+        .copy_from_slice(&first);
+
+    let blob = BrepBlob::new(writer.identity().clone(), bytes);
+    let hash = blob.content_hash();
+    let aliased = ArchivedFeature::from_parts(archived.producer(), blob, hash, archived.bindings())
+        .expect("the slots are distinct, so only decoded geometry exposes the alias");
+
+    let mut reader = MockKernel::new();
+    let mut restored = TopologyMap::new();
+    let err = restore_feature(&mut reader, &aliased, &mut restored)
+        .expect_err("two names must not resolve to one decoded face");
+    assert_eq!(err.kind(), ErrorKind::Topology);
+    assert!(err.to_string().contains("silent alias"));
+    assert!(restored.is_empty());
+    assert_eq!(
+        reader.live_shape_count(),
+        0,
+        "the decoded shape is released"
+    );
+}
+
+#[test]
+fn an_invalid_face_inside_the_mock_archive_is_refused_before_storage() {
+    let plate = plate().expect("a valid plate");
+    let mut writer = MockKernel::new();
+    let map = build(&mut writer, &plate);
+    let archived = archive_feature(&mut writer, &map, plate.feature).expect("archives");
+
+    let binding_count = archived.bindings().len();
+    let mut bytes = archived.blob().bytes().to_vec();
+    let entries_start = bytes.len() - binding_count * size_of::<u64>();
+    bytes[entries_start..entries_start + size_of::<u64>()].copy_from_slice(&u64::MAX.to_le_bytes());
+
+    let blob = BrepBlob::new(writer.identity().clone(), bytes);
+    let hash = blob.content_hash();
+    let damaged = ArchivedFeature::from_parts(archived.producer(), blob, hash, archived.bindings())
+        .expect("the binding table itself is still well formed");
+
+    let mut reader = MockKernel::new();
+    let mut restored = TopologyMap::new();
+    assert!(restore_feature(&mut reader, &damaged, &mut restored).is_err());
+    assert!(restored.is_empty());
+    assert_eq!(reader.live_shape_count(), 0);
 }
 
 #[test]
@@ -399,10 +493,12 @@ fn the_root_slot_is_not_a_sub_shape() {
     let map = build(&mut kernel, &plate);
     let archived = archive_feature(&mut kernel, &map, plate.feature).expect("archives");
 
+    let before = kernel.live_shape_count();
     let err = kernel
         .decode_shape_with(archived.blob(), &[ArchiveSlot::ROOT])
         .expect_err("slot zero is the shape itself");
     assert_eq!(err.kind(), ErrorKind::Kernel);
+    assert_eq!(kernel.live_shape_count(), before);
 }
 
 #[test]

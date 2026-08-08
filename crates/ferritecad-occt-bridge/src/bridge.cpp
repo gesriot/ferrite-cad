@@ -656,6 +656,10 @@ FcOcctStatus fc_occt_encode_shape_named(FcOcctSession *session, uint64_t shape,
     std::ostringstream buffer(std::ios::out | std::ios::binary);
     BinTools::Write(archive, buffer, false, false,
                     BinTools_FormatVersion_CURRENT);
+    if (!buffer.good()) {
+      write_error(out_error, "Open CASCADE failed to serialise the archive");
+      return FC_OCCT_KERNEL;
+    }
     const std::string encoded = buffer.str();
 
     *out_length = encoded.size();
@@ -702,6 +706,11 @@ FcOcctStatus fc_occt_decode_shape_named(FcOcctSession *session,
                   "the cached bytes are not an archive written by this bridge");
       return FC_OCCT_KERNEL;
     }
+    if (buffer.peek() != std::char_traits<char>::eof()) {
+      write_error(out_error,
+                  "the cached archive has trailing bytes after its B-Rep");
+      return FC_OCCT_INVALID_INPUT;
+    }
 
     std::vector<TopoDS_Shape> entries;
     for (TopoDS_Iterator it(restored); it.More(); it.Next()) {
@@ -718,6 +727,37 @@ FcOcctStatus fc_occt_decode_shape_named(FcOcctSession *session,
     // the history of the operation that made them.
     record.decoded = true;
 
+    // Every entry after the root must be a face of that root, even if the
+    // caller's table does not request it. A valid archive written above has no
+    // unrelated padding entries, so accepting one would make the decoder a
+    // parser for a looser and undocumented format. Keep the root's own face
+    // occurrence rather than the separately archived copy so orientation also
+    // comes from the restored shape.
+    std::vector<TopoDS_Shape> canonical(entries.size());
+    canonical[0] = record.shape;
+    for (size_t entry = 1; entry < entries.size(); ++entry) {
+      const TopoDS_Shape &sub_shape = entries[entry];
+      if (sub_shape.ShapeType() != TopAbs_FACE) {
+        write_error(out_error, "archive entry " + std::to_string(entry) +
+                                   " is not a face");
+        return FC_OCCT_INVALID_INPUT;
+      }
+
+      bool contained = false;
+      for (TopExp_Explorer it(record.shape, TopAbs_FACE); it.More(); it.Next()) {
+        if (it.Current().IsSame(sub_shape)) {
+          canonical[entry] = it.Current();
+          contained = true;
+          break;
+        }
+      }
+      if (!contained) {
+        write_error(out_error, "archive entry " + std::to_string(entry) +
+                                   " is not part of the archived shape");
+        return FC_OCCT_INVALID_INPUT;
+      }
+    }
+
     std::vector<uint64_t> resolved(slot_count, 0);
     for (size_t i = 0; i < slot_count; ++i) {
       const uint32_t slot = slots[i];
@@ -733,7 +773,7 @@ FcOcctStatus fc_occt_decode_shape_named(FcOcctSession *session,
                                    " sub-shapes");
         return FC_OCCT_INVALID_INPUT;
       }
-      resolved[i] = record.remember(entries[slot]);
+      resolved[i] = record.remember(canonical[slot]);
     }
 
     const uint64_t id = session->next_shape++;

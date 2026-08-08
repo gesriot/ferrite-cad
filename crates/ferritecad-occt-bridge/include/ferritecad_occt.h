@@ -198,6 +198,8 @@ FcOcctStatus fc_occt_decode_shape(FcOcctSession *session,
  * requested sub-shape, in the order given. A slot is that position — 0 is the
  * shape itself and `k + 1` is the k-th sub-shape — and it means nothing
  * outside this one blob. It is not a traversal index and not a name.
+ * This slice accepts faces only; later sub-shape kinds require carrying their
+ * actual kind through the ABI rather than labelling everything as a face.
  *
  * The obvious alternative does not work. BinTools_ShapeSet hands out an index
  * per shape and can look one up again, but the lookup strips the location, and

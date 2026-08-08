@@ -12,12 +12,14 @@
 
 use ferritecad_document::{CapSide, EntityKind, SelectionRule, SemanticRole, TopologyRef};
 use ferritecad_kernel::{
-    ExtrudeExtent, ExtrudeRequest, GeometryKernel, OperationContext, PlanarPoint, Profile,
-    ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane,
+    ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, GeometryKernel, OperationContext,
+    PlanarPoint, Profile, ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane,
 };
 use ferritecad_occt::{OcctKernel, is_available};
-use ferritecad_topology::{TopologyMap, archive_feature, resolve, restore_feature};
-use ferritecad_types::{ErrorKind, ObjectId, Result, StableEntityId};
+use ferritecad_topology::{
+    ArchivedFeature, BoundName, TopologyMap, archive_feature, resolve, restore_feature,
+};
+use ferritecad_types::{ContentHash, ErrorKind, ObjectId, Result, StableEntityId};
 
 fn plate(height: f64) -> Result<(ExtrudeRequest, Vec<StableEntityId>)> {
     let corners = [(0.0, 0.0), (60.0, 0.0), (60.0, 40.0), (0.0, 40.0)];
@@ -198,6 +200,86 @@ fn a_restored_open_cascade_shape_refuses_a_name_it_never_had() {
     if let Some(shape) = restored.feature(feature).and_then(|n| n.shape()) {
         reader.release(shape);
     }
+}
+
+#[test]
+fn a_bad_open_cascade_slot_leaves_no_decoded_shape() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+
+    let (request, _) = plate(6.0).expect("a valid plate");
+    let feature = ObjectId::new();
+    let archived = {
+        let mut writer = OcctKernel::new().expect("opens");
+        let result = writer
+            .extrude(&request, &OperationContext::default())
+            .expect("builds");
+        let mut map = TopologyMap::new();
+        map.record_extrude(feature, request.profile(), &result)
+            .expect("records");
+        let archived = archive_feature(&mut writer, &map, feature).expect("archives");
+        writer.release(result.shape);
+        archived
+    };
+
+    let bogus = ArchivedFeature::from_parts(
+        archived.producer(),
+        archived.blob().clone(),
+        archived.blob().content_hash(),
+        [(BoundName::StartCap, ArchiveSlot::new(9_999))],
+    )
+    .expect("the table is structurally valid before the archive is read");
+
+    let mut reader = OcctKernel::new().expect("opens");
+    let mut restored = TopologyMap::new();
+    assert!(restore_feature(&mut reader, &bogus, &mut restored).is_err());
+    assert!(restored.is_empty());
+    assert_eq!(reader.live_shape_count(), 0);
+}
+
+#[test]
+fn trailing_bytes_in_a_named_open_cascade_archive_are_refused() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+
+    const HEADER_LEN: usize = 4 + 4 + 8 + 32;
+    const LENGTH_START: usize = 4 + 4;
+    const HASH_START: usize = LENGTH_START + 8;
+
+    let (request, _) = plate(6.0).expect("a valid plate");
+    let feature = ObjectId::new();
+    let mut kernel = OcctKernel::new().expect("opens");
+    let result = kernel
+        .extrude(&request, &OperationContext::default())
+        .expect("builds");
+    let mut map = TopologyMap::new();
+    map.record_extrude(feature, request.profile(), &result)
+        .expect("records");
+    let archived = archive_feature(&mut kernel, &map, feature).expect("archives");
+    let slot = archived
+        .slot(BoundName::StartCap)
+        .expect("the start cap was archived");
+
+    // Keep FerriteCAD's framing internally consistent so the payload reaches
+    // the bridge. The named B-Rep decoder itself must reject what BinTools did
+    // not consume rather than accepting a valid archive with a hidden suffix.
+    let mut bytes = archived.blob().bytes().to_vec();
+    bytes.push(0);
+    let payload_len = u64::try_from(bytes.len() - HEADER_LEN).expect("fits");
+    bytes[LENGTH_START..HASH_START].copy_from_slice(&payload_len.to_le_bytes());
+    let payload_hash = ContentHash::of_bytes(&bytes[HEADER_LEN..]);
+    bytes[HASH_START..HEADER_LEN].copy_from_slice(payload_hash.as_bytes());
+    let damaged = BrepBlob::new(kernel.identity().clone(), bytes);
+
+    let before = kernel.live_shape_count();
+    assert!(kernel.decode_shape_with(&damaged, &[slot]).is_err());
+    assert_eq!(kernel.live_shape_count(), before);
+
+    kernel.release(result.shape);
 }
 
 #[test]

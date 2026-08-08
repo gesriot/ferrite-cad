@@ -516,8 +516,16 @@ impl GeometryKernel for MockKernel {
             ));
         }
 
-        let shape = self.store(prism);
-        let mut resolved = Vec::with_capacity(slots.len());
+        let face_count = prism.side_face_count() as u64 + 2;
+        if let Some(invalid) = named.iter().find(|face| **face >= face_count) {
+            return Err(CadError::kernel(format!(
+                "the archive names face {invalid}, but the restored shape has {face_count} faces"
+            )));
+        }
+
+        // Validate every request before storing the decoded prism. A failed
+        // decode must not leave a live shape the caller never received.
+        let mut requested = Vec::with_capacity(slots.len());
         for slot in slots {
             if slot.is_root() {
                 return Err(CadError::kernel(
@@ -531,9 +539,14 @@ impl GeometryKernel for MockKernel {
                     slot.index()
                 ))
             })?;
-            resolved.push(self.face(shape, *face));
+            requested.push(*face);
         }
 
+        let shape = self.store(prism);
+        let resolved = requested
+            .into_iter()
+            .map(|face| self.face(shape, face))
+            .collect();
         Ok((shape, resolved))
     }
 

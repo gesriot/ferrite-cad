@@ -79,7 +79,9 @@ pub trait GeometryKernel {
     /// Implementations must refuse a slot outside the archive, and
     /// [`ArchiveSlot::ROOT`], which is the shape and not a sub-shape. The
     /// restored shape still carries no history; what comes back is the
-    /// sub-shapes that were archived, not how they were made.
+    /// sub-shapes that were archived, not how they were made. Every returned
+    /// sub-shape must report its actual kind and belong to the returned shape.
+    /// A failed decode must leave no live shape behind.
     fn decode_shape_with(
         &mut self,
         blob: &BrepBlob,

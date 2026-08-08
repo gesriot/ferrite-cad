@@ -202,6 +202,10 @@ pub fn archive_feature(
         }
     }
 
+    // Distinct names must not be smuggled past `ArchivedFeature` by assigning
+    // the same face two distinct slots. The table can see slot identity only;
+    // this is the last point that can still compare the live handles.
+    let mut claimed = BTreeMap::new();
     for (name, face) in &wanted {
         if face.kind() != SubShapeKind::Face {
             return Err(CadError::topology(format!(
@@ -212,6 +216,12 @@ pub fn archive_feature(
         if face.shape() != shape {
             return Err(CadError::topology(format!(
                 "feature {producer} names {name:?} on a shape it did not build"
+            )));
+        }
+        if let Some(previous) = claimed.insert(*face, *name) {
+            return Err(CadError::topology(format!(
+                "feature {producer} gives both {previous:?} and {name:?} to the same face; \
+                 refusing rather than archiving a silent alias"
             )));
         }
     }
@@ -241,6 +251,11 @@ pub fn archive_feature(
 /// The kernel that reads the archive need not be the one that wrote it — that
 /// is the point — but it must agree about identity, format and checksum, which
 /// the kernel checks before any geometry is decoded.
+///
+/// On success, the caller owns the restored root shape reachable through
+/// `into.feature(archived.producer())` and must eventually release it through
+/// the same kernel session. On failure, this function releases any shape that
+/// it decoded before returning.
 pub fn restore_feature(
     kernel: &mut dyn GeometryKernel,
     archived: &ArchivedFeature,
@@ -250,44 +265,59 @@ pub fn restore_feature(
     let slots: Vec<ArchiveSlot> = archived.bindings.values().copied().collect();
 
     let (shape, faces) = kernel.decode_shape_with(&archived.blob, &slots)?;
-    if faces.len() != names.len() {
-        return Err(CadError::kernel(format!(
-            "restoring feature {} asked for {} sub-shapes and received {}",
-            archived.producer,
-            names.len(),
-            faces.len()
-        )));
-    }
-
-    let mut start_cap = Vec::new();
-    let mut end_cap = Vec::new();
-    let mut sides: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
-
-    for (name, face) in names.into_iter().zip(faces) {
-        if face.kind() != SubShapeKind::Face {
-            return Err(CadError::topology(format!(
-                "the archive of feature {} restored {name:?} as a {}, which is not a face",
+    let restored = (|| -> Result<()> {
+        if faces.len() != names.len() {
+            return Err(CadError::kernel(format!(
+                "restoring feature {} asked for {} sub-shapes and received {}",
                 archived.producer,
-                face.kind()
-            )));
-        }
-        if face.shape() != shape {
-            return Err(CadError::topology(format!(
-                "the archive of feature {} restored {name:?} on another shape",
-                archived.producer
+                names.len(),
+                faces.len()
             )));
         }
 
-        match name {
-            BoundName::StartCap => start_cap.push(face),
-            BoundName::EndCap => end_cap.push(face),
-            BoundName::Side { profile_segment } => {
-                sides.entry(profile_segment).or_default().push(face)
+        let mut start_cap = Vec::new();
+        let mut end_cap = Vec::new();
+        let mut sides: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
+        let mut claimed = BTreeMap::new();
+
+        for (name, face) in names.into_iter().zip(faces) {
+            if face.kind() != SubShapeKind::Face {
+                return Err(CadError::topology(format!(
+                    "the archive of feature {} restored {name:?} as a {}, which is not a face",
+                    archived.producer,
+                    face.kind()
+                )));
+            }
+            if face.shape() != shape {
+                return Err(CadError::topology(format!(
+                    "the archive of feature {} restored {name:?} on another shape",
+                    archived.producer
+                )));
+            }
+            if let Some(previous) = claimed.insert(face, name) {
+                return Err(CadError::topology(format!(
+                    "the archive of feature {} restored both {previous:?} and {name:?} as the \
+                     same face; refusing rather than accepting a silent alias",
+                    archived.producer
+                )));
+            }
+
+            match name {
+                BoundName::StartCap => start_cap.push(face),
+                BoundName::EndCap => end_cap.push(face),
+                BoundName::Side { profile_segment } => {
+                    sides.entry(profile_segment).or_default().push(face)
+                }
             }
         }
-    }
 
-    into.record_restored(archived.producer, shape, &start_cap, &end_cap, &sides)
+        into.record_restored(archived.producer, shape, &start_cap, &end_cap, &sides)
+    })();
+
+    if restored.is_err() {
+        kernel.release(shape);
+    }
+    restored
 }
 
 #[cfg(test)]
