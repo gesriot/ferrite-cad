@@ -120,21 +120,49 @@ fn run(mut command: Command, what: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    // The tail is where CMake puts the reason; the head is boilerplate.
+    // Show the compiler's own diagnostics, not the tail of the output.
+    //
+    // The first version of this reported the last few lines, which for a
+    // failed C++ build are make's "*** Error 1" summary — three lines saying
+    // that something failed and none saying what. The real message is well
+    // above them, so it is searched for by name.
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let detail: Vec<&str> = stderr
+    let combined: Vec<&str> = stderr
         .lines()
         .chain(stdout.lines())
         .filter(|line| !line.trim().is_empty())
-        .rev()
-        .take(6)
         .collect();
 
+    let diagnostics: Vec<&str> = combined
+        .iter()
+        .copied()
+        .filter(|line| {
+            let lowered = line.to_ascii_lowercase();
+            lowered.contains("error")
+                && !lowered.contains("error 1")
+                && !lowered.contains("error 2")
+        })
+        .take(8)
+        .collect();
+
+    let detail = if diagnostics.is_empty() {
+        // Nothing named itself an error, so the tail is the best available.
+        combined
+            .iter()
+            .rev()
+            .take(8)
+            .rev()
+            .copied()
+            .collect::<Vec<_>>()
+    } else {
+        diagnostics
+    };
+
     Err(format!(
-        "{what} failed ({}): {}",
+        "{what} failed ({}):\n  {}",
         output.status,
-        detail.into_iter().rev().collect::<Vec<_>>().join(" | ")
+        detail.join("\n  ")
     ))
 }
 

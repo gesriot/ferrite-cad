@@ -518,6 +518,22 @@ jobs:
               # No RPATH on Windows: both the bridge and OCCT must be findable
               # on PATH when the test binary runs.
               export PATH="$FCAD_OCCT_LIB_DIR:$PATH"
+
+              # Git Bash prepends its own /usr/bin, which contains a GNU
+              # `link.exe`. CMake is unaffected because it records the full
+              # path to the compiler at configure time, but rustc invokes
+              # link.exe by name and picks up the wrong one — "linking with
+              # link.exe failed" naming a path under Git. Put the MSVC tools
+              # ahead of it.
+              if [ -n "${VCToolsInstallDir:-}" ]; then
+                msvc_bin="$(cygpath -u "$VCToolsInstallDir")bin/Hostx64/x64"
+                if [ -x "$msvc_bin/link.exe" ]; then
+                  export PATH="$msvc_bin:$PATH"
+                else
+                  echo "::warning::no MSVC link.exe under $msvc_bin"
+                fi
+              fi
+              echo "link.exe resolves to: $(command -v link || echo none)"
               ;;
             linux)
               # RUNPATH is not transitive, and the OCCT toolkits load each

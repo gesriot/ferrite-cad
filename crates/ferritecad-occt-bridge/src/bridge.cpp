@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <BRep_Tool.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
@@ -29,9 +30,10 @@
 #include <Message_ProgressIndicator.hxx>
 #include <Message_ProgressScope.hxx>
 #include <Standard_Failure.hxx>
+#include <Standard_Type.hxx>
 #include <Standard_Version.hxx>
 #include <TopExp_Explorer.hxx>
-#include <TopTools_ListOfShape.hxx>
+#include <NCollection_List.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
@@ -39,7 +41,10 @@
 #include <TopoDS_Vertex.hxx>
 #include <TopoDS_Wire.hxx>
 #include <gp_Ax3.hxx>
+#include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
+#include <gp_Pnt.hxx>
+#include <gp_Vec.hxx>
 
 namespace {
 
@@ -72,14 +77,12 @@ public:
   CancelIndicator(FcOcctCancelFn callback, void *context)
       : myCallback(callback), myContext(context) {}
 
-  Standard_Boolean UserBreak() override {
+  bool UserBreak() override {
     ++myPolls;
-    return myCallback != nullptr && myCallback(myContext) != 0
-               ? Standard_True
-               : Standard_False;
+    return myCallback != nullptr && myCallback(myContext) != 0;
   }
 
-  void Show(const Message_ProgressScope &, const Standard_Boolean) override {}
+  void Show(const Message_ProgressScope &, const bool) override {}
 
   int Polls() const { return myPolls; }
 
@@ -103,20 +106,38 @@ bool cancelled(FcOcctCancelFn callback, void *context) {
   return callback != nullptr && callback(context) != 0;
 }
 
+/// Describes an Open CASCADE failure, on either side of the 8.0 boundary.
+///
+/// Open CASCADE 8.0 reparented Standard_Failure from Standard_Transient to
+/// std::exception: DynamicType() no longer exists and GetMessageString() is
+/// deprecated in favour of what(). Both spellings are kept rather than picking
+/// the newer one, because a contributor's installed Open CASCADE is not
+/// necessarily the pinned one.
+std::string describe(const Standard_Failure &failure) {
+#if OCC_VERSION_HEX >= 0x080000
+  const char *text = failure.what();
+  return text != nullptr && text[0] != '\0'
+             ? std::string("Open CASCADE raised ") + text
+             : std::string("Open CASCADE raised an unnamed failure");
+#else
+  std::string message = "Open CASCADE raised ";
+  message += failure.DynamicType()->Name();
+  const char *detail = failure.GetMessageString();
+  if (detail != nullptr && detail[0] != '\0') {
+    message += ": ";
+    message += detail;
+  }
+  return message;
+#endif
+}
+
 /// Runs `body`, converting anything it throws into a status code.
 template <typename Body>
 FcOcctStatus guarded(FcOcctError *out_error, Body body) noexcept {
   try {
     return body();
   } catch (const Standard_Failure &failure) {
-    std::string message = "Open CASCADE raised ";
-    message += failure.DynamicType()->Name();
-    const char *detail = failure.GetMessageString();
-    if (detail != nullptr && detail[0] != '\0') {
-      message += ": ";
-      message += detail;
-    }
-    write_error(out_error, message);
+    write_error(out_error, describe(failure));
     return FC_OCCT_KERNEL;
   } catch (const std::exception &error) {
     write_error(out_error, std::string("the bridge failed: ") + error.what());
@@ -320,14 +341,15 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
     ShapeRecord record;
     record.shape = prism.Shape();
 
-    TopTools_ListOfShape arguments;
+    NCollection_List<TopoDS_Shape> arguments;
     arguments.Append(face);
     const BRepTools_History history(arguments, prism);
 
     record.side_faces.resize(segment_count);
     for (size_t i = 0; i < segment_count; ++i) {
-      const TopTools_ListOfShape &generated = history.Generated(edges[i]);
-      for (TopTools_ListOfShape::Iterator it(generated); it.More(); it.Next()) {
+      const NCollection_List<TopoDS_Shape> &generated = history.Generated(edges[i]);
+      for (NCollection_List<TopoDS_Shape>::Iterator it(generated); it.More();
+           it.Next()) {
         record.side_faces[i].push_back(record.remember(it.Value()));
       }
     }
