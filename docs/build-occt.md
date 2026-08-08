@@ -15,13 +15,18 @@ the tag that actually built and passed the smoke test on all three platforms.
 
 | Field | Value |
 | --- | --- |
-| Tag | `V8_0_0` |
-| Commit | `d3056ef80c9668f395da40f5fd7be186cae4501f` |
-| Source archive | `https://github.com/Open-Cascade-SAS/OCCT/archive/d3056ef80c9668f395da40f5fd7be186cae4501f.tar.gz` |
-| Source archive SHA-256 | `7b7ad86852227907d30513584d9e7aa8395ead203e1d81d810977b54aba55c64` |
-| Source archive size | 44 989 827 bytes |
-| Reported version | `OCC_VERSION_COMPLETE=8.0.0` |
-| Verified by | [run 31227437597](https://github.com/gesriot/ferrite-cad/actions/runs/31227437597), 2026-08-07 |
+| Tag | `V8_0_1` |
+| Commit | `b8f597c677811d1f9f4d8a97f5ae2825c0353a42` |
+| Source archive | `https://github.com/Open-Cascade-SAS/OCCT/archive/b8f597c677811d1f9f4d8a97f5ae2825c0353a42.tar.gz` |
+| Source archive SHA-256 | `dba62b81078dd43cec23feba89432be301582341001edad1b93342ad8bda35ea` |
+| Source archive size | 45 131 814 bytes |
+| Reported version | `OCC_VERSION_COMPLETE=8.0.1` |
+| Verified by | [run 31254884697](https://github.com/gesriot/ferrite-cad/actions/runs/31254884697), 2026-08-08 |
+
+`V8_0_1` is an annotated tag: the ref itself names tag object
+`c5605924864829ce8c1e1477f976ffb3880538a8`, which peels to the commit above.
+The lightweight tag `V8.0.1` names the same commit. The pin records the commit,
+so which of the two names was typed does not matter.
 
 Toolchain each platform actually used, as recorded by that run:
 
@@ -35,16 +40,30 @@ All eight smoke-test steps passed on all three. Steps 6 and 7 — the ones that
 matter and the ones that fail quietly — confirmed that a STEP round trip through
 XDE preserves the shape name `AS1_PE_ASM`, the colour `RGB(0,1,0)` and the unit
 declaration `length_unit_mm=1`. Tessellation produced 284 triangles on every
-platform. `LICENSE_LGPL_21.txt` and `OCCT_LGPL_EXCEPTION.txt` were present in
-all three source trees.
+platform, unchanged from `V8_0_0`. `LICENSE_LGPL_21.txt` and
+`OCCT_LGPL_EXCEPTION.txt` were present in all three source trees; their absence
+now fails the run rather than warning.
+
+`V8_0_1` is 40 commits ahead of `V8_0_0` and carries fixes to the STEP writer,
+to fillet and chamfer, and to several crash and null-dereference paths
+([comparison](https://github.com/Open-Cascade-SAS/OCCT/compare/V8_0_0...V8_0_1)).
+The smoke test exercises too little to show any of that; it is evidence the
+version builds and keeps STEP metadata intact, not evidence the fixes work. The
+reason to prefer it is that those areas are ones FerriteCAD will lean on, and
+adopting the patch release before any Rust code depends on the kernel is
+cheaper than moving later.
 
 **The commit is the authoritative pin, not the archive checksum.** GitHub
 generates tag archives on demand rather than storing them, and their bytes have
 changed before when the underlying archive format changed. The checksum above
 is of the *commit* archive, which is what the workflow downloads; a checksum
-taken from `.../archive/refs/tags/V8_0_0.tar.gz`, or from the `.zip`, will
+taken from `.../archive/refs/tags/V8_0_1.tar.gz`, or from the `.zip`, will
 differ without anything being wrong. A build script that must still be
 reproducible in three years should clone the commit.
+
+The previous pin, `V8_0_0` / `d3056ef80c9668f395da40f5fd7be186cae4501f`, also
+passed all three platforms in
+[run 31227437597](https://github.com/gesriot/ferrite-cad/actions/runs/31227437597).
 
 Re-running the pin workflow for a new tag is how this table changes. It should
 not be edited by hand from a single machine: a pin is a claim about three
@@ -53,7 +72,7 @@ platforms.
 ### Producing the record
 
 Run the **OCCT pin** workflow from the Actions tab with the candidate tag, e.g.
-`V8_0_0`. It resolves that tag once, downloads the source snapshot by the
+`V8_0_1`. It resolves that tag once, downloads the source snapshot by the
 resulting immutable commit, builds OCCT on Linux, Windows and macOS, runs
 [`tools/occt-smoke`](../tools/occt-smoke) against each build, and prints a
 filled-in version of the table above in the run summary.

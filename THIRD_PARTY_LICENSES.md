@@ -26,7 +26,7 @@ post-release fix (implementation-plan.md, 11).
 ### OCCT is LGPL-2.1 *only*
 
 Verified against the OCCT README and representative source headers at the
-currently pinned V8.0.0 commit, including
+currently pinned V8.0.1 commit, including
 `src/FoundationClasses/TKernel/Standard/Standard_DefineException.hxx`. They
 state LGPL version 2.1 with the Open CASCADE exception and separately offer
 commercial terms.
