@@ -67,6 +67,7 @@ pub struct MockKernel {
     session: SessionId,
     shapes: BTreeMap<u64, Prism>,
     next_index: u64,
+    extrusions: u64,
 }
 
 impl MockKernel {
@@ -82,6 +83,7 @@ impl MockKernel {
             session: SessionId::new(),
             shapes: BTreeMap::new(),
             next_index: 0,
+            extrusions: 0,
         }
     }
 
@@ -93,6 +95,16 @@ impl MockKernel {
     /// free to offer the same, and it is worth having for the same reason.
     pub fn live_shape_count(&self) -> usize {
         self.shapes.len()
+    }
+
+    /// How many extrusions this session has been asked to compute.
+    ///
+    /// The only way to prove a cache was actually used. A warm rebuild that
+    /// silently recomputed everything would produce identical geometry and
+    /// identical names, so nothing about its result distinguishes it from a
+    /// cold one — the difference is a call that did not happen.
+    pub fn extrude_count(&self) -> u64 {
+        self.extrusions
     }
 
     fn store(&mut self, prism: Prism) -> ShapeHandle {
@@ -218,6 +230,7 @@ impl GeometryKernel for MockKernel {
         context: &OperationContext,
     ) -> Result<ExtrudeResult> {
         context.check_cancelled()?;
+        self.extrusions += 1;
 
         let profile = request.profile();
         if !profile.inner().is_empty() {

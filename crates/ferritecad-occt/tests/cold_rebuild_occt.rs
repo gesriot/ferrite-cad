@@ -10,11 +10,11 @@
 #![allow(clippy::panic)]
 
 use ferritecad_document::{
-    Body, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression, Extrude,
-    ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
+    Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression,
+    Extrude, ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
 };
 use ferritecad_eval::rebuild_cold;
-use ferritecad_kernel::{HistoryInput, OperationContext};
+use ferritecad_kernel::OperationContext;
 use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_types::{ObjectId, Result, StableEntityId, Transform};
 
@@ -150,20 +150,20 @@ fn a_saved_document_rebuilds_into_open_cascade_geometry() {
 
     // Every sketch segment is named by the face it raised. This is the whole
     // reason history exists, and the reason the bridge shares corner vertices.
-    let history = built
-        .history(plate.extrude)
-        .expect("the extrude has history");
+    let names = built
+        .topology()
+        .feature(plate.extrude)
+        .expect("the extrude named its faces");
     for segment in &plate.segments {
         assert_eq!(
-            history.generated(HistoryInput::Segment(*segment)).count(),
+            names.side(*segment).count(),
             1,
             "segment {segment} should have raised one face"
         );
     }
 
-    let caps = built.caps(plate.extrude).expect("an extrusion has caps");
-    assert_eq!(caps.start.len(), 1);
-    assert_eq!(caps.end.len(), 1);
+    assert_eq!(names.cap(CapSide::Start).expect("a start cap").len(), 1);
+    assert_eq!(names.cap(CapSide::End).expect("an end cap").len(), 1);
 
     built.release_all(&mut kernel);
     assert_eq!(

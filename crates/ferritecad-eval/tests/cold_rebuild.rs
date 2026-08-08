@@ -9,12 +9,12 @@
 #![allow(clippy::panic)]
 
 use ferritecad_document::{
-    Body, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression, Extrude,
-    ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
+    Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression,
+    Extrude, ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
 };
 use ferritecad_eval::rebuild_cold;
 use ferritecad_kernel::{
-    CancelToken, GeometryKernel, HistoryInput, OperationContext, ProgressSink, TessellationParams,
+    CancelToken, GeometryKernel, OperationContext, ProgressSink, TessellationParams,
     mock::MockKernel,
 };
 use ferritecad_types::{ErrorKind, ObjectId, Result, StableEntityId, Transform};
@@ -154,22 +154,25 @@ fn a_plate_rebuilds_into_a_solid_with_named_faces() {
     );
     assert_eq!(built.shape_count(), 1, "only the extrude created geometry");
 
-    // Every profile segment raised exactly one side face.
-    let history = built
-        .history(plate.extrude)
-        .expect("the extrude has history");
+    // Asked by name, which is the only account a rebuild keeps. Every profile
+    // segment raised exactly one side face, and the two caps are two faces.
+    let names = built
+        .topology()
+        .feature(plate.extrude)
+        .expect("the extrude named its faces");
     for segment in &plate.segments {
         assert_eq!(
-            history.generated(HistoryInput::Segment(*segment)).count(),
+            names.side(*segment).count(),
             1,
             "segment {segment} should have raised one face"
         );
     }
 
-    let caps = built.caps(plate.extrude).expect("an extrusion has caps");
-    assert_eq!(caps.start.len(), 1);
-    assert_eq!(caps.end.len(), 1);
-    assert_ne!(caps.start[0], caps.end[0]);
+    let start: Vec<_> = names.cap(CapSide::Start).expect("a start cap").collect();
+    let end: Vec<_> = names.cap(CapSide::End).expect("an end cap").collect();
+    assert_eq!(start.len(), 1);
+    assert_eq!(end.len(), 1);
+    assert_ne!(start[0], end[0]);
 
     built.release_all(&mut kernel);
 }

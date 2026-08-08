@@ -1,10 +1,23 @@
 // SPDX-License-Identifier: MIT
-//! Rebuilding a whole document from nothing, one feature at a time.
+//! Rebuilding a whole document, one feature at a time.
 //!
-//! Cold means no cache is consulted and none is written: every feature is
-//! recomputed from the document. That is the slowest path and the one that
-//! defines correctness — a cached rebuild is only allowed to agree with this
-//! one faster.
+//! Two entry points share one loop. [`rebuild_cold`] consults no cache and
+//! writes none: every feature is recomputed from the document, which is the
+//! slowest path and the one that defines correctness. [`rebuild_cached`] may
+//! restore a feature's geometry and names from a sidecar instead of computing
+//! them, and is only allowed to agree with the cold path faster.
+//!
+//! The cold path's guarantee is structural rather than a promise: it has no
+//! parameter through which a cache could reach it.
+//!
+//! # Both paths produce the same thing
+//!
+//! [`RebuildResult`] is the single return type, and it reports nothing that
+//! only a fresh computation could supply. An archive carries geometry and
+//! names, not the history of the operation that made them, so a result that
+//! exposed raw history would have to answer differently after a hit — and a
+//! caller able to tell a warm rebuild from a cold one is a caller whose
+//! correctness depends on which one it got.
 //!
 //! Sequential on purpose. [`RebuildPlan`](crate::RebuildPlan) already reports
 //! levels that could run concurrently, but a kernel session is not shareable
@@ -14,63 +27,51 @@
 use std::collections::BTreeMap;
 
 use ferritecad_document::TopologyRef;
-use ferritecad_document::{Document, ObjectPayload, ObjectRecord};
+use ferritecad_document::{CacheStore, Document, ObjectPayload, ObjectRecord};
 use ferritecad_kernel::{
-    GeometryKernel, History, OperationContext, Profile, ShapeHandle, SketchPlane, SubShapeHandle,
+    ExtrudeRequest, GeometryKernel, OperationContext, Profile, ShapeHandle, SketchPlane,
+    SubShapeHandle,
 };
-use ferritecad_topology::TopologyMap;
+use ferritecad_topology::{TopologyMap, archive_feature, restore_feature};
 use ferritecad_types::{CadError, ObjectId, Result};
 
+use crate::cache::{load_extrude_archive, store_extrude_archive};
 use crate::convert::{extrude_request, plane_from_datum, profile_from_sketch};
 use crate::document_graph::DocumentGraph;
 
-/// The faces closing each end of an extrusion.
-///
-/// Reported apart from history because they are generated from no input: the
-/// sweep creates them, so "generated from segment S" cannot name them.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct ExtrudeCaps {
-    pub start: Vec<SubShapeHandle>,
-    pub end: Vec<SubShapeHandle>,
-}
-
-/// What a cold rebuild produced.
+/// What a rebuild produced.
 ///
 /// # Handles are session-owned
 ///
 /// The shapes named here live in the kernel session that built them. Call
-/// [`ColdRebuild::release_all`] when finished; dropping this value instead
+/// [`RebuildResult::release_all`] when finished; dropping this value instead
 /// leaves the kernel holding the geometry until the session ends. A failed
 /// rebuild needs no such care — it releases everything it made before
 /// returning the error.
 ///
 /// This value is deliberately not cloneable. A copy could release the shapes
 /// while the original continued handing out handles that were no longer live.
+///
+/// # What a face is called lives in one place
+///
+/// [`topology`][Self::topology] is the only account of what this rebuild
+/// produced. Raw [`History`][ferritecad_kernel::History] and cap handles are
+/// used while building that account and then dropped: they describe an
+/// operation, and a feature restored from a cache had no operation. Anything a
+/// caller needs about a face it must ask for by name.
 #[derive(Debug, Default)]
-pub struct ColdRebuild {
+pub struct RebuildResult {
     shapes: BTreeMap<ObjectId, ShapeHandle>,
-    histories: BTreeMap<ObjectId, History>,
-    caps: BTreeMap<ObjectId, ExtrudeCaps>,
     profiles: BTreeMap<ObjectId, Profile>,
     topology: TopologyMap,
     order: Vec<ObjectId>,
     owned: Vec<ShapeHandle>,
 }
 
-impl ColdRebuild {
+impl RebuildResult {
     /// The shape a feature or body resolved to.
     pub fn shape(&self, object: ObjectId) -> Option<ShapeHandle> {
         self.shapes.get(&object).copied()
-    }
-
-    /// What a feature did to its inputs.
-    pub fn history(&self, object: ObjectId) -> Option<&History> {
-        self.histories.get(&object)
-    }
-
-    /// The cap faces of an extrusion.
-    pub fn caps(&self, object: ObjectId) -> Option<&ExtrudeCaps> {
-        self.caps.get(&object)
     }
 
     /// The profile a sketch converted to.
@@ -120,20 +121,49 @@ impl ColdRebuild {
 /// Fails on the first feature that cannot be built, having released whatever it
 /// had already made. A half-built rebuild is worse than none: it would leave
 /// the caller holding shapes it cannot name and a model it cannot trust.
+///
+/// Reads and writes no cache, and cannot be made to: there is no parameter
+/// through which one could be supplied.
 pub fn rebuild_cold(
     document: &Document,
     kernel: &mut dyn GeometryKernel,
     context: &OperationContext,
-) -> Result<ColdRebuild> {
+) -> Result<RebuildResult> {
+    rebuild(document, kernel, None, context).map(|(result, _)| result)
+}
+
+/// Rebuilds `document`, restoring from `cache` whatever it usefully holds.
+///
+/// Produces exactly what [`rebuild_cold`] would, alongside a per-feature
+/// account of what the cache did. A cache that is empty, stale or damaged
+/// costs time and nothing else: every failure to use an entry falls back to
+/// computing the feature, and a failure to store one leaves a rebuild that
+/// already succeeded successful.
+pub fn rebuild_cached(
+    document: &Document,
+    kernel: &mut dyn GeometryKernel,
+    cache: &mut CacheStore,
+    context: &OperationContext,
+) -> Result<(RebuildResult, Vec<CacheEvent>)> {
+    rebuild(document, kernel, Some(cache), context)
+}
+
+fn rebuild(
+    document: &Document,
+    kernel: &mut dyn GeometryKernel,
+    cache: Option<&mut CacheStore>,
+    context: &OperationContext,
+) -> Result<(RebuildResult, Vec<CacheEvent>)> {
     // Do this before reading or validating the document. Besides avoiding
     // needless work, it makes cancellation observable for an empty document,
     // whose evaluation loop has no feature boundary at which to check it.
     context.check_cancelled()?;
 
-    let mut state = ColdRebuild::default();
+    let mut state = RebuildResult::default();
+    let mut events = Vec::new();
 
-    match run(document, kernel, context, &mut state) {
-        Ok(()) => Ok(state),
+    match run(document, kernel, cache, context, &mut state, &mut events) {
+        Ok(()) => Ok((state, events)),
         Err(error) => {
             state.release_all(kernel);
             Err(error)
@@ -144,8 +174,10 @@ pub fn rebuild_cold(
 fn run(
     document: &Document,
     kernel: &mut dyn GeometryKernel,
+    mut cache: Option<&mut CacheStore>,
     context: &OperationContext,
-    state: &mut ColdRebuild,
+    state: &mut RebuildResult,
+    events: &mut Vec<CacheEvent>,
 ) -> Result<()> {
     ensure_rebuildable(document)?;
 
@@ -203,32 +235,36 @@ fn run(
                     })?;
 
                 let request = extrude_request(feature, profile)?;
-                let result = kernel.extrude(&request, context)?;
 
-                // Register ownership before checking again: a kernel can
-                // finish the operation and then invoke a progress callback
-                // that cancels the rebuild. The resulting shape still belongs
-                // to us and must participate in error cleanup.
-                state.owned.push(result.shape);
-                context.check_cancelled()?;
+                let restored = match cache.as_deref_mut() {
+                    Some(cache) => restore(kernel, cache, context, *id, &request, state, events)?,
+                    None => false,
+                };
 
-                // Named while the result is still whole. The correspondence
-                // between a segment and the face it raised lives across the
-                // history and the caps, and reassembling it from the separate
-                // fields below would be inventing it rather than recording it.
-                state
-                    .topology
-                    .record_extrude(*id, request.profile(), &result)?;
+                if !restored {
+                    let result = kernel.extrude(&request, context)?;
 
-                state.shapes.insert(*id, result.shape);
-                state.histories.insert(*id, result.history);
-                state.caps.insert(
-                    *id,
-                    ExtrudeCaps {
-                        start: result.start_cap,
-                        end: result.end_cap,
-                    },
-                );
+                    // Register ownership before checking again: a kernel can
+                    // finish the operation and then invoke a progress callback
+                    // that cancels the rebuild. The resulting shape still
+                    // belongs to us and must participate in error cleanup.
+                    state.owned.push(result.shape);
+                    context.check_cancelled()?;
+
+                    // Named while the result is still whole. The correspondence
+                    // between a segment and the face it raised lives across the
+                    // history and the caps, and reassembling it from those
+                    // parts afterwards would be inventing it rather than
+                    // recording it.
+                    state
+                        .topology
+                        .record_extrude(*id, request.profile(), &result)?;
+                    state.shapes.insert(*id, result.shape);
+
+                    if let Some(cache) = cache.as_deref_mut() {
+                        store(kernel, cache, context, *id, &request, state, events);
+                    }
+                }
             }
 
             ObjectPayload::Body(body) => {
@@ -269,6 +305,146 @@ fn run(
     // Covers a cancellation concurrent with the final non-kernel feature.
     context.check_cancelled()?;
     Ok(())
+}
+
+/// What the cache did about one feature.
+///
+/// A feature can produce more than one of these: a miss is followed by a
+/// failed write when the rebuilt result could not be stored.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct CacheEvent {
+    pub feature: ObjectId,
+    pub outcome: CacheOutcome,
+    /// Why, when the outcome is a refusal or a failure.
+    pub detail: Option<String>,
+}
+
+/// The four things that can happen to one feature's cache entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum CacheOutcome {
+    /// The stored archive was used, and the kernel did not build this feature.
+    Hit,
+    /// Nothing usable was stored.
+    ///
+    /// Includes damage the sidecar detected itself: [`CacheStore`] verifies
+    /// its own content hashes and reports a corrupt payload as absent, which
+    /// is indistinguishable from never having been written and needs the same
+    /// response.
+    Miss,
+    /// Intact bytes that are not a usable archive.
+    ///
+    /// Narrower than a miss on purpose: something was stored, it survived
+    /// storage, and it was still refused — by the codec, or by a kernel that
+    /// could not decode the B-Rep inside it. That is a defect worth surfacing,
+    /// where a miss is ordinary.
+    Rejected,
+    /// The feature was rebuilt and its archive could not be kept.
+    ///
+    /// The rebuild is unaffected; the next run will simply be cold again.
+    WriteFailed,
+}
+
+impl CacheEvent {
+    fn new(feature: ObjectId, outcome: CacheOutcome, detail: Option<String>) -> Self {
+        Self {
+            feature,
+            outcome,
+            detail,
+        }
+    }
+}
+
+/// Tries to restore one feature instead of computing it.
+///
+/// `Ok(true)` means the shape is built, named and owned by `state`. `Ok(false)`
+/// means the caller must extrude, and says why in `events`. An error is a
+/// genuine failure of the rebuild — cancellation, or a kernel that restored a
+/// shape it will not then describe — never a disappointing cache.
+fn restore(
+    kernel: &mut dyn GeometryKernel,
+    cache: &CacheStore,
+    context: &OperationContext,
+    id: ObjectId,
+    request: &ExtrudeRequest,
+    state: &mut RebuildResult,
+    events: &mut Vec<CacheEvent>,
+) -> Result<bool> {
+    let archived = match load_extrude_archive(cache, kernel.identity(), request, context, id) {
+        Ok(Some(archived)) => archived,
+        Ok(None) => {
+            events.push(CacheEvent::new(id, CacheOutcome::Miss, None));
+            return Ok(false);
+        }
+        Err(error) => {
+            events.push(CacheEvent::new(
+                id,
+                CacheOutcome::Rejected,
+                Some(error.to_string()),
+            ));
+            return Ok(false);
+        }
+    };
+
+    // A blob this kernel will not decode is still only a cache problem. The
+    // map is left untouched by a failure here, so the fresh build below
+    // records this feature over nothing rather than over a half-restore.
+    if let Err(error) = restore_feature(kernel, &archived, &mut state.topology) {
+        events.push(CacheEvent::new(
+            id,
+            CacheOutcome::Rejected,
+            Some(error.to_string()),
+        ));
+        return Ok(false);
+    }
+
+    let shape = state
+        .topology
+        .feature(id)
+        .and_then(|names| names.shape())
+        .ok_or_else(|| {
+            CadError::kernel(format!(
+                "restoring feature {id} produced names without a shape to hang them on"
+            ))
+        })?;
+
+    // Ownership first, and before the cancellation check: the shape exists in
+    // the session from the moment it was decoded, and anything that unwinds
+    // from here must be able to hand it back.
+    state.owned.push(shape);
+    state.shapes.insert(id, shape);
+    events.push(CacheEvent::new(id, CacheOutcome::Hit, None));
+
+    context.check_cancelled()?;
+    Ok(true)
+}
+
+/// Keeps a freshly built feature for next time, or reports why it could not.
+///
+/// Deliberately infallible. The geometry is already correct and already in
+/// hand; turning a storage problem into a failed rebuild would trade a slow
+/// next run for no result at all.
+fn store(
+    kernel: &mut dyn GeometryKernel,
+    cache: &mut CacheStore,
+    context: &OperationContext,
+    id: ObjectId,
+    request: &ExtrudeRequest,
+    state: &RebuildResult,
+    events: &mut Vec<CacheEvent>,
+) {
+    let identity = kernel.identity().clone();
+    let stored = archive_feature(kernel, &state.topology, id)
+        .and_then(|archived| store_extrude_archive(cache, &identity, request, context, &archived));
+
+    if let Err(error) = stored {
+        events.push(CacheEvent::new(
+            id,
+            CacheOutcome::WriteFailed,
+            Some(error.to_string()),
+        ));
+    }
 }
 
 fn ensure_rebuildable(document: &Document) -> Result<()> {

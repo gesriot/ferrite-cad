@@ -37,7 +37,7 @@ mod document_graph;
 mod plan;
 
 pub use cache::{extrude_archive_key, load_extrude_archive, store_extrude_archive};
-pub use cold::{ColdRebuild, ExtrudeCaps, rebuild_cold};
+pub use cold::{CacheEvent, CacheOutcome, RebuildResult, rebuild_cached, rebuild_cold};
 pub use convert::{extrude_request, plane_from_datum, profile_from_sketch};
 pub use dirty::{DependentIndex, dirty_set};
 pub use document_graph::DocumentGraph;
