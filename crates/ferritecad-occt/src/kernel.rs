@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 use ferritecad_kernel::{
-    BrepBlob, ExtrudeExtent, ExtrudeRequest, ExtrudeResult, GeometryKernel, History, HistoryInput,
-    KernelIdentity, Mesh, OperationContext, SegmentGeometry, SessionId, ShapeHandle, SketchPlane,
-    SubShapeHandle, SubShapeKind, TessellationParams,
+    ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, ExtrudeResult, GeometryKernel, History,
+    HistoryInput, KernelIdentity, Mesh, OperationContext, SegmentGeometry, SessionId, ShapeHandle,
+    SketchPlane, SubShapeHandle, SubShapeKind, TessellationParams,
 };
 use ferritecad_types::{CadError, ContentHash, Result, Transform};
 
@@ -10,6 +10,14 @@ use crate::ffi;
 
 /// Marks FerriteCAD's own framing around Open CASCADE's bytes.
 const BLOB_MAGIC: &[u8; 4] = b"FCBR";
+
+/// Marks an archive: a shape together with sub-shapes to be found again.
+///
+/// A separate magic rather than a flag inside the header. An archive read as a
+/// plain blob would hand back the compound instead of the solid, and a plain
+/// blob read as an archive would find no sub-shapes; both are wrong quietly,
+/// so the two are made unreadable as each other.
+const NAMED_BLOB_MAGIC: &[u8; 4] = b"FCBN";
 
 /// Byte offsets in FerriteCAD's framing.
 const BLOB_VERSION_END: usize = BLOB_MAGIC.len() + 4;
@@ -79,6 +87,84 @@ impl OcctKernel {
     /// way to assert that a built solid is the one that was asked for.
     pub fn shape_stats(&mut self, shape: ShapeHandle) -> Result<(u64, f64)> {
         self.session.shape_stats(self.raw(shape)?)
+    }
+
+    /// Wraps a kernel payload in FerriteCAD's framing.
+    fn frame(&self, magic: &[u8; 4], payload: Vec<u8>) -> Result<BrepBlob> {
+        let payload_length = u64::try_from(payload.len())
+            .map_err(|_| CadError::kernel("the encoded B-Rep is too large to frame"))?;
+        let payload_hash = ContentHash::of_bytes(&payload);
+
+        let mut bytes = Vec::with_capacity(BLOB_HEADER_LEN + payload.len());
+        bytes.extend_from_slice(magic);
+        bytes.extend_from_slice(&BLOB_FORMAT_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&payload_length.to_le_bytes());
+        bytes.extend_from_slice(payload_hash.as_bytes());
+        bytes.extend_from_slice(&payload);
+
+        Ok(BrepBlob::new(self.identity.clone(), bytes))
+    }
+
+    /// Checks the framing and returns the kernel payload inside it.
+    ///
+    /// Identity first, then the magic, then the format version, then the
+    /// declared length, then the checksum. Each answers a different way for a
+    /// cache entry to be wrong, and every one of them ends in discarding the
+    /// entry rather than decoding it.
+    fn unframe<'b>(&self, magic: &[u8; 4], blob: &'b BrepBlob) -> Result<&'b [u8]> {
+        blob.require_kernel(&self.identity)?;
+
+        let bytes = blob.bytes();
+        if bytes.len() < BLOB_HEADER_LEN || &bytes[..magic.len()] != magic {
+            return Err(CadError::kernel(
+                "this cached shape is not in the expected FerriteCAD blob format; discard the cache",
+            ));
+        }
+
+        let version = u32::from_le_bytes(
+            bytes[magic.len()..BLOB_VERSION_END]
+                .try_into()
+                .map_err(|_| CadError::kernel("this cached shape has a truncated header"))?,
+        );
+        if version != BLOB_FORMAT_VERSION {
+            return Err(CadError::unsupported(format!(
+                "this cached shape is in blob format v{version}, and this build writes \
+                 v{BLOB_FORMAT_VERSION}; discard the cache rather than decoding it"
+            )));
+        }
+
+        let declared_length = u64::from_le_bytes(
+            bytes[BLOB_VERSION_END..BLOB_LENGTH_END]
+                .try_into()
+                .map_err(|_| CadError::kernel("this cached shape has a truncated length"))?,
+        );
+        let declared_length = usize::try_from(declared_length).map_err(|_| {
+            CadError::kernel("this cached shape declares a payload too large for this platform")
+        })?;
+
+        let payload = &bytes[BLOB_HEADER_LEN..];
+        if payload.len() != declared_length {
+            return Err(CadError::kernel(format!(
+                "this cached shape declares {declared_length} payload bytes but contains {}; \
+                 discard the damaged cache",
+                payload.len()
+            )));
+        }
+        if payload.is_empty() {
+            return Err(CadError::kernel(
+                "this cached shape has an empty B-Rep payload; discard the damaged cache",
+            ));
+        }
+
+        let expected_hash = ContentHash::from_slice(&bytes[BLOB_LENGTH_END..BLOB_HASH_END])
+            .map_err(|_| CadError::kernel("this cached shape has a malformed payload checksum"))?;
+        if ContentHash::of_bytes(payload) != expected_hash {
+            return Err(CadError::kernel(
+                "this cached shape's payload checksum does not match; discard the damaged cache",
+            ));
+        }
+
+        Ok(payload)
     }
 
     /// Checks a handle belongs here and unwraps the bridge's identifier.
@@ -214,81 +300,64 @@ impl GeometryKernel for OcctKernel {
         ))
     }
 
+    fn encode_shape_with(
+        &mut self,
+        shape: ShapeHandle,
+        sub_shapes: &[SubShapeHandle],
+    ) -> Result<(BrepBlob, Vec<ArchiveSlot>)> {
+        let raw = self.raw(shape)?;
+
+        let mut ids = Vec::with_capacity(sub_shapes.len());
+        for sub in sub_shapes {
+            if sub.shape() != shape {
+                return Err(CadError::kernel(format!(
+                    "{sub} does not belong to the shape being archived"
+                )));
+            }
+            if sub.kind() != SubShapeKind::Face {
+                return Err(CadError::kernel(format!(
+                    "{sub} is a {}, and this slice archives faces",
+                    sub.kind()
+                )));
+            }
+            ids.push(sub.index());
+        }
+
+        let (payload, slots) = self.session.encode_shape_named(raw, &ids)?;
+        Ok((
+            self.frame(NAMED_BLOB_MAGIC, payload)?,
+            slots.into_iter().map(ArchiveSlot::new).collect(),
+        ))
+    }
+
+    fn decode_shape_with(
+        &mut self,
+        blob: &BrepBlob,
+        slots: &[ArchiveSlot],
+    ) -> Result<(ShapeHandle, Vec<SubShapeHandle>)> {
+        let payload = self.unframe(NAMED_BLOB_MAGIC, blob)?;
+
+        let raw_slots: Vec<u32> = slots.iter().map(|s| s.index()).collect();
+        let (raw_shape, raw_subs) = self.session.decode_shape_named(payload, &raw_slots)?;
+
+        let shape = ShapeHandle::new(self.session_id, raw_shape);
+        Ok((
+            shape,
+            raw_subs
+                .into_iter()
+                .map(|id| self.face(shape, id))
+                .collect(),
+        ))
+    }
+
     fn encode_shape(&mut self, shape: ShapeHandle) -> Result<BrepBlob> {
         let raw = self.raw(shape)?;
         let payload = self.session.encode_shape(raw)?;
-        let payload_length = u64::try_from(payload.len())
-            .map_err(|_| CadError::kernel("the encoded B-Rep is too large to frame"))?;
-        let payload_hash = ContentHash::of_bytes(&payload);
-
-        let mut bytes = Vec::with_capacity(BLOB_HEADER_LEN + payload.len());
-        bytes.extend_from_slice(BLOB_MAGIC);
-        bytes.extend_from_slice(&BLOB_FORMAT_VERSION.to_le_bytes());
-        bytes.extend_from_slice(&payload_length.to_le_bytes());
-        bytes.extend_from_slice(payload_hash.as_bytes());
-        bytes.extend_from_slice(&payload);
-
-        Ok(BrepBlob::new(self.identity.clone(), bytes))
+        self.frame(BLOB_MAGIC, payload)
     }
 
     fn decode_shape(&mut self, blob: &BrepBlob) -> Result<ShapeHandle> {
-        // The kernel identity is checked first: a blob written by a different
-        // Open CASCADE, or by a different build of this bridge, describes
-        // geometry this build may compute differently.
-        blob.require_kernel(&self.identity)?;
-
-        let bytes = blob.bytes();
-        if bytes.len() < BLOB_HEADER_LEN || &bytes[..BLOB_MAGIC.len()] != BLOB_MAGIC {
-            return Err(CadError::kernel(
-                "this cached shape is not in FerriteCAD's B-Rep blob format; discard the cache",
-            ));
-        }
-
-        // Framed separately from the kernel identity because the two move
-        // independently: this version changes when FerriteCAD changes what it
-        // stores, not when Open CASCADE changes.
-        let version = u32::from_le_bytes(
-            bytes[BLOB_MAGIC.len()..BLOB_VERSION_END]
-                .try_into()
-                .map_err(|_| CadError::kernel("this cached shape has a truncated header"))?,
-        );
-        if version != BLOB_FORMAT_VERSION {
-            return Err(CadError::unsupported(format!(
-                "this cached shape is in blob format v{version}, and this build writes \
-                 v{BLOB_FORMAT_VERSION}; discard the cache rather than decoding it"
-            )));
-        }
-
-        let declared_length = u64::from_le_bytes(
-            bytes[BLOB_VERSION_END..BLOB_LENGTH_END]
-                .try_into()
-                .map_err(|_| CadError::kernel("this cached shape has a truncated length"))?,
-        );
-        let declared_length = usize::try_from(declared_length).map_err(|_| {
-            CadError::kernel("this cached shape declares a payload too large for this platform")
-        })?;
-        let payload = &bytes[BLOB_HEADER_LEN..];
-        if payload.len() != declared_length {
-            return Err(CadError::kernel(format!(
-                "this cached shape declares {declared_length} payload bytes but contains {}; \
-                 discard the damaged cache",
-                payload.len()
-            )));
-        }
-        if payload.is_empty() {
-            return Err(CadError::kernel(
-                "this cached shape has an empty B-Rep payload; discard the damaged cache",
-            ));
-        }
-
-        let expected_hash = ContentHash::from_slice(&bytes[BLOB_LENGTH_END..BLOB_HASH_END])
-            .map_err(|_| CadError::kernel("this cached shape has a malformed payload checksum"))?;
-        if ContentHash::of_bytes(payload) != expected_hash {
-            return Err(CadError::kernel(
-                "this cached shape's payload checksum does not match; discard the damaged cache",
-            ));
-        }
-
+        let payload = self.unframe(BLOB_MAGIC, blob)?;
         let raw = self.session.decode_shape(payload)?;
         Ok(ShapeHandle::new(self.session_id, raw))
     }

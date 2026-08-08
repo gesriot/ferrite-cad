@@ -345,6 +345,31 @@ This v2 framing, the build identity and 25 adapter tests against real geometry
 were verified with pinned OCCT 8.0.1 on Linux, Windows and macOS in
 [run 31275991427](https://github.com/gesriot/ferrite-cad/actions/runs/31275991427).
 
+## A shape-set index is not a name
+
+The obvious way to point at a face inside a cached B-Rep is `BinTools_ShapeSet`:
+it hands out an index per shape, `Index()` looks one up and `Shape()` gives it
+back. It does not work, and the way it fails is silent.
+
+`Index()` strips the location. The top cap of a prism is the bottom cap with a
+translation — the two share a `TShape` — so both resolve to the same index.
+Measured on OCCT 7.9.3: the located form returns 0, meaning not found, and the
+form with its location stripped returns exactly the bottom cap's index. A
+reference to the top face would have resolved to the bottom one, which is the
+retargeting the whole naming design exists to prevent.
+
+What the bridge does instead is write the wanted sub-shapes down. An archive is
+a compound built deliberately — the shape first, then each named sub-shape in
+the order asked for — and a *slot* is a position in that list. It is an
+internal index of a blob we wrote, not a traversal index of geometry, and it
+means nothing outside the blob it came with. After a round trip each slot
+returns a face that is `IsSame` a face of the restored solid, with the same
+area, and six names come back as six distinct faces.
+
+An archive carries a different magic from a plain blob. Reading one as the
+other would hand back the compound instead of the solid, or find no sub-shape
+table, and both are wrong quietly.
+
 ## Open CASCADE 8.0 changed things the adapter uses
 
 The bridge compiles against 7.9 and 8.0 alike, because a contributor's

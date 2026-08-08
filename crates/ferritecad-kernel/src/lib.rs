@@ -51,5 +51,6 @@ pub use profile::{
 };
 pub use request::{ExtrudeExtent, ExtrudeRequest, TessellationParams};
 pub use result::{
-    BrepBlob, ExtrudeResult, History, HistoryInput, Mesh, MeshFaceRange, OperationResult,
+    ArchiveSlot, BrepBlob, ExtrudeResult, History, HistoryInput, Mesh, MeshFaceRange,
+    OperationResult,
 };

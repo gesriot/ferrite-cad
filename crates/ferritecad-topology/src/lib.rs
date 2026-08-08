@@ -30,8 +30,10 @@
 //! geometry kernel does not yet emit a shape for a sketch on its own, and
 //! inventing a handle for one would be a name with nothing behind it.
 
+mod archive;
 mod map;
 mod resolve;
 
+pub use archive::{ArchivedFeature, BoundName, archive_feature, restore_feature};
 pub use map::{FeatureNames, TopologyMap};
 pub use resolve::resolve;

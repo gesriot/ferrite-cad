@@ -139,6 +139,45 @@ impl TopologyMap {
         self.features.insert(producer, names);
         Ok(())
     }
+
+    /// Records names restored from an archive rather than from an operation.
+    ///
+    /// The same checks as a fresh record: every face must be a face of the
+    /// shape it was restored with. What is deliberately absent is history —
+    /// an archive carries the sub-shapes that were named, not how they were
+    /// made — so this cannot be used to fake a rebuild.
+    pub fn record_restored(
+        &mut self,
+        producer: ObjectId,
+        shape: ShapeHandle,
+        start_cap: &[SubShapeHandle],
+        end_cap: &[SubShapeHandle],
+        sides: &BTreeMap<StableEntityId, Vec<SubShapeHandle>>,
+    ) -> Result<()> {
+        let mut names = FeatureNames {
+            shape: Some(shape),
+            ..FeatureNames::default()
+        };
+
+        for (faces, into) in [
+            (start_cap, &mut names.start_cap),
+            (end_cap, &mut names.end_cap),
+        ] {
+            for face in faces {
+                check(*face, shape, producer, "a restored extrusion cap")?;
+                into.insert(*face);
+            }
+        }
+        for (segment, faces) in sides {
+            for face in faces {
+                check(*face, shape, producer, "a restored extrusion side")?;
+                names.sides.entry(*segment).or_default().insert(*face);
+            }
+        }
+
+        self.features.insert(producer, names);
+        Ok(())
+    }
 }
 
 fn check(face: SubShapeHandle, shape: ShapeHandle, producer: ObjectId, what: &str) -> Result<()> {

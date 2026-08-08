@@ -158,6 +158,29 @@ unsafe extern "C" {
         out_shape: *mut u64,
         out_error: *mut RawError,
     ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn fc_occt_encode_shape_named(
+        session: *mut RawSession,
+        shape: u64,
+        sub_shapes: *const u64,
+        sub_shape_count: usize,
+        out_slots: *mut u32,
+        out_bytes: *mut u8,
+        capacity: usize,
+        out_length: *mut usize,
+        out_error: *mut RawError,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn fc_occt_decode_shape_named(
+        session: *mut RawSession,
+        bytes: *const u8,
+        length: usize,
+        slots: *const u32,
+        slot_count: usize,
+        out_shape: *mut u64,
+        out_sub_shapes: *mut u64,
+        out_error: *mut RawError,
+    ) -> i32;
     fn fc_occt_release_shape(session: *mut RawSession, shape: u64);
     fn fc_occt_live_shape_count(session: *const RawSession) -> usize;
 }
@@ -360,6 +383,99 @@ impl Session {
         };
         interpret(status, &error, "decoding a cached shape")?;
         Ok(shape)
+    }
+
+    /// Archives a shape with the sub-shapes to be found again.
+    pub(crate) fn encode_shape_named(
+        &mut self,
+        shape: u64,
+        sub_shapes: &[u64],
+    ) -> Result<(Vec<u8>, Vec<u32>)> {
+        const WHAT: &str = "archiving a shape with its named sub-shapes";
+
+        let mut slots = vec![0u32; sub_shapes.len()];
+        let mut length = 0usize;
+        let mut error = RawError::empty();
+
+        // Two calls, as elsewhere: the first reports the length, the second
+        // fills a buffer the caller owns.
+        //
+        // SAFETY: the slices live across the call and their lengths travel
+        // with them; the out-parameters are valid.
+        let status = unsafe {
+            fc_occt_encode_shape_named(
+                self.raw,
+                shape,
+                sub_shapes.as_ptr(),
+                sub_shapes.len(),
+                slots.as_mut_ptr(),
+                std::ptr::null_mut(),
+                0,
+                &mut length,
+                &mut error,
+            )
+        };
+        interpret(status, &error, WHAT)?;
+
+        if length == 0 {
+            return Err(CadError::kernel(format!(
+                "{WHAT}: the bridge reported an empty archive"
+            )));
+        }
+
+        let mut bytes = vec![0u8; length];
+        let mut written = 0usize;
+        // SAFETY: the buffer is exactly `length` bytes and lives across the
+        // call; the out-parameters are valid.
+        let status = unsafe {
+            fc_occt_encode_shape_named(
+                self.raw,
+                shape,
+                sub_shapes.as_ptr(),
+                sub_shapes.len(),
+                slots.as_mut_ptr(),
+                bytes.as_mut_ptr(),
+                length,
+                &mut written,
+                &mut error,
+            )
+        };
+        interpret(status, &error, WHAT)?;
+
+        if written != length {
+            return Err(CadError::kernel(format!(
+                "{WHAT}: the bridge first reported {length} bytes and then wrote {written}"
+            )));
+        }
+        Ok((bytes, slots))
+    }
+
+    /// Restores a shape and the sub-shapes named by their slots.
+    pub(crate) fn decode_shape_named(
+        &mut self,
+        bytes: &[u8],
+        slots: &[u32],
+    ) -> Result<(u64, Vec<u64>)> {
+        let mut shape = 0u64;
+        let mut resolved = vec![0u64; slots.len()];
+        let mut error = RawError::empty();
+
+        // SAFETY: both slices live across the call with their lengths; the
+        // out-parameters are valid and sized by `slots.len()`.
+        let status = unsafe {
+            fc_occt_decode_shape_named(
+                self.raw,
+                bytes.as_ptr(),
+                bytes.len(),
+                slots.as_ptr(),
+                slots.len(),
+                &mut shape,
+                resolved.as_mut_ptr(),
+                &mut error,
+            )
+        };
+        interpret(status, &error, "restoring an archived shape")?;
+        Ok((shape, resolved))
     }
 
     pub(crate) fn release(&mut self, shape: u64) {

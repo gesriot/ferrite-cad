@@ -19,6 +19,7 @@
 #include <vector>
 
 #include <BRep_Tool.hxx>
+#include <BRep_Builder.hxx>
 #include <BinTools.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
@@ -41,6 +42,8 @@
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Vertex.hxx>
+#include <TopoDS_Compound.hxx>
+#include <TopoDS_Iterator.hxx>
 #include <TopoDS_Wire.hxx>
 #include <gp_Ax3.hxx>
 #include <gp_Dir.hxx>
@@ -588,6 +591,157 @@ FcOcctStatus fc_occt_decode_shape(FcOcctSession *session, const uint8_t *bytes,
     const uint64_t id = session->next_shape++;
     session->shapes.emplace(id, std::move(record));
     *out_shape = id;
+    return FC_OCCT_OK;
+  });
+}
+
+FcOcctStatus fc_occt_encode_shape_named(FcOcctSession *session, uint64_t shape,
+                                        const uint64_t *sub_shapes,
+                                        size_t sub_shape_count,
+                                        uint32_t *out_slots, uint8_t *out_bytes,
+                                        size_t capacity, size_t *out_length,
+                                        FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr || out_length == nullptr ||
+        (sub_shape_count > 0 && (sub_shapes == nullptr || out_slots == nullptr))) {
+      write_error(out_error,
+                  "fc_occt_encode_shape_named was given a null argument");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+
+    // The archive is written down deliberately rather than discovered: the
+    // shape, then each requested sub-shape, in the order asked for.
+    BRep_Builder builder;
+    TopoDS_Compound archive;
+    builder.MakeCompound(archive);
+    builder.Add(archive, found->second.shape);
+
+    for (size_t i = 0; i < sub_shape_count; ++i) {
+      const uint64_t sub_id = sub_shapes[i];
+      if (sub_id >= found->second.sub_shapes.size()) {
+        write_error(out_error, "sub-shape " + std::to_string(sub_id) +
+                                   " does not belong to shape " +
+                                   std::to_string(shape));
+        return FC_OCCT_UNKNOWN_HANDLE;
+      }
+      const TopoDS_Shape &sub_shape = found->second.sub_shapes[sub_id];
+
+      // A stale identifier could name a sub-shape of some earlier result. An
+      // archive whose entries are not part of the shape it archives would
+      // hand back faces of the wrong solid.
+      bool contained = false;
+      for (TopExp_Explorer it(found->second.shape, sub_shape.ShapeType());
+           it.More(); it.Next()) {
+        if (it.Current().IsSame(sub_shape)) {
+          contained = true;
+          break;
+        }
+      }
+      if (!contained) {
+        write_error(out_error, "sub-shape " + std::to_string(sub_id) +
+                                   " is not part of the shape being archived");
+        return FC_OCCT_INVALID_INPUT;
+      }
+
+      builder.Add(archive, sub_shape);
+      out_slots[i] = static_cast<uint32_t>(i + 1);
+    }
+
+    std::ostringstream buffer(std::ios::out | std::ios::binary);
+    BinTools::Write(archive, buffer, false, false,
+                    BinTools_FormatVersion_CURRENT);
+    const std::string encoded = buffer.str();
+
+    *out_length = encoded.size();
+    if (capacity == 0) {
+      return FC_OCCT_OK;
+    }
+    if (out_bytes == nullptr || capacity < encoded.size()) {
+      write_error(out_error, "the buffer holds " + std::to_string(capacity) +
+                                 " bytes but the archive needs " +
+                                 std::to_string(encoded.size()));
+      return FC_OCCT_INVALID_INPUT;
+    }
+    std::memcpy(out_bytes, encoded.data(), encoded.size());
+    return FC_OCCT_OK;
+  });
+}
+
+FcOcctStatus fc_occt_decode_shape_named(FcOcctSession *session,
+                                        const uint8_t *bytes, size_t length,
+                                        const uint32_t *slots,
+                                        size_t slot_count, uint64_t *out_shape,
+                                        uint64_t *out_sub_shapes,
+                                        FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr || bytes == nullptr || out_shape == nullptr ||
+        (slot_count > 0 && (slots == nullptr || out_sub_shapes == nullptr))) {
+      write_error(out_error,
+                  "fc_occt_decode_shape_named was given a null argument");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    if (length == 0) {
+      write_error(out_error, "a cached archive cannot be empty");
+      return FC_OCCT_INVALID_INPUT;
+    }
+
+    std::istringstream buffer(
+        std::string(reinterpret_cast<const char *>(bytes), length),
+        std::ios::in | std::ios::binary);
+
+    TopoDS_Shape restored;
+    BinTools::Read(restored, buffer);
+    if (restored.IsNull() || restored.ShapeType() != TopAbs_COMPOUND) {
+      write_error(out_error,
+                  "the cached bytes are not an archive written by this bridge");
+      return FC_OCCT_KERNEL;
+    }
+
+    std::vector<TopoDS_Shape> entries;
+    for (TopoDS_Iterator it(restored); it.More(); it.Next()) {
+      entries.push_back(it.Value());
+    }
+    if (entries.empty()) {
+      write_error(out_error, "the archive holds no shape");
+      return FC_OCCT_KERNEL;
+    }
+
+    ShapeRecord record;
+    record.shape = entries[0];
+    // Still decoded: an archive carries the sub-shapes that were named, not
+    // the history of the operation that made them.
+    record.decoded = true;
+
+    std::vector<uint64_t> resolved(slot_count, 0);
+    for (size_t i = 0; i < slot_count; ++i) {
+      const uint32_t slot = slots[i];
+      if (slot == 0) {
+        write_error(out_error,
+                    "slot 0 is the archived shape itself, not a sub-shape");
+        return FC_OCCT_INVALID_INPUT;
+      }
+      if (static_cast<size_t>(slot) >= entries.size()) {
+        write_error(out_error, "slot " + std::to_string(slot) +
+                                   " is outside an archive of " +
+                                   std::to_string(entries.size() - 1) +
+                                   " sub-shapes");
+        return FC_OCCT_INVALID_INPUT;
+      }
+      resolved[i] = record.remember(entries[slot]);
+    }
+
+    const uint64_t id = session->next_shape++;
+    session->shapes.emplace(id, std::move(record));
+    *out_shape = id;
+    for (size_t i = 0; i < slot_count; ++i) {
+      out_sub_shapes[i] = resolved[i];
+    }
     return FC_OCCT_OK;
   });
 }

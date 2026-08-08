@@ -191,6 +191,47 @@ FcOcctStatus fc_occt_decode_shape(FcOcctSession *session,
                                   uint64_t *out_shape,
                                   FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
+/*
+ * Archives a shape together with sub-shapes the caller wants to find again.
+ *
+ * The archive is a compound this bridge builds: the shape first, then each
+ * requested sub-shape, in the order given. A slot is that position — 0 is the
+ * shape itself and `k + 1` is the k-th sub-shape — and it means nothing
+ * outside this one blob. It is not a traversal index and not a name.
+ *
+ * The obvious alternative does not work. BinTools_ShapeSet hands out an index
+ * per shape and can look one up again, but the lookup strips the location, and
+ * the two caps of a prism share a TShape: both resolve to the same index, so a
+ * reference to one would silently resolve to the other. Measured on OCCT
+ * 7.9.3. Writing the wanted sub-shapes down explicitly avoids the question.
+ *
+ * `out_slots` receives one slot per requested sub-shape and must have room for
+ * `sub_shape_count`. The bytes follow the usual two-call protocol: pass a zero
+ * capacity to learn the length.
+ */
+FcOcctStatus fc_occt_encode_shape_named(
+    FcOcctSession *session, uint64_t shape, const uint64_t *sub_shapes,
+    size_t sub_shape_count, uint32_t *out_slots, uint8_t *out_bytes,
+    size_t capacity, size_t *out_length,
+    FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/*
+ * Restores a shape and the sub-shapes named by their slots.
+ *
+ * `out_sub_shapes` receives one session-local identifier per requested slot
+ * and must have room for `slot_count`. Slot 0 is the shape itself and is
+ * refused here: it is not a sub-shape.
+ *
+ * The restored shape still carries no history. This call returns the
+ * sub-shapes the caller archived, and nothing about how they were made; a
+ * semantic name is reattached by the layer that stored the slot table, not by
+ * the kernel.
+ */
+FcOcctStatus fc_occt_decode_shape_named(
+    FcOcctSession *session, const uint8_t *bytes, size_t length,
+    const uint32_t *slots, size_t slot_count, uint64_t *out_shape,
+    uint64_t *out_sub_shapes, FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
 /* Drops a shape. Releasing an unknown or already-released identifier is not an
  * error: an unwinding caller must be able to release everything it might hold
  * without first working out what it actually holds. */

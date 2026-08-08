@@ -276,6 +276,7 @@ dependencies = [
  "ferritecad-document",
  "ferritecad-eval",
  "ferritecad-kernel",
+ "ferritecad-topology",
  "ferritecad-types",
  "tempfile",
 ]

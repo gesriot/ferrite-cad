@@ -2,10 +2,10 @@
 use ferritecad_types::{CanonicalHasher, ContentHash, Result, Transform};
 
 use crate::context::OperationContext;
-use crate::handle::ShapeHandle;
+use crate::handle::{ShapeHandle, SubShapeHandle};
 use crate::identity::KernelIdentity;
 use crate::request::{ExtrudeRequest, TessellationParams};
-use crate::result::{BrepBlob, ExtrudeResult, Mesh, OperationResult};
+use crate::result::{ArchiveSlot, BrepBlob, ExtrudeResult, Mesh, OperationResult};
 
 /// The operations FerriteCAD needs from a geometry kernel.
 ///
@@ -57,6 +57,34 @@ pub trait GeometryKernel {
         params: &TessellationParams,
         context: &OperationContext,
     ) -> Result<Mesh>;
+
+    /// Serialises a shape together with sub-shapes to be found again.
+    ///
+    /// Returns one [`ArchiveSlot`] per requested sub-shape, in the order given.
+    /// A slot is a position inside the returned blob and means nothing without
+    /// it; the caller keeps the correspondence between its own names and these
+    /// slots, and the kernel never learns what those names are.
+    ///
+    /// This is what makes a cached shape usable by a layer that names faces.
+    /// [`Self::decode_shape`] alone cannot be: a B-Rep stores a shape, not the
+    /// operation that made it.
+    fn encode_shape_with(
+        &mut self,
+        shape: ShapeHandle,
+        sub_shapes: &[SubShapeHandle],
+    ) -> Result<(BrepBlob, Vec<ArchiveSlot>)>;
+
+    /// Restores a shape and the sub-shapes named by their slots.
+    ///
+    /// Implementations must refuse a slot outside the archive, and
+    /// [`ArchiveSlot::ROOT`], which is the shape and not a sub-shape. The
+    /// restored shape still carries no history; what comes back is the
+    /// sub-shapes that were archived, not how they were made.
+    fn decode_shape_with(
+        &mut self,
+        blob: &BrepBlob,
+        slots: &[ArchiveSlot],
+    ) -> Result<(ShapeHandle, Vec<SubShapeHandle>)>;
 
     /// Serialises a shape into an opaque cache blob.
     fn encode_shape(&mut self, shape: ShapeHandle) -> Result<BrepBlob>;

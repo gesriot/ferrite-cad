@@ -159,6 +159,42 @@ impl BrepBlob {
     }
 }
 
+/// A position inside one archive, and nothing more.
+///
+/// An archive holds a shape together with the sub-shapes its author asked to
+/// keep; a slot says which of those a caller wants back. It is meaningful only
+/// against the blob it was produced with, which is why the two must be stored
+/// together and why this type says nothing about geometry.
+///
+/// It is deliberately *not* a name. A name says what a face is and survives a
+/// rebuild; a slot says where a face sits in one particular archive and
+/// survives nothing else.
+///
+/// A bare integer on purpose. When a later slice stores slots beside their
+/// blobs, it can write this out with whatever it already uses; nothing here
+/// needs a serialisation dependency to make that possible. Contrast
+/// [`SubShapeHandle`], which may never be written down at all and implements
+/// no serialisation for that reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ArchiveSlot(u32);
+
+impl ArchiveSlot {
+    /// Slot zero is the archived shape itself, never a sub-shape.
+    pub const ROOT: Self = Self(0);
+
+    pub const fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+
+    pub const fn is_root(self) -> bool {
+        self.0 == 0
+    }
+}
+
 /// Which triangles belong to which face.
 ///
 /// Without this the viewport can draw a solid but cannot tell what was clicked,

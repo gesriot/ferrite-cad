@@ -21,11 +21,18 @@ use crate::identity::KernelIdentity;
 use crate::kernel::GeometryKernel;
 use crate::request::{ExtrudeExtent, ExtrudeRequest, TessellationParams};
 use crate::result::{
-    BrepBlob, ExtrudeResult, History, HistoryInput, Mesh, MeshFaceRange, OperationResult,
+    ArchiveSlot, BrepBlob, ExtrudeResult, History, HistoryInput, Mesh, MeshFaceRange,
+    OperationResult,
 };
 
 /// Marks the mock's own blob format, so a stray blob is refused early.
 const BLOB_MAGIC: &[u8; 4] = b"FCMK";
+
+/// Marks an archive that also carries named sub-shapes.
+///
+/// A different marker from a plain blob on purpose: decoding an archive as a
+/// bare shape, or the reverse, would misread one for the other.
+const NAMED_MAGIC: &[u8; 4] = b"FCMN";
 
 /// A prism: a polygon swept between two parallel caps.
 #[derive(Debug, Clone, PartialEq)]
@@ -109,6 +116,88 @@ impl MockKernel {
 
     fn face(&self, shape: ShapeHandle, index: u64) -> SubShapeHandle {
         SubShapeHandle::new(shape, SubShapeKind::Face, index)
+    }
+
+    /// Writes a prism under `magic`, shared by the plain and named formats.
+    fn encode_prism(&self, magic: &[u8; 4], shape: ShapeHandle) -> Result<Vec<u8>> {
+        let prism = self.lookup(shape)?;
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(magic);
+        bytes.extend_from_slice(&(prism.base.len() as u32).to_le_bytes());
+        for point in prism.base.iter().chain(prism.top.iter()) {
+            for value in [point.x, point.y, point.z] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        for label in &prism.labels {
+            bytes.extend_from_slice(&label.to_bytes());
+        }
+        Ok(bytes)
+    }
+
+    /// Reads a prism written under `magic`, returning it and whatever follows.
+    ///
+    /// The magic is checked rather than skipped: a plain blob read as an
+    /// archive, or the reverse, would misread one format for the other.
+    fn decode_prism<'b>(&self, magic: &[u8; 4], bytes: &'b [u8]) -> Result<(Prism, &'b [u8])> {
+        let header = 4 + 4;
+        if bytes.len() < header || &bytes[..4] != magic {
+            return Err(CadError::kernel(
+                "cached shape is not in the mock kernel's blob format",
+            ));
+        }
+
+        let count = u32::from_le_bytes(
+            bytes[4..8]
+                .try_into()
+                .map_err(|_| CadError::kernel("cached shape has a truncated header"))?,
+        ) as usize;
+
+        let body = header + count * 6 * 8 + count * 16;
+        if bytes.len() < body {
+            return Err(CadError::kernel(format!(
+                "cached shape claims {count} corners, which needs {body} bytes, but has {}",
+                bytes.len()
+            )));
+        }
+
+        let mut cursor = header;
+        let read_point = |cursor: &mut usize| -> Result<Point3> {
+            let mut coords = [0.0f64; 3];
+            for coord in &mut coords {
+                let slice = bytes
+                    .get(*cursor..*cursor + 8)
+                    .ok_or_else(|| CadError::kernel("cached shape ends mid-coordinate"))?;
+                *coord = f64::from_le_bytes(
+                    slice
+                        .try_into()
+                        .map_err(|_| CadError::kernel("cached shape ends mid-coordinate"))?,
+                );
+                *cursor += 8;
+            }
+            Point3::new(coords[0], coords[1], coords[2])
+        };
+
+        let mut base = Vec::with_capacity(count);
+        for _ in 0..count {
+            base.push(read_point(&mut cursor)?);
+        }
+        let mut top = Vec::with_capacity(count);
+        for _ in 0..count {
+            top.push(read_point(&mut cursor)?);
+        }
+
+        let mut labels = Vec::with_capacity(count);
+        for _ in 0..count {
+            let slice = bytes
+                .get(cursor..cursor + 16)
+                .ok_or_else(|| CadError::kernel("cached shape ends mid-label"))?;
+            labels.push(StableEntityId::from_slice(slice)?);
+            cursor += 16;
+        }
+
+        Ok((Prism { base, top, labels }, &bytes[cursor..]))
     }
 }
 
@@ -357,85 +446,113 @@ impl GeometryKernel for MockKernel {
         Ok(mesh)
     }
 
-    fn encode_shape(&mut self, shape: ShapeHandle) -> Result<BrepBlob> {
+    fn encode_shape_with(
+        &mut self,
+        shape: ShapeHandle,
+        sub_shapes: &[SubShapeHandle],
+    ) -> Result<(BrepBlob, Vec<ArchiveSlot>)> {
         let prism = self.lookup(shape)?;
+        let face_count = prism.side_face_count() as u64 + 2;
 
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(BLOB_MAGIC);
-        bytes.extend_from_slice(&(prism.base.len() as u32).to_le_bytes());
-        for point in prism.base.iter().chain(prism.top.iter()) {
-            for value in [point.x, point.y, point.z] {
-                bytes.extend_from_slice(&value.to_le_bytes());
+        let mut named = Vec::with_capacity(sub_shapes.len());
+        let mut slots = Vec::with_capacity(sub_shapes.len());
+        for (position, sub) in sub_shapes.iter().enumerate() {
+            if sub.shape() != shape {
+                return Err(CadError::kernel(format!(
+                    "{sub} does not belong to the shape being archived"
+                )));
             }
-        }
-        for label in &prism.labels {
-            bytes.extend_from_slice(&label.to_bytes());
+            if sub.kind() != SubShapeKind::Face || sub.index() >= face_count {
+                return Err(CadError::kernel(format!(
+                    "{sub} is not a face of the shape being archived"
+                )));
+            }
+            named.push(sub.index());
+            // Slot zero is the shape itself, so the k-th sub-shape is k + 1.
+            slots.push(ArchiveSlot::new(position as u32 + 1));
         }
 
+        let mut bytes = self.encode_prism(NAMED_MAGIC, shape)?;
+        bytes.extend_from_slice(&(named.len() as u32).to_le_bytes());
+        for index in named {
+            bytes.extend_from_slice(&index.to_le_bytes());
+        }
+
+        Ok((BrepBlob::new(self.identity.clone(), bytes), slots))
+    }
+
+    fn decode_shape_with(
+        &mut self,
+        blob: &BrepBlob,
+        slots: &[ArchiveSlot],
+    ) -> Result<(ShapeHandle, Vec<SubShapeHandle>)> {
+        blob.require_kernel(&self.identity)?;
+
+        let (prism, rest) = self.decode_prism(NAMED_MAGIC, blob.bytes())?;
+
+        if rest.len() < 4 {
+            return Err(CadError::kernel("the archive has no sub-shape table"));
+        }
+        let count = u32::from_le_bytes(
+            rest[..4]
+                .try_into()
+                .map_err(|_| CadError::kernel("the archive has a truncated table"))?,
+        ) as usize;
+        if rest.len() != 4 + count * 8 {
+            return Err(CadError::kernel(format!(
+                "the archive claims {count} sub-shapes, which needs {} bytes, but has {}",
+                4 + count * 8,
+                rest.len()
+            )));
+        }
+
+        let mut named = Vec::with_capacity(count);
+        for entry in 0..count {
+            let at = 4 + entry * 8;
+            named.push(u64::from_le_bytes(
+                rest[at..at + 8]
+                    .try_into()
+                    .map_err(|_| CadError::kernel("the archive ends mid-entry"))?,
+            ));
+        }
+
+        let shape = self.store(prism);
+        let mut resolved = Vec::with_capacity(slots.len());
+        for slot in slots {
+            if slot.is_root() {
+                return Err(CadError::kernel(
+                    "slot 0 is the archived shape itself, not a sub-shape",
+                ));
+            }
+            let position = slot.index() as usize - 1;
+            let face = named.get(position).ok_or_else(|| {
+                CadError::kernel(format!(
+                    "slot {} is outside an archive of {count} sub-shapes",
+                    slot.index()
+                ))
+            })?;
+            resolved.push(self.face(shape, *face));
+        }
+
+        Ok((shape, resolved))
+    }
+
+    fn encode_shape(&mut self, shape: ShapeHandle) -> Result<BrepBlob> {
+        let bytes = self.encode_prism(BLOB_MAGIC, shape)?;
         Ok(BrepBlob::new(self.identity.clone(), bytes))
     }
 
     fn decode_shape(&mut self, blob: &BrepBlob) -> Result<ShapeHandle> {
         blob.require_kernel(&self.identity)?;
 
-        let bytes = blob.bytes();
-        let header = 4 + 4;
-        if bytes.len() < header || &bytes[..4] != BLOB_MAGIC {
-            return Err(CadError::kernel(
-                "cached shape is not in the mock kernel's blob format",
-            ));
-        }
-
-        let count = u32::from_le_bytes(
-            bytes[4..8]
-                .try_into()
-                .map_err(|_| CadError::kernel("cached shape has a truncated header"))?,
-        ) as usize;
-
-        let expected = header + count * 6 * 8 + count * 16;
-        if bytes.len() != expected {
+        let (prism, rest) = self.decode_prism(BLOB_MAGIC, blob.bytes())?;
+        if !rest.is_empty() {
             return Err(CadError::kernel(format!(
-                "cached shape claims {count} corners, which needs {expected} bytes, but has {}",
-                bytes.len()
+                "cached shape has {} bytes after the prism; it may be an archive",
+                rest.len()
             )));
         }
-
-        let mut cursor = header;
-        let read_point = |cursor: &mut usize| -> Result<Point3> {
-            let mut coords = [0.0f64; 3];
-            for coord in &mut coords {
-                let slice = bytes
-                    .get(*cursor..*cursor + 8)
-                    .ok_or_else(|| CadError::kernel("cached shape ends mid-coordinate"))?;
-                *coord = f64::from_le_bytes(
-                    slice
-                        .try_into()
-                        .map_err(|_| CadError::kernel("cached shape ends mid-coordinate"))?,
-                );
-                *cursor += 8;
-            }
-            Point3::new(coords[0], coords[1], coords[2])
-        };
-
-        let mut base = Vec::with_capacity(count);
-        for _ in 0..count {
-            base.push(read_point(&mut cursor)?);
-        }
-        let mut top = Vec::with_capacity(count);
-        for _ in 0..count {
-            top.push(read_point(&mut cursor)?);
-        }
-
-        let mut labels = Vec::with_capacity(count);
-        for _ in 0..count {
-            let slice = bytes
-                .get(cursor..cursor + 16)
-                .ok_or_else(|| CadError::kernel("cached shape ends mid-label"))?;
-            labels.push(StableEntityId::from_slice(slice)?);
-            cursor += 16;
-        }
-
-        Ok(self.store(Prism { base, top, labels }))
+        Ok(self.store(prism))
     }
 
     fn release(&mut self, shape: ShapeHandle) {
