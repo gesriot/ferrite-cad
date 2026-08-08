@@ -75,6 +75,16 @@ impl ArchivedFeature {
         &self.blob
     }
 
+    /// The checksum the table was recorded against.
+    ///
+    /// Equal to the payload's own hash while the archive is in memory, since
+    /// nothing may construct one where they disagree. It is carried separately
+    /// so it can be written down and checked again after a round trip through
+    /// storage, where the two can drift apart.
+    pub fn blob_hash(&self) -> ContentHash {
+        self.blob_hash
+    }
+
     /// The names this archive carries, in a deterministic order.
     pub fn bindings(&self) -> impl ExactSizeIterator<Item = (BoundName, ArchiveSlot)> + '_ {
         self.bindings.iter().map(|(name, slot)| (*name, *slot))

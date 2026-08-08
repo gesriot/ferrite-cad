@@ -31,9 +31,11 @@
 //! inventing a handle for one would be a name with nothing behind it.
 
 mod archive;
+mod codec;
 mod map;
 mod resolve;
 
 pub use archive::{ArchivedFeature, BoundName, archive_feature, restore_feature};
+pub use codec::ARCHIVE_CACHE_KIND;
 pub use map::{FeatureNames, TopologyMap};
 pub use resolve::resolve;
