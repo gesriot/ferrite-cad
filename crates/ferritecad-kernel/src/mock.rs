@@ -68,22 +68,37 @@ pub struct MockKernel {
     shapes: BTreeMap<u64, Prism>,
     next_index: u64,
     extrusions: u64,
+    refuse_named_encoding: bool,
 }
 
 impl MockKernel {
     pub fn new() -> Self {
-        Self::with_version("1.0.0")
+        Self::with_identity("1.0.0", "")
     }
 
     /// A mock claiming a particular version, for testing cache invalidation.
     pub fn with_version(version: &str) -> Self {
+        Self::with_identity(version, "")
+    }
+
+    /// A mock with the usual version but another build fingerprint.
+    ///
+    /// Unlike a version change, this does not make `CacheStore::open` discard
+    /// the sidecar. It exists to prove the full identity in each operation key
+    /// keeps entries from two builds apart inside the same file.
+    pub fn with_build(build: &str) -> Self {
+        Self::with_identity("1.0.0", build)
+    }
+
+    fn with_identity(version: &str, build: &str) -> Self {
         Self {
-            identity: KernelIdentity::new("mock", version, "")
+            identity: KernelIdentity::new("mock", version, build)
                 .expect("the mock's own identity is well formed"),
             session: SessionId::new(),
             shapes: BTreeMap::new(),
             next_index: 0,
             extrusions: 0,
+            refuse_named_encoding: false,
         }
     }
 
@@ -105,6 +120,12 @@ impl MockKernel {
     /// cold one — the difference is a call that did not happen.
     pub fn extrude_count(&self) -> u64 {
         self.extrusions
+    }
+
+    /// Makes named archive encoding fail while leaving geometry operations
+    /// alone, so callers can prove cache writes are genuinely best-effort.
+    pub fn refuse_named_encoding(&mut self) {
+        self.refuse_named_encoding = true;
     }
 
     fn store(&mut self, prism: Prism) -> ShapeHandle {
@@ -464,6 +485,11 @@ impl GeometryKernel for MockKernel {
         shape: ShapeHandle,
         sub_shapes: &[SubShapeHandle],
     ) -> Result<(BrepBlob, Vec<ArchiveSlot>)> {
+        if self.refuse_named_encoding {
+            return Err(CadError::kernel(
+                "the mock was asked to refuse named archive encoding",
+            ));
+        }
         let prism = self.lookup(shape)?;
         let face_count = prism.side_face_count() as u64 + 2;
 

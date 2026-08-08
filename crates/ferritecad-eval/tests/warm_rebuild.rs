@@ -444,25 +444,49 @@ fn a_later_failure_releases_what_the_cache_restored() {
     built.release_all(&mut kernel);
     drop(cache);
 
-    // Break the body that follows the extrusion, so the rebuild fails after
-    // the cache has already produced a solid.
+    // Keep the document semantically valid, but make the second extrusion an
+    // operation this evaluator does not implement. Validation must pass, the
+    // first extrusion must be restored, and only then may conversion of the
+    // second one fail. A missing body tip would be a vacuous test: validation
+    // catches it before the rebuild loop and no cached shape ever exists.
+    let mut unsupported = document
+        .objects()
+        .expect("reads objects")
+        .into_iter()
+        .find_map(|object| match object.payload {
+            ObjectPayload::Extrude(feature) if object.id == plate.second => Some(feature),
+            _ => None,
+        })
+        .expect("the second extrusion exists");
+    unsupported.operation = SolidOperation::Add;
+    unsupported.target_body = Some(plate.body);
     document
         .write(|w| {
             w.put_object(
-                plate.body,
+                plate.second,
                 None,
-                3,
-                Some("Plate"),
-                &ObjectPayload::Body(Body {
-                    tip_feature: Some(ObjectId::new()),
-                }),
-            )
+                4,
+                Some("Extrude2"),
+                &ObjectPayload::Extrude(unsupported),
+            )?;
+            w.add_dependency(Dependency {
+                dependent: plate.second,
+                dependency: plate.body,
+                role: DependencyRole::TargetBody,
+            })
         })
         .expect("writes");
 
     let mut kernel = MockKernel::new();
     let mut cache = store(dir.path(), &kernel, document_id);
-    assert!(rebuild_cached(&document, &mut kernel, &mut cache, &context).is_err());
+    let err = rebuild_cached(&document, &mut kernel, &mut cache, &context)
+        .expect_err("the second operation is outside this slice");
+    assert_eq!(err.kind(), ferritecad_types::ErrorKind::Unsupported);
+    assert_eq!(
+        kernel.extrude_count(),
+        0,
+        "the first feature was restored before the later failure"
+    );
     assert_eq!(
         kernel.live_shape_count(),
         0,
@@ -511,6 +535,38 @@ fn a_cold_rebuild_neither_reads_nor_writes_the_cache() {
 }
 
 #[test]
+fn failed_archive_writes_do_not_fail_the_rebuild() {
+    let (dir, document, plate) = sample(10.0);
+    let document_id = document.meta().document_id;
+    let context = OperationContext::default();
+    let mut kernel = MockKernel::new();
+    kernel.refuse_named_encoding();
+    let mut cache = store(dir.path(), &kernel, document_id);
+
+    let (built, events) = rebuild_cached(&document, &mut kernel, &mut cache, &context)
+        .expect("cache write failures cannot invalidate computed geometry");
+
+    assert_eq!(kernel.extrude_count(), 2);
+    assert_eq!(named_faces(&built, &plate).len(), 6);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.outcome == CacheOutcome::Miss)
+            .count(),
+        2
+    );
+    let failed: Vec<_> = events
+        .iter()
+        .filter(|event| event.outcome == CacheOutcome::WriteFailed)
+        .collect();
+    assert_eq!(failed.len(), 2);
+    assert!(failed.iter().all(|event| event.detail.is_some()));
+
+    built.release_all(&mut kernel);
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
 fn an_entry_from_another_kernel_build_is_a_miss() {
     let (dir, document, _) = sample(10.0);
     let document_id = document.meta().document_id;
@@ -523,9 +579,9 @@ fn an_entry_from_another_kernel_build_is_a_miss() {
     built.release_all(&mut writer);
     drop(cache);
 
-    // A kernel claiming another version. The sidecar itself is discarded on
-    // open, so this is a miss before the codec is ever reached.
-    let mut other = MockKernel::with_version("9.9.9");
+    // Same id and version, another build. The sidecar stays in place; the full
+    // identity inside each operation key must make only this build miss.
+    let mut other = MockKernel::with_build("another-bridge-build");
     let mut cache = store(dir.path(), &other, document_id);
     let (built, events) =
         rebuild_cached(&document, &mut other, &mut cache, &context).expect("rebuilds");
@@ -533,7 +589,18 @@ fn an_entry_from_another_kernel_build_is_a_miss() {
     assert_eq!(other.extrude_count(), 2);
     assert!(
         events.iter().all(|e| e.outcome == CacheOutcome::Miss),
-        "a sidecar bound to another kernel is discarded whole: {events:?}"
+        "another build must not find entries under the original build's keys: {events:?}"
     );
     built.release_all(&mut other);
+    drop(cache);
+
+    // The other build wrote different keys rather than replacing or causing
+    // the original build's entries to be discarded.
+    let mut original = MockKernel::new();
+    let mut cache = store(dir.path(), &original, document_id);
+    let (built, events) = rebuild_cached(&document, &mut original, &mut cache, &context)
+        .expect("the original build still rebuilds");
+    assert_eq!(original.extrude_count(), 0);
+    assert!(events.iter().all(|e| e.outcome == CacheOutcome::Hit));
+    built.release_all(&mut original);
 }
