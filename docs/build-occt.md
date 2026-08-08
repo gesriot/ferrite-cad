@@ -183,9 +183,14 @@ brew install cmake ninja
 Two things differ from Linux and both must be handled before the first release
 build, not after:
 
-- The install name of each `libTK*.dylib` must be rewritten to
-  `@rpath/libTK*.dylib`, with `RPATH=@executable_path/../Frameworks` in the
-  bundle. Without this the application only runs on the machine that built it.
+- The pinned 8.0.1 install already gives each `libTK*.dylib` an
+  `@rpath/libTK*.dylib` install name, as verified from the adapter executable
+  in pin run
+  [31273458848](https://github.com/gesriot/ferrite-cad/actions/runs/31273458848).
+  The app bundle must still provide `LC_RPATH=@executable_path/../Frameworks`,
+  place the libraries there, and verify the result from a clean environment.
+  A future OCCT package that
+  reintroduces absolute install names must be rewritten during packaging.
 - Universal binaries need `-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"`, or two
   separate builds joined with `lipo`. Decide which before the packaging work
   starts; the second option is usually less painful with OCCT.

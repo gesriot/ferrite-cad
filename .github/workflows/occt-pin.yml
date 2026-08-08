@@ -487,9 +487,10 @@ jobs:
               export LD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               ;;
             macos)
-              # The in-place smoke test uses OCCT's absolute install names.
-              # This proves the install tree, not a relocatable app bundle;
-              # packaging must rewrite those names to @rpath separately.
+              # The CMAKE_BUILD_RPATH set above resolves OCCT's @rpath install
+              # names against this exact install tree. This proves the
+              # in-place build, not a relocatable app bundle; packaging must
+              # establish its own bundle-relative RPATHs separately.
               ;;
           esac
 
@@ -553,7 +554,9 @@ jobs:
               export LD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               ;;
             macos)
-              # OCCT's absolute install names resolve in place.
+              # build.rs embeds this OCCT install directory as an RPATH, which
+              # resolves the toolkits' @rpath install names without relying on
+              # a DYLD_* environment variable.
               ;;
           esac
 
@@ -566,9 +569,11 @@ jobs:
           # not the shim: the shim is static and lives inside it, and it is the
           # executable that names Open CASCADE at run time.
           #
-          # Checked here rather than in a step of its own because it needs the
-          # environment established above — on Windows, dumpbin and the MSVC
-          # linker are only on PATH within this shell.
+          # Kept in this step so dependency inspection and test execution use
+          # the same binary and the same step-local PATH. On Windows the
+          # workflow-wide vcvars export already supplies dumpbin to later
+          # steps; the override above additionally guarantees that rustc sees
+          # MSVC's link.exe ahead of Git Bash's unrelated utility.
           binary="$(cargo test -p ferritecad-occt --test occt_kernel --no-run --message-format=json 2>/dev/null \
             | jq -r 'select(.reason == "compiler-artifact")
                      | select(.target.name == "occt_kernel")
