@@ -23,6 +23,8 @@
 //! only recourse is to discard the entry and rebuild. That is cheap. The
 //! alternative is a name resolving to a face that is not the one it means.
 
+use std::mem::size_of;
+
 use ferritecad_kernel::{ArchiveSlot, BrepBlob, KernelIdentity};
 use ferritecad_types::{CadError, ContentHash, ObjectId, Result, StableEntityId};
 
@@ -45,6 +47,9 @@ const MAGIC: &[u8; 4] = b"FCNA";
 /// becomes worth the code; today there is nothing older to read.
 const FORMAT_VERSION: u16 = 1;
 
+/// Bytes before the checksummed archive payload.
+const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>() + size_of::<u64>() + 32;
+
 // Stable on disk. Never reuse a number for a different meaning, and never
 // renumber one: an old cache entry outlives the build that wrote it.
 const TAG_START_CAP: u16 = 1;
@@ -57,36 +62,48 @@ impl ArchivedFeature {
     /// Deterministic: the binding table is already ordered, so the same
     /// archive encodes to the same bytes on every machine and the cache can
     /// address the result by its content.
-    pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(MAGIC);
-        out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
-        out.extend_from_slice(&self.producer().to_bytes());
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&self.producer().to_bytes());
 
         let kernel = self.blob().kernel();
-        put_str(&mut out, kernel.id());
-        put_str(&mut out, kernel.version());
-        put_str(&mut out, kernel.build());
+        put_str(&mut payload, kernel.id())?;
+        put_str(&mut payload, kernel.version())?;
+        put_str(&mut payload, kernel.build())?;
 
-        out.extend_from_slice(self.blob_hash().as_bytes());
+        payload.extend_from_slice(self.blob_hash().as_bytes());
         let bytes = self.blob().bytes();
-        out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
-        out.extend_from_slice(bytes);
+        let blob_length = u64::try_from(bytes.len())
+            .map_err(|_| malformed("the B-Rep is too large to archive"))?;
+        payload.extend_from_slice(&blob_length.to_le_bytes());
+        payload.extend_from_slice(bytes);
 
         let bindings = self.bindings();
-        out.extend_from_slice(&(bindings.len() as u32).to_le_bytes());
+        let binding_count = u32::try_from(bindings.len())
+            .map_err(|_| malformed("there are too many topology names to archive"))?;
+        payload.extend_from_slice(&binding_count.to_le_bytes());
         for (name, slot) in bindings {
             match name {
-                BoundName::StartCap => out.extend_from_slice(&TAG_START_CAP.to_le_bytes()),
-                BoundName::EndCap => out.extend_from_slice(&TAG_END_CAP.to_le_bytes()),
+                BoundName::StartCap => payload.extend_from_slice(&TAG_START_CAP.to_le_bytes()),
+                BoundName::EndCap => payload.extend_from_slice(&TAG_END_CAP.to_le_bytes()),
                 BoundName::Side { profile_segment } => {
-                    out.extend_from_slice(&TAG_SIDE.to_le_bytes());
-                    out.extend_from_slice(&profile_segment.to_bytes());
+                    payload.extend_from_slice(&TAG_SIDE.to_le_bytes());
+                    payload.extend_from_slice(&profile_segment.to_bytes());
                 }
             }
-            out.extend_from_slice(&slot.index().to_le_bytes());
+            payload.extend_from_slice(&slot.index().to_le_bytes());
         }
-        out
+
+        let payload_length = u64::try_from(payload.len())
+            .map_err(|_| malformed("the named archive is too large to frame"))?;
+        let payload_hash = ContentHash::of_bytes(&payload);
+        let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
+        out.extend_from_slice(MAGIC);
+        out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        out.extend_from_slice(&payload_length.to_le_bytes());
+        out.extend_from_slice(payload_hash.as_bytes());
+        out.extend_from_slice(&payload);
+        Ok(out)
     }
 
     /// Reads an archive back, refusing anything that is not exactly one.
@@ -110,6 +127,19 @@ impl ArchivedFeature {
             )));
         }
 
+        let payload_length = usize::try_from(reader.u64("archive payload length")?)
+            .map_err(|_| malformed("this archive claims a payload larger than memory"))?;
+        let payload_hash = ContentHash::from_bytes(reader.array("archive payload checksum")?);
+        let payload = reader.take(payload_length, "archive payload")?;
+        reader.finish("archive payload")?;
+
+        if ContentHash::of_bytes(payload) != payload_hash {
+            return Err(malformed(
+                "the named archive payload does not match its checksum",
+            ));
+        }
+
+        let mut reader = Reader::new(payload);
         let stored_producer = ObjectId::from_bytes(reader.array("producer")?)?;
         if stored_producer != producer {
             return Err(malformed(format!(
@@ -153,7 +183,7 @@ impl ArchivedFeature {
             bindings.push((name, ArchiveSlot::new(reader.u32("slot")?)));
         }
 
-        reader.finish()?;
+        reader.finish("last binding")?;
 
         // `from_parts` is the single gate on what a table may say: no root
         // slot, no repeated name, no shared slot, no empty table, and a
@@ -162,9 +192,12 @@ impl ArchivedFeature {
     }
 }
 
-fn put_str(out: &mut Vec<u8>, value: &str) {
-    out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+fn put_str(out: &mut Vec<u8>, value: &str) -> Result<()> {
+    let length = u32::try_from(value.len())
+        .map_err(|_| malformed("a kernel identity field is too large to archive"))?;
+    out.extend_from_slice(&length.to_le_bytes());
     out.extend_from_slice(value.as_bytes());
+    Ok(())
 }
 
 fn malformed(what: impl Into<String>) -> CadError {
@@ -230,11 +263,11 @@ impl<'a> Reader<'a> {
     /// Trailing bytes mean the writer and this reader disagree about the
     /// layout. Ignoring them would let a longer record be read as a shorter
     /// one, which is how a partial parse becomes a confident wrong answer.
-    fn finish(self) -> Result<()> {
+    fn finish(self, what: &str) -> Result<()> {
         let left = self.bytes.len() - self.at;
         if left > 0 {
             return Err(malformed(format!(
-                "this archive has {left} byte(s) after its last binding"
+                "this archive has {left} byte(s) after its {what}"
             )));
         }
         Ok(())
@@ -294,21 +327,25 @@ mod tests {
     #[test]
     fn an_archive_survives_its_byte_form() {
         let (original, producer, kernel) = archived();
-        let restored =
-            ArchivedFeature::decode(&original.encode(), producer, &kernel).expect("reads back");
+        let bytes = original.encode().expect("encodes");
+        let restored = ArchivedFeature::decode(&bytes, producer, &kernel).expect("reads back");
         assert_eq!(restored, original);
     }
 
     #[test]
     fn the_same_archive_encodes_the_same_way_every_time() {
         let (archive, _, _) = archived();
-        assert_eq!(archive.encode(), archive.encode());
+        assert_eq!(
+            archive.encode().expect("encodes"),
+            archive.encode().expect("encodes")
+        );
     }
 
     #[test]
     fn another_features_archive_is_refused() {
         let (archive, _, kernel) = archived();
-        let err = ArchivedFeature::decode(&archive.encode(), ObjectId::new(), &kernel)
+        let bytes = archive.encode().expect("encodes");
+        let err = ArchivedFeature::decode(&bytes, ObjectId::new(), &kernel)
             .expect_err("the producer does not match");
         assert!(err.to_string().contains("belongs to feature"));
     }
@@ -317,13 +354,14 @@ mod tests {
     fn another_kernel_build_is_refused() {
         let (archive, producer, _) = archived();
         let other = KernelIdentity::new("mock", "1.0.0", "another-compiler").expect("valid");
-        assert!(ArchivedFeature::decode(&archive.encode(), producer, &other).is_err());
+        let bytes = archive.encode().expect("encodes");
+        assert!(ArchivedFeature::decode(&bytes, producer, &other).is_err());
     }
 
     #[test]
     fn a_version_from_the_future_is_refused() {
         let (archive, producer, kernel) = archived();
-        let mut bytes = archive.encode();
+        let mut bytes = archive.encode().expect("encodes");
         bytes[4..6].copy_from_slice(&(FORMAT_VERSION + 1).to_le_bytes());
 
         let err = ArchivedFeature::decode(&bytes, producer, &kernel)
@@ -334,7 +372,7 @@ mod tests {
     #[test]
     fn an_unknown_name_tag_is_refused_rather_than_skipped() {
         let (archive, producer, kernel) = archived();
-        let bytes = archive.encode();
+        let bytes = archive.encode().expect("encodes");
 
         // The first tag sits directly after the binding count.
         let at = bytes.len()
@@ -347,6 +385,7 @@ mod tests {
                 .sum::<usize>();
         let mut damaged = bytes.clone();
         damaged[at..at + 2].copy_from_slice(&u16::MAX.to_le_bytes());
+        reseal(&mut damaged);
 
         let err = ArchivedFeature::decode(&damaged, producer, &kernel)
             .expect_err("an unreadable name is not an ignorable one");
@@ -356,17 +395,17 @@ mod tests {
     #[test]
     fn trailing_bytes_are_refused() {
         let (archive, producer, kernel) = archived();
-        let mut bytes = archive.encode();
+        let mut bytes = archive.encode().expect("encodes");
         bytes.push(0);
 
         let err = ArchivedFeature::decode(&bytes, producer, &kernel).expect_err("there is more");
-        assert!(err.to_string().contains("after its last binding"));
+        assert!(err.to_string().contains("after its archive payload"));
     }
 
     #[test]
     fn a_truncated_archive_is_refused_at_every_length() {
         let (archive, producer, kernel) = archived();
-        let bytes = archive.encode();
+        let bytes = archive.encode().expect("encodes");
 
         for length in 0..bytes.len() {
             assert!(
@@ -380,11 +419,12 @@ mod tests {
     #[test]
     fn a_damaged_payload_is_refused_by_its_checksum() {
         let (archive, producer, kernel) = archived();
-        let mut bytes = archive.encode();
+        let mut bytes = archive.encode().expect("encodes");
 
         // Somewhere inside the payload, past every header field.
         let at = bytes.len() / 2;
         bytes[at] ^= 0xff;
+        reseal(&mut bytes);
 
         let err = ArchivedFeature::decode(&bytes, producer, &kernel)
             .expect_err("the payload no longer matches its checksum");
@@ -392,9 +432,27 @@ mod tests {
     }
 
     #[test]
+    fn a_changed_binding_is_refused_by_the_archive_checksum() {
+        let (archive, producer, kernel) = archived();
+        let mut bytes = archive.encode().expect("encodes");
+
+        // A slot is semantic data just as much as the B-Rep. Without the
+        // archive-level checksum, changing this to another valid slot could
+        // silently make a durable name resolve to the wrong face.
+        *bytes.last_mut().expect("the archive has a binding") ^= 0x01;
+
+        let err = ArchivedFeature::decode(&bytes, producer, &kernel)
+            .expect_err("a changed binding is not an intact archive");
+        assert!(
+            err.to_string()
+                .contains("payload does not match its checksum")
+        );
+    }
+
+    #[test]
     fn a_table_naming_one_slot_twice_is_refused() {
         let (archive, producer, kernel) = archived();
-        let bytes = archive.encode();
+        let bytes = archive.encode().expect("encodes");
 
         // Rewrite every slot as 1, which two names may not share.
         let mut damaged = bytes.clone();
@@ -413,7 +471,13 @@ mod tests {
             damaged[at + width - 4..at + width].copy_from_slice(&1u32.to_le_bytes());
             at += width;
         }
+        reseal(&mut damaged);
 
         assert!(ArchivedFeature::decode(&damaged, producer, &kernel).is_err());
+    }
+
+    fn reseal(bytes: &mut [u8]) {
+        let payload_hash = ContentHash::of_bytes(&bytes[HEADER_LEN..]);
+        bytes[HEADER_LEN - 32..HEADER_LEN].copy_from_slice(payload_hash.as_bytes());
     }
 }

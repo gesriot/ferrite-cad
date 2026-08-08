@@ -16,8 +16,8 @@ use ferritecad_document::{
 };
 use ferritecad_eval::{extrude_archive_key, load_extrude_archive, store_extrude_archive};
 use ferritecad_kernel::{
-    ExtrudeExtent, ExtrudeRequest, GeometryKernel, OperationContext, PlanarPoint, Profile,
-    ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane, mock::MockKernel,
+    ExtrudeExtent, ExtrudeRequest, GeometryKernel, KernelIdentity, OperationContext, PlanarPoint,
+    Profile, ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane, mock::MockKernel,
 };
 use ferritecad_topology::{ARCHIVE_CACHE_KIND, TopologyMap, archive_feature, resolve};
 use ferritecad_types::{DocumentId, ErrorKind, ObjectId, Result, StableEntityId};
@@ -246,6 +246,69 @@ fn a_stored_entry_belongs_to_the_feature_that_wrote_it() {
         .expect("reads")
         .is_none()
     );
+}
+
+#[test]
+fn another_kernel_build_is_a_miss_and_cannot_write_under_that_key() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("plate.fcad-cache");
+    let document = DocumentId::new();
+    let plate = plate(10.0).expect("a valid plate");
+    let mut kernel = MockKernel::new();
+    let mut cache = CacheStore::open(
+        &path,
+        document,
+        kernel.identity().id(),
+        kernel.identity().version(),
+    )
+    .expect("opens");
+
+    let result = kernel
+        .extrude(&plate.request, &OperationContext::default())
+        .expect("builds");
+    let mut map = TopologyMap::new();
+    map.record_extrude(plate.feature, plate.request.profile(), &result)
+        .expect("records");
+    let archived = archive_feature(&mut kernel, &map, plate.feature).expect("archives");
+
+    let rebuilt = KernelIdentity::new(
+        kernel.identity().id(),
+        kernel.identity().version(),
+        "another-bridge-build",
+    )
+    .expect("valid identity");
+    let context = OperationContext::default();
+
+    let err = store_extrude_archive(&mut cache, &rebuilt, &plate.request, &context, &archived)
+        .expect_err("an archive may not be filed under another kernel's key");
+    assert_eq!(err.kind(), ErrorKind::Kernel);
+    assert!(
+        cache
+            .get(
+                plate.feature,
+                extrude_archive_key(&rebuilt, &plate.request, &context),
+                ARCHIVE_CACHE_KIND,
+            )
+            .expect("reads")
+            .is_none(),
+        "the refused write must not leave an unusable cache entry"
+    );
+
+    store_extrude_archive(
+        &mut cache,
+        kernel.identity(),
+        &plate.request,
+        &context,
+        &archived,
+    )
+    .expect("the producing kernel may store its archive");
+    assert!(
+        load_extrude_archive(&cache, &rebuilt, &plate.request, &context, plate.feature)
+            .expect("a different build is a normal miss")
+            .is_none()
+    );
+
+    kernel.release(result.shape);
 }
 
 #[test]

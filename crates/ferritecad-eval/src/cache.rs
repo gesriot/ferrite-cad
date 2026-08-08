@@ -50,24 +50,30 @@ pub fn store_extrude_archive(
     context: &OperationContext,
     archived: &ArchivedFeature,
 ) -> Result<ContentHash> {
+    // Refuse a mismatched caller before it can replace a good entry with bytes
+    // that the key's own kernel will necessarily reject on the next read.
+    archived.blob().require_kernel(kernel)?;
+    let bytes = archived.encode()?;
     cache.put(
         archived.producer(),
         extrude_archive_key(kernel, request, context),
         ARCHIVE_CACHE_KIND,
-        &archived.encode(),
+        &bytes,
     )
 }
 
 /// Reads back what a previous run stored for this feature, if anything.
 ///
-/// The three outcomes are kept apart on purpose:
+/// The outcomes the storage API preserves are kept apart on purpose:
 ///
-/// - `Ok(None)` — nothing was stored under this key. Rebuild; that is normal.
+/// - `Ok(None)` — the store found no usable bytes under this key. This covers
+///   both a normal miss and damage its own content hash detected; `CacheStore`
+///   deliberately turns either into a miss because both require a rebuild.
 /// - `Ok(Some(_))` — an archive that passed every check.
-/// - `Err(_)` — something *was* stored and is not usable: another producer,
-///   another kernel build, a layout this build cannot read, a failed checksum.
-///   The caller may still rebuild, but this is a damaged sidecar rather than a
-///   cold start, and the difference is worth reporting.
+/// - `Err(_)` — the store returned internally intact bytes that are not a valid
+///   named archive: another producer, another kernel build, a layout this build
+///   cannot read, or a failed inner checksum. The caller may still rebuild and
+///   may report this narrower class of rejected cache entry.
 pub fn load_extrude_archive(
     cache: &CacheStore,
     kernel: &KernelIdentity,
