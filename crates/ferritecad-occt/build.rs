@@ -90,22 +90,34 @@ fn build_bridge() -> Result<(), String> {
         .get("occt_library_dir")
         .ok_or("the bridge did not report where Open CASCADE lives")?;
 
+    // The shim is static and ends up inside the Rust binary; Open CASCADE
+    // stays dynamic behind it, which is where the licence policy applies.
     println!("cargo::rustc-link-search=native={bridge_dir}");
-    println!("cargo::rustc-link-lib=dylib=ferritecad_occt_bridge");
+    println!("cargo::rustc-link-lib=static=ferritecad_occt_bridge");
 
-    // The bridge links Open CASCADE itself, so Rust needs only to be able to
-    // find the bridge at run time. RPATH rather than an environment variable:
-    // on macOS SIP strips DYLD_* when a protected shell spawns a process,
-    // which is exactly where the variable looks like it should work.
+    println!("cargo::rustc-link-search=native={occt_dir}");
+    let toolkits = info
+        .get("occt_libraries")
+        .ok_or("the bridge did not report which Open CASCADE toolkits it uses")?;
+    for toolkit in toolkits.split(',').filter(|t| !t.trim().is_empty()) {
+        println!("cargo::rustc-link-lib=dylib={}", toolkit.trim());
+    }
+
+    // A static C++ library dragged into a Rust link needs the C++ runtime
+    // named explicitly; rustc only assumes a C one. MSVC picks its runtime up
+    // from the object files, so Windows needs nothing here.
+    if cfg!(target_os = "macos") {
+        println!("cargo::rustc-link-lib=dylib=c++");
+    } else if cfg!(target_os = "linux") {
+        println!("cargo::rustc-link-lib=dylib=stdc++");
+    }
+
+    // RPATH rather than an environment variable: on macOS SIP strips DYLD_*
+    // when a protected shell spawns a process, which is exactly where the
+    // variable looks like it should work. Windows has no RPATH and searches
+    // PATH instead, which the pin workflow sets.
     if cfg!(unix) {
-        println!("cargo::rustc-link-arg=-Wl,-rpath,{bridge_dir}");
         println!("cargo::rustc-link-arg=-Wl,-rpath,{occt_dir}");
-    } else {
-        // Windows has no RPATH; the loader searches PATH.
-        println!(
-            "cargo::warning=add {bridge_dir} and {occt_dir} to PATH before running \
-             ferritecad-occt tests"
-        );
     }
 
     Ok(())

@@ -276,6 +276,32 @@ interrupted.
 `FirstShape()` and `LastShape()` return a `TopoDS_Face` for a prism, which is
 why the adapter reports the caps directly rather than exploring for them.
 
+## The shim is static; Open CASCADE is dynamic
+
+`crates/ferritecad-occt-bridge` builds as a **static** library and is linked
+into the Rust binary. The dynamic-linking policy is about Open CASCADE, which
+stays dynamic behind it; the shim is FerriteCAD's own MIT code and shipping it
+inside the executable raises no licence question.
+
+Static was not the first choice, and the reasons it became one are worth
+keeping. A shared shim exports nothing on Windows without
+`__declspec(dllexport)`, so the Rust link failed with `LNK2019: unresolved
+external symbol fc_occt_*` on a build that had just compiled cleanly. Fixing
+that leaves a second problem: Windows has no RPATH, so the shim's own DLL then
+has to be findable at run time as well as Open CASCADE's. A static shim has
+neither problem on any platform.
+
+Two consequences for the Rust build script. It must name the Open CASCADE
+toolkits itself, so CMake writes the resolved list into a file rather than
+leaving the Rust side to guess which toolkits a given build provides. And a
+static C++ library dragged into a Rust link needs the C++ runtime named
+explicitly — `c++` on macOS, `stdc++` on Linux — because rustc assumes only a C
+one; MSVC picks its runtime up from the object files.
+
+Dynamic linkage is verified in the pin workflow against the **test executable**,
+not the shim: the shim is inside it, and it is the executable that names Open
+CASCADE at run time.
+
 ## Open CASCADE 8.0 changed things the adapter uses
 
 The bridge compiles against 7.9 and 8.0 alike, because a contributor's

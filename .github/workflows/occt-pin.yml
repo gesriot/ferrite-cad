@@ -554,21 +554,43 @@ jobs:
       - name: Confirm the adapter links Open CASCADE dynamically
         env:
           FCAD_PLATFORM: ${{ matrix.name }}
+          FCAD_OCCT_CONFIG_DIR: ${{ steps.occt.outputs.config_dir }}
         run: |
           set -euo pipefail
           # The licence position rests on dynamic linkage, so it is checked
           # against the artefact rather than assumed from the CMake flags.
-          bridge="$(find target -name 'libferritecad_occt_bridge.*' -o -name 'ferritecad_occt_bridge.dll' | head -1)"
-          if [ -z "$bridge" ]; then
-            echo "::error::the bridge library was not built"
+          #
+          # The artefact is the test executable, not the shim: the shim is
+          # static and lives inside it, and it is the executable that names
+          # Open CASCADE at run time.
+          export FERRITECAD_REQUIRE_OCCT=1
+          export OpenCASCADE_DIR="$FCAD_OCCT_CONFIG_DIR"
+
+          binary="$(cargo test -p ferritecad-occt --no-run --message-format=json 2>/dev/null \
+            | jq -r 'select(.reason == "compiler-artifact")
+                     | select(.manifest_path | test("ferritecad-occt/Cargo.toml$"))
+                     | .executable // empty' \
+            | head -1)"
+          if [ -z "$binary" ]; then
+            echo "::error::no ferritecad-occt test executable was produced"
             exit 1
           fi
-          echo "bridge: $bridge"
+          echo "checking $binary"
 
           case "$FCAD_PLATFORM" in
-            linux)   ldd "$bridge" | grep -i 'libTK' || { echo "::error::no OCCT toolkit is dynamically linked"; exit 1; } ;;
-            macos)   otool -L "$bridge" | grep -i 'libTK' || { echo "::error::no OCCT toolkit is dynamically linked"; exit 1; } ;;
-            windows) echo "note: dependency listing needs dumpbin; the shared build was already asserted from CMakeCache" ;;
+            linux)
+              ldd "$binary" | grep -i 'libTK' \
+                || { echo "::error::the adapter names no Open CASCADE toolkit at run time"; exit 1; }
+              ;;
+            macos)
+              otool -L "$binary" | grep -i 'libTK' \
+                || { echo "::error::the adapter names no Open CASCADE toolkit at run time"; exit 1; }
+              ;;
+            windows)
+              # dumpbin ships with MSVC and is on PATH once vcvars has run.
+              dumpbin //DEPENDENTS "$(cygpath -w "$binary")" | grep -i 'TK.*\.dll' \
+                || { echo "::error::the adapter names no Open CASCADE DLL at run time"; exit 1; }
+              ;;
           esac
 
       - name: Write the pin report

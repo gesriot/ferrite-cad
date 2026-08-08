@@ -2,10 +2,16 @@
 #
 # The C++ side of the Open CASCADE adapter.
 #
-# Built as a shared library that links OCCT itself, so the Rust crate links one
-# name and CMake keeps the toolkit list. Open CASCADE is linked dynamically and
-# only dynamically; see docs/build-occt.md for why that is policy rather than
-# preference.
+# Built as a static library that is linked into the Rust binary. The dynamic
+# linking policy is about Open CASCADE, not about this shim: the shim is
+# FerriteCAD's own MIT code, and OCCT stays dynamic behind it. See
+# docs/build-occt.md.
+#
+# Static was not the first choice. A shared shim needs __declspec(dllexport) on
+# Windows or it exports nothing and the Rust link fails with LNK2019, and then
+# its DLL has to be findable at run time on a platform with no RPATH. A static
+# shim has neither problem on any platform, and the only thing left to ship
+# beside the executable is Open CASCADE itself.
 
 cmake_minimum_required(VERSION 3.16)
 project(ferritecad_occt_bridge LANGUAGES CXX)
@@ -50,7 +56,7 @@ if(DEFINED OpenCASCADE_BUILD_SHARED_LIBS AND NOT OpenCASCADE_BUILD_SHARED_LIBS)
     "Static Open CASCADE is forbidden: FerriteCAD links it dynamically only.")
 endif()
 
-add_library(ferritecad_occt_bridge SHARED src/bridge.cpp)
+add_library(ferritecad_occt_bridge STATIC src/bridge.cpp)
 
 target_include_directories(ferritecad_occt_bridge
   PUBLIC include
@@ -58,22 +64,15 @@ target_include_directories(ferritecad_occt_bridge
 target_link_directories(ferritecad_occt_bridge PRIVATE ${OpenCASCADE_LIBRARY_DIR})
 target_link_libraries(ferritecad_occt_bridge PRIVATE ${_occt_link_libs})
 
-if(APPLE)
-  # So the Rust test binary can find the bridge through its own RPATH rather
-  # than through the environment, which SIP strips.
-  set_target_properties(ferritecad_occt_bridge PROPERTIES
-    INSTALL_NAME_DIR "@rpath"
-    BUILD_WITH_INSTALL_NAME_DIR ON)
-endif()
-set_target_properties(ferritecad_occt_bridge PROPERTIES
-  BUILD_RPATH "${OpenCASCADE_LIBRARY_DIR}"
-  INSTALL_RPATH "${OpenCASCADE_LIBRARY_DIR}")
-
 # What the Rust build script needs and cannot discover for itself.
 #
 # The name carries the configuration because a multi-config generator evaluates
 # these expressions once per configuration, and one file cannot hold two
 # answers.
+#
+# `occt_libraries` is the toolkit list resolved above, so the Rust side never
+# has to guess which toolkits this build of Open CASCADE actually provides.
+string(REPLACE ";" "," _occt_libs_csv "${_occt_link_libs}")
 file(GENERATE
   OUTPUT "${CMAKE_BINARY_DIR}/ferritecad-bridge-info-$<CONFIG>.txt"
-  CONTENT "occt_library_dir=${OpenCASCADE_LIBRARY_DIR}\nocct_version=${OpenCASCADE_VERSION}\nbridge_dir=$<TARGET_FILE_DIR:ferritecad_occt_bridge>\n")
+  CONTENT "occt_library_dir=${OpenCASCADE_LIBRARY_DIR}\nocct_version=${OpenCASCADE_VERSION}\nocct_libraries=${_occt_libs_csv}\nbridge_dir=$<TARGET_FILE_DIR:ferritecad_occt_bridge>\n")
