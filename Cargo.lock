@@ -234,6 +234,11 @@ version = "0.0.1"
 dependencies = [
  "clap",
  "ferritecad-document",
+ "ferritecad-eval",
+ "ferritecad-export",
+ "ferritecad-fixtures",
+ "ferritecad-kernel",
+ "ferritecad-occt",
  "ferritecad-types",
  "tempfile",
 ]

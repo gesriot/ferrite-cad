@@ -6,6 +6,7 @@
 //! interface will later need to know about a document should be answerable
 //! here first.
 
+mod export;
 mod render;
 mod sample;
 
@@ -14,6 +15,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use ferritecad_document::{CacheStore, DOCUMENT_EXTENSION, Document};
+use ferritecad_kernel::TessellationParams;
 use ferritecad_types::{CadError, Result, Unit};
 
 /// Exit code for a document that failed validation, as opposed to a command
@@ -40,6 +42,37 @@ enum Command {
     DumpGraph(DumpGraphArgs),
     /// Delete a document's regenerable cache sidecar.
     ClearCache(DocumentArgs),
+    /// Rebuild a document and write one of its solids as binary STL.
+    ExportStl(ExportStlArgs),
+}
+
+#[derive(Debug, Args)]
+struct ExportStlArgs {
+    /// Path to the document.
+    path: PathBuf,
+
+    /// Path to write the mesh to.
+    #[arg(long, short)]
+    output: PathBuf,
+
+    /// Which body to export, by name or identifier.
+    ///
+    /// Optional only while a document holds exactly one body. With several,
+    /// this is required rather than guessed.
+    #[arg(long)]
+    solid: Option<String>,
+
+    /// Millimetres of chord error allowed between the mesh and the surface.
+    #[arg(long, default_value_t = TessellationParams::DEFAULT_LINEAR)]
+    linear_deflection: f64,
+
+    /// Radians of angular error allowed between neighbouring facets.
+    #[arg(long, default_value_t = TessellationParams::DEFAULT_ANGULAR)]
+    angular_deflection: f64,
+
+    /// Replace the output file if it already exists.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -125,6 +158,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::ClearCache(args) => clear_cache(args),
+        Command::ExportStl(args) => export::export_stl(args),
     }
 }
 
