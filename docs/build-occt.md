@@ -375,6 +375,20 @@ one in a document.
 So the adapter checks every result with `BRepCheck_Analyzer` and refuses what
 fails, issuing no handle. `IsDone()` alone is not a contract.
 
+**Confirmed on the pinned kernel.** The table above was measured on 7.9.3, and
+the pin workflow now records which path each refusal took. On OCCT 8.0.1, on
+Linux, Windows and macOS alike:
+
+```
+radius 5.0: Open CASCADE could not round every edge of this shape
+radius 5.1: produced a shape Open CASCADE reports as invalid; it is refused
+radius 6.0: produced a shape Open CASCADE reports as invalid; it is refused
+```
+
+The band where the builder claims success and produces an invalid solid is
+still there on the version this project ships against, so the check is
+load-bearing rather than a precaution against an older release.
+
 ## What the corpus measured
 
 Twenty procedural parts — blocks of varying proportion, L-shapes, and outlines
