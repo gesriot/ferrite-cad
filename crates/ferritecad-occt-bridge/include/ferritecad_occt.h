@@ -212,6 +212,53 @@ FcOcctStatus fc_occt_decode_shape(FcOcctSession *session,
  * capacity to learn the length.
  */
 /*
+ * Rounds every edge of a shape to one radius.
+ *
+ * Evaluation surface, not yet part of any feature. It exists to find out where
+ * Open CASCADE's filleting stops working, which is a question that has to be
+ * answered before a fillet feature is designed around it.
+ *
+ * The result is checked before it is kept. Measured on 7.9.3 with a 60 x 40 x
+ * 10 plate: at r = 5 the builder reports failure, which is correct, but at
+ * r = 5.1 and r = 6 it reports success and hands back a shape that fails
+ * BRepCheck_Analyzer and encloses MORE volume than the block it was cut from.
+ * A fillet on a convex edge removes material, so that shape is not a worse
+ * answer — it is not an answer. Anything that fails the check is refused here
+ * and no handle is issued for it.
+ */
+FcOcctStatus fc_occt_fillet_all(FcOcctSession *session, uint64_t shape,
+                                double radius, FcOcctCancelFn cancel,
+                                void *cancel_context, uint64_t *out_shape,
+                                FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/*
+ * Hollows a solid, leaving the named faces open.
+ *
+ * `thickness` is the wall thickness in millimetres, always positive; the wall
+ * is grown inwards. The faces are sub-shape identifiers of this session, so a
+ * caller opens the face it already has a name for rather than one it found by
+ * looking.
+ *
+ * Checked in the same way and for the same reason as the fillet above.
+ */
+FcOcctStatus fc_occt_shell(FcOcctSession *session, uint64_t shape,
+                           double thickness, const uint64_t *open_faces,
+                           size_t open_face_count, FcOcctCancelFn cancel,
+                           void *cancel_context, uint64_t *out_shape,
+                           FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/*
+ * Whether Open CASCADE considers a shape well formed.
+ *
+ * Offered so a caller can assert about shapes this bridge did not just build,
+ * and so a corpus can say which inputs were sound before blaming an operation
+ * for what came out.
+ */
+FcOcctStatus fc_occt_shape_is_valid(FcOcctSession *session, uint64_t shape,
+                                    uint8_t *out_valid,
+                                    FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/*
  * Triangulates a shape, reporting which face each triangle belongs to.
  *
  * Two calls. Pass zero capacities to learn the three counts, then call again

@@ -85,6 +85,70 @@ impl OcctKernel {
     ///
     /// A diagnostic independent of tessellation, used to assert that a built
     /// or restored solid is the one that was requested.
+    /// Rounds every edge of a shape to one radius.
+    ///
+    /// # Not part of the kernel contract, on purpose
+    ///
+    /// This and [`shell`][Self::shell] are here to answer a question, not to
+    /// serve a feature: how far can Open CASCADE be pushed before filleting
+    /// stops working, and does it say so when it does. Putting them in
+    /// [`GeometryKernel`] would settle by declaration what this slice exists
+    /// to measure. They move there when a fillet feature is designed, and the
+    /// corpus is what that design will be based on.
+    ///
+    /// The returned shape carries no names. A fillet replaces the faces it
+    /// touches, and nothing that named the original names this.
+    pub fn fillet_all(
+        &mut self,
+        shape: ShapeHandle,
+        radius: f64,
+        context: &OperationContext,
+    ) -> Result<ShapeHandle> {
+        context.check_cancelled()?;
+        let raw = self.raw(shape)?;
+        let built = self.session.fillet_all(raw, radius, context.cancel())?;
+        Ok(ShapeHandle::new(self.session_id, built))
+    }
+
+    /// Hollows a solid to a wall of `thickness`, opening the named faces.
+    ///
+    /// See [`fillet_all`][Self::fillet_all] for why this is not on the trait.
+    pub fn shell(
+        &mut self,
+        shape: ShapeHandle,
+        thickness: f64,
+        open_faces: &[SubShapeHandle],
+        context: &OperationContext,
+    ) -> Result<ShapeHandle> {
+        context.check_cancelled()?;
+        let raw = self.raw(shape)?;
+
+        let mut faces = Vec::with_capacity(open_faces.len());
+        for face in open_faces {
+            if face.shape() != shape {
+                return Err(CadError::input(format!(
+                    "{face} belongs to another shape and cannot be opened in this one"
+                )));
+            }
+            faces.push(face.index());
+        }
+
+        let built = self
+            .session
+            .shell(raw, thickness, &faces, context.cancel())?;
+        Ok(ShapeHandle::new(self.session_id, built))
+    }
+
+    /// Whether Open CASCADE considers this shape well formed.
+    ///
+    /// Every shape this adapter returns already passed the check; this is for
+    /// asserting about inputs, so a corpus can say an operation was given
+    /// something sound before blaming it for what came out.
+    pub fn is_valid(&mut self, shape: ShapeHandle) -> Result<bool> {
+        let raw = self.raw(shape)?;
+        self.session.is_valid(raw)
+    }
+
     pub fn shape_stats(&mut self, shape: ShapeHandle) -> Result<(u64, f64)> {
         self.session.shape_stats(self.raw(shape)?)
     }

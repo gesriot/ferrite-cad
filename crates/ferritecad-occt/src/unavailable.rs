@@ -37,6 +37,29 @@ impl OcctKernel {
     pub fn shape_stats(&mut self, _shape: ShapeHandle) -> Result<(u64, f64)> {
         match self.0 {}
     }
+
+    pub fn fillet_all(
+        &mut self,
+        _shape: ShapeHandle,
+        _radius: f64,
+        _context: &OperationContext,
+    ) -> Result<ShapeHandle> {
+        match self.0 {}
+    }
+
+    pub fn shell(
+        &mut self,
+        _shape: ShapeHandle,
+        _thickness: f64,
+        _open_faces: &[SubShapeHandle],
+        _context: &OperationContext,
+    ) -> Result<ShapeHandle> {
+        match self.0 {}
+    }
+
+    pub fn is_valid(&mut self, _shape: ShapeHandle) -> Result<bool> {
+        match self.0 {}
+    }
 }
 
 impl GeometryKernel for OcctKernel {

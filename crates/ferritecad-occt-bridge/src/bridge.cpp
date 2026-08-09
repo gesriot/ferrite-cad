@@ -26,7 +26,10 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepCheck_Analyzer.hxx>
+#include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
+#include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepTools.hxx>
@@ -49,6 +52,7 @@
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Iterator.hxx>
 #include <TopoDS_Wire.hxx>
+#include <TopTools_ListOfShape.hxx>
 #include <Poly_Triangulation.hxx>
 #include <TopLoc_Location.hxx>
 #include <gp_Ax3.hxx>
@@ -597,6 +601,195 @@ FcOcctStatus fc_occt_decode_shape(FcOcctSession *session, const uint8_t *bytes,
     const uint64_t id = session->next_shape++;
     session->shapes.emplace(id, std::move(record));
     *out_shape = id;
+    return FC_OCCT_OK;
+  });
+}
+
+/// Refuses a result Open CASCADE built but cannot vouch for.
+///
+/// `IsDone()` is not enough on its own. A fillet just past its geometric limit
+/// reports success and produces a shape that fails this check and encloses
+/// more volume than it started with; see the note on fc_occt_fillet_all.
+bool well_formed(const TopoDS_Shape &shape) {
+  if (shape.IsNull()) {
+    return false;
+  }
+  BRepCheck_Analyzer analyzer(shape);
+  return analyzer.IsValid() == Standard_True;
+}
+
+FcOcctStatus fc_occt_fillet_all(FcOcctSession *session, uint64_t shape,
+                                double radius, FcOcctCancelFn cancel,
+                                void *cancel_context, uint64_t *out_shape,
+                                FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr || out_shape == nullptr) {
+      write_error(out_error, "fc_occt_fillet_all was given a null argument");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    if (!std::isfinite(radius) || radius <= 0.0) {
+      write_error(out_error, "a fillet radius must be positive and finite");
+      return FC_OCCT_INVALID_INPUT;
+    }
+
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    if (cancelled(cancel, cancel_context)) {
+      return FC_OCCT_CANCELLED;
+    }
+
+    BRepFilletAPI_MakeFillet fillet(found->second.shape);
+    size_t edges = 0;
+    for (TopExp_Explorer it(found->second.shape, TopAbs_EDGE); it.More();
+         it.Next()) {
+      fillet.Add(radius, TopoDS::Edge(it.Current()));
+      ++edges;
+    }
+    if (edges == 0) {
+      write_error(out_error, "this shape has no edges to round");
+      return FC_OCCT_INVALID_INPUT;
+    }
+
+    Handle(CancelIndicator) indicator =
+        new CancelIndicator(cancel, cancel_context);
+    fillet.Build(indicator->Start());
+
+    if (cancelled(cancel, cancel_context)) {
+      return FC_OCCT_CANCELLED;
+    }
+    if (!fillet.IsDone()) {
+      write_error(out_error, "Open CASCADE could not round every edge of this "
+                             "shape at radius " +
+                                 std::to_string(radius));
+      return FC_OCCT_KERNEL;
+    }
+
+    const TopoDS_Shape result = fillet.Shape();
+    if (!well_formed(result)) {
+      write_error(out_error,
+                  "rounding every edge at radius " + std::to_string(radius) +
+                      " produced a shape Open CASCADE reports as invalid; it "
+                      "is refused rather than returned");
+      return FC_OCCT_KERNEL;
+    }
+
+    ShapeRecord record;
+    record.shape = result;
+    // A rounded shape is not the shape it came from: its faces are new and
+    // nothing that named the original names this.
+    record.decoded = true;
+    const uint64_t id = session->next_shape++;
+    session->shapes.emplace(id, std::move(record));
+    *out_shape = id;
+    return FC_OCCT_OK;
+  });
+}
+
+FcOcctStatus fc_occt_shell(FcOcctSession *session, uint64_t shape,
+                           double thickness, const uint64_t *open_faces,
+                           size_t open_face_count, FcOcctCancelFn cancel,
+                           void *cancel_context, uint64_t *out_shape,
+                           FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr || out_shape == nullptr ||
+        (open_face_count > 0 && open_faces == nullptr)) {
+      write_error(out_error, "fc_occt_shell was given a null argument");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    if (!std::isfinite(thickness) || thickness <= 0.0) {
+      write_error(out_error, "a wall thickness must be positive and finite");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    if (open_face_count == 0) {
+      write_error(out_error, "a shell with no open face is the solid it came "
+                             "from; name at least one face to remove");
+      return FC_OCCT_INVALID_INPUT;
+    }
+
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+
+    ShapeRecord &record = found->second;
+    TopTools_ListOfShape removed;
+    for (size_t i = 0; i < open_face_count; ++i) {
+      const uint64_t id = open_faces[i];
+      if (id >= record.sub_shapes.size()) {
+        write_error(out_error, "sub-shape " + std::to_string(id) +
+                                   " does not belong to shape " +
+                                   std::to_string(shape));
+        return FC_OCCT_UNKNOWN_HANDLE;
+      }
+      const TopoDS_Shape &face = record.sub_shapes[id];
+      if (face.ShapeType() != TopAbs_FACE) {
+        write_error(out_error, "sub-shape " + std::to_string(id) +
+                                   " is not a face, so it cannot be opened");
+        return FC_OCCT_INVALID_INPUT;
+      }
+      removed.Append(face);
+    }
+
+    if (cancelled(cancel, cancel_context)) {
+      return FC_OCCT_CANCELLED;
+    }
+
+    // Negative offset: the wall grows inwards, so the outside of the part is
+    // where the user put it. A positive offset would silently make the part
+    // bigger than the model says it is.
+    BRepOffsetAPI_MakeThickSolid maker;
+    maker.MakeThickSolidByJoin(record.shape, removed, -thickness, 1.0e-7);
+
+    if (cancelled(cancel, cancel_context)) {
+      return FC_OCCT_CANCELLED;
+    }
+    if (!maker.IsDone()) {
+      write_error(out_error,
+                  "Open CASCADE could not hollow this shape to a wall of " +
+                      std::to_string(thickness) + " mm");
+      return FC_OCCT_KERNEL;
+    }
+
+    const TopoDS_Shape result = maker.Shape();
+    if (!well_formed(result)) {
+      write_error(out_error, "hollowing to a wall of " +
+                                 std::to_string(thickness) +
+                                 " mm produced a shape Open CASCADE reports as "
+                                 "invalid; it is refused rather than returned");
+      return FC_OCCT_KERNEL;
+    }
+
+    ShapeRecord built;
+    built.shape = result;
+    built.decoded = true;
+    const uint64_t id = session->next_shape++;
+    session->shapes.emplace(id, std::move(built));
+    *out_shape = id;
+    return FC_OCCT_OK;
+  });
+}
+
+FcOcctStatus fc_occt_shape_is_valid(FcOcctSession *session, uint64_t shape,
+                                    uint8_t *out_valid,
+                                    FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr || out_valid == nullptr) {
+      write_error(out_error, "fc_occt_shape_is_valid was given a null argument");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    *out_valid = well_formed(found->second.shape) ? 1 : 0;
     return FC_OCCT_OK;
   });
 }

@@ -351,6 +351,58 @@ This v2 framing, the build identity and 25 adapter tests against real geometry
 were verified with pinned OCCT 8.0.1 on Linux, Windows and macOS in
 [run 31275991427](https://github.com/gesriot/ferrite-cad/actions/runs/31275991427).
 
+## A fillet can report success and hand back nonsense
+
+The most important measurement in this project so far. On a 60 x 40 x 10
+plate, `BRepFilletAPI_MakeFillet` over every edge behaves like this on 7.9.3:
+
+| radius | `IsDone()` | `BRepCheck_Analyzer` | volume |
+|-------:|:-----------|:---------------------|-------:|
+| 4.0    | true       | valid                | 22 575 |
+| 4.9    | true       | valid                | 21 890 |
+| 5.0    | **false**  | —                    | —      |
+| 5.1    | **true**   | **invalid**          | **25 815** |
+| 6.0    | **true**   | **invalid**          | **25 088** |
+| 20.0   | false      | —                    | —      |
+
+Half the plate's thickness is 5 mm, so 5.0 failing is correct. What matters is
+the band above it: the builder reports success and returns a shape that fails
+the analyser and encloses more material than the 24 000 mm³ block it was cut
+from. Rounding a convex edge removes material. Those shapes are not poor
+answers, they are not answers, and a caller that trusted `IsDone()` would put
+one in a document.
+
+So the adapter checks every result with `BRepCheck_Analyzer` and refuses what
+fails, issuing no handle. `IsDone()` alone is not a contract.
+
+## What the corpus measured
+
+Twenty procedural parts — blocks of varying proportion, L-shapes, and outlines
+whose corners are arcs — swept from well inside each part's nominal limit to
+well past it, on every platform in the pin workflow.
+
+**Fillets never silently misbehaved once the check above was in place.** Every
+part rounded successfully below its limit and was refused at or above it. Two
+readings are worth keeping:
+
+- An L-shape's limit is set by its narrowest arm, not by its bounding box.
+  `ell-thick` (50 x 50 x 40, 20 mm cut) rounded to 6.7 mm where its bounding
+  box suggests 20 mm.
+- `rounded-tall` rounded at its full nominal limit, so the nominal figure is a
+  sweep scale, not a prediction.
+
+**Shells are robust on sharp-cornered parts and weaker on cylindrical ones.**
+Blocks and L-shapes hollowed to walls well past their nominal limit — the real
+constraint is the wall against the part's thickness. Parts with small corner
+radii are where `BRepOffsetAPI_MakeThickSolid` struggles: `rounded-tight`
+(30 x 30 with 2 mm corners) hollowed only to 1.3 mm, and `rounded-tall`
+(30 x 30 x 60 with 6 mm corners) to 5 mm, both refusing ten of twelve steps.
+That is the shape of the risk for a shell feature: not sharp geometry, but
+small-radius cylindrical faces.
+
+Both operations were deterministic on all twenty parts: two identical requests
+gave identical face counts and volumes to within 1e-9.
+
 ## What meshing does, and does not, do
 
 Three things about `BRepMesh_IncrementalMesh` that the adapter depends on,

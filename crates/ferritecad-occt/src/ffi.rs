@@ -158,6 +158,36 @@ unsafe extern "C" {
         out_shape: *mut u64,
         out_error: *mut RawError,
     ) -> i32;
+    fn fc_occt_fillet_all(
+        session: *mut RawSession,
+        shape: u64,
+        radius: f64,
+        cancel: Option<CancelFn>,
+        cancel_context: *mut c_void,
+        out_shape: *mut u64,
+        out_error: *mut RawError,
+    ) -> i32;
+
+    #[allow(clippy::too_many_arguments)]
+    fn fc_occt_shell(
+        session: *mut RawSession,
+        shape: u64,
+        thickness: f64,
+        open_faces: *const u64,
+        open_face_count: usize,
+        cancel: Option<CancelFn>,
+        cancel_context: *mut c_void,
+        out_shape: *mut u64,
+        out_error: *mut RawError,
+    ) -> i32;
+
+    fn fc_occt_shape_is_valid(
+        session: *mut RawSession,
+        shape: u64,
+        out_valid: *mut u8,
+        out_error: *mut RawError,
+    ) -> i32;
+
     #[allow(clippy::too_many_arguments)]
     fn fc_occt_tessellate(
         session: *mut RawSession,
@@ -419,6 +449,73 @@ impl Session {
     }
 
     /// Archives a shape with the sub-shapes to be found again.
+    /// Rounds every edge of a shape to one radius.
+    pub(crate) fn fillet_all(
+        &mut self,
+        shape: u64,
+        radius: f64,
+        cancel: &CancelToken,
+    ) -> Result<u64> {
+        let context = cancel as *const CancelToken as *mut c_void;
+        let mut out = 0u64;
+        let mut error = RawError::empty();
+        // SAFETY: the out-parameters are valid for the call and the token
+        // outlives it; the bridge is noexcept.
+        let status = unsafe {
+            fc_occt_fillet_all(
+                self.raw,
+                shape,
+                radius,
+                Some(cancel_trampoline),
+                context,
+                &mut out,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "rounding every edge")?;
+        Ok(out)
+    }
+
+    /// Hollows a solid, leaving the named faces open.
+    pub(crate) fn shell(
+        &mut self,
+        shape: u64,
+        thickness: f64,
+        open_faces: &[u64],
+        cancel: &CancelToken,
+    ) -> Result<u64> {
+        let context = cancel as *const CancelToken as *mut c_void;
+        let mut out = 0u64;
+        let mut error = RawError::empty();
+        // SAFETY: the slice lives across the call and its length is passed
+        // with it; the out-parameters are valid.
+        let status = unsafe {
+            fc_occt_shell(
+                self.raw,
+                shape,
+                thickness,
+                open_faces.as_ptr(),
+                open_faces.len(),
+                Some(cancel_trampoline),
+                context,
+                &mut out,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "hollowing a solid")?;
+        Ok(out)
+    }
+
+    /// Whether Open CASCADE considers this shape well formed.
+    pub(crate) fn is_valid(&mut self, shape: u64) -> Result<bool> {
+        let mut valid = 0u8;
+        let mut error = RawError::empty();
+        // SAFETY: the out-parameter is valid for the call.
+        let status = unsafe { fc_occt_shape_is_valid(self.raw, shape, &mut valid, &mut error) };
+        interpret(status, &error, "checking a shape")?;
+        Ok(valid != 0)
+    }
+
     /// Triangles, their normals, and which face each triangle belongs to.
     ///
     /// Two calls, as the bridge documents: the first learns the sizes and the
