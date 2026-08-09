@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "ferritecad-export"
+description = "Deterministic export of tessellated geometry to interchange formats"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# Takes a mesh and produces bytes. No kernel, no document, no filesystem: an
+# exporter that could not be handed a mesh from memory would be untestable
+# without one, and the formats it writes have nothing to do with where the
+# geometry came from.
+[dependencies]
+ferritecad-kernel.workspace = true
+ferritecad-types.workspace = true
+
+[dev-dependencies]
+ferritecad-document.workspace = true
+ferritecad-eval.workspace = true
+ferritecad-fixtures.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true
