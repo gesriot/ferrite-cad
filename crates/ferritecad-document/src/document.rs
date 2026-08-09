@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 use std::collections::BTreeSet;
+use std::io::{ErrorKind as IoErrorKind, Read};
 use std::path::{Path, PathBuf};
 
 use ferritecad_types::{
@@ -169,22 +170,7 @@ impl Document {
         schema::migrate_document(&mut conn)?;
 
         let meta = read_meta(&conn)?;
-        if meta.format_version > FORMAT_VERSION {
-            return Err(CadError::unsupported(format!(
-                "{} uses document format v{}, this build writes v{}",
-                path.display(),
-                meta.format_version,
-                FORMAT_VERSION
-            )));
-        }
-        if meta.minimum_reader_version > FORMAT_VERSION {
-            return Err(CadError::unsupported(format!(
-                "{} needs a reader for format v{} or newer; this build writes v{}",
-                path.display(),
-                meta.minimum_reader_version,
-                FORMAT_VERSION
-            )));
-        }
+        require_supported_format(&path, &meta)?;
 
         let access = determine_access(&conn)?;
         Ok(Self {
@@ -192,6 +178,34 @@ impl Document {
             path,
             meta,
             access,
+        })
+    }
+
+    /// Opens an existing, current-schema document without modifying it.
+    ///
+    /// Unlike [`Self::open`], this path neither changes persistent pragmas nor
+    /// runs migrations. An older schema is refused with an actionable error:
+    /// silently migrating would violate the read-only contract, while reading
+    /// it as if the new columns already existed would be misleading. A file in
+    /// SQLite WAL mode is likewise refused before SQLite opens it: FerriteCAD
+    /// documents are single-file rollback-journal databases, and even a
+    /// read-only WAL connection may create `-wal`/`-shm` files.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        refuse_wal_journal(&path)?;
+        let conn = open_connection(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        schema::check_application_id(&conn, DOCUMENT_APPLICATION_ID, "document")?;
+        schema::require_current_document_schema(&conn)?;
+
+        let meta = read_meta(&conn)?;
+        require_supported_format(&path, &meta)?;
+        Ok(Self {
+            conn,
+            path,
+            meta,
+            access: Access::ReadOnly {
+                reason: "it was explicitly opened without write access".to_owned(),
+            },
         })
     }
 
@@ -551,6 +565,57 @@ impl DocumentWriter<'_> {
 fn open_connection(path: &Path, flags: OpenFlags) -> Result<Connection> {
     Connection::open_with_flags(path, flags)
         .map_err(|e| CadError::io(format!("opening {}", path.display()), e))
+}
+
+/// Reads only the two SQLite header bytes that describe the journalling mode.
+///
+/// This has to happen before SQLite opens the connection. In WAL mode a
+/// nominally read-only connection is allowed to create shared-memory files,
+/// which would break the caller's promise to leave the directory untouched.
+fn refuse_wal_journal(path: &Path) -> Result<()> {
+    const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| CadError::io(format!("opening {}", path.display()), e))?;
+    let mut header = [0u8; 20];
+    match file.read_exact(&mut header) {
+        Ok(()) => {}
+        Err(error) if error.kind() == IoErrorKind::UnexpectedEof => return Ok(()),
+        Err(error) => {
+            return Err(CadError::io(
+                format!("reading {} header", path.display()),
+                error,
+            ));
+        }
+    }
+
+    if &header[..SQLITE_MAGIC.len()] == SQLITE_MAGIC && (header[18] == 2 || header[19] == 2) {
+        return Err(CadError::unsupported(format!(
+            "{} uses SQLite WAL journalling; a read-only command will neither create auxiliary \
+             files nor rewrite it to FerriteCAD's single-file DELETE mode",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn require_supported_format(path: &Path, meta: &DocumentMeta) -> Result<()> {
+    if meta.format_version > FORMAT_VERSION {
+        return Err(CadError::unsupported(format!(
+            "{} uses document format v{}, this build writes v{}",
+            path.display(),
+            meta.format_version,
+            FORMAT_VERSION
+        )));
+    }
+    if meta.minimum_reader_version > FORMAT_VERSION {
+        return Err(CadError::unsupported(format!(
+            "{} needs a reader for format v{} or newer; this build writes v{}",
+            path.display(),
+            meta.minimum_reader_version,
+            FORMAT_VERSION
+        )));
+    }
+    Ok(())
 }
 
 fn read_object_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<ObjectRecord>> {

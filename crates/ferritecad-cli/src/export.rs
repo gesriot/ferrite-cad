@@ -36,7 +36,7 @@ pub fn export_stl(args: ExportStlArgs) -> Result<ExitCode> {
         )));
     }
     let params = TessellationParams::new(args.linear_deflection, args.angular_deflection, false)?;
-    let document = Document::open(&args.path)?;
+    let document = Document::open_read_only(&args.path)?;
     let (chosen_id, label) = choose(&document, args.solid.as_deref())?;
 
     // Cold on purpose. An export is rare and must be right; consulting a cache

@@ -38,6 +38,14 @@ fn plate(directory: &Path) -> PathBuf {
     target
 }
 
+fn put_in_wal_mode(document: &Path) {
+    let conn = rusqlite::Connection::open(document).expect("opens raw");
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+        .expect("sets a persistent mode the command must not normalise");
+    assert_eq!(mode, "wal");
+}
+
 /// Whether this build has a kernel at all.
 fn has_kernel(document: &Path, out: &Path) -> bool {
     let output = run(&[
@@ -209,6 +217,34 @@ fn the_document_is_not_disturbed_by_exporting_it() {
         before,
         "exporting rewrote the document"
     );
+}
+
+#[test]
+fn a_wal_document_is_refused_without_being_normalised() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let document = plate(dir.path());
+    let out = dir.path().join("plate.stl");
+    put_in_wal_mode(&document);
+    let before = std::fs::read(&document).expect("reads");
+
+    let output = run(&[
+        "export-stl",
+        &document.to_string_lossy(),
+        "-o",
+        &out.to_string_lossy(),
+    ]);
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("WAL"));
+    assert_eq!(std::fs::read(&document).expect("reads after"), before);
+    assert!(!out.exists());
+    assert!(std::fs::read_dir(dir.path()).expect("lists").all(|entry| {
+        !entry
+            .expect("entry")
+            .path()
+            .to_string_lossy()
+            .contains(".partial")
+    }));
 }
 
 #[test]

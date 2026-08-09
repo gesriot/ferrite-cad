@@ -112,6 +112,30 @@ ALTER TABLE topology_refs
 "#,
 ];
 
+/// Refuses a document whose SQL schema cannot be read without changing it.
+///
+/// The ordinary open path migrates older schemas. A caller that promised to
+/// leave the source file untouched needs the opposite contract: fail before a
+/// query depends on a column that an unapplied migration would have created.
+pub(crate) fn require_current_document_schema(conn: &Connection) -> Result<()> {
+    let current = schema_version(conn)?;
+    let target = MIGRATIONS.len() as u32;
+
+    if current < target {
+        return Err(CadError::unsupported(format!(
+            "this document uses schema v{current} and needs migration to v{target}; it was opened \
+             read-only and will not be changed"
+        )));
+    }
+    if current > target {
+        return Err(CadError::unsupported(format!(
+            "this document was written by a newer FerriteCAD (schema v{current}, this build \
+             understands up to v{target})"
+        )));
+    }
+    Ok(())
+}
+
 /// Schema of the cache sidecar. Nothing here may affect a rebuild's result.
 const CACHE_MIGRATIONS: &[&str] = &[
     // v1

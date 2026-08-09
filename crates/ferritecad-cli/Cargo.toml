@@ -24,6 +24,7 @@ clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
 ferritecad-fixtures.workspace = true
+rusqlite = { version = "0.37", features = ["bundled"] }
 tempfile = "3"
 
 [lints]

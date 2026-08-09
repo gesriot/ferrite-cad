@@ -28,7 +28,7 @@ pub fn rebuild(args: RebuildArgs) -> Result<ExitCode> {
         ));
     }
 
-    let document = Document::open(&args.path)?;
+    let document = Document::open_read_only(&args.path)?;
     let mut kernel = OcctKernel::new()?;
 
     // `rebuild_cold` takes no cache and has no way to reach one, so the

@@ -38,6 +38,14 @@ fn plate(directory: &Path) -> PathBuf {
     target
 }
 
+fn put_in_wal_mode(document: &Path) {
+    let conn = rusqlite::Connection::open(document).expect("opens raw");
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+        .expect("sets a persistent mode the command must not normalise");
+    assert_eq!(mode, "wal");
+}
+
 fn rebuild(document: &Path) -> Output {
     run(&["rebuild", &document.to_string_lossy(), "--cold"])
 }
@@ -143,12 +151,9 @@ fn mentions_a_duration(report: &str) -> bool {
 fn rebuilding_writes_nothing_at_all() {
     let dir = tempfile::tempdir().expect("temp dir");
     let document = plate(dir.path());
-    if !has_kernel(&document) {
-        return;
-    }
 
     let before = snapshot(dir.path());
-    assert!(rebuild(&document).status.success());
+    let output = rebuild(&document);
     let after = snapshot(dir.path());
 
     assert_eq!(
@@ -157,6 +162,31 @@ fn rebuilding_writes_nothing_at_all() {
         "a cold rebuild must not leave a cache sidecar, or anything else, behind"
     );
     assert_eq!(before, after, "the document was rewritten by reading it");
+
+    if !output.status.success() {
+        let complaint = String::from_utf8_lossy(&output.stderr);
+        if complaint.contains("no Open CASCADE") {
+            eprintln!("skipped geometry: this build has no Open CASCADE");
+            return;
+        }
+        panic!("rebuild failed for another reason: {complaint}");
+    }
+}
+
+#[test]
+fn a_wal_document_is_refused_without_being_normalised() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let document = plate(dir.path());
+    put_in_wal_mode(&document);
+    let before = snapshot(dir.path());
+
+    let output = rebuild(&document);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("WAL"),
+        "the refusal must identify the state it left alone"
+    );
+    assert_eq!(snapshot(dir.path()), before);
 }
 
 #[test]

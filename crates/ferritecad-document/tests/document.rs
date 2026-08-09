@@ -181,6 +181,90 @@ fn a_document_survives_save_reload_and_resave_unchanged() {
 }
 
 #[test]
+fn an_explicitly_read_only_open_can_read_but_never_be_promoted_to_a_writer() {
+    let (_dir, path) = workspace();
+
+    let mut document = Document::create(&path).expect("creates");
+    populate(&mut document).expect("populates");
+    document.close().expect("closes");
+    let before = std::fs::read(&path).expect("reads before");
+
+    let mut opened = Document::open_read_only(&path).expect("opens without writing");
+    assert!(matches!(opened.access(), Access::ReadOnly { .. }));
+    assert!(!opened.objects().expect("reads objects").is_empty());
+    let error = opened
+        .write(|_| Ok(()))
+        .expect_err("the connection cannot be promoted to a writer");
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    opened.close().expect("closes");
+
+    assert_eq!(std::fs::read(&path).expect("reads after"), before);
+}
+
+#[test]
+fn a_read_only_open_refuses_wal_without_changing_the_directory() {
+    let (dir, path) = workspace();
+
+    let mut document = Document::create(&path).expect("creates");
+    populate(&mut document).expect("populates");
+    document.close().expect("closes");
+
+    // WAL is valid SQLite state but differs from FerriteCAD's normal DELETE
+    // mode. The ordinary open path deliberately normalises it and therefore
+    // changes the source file; this makes that write observable.
+    let conn = rusqlite::Connection::open(&path).expect("opens raw");
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+        .expect("sets WAL");
+    assert_eq!(mode, "wal");
+    drop(conn);
+
+    let before = std::fs::read(&path).expect("reads before");
+    let mut before_entries: Vec<_> = std::fs::read_dir(dir.path())
+        .expect("lists before")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect();
+    before_entries.sort();
+
+    let error = Document::open_read_only(&path).expect_err("WAL would need auxiliary files");
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(error.to_string().contains("WAL"), "{error}");
+
+    assert_eq!(std::fs::read(&path).expect("reads after"), before);
+    let mut after_entries: Vec<_> = std::fs::read_dir(dir.path())
+        .expect("lists after")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect();
+    after_entries.sort();
+    assert_eq!(
+        after_entries, before_entries,
+        "opening left an auxiliary file"
+    );
+
+    assert_eq!(&before[18..20], &[2, 2], "the WAL header remains intact");
+}
+
+#[test]
+fn a_read_only_open_refuses_an_old_schema_instead_of_migrating_it() {
+    let (_dir, path) = workspace();
+    Document::create(&path)
+        .expect("creates")
+        .close()
+        .expect("closes");
+
+    let conn = rusqlite::Connection::open(&path).expect("opens raw");
+    conn.pragma_update(None, "user_version", 1i64)
+        .expect("marks the schema old");
+    drop(conn);
+    let before = std::fs::read(&path).expect("reads before");
+
+    let error = Document::open_read_only(&path).expect_err("migration would be a write");
+    assert_eq!(error.kind(), ErrorKind::Unsupported);
+    assert!(error.to_string().contains("needs migration"), "{error}");
+    assert_eq!(std::fs::read(&path).expect("reads after"), before);
+}
+
+#[test]
 fn an_object_of_an_unknown_type_survives_a_full_cycle_byte_for_byte() {
     let (_dir, path) = workspace();
     let id = ObjectId::new();
