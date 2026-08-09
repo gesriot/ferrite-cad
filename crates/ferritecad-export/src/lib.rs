@@ -34,12 +34,13 @@ const HEADER: &[u8; HEADER_LEN] =
 const HEADER_LEN: usize = 80;
 const TRIANGLE_BYTES: usize = 50;
 
-/// The exact size a mesh of this many triangles will occupy.
+/// The exact byte size a mesh of this many triangles will occupy.
 ///
-/// Offered so a caller can check space, or a test can state the number it
-/// expects without recomputing the format's arithmetic.
-pub const fn binary_stl_len(triangles: usize) -> usize {
-    HEADER_LEN + size_of::<u32>() + triangles * TRIANGLE_BYTES
+/// The count is a `u32` because that is the largest file binary STL can
+/// describe. The result is a `u64` because such a file need not fit in a
+/// 32-bit process's address space even though its size is well-defined.
+pub const fn binary_stl_len(triangles: u32) -> u64 {
+    (HEADER_LEN + size_of::<u32>()) as u64 + triangles as u64 * TRIANGLE_BYTES as u64
 }
 
 /// Writes `mesh` as binary STL.
@@ -63,7 +64,19 @@ pub fn binary_stl(mesh: &Mesh) -> Result<Vec<u8>> {
         ))
     })?;
 
-    let mut out = Vec::with_capacity(binary_stl_len(triangles));
+    let file_len = usize::try_from(binary_stl_len(count)).map_err(|_| {
+        CadError::input(format!(
+            "the binary STL needs {} bytes, which this platform cannot address",
+            binary_stl_len(count)
+        ))
+    })?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(file_len).map_err(|source| {
+        CadError::input_because(
+            format!("the binary STL needs {file_len} bytes, which cannot be reserved"),
+            source,
+        )
+    })?;
     out.extend_from_slice(HEADER);
     out.extend_from_slice(&count.to_le_bytes());
 
@@ -81,11 +94,11 @@ pub fn binary_stl(mesh: &Mesh) -> Result<Vec<u8>> {
         })?;
 
         for value in normal {
-            out.extend_from_slice(&(value as f32).to_le_bytes());
+            write_float(&mut out, value);
         }
         for corner in &corners {
             for value in corner {
-                out.extend_from_slice(&(*value as f32).to_le_bytes());
+                write_float(&mut out, *value);
             }
         }
         // The attribute byte count. Non-zero values are a colour convention
@@ -94,8 +107,19 @@ pub fn binary_stl(mesh: &Mesh) -> Result<Vec<u8>> {
         out.extend_from_slice(&0u16.to_le_bytes());
     }
 
-    debug_assert_eq!(out.len(), binary_stl_len(triangles));
+    debug_assert_eq!(out.len(), file_len);
     Ok(out)
+}
+
+/// Narrows one STL scalar and gives zero its single canonical representation.
+///
+/// Rust, like IEEE 754, compares `-0.0` equal to `0.0`, but their bytes differ.
+/// Leaving the sign in the file would let two equal [`Mesh`] values produce
+/// different exports depending on the CPU operations that made their zeros.
+fn write_float(out: &mut Vec<u8>, value: f64) {
+    let narrowed = value as f32;
+    let canonical = if narrowed == 0.0 { 0.0 } else { narrowed };
+    out.extend_from_slice(&canonical.to_le_bytes());
 }
 
 fn vertex(mesh: &Mesh, index: u32) -> [f64; 3] {
@@ -176,6 +200,25 @@ mod tests {
     fn the_size_is_exactly_what_the_format_says() {
         assert_eq!(binary_stl_len(0), 84);
         assert_eq!(binary_stl_len(12), 684);
+        assert_eq!(binary_stl_len(u32::MAX), 214_748_364_834);
+    }
+
+    #[test]
+    fn signed_zero_does_not_change_the_file() {
+        let positive = one_triangle(vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+        let mut negative = positive.clone();
+        for coordinate in &mut negative.positions {
+            if *coordinate == 0.0 {
+                *coordinate = -0.0;
+            }
+        }
+
+        assert_eq!(positive, negative, "signed zero is the same mesh value");
+        assert_eq!(
+            binary_stl(&positive).expect("writes"),
+            binary_stl(&negative).expect("writes"),
+            "equal mesh values must have one canonical byte representation"
+        );
     }
 
     #[test]
@@ -228,7 +271,10 @@ mod tests {
     #[test]
     fn an_empty_mesh_is_a_file_with_no_triangles() {
         let bytes = binary_stl(&Mesh::default()).expect("writes");
-        assert_eq!(bytes.len(), binary_stl_len(0));
+        assert_eq!(
+            bytes.len(),
+            usize::try_from(binary_stl_len(0)).expect("an empty STL fits in memory")
+        );
         assert_eq!(
             u32::from_le_bytes(
                 bytes[HEADER_LEN..HEADER_LEN + 4]

@@ -9,10 +9,11 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-# Takes a mesh and produces bytes. No kernel, no document, no filesystem: an
-# exporter that could not be handed a mesh from memory would be untestable
-# without one, and the formats it writes have nothing to do with where the
-# geometry came from.
+# Takes a mesh and produces bytes. No kernel implementation or session, no
+# document, no filesystem: an exporter that could not be handed a mesh from
+# memory would be untestable without one, and the formats it writes have
+# nothing to do with where the geometry came from. `ferritecad-kernel` below is
+# the implementation-neutral contract crate that defines `Mesh`.
 [dependencies]
 ferritecad-kernel.workspace = true
 ferritecad-types.workspace = true

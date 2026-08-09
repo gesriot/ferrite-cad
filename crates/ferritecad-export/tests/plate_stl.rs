@@ -87,7 +87,10 @@ fn the_plate_is_twelve_triangles_and_684_bytes() {
 
     let bytes = binary_stl(&mesh).expect("writes");
     assert_eq!(bytes.len(), 684);
-    assert_eq!(bytes.len(), binary_stl_len(12));
+    assert_eq!(
+        bytes.len(),
+        usize::try_from(binary_stl_len(12)).expect("the plate STL fits in memory")
+    );
     assert_eq!(
         u32::from_le_bytes(bytes[80..84].try_into().expect("four bytes")),
         12,

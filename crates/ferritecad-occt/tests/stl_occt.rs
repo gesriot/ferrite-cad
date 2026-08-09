@@ -59,7 +59,11 @@ fn open_cascade_geometry_exports_to_a_file_a_reader_would_accept() {
     let mut kernel = OcctKernel::new().expect("opens");
     let bytes = plate_stl(&mut kernel);
 
-    assert_eq!(bytes.len(), binary_stl_len(12), "a box is twelve triangles");
+    assert_eq!(
+        bytes.len(),
+        usize::try_from(binary_stl_len(12)).expect("the plate STL fits in memory"),
+        "a box is twelve triangles"
+    );
     let count = u32::from_le_bytes(bytes[80..84].try_into().expect("four bytes"));
     assert_eq!(count, 12);
 
