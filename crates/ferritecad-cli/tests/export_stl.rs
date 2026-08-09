@@ -212,6 +212,61 @@ fn the_document_is_not_disturbed_by_exporting_it() {
 }
 
 #[test]
+fn the_document_cannot_be_its_own_output() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let document = plate(dir.path());
+    let before = std::fs::read(&document).expect("reads");
+
+    let output = run(&[
+        "export-stl",
+        &document.to_string_lossy(),
+        "-o",
+        &document.to_string_lossy(),
+        "--force",
+    ]);
+
+    assert!(
+        !output.status.success(),
+        "an export must not replace its source"
+    );
+    assert_eq!(
+        std::fs::read(&document).expect("the document still exists"),
+        before,
+        "the native document was replaced by its own STL export"
+    );
+}
+
+#[test]
+fn an_unrelated_partial_file_is_never_used_as_scratch_space() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let document = plate(dir.path());
+    let probe = dir.path().join("probe.stl");
+    if !has_kernel(&document, &probe) {
+        return;
+    }
+
+    let out = dir.path().join("plate.stl");
+    let partial = dir.path().join("plate.stl.partial");
+    std::fs::write(&partial, b"another process owns this file").expect("writes");
+
+    let output = run(&[
+        "export-stl",
+        &document.to_string_lossy(),
+        "-o",
+        &out.to_string_lossy(),
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read(&partial).expect("the unrelated file remains"),
+        b"another process owns this file"
+    );
+}
+
+#[test]
 fn several_bodies_are_listed_rather_than_guessed_between() {
     use ferritecad_document::{Body, Dependency, DependencyRole, Document, ObjectPayload};
     use ferritecad_types::ObjectId;
@@ -228,12 +283,12 @@ fn several_bodies_are_listed_rather_than_guessed_between() {
     // creates is the real one: two things a person could have meant.
     let second = ObjectId::new();
     let mut document = Document::open(&path).expect("opens");
-    let tip = document
+    let (first, tip) = document
         .objects()
         .expect("reads")
         .into_iter()
         .find_map(|object| match object.payload {
-            ObjectPayload::Body(body) => body.tip_feature,
+            ObjectPayload::Body(body) => body.tip_feature.map(|tip| (object.id, tip)),
             _ => None,
         })
         .expect("the plate has a body over a feature");
@@ -290,4 +345,44 @@ fn several_bodies_are_listed_rather_than_guessed_between() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(std::fs::metadata(&out).expect("reads").len(), 684);
+
+    // An identifier remains unambiguous even if another body's name happens
+    // to be the same string. IDs are the advertised escape hatch for duplicate
+    // names, so a name may not take that escape hatch away.
+    std::fs::remove_file(&out).expect("clears the named export");
+    let first_text = first.to_string();
+    let mut document = Document::open(&path).expect("opens again");
+    document
+        .write(|w| {
+            w.put_object(
+                second,
+                None,
+                4,
+                Some(&first_text),
+                &ObjectPayload::Body(Body {
+                    tip_feature: Some(tip),
+                }),
+            )?;
+            Ok(())
+        })
+        .expect("gives the second body an identifier-shaped name");
+    document.close().expect("closes again");
+
+    let output = run(&[
+        "export-stl",
+        &path.to_string_lossy(),
+        "-o",
+        &out.to_string_lossy(),
+        "--solid",
+        &first_text,
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(&format!("from Plate ({first})")),
+        "an identifier must select its object before names are considered"
+    );
 }
