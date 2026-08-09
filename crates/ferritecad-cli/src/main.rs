@@ -7,6 +7,7 @@
 //! here first.
 
 mod export;
+mod rebuild;
 mod render;
 mod sample;
 
@@ -44,6 +45,21 @@ enum Command {
     ClearCache(DocumentArgs),
     /// Rebuild a document and write one of its solids as binary STL.
     ExportStl(ExportStlArgs),
+    /// Rebuild a document from scratch and report what it produced.
+    Rebuild(RebuildArgs),
+}
+
+#[derive(Debug, Args)]
+struct RebuildArgs {
+    /// Path to the document.
+    path: PathBuf,
+
+    /// Rebuild every feature, consulting no cache.
+    ///
+    /// Required. The cached path exists but is not offered here yet, and
+    /// making it the default would hide which one produced the answer.
+    #[arg(long)]
+    cold: bool,
 }
 
 #[derive(Debug, Args)]
@@ -159,6 +175,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::ClearCache(args) => clear_cache(args),
         Command::ExportStl(args) => export::export_stl(args),
+        Command::Rebuild(args) => rebuild::rebuild(args),
     }
 }
 
