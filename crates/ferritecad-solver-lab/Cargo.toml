@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "ferritecad-solver-lab"
+description = "A bench for comparing sketch constraint solvers before one is chosen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# An experiment, not a product. Nothing depends on it and nothing should until
+# a solver has been chosen on the evidence it produces.
+publish = false
+
+# Deliberately nothing. A comparison of solvers must not be shaped by what a
+# linear algebra crate happens to make easy, and the numerics needed here fit
+# in a few hundred lines that can be read.
+[dependencies]
+
+[lints]
+workspace = true

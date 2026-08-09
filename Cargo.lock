@@ -313,6 +313,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferritecad-solver-lab"
+version = "0.0.1"
+
+[[package]]
 name = "ferritecad-topology"
 version = "0.0.1"
 dependencies = [

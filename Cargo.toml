@@ -8,6 +8,7 @@ members = [
     "crates/ferritecad-fixtures",
     "crates/ferritecad-kernel",
     "crates/ferritecad-occt",
+    "crates/ferritecad-solver-lab",
     "crates/ferritecad-topology",
     "crates/ferritecad-cli",
 ]
