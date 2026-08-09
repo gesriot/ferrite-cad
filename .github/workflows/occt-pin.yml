@@ -554,9 +554,14 @@ jobs:
               export LD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               ;;
             macos)
-              # build.rs embeds this OCCT install directory as an RPATH, which
-              # resolves the toolkits' @rpath install names without relying on
-              # a DYLD_* environment variable.
+              # build.rs embeds this OCCT install directory as an RPATH in the
+              # ferritecad-occt package's own test executables. Cargo does not
+              # propagate that package-local link argument to a downstream
+              # binary such as the CLI, whose process-level tests launch it as
+              # a child. Supply the raw install tree to dyld for this in-place
+              # test. A shipped app must instead carry a bundle-relative
+              # LC_RPATH and its dylibs; this does not claim to test packaging.
+              export DYLD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
               ;;
           esac
 

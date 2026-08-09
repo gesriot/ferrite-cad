@@ -191,6 +191,12 @@ build, not after:
   place the libraries there, and verify the result from a clean environment.
   A future OCCT package that
   reintroduces absolute install names must be rewritten during packaging.
+- `ferritecad-occt` adds the raw install directory as an RPATH to its own test
+  executables, but Cargo does not propagate that package-local link argument
+  to downstream binaries. The pin workflow therefore sets
+  `DYLD_LIBRARY_PATH` while its process-level CLI gates launch the unbundled
+  debug executable. This only makes the pinned build tree runnable during the
+  test; it is not a substitute for the bundle-relative RPATH above.
 - Universal binaries need `-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"`, or two
   separate builds joined with `lipo`. Decide which before the packaging work
   starts; the second option is usually less painful with OCCT.

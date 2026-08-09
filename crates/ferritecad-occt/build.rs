@@ -148,9 +148,11 @@ fn build_bridge() -> Result<(), String> {
         println!("cargo::rustc-link-lib=dylib=stdc++");
     }
 
-    // RPATH rather than an environment variable: on macOS SIP strips DYLD_*
-    // when a protected shell spawns a process, which is exactly where the
-    // variable looks like it should work. Windows has no RPATH and searches
+    // RPATH rather than an environment variable for this package's own
+    // executables: on macOS SIP can strip DYLD_* at protected-process
+    // boundaries. Cargo does not propagate this package-local link argument
+    // to downstream binaries; the pin workflow supplies the raw library path
+    // when it launches the unbundled CLI. Windows has no RPATH and searches
     // PATH instead, which the pin workflow sets.
     if cfg!(unix) {
         println!("cargo::rustc-link-arg=-Wl,-rpath,{occt_dir}");
