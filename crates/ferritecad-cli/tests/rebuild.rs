@@ -109,14 +109,34 @@ fn two_rebuilds_of_one_document_say_exactly_the_same_thing() {
          reports is the whole use of this command"
     );
 
-    // The most likely way that could fail is an elapsed time.
+    // The most likely way that could fail is an elapsed time, and a timing
+    // that happened to be constant would pass the comparison above.
     let report = String::from_utf8_lossy(&once.stdout);
-    for unit in ["ms", "µs", "seconds", "elapsed", "took"] {
-        assert!(
-            !report.contains(unit),
-            "the report mentions {unit}: {report}"
-        );
+    assert!(
+        !mentions_a_duration(&report),
+        "the report looks like it carries a duration: {report}"
+    );
+}
+
+/// Whether any token in the report reads as a length of time.
+///
+/// Deliberately not a substring search for `ms`. The kernel line carries the
+/// target triple, and `x86_64-pc-windows-msvc` contains those two letters —
+/// which is exactly how the first version of this guard failed, on Windows
+/// only, in the pin workflow. A guard that fires on the platform it runs on is
+/// worse than no guard, because it gets deleted rather than understood.
+fn mentions_a_duration(report: &str) -> bool {
+    if report.contains("elapsed") || report.contains("took ") {
+        return true;
     }
+    report.split_whitespace().any(|token| {
+        let token = token.trim_end_matches([',', '.', ')']);
+        ["ns", "\u{b5}s", "us", "ms", "s"].iter().any(|unit| {
+            token.strip_suffix(unit).is_some_and(|number| {
+                !number.is_empty() && number.chars().all(|c| c.is_ascii_digit() || c == '.')
+            })
+        })
+    })
 }
 
 #[test]
@@ -232,4 +252,33 @@ fn a_missing_document_is_an_error_not_an_empty_report() {
     ]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).is_empty());
+}
+
+#[test]
+fn the_duration_guard_knows_a_timing_from_a_target_triple() {
+    // The lines a real report is made of, none of which is a duration.
+    for innocent in [
+        "  kernel occt 8.0.1 (bridge 7e12b8f0 x86_64-pc-windows-msvc)",
+        "  4 objects evaluated, 1 shape built",
+        "  019fe39c-0c09-78a1-80d3-905a79570e50  Profile  sketch  4 segments",
+        "  Extrude1  feature.extrude  solid, 6 named faces",
+        "  6 of 6 stored references resolved",
+        r"rebuilt C:\Users\RUNNER~1\AppData\Local\Temp\.tmpfETos3\plate.fcad",
+    ] {
+        assert!(
+            !mentions_a_duration(innocent),
+            "a guard that fires on this would be deleted rather than understood: {innocent}"
+        );
+    }
+
+    // And the things it exists to catch.
+    for timing in [
+        "rebuilt in 24ms",
+        "rebuilt in 1.5s",
+        "  4 objects in 300us",
+        "  elapsed 0",
+        "  took 3 seconds",
+    ] {
+        assert!(mentions_a_duration(timing), "missed a duration: {timing}");
+    }
 }
