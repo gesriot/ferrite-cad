@@ -10,6 +10,7 @@ mod export;
 mod rebuild;
 mod render;
 mod sample;
+mod topology;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -23,6 +24,10 @@ use ferritecad_types::{CadError, Result, Unit};
 /// that could not run at all.
 const EXIT_INVALID: u8 = 1;
 const EXIT_FAILED: u8 = 2;
+/// A document that opened and rebuilt, and whose stored names no longer all
+/// find geometry. Distinct from both of the above: nothing went wrong with the
+/// command, and the document is not malformed — it has simply lost a name.
+const EXIT_UNRESOLVED: u8 = 3;
 
 #[derive(Debug, Parser)]
 #[command(name = "ferritecad", version, about, long_about = None)]
@@ -47,6 +52,8 @@ enum Command {
     ExportStl(ExportStlArgs),
     /// Rebuild a document from scratch and report what it produced.
     Rebuild(RebuildArgs),
+    /// Rebuild a document and report what each stored reference resolves to.
+    PrintTopology(DocumentArgs),
 }
 
 #[derive(Debug, Args)]
@@ -176,6 +183,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::ClearCache(args) => clear_cache(args),
         Command::ExportStl(args) => export::export_stl(args),
         Command::Rebuild(args) => rebuild::rebuild(args),
+        Command::PrintTopology(args) => topology::print_topology(args),
     }
 }
 
