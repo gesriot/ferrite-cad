@@ -612,7 +612,12 @@ jobs:
           # without a kernel, and a skipped test still reports as passed.
           # FERRITECAD_REQUIRE_OCCT=1 above is what stops a green step from
           # meaning "skipped": without a kernel the build fails outright.
-          cargo test -p ferritecad-occt --all-targets
+          # Keep the successful corpus measurements too. The default harness
+          # hides stdout/stderr for passing tests, which would prove only that
+          # the policy held and lose the platform-specific limits and refusal
+          # paths that this workflow exists to measure.
+          cargo test -p ferritecad-occt --all-targets -- --nocapture 2>&1 \
+            | tee adapter-test-output.txt
 
           # The CLI lives in another package, so the adapter command above
           # cannot discover its process-level gates. Ordinary CI builds the CLI
@@ -659,6 +664,14 @@ jobs:
             echo
             echo "</details>"
             echo
+            echo "<details><summary>Adapter tests and fillet/shell corpus</summary>"
+            echo
+            echo '```'
+            cat adapter-test-output.txt 2>/dev/null || echo '(the adapter tests did not produce output)'
+            echo '```'
+            echo
+            echo "</details>"
+            echo
           } > "pin-report-${FCAD_PLATFORM}.md"
 
           cat "pin-report-${FCAD_PLATFORM}.md" >> "$GITHUB_STEP_SUMMARY"
@@ -671,6 +684,7 @@ jobs:
           path: |
             pin-report-${{ matrix.name }}.md
             smoke-output.txt
+            adapter-test-output.txt
           if-no-files-found: warn
 
   report:

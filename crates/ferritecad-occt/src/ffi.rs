@@ -448,7 +448,6 @@ impl Session {
         Ok(shape)
     }
 
-    /// Archives a shape with the sub-shapes to be found again.
     /// Rounds every edge of a shape to one radius.
     pub(crate) fn fillet_all(
         &mut self,

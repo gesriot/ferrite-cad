@@ -397,6 +397,12 @@ fn a_shell_is_either_sound_or_refused_at_every_thickness() {
                 None => "none".to_owned(),
             }
         ));
+        assert!(
+            largest_sound.is_some(),
+            "{}: no wall at all could be built, which is not a limit but a \
+             failure to hollow anything",
+            part.provenance()
+        );
     }
 
     eprintln!("shell limits, wall in mm:\n{}", report.join("\n"));
@@ -404,7 +410,7 @@ fn a_shell_is_either_sound_or_refused_at_every_thickness() {
 }
 
 #[test]
-fn the_same_operation_on_the_same_part_gives_the_same_result_twice() {
+fn the_same_fillet_and_shell_on_the_same_part_give_the_same_result_twice() {
     if !is_available() {
         eprintln!("skipped: this build has no Open CASCADE");
         return;
@@ -414,31 +420,62 @@ fn the_same_operation_on_the_same_part_gives_the_same_result_twice() {
     let context = OperationContext::default();
 
     for part in corpus() {
-        let radius = part.smallest_dimension() / 8.0;
-        let mut measured = Vec::new();
+        let smallest = part.smallest_dimension();
+        let radius = smallest / 8.0;
+        let thickness = smallest / 12.0;
+        let mut fillets = Vec::new();
+        let mut shells = Vec::new();
 
         for _ in 0..2 {
             let solid = build(&mut kernel, &part);
             let rounded = kernel
                 .fillet_all(solid, radius, &context)
                 .unwrap_or_else(|e| panic!("{} at radius {radius}: {e}", part.provenance()));
-            measured.push(kernel.shape_stats(rounded).expect("measures"));
+            fillets.push(kernel.shape_stats(rounded).expect("measures"));
             kernel.release(rounded);
             kernel.release(solid);
+
+            let result = kernel
+                .extrude(&request(&part).expect("a valid part"), &context)
+                .unwrap_or_else(|e| panic!("{}: {e}", part.provenance()));
+            let hollow = kernel
+                .shell(result.shape, thickness, &result.end_cap, &context)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{} at wall {thickness}: cannot measure determinism: {e}",
+                        part.provenance()
+                    )
+                });
+            shells.push(kernel.shape_stats(hollow).expect("measures"));
+            kernel.release(hollow);
+            kernel.release(result.shape);
         }
 
         assert_eq!(
-            measured[0].0,
-            measured[1].0,
+            fillets[0].0,
+            fillets[1].0,
             "{}: two identical fillets gave different face counts",
             part.provenance()
         );
         assert!(
-            (measured[0].1 - measured[1].1).abs() < 1e-9,
+            (fillets[0].1 - fillets[1].1).abs() < 1e-9,
             "{}: two identical fillets gave volumes {} and {}",
             part.provenance(),
-            measured[0].1,
-            measured[1].1
+            fillets[0].1,
+            fillets[1].1
+        );
+        assert_eq!(
+            shells[0].0,
+            shells[1].0,
+            "{}: two identical shells gave different face counts",
+            part.provenance()
+        );
+        assert!(
+            (shells[0].1 - shells[1].1).abs() < 1e-9,
+            "{}: two identical shells gave volumes {} and {}",
+            part.provenance(),
+            shells[0].1,
+            shells[1].1
         );
     }
     assert_eq!(kernel.live_shape_count(), 0);
@@ -522,13 +559,23 @@ fn the_radii_that_open_cascade_calls_success_are_still_refused() {
     let (_, block) = kernel.shape_stats(solid).expect("measures");
     assert!((block - 24_000.0).abs() < 1e-6, "the plate is 24000 mm^3");
 
+    let mut refusals = Vec::new();
     for radius in [5.0, 5.1, 6.0] {
         let err = kernel
             .fillet_all(solid, radius, &context)
             .err()
             .unwrap_or_else(|| panic!("radius {radius} is past this plate's limit and must fail"));
         assert_eq!(err.kind(), ErrorKind::Kernel, "radius {radius}: {err}");
+        // This is diagnostic rather than a contract assertion. It lets the
+        // pinned run record whether that OCCT version stopped at IsDone() or
+        // whether FerriteCAD's validity check caught a claimed success.
+        refusals.push(format!("  radius {radius:.1}: {err}"));
     }
+    eprintln!(
+        "plate boundary refusal paths (OCCT {}):\n{}",
+        kernel.identity().version(),
+        refusals.join("\n")
+    );
 
     // And a radius inside the limit still works, so the refusals above are a
     // limit and not a fillet that never works.

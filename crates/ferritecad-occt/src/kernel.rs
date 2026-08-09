@@ -81,10 +81,6 @@ impl OcctKernel {
         self.session.live_shape_count()
     }
 
-    /// Face count and volume, in millimetres cubed.
-    ///
-    /// A diagnostic independent of tessellation, used to assert that a built
-    /// or restored solid is the one that was requested.
     /// Rounds every edge of a shape to one radius.
     ///
     /// # Not part of the kernel contract, on purpose
@@ -149,6 +145,10 @@ impl OcctKernel {
         self.session.is_valid(raw)
     }
 
+    /// Face count and volume, in millimetres cubed.
+    ///
+    /// A diagnostic independent of tessellation, used to assert that a built
+    /// or restored solid is the one that was requested.
     pub fn shape_stats(&mut self, shape: ShapeHandle) -> Result<(u64, f64)> {
         self.session.shape_stats(self.raw(shape)?)
     }

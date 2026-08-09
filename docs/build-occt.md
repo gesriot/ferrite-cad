@@ -382,8 +382,11 @@ whose corners are arcs — swept from well inside each part's nominal limit to
 well past it, on every platform in the pin workflow.
 
 **Fillets never silently misbehaved once the check above was in place.** Every
-part rounded successfully below its limit and was refused at or above it. Two
-readings are worth keeping:
+part had at least one successful radius, and every other request was an
+explicit refusal rather than an invalid handle. The nominal half-dimension is
+a sweep scale, not a universal boundary: nineteen parts stopped below it, but
+`rounded-tall` still rounded at the full nominal value. Two readings are worth
+keeping:
 
 - An L-shape's limit is set by its narrowest arm, not by its bounding box.
   `ell-thick` (50 x 50 x 40, 20 mm cut) rounded to 6.7 mm where its bounding
@@ -400,8 +403,16 @@ radii are where `BRepOffsetAPI_MakeThickSolid` struggles: `rounded-tight`
 That is the shape of the risk for a shell feature: not sharp geometry, but
 small-radius cylindrical faces.
 
-Both operations were deterministic on all twenty parts: two identical requests
-gave identical face counts and volumes to within 1e-9.
+Both operations were deterministic on all twenty parts: two identical fillet
+requests and two identical shell requests gave identical face counts and
+volumes to within 1e-9. These are separate assertions; repeating only the
+fillet would say nothing about the offset algorithm behind shell.
+
+The pin workflow runs the adapter tests with captured output enabled and keeps
+`adapter-test-output.txt` beside each platform's pin report. Besides the sweep
+tables, the output records whether the 5.0/5.1/6.0 plate boundary was refused
+by the builder itself or by FerriteCAD's validity check. A green test alone
+proves the policy but cannot distinguish those mechanisms.
 
 ## What meshing does, and does not, do
 
