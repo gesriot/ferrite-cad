@@ -16,6 +16,8 @@ use ferritecad_fixtures::plate_source;
 
 /// The exit status for a document whose names no longer all resolve.
 const UNRESOLVED: i32 = 3;
+const INVALID: i32 = 1;
+const FAILED: i32 = 2;
 
 fn ferritecad() -> PathBuf {
     // `current_exe` is target/<profile>/deps/<test>; the binary is two up.
@@ -102,6 +104,27 @@ fn drop_a_segment(document: &Path) -> ferritecad_types::StableEntityId {
         .expect("writes");
     opened.close().expect("closes");
     removed.id
+}
+
+fn rewrite_first_reference(
+    document: &Path,
+    change: impl FnOnce(&mut ferritecad_document::TopologyRef),
+) -> ferritecad_types::StableEntityId {
+    use ferritecad_document::Document;
+
+    let mut opened = Document::open(document).expect("opens");
+    let mut reference = opened
+        .topology_refs()
+        .expect("reads references")
+        .into_iter()
+        .next()
+        .expect("the plate stores references");
+    change(&mut reference);
+    opened
+        .write(|writer| writer.put_topology_ref(&reference))
+        .expect("rewrites the reference");
+    opened.close().expect("closes");
+    reference.id
 }
 
 #[test]
@@ -200,6 +223,61 @@ fn every_lost_reference_is_listed_not_only_the_first() {
             "stopping at the first lost name hides how much broke: {report}"
         );
     }
+}
+
+#[test]
+fn a_contradictory_reference_is_invalid_not_lost() {
+    use ferritecad_document::EntityKind;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let document = plate(dir.path());
+    if !has_kernel(&document) {
+        return;
+    }
+
+    let invalid = rewrite_first_reference(&document, |reference| {
+        // An extrusion cap can only be a face. This statement is malformed;
+        // no change to geometry could make it resolve to an edge.
+        reference.expected_kind = EntityKind::Edge;
+    });
+    let output = print_topology(&document);
+    let report = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(output.status.code(), Some(INVALID), "{report}");
+    assert!(report.contains(&format!("{invalid}  invalid")), "{report}");
+    assert!(!report.contains(&format!("{invalid}  lost")), "{report}");
+}
+
+#[test]
+fn a_role_this_build_cannot_resolve_is_unsupported_not_lost() {
+    use ferritecad_document::{EntityKind, SelectionRule, SemanticRole};
+    use ferritecad_types::StableEntityId;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let document = plate(dir.path());
+    if !has_kernel(&document) {
+        return;
+    }
+
+    let unsupported = rewrite_first_reference(&document, |reference| {
+        reference.expected_kind = EntityKind::Edge;
+        reference.output_role = SemanticRole::SketchSegment {
+            segment: StableEntityId::new(),
+        };
+        reference.selection = SelectionRule::Exact;
+    });
+    let output = print_topology(&document);
+    let report = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(output.status.code(), Some(FAILED), "{report}");
+    assert!(
+        report.contains(&format!("{unsupported}  unsupported")),
+        "{report}"
+    );
+    assert!(
+        !report.contains(&format!("{unsupported}  lost")),
+        "{report}"
+    );
 }
 
 #[test]

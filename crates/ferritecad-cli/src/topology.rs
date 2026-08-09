@@ -7,20 +7,24 @@
 //! no archive slots, no face indices. Those change on every run, and a report
 //! that named them would be inviting somebody to depend on them.
 //!
-//! A reference that no longer resolves is why this command exists, so all of
-//! them are listed rather than the first. Stopping at one would hide whether
-//! a single edit broke one name or every name, which is the difference between
-//! a small mistake and a lost model.
+//! A reference that no longer resolves is why this command exists, so all
+//! non-resolutions are listed rather than the first. Their error classes stay
+//! distinct: lost geometry is not a contradictory reference, and neither is a
+//! role this build cannot implement. Stopping at one would hide whether a
+//! single edit broke one name or every name, which is the difference between a
+//! small mistake and a lost model.
 
 use std::process::ExitCode;
 
-use ferritecad_document::{CapSide, Document, ObjectRecord, SelectionRule, SemanticRole};
+use ferritecad_document::{
+    CapSide, Document, ObjectRecord, SelectionRule, SemanticRole, TopologyRef,
+};
 use ferritecad_eval::{RebuildResult, rebuild_cold};
 use ferritecad_kernel::OperationContext;
 use ferritecad_occt::OcctKernel;
-use ferritecad_types::{ObjectId, Result};
+use ferritecad_types::{CadError, ErrorKind, ObjectId, Result};
 
-use crate::{DocumentArgs, EXIT_UNRESOLVED};
+use crate::{DocumentArgs, EXIT_FAILED, EXIT_INVALID, EXIT_UNRESOLVED};
 
 pub fn print_topology(args: DocumentArgs) -> Result<ExitCode> {
     // Read-only: a command that reports on a document must not be capable of
@@ -32,20 +36,13 @@ pub fn print_topology(args: DocumentArgs) -> Result<ExitCode> {
     let outcome = report(&document, &built);
     built.release_all(&mut kernel);
 
-    let (text, lost) = outcome?;
+    let (text, status) = outcome?;
     print!("{text}");
-    Ok(if lost == 0 {
-        ExitCode::SUCCESS
-    } else {
-        // Distinct from both success and the code a command that could not run
-        // returns: this document opened, rebuilt, and is missing names. A
-        // script wants to tell those three apart.
-        ExitCode::from(EXIT_UNRESOLVED)
-    })
+    Ok(status.exit_code())
 }
 
-/// The report, and how many references failed to resolve.
-fn report(document: &Document, built: &RebuildResult) -> Result<(String, usize)> {
+/// The report and the most serious outcome it contains.
+fn report(document: &Document, built: &RebuildResult) -> Result<(String, ReportStatus)> {
     use std::fmt::Write as _;
 
     let objects = document.objects()?;
@@ -69,16 +66,17 @@ fn report(document: &Document, built: &RebuildResult) -> Result<(String, usize)>
     )
     .expect("writing to a String cannot fail");
 
-    let mut lost = Vec::new();
+    let mut issues = Vec::new();
     for reference in &references {
         out.push('\n');
         let resolved = built.resolve(reference);
         let (status, count) = match &resolved {
-            Ok(found) => ("resolved", found.len().to_string()),
-            Err(_) => ("lost", "-".to_owned()),
+            Ok(found) => (ReferenceStatus::Resolved, found.len().to_string()),
+            Err(error) => (ReferenceStatus::from_error(error), "-".to_owned()),
         };
 
-        writeln!(out, "  {}  {status}", reference.id).expect("writing to a String cannot fail");
+        writeln!(out, "  {}  {}", reference.id, status.as_str())
+            .expect("writing to a String cannot fail");
         writeln!(
             out,
             "    role       {}",
@@ -104,7 +102,11 @@ fn report(document: &Document, built: &RebuildResult) -> Result<(String, usize)>
         writeln!(out, "    selects    {count}").expect("writing to a String cannot fail");
 
         if let Err(error) = resolved {
-            lost.push((reference, error));
+            issues.push(ReferenceIssue {
+                reference,
+                status,
+                error,
+            });
         }
     }
 
@@ -112,23 +114,110 @@ fn report(document: &Document, built: &RebuildResult) -> Result<(String, usize)>
     writeln!(
         out,
         "  {} of {} references resolved",
-        references.len() - lost.len(),
+        references.len() - issues.len(),
         references.len()
     )
     .expect("writing to a String cannot fail");
 
     // All of them, with the reason each gave. A caller fixing a model needs to
     // see the whole extent of the damage in one pass.
-    for (reference, error) in &lost {
+    for issue in &issues {
         writeln!(
             out,
-            "    {} {}: {error}",
-            reference.id,
-            describe_role(&reference.output_role)
+            "    {} {} {}: {error}",
+            issue.reference.id,
+            issue.status.as_str(),
+            describe_role(&issue.reference.output_role),
+            error = issue.error,
         )
         .expect("writing to a String cannot fail");
     }
-    Ok((out, lost.len()))
+    Ok((
+        out,
+        ReportStatus::from_statuses(issues.iter().map(|issue| issue.status)),
+    ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReferenceStatus {
+    Resolved,
+    Lost,
+    Invalid,
+    Unsupported,
+    Failed,
+}
+
+struct ReferenceIssue<'a> {
+    reference: &'a TopologyRef,
+    status: ReferenceStatus,
+    error: CadError,
+}
+
+impl ReferenceStatus {
+    fn from_error(error: &CadError) -> Self {
+        match error.kind() {
+            ErrorKind::Topology => Self::Lost,
+            ErrorKind::Input => Self::Invalid,
+            ErrorKind::Unsupported => Self::Unsupported,
+            // Resolution is currently pure and returns only the three kinds
+            // above. Keep future kernel, IO, cancellation or constraint errors
+            // visible without pretending that geometry merely disappeared.
+            _ => Self::Failed,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Resolved => "resolved",
+            Self::Lost => "lost",
+            Self::Invalid => "invalid",
+            Self::Unsupported => "unsupported",
+            Self::Failed => "error",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReportStatus {
+    Resolved,
+    Lost,
+    Invalid,
+    Failed,
+}
+
+impl ReportStatus {
+    fn from_statuses(statuses: impl IntoIterator<Item = ReferenceStatus>) -> Self {
+        let mut lost = false;
+        let mut invalid = false;
+        let mut failed = false;
+        for status in statuses {
+            match status {
+                ReferenceStatus::Resolved => {}
+                ReferenceStatus::Lost => lost = true,
+                ReferenceStatus::Invalid => invalid = true,
+                ReferenceStatus::Unsupported | ReferenceStatus::Failed => failed = true,
+            }
+        }
+
+        if failed {
+            Self::Failed
+        } else if invalid {
+            Self::Invalid
+        } else if lost {
+            Self::Lost
+        } else {
+            Self::Resolved
+        }
+    }
+
+    fn exit_code(self) -> ExitCode {
+        match self {
+            Self::Resolved => ExitCode::SUCCESS,
+            Self::Invalid => ExitCode::from(EXIT_INVALID),
+            Self::Failed => ExitCode::from(EXIT_FAILED),
+            Self::Lost => ExitCode::from(EXIT_UNRESOLVED),
+        }
+    }
 }
 
 /// A durable description of what geometry a reference means.
@@ -150,7 +239,7 @@ fn describe_role(role: &SemanticRole) -> String {
         }
         SemanticRole::SketchSegment { segment } => format!("sketch segment {segment}"),
         SemanticRole::FilletFace { source_edge } => format!("fillet face from edge {source_edge}"),
-        other => format!("unknown role {other:?}"),
+        _ => "unknown semantic role".to_owned(),
     }
 }
 
@@ -160,7 +249,7 @@ fn describe_selection(selection: &SelectionRule) -> String {
         SelectionRule::AllDerivedFrom { ancestor } => {
             format!("all derived from {ancestor}")
         }
-        other => format!("unknown rule {other:?}"),
+        _ => "unknown selection rule".to_owned(),
     }
 }
 
@@ -172,5 +261,35 @@ fn label(objects: &[ObjectRecord], id: ObjectId) -> String {
     {
         Some(name) => format!("{name} ({id})"),
         None => id.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReferenceStatus, ReportStatus};
+
+    #[test]
+    fn the_exit_status_keeps_error_classes_distinct_and_prioritised() {
+        assert_eq!(ReportStatus::from_statuses([]), ReportStatus::Resolved);
+        assert_eq!(
+            ReportStatus::from_statuses([ReferenceStatus::Lost]),
+            ReportStatus::Lost
+        );
+        assert_eq!(
+            ReportStatus::from_statuses([ReferenceStatus::Lost, ReferenceStatus::Invalid]),
+            ReportStatus::Invalid
+        );
+        assert_eq!(
+            ReportStatus::from_statuses([
+                ReferenceStatus::Lost,
+                ReferenceStatus::Invalid,
+                ReferenceStatus::Unsupported,
+            ]),
+            ReportStatus::Failed
+        );
+        assert_eq!(
+            ReportStatus::from_statuses([ReferenceStatus::Failed]),
+            ReportStatus::Failed
+        );
     }
 }
