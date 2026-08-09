@@ -31,28 +31,32 @@ rather than added as `λI`, because a sketch mixes units — a distance residual
 is millimetres and an equal-length residual is millimetres squared — and
 uniform damping would quietly favour whichever happens to be larger.
 
-Measured in release, fifteen problems up to 208 equations:
+One local release run, with the tests serialized, covered fifteen problems up
+to 208 equations. These are example observations, not stable benchmark
+numbers; the hardware profile and repeated-sample harness required for that do
+not exist yet:
 
 | problem | equations | unknowns | dof | redundant | iterations | worst residual | time |
 |---|--:|--:|--:|--:|--:|--:|--:|
-| rectangle | 8 | 8 | 0 | 0 | 3 | 7.1e-15 | 7 µs |
-| chain-10 | 98 | 80 | 0 | 18 | 3 | 2.1e-11 | 523 µs |
-| chain-21 | 208 | 168 | 0 | 40 | 3 | 4.1e-10 | 3.7 ms |
-| polygon-32 | 35 | 64 | 29 | 0 | 9 | 2.0e-10 | 935 µs |
-| bracket-48 | 98 | 98 | 1 | 1 | 14 | 2.3e-12 | 3.7 ms |
-| bracket-100 | 202 | 202 | 1 | 1 | 14 | 9.9e-11 | 22 ms |
+| rectangle | 8 | 8 | 0 | 0 | 2 | 2.0e-9 | 4 µs |
+| chain-10 | 98 | 80 | 0 | 18 | 2 | 2.5e-7 | 340 µs |
+| chain-21 | 208 | 168 | 0 | 40 | 3 | 4.1e-10 | 3.3 ms |
+| polygon-32 | 35 | 64 | 29 | 0 | 8 | 2.8e-7 | 950 µs |
+| bracket-48 | 98 | 98 | 1 | 1 | 9 | 2.4e-8 | 2.6 ms |
+| bracket-100 | 202 | 202 | 1 | 1 | 11 | 1.4e-8 | 17.7 ms |
 
-Everything converged. **A drag step costs about a microsecond**: re-solving
-from the previous solution while a corner is pulled is nothing like solving
-from scratch, and that is the number interactivity depends on.
+Everything cleared the common `1e-6` residual limit. It is a numeric comparison
+limit, not a physical nanometre: distance residuals are in millimetres while
+equal-length and dot/cross-product residuals are in mm². Re-solving from the
+previous solution while a corner is pulled is much cheaper than a cold solve,
+but the current test-only timing is not yet a UI latency measurement.
 
 Two readings matter more than the totals:
 
-- **Iteration count, not size, dominates.** `chain-21` (208 equations) solves
-  in 3.7 ms and `bracket-100` (202 equations) takes 22 ms, because the bracket
-  needs fourteen iterations to the chain's three. Chained perpendicular and
-  equal-length constraints are what make a sketch expensive, not how many
-  constraints there are.
+- **Iteration count matters at least as much as size.** `chain-21` and
+  `bracket-100` are nearly the same size, but the bracket needs many more
+  iterations. Chained perpendicular and equal-length constraints are a harder
+  family than a similarly sized rectangle chain.
 - **The cost is superlinear.** Dense normal equations are O(unknowns³) per
   iteration. At 200 unknowns that is comfortable; a sketch ten times larger
   would not be, and the answer then is sparsity, not a faster machine.
@@ -64,40 +68,47 @@ about, because such a sketch still solves and is still wrong to edit.
 
 ## The second candidate
 
-planegcs, FreeCAD's solver, on the same terms as Open CASCADE: LGPL, built as
-a shared library by `tools/build-planegcs.sh` from a pinned FreeCAD 1.0.1
+planegcs, FreeCAD's solver: LGPL-2.0-or-later, built as a shared library by
+`tools/build-planegcs.sh` from a pinned FreeCAD 1.0.1
 whose checksum is verified before anything is extracted, linked dynamically
 behind a shim of our own MIT code, and off by default behind a cargo feature.
-The sources are used byte-identical; the only files added are two build-glue
-headers, because FreeCAD's own versions reach into Qt. Recorded in
-THIRD_PARTY_LICENSES.md.
+The sources are used byte-identical; the only files added are three build-glue
+headers, because FreeCAD's own versions reach into Qt and its build system.
+The build output carries FreeCAD's complete licence text beside the library.
+Recorded in THIRD_PARTY_LICENSES.md.
+
+The helper currently builds on macOS and Linux; the linked path has been
+exercised locally on macOS. Unlike OCCT, it is not in the three-platform pin
+workflow and has no native Windows build path yet.
 
 ```
 FCAD_PLANEGCS_DIR=<dir> cargo test --release -p ferritecad-solver-lab \
-    --features planegcs -- --nocapture
+    --features planegcs -- --nocapture --test-threads=1
 ```
 
 ### What the comparison shows
 
 | problem | equations | LM | planegcs |
 |---|--:|--:|--:|
-| rectangle | 8 | 7.1e-15, 8 µs | **0**, 192 µs |
-| chain-10 | 98 | 2.1e-11, 566 µs | **0**, 3.0 ms |
-| chain-21 | 208 | 4.1e-10, **3.7 ms** | 0, 17.2 ms |
-| polygon-32 | 35 | 2.0e-10, 885 µs | 3.6e-15, **826 µs** |
-| bracket-48 | 98 | 9.0e-11, 2.5 ms | 3.5e-11, **2.2 ms** |
-| bracket-100 | 202 | 5.4e-11, 19.6 ms | 3.8e-10, **13.5 ms** |
+| rectangle | 8 | 2.0e-9, 4 µs | 0, 164 µs |
+| chain-10 | 98 | 2.5e-7, 340 µs | 0, 3.2 ms |
+| chain-21 | 208 | 4.1e-10, 3.3 ms | 0, 17.7 ms |
+| polygon-32 | 35 | 2.8e-7, 950 µs | 3.6e-15, 857 µs |
+| bracket-48 | 98 | 2.4e-8, 2.6 ms | 3.5e-11, 2.3 ms |
+| bracket-100 | 202 | 1.4e-8, 17.7 ms | 3.8e-10, 13.7 ms |
 
-Both solve everything in the corpus to well within a nanometre, and both
+Both clear the same neutral residual limit on the whole corpus, and both
 diagnose the under- and over-constrained cases the same way.
 
-- **planegcs is more accurate on well-conditioned sketches**, reaching exact
-  zero where the LM leaves 1e-10 to 1e-15. That is a real difference and not a
-  meaningful one at this scale, but it is the direction one would want.
-- **Neither is uniformly faster.** The LM is four times quicker on chained
-  rectangles; planegcs is a third quicker on chained perpendicular and
-  equal-length constraints, which is the harder family. Whichever is chosen,
-  the other is faster at something.
+- **planegcs often leaves the smaller neutral residual**, reaching exact zero
+  on several well-conditioned sketches where the LM stops after clearing the
+  common limit. The extra digits do not decide the product choice at this
+  scale.
+- **The current times do not rank speed fairly.** planegcs necessarily runs
+  its rank diagnosis while `System::initSolution()` prepares a solve; the
+  local LM path does not. These are useful end-to-end smoke measurements, but
+  not execution-equivalent timings. A speed decision needs phase-separated,
+  repeated measurements on a recorded hardware profile.
 - **The measurement is only as good as the corpus.** An earlier version of the
   bracket started its staircase ninety degrees from where its own constraints
   said the first arm went. The LM recovered from that and planegcs did not,
@@ -107,9 +118,11 @@ diagnose the under- and over-constrained cases the same way.
 
 ### What the choice still needs
 
-Time on a corpus this size does not settle it. Both candidates are dense and
-O(unknowns³) per iteration; at 200 unknowns that is comfortable and at 2000 it
-would not be, and the answer there is sparsity rather than a faster machine.
-Neither has been asked to drag under a real interface, to survive a sketch
-that is genuinely unsatisfiable, or to explain a conflict to a person. Those
-are the questions that would actually decide it.
+Time on a corpus this size does not settle it. The local LM uses dense
+O(unknowns³) normal equations; at 200 unknowns that is comfortable and at 2000
+it would not be. planegcs also needs a scaling run before either result can be
+extrapolated that far.
+Only the local LM has been exercised by the synthetic drag test. Neither has
+been asked to drag through the same persistent, UI-shaped workload, to survive
+a genuinely unsatisfiable sketch, or to identify a conflict in terms a person
+can act on. Those are the questions that would actually decide it.

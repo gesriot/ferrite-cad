@@ -11,18 +11,23 @@
 use std::time::Duration;
 
 use ferritecad_solver_lab::{
-    Constraint, Corpus, DoesNothing, LevenbergMarquardt, Point, Problem, Solver, problem,
+    COMPARISON_RESIDUAL_LIMIT, Constraint, Corpus, DoesNothing, LevenbergMarquardt, Point, Problem,
+    Solver, problem,
 };
 
 /// How close counts as solved, for every candidate alike.
 ///
-/// A nanometre. Chosen because it is far below anything a drawing means and
-/// far above where two solvers differ for reasons of their own: judging on
-/// 1e-9 made planegcs "fail" a bracket at 1.077e-9, which is a picometre of
-/// disagreement and says nothing about whether the sketch was solved. The
-/// achieved residual is reported either way, so a real difference in accuracy
-/// is visible in the table rather than hidden behind a pass.
-const ACCEPTABLE: f64 = 1e-6;
+/// This is deliberately a neutral numeric threshold. The corpus mixes length
+/// residuals with dot/cross products in mm², so calling the scalar itself a
+/// nanometre would be dimensionally false. The achieved residual is reported
+/// either way.
+const ACCEPTABLE: f64 = COMPARISON_RESIDUAL_LIMIT;
+
+fn iterations(outcome: &ferritecad_solver_lab::Outcome) -> String {
+    outcome
+        .iterations
+        .map_or_else(|| "n/a".to_owned(), |count| count.to_string())
+}
 
 /// Every candidate the bench knows about.
 ///
@@ -103,7 +108,7 @@ fn every_candidate_solves_what_it_should_and_says_so() {
                 } else {
                     "gave up"
                 },
-                outcome.iterations,
+                iterations(&outcome),
                 outcome.worst_residual,
                 micros(outcome.elapsed)
             ));
@@ -113,20 +118,21 @@ fn every_candidate_solves_what_it_should_and_says_so() {
             // redundant constraints must also solve — saying a thing twice
             // does not make it unsatisfiable.
             assert!(
-                outcome.worst_residual <= ACCEPTABLE,
-                "{} could not solve {}: worst residual {:.3e} after {} iterations",
+                outcome.converged && outcome.worst_residual <= ACCEPTABLE,
+                "{} could not solve {}: converged {}, worst residual {:.3e}, iterations {}",
                 solver.name(),
                 problem.name,
+                outcome.converged,
                 outcome.worst_residual,
-                outcome.iterations
+                iterations(&outcome)
             );
         }
     }
 
     eprintln!(
-        "solver comparison ({} build; timings from a debug build are not a \n\
-         prediction about a release one, only a comparison between candidates \n\
-         measured the same way):\n{}",
+        "solver comparison ({} build; candidate-path timings include each \n\
+         implementation's own setup and are smoke measurements, not a speed \n\
+         ranking):\n{}",
         if cfg!(debug_assertions) {
             "debug"
         } else {
@@ -134,6 +140,11 @@ fn every_candidate_solves_what_it_should_and_says_so() {
         },
         rows.join("\n")
     );
+}
+
+#[test]
+fn the_default_candidate_and_the_gate_use_one_limit() {
+    assert_eq!(LevenbergMarquardt::default().tolerance, ACCEPTABLE);
 }
 
 #[test]
@@ -148,6 +159,7 @@ fn the_bench_can_tell_a_solver_from_something_that_does_nothing() {
     );
 
     let solved = LevenbergMarquardt::default().solve(&problem, &problem.start);
+    assert!(solved.converged);
     assert!(solved.worst_residual <= ACCEPTABLE);
     assert!(solved.worst_residual < idle.worst_residual / 1e6);
 }
@@ -158,6 +170,7 @@ fn a_solved_rectangle_is_actually_a_rectangle() {
     // it produced, which is what the claim is supposed to mean.
     let problem = problem(Corpus::Rectangle, 0);
     let outcome = LevenbergMarquardt::default().solve(&problem, &problem.start);
+    assert!(outcome.converged);
     assert!(outcome.worst_residual <= ACCEPTABLE);
 
     let at = |point: usize| (outcome.solution[point * 2], outcome.solution[point * 2 + 1]);
@@ -301,13 +314,13 @@ mod against_planegcs {
             // they may satisfy them differently, so what has to match is the
             // residual, not the coordinates.
             assert!(
-                mine.worst_residual <= ACCEPTABLE,
+                mine.converged && mine.worst_residual <= ACCEPTABLE,
                 "{}: mine left {:.3e}",
                 problem.name,
                 mine.worst_residual
             );
             assert!(
-                theirs.worst_residual <= ACCEPTABLE,
+                theirs.converged && theirs.worst_residual <= ACCEPTABLE,
                 "{}: planegcs left {:.3e}",
                 problem.name,
                 theirs.worst_residual

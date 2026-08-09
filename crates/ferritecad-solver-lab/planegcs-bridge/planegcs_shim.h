@@ -15,8 +15,22 @@
 #include <stdint.h>
 
 #ifdef __cplusplus
+#define FC_GCS_NOEXCEPT noexcept
 extern "C" {
+#else
+#define FC_GCS_NOEXCEPT
 #endif
+
+/* Return statuses. Only SUCCESS and CONVERGED contain an applied solution. */
+enum {
+  FC_GCS_SUCCESS = 0,
+  FC_GCS_NOT_CONVERGED = 1,
+  FC_GCS_CONVERGED = 2,
+  FC_GCS_INVALID_INPUT = -1,
+  FC_GCS_UNKNOWN_CONSTRAINT = -2,
+  FC_GCS_STD_EXCEPTION = -3,
+  FC_GCS_UNKNOWN_EXCEPTION = -4
+};
 
 /* Constraint kinds, matching the bench's own enum. Stable by number: these
  * cross an ABI. */
@@ -44,21 +58,23 @@ typedef struct FcGcsConstraint {
 /* Solves, and reports what planegcs made of the system.
  *
  * `state` is 2 doubles per point, read as the starting guess and written with
- * the solution. Returns 0 on success and non-zero when planegcs did not
- * converge; the diagnosis out-parameters are filled either way when they can
- * be.
+ * the solution. Returns FC_GCS_SUCCESS or FC_GCS_CONVERGED only when an
+ * acceptable native solution was applied; all other statuses are failures.
+ * The diagnosis out-parameters are filled when they can be.
  */
 int32_t fc_gcs_solve(double *state, size_t point_count,
                      const FcGcsConstraint *constraints,
                      size_t constraint_count, int32_t *out_dofs,
                      int32_t *out_has_conflicting, int32_t *out_has_redundant,
-                     int32_t *out_iterations);
+                     int32_t *out_iterations) FC_GCS_NOEXCEPT;
 
 /* The planegcs version this shim was built against, for the record. */
-const char *fc_gcs_provenance(void);
+const char *fc_gcs_provenance(void) FC_GCS_NOEXCEPT;
 
 #ifdef __cplusplus
 }
 #endif
+
+#undef FC_GCS_NOEXCEPT
 
 #endif

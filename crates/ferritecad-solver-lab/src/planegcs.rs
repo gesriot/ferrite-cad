@@ -18,7 +18,10 @@
 use std::os::raw::c_char;
 use std::time::Instant;
 
-use crate::{Constraint, Diagnosis, Outcome, Problem, Solver};
+use crate::{COMPARISON_RESIDUAL_LIMIT, Constraint, Diagnosis, Outcome, Problem, Solver};
+
+const STATUS_SUCCESS: i32 = 0;
+const STATUS_CONVERGED: i32 = 2;
 
 const COINCIDENT: i32 = 0;
 const FIXED: i32 = 1;
@@ -104,6 +107,10 @@ fn run(_state: &mut [f64], _encoded: &[RawConstraint]) -> (i32, i32, i32, i32, i
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Planegcs;
+
+fn completed(status: i32) -> bool {
+    matches!(status, STATUS_SUCCESS | STATUS_CONVERGED)
+}
 
 fn encode(constraints: &[Constraint]) -> Vec<RawConstraint> {
     let blank = RawConstraint {
@@ -192,7 +199,6 @@ impl Solver for Planegcs {
         let mut state = start.to_vec();
         let encoded = encode(&problem.constraints);
         let (status, _, _, _, iterations) = run(&mut state, &encoded);
-        let elapsed = began.elapsed();
 
         // Measured the same way for every candidate: what the residuals
         // actually are, not what the solver says about itself.
@@ -200,21 +206,49 @@ impl Solver for Planegcs {
         let worst = residuals
             .iter()
             .fold(0.0f64, |worst, value| worst.max(value.abs()));
+        let elapsed = began.elapsed();
 
         Outcome {
-            // Judged on the residuals, not on which of planegcs's two
-            // success codes came back: a system that cannot be satisfied
-            // exactly reports Converged, and whether that is good enough is
-            // the same question asked of every candidate.
-            converged: status <= 2 && worst <= 1e-9,
+            // Both conditions matter. A small residual at the starting state
+            // must not turn an ABI error into success, and a native success
+            // must still clear the same neutral threshold as every candidate.
+            converged: completed(status) && worst <= COMPARISON_RESIDUAL_LIMIT,
             iterations: if iterations < 0 {
-                0
+                None
             } else {
-                iterations as usize
+                Some(iterations as usize)
             },
             worst_residual: worst,
             elapsed,
             solution: state,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_documented_completion_statuses_are_success() {
+        assert!(completed(STATUS_SUCCESS));
+        assert!(completed(STATUS_CONVERGED));
+        for status in [-4, -3, -2, -1, 1, 3] {
+            assert!(!completed(status), "status {status} is not success");
+        }
+    }
+
+    #[cfg(planegcs_linked)]
+    #[test]
+    fn an_invalid_point_index_is_refused_at_the_abi_boundary() {
+        let mut state = vec![0.0, 0.0];
+        let invalid = RawConstraint {
+            kind: COINCIDENT,
+            points: [0, 1, -1, -1],
+            value: 0.0,
+            value2: 0.0,
+        };
+        let (status, ..) = run(&mut state, &[invalid]);
+        assert_eq!(status, -1);
     }
 }

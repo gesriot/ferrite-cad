@@ -14,7 +14,7 @@
 use std::time::Instant;
 
 use crate::linalg::{norm, solve_spd};
-use crate::{Outcome, Problem, Solver};
+use crate::{COMPARISON_RESIDUAL_LIMIT, Outcome, Problem, Solver};
 
 #[derive(Debug, Clone, Copy)]
 pub struct LevenbergMarquardt {
@@ -27,9 +27,10 @@ impl Default for LevenbergMarquardt {
     fn default() -> Self {
         Self {
             max_iterations: 100,
-            // A micrometre. Finer than any drawing cares about and coarse
-            // enough that convergence is not a matter of luck in the last bits.
-            tolerance: 1e-9,
+            // The comparison's common numerical boundary. Residuals have the
+            // units of their constraints, so this must not be described as
+            // one physical distance.
+            tolerance: COMPARISON_RESIDUAL_LIMIT,
         }
     }
 }
@@ -50,17 +51,19 @@ impl Solver for LevenbergMarquardt {
         let mut state = start.to_vec();
         let (mut residuals, mut jacobian) = problem.evaluate(&state);
         let mut damping = 1e-6;
+        let mut iterations = 0;
 
         for iteration in 0..self.max_iterations {
             if worst(&residuals) <= self.tolerance {
                 return Outcome {
                     converged: true,
-                    iterations: iteration,
+                    iterations: Some(iteration),
                     worst_residual: worst(&residuals),
                     elapsed: began.elapsed(),
                     solution: state,
                 };
             }
+            iterations = iteration + 1;
 
             let normal = jacobian.transpose_times_self();
             let gradient = jacobian.transpose_times(&residuals);
@@ -114,7 +117,7 @@ impl Solver for LevenbergMarquardt {
 
         Outcome {
             converged: worst(&residuals) <= self.tolerance,
-            iterations: self.max_iterations,
+            iterations: Some(iterations),
             worst_residual: worst(&residuals),
             elapsed: began.elapsed(),
             solution: state,
@@ -139,7 +142,7 @@ impl Solver for DoesNothing {
         let (residuals, _) = problem.evaluate(start);
         Outcome {
             converged: false,
-            iterations: 0,
+            iterations: Some(0),
             worst_residual: worst(&residuals),
             elapsed: began.elapsed(),
             solution: start.to_vec(),

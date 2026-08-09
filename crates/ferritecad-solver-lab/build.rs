@@ -20,6 +20,10 @@ fn main() {
     println!("cargo:rerun-if-changed=planegcs-bridge/planegcs_shim.cpp");
     println!("cargo:rerun-if-changed=planegcs-bridge/planegcs_shim.h");
     println!("cargo:rerun-if-env-changed=FCAD_PLANEGCS_DIR");
+    println!("cargo:rerun-if-env-changed=FCAD_EIGEN_INCLUDE");
+    println!("cargo:rerun-if-env-changed=FCAD_BOOST_INCLUDE");
+    println!("cargo:rerun-if-env-changed=CXX");
+    println!("cargo:rerun-if-env-changed=AR");
 
     if std::env::var_os("CARGO_FEATURE_PLANEGCS").is_none() {
         return;
@@ -43,6 +47,15 @@ fn main() {
             "cargo::warning={} does not look like a planegcs build; that candidate will be \
              skipped",
             planegcs.display()
+        );
+        return;
+    }
+
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").expect("cargo sets target OS");
+    if target_os != "macos" && target_os != "linux" {
+        println!(
+            "cargo::warning=the linked planegcs lab path currently supports macOS and Linux, not \
+             {target_os}; that candidate will be skipped"
         );
         return;
     }
@@ -85,7 +98,8 @@ fn main() {
     // Bundled into a static archive of FerriteCAD's own code; planegcs itself
     // stays a shared library beside it, which is the point.
     let archive = out.join("libplanegcs_shim.a");
-    let status = Command::new("ar")
+    let archiver = std::env::var("AR").unwrap_or_else(|_| "ar".to_owned());
+    let status = Command::new(archiver)
         .arg("crs")
         .arg(&archive)
         .arg(&object)
@@ -100,7 +114,7 @@ fn main() {
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", planegcs.display());
 
     // The C++ standard library, which the shim and planegcs both need.
-    if cfg!(target_os = "macos") {
+    if target_os == "macos" {
         println!("cargo:rustc-link-lib=dylib=c++");
     } else {
         println!("cargo:rustc-link-lib=dylib=stdc++");

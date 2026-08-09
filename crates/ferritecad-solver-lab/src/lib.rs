@@ -38,6 +38,14 @@ pub use planegcs::{
 
 use std::time::Duration;
 
+/// The neutral acceptance limit used to compare every candidate.
+///
+/// This is a numeric limit, not one physical length: the corpus deliberately
+/// contains residuals in both millimetres and mm². Candidate-internal stopping
+/// rules may differ, but `Outcome::converged` is judged against this common
+/// boundary after the solution is evaluated by the neutral problem model.
+pub const COMPARISON_RESIDUAL_LIMIT: f64 = 1e-6;
+
 /// A point in the sketch plane, by index into the unknown vector.
 ///
 /// Each point occupies two unknowns, `2i` and `2i + 1`.
@@ -286,7 +294,8 @@ impl Diagnosis {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
     pub converged: bool,
-    pub iterations: usize,
+    /// Iterations when the candidate exposes them.
+    pub iterations: Option<usize>,
     /// The largest single residual left, in millimetres or mm².
     pub worst_residual: f64,
     pub elapsed: Duration,

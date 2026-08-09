@@ -35,21 +35,25 @@ Two rules follow from those terms and are enforced rather than remembered:
   option) any later version
 - **Used for:** a second candidate in the sketch solver comparison
   (`crates/ferritecad-solver-lab`). Not part of any shipped application today.
-- **Linking:** dynamic, on the same terms as Open CASCADE. The shim
+- **Linking:** dynamic. The shim
   (`crates/ferritecad-solver-lab/planegcs-bridge`) is FerriteCAD's own MIT code
   and holds no planegcs types; planegcs itself is a shared library built beside
   it and can be replaced.
 - **Source:** FreeCAD 1.0.1, `src/Mod/Sketcher/App/planegcs`, archive SHA-256
   `f62bc07c477544eff62b6ab0fc3bb63fa7f1e6f94763c51b0049507842d444f3`
-- **Modifications:** none. The sources are used byte-identical. Two headers
-  beside them — `SketcherGlobal.h` and `Base/Console.h` — are FerriteCAD's own
-  MIT build glue, written because FreeCAD's versions reach into Qt and its
-  build system, and marked as such.
+- **Modifications:** none. The sources are used byte-identical. Three headers
+  beside them — `SketcherGlobal.h`, `FCConfig.h` and `Base/Console.h` — are
+  FerriteCAD's own MIT build glue, written because FreeCAD's versions reach
+  into Qt and its build system, and marked as such.
 - **Replacing it:** `tools/build-planegcs.sh` fetches the pinned release,
   verifies the checksum before extracting anything, and builds the shared
-  library. Point `FCAD_PLANEGCS_DIR` at your own build instead.
+  library. The build directory carries FreeCAD's complete `LICENSE` text
+  beside the library. Point `FCAD_PLANEGCS_DIR` at your own build instead.
 - **Off by default:** the `planegcs` cargo feature. Ordinary builds and CI do
   not compile or link it.
+- **Platform coverage:** the linked lab path is currently implemented and
+  locally exercised on macOS; the helper also supports Linux. It is not part
+  of the three-platform pin workflow and has no native Windows build path yet.
 
 ### Eigen and Boost
 

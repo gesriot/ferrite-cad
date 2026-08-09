@@ -27,6 +27,39 @@ GCS::Line line(Sketch &sketch, int32_t a, int32_t b) {
   return result;
 }
 
+bool is_point(size_t point_count, int32_t index) {
+  return index >= 0 && static_cast<size_t>(index) < point_count;
+}
+
+bool has_valid_points(const FcGcsConstraint &constraint,
+                      size_t point_count) {
+  int used = 0;
+  switch (constraint.kind) {
+    case FC_GCS_FIXED:
+      used = 1;
+      break;
+    case FC_GCS_COINCIDENT:
+    case FC_GCS_DISTANCE:
+    case FC_GCS_HORIZONTAL:
+    case FC_GCS_VERTICAL:
+      used = 2;
+      break;
+    case FC_GCS_EQUAL_LENGTH:
+    case FC_GCS_PERPENDICULAR:
+    case FC_GCS_PARALLEL:
+      used = 4;
+      break;
+    default:
+      return false;
+  }
+  for (int i = 0; i < used; ++i) {
+    if (!is_point(point_count, constraint.points[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 extern "C" int32_t fc_gcs_solve(double *state, size_t point_count,
@@ -34,9 +67,9 @@ extern "C" int32_t fc_gcs_solve(double *state, size_t point_count,
                                 size_t constraint_count, int32_t *out_dofs,
                                 int32_t *out_has_conflicting,
                                 int32_t *out_has_redundant,
-                                int32_t *out_iterations) {
+                                int32_t *out_iterations) noexcept {
   if (state == nullptr || (constraint_count > 0 && constraints == nullptr)) {
-    return -1;
+    return FC_GCS_INVALID_INPUT;
   }
 
   try {
@@ -59,6 +92,11 @@ extern "C" int32_t fc_gcs_solve(double *state, size_t point_count,
     GCS::System system;
     for (size_t i = 0; i < constraint_count; ++i) {
       const FcGcsConstraint &c = constraints[i];
+      if (!has_valid_points(c, point_count)) {
+        return c.kind < FC_GCS_COINCIDENT || c.kind > FC_GCS_PARALLEL
+                   ? FC_GCS_UNKNOWN_CONSTRAINT
+                   : FC_GCS_INVALID_INPUT;
+      }
       const int tag = static_cast<int>(i) + 1;
 
       switch (c.kind) {
@@ -108,7 +146,7 @@ extern "C" int32_t fc_gcs_solve(double *state, size_t point_count,
           break;
         }
         default:
-          return -2;
+          return FC_GCS_UNKNOWN_CONSTRAINT;
       }
     }
 
@@ -140,18 +178,18 @@ extern "C" int32_t fc_gcs_solve(double *state, size_t point_count,
     // shim returned on Converged without applying, and every sketch with a
     // redundant constraint came back untouched and looked like a solver
     // failure. Only Failed leaves the state alone.
-    if (status == GCS::Failed) {
-      return 1;
+    if (status != GCS::Success && status != GCS::Converged) {
+      return FC_GCS_NOT_CONVERGED;
     }
     system.applySolution();
-    return status == GCS::Success ? 0 : 2;
+    return status == GCS::Success ? FC_GCS_SUCCESS : FC_GCS_CONVERGED;
   } catch (const std::exception &) {
-    return -3;
+    return FC_GCS_STD_EXCEPTION;
   } catch (...) {
-    return -4;
+    return FC_GCS_UNKNOWN_EXCEPTION;
   }
 }
 
-extern "C" const char *fc_gcs_provenance(void) {
+extern "C" const char *fc_gcs_provenance(void) noexcept {
   return "planegcs from FreeCAD 1.0.1";
 }
