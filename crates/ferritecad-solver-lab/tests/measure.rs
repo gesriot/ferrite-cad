@@ -32,11 +32,26 @@ const ACCEPTABLE: f64 = 1e-6;
 /// performs like rather than which of two is better.
 fn candidates() -> Vec<Box<dyn Solver>> {
     let mut all: Vec<Box<dyn Solver>> = vec![Box::new(LevenbergMarquardt::default())];
-    #[cfg(feature = "planegcs")]
-    if ferritecad_solver_lab::planegcs_available() {
-        all.push(Box::new(ferritecad_solver_lab::Planegcs));
-    }
+    all.extend(optional());
     all
+}
+
+/// The candidates that are only there in some builds.
+///
+/// Written as two whole functions rather than a conditional push, so the list
+/// above reads and compiles the same way whether or not the feature is on.
+#[cfg(feature = "planegcs")]
+fn optional() -> Vec<Box<dyn Solver>> {
+    if ferritecad_solver_lab::planegcs_available() {
+        vec![Box::new(ferritecad_solver_lab::Planegcs)]
+    } else {
+        Vec::new()
+    }
+}
+
+#[cfg(not(feature = "planegcs"))]
+fn optional() -> Vec<Box<dyn Solver>> {
+    Vec::new()
 }
 
 /// The corpus, in the sizes the comparison is made over.
