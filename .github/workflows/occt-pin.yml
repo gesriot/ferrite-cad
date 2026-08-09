@@ -609,6 +609,13 @@ jobs:
           # meaning "skipped": without a kernel the build fails outright.
           cargo test -p ferritecad-occt --all-targets
 
+          # `export-stl` lives in another package, so the adapter command above
+          # cannot discover its process-level gates. Ordinary CI builds the CLI
+          # without OCCT and those tests deliberately skip their geometry
+          # paths; run them here to prove filesystem publication and the real
+          # document -> OCCT -> STL vertical slice on every product platform.
+          cargo test -p ferritecad-cli --test export_stl
+
       - name: Write the pin report
         if: always()
         env:
