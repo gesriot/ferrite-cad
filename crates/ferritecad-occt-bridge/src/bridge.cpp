@@ -12,8 +12,9 @@
 
 #include <cmath>
 #include <cstring>
-#include <sstream>
 #include <exception>
+#include <limits>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -28,11 +29,13 @@
 #include <BRepGProp.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepTools.hxx>
 #include <BRepTools_History.hxx>
 #include <GC_MakeArcOfCircle.hxx>
 #include <GProp_GProps.hxx>
 #include <Message_ProgressIndicator.hxx>
 #include <Message_ProgressScope.hxx>
+#include <IMeshData_Status.hxx>
 #include <Standard_Failure.hxx>
 #include <Standard_Type.hxx>
 #include <Standard_Version.hxx>
@@ -619,6 +622,10 @@ FcOcctStatus fc_occt_tessellate(
                   "tessellation needs positive, finite deflections");
       return FC_OCCT_INVALID_INPUT;
     }
+    if (relative > 1) {
+      write_error(out_error, "relative tessellation must be encoded as 0 or 1");
+      return FC_OCCT_INVALID_INPUT;
+    }
 
     const auto found = session->shapes.find(shape);
     if (found == session->shapes.end()) {
@@ -633,9 +640,16 @@ FcOcctStatus fc_occt_tessellate(
     ShapeRecord &record = found->second;
     Handle(CancelIndicator) indicator = new CancelIndicator(cancel, cancel_context);
 
-    // Explicit on every axis. The defaults differ between Open CASCADE
-    // releases, and a mesh whose fineness quietly changed with the kernel
-    // would invalidate every cached tessellation without saying so.
+    // A triangulation is transient derived data attached to the B-Rep. OCCT
+    // reuses an existing fine mesh for a later coarse request; without this
+    // clean, identical parameters can produce 632 triangles after a fine call
+    // and 28 on a fresh shape. Every request must depend on its own parameters,
+    // not on which picture happened to be drawn first.
+    BRepTools::Clean(record.shape);
+
+    // The three public controls are explicit, and parallelism is disabled for
+    // reproducibility. The remaining OCCT defaults are covered by the kernel
+    // build identity and therefore by every mesh cache key.
     BRepMesh_IncrementalMesh mesher;
     mesher.SetShape(record.shape);
     IMeshTools_Parameters parameters;
@@ -646,8 +660,21 @@ FcOcctStatus fc_occt_tessellate(
     mesher.ChangeParameters() = parameters;
     mesher.Perform(indicator->Start());
 
-    if (cancelled(cancel, cancel_context)) {
+    const Standard_Integer mesh_status = mesher.GetStatusFlags();
+    if ((mesh_status & IMeshData_UserBreak) != 0 ||
+        cancelled(cancel, cancel_context)) {
+      BRepTools::Clean(record.shape);
       return FC_OCCT_CANCELLED;
+    }
+    const Standard_Integer bad_status =
+        IMeshData_OpenWire | IMeshData_SelfIntersectingWire |
+        IMeshData_Failure | IMeshData_UnorientedWire |
+        IMeshData_TooFewPoints;
+    if ((mesh_status & bad_status) != 0) {
+      BRepTools::Clean(record.shape);
+      write_error(out_error, "Open CASCADE could not tessellate every face; status " +
+                                 std::to_string(mesh_status));
+      return FC_OCCT_KERNEL;
     }
 
     std::vector<float> positions;
@@ -663,15 +690,32 @@ FcOcctStatus fc_occt_tessellate(
       const Handle(Poly_Triangulation) triangulation =
           BRep_Tool::Triangulation(face, location);
       if (triangulation.IsNull() || triangulation->NbTriangles() == 0) {
-        // A face the mesher could not triangulate is reported as absent
-        // rather than as an empty range: a range of no triangles would look
-        // like a face that is genuinely invisible.
-        continue;
+        // Omitting this face would return a plausible mesh with a hole in it.
+        // There is no honest successful representation of that result.
+        BRepTools::Clean(record.shape);
+        write_error(out_error,
+                    "Open CASCADE produced no triangles for one of the shape's faces");
+        return FC_OCCT_KERNEL;
       }
 
       const gp_Trsf transform = location.Transformation();
-      const bool reversed = face.Orientation() == TopAbs_REVERSED;
+      const TopAbs_Orientation orientation = face.Orientation();
+      if (orientation != TopAbs_FORWARD && orientation != TopAbs_REVERSED) {
+        BRepTools::Clean(record.shape);
+        write_error(out_error,
+                    "a meshed face has neither FORWARD nor REVERSED orientation");
+        return FC_OCCT_KERNEL;
+      }
+      const bool reversed = orientation == TopAbs_REVERSED;
       const int node_count = triangulation->NbNodes();
+      const size_t vertex_count = positions.size() / 3;
+      const size_t max_index =
+          static_cast<size_t>(std::numeric_limits<uint32_t>::max());
+      if (node_count < 0 || static_cast<size_t>(node_count) > max_index - vertex_count) {
+        BRepTools::Clean(record.shape);
+        write_error(out_error, "the tessellation has more vertices than uint32 can index");
+        return FC_OCCT_KERNEL;
+      }
       const uint32_t base = static_cast<uint32_t>(positions.size() / 3);
 
       std::vector<gp_Pnt> nodes;
@@ -688,10 +732,25 @@ FcOcctStatus fc_occt_tessellate(
       const uint32_t first_index = static_cast<uint32_t>(indices.size());
 
       for (int t = 1; t <= triangulation->NbTriangles(); ++t) {
+        if ((t & 1023) == 0 && cancelled(cancel, cancel_context)) {
+          BRepTools::Clean(record.shape);
+          return FC_OCCT_CANCELLED;
+        }
         int a = 0;
         int b = 0;
         int c = 0;
         triangulation->Triangle(t).Get(a, b, c);
+        if (a < 1 || a > node_count || b < 1 || b > node_count || c < 1 ||
+            c > node_count) {
+          BRepTools::Clean(record.shape);
+          write_error(out_error, "Open CASCADE produced a triangle with an invalid node");
+          return FC_OCCT_KERNEL;
+        }
+        if (indices.size() > max_index - 3) {
+          BRepTools::Clean(record.shape);
+          write_error(out_error, "the tessellation has more indices than uint32 can address");
+          return FC_OCCT_KERNEL;
+        }
         if (reversed) {
           std::swap(b, c);
         }
@@ -734,6 +793,10 @@ FcOcctStatus fc_occt_tessellate(
       face_index_count.push_back(static_cast<uint32_t>(indices.size()) -
                                  first_index);
     }
+
+    // Do not let drawing change later serialisation or the next tessellation.
+    // Positions, normals and face identities above are already caller-owned.
+    BRepTools::Clean(record.shape);
 
     *out_vertex_count = positions.size() / 3;
     *out_index_count = indices.size();

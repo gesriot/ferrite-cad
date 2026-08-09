@@ -159,7 +159,6 @@ unsafe extern "C" {
         out_error: *mut RawError,
     ) -> i32;
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     fn fc_occt_tessellate(
         session: *mut RawSession,
         shape: u64,
@@ -465,9 +464,12 @@ impl Session {
         };
         interpret(status, &error, "measuring a tessellation")?;
 
+        let coordinates = vertices
+            .checked_mul(3)
+            .ok_or_else(|| CadError::kernel("the tessellation vertex count overflows usize"))?;
         let mut mesh = RawMesh {
-            positions: vec![0.0; vertices * 3],
-            normals: vec![0.0; vertices * 3],
+            positions: vec![0.0; coordinates],
+            normals: vec![0.0; coordinates],
             indices: vec![0; indices],
             face_shapes: vec![0; faces],
             face_first: vec![0; faces],
@@ -666,6 +668,8 @@ unsafe impl Send for Session {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use ferritecad_types::ErrorKind;
 
     use super::*;
@@ -689,6 +693,65 @@ mod tests {
             line(10.0, 5.0, 0.0, 5.0),
             line(0.0, 5.0, 0.0, 0.0),
         ]
+    }
+
+    extern "C" fn cancel_on_third_poll(context: *mut c_void) -> i32 {
+        // SAFETY: the test passes a live `AtomicUsize` for the duration of the
+        // synchronous bridge call.
+        let polls = unsafe { &*(context as *const AtomicUsize) };
+        i32::from(polls.fetch_add(1, Ordering::SeqCst) + 1 >= 3)
+    }
+
+    #[test]
+    fn the_mesher_polls_cancellation_inside_the_operation() {
+        let mut session = Session::new().expect("opens a real OCCT session");
+        let plane = Plane {
+            origin: [0.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        };
+        let shape = session
+            .extrude(&plane, &rectangle_segments(), 0.0, 2.0, &CancelToken::new())
+            .expect("builds a prism");
+        let polls = AtomicUsize::new(0);
+        let mut vertices = 0usize;
+        let mut indices = 0usize;
+        let mut faces = 0usize;
+        let mut error = RawError::empty();
+
+        // The bridge checks once before and once after OCCT. Cancelling only
+        // on the third callback means this cannot pass unless the progress
+        // indicator itself was polled during `Perform`.
+        // SAFETY: every pointer is valid for this synchronous size query.
+        let status = unsafe {
+            fc_occt_tessellate(
+                session.raw,
+                shape,
+                0.01,
+                0.5,
+                0,
+                Some(cancel_on_third_poll),
+                &polls as *const AtomicUsize as *mut c_void,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+                &mut vertices,
+                &mut indices,
+                &mut faces,
+                &mut error,
+            )
+        };
+        assert_eq!(status, STATUS_CANCELLED);
+        assert!(polls.load(Ordering::SeqCst) >= 3);
+
+        session.release(shape);
+        assert_eq!(session.live_shape_count(), 0);
     }
 
     #[test]

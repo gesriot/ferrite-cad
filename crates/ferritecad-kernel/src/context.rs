@@ -11,10 +11,11 @@ use ferritecad_types::{CadError, Result, Tolerance};
 /// worker holds another. Nothing here is tied to a particular kernel's
 /// cancellation mechanism: an adapter polls this and translates.
 ///
-/// Cancelling is a request, not a guarantee. An operation already inside a
-/// kernel call finishes that call; what cancellation promises is that the
-/// result is discarded rather than stored, so a cancelled rebuild leaves
-/// neither the document nor the cache half-written.
+/// Cancelling is a request, not a guarantee of immediate interruption. Some
+/// kernel algorithms poll and stop inside the call; others finish that unit of
+/// work first. In either case a result observed after cancellation is discarded
+/// rather than stored, so a cancelled rebuild leaves neither the document nor
+/// the cache half-written.
 #[derive(Debug, Clone, Default)]
 pub struct CancelToken {
     flag: Arc<AtomicBool>,

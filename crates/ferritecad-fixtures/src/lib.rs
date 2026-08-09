@@ -15,14 +15,14 @@
 //! so recording them would turn the gate into noise and, worse, would make the
 //! file look like an authority on which face is which.
 //!
-//! # Current limit: a bijection is not identity
+//! # A bijection is not identity
 //!
 //! Cardinality plus the final distinct-face count catches lost, ambiguous and
-//! collapsed names. It cannot catch a one-to-one permutation of existing
-//! faces: swapping start and end caps would render the same text. The gate must
-//! not claim otherwise. Closing that gap needs a kernel-neutral geometric
-//! fingerprint for each resolved face; the planned face-associated
-//! tessellation can supply one without persisting session-local topology.
+//! collapsed names, but cannot catch a one-to-one permutation of existing
+//! faces. [`render_manifest`] therefore also measures each resolved face from
+//! the triangles filed under that same handle. Area and centroid distinguish
+//! every face in the committed plate without persisting session-local topology;
+//! swapping caps or rotating side-face history changes the golden text.
 //!
 //! # Nothing opens the committed file in place
 //!
@@ -83,8 +83,9 @@ pub fn open_plate(directory: &Path) -> Result<Document> {
 ///
 /// Deterministic and free of anything session-local, so two runs of the same
 /// build — and a run on another machine, or against another kernel — produce
-/// the same text or a readable difference. This deliberately does not identify
-/// the geometry of a resolved face; see the crate-level limitation.
+/// the same text or a readable difference. Area and centroid come from the
+/// triangles assigned to each resolved face, independently anchoring the name
+/// to geometry rather than to a kernel's traversal index.
 pub fn render_manifest(
     document: &Document,
     built: &RebuildResult,

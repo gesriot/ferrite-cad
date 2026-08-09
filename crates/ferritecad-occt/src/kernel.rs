@@ -34,10 +34,10 @@ const BLOB_FORMAT_VERSION: u32 = 2;
 
 /// Open CASCADE behind the FerriteCAD geometry contract.
 ///
-/// This slice implements extrusion, B-Rep encoding and release. Transform and
-/// tessellation return [`CadError::Unsupported`] until their own slices;
-/// refusing is the honest answer while the alternative would be a plausible
-/// wrong one.
+/// This slice implements extrusion, face-associated tessellation, B-Rep
+/// encoding and release. Transform still returns [`CadError::Unsupported`]
+/// until its own slice; refusing is the honest answer while the alternative
+/// would be a plausible wrong one.
 ///
 /// # A decoded shape is geometry only
 ///
@@ -83,8 +83,8 @@ impl OcctKernel {
 
     /// Face count and volume, in millimetres cubed.
     ///
-    /// Present because tessellation is not implemented yet and this is the only
-    /// way to assert that a built solid is the one that was asked for.
+    /// A diagnostic independent of tessellation, used to assert that a built
+    /// or restored solid is the one that was requested.
     pub fn shape_stats(&mut self, shape: ShapeHandle) -> Result<(u64, f64)> {
         self.session.shape_stats(self.raw(shape)?)
     }

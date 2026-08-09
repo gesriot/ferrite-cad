@@ -10,7 +10,7 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, f64::consts::PI};
 
 use ferritecad_document::CapSide;
 use ferritecad_kernel::{
@@ -55,6 +55,27 @@ fn plate() -> Result<(ExtrudeRequest, Vec<StableEntityId>)> {
             false,
         ),
         labels,
+    ))
+}
+
+/// A curved face whose triangle count makes deflection reuse observable.
+fn curved() -> Result<ExtrudeRequest> {
+    let arc = ProfileSegment::new(
+        StableEntityId::new(),
+        SegmentGeometry::arc(PlanarPoint::ORIGIN, 10.0, 0.0, PI)?,
+    );
+    let diameter = ProfileSegment::new(
+        StableEntityId::new(),
+        SegmentGeometry::line(PlanarPoint::new(-10.0, 0.0)?, PlanarPoint::new(10.0, 0.0)?)?,
+    );
+    Ok(ExtrudeRequest::new(
+        Profile::new(
+            SketchPlane::world_xy(),
+            ProfileLoop::new(vec![arc, diameter])?,
+            Vec::new(),
+        )?,
+        ExtrudeExtent::blind(5.0)?,
+        false,
     ))
 }
 
@@ -345,6 +366,48 @@ fn a_finer_deflection_is_the_same_shape_measured_more_closely() {
 }
 
 #[test]
+fn a_coarse_request_does_not_reuse_an_earlier_fine_mesh() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+
+    let request = curved().expect("a curved profile");
+    let fine = TessellationParams::new(0.001, 0.05, false).expect("fine parameters");
+    let coarse = TessellationParams::new(2.0, 1.0, false).expect("coarse parameters");
+    let context = OperationContext::default();
+
+    let mut reused = OcctKernel::new().expect("opens");
+    let reused_shape = reused.extrude(&request, &context).expect("builds").shape;
+    let fine_mesh = reused
+        .tessellate(reused_shape, &fine, &context)
+        .expect("meshes finely");
+    let coarse_after_fine = reused
+        .tessellate(reused_shape, &coarse, &context)
+        .expect("remeshes coarsely");
+
+    let mut fresh = OcctKernel::new().expect("opens another session");
+    let fresh_shape = fresh.extrude(&request, &context).expect("builds").shape;
+    let coarse_fresh = fresh
+        .tessellate(fresh_shape, &coarse, &context)
+        .expect("meshes coarsely from scratch");
+
+    assert!(
+        fine_mesh.triangle_count() > coarse_fresh.triangle_count(),
+        "the curved fixture must distinguish fine from coarse"
+    );
+    assert_eq!(
+        coarse_after_fine.positions, coarse_fresh.positions,
+        "the same request must not depend on an earlier tessellation"
+    );
+    assert_eq!(coarse_after_fine.normals, coarse_fresh.normals);
+    assert_eq!(coarse_after_fine.indices, coarse_fresh.indices);
+
+    reused.release(reused_shape);
+    fresh.release(fresh_shape);
+}
+
+#[test]
 fn the_same_shape_meshes_the_same_way_twice() {
     if !is_available() {
         eprintln!("skipped: this build has no Open CASCADE");
@@ -392,17 +455,15 @@ fn a_cancelled_tessellation_produces_no_mesh() {
 }
 
 #[test]
-fn a_solid_archived_after_being_drawn_restores_the_same_geometry() {
+fn drawing_does_not_change_the_shape_that_is_archived() {
     if !is_available() {
         eprintln!("skipped: this build has no Open CASCADE");
         return;
     }
 
-    // Open CASCADE keeps the triangulation on the shape, and although the
-    // bridge asks BinTools not to write triangles, meshing still changes the
-    // bytes it does write — measured on 7.9.3 and recorded in build-occt.md.
-    // Nothing depends on those bytes being stable, and this is what does have
-    // to hold: the solid that comes back is the same solid.
+    // Open CASCADE keeps triangulation on the shape and reuses it across calls.
+    // The bridge cleans that transient state before and after drawing, so the
+    // requested picture cannot affect either later parameters or persistence.
     let mut built = build();
     let before = built.kernel.encode_shape(built.shape).expect("encodes");
     let (before_faces, before_volume) = built.kernel.shape_stats(built.shape).expect("measures");
@@ -420,6 +481,11 @@ fn a_solid_archived_after_being_drawn_restores_the_same_geometry() {
         .kernel
         .encode_shape(built.shape)
         .expect("encodes again");
+    assert_eq!(
+        before.bytes(),
+        after.bytes(),
+        "drawing transient data must not change the persisted B-Rep"
+    );
     let restored = built.kernel.decode_shape(&after).expect("decodes");
     let (faces, volume) = built.kernel.shape_stats(restored).expect("measures");
 

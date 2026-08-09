@@ -367,23 +367,28 @@ and put one face in the wrong place. The adapter swaps the winding and negates
 the normals of reversed faces, and transforms every node by its face's
 location.
 
-## Drawing a solid changes the bytes it serialises to
+## A tessellation must not inherit the previous tessellation
 
-`BinTools::Write` is asked for no triangles and no normals, and meshing a
-shape still changes what it writes. Open CASCADE keeps the triangulation on
-the shape itself, and something the writer emits — evidently not the triangles
-— differs once it is there. A prism's payload before and after meshing has the
-same length and a different checksum.
+Open CASCADE keeps triangulation on the shape. That is not only an internal
+cache: it changes the answer. On a half-cylinder, a coarse request made after a
+fine one reused the fine mesh and returned 632 triangles, while the same coarse
+request on a fresh shape returned 28. Since tessellation parameters participate
+in FerriteCAD's mesh cache key, serving those two different answers under one
+key would be a correctness bug.
 
-Nothing currently depends on those bytes being stable. A cache key is computed
-from the request, not from the blob; two blobs of the same solid decode to the
-same solid; and the archive's own checksum is taken when the archive is made.
-It is recorded here because it is surprising, and because the first thing that
-does depend on blob stability will fail for this reason.
+The bridge therefore calls `BRepTools::Clean` before every meshing pass. The
+two calls of the caller-owned-buffer protocol each mesh from a clean shape, and
+a permanent curved-profile regression compares `fine → coarse` with `coarse on
+a fresh shape`, including positions, normals and indices.
 
-Taking a mesh-free copy first does not help: `BRepBuilderAPI_Copy` with
-`copyMesh` off produced a payload twice the size and still not stable across
-meshing.
+The bridge also cleans after copying the mesh into caller-owned vectors. Raw
+OCCT behaviour without that cleanup is surprising: even though `BinTools::Write`
+is asked for no triangles and no normals, a prism's payload before and after
+meshing has the same length and a different checksum. A mesh-free
+`BRepBuilderAPI_Copy` did not help; with `copyMesh` off it produced a payload
+twice the size and was still unstable. Cleaning the original shape does: a
+regression test now requires byte-identical B-Rep before and after drawing, so
+transient rendering state cannot leak into persistence.
 
 ## A shape-set index is not a name
 

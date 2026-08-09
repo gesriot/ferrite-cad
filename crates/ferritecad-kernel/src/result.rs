@@ -259,7 +259,8 @@ impl Mesh {
             )));
         }
 
-        let vertices = self.vertex_count() as u32;
+        let vertices = u32::try_from(self.vertex_count())
+            .map_err(|_| CadError::kernel("mesh has more vertices than uint32 can index"))?;
         if let Some(out_of_range) = self.indices.iter().find(|i| **i >= vertices) {
             return Err(CadError::kernel(format!(
                 "mesh index {out_of_range} addresses vertex {out_of_range} of {vertices}"

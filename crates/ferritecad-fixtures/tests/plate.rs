@@ -4,9 +4,9 @@
 //! The document was written by an earlier build and checked in, so a change
 //! that loses a stored name, makes it ambiguous or collapses two names onto one
 //! face fails here rather than in somebody's model. The same checks run against
-//! Open CASCADE in the pin workflow and compare one file. The manifest does not
-//! yet geometrically identify each face, so a one-to-one permutation remains a
-//! stated gap rather than a guarantee these tests do not provide.
+//! Open CASCADE in the pin workflow and compare one file. Each resolved face is
+//! measured from its own triangles, so a one-to-one permutation changes the
+//! manifest even though every name still reaches one distinct face.
 
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]

@@ -215,9 +215,11 @@ FcOcctStatus fc_occt_decode_shape(FcOcctSession *session,
  * Triangulates a shape, reporting which face each triangle belongs to.
  *
  * Two calls. Pass zero capacities to learn the three counts, then call again
- * with buffers that large. The second call is cheap: Open CASCADE stores the
- * triangulation on the shape itself, and re-meshing with the same deflection
- * finds the work already done.
+ * with buffers that large. Both calls mesh from a clean shape. Open CASCADE
+ * otherwise reuses a prior finer triangulation for a later coarse request,
+ * making the result depend on call order rather than these parameters. The
+ * bridge removes transient triangulation before and after each call.
+ * `relative` is the fixed-width boolean 0 or 1; every other value is refused.
  *
  * `vertex_capacity` counts vertices, not floats; `out_positions` and
  * `out_normals` each need three floats per vertex. Vertices are never shared
