@@ -178,9 +178,14 @@ fn bracket(arms: usize) -> Problem {
     // A staircase of segments, each square to the last and the same length as
     // the one before it. Nothing is dimensioned except the first arm, so every
     // other arm depends on it — which is what makes this worth solving.
+    // A staircase that goes right first, because the first arm is constrained
+    // horizontal. An earlier version started it going up, which put the guess
+    // ninety degrees from the answer: the Levenberg-Marquardt candidate
+    // recovered and planegcs's DogLeg did not, which said more about the
+    // corpus than about either solver.
     for index in 0..=arms {
-        let along = (index / 2) as f64 * 20.0;
-        let up = index.div_ceil(2) as f64 * 20.0;
+        let along = index.div_ceil(2) as f64 * 20.0;
+        let up = (index / 2) as f64 * 20.0;
         start.push(along + 0.2);
         start.push(up - 0.15);
     }

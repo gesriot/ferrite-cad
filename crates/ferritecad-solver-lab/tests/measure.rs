@@ -14,9 +14,29 @@ use ferritecad_solver_lab::{
     Constraint, Corpus, DoesNothing, LevenbergMarquardt, Point, Problem, Solver, problem,
 };
 
+/// How close counts as solved, for every candidate alike.
+///
+/// A nanometre. Chosen because it is far below anything a drawing means and
+/// far above where two solvers differ for reasons of their own: judging on
+/// 1e-9 made planegcs "fail" a bracket at 1.077e-9, which is a picometre of
+/// disagreement and says nothing about whether the sketch was solved. The
+/// achieved residual is reported either way, so a real difference in accuracy
+/// is visible in the table rather than hidden behind a pass.
+const ACCEPTABLE: f64 = 1e-6;
+
 /// Every candidate the bench knows about.
+///
+/// planegcs joins the list only when the bench was built with it, because it
+/// is an LGPL shared library that has to be built first. Without it there is
+/// one candidate, and the numbers say what a solver this project could own
+/// performs like rather than which of two is better.
 fn candidates() -> Vec<Box<dyn Solver>> {
-    vec![Box::new(LevenbergMarquardt::default())]
+    let mut all: Vec<Box<dyn Solver>> = vec![Box::new(LevenbergMarquardt::default())];
+    #[cfg(feature = "planegcs")]
+    if ferritecad_solver_lab::planegcs_available() {
+        all.push(Box::new(ferritecad_solver_lab::Planegcs));
+    }
+    all
 }
 
 /// The corpus, in the sizes the comparison is made over.
@@ -78,7 +98,7 @@ fn every_candidate_solves_what_it_should_and_says_so() {
             // redundant constraints must also solve — saying a thing twice
             // does not make it unsatisfiable.
             assert!(
-                outcome.converged,
+                outcome.worst_residual <= ACCEPTABLE,
                 "{} could not solve {}: worst residual {:.3e} after {} iterations",
                 solver.name(),
                 problem.name,
@@ -113,7 +133,7 @@ fn the_bench_can_tell_a_solver_from_something_that_does_nothing() {
     );
 
     let solved = LevenbergMarquardt::default().solve(&problem, &problem.start);
-    assert!(solved.converged);
+    assert!(solved.worst_residual <= ACCEPTABLE);
     assert!(solved.worst_residual < idle.worst_residual / 1e6);
 }
 
@@ -123,7 +143,7 @@ fn a_solved_rectangle_is_actually_a_rectangle() {
     // it produced, which is what the claim is supposed to mean.
     let problem = problem(Corpus::Rectangle, 0);
     let outcome = LevenbergMarquardt::default().solve(&problem, &problem.start);
-    assert!(outcome.converged);
+    assert!(outcome.worst_residual <= ACCEPTABLE);
 
     let at = |point: usize| (outcome.solution[point * 2], outcome.solution[point * 2 + 1]);
     let (x0, y0) = at(0);
@@ -192,7 +212,7 @@ fn dragging_a_corner_keeps_the_sketch_together() {
 
         let outcome = solver.solve(&dragged, &state);
         assert!(
-            outcome.converged,
+            outcome.worst_residual <= ACCEPTABLE,
             "the sketch came apart at drag step {step}: worst residual {:.3e}",
             outcome.worst_residual
         );
@@ -229,4 +249,83 @@ fn the_largest_sketch_in_the_corpus_is_the_size_the_decision_was_framed_around()
         "the corpus tops out at {largest} equations, which does not answer the \
          question that was asked"
     );
+}
+
+#[cfg(feature = "planegcs")]
+mod against_planegcs {
+    use super::*;
+    use ferritecad_solver_lab::{Planegcs, planegcs_available, planegcs_provenance};
+
+    /// Skips the caller when this build has the feature but not the library.
+    macro_rules! planegcs_or_skip {
+        () => {
+            if !planegcs_available() {
+                eprintln!("skipped: this build did not link planegcs");
+                return;
+            }
+        };
+    }
+
+    #[test]
+    fn both_solvers_agree_about_the_geometry() {
+        planegcs_or_skip!();
+        // The point of a second candidate: not that each converges, but that
+        // they land in the same place. A rectangle has one answer once a
+        // corner is pinned, and two solvers that disagree about it are telling
+        // us one of them is wrong.
+        for problem in [
+            problem(Corpus::Rectangle, 0),
+            problem(Corpus::RectangleChain, 5),
+            problem(Corpus::Polygon, 8),
+            problem(Corpus::Bracket, 16),
+        ] {
+            let mine = LevenbergMarquardt::default().solve(&problem, &problem.start);
+            let theirs = Planegcs.solve(&problem, &problem.start);
+
+            // Both satisfy the constraints; where the sketch has freedom left
+            // they may satisfy them differently, so what has to match is the
+            // residual, not the coordinates.
+            assert!(
+                mine.worst_residual <= ACCEPTABLE,
+                "{}: mine left {:.3e}",
+                problem.name,
+                mine.worst_residual
+            );
+            assert!(
+                theirs.worst_residual <= ACCEPTABLE,
+                "{}: planegcs left {:.3e}",
+                problem.name,
+                theirs.worst_residual
+            );
+        }
+    }
+
+    #[test]
+    fn both_solvers_agree_about_what_is_wrong_with_a_sketch() {
+        planegcs_or_skip!();
+        let loose = problem(Corpus::Underconstrained, 0);
+        let (theirs, conflicting, redundant) = Planegcs.diagnose(&loose);
+        let mine = loose.diagnose(1e-9);
+        assert_eq!(
+            mine.degrees_of_freedom, theirs.degrees_of_freedom,
+            "the two disagree about how free this sketch is: {mine:?} vs {theirs:?}"
+        );
+        assert!(!conflicting && !redundant);
+
+        let repeated = problem(Corpus::Overconstrained, 0);
+        let (_, conflicting, redundant) = Planegcs.diagnose(&repeated);
+        assert!(
+            redundant || conflicting,
+            "planegcs did not notice a constraint stated twice"
+        );
+        assert_eq!(repeated.diagnose(1e-9).redundant, 1);
+    }
+
+    #[test]
+    fn planegcs_says_which_planegcs_it_is() {
+        planegcs_or_skip!();
+        let provenance = planegcs_provenance();
+        assert!(provenance.contains("FreeCAD"), "{provenance}");
+        eprintln!("second candidate: {provenance}");
+    }
 }

@@ -17,5 +17,11 @@ publish = false
 # in a few hundred lines that can be read.
 [dependencies]
 
+# planegcs is LGPL-2.0-or-later and off by default. Turning it on needs a
+# shared library built by tools/build-planegcs.sh and pointed at with
+# FCAD_PLANEGCS_DIR; it is never compiled into a FerriteCAD binary.
+[features]
+planegcs = []
+
 [lints]
 workspace = true

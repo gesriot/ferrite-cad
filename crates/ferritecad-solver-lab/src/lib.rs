@@ -25,10 +25,16 @@
 mod corpus;
 mod linalg;
 mod lm;
+#[cfg(feature = "planegcs")]
+mod planegcs;
 
 pub use corpus::{Corpus, problem};
 pub use linalg::Matrix;
 pub use lm::{DoesNothing, LevenbergMarquardt};
+#[cfg(feature = "planegcs")]
+pub use planegcs::{
+    Planegcs, is_available as planegcs_available, provenance as planegcs_provenance,
+};
 
 use std::time::Duration;
 

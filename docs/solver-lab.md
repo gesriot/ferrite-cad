@@ -62,14 +62,54 @@ rectangle reports two degrees of freedom, the repeated constraint reports one
 redundant equation. That second one is the case a person most needs told
 about, because such a sketch still solves and is still wrong to edit.
 
-## What is not done
+## The second candidate
 
-**planegcs is not wired in.** FreeCAD's solver is LGPL-2.1 and this project is
-MIT with a statically linked shim, so vendoring it is a licensing decision
-before it is an engineering one, and not one to make silently in a prototype.
-The `Solver` interface exists so it can be added as a second candidate without
-the corpus or the measurements changing.
+planegcs, FreeCAD's solver, on the same terms as Open CASCADE: LGPL, built as
+a shared library by `tools/build-planegcs.sh` from a pinned FreeCAD 1.0.1
+whose checksum is verified before anything is extracted, linked dynamically
+behind a shim of our own MIT code, and off by default behind a cargo feature.
+The sources are used byte-identical; the only files added are two build-glue
+headers, because FreeCAD's own versions reach into Qt. Recorded in
+THIRD_PARTY_LICENSES.md.
 
-Until then the comparison has one candidate, which means these numbers say
-"a solver this project could own performs like this" and not yet "this is the
-better of two".
+```
+FCAD_PLANEGCS_DIR=<dir> cargo test --release -p ferritecad-solver-lab \
+    --features planegcs -- --nocapture
+```
+
+### What the comparison shows
+
+| problem | equations | LM | planegcs |
+|---|--:|--:|--:|
+| rectangle | 8 | 7.1e-15, 8 µs | **0**, 192 µs |
+| chain-10 | 98 | 2.1e-11, 566 µs | **0**, 3.0 ms |
+| chain-21 | 208 | 4.1e-10, **3.7 ms** | 0, 17.2 ms |
+| polygon-32 | 35 | 2.0e-10, 885 µs | 3.6e-15, **826 µs** |
+| bracket-48 | 98 | 9.0e-11, 2.5 ms | 3.5e-11, **2.2 ms** |
+| bracket-100 | 202 | 5.4e-11, 19.6 ms | 3.8e-10, **13.5 ms** |
+
+Both solve everything in the corpus to well within a nanometre, and both
+diagnose the under- and over-constrained cases the same way.
+
+- **planegcs is more accurate on well-conditioned sketches**, reaching exact
+  zero where the LM leaves 1e-10 to 1e-15. That is a real difference and not a
+  meaningful one at this scale, but it is the direction one would want.
+- **Neither is uniformly faster.** The LM is four times quicker on chained
+  rectangles; planegcs is a third quicker on chained perpendicular and
+  equal-length constraints, which is the harder family. Whichever is chosen,
+  the other is faster at something.
+- **The measurement is only as good as the corpus.** An earlier version of the
+  bracket started its staircase ninety degrees from where its own constraints
+  said the first arm went. The LM recovered from that and planegcs did not,
+  which looked like a finding about solvers and was a finding about the
+  corpus. It is fixed, and worth remembering: a comparison that flatters one
+  candidate is usually measuring its own setup.
+
+### What the choice still needs
+
+Time on a corpus this size does not settle it. Both candidates are dense and
+O(unknowns³) per iteration; at 200 unknowns that is comfortable and at 2000 it
+would not be, and the answer there is sparsity rather than a faster machine.
+Neither has been asked to drag under a real interface, to survive a sketch
+that is genuinely unsatisfiable, or to explain a conflict to a person. Those
+are the questions that would actually decide it.

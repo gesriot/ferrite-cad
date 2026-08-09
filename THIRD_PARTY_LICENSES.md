@@ -1,78 +1,65 @@
-# Third-party licences
+# Third-party components
 
-FerriteCAD's own code is MIT (see [LICENSE](LICENSE)). Every authored source and
-build file says so itself through an `SPDX-License-Identifier: MIT` header; Cargo
-manifests use the structured `license` field. `tools/check-licence-headers.sh`
-enforces this in CI, because a source file copied out of the repository carries
-no licence at all unless it declares one.
+FerriteCAD's own code is MIT. That covers this repository and nothing else:
+the components below keep their own licences, and their terms apply to anyone
+who redistributes a build containing them.
 
-This file records every third-party component shipped with, or linked into, a
-FerriteCAD binary.
+Two rules follow from those terms and are enforced rather than remembered:
 
-It is maintained by hand and verified in CI by `cargo deny check`. A dependency
-is added only with a licence, an owner and a stated reason
-(implementation-plan.md, 2).
+- **Copyleft libraries are linked dynamically, never compiled in.** The user
+  must be able to replace them with their own build, which a shared library
+  allows and a static one does not without further obligations this project
+  does not take on.
+- **Nothing under the GPL or AGPL enters the application process at all.**
+  `deny.toml` lists the ones that have come up by name, so a refusal is a
+  decision on record rather than an omission.
 
-## Native components
+## Open CASCADE Technology
 
-| Component | Version | Licence | Linkage | Notes |
-| --- | --- | --- | --- | --- |
-| Open CASCADE Technology | pinned in `docs/build-occt.md` | LGPL-2.1 with the Open CASCADE exception | dynamic only | Project policy: never statically linked. The shipped notice must tell users how to obtain and replace the library. |
+- **Licence:** LGPL-2.1 with the Open CASCADE exception
+- **Used for:** the geometry kernel
+- **Linking:** dynamic. The adapter is a static shim of FerriteCAD's own MIT
+  code (`crates/ferritecad-occt-bridge`) that calls into OCCT's shared
+  libraries; no OCCT object code is linked into a FerriteCAD binary.
+- **Version:** pinned to V8_0_1, commit
+  `b8f597c677811d1f9f4d8a97f5ae2825c0353a42`, source archive SHA-256
+  `dba62b81078dd43cec23feba89432be301582341001edad1b93342ad8bda35ea`
+- **Replacing it:** build OCCT from the pinned source (`docs/build-occt.md`)
+  and put the resulting shared libraries where the application finds them.
+- **Notices:** OCCT's own `LICENSE_LGPL_21.txt` and `OCCT_LGPL_EXCEPTION.txt`
+  are recorded by the pin workflow and ship beside the libraries.
 
-“Dynamic only” is FerriteCAD's engineering and distribution policy, not a claim
-that LGPL-2.1 permits no other form of linking. Section 6 of the bundled licence
-describes alternative obligations; this project deliberately does not build or
-support that separate compliance path.
+## planegcs
 
-The OCCT notice, the full LGPL-2.1 text and replacement instructions must be
-present in every distributed package. This is a release gate, not a
-post-release fix (implementation-plan.md, 11).
+- **Licence:** GNU Library General Public License, version 2 or (at your
+  option) any later version
+- **Used for:** a second candidate in the sketch solver comparison
+  (`crates/ferritecad-solver-lab`). Not part of any shipped application today.
+- **Linking:** dynamic, on the same terms as Open CASCADE. The shim
+  (`crates/ferritecad-solver-lab/planegcs-bridge`) is FerriteCAD's own MIT code
+  and holds no planegcs types; planegcs itself is a shared library built beside
+  it and can be replaced.
+- **Source:** FreeCAD 1.0.1, `src/Mod/Sketcher/App/planegcs`, archive SHA-256
+  `f62bc07c477544eff62b6ab0fc3bb63fa7f1e6f94763c51b0049507842d444f3`
+- **Modifications:** none. The sources are used byte-identical. Two headers
+  beside them — `SketcherGlobal.h` and `Base/Console.h` — are FerriteCAD's own
+  MIT build glue, written because FreeCAD's versions reach into Qt and its
+  build system, and marked as such.
+- **Replacing it:** `tools/build-planegcs.sh` fetches the pinned release,
+  verifies the checksum before extracting anything, and builds the shared
+  library. Point `FCAD_PLANEGCS_DIR` at your own build instead.
+- **Off by default:** the `planegcs` cargo feature. Ordinary builds and CI do
+  not compile or link it.
 
-### OCCT is LGPL-2.1 *only*
+### Eigen and Boost
 
-Verified against the OCCT README and representative source headers at the
-currently pinned V8.0.1 commit, including
-`src/FoundationClasses/TKernel/Standard/Standard_DefineException.hxx`. They
-state LGPL version 2.1 with the Open CASCADE exception and separately offer
-commercial terms.
-
-There is no "or (at your option) any later version". That phrase appears only in
-the boilerplate at the end of `LICENSE_LGPL_21.txt`, which is the FSF's template
-for authors rather than the grant OCCT actually made.
-
-This costs FerriteCAD nothing today: MIT combines with LGPL-2.1 without
-difficulty. It matters for one future decision. Relicensing FerriteCAD under
-GPL-3.0 would raise a real compatibility question, because the usual route from
-LGPL-2.1 to GPL-3.0 runs through the "or later" clause up to LGPL-3.0, and that
-route is closed here. A copyleft move would need legal advice first, not
-afterwards — record this before anyone assumes it is a formality.
+planegcs needs both at build time. Eigen is MPL-2.0 and Boost is under the
+Boost Software License; both are permissive and both are header-only for what
+planegcs uses, so neither adds an obligation beyond attribution. They are
+found on the system rather than vendored.
 
 ## Rust dependencies
 
-Generated per release from the locked dependency graph:
-
-```sh
-cargo deny check licenses
-cargo tree --edges normal --prefix none --format '{p} {l}' | sort -u
-```
-
-The generated listing is attached to each release artifact. The allow-list of
-acceptable licences lives in [`deny.toml`](deny.toml).
-
-## Deliberately excluded
-
-| Component | Licence | Reason |
-| --- | --- | --- |
-| SolveSpace `slvs` sketch solver | GPL-3.0 | Incompatible with the MIT distribution policy; denied in `deny.toml`. |
-
-`planegcs` (FreeCAD's sketch solver, LGPL-2.1) is the only mature open
-alternative and is a candidate for the stage 0 solver comparison. If it is
-adopted it must be linked dynamically and recorded in the native table above,
-under the same conditions as OCCT.
-
-## Test corpus
-
-Test models must have a clear authorship status. No third-party commercial
-parts enter this repository. The corpus is limited to procedurally generated
-geometry, models authored for this project, and openly licensed datasets whose
-licence is recorded in `tests/corpus/PROVENANCE.md`.
+`cargo deny check licenses` runs in CI over the whole dependency tree against
+the allow-list in `deny.toml`. A crate whose licence is not on that list fails
+the build rather than arriving unnoticed.
