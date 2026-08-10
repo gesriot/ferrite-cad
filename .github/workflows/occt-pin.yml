@@ -642,7 +642,27 @@ jobs:
             -DCMAKE_BUILD_RPATH="$FCAD_OCCT_LIB_DIR"
           cmake --build corpus-build --parallel
 
-          binary="$(find corpus-build -name 'step_corpus' -o -name 'step_corpus.exe' | head -1)"
+          # The same runtime setup the smoke test needs, and for the same
+          # reasons: RUNPATH is not transitive on Linux and does not exist on
+          # Windows. Written out again rather than assumed, because the last
+          # version of this step assumed and exited 127.
+          case '${{ matrix.name }}' in
+            windows)
+              export PATH="$FCAD_OCCT_LIB_DIR:$PATH"
+              ;;
+            linux)
+              export LD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              ;;
+            macos)
+              ;;
+          esac
+
+          binary="$(find corpus-build -type f \( -name 'step_corpus' -o -name 'step_corpus.exe' \) -print -quit)"
+          if [ -z "$binary" ] || [ ! -x "$binary" ]; then
+            echo "the corpus generator was not built" >&2
+            exit 1
+          fi
+
           rm -rf step-corpus step-corpus-again
           mkdir -p step-corpus step-corpus-again
           "$binary" step-corpus
