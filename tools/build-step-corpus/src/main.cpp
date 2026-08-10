@@ -33,6 +33,16 @@
 #include <APIHeaderSection_MakeHeader.hxx>
 #include <DESTEP_Parameters.hxx>
 #include <HeaderSection_FileSchema.hxx>
+#include <Interface_HArray1OfHAsciiString.hxx>
+#include <IFSelect_ReturnStatus.hxx>
+#include <Quantity_TypeOfColor.hxx>
+#include <STEPControl_StepModelType.hxx>
+#include <Standard_Boolean.hxx>
+#include <TCollection_HAsciiString.hxx>
+#include <UnitsMethods_LengthUnit.hxx>
+#include <XCAFDoc_ColorType.hxx>
+#include <gp_Vec.hxx>
+#include <gp_XYZ.hxx>
 #include <TColStd_SequenceOfAsciiString.hxx>
 #include <Bnd_Box.hxx>
 #include <TopLoc_Location.hxx>
