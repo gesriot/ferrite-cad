@@ -5,7 +5,9 @@
 
 #include "planegcs_shim.h"
 
+#include <cstring>
 #include <exception>
+#include <memory>
 #include <vector>
 
 #include "GCS.h"
@@ -20,11 +22,16 @@ struct Sketch {
   std::vector<double> values;
 };
 
-GCS::Line line(Sketch &sketch, int32_t a, int32_t b) {
+/// A line between two of a sketch's points, by index.
+GCS::Line line_of(const std::vector<GCS::Point> &points, int32_t a, int32_t b) {
   GCS::Line result;
-  result.p1 = sketch.points[static_cast<size_t>(a)];
-  result.p2 = sketch.points[static_cast<size_t>(b)];
+  result.p1 = points[static_cast<size_t>(a)];
+  result.p2 = points[static_cast<size_t>(b)];
   return result;
+}
+
+GCS::Line line(Sketch &sketch, int32_t a, int32_t b) {
+  return line_of(sketch.points, a, b);
 }
 
 bool is_point(size_t point_count, int32_t index) {
@@ -188,6 +195,221 @@ extern "C" int32_t fc_gcs_solve(double *state, size_t point_count,
   } catch (...) {
     return FC_GCS_UNKNOWN_EXCEPTION;
   }
+}
+
+namespace {
+
+/// A system that outlives one solve, so dragging can be measured honestly.
+struct Session {
+  std::vector<double> state;
+  std::vector<double *> parameters;
+  std::vector<GCS::Point> points;
+  // Held by pointer inside planegcs, so this must never reallocate and the
+  // slots must stay put for the session's whole life.
+  std::vector<double> values;
+  // Where each constraint's first value sits in `values`, or -1.
+  std::vector<long> value_of;
+  GCS::System system;
+  bool diagnosed = false;
+};
+
+}  // namespace
+
+extern "C" FcGcsSession *fc_gcs_session_create(
+    const double *start, size_t point_count, const FcGcsConstraint *constraints,
+    size_t constraint_count) noexcept {
+  if (start == nullptr || (constraint_count > 0 && constraints == nullptr)) {
+    return nullptr;
+  }
+  try {
+    auto session = std::make_unique<Session>();
+    session->state.assign(start, start + point_count * 2);
+    session->points.reserve(point_count);
+    session->parameters.reserve(point_count * 2);
+    session->values.reserve(constraint_count * 2);
+    session->value_of.assign(constraint_count, -1);
+
+    for (size_t i = 0; i < point_count; ++i) {
+      GCS::Point point;
+      point.x = &session->state[i * 2];
+      point.y = &session->state[i * 2 + 1];
+      session->points.push_back(point);
+      session->parameters.push_back(point.x);
+      session->parameters.push_back(point.y);
+    }
+
+    for (size_t i = 0; i < constraint_count; ++i) {
+      const FcGcsConstraint &c = constraints[i];
+      const int tag = static_cast<int>(i) + 1;
+      if (!has_valid_points(c, point_count)) {
+        return nullptr;
+      }
+
+      switch (c.kind) {
+        case FC_GCS_COINCIDENT:
+          session->system.addConstraintP2PCoincident(
+              session->points[c.points[0]], session->points[c.points[1]], tag);
+          break;
+        case FC_GCS_FIXED: {
+          session->value_of[i] = static_cast<long>(session->values.size());
+          session->values.push_back(c.value);
+          session->values.push_back(c.value2);
+          session->system.addConstraintCoordinateX(
+              session->points[c.points[0]],
+              &session->values[static_cast<size_t>(session->value_of[i])], tag);
+          session->system.addConstraintCoordinateY(
+              session->points[c.points[0]],
+              &session->values[static_cast<size_t>(session->value_of[i]) + 1],
+              tag);
+          break;
+        }
+        case FC_GCS_DISTANCE: {
+          session->value_of[i] = static_cast<long>(session->values.size());
+          session->values.push_back(c.value);
+          session->system.addConstraintP2PDistance(
+              session->points[c.points[0]], session->points[c.points[1]],
+              &session->values[static_cast<size_t>(session->value_of[i])], tag);
+          break;
+        }
+        case FC_GCS_HORIZONTAL:
+          session->system.addConstraintHorizontal(
+              session->points[c.points[0]], session->points[c.points[1]], tag);
+          break;
+        case FC_GCS_VERTICAL:
+          session->system.addConstraintVertical(
+              session->points[c.points[0]], session->points[c.points[1]], tag);
+          break;
+        case FC_GCS_EQUAL_LENGTH: {
+          GCS::Line a = line_of(session->points, c.points[0], c.points[1]);
+          GCS::Line b = line_of(session->points, c.points[2], c.points[3]);
+          session->system.addConstraintEqualLength(a, b, tag);
+          break;
+        }
+        case FC_GCS_PERPENDICULAR:
+          session->system.addConstraintPerpendicular(
+              session->points[c.points[0]], session->points[c.points[1]],
+              session->points[c.points[2]], session->points[c.points[3]], tag);
+          break;
+        case FC_GCS_PARALLEL: {
+          GCS::Line a = line_of(session->points, c.points[0], c.points[1]);
+          GCS::Line b = line_of(session->points, c.points[2], c.points[3]);
+          session->system.addConstraintParallel(a, b, tag);
+          break;
+        }
+        default:
+          return nullptr;
+      }
+    }
+
+    session->system.declareUnknowns(session->parameters);
+    session->system.initSolution();
+    return reinterpret_cast<FcGcsSession *>(session.release());
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+extern "C" void fc_gcs_session_destroy(FcGcsSession *session) noexcept {
+  delete reinterpret_cast<Session *>(session);
+}
+
+extern "C" int32_t fc_gcs_session_diagnose(
+    FcGcsSession *handle, int32_t *out_dofs, int32_t *out_conflicting_count,
+    int32_t *out_redundant_count, int32_t *out_blamed, size_t capacity,
+    size_t *out_blamed_count) noexcept {
+  if (handle == nullptr) {
+    return -1;
+  }
+  try {
+    Session *session = reinterpret_cast<Session *>(handle);
+    session->system.diagnose();
+    session->diagnosed = true;
+
+    GCS::VEC_I conflicting;
+    GCS::VEC_I redundant;
+    session->system.getConflicting(conflicting);
+    session->system.getRedundant(redundant);
+
+    if (out_dofs != nullptr) {
+      *out_dofs = static_cast<int32_t>(session->system.dofsNumber());
+    }
+    if (out_conflicting_count != nullptr) {
+      *out_conflicting_count = static_cast<int32_t>(conflicting.size());
+    }
+    if (out_redundant_count != nullptr) {
+      *out_redundant_count = static_cast<int32_t>(redundant.size());
+    }
+
+    // Tags were set to the constraint's own index plus one, so what comes back
+    // names the constraint a person wrote rather than a row of a matrix.
+    size_t written = 0;
+    size_t total = 0;
+    for (const GCS::VEC_I *group : {&conflicting, &redundant}) {
+      for (int tag : *group) {
+        ++total;
+        if (out_blamed != nullptr && written < capacity) {
+          out_blamed[written++] = tag - 1;
+        }
+      }
+    }
+    if (out_blamed_count != nullptr) {
+      *out_blamed_count = total;
+    }
+    return 0;
+  } catch (...) {
+    return -3;
+  }
+}
+
+extern "C" int32_t fc_gcs_session_move(FcGcsSession *handle,
+                                       size_t constraint_index, double x,
+                                       double y) noexcept {
+  if (handle == nullptr) {
+    return -1;
+  }
+  Session *session = reinterpret_cast<Session *>(handle);
+  if (constraint_index >= session->value_of.size()) {
+    return -1;
+  }
+  const long slot = session->value_of[constraint_index];
+  if (slot < 0 || static_cast<size_t>(slot) + 1 >= session->values.size()) {
+    return -1;
+  }
+  // Written through the pointers planegcs already holds, which is what makes
+  // this a nudge rather than a rebuild.
+  session->values[static_cast<size_t>(slot)] = x;
+  session->values[static_cast<size_t>(slot) + 1] = y;
+  return 0;
+}
+
+extern "C" int32_t fc_gcs_session_solve(FcGcsSession *handle) noexcept {
+  if (handle == nullptr) {
+    return -1;
+  }
+  try {
+    Session *session = reinterpret_cast<Session *>(handle);
+    const int status = session->system.solve();
+    if (status == GCS::Failed || status == GCS::SuccessfulSolutionInvalid) {
+      return 1;
+    }
+    session->system.applySolution();
+    return status == GCS::Success ? 0 : 2;
+  } catch (...) {
+    return -3;
+  }
+}
+
+extern "C" int32_t fc_gcs_session_state(const FcGcsSession *handle, double *out,
+                                        size_t count) noexcept {
+  if (handle == nullptr || out == nullptr) {
+    return -1;
+  }
+  const Session *session = reinterpret_cast<const Session *>(handle);
+  if (count != session->state.size()) {
+    return -1;
+  }
+  std::memcpy(out, session->state.data(), count * sizeof(double));
+  return 0;
 }
 
 extern "C" const char *fc_gcs_provenance(void) noexcept {

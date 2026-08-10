@@ -23,17 +23,20 @@
 //! the comparison is about, so each one is visible.
 
 mod corpus;
+mod drag;
 mod linalg;
 mod lm;
 #[cfg(feature = "planegcs")]
 mod planegcs;
 
-pub use corpus::{Corpus, problem};
+pub use corpus::{Corpus, IMPOSSIBLE, problem};
+pub use drag::{Drag, DragTimings, drag_with_lm};
 pub use linalg::Matrix;
 pub use lm::{DoesNothing, LevenbergMarquardt};
 #[cfg(feature = "planegcs")]
 pub use planegcs::{
-    Planegcs, is_available as planegcs_available, provenance as planegcs_provenance,
+    Planegcs, drag_with_planegcs, is_available as planegcs_available,
+    provenance as planegcs_provenance,
 };
 
 use std::time::Duration;
@@ -284,6 +287,60 @@ pub struct Diagnosis {
     pub redundant: usize,
 }
 
+/// What a solver can say about a sketch it could not satisfy.
+///
+/// The point of naming constraints rather than counting them: a person who is
+/// told "this sketch is over-constrained" has to find the offending line
+/// themselves, and on a sketch of any size they will not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Blame {
+    /// Indices into the problem's own constraint list, in order.
+    pub constraints: Vec<usize>,
+}
+
+impl Blame {
+    /// A sentence a person could act on.
+    pub fn explain(&self, problem: &Problem) -> String {
+        if self.constraints.is_empty() {
+            return "no constraint could be singled out".to_owned();
+        }
+        let named: Vec<String> = self
+            .constraints
+            .iter()
+            .filter_map(|index| problem.constraints.get(*index).map(describe))
+            .collect();
+        match named.len() {
+            1 => format!("this constraint says nothing new: {}", named[0]),
+            count => format!(
+                "these {count} constraints cannot all hold at once: {}",
+                named.join("; ")
+            ),
+        }
+    }
+}
+
+/// One constraint, in words rather than in structure.
+fn describe(constraint: &Constraint) -> String {
+    match constraint {
+        Constraint::Coincident { a, b } => format!("points {} and {} coincide", a.0, b.0),
+        Constraint::Fixed { point, x, y } => format!("point {} is fixed at ({x}, {y})", point.0),
+        Constraint::Distance { a, b, distance } => {
+            format!("points {} and {} are {distance} apart", a.0, b.0)
+        }
+        Constraint::Horizontal { a, b } => format!("{} to {} is horizontal", a.0, b.0),
+        Constraint::Vertical { a, b } => format!("{} to {} is vertical", a.0, b.0),
+        Constraint::EqualLength { a, b } => {
+            format!("{}-{} is as long as {}-{}", a.0.0, a.1.0, b.0.0, b.1.0)
+        }
+        Constraint::Perpendicular { a, b } => {
+            format!("{}-{} is square to {}-{}", a.0.0, a.1.0, b.0.0, b.1.0)
+        }
+        Constraint::Parallel { a, b } => {
+            format!("{}-{} is parallel to {}-{}", a.0.0, a.1.0, b.0.0, b.1.0)
+        }
+    }
+}
+
 impl Diagnosis {
     pub fn is_fully_constrained(&self) -> bool {
         self.degrees_of_freedom == 0 && self.redundant == 0
@@ -300,6 +357,29 @@ pub struct Outcome {
     pub worst_residual: f64,
     pub elapsed: Duration,
     pub solution: Vec<f64>,
+}
+
+/// Which constraints a rank-deficient system cannot all satisfy.
+///
+/// The rows that Gaussian elimination could not use as a pivot: each one says
+/// nothing the rows before it did not already say. Which constraint that maps
+/// to is the one a person should look at first.
+pub fn blame(problem: &Problem) -> Blame {
+    let (_, jacobian) = problem.evaluate(&problem.start);
+    let dependent = jacobian.dependent_rows(1e-9);
+
+    // A constraint may contribute two equations, so a dependent row is traced
+    // back to the constraint that wrote it.
+    let mut constraints = Vec::new();
+    let mut row = 0;
+    for (index, constraint) in problem.constraints.iter().enumerate() {
+        let rows = row..row + constraint.equations();
+        if rows.clone().any(|r| dependent.contains(&r)) {
+            constraints.push(index);
+        }
+        row = rows.end;
+    }
+    Blame { constraints }
 }
 
 /// A candidate. Every one is asked the same questions the same way.

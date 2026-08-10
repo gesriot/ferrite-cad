@@ -11,8 +11,8 @@
 use std::time::Duration;
 
 use ferritecad_solver_lab::{
-    COMPARISON_RESIDUAL_LIMIT, Constraint, Corpus, DoesNothing, LevenbergMarquardt, Point, Problem,
-    Solver, problem,
+    COMPARISON_RESIDUAL_LIMIT, Constraint, Corpus, DoesNothing, Drag, IMPOSSIBLE,
+    LevenbergMarquardt, Point, Problem, Solver, blame, drag_with_lm, problem,
 };
 
 /// How close counts as solved, for every candidate alike.
@@ -21,8 +21,6 @@ use ferritecad_solver_lab::{
 /// residuals with dot/cross products in mm², so calling the scalar itself a
 /// nanometre would be dimensionally false. The achieved residual is reported
 /// either way.
-const ACCEPTABLE: f64 = COMPARISON_RESIDUAL_LIMIT;
-
 fn iterations(outcome: &ferritecad_solver_lab::Outcome) -> String {
     outcome
         .iterations
@@ -118,7 +116,7 @@ fn every_candidate_solves_what_it_should_and_says_so() {
             // redundant constraints must also solve — saying a thing twice
             // does not make it unsatisfiable.
             assert!(
-                outcome.converged && outcome.worst_residual <= ACCEPTABLE,
+                outcome.converged && outcome.worst_residual <= COMPARISON_RESIDUAL_LIMIT,
                 "{} could not solve {}: converged {}, worst residual {:.3e}, iterations {}",
                 solver.name(),
                 problem.name,
@@ -144,7 +142,10 @@ fn every_candidate_solves_what_it_should_and_says_so() {
 
 #[test]
 fn the_default_candidate_and_the_gate_use_one_limit() {
-    assert_eq!(LevenbergMarquardt::default().tolerance, ACCEPTABLE);
+    assert_eq!(
+        LevenbergMarquardt::default().tolerance,
+        COMPARISON_RESIDUAL_LIMIT
+    );
 }
 
 #[test]
@@ -160,7 +161,7 @@ fn the_bench_can_tell_a_solver_from_something_that_does_nothing() {
 
     let solved = LevenbergMarquardt::default().solve(&problem, &problem.start);
     assert!(solved.converged);
-    assert!(solved.worst_residual <= ACCEPTABLE);
+    assert!(solved.worst_residual <= COMPARISON_RESIDUAL_LIMIT);
     assert!(solved.worst_residual < idle.worst_residual / 1e6);
 }
 
@@ -171,7 +172,7 @@ fn a_solved_rectangle_is_actually_a_rectangle() {
     let problem = problem(Corpus::Rectangle, 0);
     let outcome = LevenbergMarquardt::default().solve(&problem, &problem.start);
     assert!(outcome.converged);
-    assert!(outcome.worst_residual <= ACCEPTABLE);
+    assert!(outcome.worst_residual <= COMPARISON_RESIDUAL_LIMIT);
 
     let at = |point: usize| (outcome.solution[point * 2], outcome.solution[point * 2 + 1]);
     let (x0, y0) = at(0);
@@ -240,7 +241,7 @@ fn dragging_a_corner_keeps_the_sketch_together() {
 
         let outcome = solver.solve(&dragged, &state);
         assert!(
-            outcome.worst_residual <= ACCEPTABLE,
+            outcome.worst_residual <= COMPARISON_RESIDUAL_LIMIT,
             "the sketch came apart at drag step {step}: worst residual {:.3e}",
             outcome.worst_residual
         );
@@ -314,13 +315,13 @@ mod against_planegcs {
             // they may satisfy them differently, so what has to match is the
             // residual, not the coordinates.
             assert!(
-                mine.converged && mine.worst_residual <= ACCEPTABLE,
+                mine.converged && mine.worst_residual <= COMPARISON_RESIDUAL_LIMIT,
                 "{}: mine left {:.3e}",
                 problem.name,
                 mine.worst_residual
             );
             assert!(
-                theirs.converged && theirs.worst_residual <= ACCEPTABLE,
+                theirs.converged && theirs.worst_residual <= COMPARISON_RESIDUAL_LIMIT,
                 "{}: planegcs left {:.3e}",
                 problem.name,
                 theirs.worst_residual
@@ -356,4 +357,115 @@ mod against_planegcs {
         assert!(provenance.contains("FreeCAD"), "{provenance}");
         eprintln!("second candidate: {provenance}");
     }
+}
+
+#[test]
+fn a_drag_is_measured_the_same_way_for_every_candidate() {
+    // Fifty nudges of one corner, with setup and diagnosis paid once and
+    // reported apart from the steps. What a person feels is the distribution
+    // of the steps, not their mean: a drag that is usually fast and
+    // occasionally not is a drag that feels broken.
+    let sketch = problem(Corpus::Underconstrained, 0);
+    let gesture = Drag::diagonal(Point(0), 50);
+
+    let mut lines = Vec::new();
+    let mine = drag_with_lm(&sketch, &gesture);
+    assert!(
+        mine.worst_residual <= COMPARISON_RESIDUAL_LIMIT,
+        "the sketch came apart while dragging: {:.3e}",
+        mine.worst_residual
+    );
+    assert!(
+        mine.worst_follow_error < 1e-6,
+        "the dragged point did not follow the pointer: off by {:.3e}",
+        mine.worst_follow_error
+    );
+    lines.push(mine.line());
+
+    #[cfg(feature = "planegcs")]
+    if let Some(theirs) = ferritecad_solver_lab::drag_with_planegcs(&sketch, &gesture) {
+        assert!(
+            theirs.worst_residual <= COMPARISON_RESIDUAL_LIMIT,
+            "planegcs let the sketch come apart: {:.3e}",
+            theirs.worst_residual
+        );
+        assert!(
+            theirs.worst_follow_error < 1e-6,
+            "planegcs did not follow the pointer: off by {:.3e}",
+            theirs.worst_follow_error
+        );
+        lines.push(theirs.line());
+    }
+
+    eprintln!(
+        "persistent drag, {} steps ({} build):\n{}",
+        gesture.targets.len(),
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        lines.join("\n")
+    );
+}
+
+#[test]
+fn a_sketch_that_cannot_be_satisfied_is_not_reported_as_solved() {
+    // The worst thing a solver can do: say yes to a drawing the geometry
+    // cannot produce. A refusal costs the person a correction; a false success
+    // costs them a part.
+    for kind in IMPOSSIBLE {
+        let sketch = problem(kind, 0);
+        let outcome = LevenbergMarquardt::default().solve(&sketch, &sketch.start);
+        assert!(
+            outcome.worst_residual > COMPARISON_RESIDUAL_LIMIT,
+            "{}: reported as solved with residual {:.3e}, which it cannot be",
+            sketch.name,
+            outcome.worst_residual
+        );
+
+        #[cfg(feature = "planegcs")]
+        if ferritecad_solver_lab::planegcs_available() {
+            let theirs = ferritecad_solver_lab::Planegcs.solve(&sketch, &sketch.start);
+            assert!(
+                theirs.worst_residual > COMPARISON_RESIDUAL_LIMIT,
+                "{}: planegcs reported it solved with residual {:.3e}",
+                sketch.name,
+                theirs.worst_residual
+            );
+        }
+    }
+}
+
+#[test]
+fn a_conflict_names_the_constraints_a_person_should_look_at() {
+    // Counting is not enough. Somebody told "this sketch is over-constrained"
+    // has to find the offending line themselves, and on a real sketch they
+    // will not.
+    let repeated = problem(Corpus::Overconstrained, 0);
+    let found = blame(&repeated);
+    assert!(
+        !found.constraints.is_empty(),
+        "a redundant constraint was detected and not named"
+    );
+    for index in &found.constraints {
+        assert!(
+            *index < repeated.constraints.len(),
+            "blamed constraint {index} is not in the sketch"
+        );
+    }
+
+    let sentence = found.explain(&repeated);
+    assert!(
+        sentence.contains("horizontal"),
+        "the message must say what the constraint is, not which row it is: {sentence}"
+    );
+    assert!(
+        !sentence.contains("Constraint {") && !sentence.contains("Point("),
+        "the message reads like a debug dump: {sentence}"
+    );
+    eprintln!("conflict message: {sentence}");
+
+    // A sound sketch blames nobody.
+    assert!(blame(&problem(Corpus::Rectangle, 0)).constraints.is_empty());
 }

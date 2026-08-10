@@ -116,13 +116,57 @@ diagnose the under- and over-constrained cases the same way.
   corpus. It is fixed, and worth remembering: a comparison that flatters one
   candidate is usually measuring its own setup.
 
-### What the choice still needs
+### Dragging, measured as a drag
 
-Time on a corpus this size does not settle it. The local LM uses dense
-O(unknowns³) normal equations; at 200 unknowns that is comfortable and at 2000
-it would not be. planegcs also needs a scaling run before either result can be
-extrapolated that far.
-Only the local LM has been exercised by the synthetic drag test. Neither has
-been asked to drag through the same persistent, UI-shaped workload, to survive
-a genuinely unsatisfiable sketch, or to identify a conflict in terms a person
-can act on. Those are the questions that would actually decide it.
+A gesture is one system set up and then nudged, not fifty unrelated solves.
+Measuring it the other way charged planegcs for a setup that includes a
+diagnosis it always performs, against a solve that had none. Fifty steps, in
+release:
+
+| candidate | setup | diagnose | p50 | p95 | max | worst residual |
+|---|--:|--:|--:|--:|--:|--:|
+| Levenberg–Marquardt | ~0 µs | 2 µs | 3 µs | 4 µs | 8 µs | 3.0e-11 |
+| planegcs | 503 µs | 32 µs | 7 µs | 8 µs | 8 µs | 0 |
+
+Both are far inside a frame. The distribution matters more than the mean — a
+drag that is usually fast and occasionally not feels broken — and neither has
+a tail worth worrying about at this size.
+
+### Sketches with no answer
+
+Three of them: a triangle whose sides are 10, 10 and 40; one edge told it is
+both 60 and 70 long; two segments told to be both parallel and perpendicular.
+Both candidates refuse all three. That is the property that matters most: a
+solver that says yes to a drawing the geometry cannot produce costs somebody a
+part, where a refusal costs them a correction.
+
+### Naming what is wrong
+
+Counting is not enough. "This sketch is over-constrained" leaves a person to
+find the offending line, and on a real sketch they will not. Both candidates
+now name constraints — planegcs natively through its conflicting and redundant
+tags, the LM from the rows its elimination could not use — and the bench turns
+that into a sentence:
+
+```
+this constraint says nothing new: 0 to 1 is horizontal
+```
+
+Which is a start and not a finish: it names the constraint, it does not yet
+name the *sketch entity* a person drew, because there is no sketch yet to name
+it from.
+
+### The decision
+
+planegcs, for the reasons in [decisions/0001-sketch-solver.md](decisions/0001-sketch-solver.md).
+Not because it is faster or more accurate — neither is decisive — but because
+a sketcher needs arcs, tangency, symmetry and splines, and it already has
+them.
+
+### What remains open
+
+Both candidates are dense and cubic per iteration, and sparsity is untouched.
+The planegcs build is exercised on macOS only; Linux is supported by the
+helper script and Windows is not attempted. And nothing here is integrated
+with a document or an interface, which is deliberate: this was a comparison,
+and it is over.

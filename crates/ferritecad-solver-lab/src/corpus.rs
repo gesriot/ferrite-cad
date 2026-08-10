@@ -26,6 +26,15 @@ pub enum Corpus {
     Underconstrained,
     /// A rectangle told twice that one side is horizontal.
     Overconstrained,
+    /// A triangle whose three sides cannot close: 10, 10 and 40.
+    ///
+    /// Not over-constrained but *unsatisfiable*, which is a different thing
+    /// and the one a person is most likely to create by accident.
+    ImpossibleTriangle,
+    /// One side told it is both 60 and 70 long.
+    ContradictoryDimensions,
+    /// Two segments told to be both parallel and perpendicular.
+    ParallelAndPerpendicular,
 }
 
 /// Builds one problem of a family at a given size.
@@ -40,8 +49,21 @@ pub fn problem(corpus: Corpus, size: usize) -> Problem {
         Corpus::Bracket => bracket(size),
         Corpus::Underconstrained => underconstrained(),
         Corpus::Overconstrained => overconstrained(),
+        Corpus::ImpossibleTriangle => impossible_triangle(),
+        Corpus::ContradictoryDimensions => contradictory_dimensions(),
+        Corpus::ParallelAndPerpendicular => parallel_and_perpendicular(),
     }
 }
+
+/// Sketches that have no solution at all.
+///
+/// A solver that reports success on one of these is worse than one that
+/// fails: the drawing then says something the geometry does not.
+pub const IMPOSSIBLE: [Corpus; 3] = [
+    Corpus::ImpossibleTriangle,
+    Corpus::ContradictoryDimensions,
+    Corpus::ParallelAndPerpendicular,
+];
 
 /// Four corners, anticlockwise, starting slightly out of place so a solver
 /// has something to do.
@@ -241,5 +263,93 @@ fn overconstrained() -> Problem {
         name: "overconstrained".to_owned(),
         start: corners(0.0, 0.0, 60.0, 40.0),
         constraints,
+    }
+}
+
+fn impossible_triangle() -> Problem {
+    // 10 + 10 < 40. No arrangement of three points satisfies this.
+    Problem {
+        name: "impossible-triangle".to_owned(),
+        start: vec![0.0, 0.0, 30.0, 1.0, 15.0, 9.0],
+        constraints: vec![
+            Constraint::Fixed {
+                point: Point(0),
+                x: 0.0,
+                y: 0.0,
+            },
+            Constraint::Distance {
+                a: Point(0),
+                b: Point(1),
+                distance: 40.0,
+            },
+            Constraint::Distance {
+                a: Point(1),
+                b: Point(2),
+                distance: 10.0,
+            },
+            Constraint::Distance {
+                a: Point(2),
+                b: Point(0),
+                distance: 10.0,
+            },
+        ],
+    }
+}
+
+fn contradictory_dimensions() -> Problem {
+    let mut constraints = vec![Constraint::Fixed {
+        point: Point(0),
+        x: 0.0,
+        y: 0.0,
+    }];
+    constraints.extend(rectangle_constraints(0, 60.0, 40.0));
+    // The same edge, told a second and different length.
+    constraints.push(Constraint::Distance {
+        a: Point(0),
+        b: Point(1),
+        distance: 70.0,
+    });
+    Problem {
+        name: "contradictory-dimensions".to_owned(),
+        start: corners(0.0, 0.0, 60.0, 40.0),
+        constraints,
+    }
+}
+
+fn parallel_and_perpendicular() -> Problem {
+    Problem {
+        name: "parallel-and-perpendicular".to_owned(),
+        start: vec![0.0, 0.0, 30.0, 0.5, 0.0, 20.0, 30.0, 20.5],
+        constraints: vec![
+            Constraint::Fixed {
+                point: Point(0),
+                x: 0.0,
+                y: 0.0,
+            },
+            Constraint::Fixed {
+                point: Point(2),
+                x: 0.0,
+                y: 20.0,
+            },
+            Constraint::Distance {
+                a: Point(0),
+                b: Point(1),
+                distance: 30.0,
+            },
+            Constraint::Distance {
+                a: Point(2),
+                b: Point(3),
+                distance: 30.0,
+            },
+            // Both at once, which nothing but a degenerate segment satisfies.
+            Constraint::Parallel {
+                a: (Point(0), Point(1)),
+                b: (Point(2), Point(3)),
+            },
+            Constraint::Perpendicular {
+                a: (Point(0), Point(1)),
+                b: (Point(2), Point(3)),
+            },
+        ],
     }
 }

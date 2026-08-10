@@ -73,6 +73,53 @@ impl Matrix {
     /// whether a sketch is under-constrained (rank below the number of
     /// unknowns) or carries redundant constraints (rank below the number of
     /// rows), which is the diagnosis a person actually needs from a solver.
+    /// The rows elimination could not use, which are the dependent ones.
+    ///
+    /// Same sweep as [`rank`][Self::rank], keeping track of which original row
+    /// each pivot came from so the ones left over can be named.
+    pub fn dependent_rows(&self, tolerance: f64) -> Vec<usize> {
+        let mut work = self.clone();
+        let mut origin: Vec<usize> = (0..work.rows).collect();
+        let mut rank = 0;
+
+        for column in 0..work.columns {
+            if rank == work.rows {
+                break;
+            }
+            let (pivot_row, pivot) = (rank..work.rows).fold((rank, 0.0), |best, row| {
+                let value = work.at(row, column).abs();
+                if value > best.1 { (row, value) } else { best }
+            });
+            if pivot <= tolerance {
+                continue;
+            }
+
+            for c in 0..work.columns {
+                let swapped = work.at(rank, c);
+                let value = work.at(pivot_row, c);
+                work.set(rank, c, value);
+                work.set(pivot_row, c, swapped);
+            }
+            origin.swap(rank, pivot_row);
+
+            for row in (rank + 1)..work.rows {
+                let factor = work.at(row, column) / work.at(rank, column);
+                if factor == 0.0 {
+                    continue;
+                }
+                for c in column..work.columns {
+                    let value = work.at(row, c) - factor * work.at(rank, c);
+                    work.set(row, c, value);
+                }
+            }
+            rank += 1;
+        }
+
+        let mut left = origin[rank..].to_vec();
+        left.sort_unstable();
+        left
+    }
+
     pub fn rank(&self, tolerance: f64) -> usize {
         let mut work = self.clone();
         let mut rank = 0;

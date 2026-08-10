@@ -16,6 +16,12 @@
 
 #ifdef __cplusplus
 #define FC_GCS_NOEXCEPT noexcept
+#else
+#define FC_GCS_NOEXCEPT
+#endif
+
+#ifdef __cplusplus
+#define FC_GCS_NOEXCEPT noexcept
 extern "C" {
 #else
 #define FC_GCS_NOEXCEPT
@@ -67,6 +73,47 @@ int32_t fc_gcs_solve(double *state, size_t point_count,
                      size_t constraint_count, int32_t *out_dofs,
                      int32_t *out_has_conflicting, int32_t *out_has_redundant,
                      int32_t *out_iterations) FC_GCS_NOEXCEPT;
+
+/* A system built once and solved many times.
+ *
+ * Dragging is not a sequence of unrelated solves: the sketch is set up once
+ * and then nudged, which is both how a person uses it and the only fair way to
+ * compare candidates. Building the system inside every timed solve measured
+ * planegcs's setup — which includes a mandatory diagnosis — against a solve
+ * that had none.
+ */
+typedef struct FcGcsSession FcGcsSession;
+
+/* Builds the system. Returns NULL if it could not be built. */
+FcGcsSession *fc_gcs_session_create(const double *start, size_t point_count,
+                                    const FcGcsConstraint *constraints,
+                                    size_t constraint_count) FC_GCS_NOEXCEPT;
+
+void fc_gcs_session_destroy(FcGcsSession *session) FC_GCS_NOEXCEPT;
+
+/* What planegcs makes of the system, and which constraints it blames.
+ *
+ * `out_blamed` receives the indices of conflicting constraints, then of
+ * redundant ones, up to `capacity`; `out_blamed_count` is how many there were
+ * in total, which may exceed the capacity. Indices are into the array the
+ * session was built from, so a caller can name the constraint a person wrote.
+ */
+int32_t fc_gcs_session_diagnose(FcGcsSession *session, int32_t *out_dofs,
+                                int32_t *out_conflicting_count,
+                                int32_t *out_redundant_count,
+                                int32_t *out_blamed, size_t capacity,
+                                size_t *out_blamed_count) FC_GCS_NOEXCEPT;
+
+/* Moves the target of a Fixed constraint, which is what dragging is. */
+int32_t fc_gcs_session_move(FcGcsSession *session, size_t constraint_index,
+                            double x, double y) FC_GCS_NOEXCEPT;
+
+/* Solves from wherever the system currently is. */
+int32_t fc_gcs_session_solve(FcGcsSession *session) FC_GCS_NOEXCEPT;
+
+/* Copies the current point positions out. */
+int32_t fc_gcs_session_state(const FcGcsSession *session, double *out,
+                             size_t count) FC_GCS_NOEXCEPT;
 
 /* The planegcs version this shim was built against, for the record. */
 const char *fc_gcs_provenance(void) FC_GCS_NOEXCEPT;
