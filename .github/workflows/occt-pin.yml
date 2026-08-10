@@ -630,6 +630,54 @@ jobs:
           # and not here.
           cargo test -p ferritecad-cli --tests
 
+      - name: Generate the STEP corpus and compare two runs
+        env:
+          FCAD_OCCT_CONFIG_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          cmake -S tools/build-step-corpus -B corpus-build -G Ninja ${{ matrix.cmake_extra }} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOpenCASCADE_DIR="$FCAD_OCCT_CONFIG_DIR" \
+            -DCMAKE_BUILD_RPATH="$FCAD_OCCT_LIB_DIR"
+          cmake --build corpus-build --parallel
+
+          binary="$(find corpus-build -name 'step_corpus' -o -name 'step_corpus.exe' | head -1)"
+          rm -rf step-corpus step-corpus-again
+          mkdir -p step-corpus step-corpus-again
+          "$binary" step-corpus
+          "$binary" step-corpus-again
+
+          # The contract is the model, not the encoding. Open CASCADE writes
+          # colour statements in an order that varies between runs, so the STEP
+          # bytes are allowed to differ; what may not differ is what a reader
+          # makes of them.
+          if ! diff -u step-corpus/SEMANTIC-MANIFEST.txt \
+                     step-corpus-again/SEMANTIC-MANIFEST.txt; then
+            echo "two generations disagree about the model" >&2
+            exit 1
+          fi
+          echo "two generations produced the same semantic manifest"
+
+          # Recorded so the difference between "the model changed" and "the
+          # bytes moved" is visible in the report rather than inferred.
+          for file in step-corpus/*.step; do
+            name="$(basename "$file")"
+            if cmp -s "$file" "step-corpus-again/$name"; then
+              echo "  byte-identical  $name"
+            else
+              echo "  bytes differ    $name (permitted; the manifest agrees)"
+            fi
+          done
+
+      - name: Upload the STEP corpus
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: step-corpus-${{ matrix.name }}
+          path: step-corpus
+          if-no-files-found: warn
+
       - name: Write the pin report
         if: always()
         env:
