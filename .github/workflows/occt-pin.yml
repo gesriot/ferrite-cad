@@ -755,9 +755,43 @@ jobs:
             adapter-test-output.txt
           if-no-files-found: warn
 
+  compare_corpus:
+    name: Compare STEP corpus semantics
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all three generated corpora
+        uses: actions/download-artifact@v8
+        with:
+          pattern: step-corpus-*
+          path: step-corpora
+
+      - name: Require one identical semantic manifest per platform
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          manifests=(step-corpora/step-corpus-*/SEMANTIC-MANIFEST.txt)
+          if [ "${#manifests[@]}" -ne 3 ]; then
+            echo "::error::expected three platform manifests, found ${#manifests[@]}"
+            printf '  %s\n' "${manifests[@]}"
+            exit 1
+          fi
+
+          reference="${manifests[0]}"
+          for manifest in "${manifests[@]}"; do
+            sha256sum "$manifest"
+            if ! diff -u "$reference" "$manifest"; then
+              echo "::error::$manifest disagrees with $reference"
+              exit 1
+            fi
+          done
+          echo "all three platforms produced one semantic manifest" \
+            >> "$GITHUB_STEP_SUMMARY"
+          sha256sum "$reference" >> "$GITHUB_STEP_SUMMARY"
+
   report:
     name: Pin summary
-    needs: [resolve, build]
+    needs: [resolve, build, compare_corpus]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -776,6 +810,7 @@ jobs:
           FCAD_SHA256: ${{ needs.resolve.outputs.sha256 }}
           FCAD_RESOLVE_RESULT: ${{ needs.resolve.result }}
           FCAD_BUILD_RESULT: ${{ needs.build.result }}
+          FCAD_CORPUS_RESULT: ${{ needs.compare_corpus.result }}
         run: |
           set -euo pipefail
           # Backticks in the printf formats are Markdown code spans.
@@ -794,6 +829,7 @@ jobs:
             printf '| Source archive SHA-256 | `%s` |\n' "$FCAD_SHA256"
             printf '| Resolve result | %s |\n' "$FCAD_RESOLVE_RESULT"
             printf '| Build result | %s |\n' "$FCAD_BUILD_RESULT"
+            printf '| STEP corpus semantic comparison | %s |\n' "$FCAD_CORPUS_RESULT"
             echo
             echo "The commit is the authoritative pin. The archive checksum"
             echo "covers one download of a tarball GitHub generates on demand."
@@ -810,7 +846,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fail if any platform did not pass
-        if: always() && (needs.resolve.result != 'success' || needs.build.result != 'success' || steps.download.outcome == 'failure')
+        if: always() && (needs.resolve.result != 'success' || needs.build.result != 'success' || needs.compare_corpus.result != 'success' || steps.download.outcome == 'failure')
         run: |
-          echo "::error::not every platform passed or the pin record is incomplete; this tag is not pinnable yet"
+          echo "::error::not every platform passed, the STEP corpus disagreed, or the pin record is incomplete; this tag is not pinnable yet"
           exit 1

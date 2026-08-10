@@ -12,8 +12,8 @@
 // Two things are deliberate and neither is obvious:
 //
 //   * The header timestamp is set through the STEP model before writing.
-//     Left alone it is the wall clock, and a corpus whose checksums change
-//     every generation cannot be recorded in PROVENANCE.md.
+//     Left alone it is the wall clock, an irrelevant difference on every
+//     regeneration even when the semantic model stays identical.
 //
 //   * Colours are written as sRGB and come back linear, because that is what
 //     Quantity_Color stores. The expectation file carries the sRGB that was
@@ -21,33 +21,30 @@
 //     formula, and what the reader actually returned — so a mistake shared by
 //     the writer and the reader cannot pass as agreement.
 
+#include <BRepGProp.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepCheck_Analyzer.hxx>
-#include <Interface_EntityIterator.hxx>
-#include <Standard_Version.hxx>
-#include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <Bnd_Box.hxx>
-#include <GProp_GProps.hxx>
 #include <APIHeaderSection_MakeHeader.hxx>
 #include <DESTEP_Parameters.hxx>
+#include <GProp_GProps.hxx>
 #include <HeaderSection_FileSchema.hxx>
-#include <Interface_HArray1OfHAsciiString.hxx>
 #include <IFSelect_ReturnStatus.hxx>
+#include <Interface_EntityIterator.hxx>
+#include <Interface_HArray1OfHAsciiString.hxx>
 #include <Quantity_TypeOfColor.hxx>
 #include <STEPControl_StepModelType.hxx>
 #include <Standard_Boolean.hxx>
+#include <Standard_Version.hxx>
 #include <TCollection_HAsciiString.hxx>
 #include <UnitsMethods_LengthUnit.hxx>
 #include <XCAFDoc_ColorType.hxx>
 #include <gp_Vec.hxx>
 #include <gp_XYZ.hxx>
 #include <TColStd_SequenceOfAsciiString.hxx>
-#include <Bnd_Box.hxx>
 #include <TopLoc_Location.hxx>
-#include <HeaderSection_FileName.hxx>
-#include <Interface_Static.hxx>
 #include <Quantity_Color.hxx>
 #include <STEPCAFControl_Reader.hxx>
 #include <STEPCAFControl_Writer.hxx>
@@ -79,12 +76,17 @@ namespace {
 
 /// The date every file in the corpus claims to have been written.
 ///
-/// A constant, so two generations of the same corpus are the same bytes.
+/// A constant removes the wall clock. It does not promise byte-identical STEP:
+/// OCCT emits independent colour entities in a varying order.
 constexpr const char *FIXED_TIMESTAMP = "2020-01-01T00:00:00";
+
+constexpr double COLOUR_TOLERANCE = 1e-4;
+constexpr double PLACEMENT_TOLERANCE = 1e-7;
+constexpr const char *AP242_SCHEMA =
+    "AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF {1 0 10303 442 1 1 4 }";
 
 /// One colour, in the space it was asked for and the space it is stored in.
 struct Colour {
-  const char *name;
   double srgb[3];
 };
 
@@ -141,6 +143,17 @@ struct Node {
   bool valid = false;
 };
 
+/// One node the generator intended to put into a file.
+///
+/// Kept apart from `Node`: comparing two values both read by OCCT would only
+/// show that two readers agree. This side is the independently stated intent.
+struct ExpectedNode {
+  const char *path;
+  double translation[3];
+  bool is_assembly;
+  const Colour *colour;
+};
+
 /// Everything read back out of one file.
 struct Observed {
   std::string file;
@@ -149,9 +162,18 @@ struct Observed {
   std::string source_unit;
   int roots = 0;
   std::vector<Node> nodes;
-  /// Colours asked for, and what the standard formula says they become.
-  std::vector<std::string> colour_expectations;
+  std::vector<ExpectedNode> expected_nodes;
 };
+
+bool nearly_equal(double a, double b, double tolerance) {
+  return std::abs(a - b) <= tolerance;
+}
+
+bool same_placement(const double a[3], const double b[3]) {
+  return nearly_equal(a[0], b[0], PLACEMENT_TOLERANCE) &&
+         nearly_equal(a[1], b[1], PLACEMENT_TOLERANCE) &&
+         nearly_equal(a[2], b[2], PLACEMENT_TOLERANCE);
+}
 
 int count_solids(const TopoDS_Shape &shape) {
   int solids = 0;
@@ -182,9 +204,10 @@ int main(int argc, char **argv) {
   auto write_file = [&](const Handle(TDocStd_Document) & doc,
                         const std::string &name,
                         DESTEP_Parameters::WriteMode_StepSchema schema,
-                        UnitsMethods_LengthUnit unit, const char *unit_name,
+                        UnitsMethods_LengthUnit unit,
+                        const char *expected_source_unit, int expected_roots,
                         const std::string &description,
-                        const std::vector<std::string> &colour_expectations)
+                        const std::vector<ExpectedNode> &expected_nodes)
       -> bool {
     // Passed explicitly rather than through Interface_Static. Setting the
     // schema globally before the first writer is constructed does nothing:
@@ -245,7 +268,7 @@ int main(int argc, char **argv) {
     Observed observed;
     observed.file = name;
     observed.description = description;
-    observed.colour_expectations = colour_expectations;
+    observed.expected_nodes = expected_nodes;
 
     // The schema the file actually declares, not the one that was requested.
     // Asking the model rather than trusting the parameter is the whole point:
@@ -375,35 +398,100 @@ int main(int argc, char **argv) {
                     b.translation + 3);
               });
 
+    // Agreement between platforms is necessary but not sufficient: three
+    // readers can lose the same name or colour in exactly the same way. Check
+    // the read-back model against the independently stated fixture intent.
+    if (observed.schema != AP242_SCHEMA) {
+      std::fprintf(stderr, "%s: declared schema is %s, expected %s\n",
+                   name.c_str(), observed.schema.c_str(), AP242_SCHEMA);
+      return false;
+    }
+    if (observed.source_unit != expected_source_unit) {
+      std::fprintf(stderr, "%s: source unit is %s, expected %s\n",
+                   name.c_str(), observed.source_unit.c_str(),
+                   expected_source_unit);
+      return false;
+    }
+    if (observed.roots != expected_roots) {
+      std::fprintf(stderr, "%s: read %d roots, expected %d\n", name.c_str(),
+                   observed.roots, expected_roots);
+      return false;
+    }
+    if (observed.nodes.size() != expected_nodes.size()) {
+      std::fprintf(stderr, "%s: read %zu nodes, expected %zu\n", name.c_str(),
+                   observed.nodes.size(), expected_nodes.size());
+      return false;
+    }
+
+    std::vector<bool> used(observed.nodes.size(), false);
+    for (const ExpectedNode &expected : expected_nodes) {
+      std::size_t found = observed.nodes.size();
+      for (std::size_t i = 0; i < observed.nodes.size(); ++i) {
+        if (!used[i] && observed.nodes[i].path == expected.path &&
+            same_placement(observed.nodes[i].translation,
+                           expected.translation)) {
+          found = i;
+          break;
+        }
+      }
+      if (found == observed.nodes.size()) {
+        std::fprintf(stderr,
+                     "%s: expected node %s at (%.4f, %.4f, %.4f) was lost\n",
+                     name.c_str(), expected.path, expected.translation[0],
+                     expected.translation[1], expected.translation[2]);
+        return false;
+      }
+      used[found] = true;
+      const Node &actual = observed.nodes[found];
+      if (actual.is_assembly != expected.is_assembly) {
+        std::fprintf(stderr, "%s: %s changed between part and assembly\n",
+                     name.c_str(), expected.path);
+        return false;
+      }
+      if (!actual.valid || actual.solids <= 0 || !(actual.volume > 0.0)) {
+        std::fprintf(stderr,
+                     "%s: %s has invalid or empty geometry after read-back\n",
+                     name.c_str(), expected.path);
+        return false;
+      }
+      if ((expected.colour != nullptr) != actual.has_colour) {
+        std::fprintf(stderr, "%s: %s did not preserve colour presence\n",
+                     name.c_str(), expected.path);
+        return false;
+      }
+      if (expected.colour != nullptr) {
+        for (int channel = 0; channel < 3; ++channel) {
+          const double wanted = to_linear(expected.colour->srgb[channel]);
+          if (!nearly_equal(actual.linear[channel], wanted,
+                            COLOUR_TOLERANCE)) {
+            std::fprintf(stderr,
+                         "%s: %s colour channel %d is %.9f, expected %.9f\n",
+                         name.c_str(), expected.path, channel,
+                         actual.linear[channel], wanted);
+            return false;
+          }
+        }
+      }
+    }
+
     results.push_back(observed);
     std::printf("  %-30s schema=%-18s unit=%-12s nodes=%zu solids=%d\n",
                 name.c_str(), observed.schema.c_str(),
                 observed.source_unit.c_str(), observed.nodes.size(), solids);
-    (void)unit_name;
     return true;
   };
 
   // The colours the corpus uses, named so an expectation can be read.
-  const Colour red{"red", {0.80, 0.20, 0.20}};
-  const Colour blue{"blue", {0.20, 0.40, 0.90}};
-  const Colour green{"green", {0.15, 0.70, 0.35}};
+  const Colour red{{0.80, 0.20, 0.20}};
+  const Colour blue{{0.20, 0.40, 0.90}};
+  const Colour green{{0.15, 0.70, 0.35}};
 
   auto set_colour = [&](const Handle(XCAFDoc_ColorTool) & tool,
-                        const TDF_Label &label, const Colour &colour,
-                        std::vector<std::string> &lines,
-                        const char *what) {
+                        const TDF_Label &label, const Colour &colour) {
     tool->SetColor(label,
                    Quantity_Color(colour.srgb[0], colour.srgb[1],
                                   colour.srgb[2], Quantity_TOC_sRGB),
                    XCAFDoc_ColorSurf);
-    char line[256];
-    std::snprintf(line, sizeof(line),
-                  "colour %s = sRGB(%.4f, %.4f, %.4f) -> linear(%.6f, %.6f, "
-                  "%.6f) +/- 1e-4",
-                  what, colour.srgb[0], colour.srgb[1], colour.srgb[2],
-                  to_linear(colour.srgb[0]), to_linear(colour.srgb[1]),
-                  to_linear(colour.srgb[2]));
-    lines.emplace_back(line);
   };
 
   bool ok = true;
@@ -417,10 +505,11 @@ int main(int argc, char **argv) {
     TDF_Label part = shapes->AddShape(BRepPrimAPI_MakeBox(60, 40, 10).Shape(), Standard_False);
     name_it(part, "Plate");
     shapes->UpdateAssemblies();
-    ok &= write_file(doc, "01-single-part.step", DESTEP_Parameters::WriteMode_StepSchema_AP242DIS,
-                     UnitsMethods_LengthUnit_Millimeter, "MM",
+    ok &= write_file(doc, "01-single-part.step",
+                     DESTEP_Parameters::WriteMode_StepSchema_AP242DIS,
+                     UnitsMethods_LengthUnit_Millimeter, "millimetre", 1,
                      "One named solid, no assembly, no colour.",
-                     {"root 1 is named Plate", "no colour is assigned"});
+                     {{"Plate", {0.0, 0.0, 0.0}, false, nullptr}});
   }
 
   // 2. A flat assembly of two named, coloured parts.
@@ -429,14 +518,13 @@ int main(int argc, char **argv) {
     app->NewDocument("BinXCAF", doc);
     Handle(XCAFDoc_ShapeTool) shapes = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
     Handle(XCAFDoc_ColorTool) colours = XCAFDoc_DocumentTool::ColorTool(doc->Main());
-    std::vector<std::string> lines;
 
     TDF_Label base = shapes->AddShape(BRepPrimAPI_MakeBox(60, 40, 10).Shape(), Standard_False);
     name_it(base, "Base");
-    set_colour(colours, base, red, lines, "of Base");
+    set_colour(colours, base, red);
     TDF_Label pin = shapes->AddShape(BRepPrimAPI_MakeCylinder(5, 25).Shape(), Standard_False);
     name_it(pin, "Pin");
-    set_colour(colours, pin, blue, lines, "of Pin");
+    set_colour(colours, pin, blue);
 
     TDF_Label assembly = shapes->NewShape();
     name_it(assembly, "Bracket");
@@ -446,10 +534,14 @@ int main(int argc, char **argv) {
     shapes->AddComponent(assembly, pin, TopLoc_Location(up));
     shapes->UpdateAssemblies();
 
-    lines.emplace_back("root 1 is an assembly named Bracket with 2 components");
-    ok &= write_file(doc, "02-flat-assembly.step", DESTEP_Parameters::WriteMode_StepSchema_AP242DIS,
-                     UnitsMethods_LengthUnit_Millimeter, "MM",
-                     "Two named, coloured parts in one assembly.", lines);
+    ok &= write_file(
+        doc, "02-flat-assembly.step",
+        DESTEP_Parameters::WriteMode_StepSchema_AP242DIS,
+        UnitsMethods_LengthUnit_Millimeter, "millimetre", 1,
+        "Two named, coloured parts in one assembly.",
+        {{"Bracket", {0.0, 0.0, 0.0}, true, nullptr},
+         {"Bracket/Base", {0.0, 0.0, 0.0}, false, &red},
+         {"Bracket/Pin", {30.0, 20.0, 10.0}, false, &blue}});
   }
 
   // 3. Nesting: an assembly whose component is itself an assembly.
@@ -458,11 +550,10 @@ int main(int argc, char **argv) {
     app->NewDocument("BinXCAF", doc);
     Handle(XCAFDoc_ShapeTool) shapes = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
     Handle(XCAFDoc_ColorTool) colours = XCAFDoc_DocumentTool::ColorTool(doc->Main());
-    std::vector<std::string> lines;
 
     TDF_Label body = shapes->AddShape(BRepPrimAPI_MakeBox(20, 20, 20).Shape(), Standard_False);
     name_it(body, "Cube");
-    set_colour(colours, body, green, lines, "of Cube");
+    set_colour(colours, body, green);
 
     TDF_Label inner = shapes->NewShape();
     name_it(inner, "InnerGroup");
@@ -479,12 +570,22 @@ int main(int argc, char **argv) {
     shapes->AddComponent(outer, inner, TopLoc_Location(lift));
     shapes->UpdateAssemblies();
 
-    lines.emplace_back("root 1 is OuterGroup, holding 2 instances of InnerGroup");
-    lines.emplace_back("InnerGroup holds 2 instances of Cube");
-    lines.emplace_back("four solids in total, from one definition");
-    ok &= write_file(doc, "03-nested-assembly.step", DESTEP_Parameters::WriteMode_StepSchema_AP242DIS,
-                     UnitsMethods_LengthUnit_Millimeter, "MM",
-                     "Two levels of nesting, one part reused four times.", lines);
+    ok &= write_file(
+        doc, "03-nested-assembly.step",
+        DESTEP_Parameters::WriteMode_StepSchema_AP242DIS,
+        UnitsMethods_LengthUnit_Millimeter, "millimetre", 1,
+        "Two levels of nesting, one part reused four times.",
+        {{"OuterGroup", {0.0, 0.0, 0.0}, true, nullptr},
+         {"OuterGroup/InnerGroup", {0.0, 0.0, 0.0}, true, nullptr},
+         {"OuterGroup/InnerGroup", {0.0, 40.0, 0.0}, true, nullptr},
+         {"OuterGroup/InnerGroup/Cube", {0.0, 0.0, 0.0}, false,
+          &green},
+         {"OuterGroup/InnerGroup/Cube", {30.0, 0.0, 0.0}, false,
+          &green},
+         {"OuterGroup/InnerGroup/Cube", {0.0, 0.0, 0.0}, false,
+          &green},
+         {"OuterGroup/InnerGroup/Cube", {30.0, 0.0, 0.0}, false,
+          &green}});
   }
 
   // 4. The same definition instanced with different transforms, which is
@@ -494,11 +595,10 @@ int main(int argc, char **argv) {
     app->NewDocument("BinXCAF", doc);
     Handle(XCAFDoc_ShapeTool) shapes = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
     Handle(XCAFDoc_ColorTool) colours = XCAFDoc_DocumentTool::ColorTool(doc->Main());
-    std::vector<std::string> lines;
 
     TDF_Label bolt = shapes->AddShape(BRepPrimAPI_MakeCylinder(3, 12).Shape(), Standard_False);
     name_it(bolt, "Bolt");
-    set_colour(colours, bolt, red, lines, "of the Bolt definition");
+    set_colour(colours, bolt, red);
 
     TDF_Label pattern = shapes->NewShape();
     name_it(pattern, "BoltPattern");
@@ -509,16 +609,21 @@ int main(int argc, char **argv) {
       // The third instance is painted over, which is the case a reader has
       // to keep apart from the definition's own colour.
       if (i == 2) {
-        set_colour(colours, instance, blue, lines, "of instance 3, overriding the definition");
+        set_colour(colours, instance, blue);
       }
     }
     shapes->UpdateAssemblies();
 
-    lines.emplace_back("root 1 is BoltPattern with 4 instances of one definition");
-    lines.emplace_back("instances 1, 2 and 4 take the definition colour");
-    ok &= write_file(doc, "04-instance-colours.step", DESTEP_Parameters::WriteMode_StepSchema_AP242DIS,
-                     UnitsMethods_LengthUnit_Millimeter, "MM",
-                     "One definition, four placements, one instance recoloured.", lines);
+    ok &= write_file(
+        doc, "04-instance-colours.step",
+        DESTEP_Parameters::WriteMode_StepSchema_AP242DIS,
+        UnitsMethods_LengthUnit_Millimeter, "millimetre", 1,
+        "One definition, four placements, one instance recoloured.",
+        {{"BoltPattern", {0.0, 0.0, 0.0}, true, nullptr},
+         {"BoltPattern/Bolt", {0.0, 0.0, 0.0}, false, &red},
+         {"BoltPattern/Bolt", {15.0, 15.0, 0.0}, false, &red},
+         {"BoltPattern/Bolt", {30.0, 0.0, 0.0}, false, &blue},
+         {"BoltPattern/Bolt", {45.0, 15.0, 0.0}, false, &red}});
   }
 
   // 5. The same model in inches, so a reader that ignores units is caught by
@@ -532,10 +637,9 @@ int main(int argc, char **argv) {
     shapes->UpdateAssemblies();
     ok &= write_file(doc, "05-inch-units.step",
                      DESTEP_Parameters::WriteMode_StepSchema_AP242DIS,
-                     UnitsMethods_LengthUnit_Inch, "INCH",
+                     UnitsMethods_LengthUnit_Inch, "INCH", 1,
                      "A 2 x 1 x 0.5 inch plate, written in inches.",
-                     {"the file declares inches",
-                      "the solid is 50.8 x 25.4 x 12.7 mm once converted"});
+                     {{"InchPlate", {0.0, 0.0, 0.0}, false, nullptr}});
   }
 
   // 6. Names outside ASCII. A reader that assumes one byte per character
@@ -557,26 +661,31 @@ int main(int argc, char **argv) {
     shapes->AddComponent(assembly, right, TopLoc_Location(across));
     shapes->UpdateAssemblies();
 
-    ok &= write_file(doc, "06-unicode-names.step", DESTEP_Parameters::WriteMode_StepSchema_AP242DIS,
-                     UnitsMethods_LengthUnit_Millimeter, "MM",
-                     "Cyrillic, accented Latin and Japanese names.",
-                     {"the assembly is named in Japanese",
-                      "components are named in Cyrillic and accented Latin",
-                      "names survive as UTF-8, not as question marks"});
+    ok &= write_file(
+        doc, "06-unicode-names.step",
+        DESTEP_Parameters::WriteMode_StepSchema_AP242DIS,
+        UnitsMethods_LengthUnit_Millimeter, "millimetre", 1,
+        "Cyrillic, accented Latin and Japanese names.",
+        {{"組立て", {0.0, 0.0, 0.0}, true, nullptr},
+         {"組立て/Кронштейн", {0.0, 0.0, 0.0}, false, nullptr},
+         {"組立て/Épaisseur — 30µm", {30.0, 0.0, 0.0}, false,
+          nullptr}});
   }
 
-  // 7. Nothing but geometry: no names, no colours, no assembly. Optional
-  //    metadata being absent is not the same as a file being broken.
+  // 7. Nothing but geometry: no explicit name, colour or assembly. The STEP
+  //    writer supplies the product name SOLID; that default is recorded rather
+  //    than misreported as absent metadata.
   {
     Handle(TDocStd_Document) doc;
     app->NewDocument("BinXCAF", doc);
     Handle(XCAFDoc_ShapeTool) shapes = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
     shapes->AddShape(BRepPrimAPI_MakeBox(15, 15, 15).Shape(), Standard_False);
     shapes->UpdateAssemblies();
-    ok &= write_file(doc, "07-bare-geometry.step", DESTEP_Parameters::WriteMode_StepSchema_AP242DIS,
-                     UnitsMethods_LengthUnit_Millimeter, "MM",
-                     "One solid with no name and no colour.",
-                     {"a reader must accept this, not treat it as damaged"});
+    ok &= write_file(doc, "07-bare-geometry.step",
+                     DESTEP_Parameters::WriteMode_StepSchema_AP242DIS,
+                     UnitsMethods_LengthUnit_Millimeter, "millimetre", 1,
+                     "One solid with writer-default name and no colour.",
+                     {{"SOLID", {0.0, 0.0, 0.0}, false, nullptr}});
   }
 
   if (!ok) {
@@ -584,10 +693,9 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // The manifest. Every value here was read out of the file it describes,
-  // except the linear colours, which are computed independently from the sRGB
-  // that was asked for — a golden taken only from the reader would let a
-  // mistake shared by the writer and the reader pass as agreement.
+  // The manifest. Observed values came out of the file; expected colours are
+  // computed independently from the requested sRGB and were already compared
+  // above. Keeping both makes the numerical contract visible to a reviewer.
   std::sort(results.begin(), results.end(),
             [](const Observed &a, const Observed &b) { return a.file < b.file; });
 
@@ -608,8 +716,22 @@ int main(int argc, char **argv) {
     manifest << "    schema " << item.schema << "\n";
     manifest << "    source unit " << item.source_unit << "\n";
     manifest << "    roots " << item.roots << "\n";
-    for (const std::string &line : item.colour_expectations) {
-      manifest << "    expected " << line << "\n";
+    for (const ExpectedNode &expected : item.expected_nodes) {
+      if (expected.colour == nullptr) {
+        continue;
+      }
+      char line[512];
+      std::snprintf(
+          line, sizeof(line),
+          "    expected colour %s at (%.4f, %.4f, %.4f) = "
+          "sRGB(%.4f, %.4f, %.4f) -> linear(%.6f, %.6f, %.6f) +/- %.0e",
+          expected.path, expected.translation[0], expected.translation[1],
+          expected.translation[2], expected.colour->srgb[0],
+          expected.colour->srgb[1], expected.colour->srgb[2],
+          to_linear(expected.colour->srgb[0]),
+          to_linear(expected.colour->srgb[1]),
+          to_linear(expected.colour->srgb[2]), COLOUR_TOLERANCE);
+      manifest << line << "\n";
     }
     for (const Node &node : item.nodes) {
       char line[512];

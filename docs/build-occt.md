@@ -260,6 +260,16 @@ packages also list Visualization toolkits (`TKService`/`TKV3d`) as link
 dependencies of XCAF even when no viewer is used — the smoke test’s
 `find_package` accounts for that; the program itself never opens a viewer.
 
+STEP output is not byte-deterministic merely because its header is fixed.
+`STEPCAFControl_Writer` may emit independent colour/style entities in a
+different order: a flat two-colour assembly produced two byte layouts across
+six processes on OCCT 7.9.3, and OCCT 8.0.1 differed between platforms in
+[pin run 31402276003](https://github.com/gesriot/ferrite-cad/actions/runs/31402276003).
+Both layouts read back into the same names, assembly tree, placements, colours,
+units and geometry. Consequently `tools/build-step-corpus` compares a sorted
+semantic manifest; the SHA-256 of a committed STEP file is an integrity check
+for that artifact, not a promise that regeneration reproduces its encoding.
+
 ## What Open CASCADE actually does, measured
 
 Two questions the adapter had to answer empirically rather than from
