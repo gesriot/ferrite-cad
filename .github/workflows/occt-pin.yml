@@ -507,7 +507,7 @@ jobs:
           # Failures are reported, never worked around. A step that does not
           # pass is a real limit of this OCCT version on this platform, and
           # that is exactly what the pin decision needs to know.
-          "$binary" tools/occt-smoke/data/sample_named_colored.step \
+          "$binary" fixtures/step/canonical/02-flat-assembly.step \
             | tee smoke-output.txt
 
       - uses: dtolnay/rust-toolchain@stable

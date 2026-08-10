@@ -1,0 +1,33 @@
+# How each damaged file was damaged
+#
+# Produced by tools/build-step-corpus from the committed corpus,
+# not from a fresh generation: generation is not byte-reproducible
+# and damage derived from it would not be either. Every mutation
+# point is asserted to occur exactly once in its source file, so
+# running this again on the same input gives the same output.
+
+01-truncated.step
+    from truncated
+    cut at three fifths of the file, mid-entity
+    at byte 9244, 15408 bytes before and 9244 after
+
+02-broken-reference.step
+    from broken reference
+    the application protocol points at entity #9999999, which does not exist
+    at byte 472, 23528 bytes before and 23534 after
+
+03-missing-terminator.step
+    from missing terminator
+    END-ISO-10303-21; removed, so the file simply stops
+    at byte 20063, 20081 bytes before and 20063 after
+
+04-corrupted-number.step
+    from corrupted number
+    the header timestamp reads month 99
+    at byte 108, 10282 bytes before and 10282 after
+
+05-duplicate-entity-id.step
+    from duplicate entity id
+    entity #10 is defined twice, the second time identically
+    at byte 866, 15770 bytes before and 15831 after
+

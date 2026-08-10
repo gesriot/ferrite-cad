@@ -191,9 +191,206 @@ double volume_of(const TopoDS_Shape &shape) {
 
 }  // namespace
 
+
+namespace {
+
+/// One deterministic way of damaging a file, and what it did.
+struct Damage {
+  std::string file;
+  std::string kind;
+  std::string what;
+  std::size_t offset = 0;
+  std::size_t bytes_before = 0;
+  std::size_t bytes_after = 0;
+};
+
+std::string read_whole(const std::string &path, bool &ok) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    ok = false;
+    return {};
+  }
+  std::ostringstream buffer;
+  buffer << file.rdbuf();
+  ok = true;
+  return buffer.str();
+}
+
+bool write_whole(const std::string &path, const std::string &content) {
+  std::ofstream file(path, std::ios::binary);
+  if (!file) {
+    return false;
+  }
+  file << content;
+  return file.good();
+}
+
+/// Where `needle` occurs, insisting there is exactly one of it.
+///
+/// A damaged file is only useful if the damage is in a known place. A pattern
+/// that appears twice would put it in whichever the search happened to reach
+/// first, and the variant would drift the next time the corpus is generated.
+bool only_occurrence(const std::string &haystack, const std::string &needle,
+                     std::size_t &at) {
+  const std::size_t first = haystack.find(needle);
+  if (first == std::string::npos) {
+    return false;
+  }
+  if (haystack.find(needle, first + 1) != std::string::npos) {
+    return false;
+  }
+  at = first;
+  return true;
+}
+
+}  // namespace
+
+/// Derives the damaged variants from files that already exist.
+///
+/// Takes an input directory rather than corrupting what it just generated, so
+/// the damaged files can be reproduced from the committed corpus by anyone.
+/// That matters because generation itself is not byte-reproducible: deriving
+/// damage from a fresh generation would inherit that.
+int corrupt(const std::string &from, const std::string &to) {
+  struct Recipe {
+    const char *source;
+    const char *name;
+    const char *kind;
+  };
+  const Recipe recipes[] = {
+      {"01-single-part.step", "01-truncated.step", "truncated"},
+      {"02-flat-assembly.step", "02-broken-reference.step", "broken reference"},
+      {"03-nested-assembly.step", "03-missing-terminator.step", "missing terminator"},
+      {"04-instance-colours.step", "04-corrupted-number.step", "corrupted number"},
+      {"05-inch-units.step", "05-duplicate-entity-id.step", "duplicate entity id"},
+  };
+
+  std::vector<Damage> report;
+  for (const Recipe &recipe : recipes) {
+    bool ok = false;
+    const std::string original = read_whole(std::string(from) + "/" + recipe.source, ok);
+    if (!ok) {
+      std::fprintf(stderr, "cannot read %s\n", recipe.source);
+      return 1;
+    }
+
+    Damage damage;
+    damage.file = recipe.name;
+    damage.kind = recipe.kind;
+    damage.bytes_before = original.size();
+    std::string damaged;
+
+    if (damage.kind == "truncated") {
+      // Cut inside the DATA section, so the file is a plausible prefix rather
+      // than an empty one.
+      damage.offset = original.size() * 3 / 5;
+      damaged = original.substr(0, damage.offset);
+      damage.what = "cut at three fifths of the file, mid-entity";
+    } else if (damage.kind == "broken reference") {
+      // The application context is referenced exactly once, which is what
+      // makes this a known place rather than a found one.
+      const std::string needle = "APPLICATION_PROTOCOL_DEFINITION";
+      if (!only_occurrence(original, needle, damage.offset)) {
+        std::fprintf(stderr, "%s: %s is not unique\n", recipe.source, needle.c_str());
+        return 1;
+      }
+      const std::size_t open = original.find('(', damage.offset);
+      const std::size_t close = original.find(");", open);
+      if (open == std::string::npos || close == std::string::npos) {
+        std::fprintf(stderr, "%s: cannot find the reference to break\n", recipe.source);
+        return 1;
+      }
+      const std::size_t last_ref = original.rfind('#', close);
+      if (last_ref == std::string::npos || last_ref < open) {
+        std::fprintf(stderr, "%s: no reference to break\n", recipe.source);
+        return 1;
+      }
+      damage.offset = last_ref;
+      damaged = original.substr(0, last_ref) + "#9999999" + original.substr(close);
+      damage.what = "the application protocol points at entity #9999999, which does not exist";
+    } else if (damage.kind == "missing terminator") {
+      const std::string needle = "END-ISO-10303-21;";
+      if (!only_occurrence(original, needle, damage.offset)) {
+        std::fprintf(stderr, "%s: the terminator is not unique\n", recipe.source);
+        return 1;
+      }
+      damaged = original.substr(0, damage.offset);
+      damage.what = "END-ISO-10303-21; removed, so the file simply stops";
+    } else if (damage.kind == "corrupted number") {
+      // The timestamp is fixed and appears once, so a digit in it is a known
+      // byte. Damaging geometry would be less certain to be unique.
+      const std::string needle = "2020-01-01T00:00:00";
+      if (!only_occurrence(original, needle, damage.offset)) {
+        std::fprintf(stderr, "%s: the timestamp is not unique\n", recipe.source);
+        return 1;
+      }
+      damaged = original;
+      // A month that does not exist, in a field a reader is expected to parse.
+      damaged[damage.offset + 5] = '9';
+      damaged[damage.offset + 6] = '9';
+      damage.what = "the header timestamp reads month 99";
+    } else {
+      // A second definition of an entity that already exists.
+      const std::string needle = "\n#10 = ";
+      if (!only_occurrence(original, needle, damage.offset)) {
+        std::fprintf(stderr, "%s: entity #10 is not defined exactly once\n", recipe.source);
+        return 1;
+      }
+      const std::size_t line_end = original.find('\n', damage.offset + 1);
+      if (line_end == std::string::npos) {
+        std::fprintf(stderr, "%s: entity #10 has no end\n", recipe.source);
+        return 1;
+      }
+      const std::string duplicate = original.substr(damage.offset, line_end - damage.offset);
+      damaged = original.substr(0, line_end) + duplicate + original.substr(line_end);
+      damage.what = "entity #10 is defined twice, the second time identically";
+    }
+
+    damage.bytes_after = damaged.size();
+    if (damaged == original) {
+      std::fprintf(stderr, "%s: the damage changed nothing\n", recipe.name);
+      return 1;
+    }
+    if (!write_whole(std::string(to) + "/" + recipe.name, damaged)) {
+      std::fprintf(stderr, "cannot write %s\n", recipe.name);
+      return 1;
+    }
+    report.push_back(damage);
+    std::printf("  %-30s %-20s at byte %zu (%zu -> %zu)\n", damage.file.c_str(),
+                damage.kind.c_str(), damage.offset, damage.bytes_before,
+                damage.bytes_after);
+  }
+
+  std::ostringstream text;
+  text << "# How each damaged file was damaged\n#\n"
+       << "# Produced by tools/build-step-corpus from the committed corpus,\n"
+       << "# not from a fresh generation: generation is not byte-reproducible\n"
+       << "# and damage derived from it would not be either. Every mutation\n"
+       << "# point is asserted to occur exactly once in its source file, so\n"
+       << "# running this again on the same input gives the same output.\n\n";
+  for (const Damage &damage : report) {
+    text << damage.file << "\n";
+    text << "    from " << damage.kind << "\n";
+    text << "    " << damage.what << "\n";
+    text << "    at byte " << damage.offset << ", " << damage.bytes_before
+         << " bytes before and " << damage.bytes_after << " after\n\n";
+  }
+  if (!write_whole(std::string(to) + "/DAMAGE-REPORT.txt", text.str())) {
+    std::fprintf(stderr, "cannot write the damage report\n");
+    return 1;
+  }
+  return 0;
+}
+
 int main(int argc, char **argv) {
+  if (argc >= 4 && std::string(argv[1]) == "corrupt") {
+    return corrupt(argv[2], argv[3]);
+  }
   if (argc < 2) {
-    std::fprintf(stderr, "usage: step_corpus <output-directory>\n");
+    std::fprintf(stderr,
+                 "usage:\n"
+                 "  step_corpus <output-directory>\n"
+                 "  step_corpus corrupt <corpus-directory> <output-directory>\n");
     return 2;
   }
   const std::string out = argv[1];

@@ -32,6 +32,7 @@ jobs:
       # A file that leaves this repository without a licence header carries no
       # licence at all. Checked mechanically so it stays true.
       - run: tools/check-licence-headers.sh
+      - run: tools/check-step-corpus.sh
 
   test:
     name: test (${{ matrix.os }})
