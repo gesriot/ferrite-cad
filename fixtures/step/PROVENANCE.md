@@ -67,7 +67,11 @@ Here "damaged" means a controlled violation of the file's syntax or references,
 not a promise that every tolerant STEP reader returns an error. A reader may
 recover, ignore the affected metadata or produce a partial model. Section 18
 must specify and test FerriteCAD's policy for each outcome; parse success alone
-must not be mistaken for a sound import.
+must not be mistaken for a sound import. Its gates must collect diagnostics from
+both reading and transfer and compare the complete XDE scene — assembly tree,
+definitions and instances, names, colours, units and placements — as well as
+shape validity and geometry. Equal solids and volume alone do not establish an
+equivalent import.
 
 | File | Bytes | SHA-256 |
 |---|---:|---|
