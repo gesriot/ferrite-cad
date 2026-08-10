@@ -12,6 +12,8 @@
 #![allow(clippy::panic)]
 
 use std::path::PathBuf;
+use std::sync::{Arc, Barrier};
+use std::thread;
 
 use ferritecad_exchange::{ColourSource, Import, Severity};
 use ferritecad_kernel::GeometryKernel;
@@ -325,6 +327,81 @@ fn nothing_that_is_not_a_step_file_becomes_a_scene() {
         }
     }
     assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
+fn simultaneous_imports_do_not_cross_sessions_or_abort_the_process() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+
+    // The first §18A pin run aborted on macOS while seven independent import
+    // tests ran in parallel. This concentrates that pressure at one instant
+    // instead of relying on the test harness's scheduling. It verifies the
+    // public guarantee — concurrent sessions import safely and independently
+    // — without claiming whether XDE document creation or the global messenger
+    // caused the original abort; the observation did not isolate them.
+    const WORKERS: usize = 8;
+    const ROUNDS: usize = 4;
+    let bytes = Arc::new(corpus("canonical", "04-instance-colours.step"));
+    let start = Arc::new(Barrier::new(WORKERS));
+
+    let workers: Vec<_> = (0..WORKERS)
+        .map(|worker| {
+            let bytes = Arc::clone(&bytes);
+            let start = Arc::clone(&start);
+            thread::spawn(move || {
+                let mut kernel = OcctKernel::new().expect("opens a private session");
+                start.wait();
+
+                for round in 0..ROUNDS {
+                    let outcome = kernel
+                        .import_step(bytes.as_slice())
+                        .unwrap_or_else(|error| {
+                            panic!("worker {worker}, round {round}: import failed: {error}")
+                        });
+                    let scene = outcome.scene().unwrap_or_else(|| {
+                        panic!(
+                            "worker {worker}, round {round}: rejected: {:?}",
+                            outcome.diagnostics()
+                        )
+                    });
+
+                    assert!(outcome.diagnostics().is_empty());
+                    assert_eq!(scene.definitions.len(), 2);
+                    assert_eq!(scene.instances.len(), 5);
+                    assert_eq!(
+                        scene
+                            .definitions
+                            .iter()
+                            .filter(|definition| definition.name == "Bolt")
+                            .count(),
+                        1
+                    );
+                    assert_eq!(
+                        scene
+                            .instances
+                            .iter()
+                            .filter(|instance| { instance.colour_source == ColourSource::Instance })
+                            .count(),
+                        1
+                    );
+
+                    release(&mut kernel, &outcome);
+                    assert_eq!(
+                        kernel.live_shape_count(),
+                        0,
+                        "worker {worker}, round {round} leaked another session's shape"
+                    );
+                }
+            })
+        })
+        .collect();
+
+    for worker in workers {
+        worker.join().expect("an import worker did not survive");
+    }
 }
 
 // Referenced so the severity type cannot quietly stop being part of the API.

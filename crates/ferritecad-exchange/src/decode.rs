@@ -39,15 +39,29 @@ pub fn decode(bytes: &[u8], session: SessionId) -> Result<Import> {
         )));
     }
 
-    let rejected = reader.u8("status")? != 0;
+    let rejected = match reader.u8("status")? {
+        0 => false,
+        1 => true,
+        other => {
+            return Err(malformed(format!(
+                "this import result has unknown status {other}"
+            )));
+        }
+    };
     let source_unit = reader.text("source unit")?;
     let schema = reader.text("schema")?;
 
     let definition_count = reader.u32("definition count")?;
     let mut definitions = Vec::with_capacity(definition_count.min(4096) as usize);
-    for _ in 0..definition_count {
+    for index in 0..definition_count {
+        let shape = reader.u64("definition shape")?;
+        if shape == 0 {
+            return Err(malformed(format!(
+                "definition {index} has the reserved shape handle 0"
+            )));
+        }
         definitions.push(Definition {
-            shape: ShapeHandle::new(session, reader.u64("definition shape")?),
+            shape: ShapeHandle::new(session, shape),
             name: reader.text("definition name")?,
             solids: reader.u32("definition solids")?,
         });
@@ -84,7 +98,7 @@ pub fn decode(bytes: &[u8], session: SessionId) -> Result<Import> {
         let name = reader.text("instance name")?;
         let mut placement = [0.0; 12];
         for value in &mut placement {
-            *value = reader.f64("placement")?;
+            *value = reader.finite_f64("placement")?;
         }
 
         let colour_source = match reader.u8("colour source")? {
@@ -99,9 +113,9 @@ pub fn decode(bytes: &[u8], session: SessionId) -> Result<Import> {
             }
         };
         let colour = [
-            reader.f64("colour")?,
-            reader.f64("colour")?,
-            reader.f64("colour")?,
+            reader.finite_f64("colour")?,
+            reader.finite_f64("colour")?,
+            reader.finite_f64("colour")?,
         ];
 
         instances.push(Instance {
@@ -148,6 +162,15 @@ pub fn decode(bytes: &[u8], session: SessionId) -> Result<Import> {
     reader.finish()?;
 
     if rejected {
+        if !source_unit.is_empty()
+            || !schema.is_empty()
+            || !definitions.is_empty()
+            || !instances.is_empty()
+        {
+            return Err(malformed(
+                "a rejected import carries scene data that cannot be returned",
+            ));
+        }
         return Ok(Import::Rejected { diagnostics });
     }
     Ok(Import::Imported {
@@ -210,6 +233,16 @@ impl<'a> Reader<'a> {
         Ok(f64::from_le_bytes(self.array(what)?))
     }
 
+    fn finite_f64(&mut self, what: &str) -> Result<f64> {
+        let value = self.f64(what)?;
+        if !value.is_finite() {
+            return Err(malformed(format!(
+                "the import result's {what} is not finite"
+            )));
+        }
+        Ok(value)
+    }
+
     fn text(&mut self, what: &str) -> Result<String> {
         let length = self.u32(what)? as usize;
         let bytes = self.take(length, what)?;
@@ -228,5 +261,146 @@ impl<'a> Reader<'a> {
             )));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Encoded {
+        bytes: Vec<u8>,
+        status: usize,
+        definition: usize,
+        parent: usize,
+        placement: usize,
+    }
+
+    fn put_text(out: &mut Vec<u8>, text: &str) {
+        out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        out.extend_from_slice(text.as_bytes());
+    }
+
+    fn imported() -> Encoded {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        let status = bytes.len();
+        bytes.push(0);
+        put_text(&mut bytes, "millimetre");
+        put_text(&mut bytes, "AP242");
+
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&1u64.to_le_bytes());
+        put_text(&mut bytes, "Plate");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        let definition = bytes.len();
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        let parent = bytes.len();
+        bytes.extend_from_slice(&NO_PARENT.to_le_bytes());
+        put_text(&mut bytes, "Plate");
+        let placement = bytes.len();
+        for value in [
+            1.0f64, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+        ] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.push(0);
+        for _ in 0..3 {
+            bytes.extend_from_slice(&0.0f64.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+
+        Encoded {
+            bytes,
+            status,
+            definition,
+            parent,
+            placement,
+        }
+    }
+
+    fn rejected() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        bytes.push(1);
+        put_text(&mut bytes, "");
+        put_text(&mut bytes, "");
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn a_complete_import_decodes() {
+        let encoded = imported();
+        let outcome = decode(&encoded.bytes, SessionId::new()).expect("decodes");
+        let scene = outcome.scene().expect("is imported");
+        assert_eq!(scene.definitions.len(), 1);
+        assert_eq!(scene.instances.len(), 1);
+        assert_eq!(scene.instances[0].translation(), [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn every_truncation_is_refused() {
+        let encoded = imported().bytes;
+        for length in 0..encoded.len() {
+            assert!(
+                decode(&encoded[..length], SessionId::new()).is_err(),
+                "accepted the first {length} of {} bytes",
+                encoded.len()
+            );
+        }
+        assert!(decode(&encoded, SessionId::new()).is_ok());
+    }
+
+    #[test]
+    fn status_is_an_enum_not_a_boolean() {
+        let mut encoded = imported();
+        encoded.bytes[encoded.status] = 2;
+        assert!(decode(&encoded.bytes, SessionId::new()).is_err());
+    }
+
+    #[test]
+    fn a_rejected_import_cannot_smuggle_in_a_scene() {
+        let mut encoded = imported();
+        encoded.bytes[encoded.status] = 1;
+        assert!(decode(&encoded.bytes, SessionId::new()).is_err());
+        assert!(matches!(
+            decode(&rejected(), SessionId::new()).expect("valid rejection"),
+            Import::Rejected { .. }
+        ));
+    }
+
+    #[test]
+    fn non_finite_placements_are_refused() {
+        let mut encoded = imported();
+        encoded.bytes[encoded.placement..encoded.placement + 8]
+            .copy_from_slice(&f64::NAN.to_le_bytes());
+        assert!(decode(&encoded.bytes, SessionId::new()).is_err());
+    }
+
+    #[test]
+    fn indices_must_describe_a_tree() {
+        let mut unknown_definition = imported();
+        unknown_definition.bytes[unknown_definition.definition..unknown_definition.definition + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        assert!(decode(&unknown_definition.bytes, SessionId::new()).is_err());
+
+        let mut forward_parent = imported();
+        forward_parent.bytes[forward_parent.parent..forward_parent.parent + 4]
+            .copy_from_slice(&0u32.to_le_bytes());
+        assert!(decode(&forward_parent.bytes, SessionId::new()).is_err());
+    }
+
+    #[test]
+    fn trailing_bytes_are_refused() {
+        let mut encoded = imported().bytes;
+        encoded.push(0);
+        assert!(decode(&encoded, SessionId::new()).is_err());
     }
 }

@@ -16,6 +16,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -224,12 +225,51 @@ struct FcOcctSession {
 
 namespace {
 
+/// Removes shapes registered by an import unless its bytes reached the caller.
+class ImportShapes {
+public:
+  explicit ImportShapes(FcOcctSession *session) : mySession(session) {}
+
+  ImportShapes(const ImportShapes &) = delete;
+  ImportShapes &operator=(const ImportShapes &) = delete;
+
+  ~ImportShapes() {
+    if (myCommitted) {
+      return;
+    }
+    for (uint64_t id : myIds) {
+      mySession->shapes.erase(id);
+    }
+  }
+
+  void remember(uint64_t id) { myIds.push_back(id); }
+  void commit() { myCommitted = true; }
+
+private:
+  FcOcctSession *mySession;
+  std::vector<uint64_t> myIds;
+  bool myCommitted = false;
+};
+
 /// Appends a little-endian value to a byte buffer.
 template <typename T>
 void put(std::vector<uint8_t> &out, T value) {
-  static_assert(std::is_trivially_copyable<T>::value, "raw bytes only");
-  const uint8_t *raw = reinterpret_cast<const uint8_t *>(&value);
-  out.insert(out.end(), raw, raw + sizeof(T));
+  static_assert(std::is_integral<T>::value && std::is_unsigned<T>::value,
+                "put<T> accepts unsigned integers or its double specialisation");
+  for (std::size_t byte = 0; byte < sizeof(T); ++byte) {
+    out.push_back(static_cast<uint8_t>(value & static_cast<T>(0xFFu)));
+    value >>= 8;
+  }
+}
+
+template <>
+void put<double>(std::vector<uint8_t> &out, double value) {
+  static_assert(sizeof(double) == sizeof(uint64_t), "the wire format uses f64");
+  static_assert(std::numeric_limits<double>::is_iec559,
+                "the wire format uses IEEE-754 f64");
+  uint64_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  put<uint64_t>(out, bits);
 }
 
 /// Appends a UTF-8 string with a 32-bit length in front of it.
@@ -742,7 +782,8 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
                                  size_t capacity, size_t *out_length,
                                  FcOcctError *out_error) noexcept {
   return guarded(out_error, [&]() -> FcOcctStatus {
-    if (session == nullptr || bytes == nullptr || out_length == nullptr) {
+    if (session == nullptr || bytes == nullptr || out_length == nullptr ||
+        (capacity > 0 && out_buffer == nullptr)) {
       write_error(out_error, "fc_occt_import_step was given a null argument");
       return FC_OCCT_INVALID_INPUT;
     }
@@ -751,12 +792,12 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
       return FC_OCCT_INVALID_INPUT;
     }
 
-    // Open CASCADE's document and application layer is not thread safe, and
-    // neither is its global messenger. Two imports at once abort the process
-    // — on macOS in the pin run, while Linux and Windows got away with it,
-    // which is the usual shape of a race. Serialised here rather than in the
-    // caller, because a library that is unsafe to call twice must say so or
-    // stop being unsafe, and stopping is cheaper than a documented landmine.
+    // The parallel import suite aborted the process on macOS in the pin run,
+    // while Linux and Windows completed. Each import touched both the XDE
+    // application/document layer and the global messenger, so the observation
+    // does not isolate which global caused the abort. Serialise the whole
+    // operation at the narrowest common boundary: callers get a safe contract
+    // without this comment pretending the evidence distinguishes the cause.
     static std::mutex import_lock;
     const std::lock_guard<std::mutex> serialise(import_lock);
 
@@ -766,11 +807,12 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
     // what the tests found. Identifiers are fixed width, so the length is the
     // same either way and the caller's second call still fits.
     const bool measuring = capacity == 0;
+    ImportShapes imported_shapes(session);
 
     // Open CASCADE prints to stdout by default, which would end up in
     // whatever the host application does with its own output. Done once for
-    // the process: this is global state, and rewriting it on every call was
-    // half of what made concurrent imports unsafe.
+    // the process: rewriting global state on every import is unnecessary and
+    // was one of the two unisolated suspects in the macOS abort.
     static std::once_flag quieten;
     std::call_once(quieten, []() {
       Message::DefaultMessenger()->ChangePrinters().Clear();
@@ -807,13 +849,11 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
       collect_diagnostics(report.str(), 0, diagnostics, diagnostic_count);
     }
 
-    const auto finish = [&](bool rejected) -> FcOcctStatus {
+    const auto finish = [&]() -> FcOcctStatus {
       // Everything else is already in `encoded`; the diagnostics go last so a
       // rejected import still carries what was noticed before it stopped.
       put<uint32_t>(encoded, diagnostic_count);
       encoded.insert(encoded.end(), diagnostics.begin(), diagnostics.end());
-      (void)rejected;
-
       *out_length = encoded.size();
       if (capacity == 0) {
         return FC_OCCT_OK;
@@ -825,6 +865,7 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
         return FC_OCCT_INVALID_INPUT;
       }
       std::memcpy(out_buffer, encoded.data(), encoded.size());
+      imported_shapes.commit();
       return FC_OCCT_OK;
     };
 
@@ -834,7 +875,7 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
       put_text(encoded, std::string());
       put<uint32_t>(encoded, 0);
       put<uint32_t>(encoded, 0);
-      return finish(true);
+      return finish();
     }
 
     const bool transferred = reader.Transfer(doc) == Standard_True;
@@ -849,7 +890,7 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
       put_text(encoded, std::string());
       put<uint32_t>(encoded, 0);
       put<uint32_t>(encoded, 0);
-      return finish(true);
+      return finish();
     }
 
     encoded.push_back(0);  // imported
@@ -922,6 +963,7 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
         id = static_cast<uint64_t>(definitions.size());
       } else {
         id = session->next_shape++;
+        imported_shapes.remember(id);
         session->shapes.emplace(id, std::move(record));
       }
 
@@ -992,7 +1034,7 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
     encoded.insert(encoded.end(), definition_bytes.begin(), definition_bytes.end());
     put<uint32_t>(encoded, instance_count);
     encoded.insert(encoded.end(), instance_bytes.begin(), instance_bytes.end());
-    return finish(false);
+    return finish();
   });
 }
 

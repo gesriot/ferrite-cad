@@ -951,4 +951,55 @@ mod tests {
         session.release(decoded);
         assert_eq!(session.live_shape_count(), 0);
     }
+
+    #[test]
+    fn a_failed_import_buffer_write_rolls_back_every_shape() {
+        let session = Session::new().expect("opens a real OCCT session");
+        let step: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/step/canonical/01-single-part.step"
+        ));
+
+        let mut length = 0usize;
+        let mut error = RawError::empty();
+        // SAFETY: this is the documented size query; the input and
+        // out-parameters live for the duration of the call.
+        let status = unsafe {
+            fc_occt_import_step(
+                session.raw,
+                step.as_ptr(),
+                step.len(),
+                std::ptr::null_mut(),
+                0,
+                &mut length,
+                &mut error,
+            )
+        };
+        assert_eq!(status, STATUS_OK);
+        assert!(length > 1);
+        assert_eq!(session.live_shape_count(), 0, "the size query kept a shape");
+
+        let mut too_small = vec![0u8; length - 1];
+        let mut needed = 0usize;
+        // SAFETY: every pointer is valid and the deliberately short capacity
+        // matches the allocated output slice.
+        let status = unsafe {
+            fc_occt_import_step(
+                session.raw,
+                step.as_ptr(),
+                step.len(),
+                too_small.as_mut_ptr(),
+                too_small.len(),
+                &mut needed,
+                &mut error,
+            )
+        };
+        assert_eq!(status, STATUS_INVALID_INPUT);
+        assert_eq!(needed, length);
+        assert_eq!(
+            session.live_shape_count(),
+            0,
+            "an import the caller could not receive leaked its definitions"
+        );
+    }
 }

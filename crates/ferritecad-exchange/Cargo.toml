@@ -9,9 +9,10 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-# No kernel and no adapter. This describes what came out of an import; who
-# performed it is somebody else's concern, and a type that mentioned Open
-# CASCADE would be a type that could not describe an import from anywhere else.
+# No concrete kernel and no adapter. Definitions carry the geometry contract's
+# backend-neutral, session-bound ShapeHandle so callers can use imported shapes
+# without weakening the ownership checks. Nothing here mentions Open CASCADE,
+# and another adapter can produce the same scene.
 [dependencies]
 ferritecad-kernel.workspace = true
 ferritecad-types.workspace = true
