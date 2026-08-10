@@ -690,6 +690,49 @@ jobs:
             fi
           done
 
+      - name: Measure what the pinned kernel makes of the corpus
+        env:
+          FCAD_OCCT_CONFIG_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          cmake -S tools/step-diagnostic -B diagnostic-build -G Ninja ${{ matrix.cmake_extra }} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOpenCASCADE_DIR="$FCAD_OCCT_CONFIG_DIR" \
+            -DCMAKE_BUILD_RPATH="$FCAD_OCCT_LIB_DIR"
+          cmake --build diagnostic-build --parallel
+
+          case '${{ matrix.name }}' in
+            windows) export PATH="$FCAD_OCCT_LIB_DIR:$PATH" ;;
+            linux) export LD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
+            macos) ;;
+          esac
+
+          binary="$(find diagnostic-build -type f \( -name 'step_diagnostic' -o -name 'step_diagnostic.exe' \) -print -quit)"
+          if [ -z "$binary" ] || [ ! -x "$binary" ]; then
+            echo "the diagnostic tool was not built" >&2
+            exit 1
+          fi
+
+          # Both halves of the corpus, so the sound files are the control for
+          # the damaged ones. This measures; it does not judge. What FerriteCAD
+          # should do about each outcome is a policy decision, and the point of
+          # the matrix is that it will be made on data from the kernel that
+          # ships rather than on the one that happened to be installed.
+          "$binary" fixtures/step/canonical/*.step fixtures/step/damaged/*.step \
+            | tee step-import-matrix.txt
+
+          echo "--- summary ---"
+          grep -E '^[0-9]|read |load fails|transfer ' step-import-matrix.txt | head -80
+
+      - name: Upload the STEP import matrix
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: step-import-matrix-${{ matrix.name }}
+          path: step-import-matrix.txt
+          if-no-files-found: warn
+
       - name: Upload the STEP corpus
         if: always()
         uses: actions/upload-artifact@v4
