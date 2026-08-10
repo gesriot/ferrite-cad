@@ -3,22 +3,16 @@
  * A flat C boundary onto FreeCAD's planegcs, so the bench can ask it the same
  * questions it asks every other candidate.
  *
- * planegcs is LGPL-2.0-or-later and is linked dynamically, exactly as Open
- * CASCADE is: the shared library beside this shim can be replaced by the user
- * with their own build. See THIRD_PARTY_LICENSES.md. This shim is FerriteCAD's
- * own MIT code and holds no planegcs types.
+ * planegcs is LGPL-2.0-or-later and is linked dynamically: the shared library
+ * beside this shim can be replaced by the user with their own build. Its terms
+ * are recorded separately from Open CASCADE in THIRD_PARTY_LICENSES.md. This
+ * shim is FerriteCAD's own MIT code and holds no planegcs types.
  */
 #ifndef FERRITECAD_PLANEGCS_SHIM_H
 #define FERRITECAD_PLANEGCS_SHIM_H
 
 #include <stddef.h>
 #include <stdint.h>
-
-#ifdef __cplusplus
-#define FC_GCS_NOEXCEPT noexcept
-#else
-#define FC_GCS_NOEXCEPT
-#endif
 
 #ifdef __cplusplus
 #define FC_GCS_NOEXCEPT noexcept
@@ -104,11 +98,18 @@ int32_t fc_gcs_session_diagnose(FcGcsSession *session, int32_t *out_dofs,
                                 int32_t *out_blamed, size_t capacity,
                                 size_t *out_blamed_count) FC_GCS_NOEXCEPT;
 
+/* Partitions the already diagnosed system and captures its gesture-start
+ * reference. Kept separate so setup and diagnosis can be measured without
+ * charging the same diagnosis twice. */
+int32_t fc_gcs_session_prepare(FcGcsSession *session) FC_GCS_NOEXCEPT;
+
 /* Moves the target of a Fixed constraint, which is what dragging is. */
 int32_t fc_gcs_session_move(FcGcsSession *session, size_t constraint_index,
                             double x, double y) FC_GCS_NOEXCEPT;
 
-/* Solves from wherever the system currently is. */
+/* Solves with the current targets. planegcs starts each solve from the
+ * gesture-start reference captured by prepare, while reusing the constraint
+ * graph and its partitioning. */
 int32_t fc_gcs_session_solve(FcGcsSession *session) FC_GCS_NOEXCEPT;
 
 /* Copies the current point positions out. */

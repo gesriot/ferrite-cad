@@ -5,6 +5,7 @@
 
 #include "planegcs_shim.h"
 
+#include <cmath>
 #include <cstring>
 #include <exception>
 #include <memory>
@@ -158,11 +159,14 @@ extern "C" int32_t fc_gcs_solve(double *state, size_t point_count,
     }
 
     system.declareUnknowns(sketch.parameters);
-    system.initSolution();
 
     // Asked before solving, which is when a person wants to be told that
-    // their sketch is over-constrained.
-    system.diagnose();
+    // their sketch is over-constrained. Doing this before initSolution() is
+    // significant: initSolution() diagnoses an undiagnosed system itself, so
+    // the reverse order would run the same rank analysis twice.
+    if (system.diagnose() < 0) {
+      return FC_GCS_NOT_CONVERGED;
+    }
     if (out_dofs != nullptr) {
       *out_dofs = static_cast<int32_t>(system.dofsNumber());
     }
@@ -172,6 +176,10 @@ extern "C" int32_t fc_gcs_solve(double *state, size_t point_count,
     if (out_has_redundant != nullptr) {
       *out_has_redundant = system.hasRedundant() ? 1 : 0;
     }
+
+    // Diagnosis is already cached, so this captures the reference and
+    // partitions the system without repeating the rank analysis.
+    system.initSolution();
 
     const int status = system.solve();
     if (out_iterations != nullptr) {
@@ -207,10 +215,12 @@ struct Session {
   // Held by pointer inside planegcs, so this must never reallocate and the
   // slots must stay put for the session's whole life.
   std::vector<double> values;
-  // Where each constraint's first value sits in `values`, or -1.
-  std::vector<long> value_of;
+  // Where each Fixed constraint's x target sits in `values`, or -1. Distance
+  // values also live in the vector but must never be mistaken for drag targets.
+  std::vector<long> fixed_value_of;
   GCS::System system;
   bool diagnosed = false;
+  bool prepared = false;
 };
 
 }  // namespace
@@ -227,7 +237,7 @@ extern "C" FcGcsSession *fc_gcs_session_create(
     session->points.reserve(point_count);
     session->parameters.reserve(point_count * 2);
     session->values.reserve(constraint_count * 2);
-    session->value_of.assign(constraint_count, -1);
+    session->fixed_value_of.assign(constraint_count, -1);
 
     for (size_t i = 0; i < point_count; ++i) {
       GCS::Point point;
@@ -251,24 +261,28 @@ extern "C" FcGcsSession *fc_gcs_session_create(
               session->points[c.points[0]], session->points[c.points[1]], tag);
           break;
         case FC_GCS_FIXED: {
-          session->value_of[i] = static_cast<long>(session->values.size());
+          session->fixed_value_of[i] =
+              static_cast<long>(session->values.size());
           session->values.push_back(c.value);
           session->values.push_back(c.value2);
           session->system.addConstraintCoordinateX(
               session->points[c.points[0]],
-              &session->values[static_cast<size_t>(session->value_of[i])], tag);
+              &session->values[static_cast<size_t>(
+                  session->fixed_value_of[i])], tag);
           session->system.addConstraintCoordinateY(
               session->points[c.points[0]],
-              &session->values[static_cast<size_t>(session->value_of[i]) + 1],
+              &session->values[static_cast<size_t>(
+                                   session->fixed_value_of[i]) +
+                               1],
               tag);
           break;
         }
         case FC_GCS_DISTANCE: {
-          session->value_of[i] = static_cast<long>(session->values.size());
+          const size_t slot = session->values.size();
           session->values.push_back(c.value);
           session->system.addConstraintP2PDistance(
               session->points[c.points[0]], session->points[c.points[1]],
-              &session->values[static_cast<size_t>(session->value_of[i])], tag);
+              &session->values[slot], tag);
           break;
         }
         case FC_GCS_HORIZONTAL:
@@ -302,7 +316,6 @@ extern "C" FcGcsSession *fc_gcs_session_create(
     }
 
     session->system.declareUnknowns(session->parameters);
-    session->system.initSolution();
     return reinterpret_cast<FcGcsSession *>(session.release());
   } catch (...) {
     return nullptr;
@@ -318,12 +331,19 @@ extern "C" int32_t fc_gcs_session_diagnose(
     int32_t *out_redundant_count, int32_t *out_blamed, size_t capacity,
     size_t *out_blamed_count) noexcept {
   if (handle == nullptr) {
-    return -1;
+    return FC_GCS_INVALID_INPUT;
   }
   try {
     Session *session = reinterpret_cast<Session *>(handle);
-    session->system.diagnose();
-    session->diagnosed = true;
+    if (capacity > 0 && out_blamed == nullptr) {
+      return FC_GCS_INVALID_INPUT;
+    }
+    if (!session->diagnosed) {
+      if (session->system.diagnose() < 0) {
+        return FC_GCS_NOT_CONVERGED;
+      }
+      session->diagnosed = true;
+    }
 
     GCS::VEC_I conflicting;
     GCS::VEC_I redundant;
@@ -355,61 +375,90 @@ extern "C" int32_t fc_gcs_session_diagnose(
     if (out_blamed_count != nullptr) {
       *out_blamed_count = total;
     }
-    return 0;
+    return FC_GCS_SUCCESS;
+  } catch (const std::exception &) {
+    return FC_GCS_STD_EXCEPTION;
   } catch (...) {
-    return -3;
+    return FC_GCS_UNKNOWN_EXCEPTION;
+  }
+}
+
+extern "C" int32_t fc_gcs_session_prepare(FcGcsSession *handle) noexcept {
+  if (handle == nullptr) {
+    return FC_GCS_INVALID_INPUT;
+  }
+  try {
+    Session *session = reinterpret_cast<Session *>(handle);
+    if (!session->diagnosed || session->prepared) {
+      return FC_GCS_INVALID_INPUT;
+    }
+    // diagnose() has already populated the rank information, so
+    // initSolution() partitions the system without running it a second time.
+    session->system.initSolution();
+    session->prepared = true;
+    return FC_GCS_SUCCESS;
+  } catch (const std::exception &) {
+    return FC_GCS_STD_EXCEPTION;
+  } catch (...) {
+    return FC_GCS_UNKNOWN_EXCEPTION;
   }
 }
 
 extern "C" int32_t fc_gcs_session_move(FcGcsSession *handle,
                                        size_t constraint_index, double x,
                                        double y) noexcept {
-  if (handle == nullptr) {
-    return -1;
+  if (handle == nullptr || !std::isfinite(x) || !std::isfinite(y)) {
+    return FC_GCS_INVALID_INPUT;
   }
   Session *session = reinterpret_cast<Session *>(handle);
-  if (constraint_index >= session->value_of.size()) {
-    return -1;
+  if (!session->prepared ||
+      constraint_index >= session->fixed_value_of.size()) {
+    return FC_GCS_INVALID_INPUT;
   }
-  const long slot = session->value_of[constraint_index];
+  const long slot = session->fixed_value_of[constraint_index];
   if (slot < 0 || static_cast<size_t>(slot) + 1 >= session->values.size()) {
-    return -1;
+    return FC_GCS_INVALID_INPUT;
   }
   // Written through the pointers planegcs already holds, which is what makes
   // this a nudge rather than a rebuild.
   session->values[static_cast<size_t>(slot)] = x;
   session->values[static_cast<size_t>(slot) + 1] = y;
-  return 0;
+  return FC_GCS_SUCCESS;
 }
 
 extern "C" int32_t fc_gcs_session_solve(FcGcsSession *handle) noexcept {
   if (handle == nullptr) {
-    return -1;
+    return FC_GCS_INVALID_INPUT;
   }
   try {
     Session *session = reinterpret_cast<Session *>(handle);
+    if (!session->prepared) {
+      return FC_GCS_INVALID_INPUT;
+    }
     const int status = session->system.solve();
     if (status == GCS::Failed || status == GCS::SuccessfulSolutionInvalid) {
-      return 1;
+      return FC_GCS_NOT_CONVERGED;
     }
     session->system.applySolution();
-    return status == GCS::Success ? 0 : 2;
+    return status == GCS::Success ? FC_GCS_SUCCESS : FC_GCS_CONVERGED;
+  } catch (const std::exception &) {
+    return FC_GCS_STD_EXCEPTION;
   } catch (...) {
-    return -3;
+    return FC_GCS_UNKNOWN_EXCEPTION;
   }
 }
 
 extern "C" int32_t fc_gcs_session_state(const FcGcsSession *handle, double *out,
                                         size_t count) noexcept {
   if (handle == nullptr || out == nullptr) {
-    return -1;
+    return FC_GCS_INVALID_INPUT;
   }
   const Session *session = reinterpret_cast<const Session *>(handle);
   if (count != session->state.size()) {
-    return -1;
+    return FC_GCS_INVALID_INPUT;
   }
   std::memcpy(out, session->state.data(), count * sizeof(double));
-  return 0;
+  return FC_GCS_SUCCESS;
 }
 
 extern "C" const char *fc_gcs_provenance(void) noexcept {

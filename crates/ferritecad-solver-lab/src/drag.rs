@@ -24,6 +24,8 @@ pub struct DragTimings {
     pub diagnose: Duration,
     /// One entry per step, in order.
     pub steps: Vec<Duration>,
+    /// Every candidate call reported a completed solve.
+    pub all_steps_converged: bool,
     pub worst_residual: f64,
     /// Where the dragged point actually ended up, against where it was put.
     pub worst_follow_error: f64,
@@ -104,13 +106,17 @@ pub fn drag_with_lm(problem: &Problem, drag: &Drag) -> DragTimings {
         y: problem.start[drag.point.y()],
     });
     let pin = dragged.constraints.len() - 1;
-    let setup = began.elapsed();
+    let mut setup = began.elapsed();
 
     let began = Instant::now();
     let _ = dragged.diagnose(1e-9);
     let diagnose = began.elapsed();
 
-    let mut state = solver.solve(&dragged, &dragged.start).solution;
+    let began = Instant::now();
+    let initial = solver.solve(&dragged, &dragged.start);
+    setup += began.elapsed();
+    let mut all_steps_converged = initial.converged;
+    let mut state = initial.solution;
     let mut steps = Vec::with_capacity(drag.targets.len());
     let mut worst_residual: f64 = 0.0;
     let mut worst_follow: f64 = 0.0;
@@ -126,6 +132,7 @@ pub fn drag_with_lm(problem: &Problem, drag: &Drag) -> DragTimings {
         let outcome = solver.solve(&dragged, &state);
         steps.push(began.elapsed());
 
+        all_steps_converged &= outcome.converged;
         state = outcome.solution;
         worst_residual = worst_residual.max(outcome.worst_residual);
         worst_follow = worst_follow
@@ -138,6 +145,7 @@ pub fn drag_with_lm(problem: &Problem, drag: &Drag) -> DragTimings {
         setup,
         diagnose,
         steps,
+        all_steps_converged,
         worst_residual,
         worst_follow_error: worst_follow,
     }

@@ -370,6 +370,7 @@ fn a_drag_is_measured_the_same_way_for_every_candidate() {
 
     let mut lines = Vec::new();
     let mine = drag_with_lm(&sketch, &gesture);
+    assert!(mine.all_steps_converged, "LM reported a failed drag step");
     assert!(
         mine.worst_residual <= COMPARISON_RESIDUAL_LIMIT,
         "the sketch came apart while dragging: {:.3e}",
@@ -383,7 +384,10 @@ fn a_drag_is_measured_the_same_way_for_every_candidate() {
     lines.push(mine.line());
 
     #[cfg(feature = "planegcs")]
-    if let Some(theirs) = ferritecad_solver_lab::drag_with_planegcs(&sketch, &gesture) {
+    if ferritecad_solver_lab::planegcs_available() {
+        let theirs = ferritecad_solver_lab::drag_with_planegcs(&sketch, &gesture)
+            .expect("a linked planegcs drag must not disappear as an unavailable candidate");
+        assert!(theirs.all_steps_converged, "planegcs failed a drag step");
         assert!(
             theirs.worst_residual <= COMPARISON_RESIDUAL_LIMIT,
             "planegcs let the sketch come apart: {:.3e}",
@@ -418,6 +422,11 @@ fn a_sketch_that_cannot_be_satisfied_is_not_reported_as_solved() {
         let sketch = problem(kind, 0);
         let outcome = LevenbergMarquardt::default().solve(&sketch, &sketch.start);
         assert!(
+            !outcome.converged,
+            "{}: LM claimed convergence",
+            sketch.name
+        );
+        assert!(
             outcome.worst_residual > COMPARISON_RESIDUAL_LIMIT,
             "{}: reported as solved with residual {:.3e}, which it cannot be",
             sketch.name,
@@ -427,6 +436,11 @@ fn a_sketch_that_cannot_be_satisfied_is_not_reported_as_solved() {
         #[cfg(feature = "planegcs")]
         if ferritecad_solver_lab::planegcs_available() {
             let theirs = ferritecad_solver_lab::Planegcs.solve(&sketch, &sketch.start);
+            assert!(
+                !theirs.converged,
+                "{}: planegcs claimed convergence",
+                sketch.name
+            );
             assert!(
                 theirs.worst_residual > COMPARISON_RESIDUAL_LIMIT,
                 "{}: planegcs reported it solved with residual {:.3e}",
@@ -466,6 +480,37 @@ fn a_conflict_names_the_constraints_a_person_should_look_at() {
     );
     eprintln!("conflict message: {sentence}");
 
+    #[cfg(feature = "planegcs")]
+    if ferritecad_solver_lab::planegcs_available() {
+        let native = ferritecad_solver_lab::blame_with_planegcs(&repeated)
+            .expect("linked planegcs must return its diagnosed tags");
+        assert!(
+            !native.constraints.is_empty(),
+            "planegcs detected redundancy but named no constraint"
+        );
+        assert!(
+            native
+                .constraints
+                .iter()
+                .all(|index| *index < repeated.constraints.len()),
+            "planegcs returned a tag outside the caller's constraint list: {native:?}"
+        );
+        assert!(
+            native.explain(&repeated).contains("horizontal"),
+            "planegcs did not map the native tag back to a useful constraint: {native:?}"
+        );
+    }
+
     // A sound sketch blames nobody.
     assert!(blame(&problem(Corpus::Rectangle, 0)).constraints.is_empty());
+
+    #[cfg(feature = "planegcs")]
+    if ferritecad_solver_lab::planegcs_available() {
+        assert!(
+            ferritecad_solver_lab::blame_with_planegcs(&problem(Corpus::Rectangle, 0))
+                .expect("linked diagnosis")
+                .constraints
+                .is_empty()
+        );
+    }
 }

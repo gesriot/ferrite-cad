@@ -1,8 +1,8 @@
 # Choosing a sketch solver
 
-The last stage 0 gate. Nothing here is wired into a document or an interface,
-and nothing should be until a candidate is chosen — a solver picked because it
-was already integrated is a solver picked for the wrong reason.
+The experiment that closed the last stage 0 gate. Nothing here is wired into a
+document or an interface: the candidate was chosen before integration so that
+existing coupling could not choose it by default.
 
 ## How the comparison is set up
 
@@ -118,19 +118,24 @@ diagnose the under- and over-constrained cases the same way.
 
 ### Dragging, measured as a drag
 
-A gesture is one system set up and then nudged, not fifty unrelated solves.
-Measuring it the other way charged planegcs for a setup that includes a
-diagnosis it always performs, against a solve that had none. Fifty steps, in
-release:
+A gesture updates one target on a system whose constraint graph survives all
+fifty steps. planegcs receives the target through the value pointers it already
+holds; the LM updates the neutral constraint and starts from its previous
+solution. planegcs instead starts each solve from the gesture-start reference
+captured by `initSolution()`. That difference is stated rather than hidden:
+both are the natural use of the candidate being measured.
 
-| candidate | setup | diagnose | p50 | p95 | max | worst residual |
-|---|--:|--:|--:|--:|--:|--:|
-| Levenberg–Marquardt | ~0 µs | 2 µs | 3 µs | 4 µs | 8 µs | 3.0e-11 |
-| planegcs | 503 µs | 32 µs | 7 µs | 8 µs | 8 µs | 0 |
+The phases are now genuinely separate. Session creation builds and declares
+the system, `diagnose()` runs once, and only then `initSolution()` partitions
+it without repeating diagnosis. Setup includes creation, partitioning and the
+initial solve; each reported step includes the solve and copying its resulting
+state. Linked failures cannot look like an absent optional candidate.
 
-Both are far inside a frame. The distribution matters more than the mean — a
-drag that is usually fast and occasionally not feels broken — and neither has
-a tail worth worrying about at this size.
+Local release runs put both candidates in the single-digit to low-tens of
+microseconds per step on this sketch and both keep the neutral residual below
+the gate. Exact p50/p95/max values are printed by the test, not frozen here:
+without a hardware profile and repeated cold/warm protocol, consecutive
+processes vary enough that one table would imply more stability than exists.
 
 ### Sketches with no answer
 

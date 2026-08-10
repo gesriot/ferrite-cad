@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: MIT
 [package]
 name = "ferritecad-solver-lab"
-description = "A bench for comparing sketch constraint solvers before one is chosen"
+description = "The bench that chose FerriteCAD's sketch solver and keeps it honest"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-# An experiment, not a product. Nothing depends on it and nothing should until
-# a solver has been chosen on the evidence it produces.
+# A decision and regression instrument, not a product crate. Nothing in the
+# document or UI depends on it.
 publish = false
 
 # Deliberately nothing. A comparison of solvers must not be shaped by what a

@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
-//! A bench for comparing sketch constraint solvers, before one is chosen.
+//! The bench that chose planegcs, retained as its regression comparison.
 //!
-//! The last question stage 0 asks: can a sketch solver be relied on, and which
-//! one. Nothing here is wired into a document or an interface, and nothing
-//! should be until the answer is in — a solver chosen because it was already
-//! integrated is a solver chosen for the wrong reason.
+//! It answered the last stage 0 question: can a sketch solver be relied on,
+//! and which one. Nothing here is wired into a document or an interface; the
+//! choice was made before integration so existing coupling could not make it.
 //!
 //! # What is being compared
 //!
@@ -35,7 +34,7 @@ pub use linalg::Matrix;
 pub use lm::{DoesNothing, LevenbergMarquardt};
 #[cfg(feature = "planegcs")]
 pub use planegcs::{
-    Planegcs, drag_with_planegcs, is_available as planegcs_available,
+    Planegcs, blame_with_planegcs, drag_with_planegcs, is_available as planegcs_available,
     provenance as planegcs_provenance,
 };
 
@@ -310,6 +309,7 @@ impl Blame {
             .filter_map(|index| problem.constraints.get(*index).map(describe))
             .collect();
         match named.len() {
+            0 => "no valid constraint could be singled out".to_owned(),
             1 => format!("this constraint says nothing new: {}", named[0]),
             count => format!(
                 "these {count} constraints cannot all hold at once: {}",

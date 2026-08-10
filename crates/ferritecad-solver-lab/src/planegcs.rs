@@ -3,7 +3,7 @@
 //!
 //! Behind a feature and behind a shared library. planegcs is
 //! LGPL-2.0-or-later, so it is linked dynamically and can be replaced by
-//! whoever runs this — the same terms Open CASCADE is on, and recorded in
+//! whoever runs this. Its terms are recorded separately from Open CASCADE in
 //! THIRD_PARTY_LICENSES.md. Nothing of its API appears in Rust: the shim
 //! beside it is FerriteCAD's own MIT code and the boundary is a flat C ABI.
 //!
@@ -230,7 +230,7 @@ mod session {
     use std::ffi::c_void;
     use std::time::Instant;
 
-    use super::{RawConstraint, encode};
+    use super::{RawConstraint, STATUS_SUCCESS, completed, encode};
     use crate::{Blame, Constraint, Drag, DragTimings, Problem};
 
     unsafe extern "C" {
@@ -250,6 +250,7 @@ mod session {
             capacity: usize,
             out_blamed_count: *mut usize,
         ) -> i32;
+        fn fc_gcs_session_prepare(session: *mut c_void) -> i32;
         fn fc_gcs_session_move(session: *mut c_void, constraint: usize, x: f64, y: f64) -> i32;
         fn fc_gcs_session_solve(session: *mut c_void) -> i32;
         fn fc_gcs_session_state(session: *const c_void, out: *mut f64, count: usize) -> i32;
@@ -263,6 +264,7 @@ mod session {
     pub struct Session {
         raw: *mut c_void,
         points: usize,
+        constraints: usize,
     }
 
     impl Drop for Session {
@@ -292,18 +294,35 @@ mod session {
             Some(Self {
                 raw,
                 points: problem.start.len() / 2,
+                constraints: problem.constraints.len(),
             })
         }
 
         /// Degrees of freedom, and which constraints planegcs blames.
-        pub fn diagnose(&mut self) -> (i32, Blame) {
+        pub fn diagnose(&mut self) -> Option<(i32, Blame)> {
             let (mut dofs, mut conflicting, mut redundant) = (-1, 0, 0);
-            let mut blamed = vec![0i32; 64];
             let mut count = 0usize;
 
-            // SAFETY: every out-pointer is valid and the capacity matches the
-            // buffer; the shim writes no more than that and reports the total.
-            unsafe {
+            // First ask how much room is needed. The session caches the native
+            // diagnosis, so the second call retrieves rather than recomputes.
+            let status = unsafe {
+                fc_gcs_session_diagnose(
+                    self.raw,
+                    &mut dofs,
+                    &mut conflicting,
+                    &mut redundant,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut count,
+                )
+            };
+            if status != STATUS_SUCCESS {
+                return None;
+            }
+
+            let mut blamed = vec![0i32; count];
+            let mut returned = 0usize;
+            let status = unsafe {
                 fc_gcs_session_diagnose(
                     self.raw,
                     &mut dofs,
@@ -311,37 +330,53 @@ mod session {
                     &mut redundant,
                     blamed.as_mut_ptr(),
                     blamed.len(),
-                    &mut count,
-                );
+                    &mut returned,
+                )
+            };
+            if status != STATUS_SUCCESS || returned != blamed.len() {
+                return None;
             }
 
-            blamed.truncate(count.min(blamed.len()));
-            let mut constraints: Vec<usize> = blamed
-                .into_iter()
-                .filter(|index| *index >= 0)
-                .map(|index| index as usize)
-                .collect();
+            let mut constraints = Vec::with_capacity(blamed.len());
+            for index in blamed {
+                let index = usize::try_from(index).ok()?;
+                if index >= self.constraints {
+                    return None;
+                }
+                constraints.push(index);
+            }
             constraints.sort_unstable();
             constraints.dedup();
-            (dofs, Blame { constraints })
+            Some((dofs, Blame { constraints }))
         }
 
-        pub fn solve(&mut self) -> i32 {
+        pub fn prepare(&mut self) -> bool {
             // SAFETY: the session is live for the whole call.
-            unsafe { fc_gcs_session_solve(self.raw) }
+            unsafe { fc_gcs_session_prepare(self.raw) == STATUS_SUCCESS }
         }
 
-        pub fn move_to(&mut self, constraint: usize, x: f64, y: f64) -> i32 {
+        pub fn solve(&mut self) -> bool {
+            // SAFETY: the session is live for the whole call.
+            completed(unsafe { fc_gcs_session_solve(self.raw) })
+        }
+
+        pub fn move_to(&mut self, constraint: usize, x: f64, y: f64) -> bool {
             // SAFETY: as above; the shim range-checks the index.
-            unsafe { fc_gcs_session_move(self.raw, constraint, x, y) }
+            unsafe { fc_gcs_session_move(self.raw, constraint, x, y) == STATUS_SUCCESS }
         }
 
-        pub fn state(&self) -> Vec<f64> {
+        pub fn state(&self) -> Option<Vec<f64>> {
             let mut out = vec![0.0; self.points * 2];
             // SAFETY: the buffer is exactly the size the shim is told.
-            unsafe { fc_gcs_session_state(self.raw, out.as_mut_ptr(), out.len()) };
-            out
+            let status = unsafe { fc_gcs_session_state(self.raw, out.as_mut_ptr(), out.len()) };
+            (status == STATUS_SUCCESS).then_some(out)
         }
+    }
+
+    /// Asks planegcs which stored constraints caused the diagnosis.
+    pub fn blame(problem: &Problem) -> Option<Blame> {
+        let mut session = Session::new(problem)?;
+        session.diagnose().map(|(_, blame)| blame)
     }
 
     /// Drags with planegcs, keeping one system for the whole gesture.
@@ -355,19 +390,25 @@ mod session {
         });
         let pin = dragged.constraints.len() - 1;
         let mut session = Session::new(&dragged)?;
-        let setup = began.elapsed();
+        let mut setup = began.elapsed();
 
         let began = Instant::now();
-        let _ = session.diagnose();
+        let _ = session.diagnose()?;
         let diagnose = began.elapsed();
 
-        session.solve();
+        let began = Instant::now();
+        if !session.prepare() || !session.solve() {
+            return None;
+        }
+        setup += began.elapsed();
         let mut steps = Vec::with_capacity(drag.targets.len());
         let mut worst_residual: f64 = 0.0;
         let mut worst_follow: f64 = 0.0;
 
         for (x, y) in &drag.targets {
-            session.move_to(pin, *x, *y);
+            if !session.move_to(pin, *x, *y) {
+                return None;
+            }
             // The same move, in the problem the residuals are judged against.
             // Without this the sketch is measured against where the pointer
             // used to be, and a solve that followed perfectly looks like one
@@ -379,10 +420,12 @@ mod session {
             };
 
             let began = Instant::now();
-            session.solve();
+            if !session.solve() {
+                return None;
+            }
+            let state = session.state()?;
             steps.push(began.elapsed());
 
-            let state = session.state();
             let (residuals, _) = dragged.evaluate(&state);
             worst_residual = worst_residual.max(
                 residuals
@@ -399,6 +442,7 @@ mod session {
             setup,
             diagnose,
             steps,
+            all_steps_converged: true,
             worst_residual,
             worst_follow_error: worst_follow,
         })
@@ -408,12 +452,20 @@ mod session {
 #[cfg(planegcs_linked)]
 pub use session::drag as drag_with_planegcs;
 
+#[cfg(planegcs_linked)]
+pub use session::blame as blame_with_planegcs;
+
 /// Which constraints planegcs blames, or nothing when it is not linked.
 #[cfg(not(planegcs_linked))]
 pub fn drag_with_planegcs(
     _problem: &crate::Problem,
     _drag: &crate::Drag,
 ) -> Option<crate::DragTimings> {
+    None
+}
+
+#[cfg(not(planegcs_linked))]
+pub fn blame_with_planegcs(_problem: &crate::Problem) -> Option<crate::Blame> {
     None
 }
 
@@ -442,5 +494,36 @@ mod tests {
         };
         let (status, ..) = run(&mut state, &[invalid]);
         assert_eq!(status, -1);
+    }
+
+    #[cfg(planegcs_linked)]
+    #[test]
+    fn a_persistent_session_enforces_its_lifecycle_and_moves_only_a_fixed_target() {
+        let problem = crate::problem(crate::Corpus::Rectangle, 0);
+        let distance = problem
+            .constraints
+            .iter()
+            .position(|constraint| matches!(constraint, Constraint::Distance { .. }))
+            .expect("the rectangle has a dimension");
+        let fixed = problem
+            .constraints
+            .iter()
+            .position(|constraint| matches!(constraint, Constraint::Fixed { .. }))
+            .expect("the rectangle has a fixed point");
+
+        let mut session = session::Session::new(&problem).expect("valid session");
+        assert!(!session.solve(), "solve before diagnosis/prepare must fail");
+        assert!(session.diagnose().is_some());
+        assert!(session.prepare());
+        assert!(session.solve());
+        assert!(
+            !session.move_to(distance, 1.0, 2.0),
+            "a distance value is not a two-coordinate drag target"
+        );
+        assert!(
+            !session.move_to(fixed, f64::NAN, 2.0),
+            "non-finite pointer positions must stop at the ABI"
+        );
+        assert!(session.move_to(fixed, 1.0, 2.0));
     }
 }
