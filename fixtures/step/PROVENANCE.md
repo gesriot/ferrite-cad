@@ -73,6 +73,13 @@ definitions and instances, names, colours, units and placements — as well as
 shape validity and geometry. Equal solids and volume alone do not establish an
 equivalent import.
 
+The reproducible observation is made by `tools/step-diagnostic` in the pinned
+OCCT workflow. It records load diagnostics even when `ReadFile` refuses the
+file, records transfer diagnostics separately, and describes definition
+sharing, instance colour overrides and complete local placements. The workflow
+compares the three reports after removing only the CR in CRLF line endings;
+the raw uploaded artefacts are not rewritten.
+
 | File | Bytes | SHA-256 |
 |---|---:|---|
 | `01-truncated.step` | 9375 | `3e0d641594314d63fc66b2bbb6d21feaf177a856c5f25851dbf3465277928820` |

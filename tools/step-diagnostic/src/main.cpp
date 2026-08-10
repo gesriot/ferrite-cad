@@ -11,10 +11,10 @@
 //
 // So a policy cannot be built on the return status, and cannot be built on
 // the check list alone either. What this tool does is collect everything that
-// is available — the read status, the diagnostics from loading, whether the
-// transfer succeeded, the diagnostics from transferring, and the whole XDE
-// meaning of the result — and print it in a form that can be compared between
-// platforms and between Open CASCADE versions.
+// is available for this corpus — the read status, the diagnostics from loading,
+// whether the transfer succeeded, the diagnostics from transferring, and the
+// XDE semantics exercised by the fixtures — and print it in a form that can be
+// compared between platforms and between Open CASCADE versions.
 //
 // It reports. It does not decide: the policy lives in FerriteCAD, and its
 // job is to be built on this rather than on a guess.
@@ -55,12 +55,14 @@
 #include <XCAFDoc_ColorType.hxx>
 #include <XCAFDoc_DocumentTool.hxx>
 #include <XCAFDoc_ShapeTool.hxx>
-#include <gp_XYZ.hxx>
+#include <gp_Trsf.hxx>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -163,9 +165,13 @@ std::string name_of(const TDF_Label &label) {
 struct Node {
   std::string path;
   bool is_assembly = false;
+  bool is_instance = false;
+  TDF_Label definition;
+  int definition_id = 0;
   bool has_colour = false;
+  const char *colour_source = "none";
   double linear[3] = {0.0, 0.0, 0.0};
-  double translation[3] = {0.0, 0.0, 0.0};
+  double placement[12] = {0.0};
   int solids = 0;
   int invalid_solids = 0;
   double volume = 0.0;
@@ -188,8 +194,8 @@ int main(int argc, char **argv) {
   out << "# What Open CASCADE " << OCC_VERSION_COMPLETE
       << " makes of each file\n#\n"
       << "# Read status, the diagnostics from loading, whether the transfer\n"
-      << "# succeeded, the diagnostics from transferring, and the whole XDE\n"
-      << "# meaning of the result. Nothing here is a verdict: a file that\n"
+      << "# succeeded, the diagnostics from transferring, and the XDE\n"
+      << "# semantics exercised by the corpus. Nothing here is a verdict: a file that\n"
       << "# reads without complaint is not thereby known to be sound.\n\n";
 
   for (int i = 1; i < argc; ++i) {
@@ -218,12 +224,11 @@ int main(int argc, char **argv) {
       continue;
     }
     out << "    read " << status_name(status) << "\n";
-    if (status != IFSelect_RetDone) {
-      out << "    nothing was transferred\n\n";
-      continue;
-    }
 
-    // Everything the loader noticed, before anything is built from it.
+    // Everything the loader noticed, before anything is built from it. Ask
+    // even when ReadFile returned RetFail: an unsuccessful read may still
+    // have a useful check list, and a dash here must not mean "we did not
+    // look".
     std::ostringstream load_report;
     reader.Reader().PrintCheckLoad(load_report, Standard_False, IFSelect_CountByItem);
     const Diagnostics load = parse_report(load_report.str());
@@ -231,6 +236,10 @@ int main(int argc, char **argv) {
         << "\n";
     for (const std::string &message : load.messages) {
       out << "        " << message << "\n";
+    }
+    if (status != IFSelect_RetDone) {
+      out << "    nothing was transferred\n\n";
+      continue;
     }
 
     bool transferred = false;
@@ -307,25 +316,45 @@ int main(int argc, char **argv) {
           }
 
           Node node;
+          node.is_instance = shapes->IsReference(label) == Standard_True;
           const std::string own = name_of(definition);
           node.path = prefix.empty() ? own : prefix + "/" + own;
           node.is_assembly = shapes->IsAssembly(definition) == Standard_True;
+          node.definition = definition;
 
           Quantity_Color colour;
           // The instance first: a component may be painted over its
           // definition, and a reader that looks only at definitions loses it.
-          if (colours->GetColor(label, XCAFDoc_ColorSurf, colour) ||
-              colours->GetColor(definition, XCAFDoc_ColorSurf, colour)) {
+          if (node.is_instance &&
+              colours->GetColor(label, XCAFDoc_ColorSurf, colour)) {
             node.has_colour = true;
+            node.colour_source = "instance";
+            node.linear[0] = colour.Red();
+            node.linear[1] = colour.Green();
+            node.linear[2] = colour.Blue();
+          } else if (colours->GetColor(definition, XCAFDoc_ColorSurf, colour)) {
+            node.has_colour = true;
+            node.colour_source = "definition";
             node.linear[0] = colour.Red();
             node.linear[1] = colour.Green();
             node.linear[2] = colour.Blue();
           }
 
-          const gp_XYZ offset = placement.Transformation().TranslationPart();
-          node.translation[0] = offset.X();
-          node.translation[1] = offset.Y();
-          node.translation[2] = offset.Z();
+          // XDE component locations are local to the parent. The tree plus
+          // every local 3x4 affine matrix is the complete placement; keeping
+          // only TranslationPart would silently lose rotations and scale.
+          const gp_Trsf transform = placement.Transformation();
+          for (int row = 1; row <= 3; ++row) {
+            for (int column = 1; column <= 4; ++column) {
+              double value = transform.Value(row, column);
+              // Do not let a platform's choice of signed zero change an
+              // otherwise identical diagnostic artefact.
+              if (std::abs(value) < 0.0000005) {
+                value = 0.0;
+              }
+              node.placement[(row - 1) * 4 + column - 1] = value;
+            }
+          }
 
           const TopoDS_Shape shape = shapes->GetShape(definition);
           if (!shape.IsNull()) {
@@ -366,27 +395,57 @@ int main(int argc, char **argv) {
       if (a.path != b.path) {
         return a.path < b.path;
       }
-      return std::lexicographical_compare(a.translation, a.translation + 3,
-                                          b.translation, b.translation + 3);
+      return std::lexicographical_compare(a.placement, a.placement + 12,
+                                          b.placement, b.placement + 12);
     });
+
+    // Label entries are implementation details, so do not print them. Assign
+    // a deterministic group number after sorting instead: equal numbers mean
+    // that several occurrences refer to one definition, which distinguishes
+    // the corpus' four Bolt instances from four copied solids.
+    std::vector<TDF_Label> definitions;
+    for (Node &node : nodes) {
+      auto same = std::find_if(
+          definitions.begin(), definitions.end(), [&](const TDF_Label &known) {
+            return known.IsEqual(node.definition);
+          });
+      if (same == definitions.end()) {
+        definitions.push_back(node.definition);
+        node.definition_id = static_cast<int>(definitions.size());
+      } else {
+        node.definition_id =
+            static_cast<int>(std::distance(definitions.begin(), same)) + 1;
+      }
+    }
 
     char line[512];
     for (const Node &node : nodes) {
       std::snprintf(line, sizeof(line),
-                    "    %-40s %-9s solids %d invalid %d volume %12.4f",
+                    "    %-40s %-9s definition %d %-10s solids %d invalid %d "
+                    "volume %12.4f",
                     node.path.c_str(), node.is_assembly ? "assembly" : "part",
+                    node.definition_id, node.is_instance ? "instance" : "direct",
                     node.solids, node.invalid_solids, node.volume);
       out << line << "\n";
       std::snprintf(line, sizeof(line),
-                    "        at (%.4f, %.4f, %.4f)  box (%.4f, %.4f, %.4f) to "
-                    "(%.4f, %.4f, %.4f)",
-                    node.translation[0], node.translation[1],
-                    node.translation[2], node.box[0], node.box[1], node.box[2],
+                    "        local placement ((%.6f, %.6f, %.6f, %.6f), "
+                    "(%.6f, %.6f, %.6f, %.6f), "
+                    "(%.6f, %.6f, %.6f, %.6f))",
+                    node.placement[0], node.placement[1], node.placement[2],
+                    node.placement[3], node.placement[4], node.placement[5],
+                    node.placement[6], node.placement[7], node.placement[8],
+                    node.placement[9], node.placement[10], node.placement[11]);
+      out << line << "\n";
+      std::snprintf(line, sizeof(line),
+                    "        box (%.4f, %.4f, %.4f) to (%.4f, %.4f, %.4f)",
+                    node.box[0], node.box[1], node.box[2],
                     node.box[3], node.box[4], node.box[5]);
       out << line << "\n";
       if (node.has_colour) {
-        std::snprintf(line, sizeof(line), "        colour linear(%.6f, %.6f, %.6f)",
-                      node.linear[0], node.linear[1], node.linear[2]);
+        std::snprintf(line, sizeof(line),
+                      "        colour %s linear(%.6f, %.6f, %.6f)",
+                      node.colour_source, node.linear[0], node.linear[1],
+                      node.linear[2]);
         out << line << "\n";
       }
     }

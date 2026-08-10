@@ -799,7 +799,7 @@ jobs:
           if-no-files-found: warn
 
   compare_corpus:
-    name: Compare STEP corpus semantics
+    name: Compare STEP corpus semantics and diagnostics
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -829,6 +829,48 @@ jobs:
             fi
           done
           echo "all three platforms produced one semantic manifest" \
+            >> "$GITHUB_STEP_SUMMARY"
+          sha256sum "$reference" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download all three import matrices
+        uses: actions/download-artifact@v8
+        with:
+          pattern: step-import-matrix-*
+          path: step-matrices
+
+      - name: Require one identical normalized matrix per platform
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          matrices=(step-matrices/step-import-matrix-*/step-import-matrix.txt)
+          if [ "${#matrices[@]}" -ne 3 ]; then
+            echo "::error::expected three platform matrices, found ${#matrices[@]}"
+            printf '  %s\n' "${matrices[@]}"
+            exit 1
+          fi
+
+          # GitHub's Windows shell makes tee write CRLF while the same command
+          # writes LF on Unix. That byte belongs to the shell artefact, not to
+          # Open CASCADE's behaviour, so compare after removing only a trailing
+          # CR from each line. The uploaded raw reports remain untouched.
+          normalized_dir="$(mktemp -d)"
+          normalized=()
+          for matrix in "${matrices[@]}"; do
+            platform="$(basename "$(dirname "$matrix")")"
+            output="$normalized_dir/$platform.txt"
+            sed 's/\r$//' "$matrix" > "$output"
+            normalized+=("$output")
+          done
+
+          reference="${normalized[0]}"
+          for matrix in "${normalized[@]}"; do
+            sha256sum "$matrix"
+            if ! diff -u "$reference" "$matrix"; then
+              echo "::error::$matrix disagrees with $reference after CRLF normalization"
+              exit 1
+            fi
+          done
+          echo "all three platforms produced one normalized STEP import matrix" \
             >> "$GITHUB_STEP_SUMMARY"
           sha256sum "$reference" >> "$GITHUB_STEP_SUMMARY"
 
