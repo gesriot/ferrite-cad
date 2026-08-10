@@ -37,11 +37,15 @@ Toolchain each platform actually used, as recorded by that run:
 | Windows | `win25-vs2026 20260803.193.1` (x64) | 4.4.2 | MSVC 19.51.36252.0, toolset 14.51.36231 |
 | macOS | `macos26 20260728.0273.1` (arm64) | 4.4.0 | AppleClang 21.0.0.21000101 |
 
-All eight smoke-test steps passed on all three. Steps 6 and 7 — the ones that
-matter and the ones that fail quietly — confirmed that a STEP round trip through
-XDE preserves the shape name `AS1_PE_ASM`, the colour `RGB(0,1,0)` and the unit
-declaration `length_unit_mm=1`. Tessellation produced 284 triangles on every
-platform, unchanged from `V8_0_0`. `LICENSE_LGPL_21.txt` and
+All eight smoke-test steps passed on all three. That historical run used the
+since-removed Pro/ENGINEER fixture of unrecorded origin: steps 6 and 7 confirmed
+that its name `AS1_PE_ASM`, colour `RGB(0,1,0)` and unit declaration
+`length_unit_mm=1` survived a STEP round trip through XDE. The current smoke
+input is FerriteCAD's synthetic, provenance-recorded
+`fixtures/step/canonical/02-flat-assembly.step`; it passed the same gates on all
+three platforms in [pin run 31410527797](https://github.com/gesriot/ferrite-cad/actions/runs/31410527797).
+Tessellation produced 284 triangles on every platform, unchanged from
+`V8_0_0`. `LICENSE_LGPL_21.txt` and
 `OCCT_LGPL_EXCEPTION.txt` were present in all three source trees; their absence
 now fails the run rather than warning.
 

@@ -281,11 +281,20 @@ int corrupt(const std::string &from, const std::string &to) {
     std::string damaged;
 
     if (damage.kind == "truncated") {
-      // Cut inside the DATA section, so the file is a plausible prefix rather
-      // than an empty one.
-      damage.offset = original.size() * 3 / 5;
+      // Cut inside one known DATA entity. A fraction of the file happened to
+      // land inside an entity in the first corpus, but did not prove that it
+      // would still do so after regeneration.
+      const std::string needle =
+          "#218 = SURFACE_CURVE('',#219,(#223,#230),.PCURVE_S1.);";
+      std::size_t entity = 0;
+      if (!only_occurrence(original, needle, entity)) {
+        std::fprintf(stderr, "%s: the entity to truncate is not unique\n",
+                     recipe.source);
+        return 1;
+      }
+      damage.offset = entity + std::string("#218 = SURFACE_CURVE('',#219").size();
       damaged = original.substr(0, damage.offset);
-      damage.what = "cut at three fifths of the file, mid-entity";
+      damage.what = "cut inside the uniquely identified entity #218";
     } else if (damage.kind == "broken reference") {
       // The application context is referenced exactly once, which is what
       // makes this a known place rather than a found one.
@@ -317,18 +326,21 @@ int corrupt(const std::string &from, const std::string &to) {
       damaged = original.substr(0, damage.offset);
       damage.what = "END-ISO-10303-21; removed, so the file simply stops";
     } else if (damage.kind == "corrupted number") {
-      // The timestamp is fixed and appears once, so a digit in it is a known
-      // byte. Damaging geometry would be less certain to be unique.
-      const std::string needle = "2020-01-01T00:00:00";
-      if (!only_occurrence(original, needle, damage.offset)) {
-        std::fprintf(stderr, "%s: the timestamp is not unique\n", recipe.source);
+      // Break a real STEP numeric token rather than digits inside a quoted
+      // timestamp. To the STEP grammar a timestamp is only a string, so month
+      // 99 does not exercise malformed-number handling at all.
+      const std::string needle = "#24 = CARTESIAN_POINT('',(30.,0.,0.));";
+      std::size_t entity = 0;
+      if (!only_occurrence(original, needle, entity)) {
+        std::fprintf(stderr, "%s: the coordinate entity is not unique\n",
+                     recipe.source);
         return 1;
       }
-      damaged = original;
-      // A month that does not exist, in a field a reader is expected to parse.
-      damaged[damage.offset + 5] = '9';
-      damaged[damage.offset + 6] = '9';
-      damage.what = "the header timestamp reads month 99";
+      const std::size_t number = needle.find("30.");
+      damage.offset = entity + number;
+      damaged = original.substr(0, damage.offset) + "30.." +
+                original.substr(damage.offset + 3);
+      damage.what = "the coordinate token 30. is malformed as 30..";
     } else {
       // A second definition of an entity that already exists.
       const std::string needle = "\n#10 = ";

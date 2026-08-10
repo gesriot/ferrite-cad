@@ -8,8 +8,8 @@
 
 01-truncated.step
     from truncated
-    cut at three fifths of the file, mid-entity
-    at byte 9244, 15408 bytes before and 9244 after
+    cut inside the uniquely identified entity #218
+    at byte 9375, 15408 bytes before and 9375 after
 
 02-broken-reference.step
     from broken reference
@@ -23,8 +23,8 @@
 
 04-corrupted-number.step
     from corrupted number
-    the header timestamp reads month 99
-    at byte 108, 10282 bytes before and 10282 after
+    the coordinate token 30. is malformed as 30..
+    at byte 1440, 10282 bytes before and 10283 after
 
 05-duplicate-entity-id.step
     from duplicate entity id

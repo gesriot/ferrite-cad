@@ -43,6 +43,8 @@ would fail for a reason that has nothing to do with the geometry; see
 
 ## The corpus
 
+| File | Bytes | SHA-256 |
+|---|---:|---|
 | `01-single-part.step` | 15408 | `fcbc47a2f551f9cec99340e8bcc8f0fdf980dcbd55e7b6a82c680e9ab2dea22a` |
 | `02-flat-assembly.step` | 23528 | `aed0cc6f222b882d7d1e95e9edebb326e2f50d52525fc8002a4192d9686f1b39` |
 | `03-nested-assembly.step` | 20081 | `e396a9f7527928fa352471415a19fd0c550c8f86299717ce6e6804c22738ee63` |
@@ -61,12 +63,20 @@ exactly once in its source file before it is touched; the tool fails rather
 than damaging whichever occurrence it found first. `DAMAGE-REPORT.txt` records
 what was done to each file and at which byte.
 
-| `01-truncated.step` | 9244 | `57cf840e7bc61a2447b124606be9fab45c6d5f8e198fc65e452ee042a0d6c252` |
+Here "damaged" means a controlled violation of the file's syntax or references,
+not a promise that every tolerant STEP reader returns an error. A reader may
+recover, ignore the affected metadata or produce a partial model. Section 18
+must specify and test FerriteCAD's policy for each outcome; parse success alone
+must not be mistaken for a sound import.
+
+| File | Bytes | SHA-256 |
+|---|---:|---|
+| `01-truncated.step` | 9375 | `3e0d641594314d63fc66b2bbb6d21feaf177a856c5f25851dbf3465277928820` |
 | `02-broken-reference.step` | 23534 | `1ff03d8dbb9abff3cf1ac5f545d02a3b394fd8ebafa47cb31d35956a5484941e` |
 | `03-missing-terminator.step` | 20063 | `231bfbc2a09d925738a208954b6beb87e3f45245a68a0a1375bb2ce3c1d7d1a5` |
-| `04-corrupted-number.step` | 10282 | `2d8e6840f8448c0cc7c0f675a53a8a0ce234cea110fbb4686897ab948c84f31b` |
+| `04-corrupted-number.step` | 10283 | `3bd6eb2919480afb41041d6f76cc7da78661f50f870f242959b67ad678ed4b68` |
 | `05-duplicate-entity-id.step` | 15831 | `e787d181af1d706aab71180ff12baeb59168a7902fbabd442798ba53df43a6bb` |
-| `DAMAGE-REPORT.txt` | 1163 | `ac0c7f5799f7b44548ad1662f40286b1aaf2d470a0f08e137a6ac02cec01fbc5` |
+| `DAMAGE-REPORT.txt` | 1177 | `c26c91e0aad69de7a2339abdd5ce404176df8cbd3199d619d07393e08f8730e1` |
 
 ## Regenerating
 
