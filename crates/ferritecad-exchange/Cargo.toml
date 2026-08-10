@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "ferritecad-exchange"
+description = "What an imported CAD file means, in terms this project owns"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# No kernel and no adapter. This describes what came out of an import; who
+# performed it is somebody else's concern, and a type that mentioned Open
+# CASCADE would be a type that could not describe an import from anywhere else.
+[dependencies]
+ferritecad-kernel.workspace = true
+ferritecad-types.workspace = true
+
+[lints]
+workspace = true

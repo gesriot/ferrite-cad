@@ -212,6 +212,55 @@ FcOcctStatus fc_occt_decode_shape(FcOcctSession *session,
  * capacity to learn the length.
  */
 /*
+ * Reads a STEP file that is already in memory.
+ *
+ * Bytes rather than a path: the bridge opens nothing. Where the data came
+ * from — a file, a network, a test — is the caller's business, and a bridge
+ * that took a path would have to grow its own opinions about encodings,
+ * permissions and what happens when the file changes underneath it.
+ *
+ * The result is one buffer in FerriteCAD's own encoding, read back with the
+ * usual two-call protocol: pass a zero capacity to learn the length, then
+ * call again. A tree with names in it does not fit a handful of parallel
+ * arrays without inventing a second protocol, so it is written down once and
+ * parsed on the other side.
+ *
+ * The encoding, all little-endian, is:
+ *
+ *   magic "FCSI", format version u16
+ *   status u8            0 = imported, 1 = rejected before anything was built
+ *   source unit          length-prefixed UTF-8
+ *   schema               length-prefixed UTF-8
+ *   definition count u32, then per definition:
+ *       shape            u64, a handle into this session
+ *       name             length-prefixed UTF-8
+ *       solids           u32
+ *   instance count u32, then per instance:
+ *       definition       u32
+ *       parent           u32, or 0xFFFFFFFF for a root
+ *       name             length-prefixed UTF-8
+ *       placement        12 f64, a row-major 3x4 matrix
+ *       colour source    u8   0 = none, 1 = from the instance, 2 = inherited
+ *       colour           3 f64, linear RGB, meaningless when the source is 0
+ *   diagnostic count u32, then per diagnostic:
+ *       stage            u8   0 = load, 1 = transfer
+ *       severity         u8   0 = warning, 1 = fail
+ *       entity           length-prefixed UTF-8, empty when not attributed
+ *       message          length-prefixed UTF-8
+ *
+ * There is no "valid" flag and there will not be one. Measured on 8.0.1: of
+ * five deliberately damaged files, two are refused outright, two are read and
+ * reported precisely, and one is read, transferred and reported clean while
+ * carrying a malformed coordinate. A file that produced no diagnostics is a
+ * file nothing was noticed about, which is not the same as a sound one, and a
+ * flag would collapse that distinction exactly where it matters.
+ */
+FcOcctStatus fc_occt_import_step(
+    FcOcctSession *session, const uint8_t *bytes, size_t length,
+    uint8_t *out_buffer, size_t capacity, size_t *out_length,
+    FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/*
  * Rounds every edge of a shape to one radius.
  *
  * Evaluation surface, not yet part of any feature. It exists to find out where

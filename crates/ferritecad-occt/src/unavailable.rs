@@ -38,6 +38,10 @@ impl OcctKernel {
         match self.0 {}
     }
 
+    pub fn import_step(&mut self, _step: &[u8]) -> Result<ferritecad_exchange::Import> {
+        match self.0 {}
+    }
+
     pub fn fillet_all(
         &mut self,
         _shape: ShapeHandle,

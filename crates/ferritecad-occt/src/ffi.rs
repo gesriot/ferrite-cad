@@ -158,6 +158,16 @@ unsafe extern "C" {
         out_shape: *mut u64,
         out_error: *mut RawError,
     ) -> i32;
+    fn fc_occt_import_step(
+        session: *mut RawSession,
+        bytes: *const u8,
+        length: usize,
+        out_buffer: *mut u8,
+        capacity: usize,
+        out_length: *mut usize,
+        out_error: *mut RawError,
+    ) -> i32;
+
     fn fc_occt_fillet_all(
         session: *mut RawSession,
         shape: u64,
@@ -446,6 +456,60 @@ impl Session {
         };
         interpret(status, &error, "decoding a cached shape")?;
         Ok(shape)
+    }
+
+    /// Reads a STEP file that is already in memory.
+    ///
+    /// Two calls, as the bridge documents: the first learns the length, the
+    /// second fills the buffer. The import runs twice, which is the price of
+    /// not inventing a second protocol for a tree with names in it.
+    pub(crate) fn import_step(&mut self, step: &[u8]) -> Result<Vec<u8>> {
+        let mut error = RawError::empty();
+        let mut length = 0usize;
+
+        // SAFETY: the input slice lives across the call with its length; the
+        // out-parameters are valid; passing no buffer with zero capacity is
+        // the size query the bridge documents.
+        let status = unsafe {
+            fc_occt_import_step(
+                self.raw,
+                step.as_ptr(),
+                step.len(),
+                std::ptr::null_mut(),
+                0,
+                &mut length,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "measuring a STEP import")?;
+
+        let mut buffer = vec![0u8; length];
+        if length == 0 {
+            return Ok(buffer);
+        }
+        let mut written = 0usize;
+        // SAFETY: the buffer was allocated at the length just reported and
+        // the capacity passed matches it.
+        let status = unsafe {
+            fc_occt_import_step(
+                self.raw,
+                step.as_ptr(),
+                step.len(),
+                buffer.as_mut_ptr(),
+                length,
+                &mut written,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "reading a STEP file")?;
+
+        if written != length {
+            return Err(CadError::kernel(format!(
+                "importing the same STEP twice gave {length} bytes then \
+                 {written}; the result is not reproducible"
+            )));
+        }
+        Ok(buffer)
     }
 
     /// Rounds every edge of a shape to one radius.

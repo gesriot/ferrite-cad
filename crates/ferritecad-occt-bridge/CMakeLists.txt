@@ -24,17 +24,26 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # Only what the adapter calls. Visualization, DataExchange and the OCAF
 # document toolkits are not needed here: this slice builds solids, it does not
 # read STEP or open a viewer.
+# DataExchange and ApplicationFramework arrive with STEP import: XDE keeps a
+# document, and the STEP reader lives in DataExchange. Visualization is here
+# for the same reason the other tools list it — Open CASCADE's imported
+# targets pull it in transitively and omitting it breaks the link on some
+# installs — and not because anything draws.
 find_package(OpenCASCADE REQUIRED COMPONENTS
   FoundationClasses
   ModelingData
   ModelingAlgorithms
+  Visualization
+  ApplicationFramework
+  DataExchange
 )
 
 # Stock OpenCASCADEConfig.cmake sets OpenCASCADE_LIBRARIES to every toolkit in
 # the install. Rebuild the link set from the modules actually requested, the
 # same way tools/occt-smoke does.
 set(_occt_link_libs "")
-foreach(_comp IN ITEMS FoundationClasses ModelingData ModelingAlgorithms)
+foreach(_comp IN ITEMS FoundationClasses ModelingData ModelingAlgorithms
+                       Visualization ApplicationFramework DataExchange)
   if(DEFINED OpenCASCADE_${_comp}_LIBRARIES)
     list(APPEND _occt_link_libs ${OpenCASCADE_${_comp}_LIBRARIES})
   endif()

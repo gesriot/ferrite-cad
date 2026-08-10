@@ -27,6 +27,34 @@
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <IFSelect_PrintCount.hxx>
+#include <IFSelect_ReturnStatus.hxx>
+#include <Interface_HArray1OfHAsciiString.hxx>
+#include <HeaderSection_FileSchema.hxx>
+#include <Interface_EntityIterator.hxx>
+#include <Interface_InterfaceModel.hxx>
+#include <Message.hxx>
+#include <Message_Messenger.hxx>
+#include <Quantity_Color.hxx>
+#include <Quantity_TypeOfColor.hxx>
+#include <STEPCAFControl_Reader.hxx>
+#include <STEPControl_Reader.hxx>
+#include <StepData_StepModel.hxx>
+#include <TColStd_SequenceOfAsciiString.hxx>
+#include <TDF_Label.hxx>
+#include <TDF_LabelSequence.hxx>
+#include <TDataStd_Name.hxx>
+#include <TDocStd_Application.hxx>
+#include <TDocStd_Document.hxx>
+#include <TopLoc_Location.hxx>
+#include <XCAFDoc_ColorTool.hxx>
+#include <XCAFDoc_ColorType.hxx>
+#include <XCAFDoc_DocumentTool.hxx>
+#include <XCAFDoc_ShapeTool.hxx>
+#include <algorithm>
+#include <cstdio>
+#include <functional>
+#include <fstream>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
@@ -192,6 +220,95 @@ struct FcOcctSession {
   std::unordered_map<uint64_t, ShapeRecord> shapes;
   uint64_t next_shape = 1;
 };
+
+namespace {
+
+/// Appends a little-endian value to a byte buffer.
+template <typename T>
+void put(std::vector<uint8_t> &out, T value) {
+  static_assert(std::is_trivially_copyable<T>::value, "raw bytes only");
+  const uint8_t *raw = reinterpret_cast<const uint8_t *>(&value);
+  out.insert(out.end(), raw, raw + sizeof(T));
+}
+
+/// Appends a UTF-8 string with a 32-bit length in front of it.
+void put_text(std::vector<uint8_t> &out, const std::string &text) {
+  put<uint32_t>(out, static_cast<uint32_t>(text.size()));
+  out.insert(out.end(), text.begin(), text.end());
+}
+
+/// A label's name as UTF-8, or empty.
+std::string label_name(const TDF_Label &label) {
+  Handle(TDataStd_Name) attribute;
+  if (!label.FindAttribute(TDataStd_Name::GetID(), attribute)) {
+    return std::string();
+  }
+  // Standard_False keeps this UTF-8 rather than collapsing to ASCII, which
+  // the corpus's Cyrillic and Japanese names would not survive.
+  return TCollection_AsciiString(attribute->Get(), Standard_False).ToCString();
+}
+
+/// Splits Open CASCADE's own check report into stage-tagged diagnostics.
+///
+/// `IFSelect_CountByItem` groups by message and marks each line `F:` or `W:`.
+/// The words "fail" and "warning" never appear, which is a trap worth naming
+/// because a parser looking for them reports nothing wrong with a file that
+/// carries three unresolved references.
+void collect_diagnostics(const std::string &report, uint8_t stage,
+                         std::vector<uint8_t> &out, uint32_t &count) {
+  std::istringstream lines(report);
+  std::string line;
+  while (std::getline(lines, line)) {
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) {
+      line.pop_back();
+    }
+    const std::size_t tab = line.find('\t');
+    if (tab == std::string::npos) {
+      continue;
+    }
+    long repeats = 0;
+    try {
+      repeats = std::stol(line.substr(0, tab));
+    } catch (const std::exception &) {
+      continue;
+    }
+    if (repeats <= 0) {
+      continue;
+    }
+
+    std::string message = line.substr(tab + 1);
+    uint8_t severity;
+    if (message.rfind("F:", 0) == 0) {
+      severity = 1;
+    } else if (message.rfind("W:", 0) == 0) {
+      severity = 0;
+    } else {
+      continue;
+    }
+    message.erase(0, 2);
+
+    // Open CASCADE writes either "TYPE: text" or bare text; the part before
+    // the first colon names the entity when there is one.
+    std::string entity;
+    const std::size_t colon = message.find(':');
+    if (colon != std::string::npos && colon > 0 &&
+        message.find(' ') > colon) {
+      entity = message.substr(0, colon);
+      message.erase(0, colon + 1);
+    }
+    while (!message.empty() && message.front() == ' ') {
+      message.erase(0, 1);
+    }
+
+    put<uint8_t>(out, stage);
+    put<uint8_t>(out, severity);
+    put_text(out, entity);
+    put_text(out, message);
+    ++count;
+  }
+}
+
+}  // namespace
 
 extern "C" {
 
@@ -616,6 +733,252 @@ bool well_formed(const TopoDS_Shape &shape) {
   }
   BRepCheck_Analyzer analyzer(shape);
   return analyzer.IsValid() == Standard_True;
+}
+
+
+FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
+                                 size_t length, uint8_t *out_buffer,
+                                 size_t capacity, size_t *out_length,
+                                 FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr || bytes == nullptr || out_length == nullptr) {
+      write_error(out_error, "fc_occt_import_step was given a null argument");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    if (length == 0) {
+      write_error(out_error, "an empty buffer is not a STEP file");
+      return FC_OCCT_INVALID_INPUT;
+    }
+
+    // The first call of the two-call protocol only measures, and measuring
+    // must not change anything. Registering a shape per definition on the
+    // sizing pass would leak one whole scene per import — which is exactly
+    // what the tests found. Identifiers are fixed width, so the length is the
+    // same either way and the caller's second call still fits.
+    const bool measuring = capacity == 0;
+
+    // Open CASCADE prints to stdout by default, which would end up in
+    // whatever the host application does with its own output.
+    Message::DefaultMessenger()->ChangePrinters().Clear();
+
+    std::vector<uint8_t> encoded;
+    encoded.reserve(4096);
+    encoded.push_back('F');
+    encoded.push_back('C');
+    encoded.push_back('S');
+    encoded.push_back('I');
+    put<uint16_t>(encoded, 1);
+
+    // The reader wants a stream, and this is where the caller's bytes become
+    // one. Nothing here touches the filesystem.
+    std::istringstream source(std::string(reinterpret_cast<const char *>(bytes), length),
+                              std::ios::in | std::ios::binary);
+
+    Handle(TDocStd_Application) app = new TDocStd_Application();
+    Handle(TDocStd_Document) doc;
+    app->NewDocument("BinXCAF", doc);
+
+    STEPCAFControl_Reader reader;
+    reader.SetNameMode(Standard_True);
+    reader.SetColorMode(Standard_True);
+
+    const IFSelect_ReturnStatus status = reader.ReadStream("memory", source);
+
+    std::vector<uint8_t> diagnostics;
+    uint32_t diagnostic_count = 0;
+    {
+      std::ostringstream report;
+      reader.Reader().PrintCheckLoad(report, Standard_False, IFSelect_CountByItem);
+      collect_diagnostics(report.str(), 0, diagnostics, diagnostic_count);
+    }
+
+    const auto finish = [&](bool rejected) -> FcOcctStatus {
+      // Everything else is already in `encoded`; the diagnostics go last so a
+      // rejected import still carries what was noticed before it stopped.
+      put<uint32_t>(encoded, diagnostic_count);
+      encoded.insert(encoded.end(), diagnostics.begin(), diagnostics.end());
+      (void)rejected;
+
+      *out_length = encoded.size();
+      if (capacity == 0) {
+        return FC_OCCT_OK;
+      }
+      if (out_buffer == nullptr || capacity < encoded.size()) {
+        write_error(out_error, "the buffer holds " + std::to_string(capacity) +
+                                   " bytes but the import needs " +
+                                   std::to_string(encoded.size()));
+        return FC_OCCT_INVALID_INPUT;
+      }
+      std::memcpy(out_buffer, encoded.data(), encoded.size());
+      return FC_OCCT_OK;
+    };
+
+    if (status != IFSelect_RetDone) {
+      encoded.push_back(1);  // rejected
+      put_text(encoded, std::string());
+      put_text(encoded, std::string());
+      put<uint32_t>(encoded, 0);
+      put<uint32_t>(encoded, 0);
+      return finish(true);
+    }
+
+    const bool transferred = reader.Transfer(doc) == Standard_True;
+    {
+      std::ostringstream report;
+      reader.Reader().PrintCheckTransfer(report, Standard_False, IFSelect_CountByItem);
+      collect_diagnostics(report.str(), 1, diagnostics, diagnostic_count);
+    }
+    if (!transferred) {
+      encoded.push_back(1);
+      put_text(encoded, std::string());
+      put_text(encoded, std::string());
+      put<uint32_t>(encoded, 0);
+      put<uint32_t>(encoded, 0);
+      return finish(true);
+    }
+
+    encoded.push_back(0);  // imported
+
+    TColStd_SequenceOfAsciiString lengths;
+    TColStd_SequenceOfAsciiString angles;
+    TColStd_SequenceOfAsciiString solid_angles;
+    reader.ChangeReader().FileUnits(lengths, angles, solid_angles);
+    put_text(encoded, lengths.IsEmpty() ? std::string()
+                                        : std::string(lengths.First().ToCString()));
+
+    std::string schema;
+    Handle(StepData_StepModel) model =
+        Handle(StepData_StepModel)::DownCast(reader.Reader().Model());
+    if (!model.IsNull()) {
+      Interface_EntityIterator header = model->Header();
+      for (header.Start(); header.More(); header.Next()) {
+        Handle(HeaderSection_FileSchema) entity =
+            Handle(HeaderSection_FileSchema)::DownCast(header.Value());
+        if (entity.IsNull() || entity->SchemaIdentifiers().IsNull()) {
+          continue;
+        }
+        Handle(Interface_HArray1OfHAsciiString) names = entity->SchemaIdentifiers();
+        for (int i = names->Lower(); i <= names->Upper(); ++i) {
+          if (names->Value(i).IsNull()) {
+            continue;
+          }
+          if (!schema.empty()) {
+            schema += " + ";
+          }
+          schema += names->Value(i)->ToCString();
+        }
+      }
+    }
+    put_text(encoded, schema);
+
+    Handle(XCAFDoc_ShapeTool) shapes = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+    Handle(XCAFDoc_ColorTool) colours = XCAFDoc_DocumentTool::ColorTool(doc->Main());
+
+    // Definitions are collected first and instanced afterwards, so a part
+    // used four times is one definition and four placements rather than four
+    // copies of the same solid.
+    std::vector<TDF_Label> definitions;
+    std::vector<uint8_t> definition_bytes;
+    const auto definition_index = [&](const TDF_Label &label) -> uint32_t {
+      for (std::size_t i = 0; i < definitions.size(); ++i) {
+        if (definitions[i].IsEqual(label)) {
+          return static_cast<uint32_t>(i);
+        }
+      }
+      definitions.push_back(label);
+
+      ShapeRecord record;
+      record.shape = shapes->GetShape(label);
+      // Imported geometry carries no history: nothing that named a feature's
+      // output names anything here.
+      record.decoded = true;
+
+      uint32_t solids = 0;
+      if (!record.shape.IsNull()) {
+        for (TopExp_Explorer it(record.shape, TopAbs_SOLID); it.More(); it.Next()) {
+          ++solids;
+        }
+      }
+
+      uint64_t id = 0;
+      if (measuring) {
+        // A number of the right width and no session entry behind it. The
+        // caller never sees this buffer.
+        id = static_cast<uint64_t>(definitions.size());
+      } else {
+        id = session->next_shape++;
+        session->shapes.emplace(id, std::move(record));
+      }
+
+      put<uint64_t>(definition_bytes, id);
+      put_text(definition_bytes, label_name(label));
+      put<uint32_t>(definition_bytes, solids);
+      return static_cast<uint32_t>(definitions.size() - 1);
+    };
+
+    std::vector<uint8_t> instance_bytes;
+    uint32_t instance_count = 0;
+
+    std::function<void(const TDF_Label &, uint32_t, const TopLoc_Location &)> walk =
+        [&](const TDF_Label &label, uint32_t parent, const TopLoc_Location &placement) {
+          TDF_Label definition = label;
+          if (shapes->IsReference(label)) {
+            shapes->GetReferredShape(label, definition);
+          }
+
+          const uint32_t index = definition_index(definition);
+          const uint32_t self = instance_count++;
+
+          put<uint32_t>(instance_bytes, index);
+          put<uint32_t>(instance_bytes, parent);
+          // The instance's own name when it has one, otherwise the
+          // definition's: a component may be named where its definition is
+          // not, and losing that would lose the assembly's own vocabulary.
+          std::string name = label_name(label);
+          if (name.empty()) {
+            name = label_name(definition);
+          }
+          put_text(instance_bytes, name);
+
+          const gp_Trsf transform = placement.Transformation();
+          for (int row = 1; row <= 3; ++row) {
+            for (int column = 1; column <= 4; ++column) {
+              put<double>(instance_bytes, transform.Value(row, column));
+            }
+          }
+
+          Quantity_Color colour;
+          uint8_t source = 0;
+          if (colours->GetColor(label, XCAFDoc_ColorSurf, colour)) {
+            source = 1;
+          } else if (colours->GetColor(definition, XCAFDoc_ColorSurf, colour)) {
+            source = 2;
+          }
+          put<uint8_t>(instance_bytes, source);
+          put<double>(instance_bytes, source == 0 ? 0.0 : colour.Red());
+          put<double>(instance_bytes, source == 0 ? 0.0 : colour.Green());
+          put<double>(instance_bytes, source == 0 ? 0.0 : colour.Blue());
+
+          TDF_LabelSequence children;
+          shapes->GetComponents(definition, children);
+          for (int i = 1; i <= children.Length(); ++i) {
+            walk(children.Value(i), self,
+                 shapes->GetShape(children.Value(i)).Location());
+          }
+        };
+
+    TDF_LabelSequence roots;
+    shapes->GetFreeShapes(roots);
+    for (int i = 1; i <= roots.Length(); ++i) {
+      walk(roots.Value(i), 0xFFFFFFFFu, TopLoc_Location());
+    }
+
+    put<uint32_t>(encoded, static_cast<uint32_t>(definitions.size()));
+    encoded.insert(encoded.end(), definition_bytes.begin(), definition_bytes.end());
+    put<uint32_t>(encoded, instance_count);
+    encoded.insert(encoded.end(), instance_bytes.begin(), instance_bytes.end());
+    return finish(false);
+  });
 }
 
 FcOcctStatus fc_occt_fillet_all(FcOcctSession *session, uint64_t shape,

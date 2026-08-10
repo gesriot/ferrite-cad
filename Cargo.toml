@@ -4,6 +4,7 @@ members = [
     "crates/ferritecad-types",
     "crates/ferritecad-document",
     "crates/ferritecad-eval",
+    "crates/ferritecad-exchange",
     "crates/ferritecad-export",
     "crates/ferritecad-fixtures",
     "crates/ferritecad-kernel",
@@ -25,6 +26,7 @@ authors = ["FerriteCAD contributors"]
 ferritecad-types = { path = "crates/ferritecad-types", version = "0.0.1" }
 ferritecad-document = { path = "crates/ferritecad-document", version = "0.0.1" }
 ferritecad-eval = { path = "crates/ferritecad-eval", version = "0.0.1" }
+ferritecad-exchange = { path = "crates/ferritecad-exchange", version = "0.0.1" }
 ferritecad-export = { path = "crates/ferritecad-export", version = "0.0.1" }
 ferritecad-fixtures = { path = "crates/ferritecad-fixtures", version = "0.0.1" }
 ferritecad-kernel = { path = "crates/ferritecad-kernel", version = "0.0.1" }

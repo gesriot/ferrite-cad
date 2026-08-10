@@ -19,6 +19,7 @@ authors.workspace = true
 blake3 = "1"
 
 [dependencies]
+ferritecad-exchange.workspace = true
 ferritecad-kernel.workspace = true
 ferritecad-types.workspace = true
 

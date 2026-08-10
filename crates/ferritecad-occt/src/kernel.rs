@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+use ferritecad_exchange::Import;
 use ferritecad_kernel::{
     ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, ExtrudeResult, GeometryKernel, History,
     HistoryInput, KernelIdentity, Mesh, MeshFaceRange, OperationContext, SegmentGeometry,
@@ -79,6 +80,20 @@ impl OcctKernel {
     /// from outside without asking the session.
     pub fn live_shape_count(&self) -> usize {
         self.session.live_shape_count()
+    }
+
+    /// Reads a STEP file that is already in memory.
+    ///
+    /// Bytes rather than a path: this adapter opens nothing, and where the
+    /// data came from is the caller's business.
+    ///
+    /// Every shape in the returned scene belongs to this session and must be
+    /// released like any other. Nothing about the result says the file was
+    /// sound — see [`ferritecad_exchange::Import`] for why there is no flag
+    /// that would.
+    pub fn import_step(&mut self, step: &[u8]) -> Result<Import> {
+        let encoded = self.session.import_step(step)?;
+        ferritecad_exchange::decode(&encoded, self.session_id)
     }
 
     /// Rounds every edge of a shape to one radius.
