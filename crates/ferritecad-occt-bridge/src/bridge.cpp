@@ -55,6 +55,7 @@
 #include <cstdio>
 #include <functional>
 #include <fstream>
+#include <mutex>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
@@ -750,6 +751,15 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
       return FC_OCCT_INVALID_INPUT;
     }
 
+    // Open CASCADE's document and application layer is not thread safe, and
+    // neither is its global messenger. Two imports at once abort the process
+    // — on macOS in the pin run, while Linux and Windows got away with it,
+    // which is the usual shape of a race. Serialised here rather than in the
+    // caller, because a library that is unsafe to call twice must say so or
+    // stop being unsafe, and stopping is cheaper than a documented landmine.
+    static std::mutex import_lock;
+    const std::lock_guard<std::mutex> serialise(import_lock);
+
     // The first call of the two-call protocol only measures, and measuring
     // must not change anything. Registering a shape per definition on the
     // sizing pass would leak one whole scene per import — which is exactly
@@ -758,8 +768,13 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
     const bool measuring = capacity == 0;
 
     // Open CASCADE prints to stdout by default, which would end up in
-    // whatever the host application does with its own output.
-    Message::DefaultMessenger()->ChangePrinters().Clear();
+    // whatever the host application does with its own output. Done once for
+    // the process: this is global state, and rewriting it on every call was
+    // half of what made concurrent imports unsafe.
+    static std::once_flag quieten;
+    std::call_once(quieten, []() {
+      Message::DefaultMessenger()->ChangePrinters().Clear();
+    });
 
     std::vector<uint8_t> encoded;
     encoded.reserve(4096);
