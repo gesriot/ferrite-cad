@@ -5,7 +5,7 @@ Technology install works the way FerriteCAD expects, **before** any Rust code
 depends on it.
 
 It exercises: box volume, extrude, boolean cut, fillet, B-Rep string
-round-trip, **STEP via XDE** (name + colour + units — the step that most often
+round-trip, **STEP via XDE** (name + colour + units – the step that most often
 fails quietly), STEP write/read round-trip, and tessellation with explicit
 deflections.
 
@@ -35,7 +35,7 @@ Point CMake at the install with `OpenCASCADE_DIR` (directory that contains
 ## Sample STEP
 
 `fixtures/step/canonical/02-flat-assembly.step` is an assembly of two named,
-coloured parts in millimetres — enough to exercise XDE and small enough to
+coloured parts in millimetres – enough to exercise XDE and small enough to
 keep in-tree. Any other STEP that carries **at least one shape name and one
 colour** also works as the first argument.
 
@@ -88,7 +88,7 @@ From an “x64 Native Tools” or VS 2022 developer prompt:
 
 ```powershell
 $env:OpenCASCADE_DIR = "C:\path\to\occt\install\cmake"
-# Some installs use lib\cmake\opencascade — use the folder with OpenCASCADEConfig.cmake
+# Some installs use lib\cmake\opencascade – use the folder with OpenCASCADEConfig.cmake
 
 cmake -S tools/occt-smoke -B build/occt-smoke `
   -G "Visual Studio 17 2022" -A x64 `

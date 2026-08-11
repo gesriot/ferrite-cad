@@ -57,7 +57,7 @@ would fail for a reason that has nothing to do with the geometry; see
 ## The damaged variants
 
 Derived by `step_corpus corrupt fixtures/step/canonical fixtures/step/damaged`
-from the files above, not from a fresh generation — so they are reproducible
+from the files above, not from a fresh generation – so they are reproducible
 even though generation is not. Each mutation point is asserted to occur
 exactly once in its source file before it is touched; the tool fails rather
 than damaging whichever occurrence it found first. `DAMAGE-REPORT.txt` records
@@ -68,14 +68,14 @@ not a promise that every tolerant STEP reader returns an error. A reader may
 recover, ignore the affected metadata or produce a partial model. Section 18
 must specify and test FerriteCAD's policy for each outcome; parse success alone
 must not be mistaken for a sound import. Its gates must collect diagnostics from
-both reading and transfer and compare the complete XDE scene — assembly tree,
-definitions and instances, names, colours, units and placements — as well as
+both reading and transfer and compare the complete XDE scene – assembly tree,
+definitions and instances, names, colours, units and placements – as well as
 shape validity and geometry. Equal solids and volume alone do not establish an
 equivalent import.
 
 One of these damages an identity rather than a value.
 `06-duplicate-product-definition.step` writes `#31` twice with different
-contents — the second carries another part's formation and context — so one
+contents – the second carries another part's formation and context – so one
 identifier names two product definitions while every reference in the file
 still resolves. It exists because a definition in an imported assembly is keyed
 by that identifier, and until this file the corpus could not say what happens

@@ -105,12 +105,12 @@ platform and runner architecture.
 
 The adapter directly calls only this subset:
 
-- `FoundationClasses` — collections, `Standard_Failure`, `Message_ProgressRange`
-- `ModelingData` — `TopoDS`, `BRep`, `Geom`
-- `ModelingAlgorithms` — booleans, fillet, chamfer, shell, `BRepTools_History`
+- `FoundationClasses` – collections, `Standard_Failure`, `Message_ProgressRange`
+- `ModelingData` – `TopoDS`, `BRep`, `Geom`
+- `ModelingAlgorithms` – booleans, fillet, chamfer, shell, `BRepTools_History`
 - `Visualization` has no direct FerriteCAD API use: rendering goes through
   `wgpu`, and the adapter takes only tessellation data from OCCT
-- `DataExchange` — STEP through XDE
+- `DataExchange` – STEP through XDE
 
 That does not make the Visualization module optional in the stock OCCT build.
 XCAF/DataExchange toolkits link to Visualization toolkits such as `TKService`,
@@ -161,7 +161,7 @@ The X11 and GL headers are not optional, despite FerriteCAD rendering through
 `wgpu` and never opening an OCCT viewer. XCAF links against the Visualization
 toolkits, so `TKService` is compiled whatever the `USE_*` flags say, and it
 includes `X11/Xlib.h`. Without these packages the build fails partway through
-with `fatal error: X11/Xlib.h: No such file or directory` — around fifteen
+with `fatal error: X11/Xlib.h: No such file or directory` – around fifteen
 minutes in, after 1700 other objects have compiled. macOS and Windows use their
 native windowing headers and need nothing extra.
 
@@ -261,7 +261,7 @@ test exists rather than an assumption in a design document.
 For XDE (steps 6–7) the OCCT install must include DataExchange **and** the OCAF
 document toolkits XCAF depends on (`ApplicationFramework`). Stock OCCT CMake
 packages also list Visualization toolkits (`TKService`/`TKV3d`) as link
-dependencies of XCAF even when no viewer is used — the smoke test’s
+dependencies of XCAF even when no viewer is used – the smoke test’s
 `find_package` accounts for that; the program itself never opens a viewer.
 
 STEP output is not byte-deterministic merely because its header is fixed.
@@ -293,8 +293,8 @@ references.
 **`BRepPrimAPI_MakePrism` never polls the progress indicator.** A
 `Message_ProgressIndicator` whose `UserBreak` returns true is called zero times
 during a prism, and the build completes normally. Cancellation for extrusion is
-therefore checked between steps — before the profile is built and before the
-sweep — and not inside them. The indicator is installed anyway, for the
+therefore checked between steps – before the profile is built and before the
+sweep – and not inside them. The indicator is installed anyway, for the
 algorithms that do poll it, but no claim is made that a long extrusion can be
 interrupted.
 
@@ -320,7 +320,7 @@ Two consequences for the Rust build script. It must name the Open CASCADE
 toolkits itself, so CMake writes the resolved list into a file rather than
 leaving the Rust side to guess which toolkits a given build provides. And a
 static C++ library dragged into a Rust link needs the C++ runtime named
-explicitly — `c++` on macOS, `stdc++` on Linux — because rustc assumes only a C
+explicitly – `c++` on macOS, `stdc++` on Linux – because rustc assumes only a C
 one; MSVC picks its runtime up from the object files.
 
 Dynamic linkage is verified in the pin workflow against the **test executable**,
@@ -374,10 +374,10 @@ plate, `BRepFilletAPI_MakeFillet` over every edge behaves like this on 7.9.3:
 |-------:|:-----------|:---------------------|-------:|
 | 4.0    | true       | valid                | 22 575 |
 | 4.9    | true       | valid                | 21 890 |
-| 5.0    | **false**  | —                    | —      |
+| 5.0    | **false**  | –                    | –      |
 | 5.1    | **true**   | **invalid**          | **25 815** |
 | 6.0    | **true**   | **invalid**          | **25 088** |
-| 20.0   | false      | —                    | —      |
+| 20.0   | false      | –                    | –      |
 
 Half the plate's thickness is 5 mm, so 5.0 failing is correct. What matters is
 the band above it: the builder reports success and returns a shape that fails
@@ -405,8 +405,8 @@ load-bearing rather than a precaution against an older release.
 
 ## What the corpus measured
 
-Twenty procedural parts — blocks of varying proportion, L-shapes, and outlines
-whose corners are arcs — swept from well inside each part's nominal limit to
+Twenty procedural parts – blocks of varying proportion, L-shapes, and outlines
+whose corners are arcs – swept from well inside each part's nominal limit to
 well past it, on every platform in the pin workflow.
 
 **Fillets never silently misbehaved once the check above was in place.** Every
@@ -423,7 +423,7 @@ keeping:
   sweep scale, not a prediction.
 
 **Shells are robust on sharp-cornered parts and weaker on cylindrical ones.**
-Blocks and L-shapes hollowed to walls well past their nominal limit — the real
+Blocks and L-shapes hollowed to walls well past their nominal limit – the real
 constraint is the wall against the part's thickness. Parts with small corner
 radii are where `BRepOffsetAPI_MakeThickSolid` struggles: `rounded-tight`
 (30 x 30 with 2 mm corners) hollowed only to 1.3 mm, and `rounded-tall`
@@ -444,7 +444,7 @@ proves the policy but cannot distinguish those mechanisms.
 
 ## What identifies an imported definition
 
-Durable selection into an imported assembly — "this bolt, the one I picked" —
+Durable selection into an imported assembly – "this bolt, the one I picked" –
 needs a key that names something in the file rather than something in the
 reader. Four candidates were ruled out before measuring: a `TDF_Label` entry is
 a position in a document Open CASCADE built this run, a name is neither unique
@@ -483,7 +483,7 @@ The assembly half is equally strict: only
 
 **An assembly has no geometry, so it has no entity of its own.** The shape
 entity is usable for every definition in only four of the eleven files that
-produce a scene — every leaf part has one and no assembly does. An assembly is
+produce a scene – every leaf part has one and no assembly does. An assembly is
 instead named by the occurrences that put its components inside it:
 `NEXT_ASSEMBLY_USAGE_OCCURRENCE` relates the assembly to each component, so the
 parent every component agrees on identifies it. This is why `shape entity` is
@@ -504,8 +504,8 @@ because they are the shape of the risk rather than incidents:
 `06-duplicate-product-definition.step` exists because the corpus previously
 could not answer this: `05-duplicate-entity-id.step` duplicates a shape
 representation, and duplicates it identically, so nothing about it is
-ambiguous. The new file writes `#31` twice with different contents — the second
-carrying another part's formation and context — while every reference in the
+ambiguous. The new file writes `#31` twice with different contents – the second
+carrying another part's formation and context – while every reference in the
 file still resolves.
 
 Open CASCADE reads it (`RetDone`), says `F: Ident defined SEVERAL TIMES : #31`
@@ -520,7 +520,7 @@ That is the failure mode to design for, and it is not the obvious one. A
 collided identifier does not produce two definitions sharing a key, which a
 uniqueness check would catch. It produces a node with **no** key, in a file that
 imports and looks entirely normal. An importer must therefore check that every
-definition has a key, not only that the keys it has are distinct — and the load
+definition has a key, not only that the keys it has are distinct – and the load
 diagnostic is available to explain why, which is more than
 `04-corrupted-number.step` offers.
 
@@ -584,15 +584,15 @@ it hands out an index per shape, `Index()` looks one up and `Shape()` gives it
 back. It does not work, and the way it fails is silent.
 
 `Index()` strips the location. The top cap of a prism is the bottom cap with a
-translation — the two share a `TShape` — so both resolve to the same index.
+translation – the two share a `TShape` – so both resolve to the same index.
 Measured on OCCT 7.9.3: the located form returns 0, meaning not found, and the
 form with its location stripped returns exactly the bottom cap's index. A
 reference to the top face would have resolved to the bottom one, which is the
 retargeting the whole naming design exists to prevent.
 
 What the bridge does instead is write the wanted sub-shapes down. An archive is
-a compound built deliberately — the shape first, then each named sub-shape in
-the order asked for — and a *slot* is a position in that list. It is an
+a compound built deliberately – the shape first, then each named sub-shape in
+the order asked for – and a *slot* is a position in that list. It is an
 internal index of a blob we wrote, not a traversal index of geometry, and it
 means nothing outside the blob it came with. After a round trip each slot
 returns a face that is `IsSame` a face of the restored solid, with the same
@@ -613,7 +613,7 @@ required care, all found by compiling the bridge against the pinned headers:
   deprecated in favour of `what()`. The bridge selects on `OCC_VERSION_HEX`.
   Note the ordering consequence: `Standard_Failure` is now caught by a
   `catch (const std::exception&)`, so the more specific handler must come
-  first — it does.
+  first – it does.
 - `Standard_Boolean`, `Standard_True` and `Standard_False` are deprecated in
   favour of `bool`, `true` and `false`, which are the same types on 7.9.
 - `TopTools_ListOfShape` moved to a deprecated alias header;
@@ -622,7 +622,7 @@ required care, all found by compiling the bridge against the pinned headers:
 Checking this does not need a full build. Extracting the pinned source archive
 and running `clang++ -fsyntax-only` with every header directory on the include
 path answers the question in a minute, where a pin workflow run costs the best
-part of an hour. `OCC_VERSION_HEX` has to be defined for that check —
+part of an hour. `OCC_VERSION_HEX` has to be defined for that check –
 `Standard_Version.hxx` is generated by CMake and absent from the source tree,
 so a stub supplying the pinned version numbers is needed, and an empty stub
 silently selects the wrong branch.

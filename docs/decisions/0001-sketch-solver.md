@@ -1,6 +1,6 @@
 # 1. planegcs is the sketch solver
 
-**Status:** accepted, and reversible — see the last section.
+**Status:** accepted, and reversible – see the last section.
 
 ## What was decided
 
@@ -41,7 +41,7 @@ samples or extra unused digits would be choosing on noise.
 
 **What decides it is how much is already there.** The bench covers eight
 constraint types on points. A sketcher needs arcs, circles, ellipses,
-tangency, symmetry, equal radius, construction geometry, splines — planegcs
+tangency, symmetry, equal radius, construction geometry, splines – planegcs
 has them, tested against fifteen years of drawings that people actually made.
 Writing that is not a slice, it is a project, and it is not the project this
 one is.
@@ -56,7 +56,7 @@ by having solved a similar problem once.
 **What it costs.** A C++ build dependency (Eigen and Boost headers), a second
 shared library to ship and to package on three platforms, and the same
 obligation to let users replace it. The Windows and Linux paths for building
-it are not yet exercised in CI — that is real, open work, not a reason against.
+it are not yet exercised in CI – that is real, open work, not a reason against.
 
 ## What this does not decide
 

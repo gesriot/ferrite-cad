@@ -16,19 +16,19 @@ is accepted are all things the comparison is about.
 The corpus is generated, so a problem can be grown to any size and a failure
 names the parameters that produced it:
 
-- **rectangle** — fully constrained, the smallest interesting case;
-- **chain-n** — a row of rectangles each sharing an edge with the last;
-- **polygon-n** — a closed polygon with every side length given;
-- **bracket-n** — a staircase of arms, each square to and the same length as
+- **rectangle** – fully constrained, the smallest interesting case;
+- **chain-n** – a row of rectangles each sharing an edge with the last;
+- **polygon-n** – a closed polygon with every side length given;
+- **bracket-n** – a staircase of arms, each square to and the same length as
   the last, with only the first dimensioned, so every arm depends on it;
-- **underconstrained** — a rectangle with nothing pinned;
-- **overconstrained** — a rectangle told twice that one side is horizontal.
+- **underconstrained** – a rectangle with nothing pinned;
+- **overconstrained** – a rectangle told twice that one side is horizontal.
 
 ## What the first candidate does
 
 Levenberg–Marquardt on the normal equations. Damping is scaled by the diagonal
-rather than added as `λI`, because a sketch mixes units — a distance residual
-is millimetres and an equal-length residual is millimetres squared — and
+rather than added as `λI`, because a sketch mixes units – a distance residual
+is millimetres and an equal-length residual is millimetres squared – and
 uniform damping would quietly favour whichever happens to be larger.
 
 One local release run, with the tests serialized, covered fifteen problems up
@@ -149,8 +149,8 @@ part, where a refusal costs them a correction.
 
 Counting is not enough. "This sketch is over-constrained" leaves a person to
 find the offending line, and on a real sketch they will not. Both candidates
-now name constraints — planegcs natively through its conflicting and redundant
-tags, the LM from the rows its elimination could not use — and the bench turns
+now name constraints – planegcs natively through its conflicting and redundant
+tags, the LM from the rows its elimination could not use – and the bench turns
 that into a sentence:
 
 ```
@@ -164,7 +164,7 @@ it from.
 ### The decision
 
 planegcs, for the reasons in [decisions/0001-sketch-solver.md](decisions/0001-sketch-solver.md).
-Not because it is faster or more accurate — neither is decisive — but because
+Not because it is faster or more accurate – neither is decisive – but because
 a sketcher needs arcs, tangency, symmetry and splines, and it already has
 them.
 

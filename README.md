@@ -31,7 +31,7 @@ cargo run -p ferritecad-cli -- dump-graph part.fcad --format dot | dot -Tsvg > g
 
 `create --sample` builds a plate: a datum plane, a rectangular profile, an
 extrusion and the topology references naming that extrusion's faces. Nothing is
-evaluated into geometry yet — the point is that the *model* round-trips.
+evaluated into geometry yet – the point is that the *model* round-trips.
 
 ## How a document is put together
 
@@ -46,15 +46,15 @@ recomputed:
 | `deps` | the dependency graph edges, with the role of each |
 | `topology_refs` | semantic names for produced geometry |
 
-Everything derived — B-Rep, tessellation, entity mappings, previews — lives in
+Everything derived – B-Rep, tessellation, entity mappings, previews – lives in
 a separate `part.fcad-cache` sidecar. **Deleting the sidecar can cost you time
 and nothing else.** That is a tested invariant, not an aspiration.
 
 Three properties the format commits to:
 
 - **Nothing is referenced by index.** A face is named by what produced it and
-  why — "the cap of this extrusion", "every face raised from this profile
-  segment" — never by position in a traversal. An index-based reference is the
+  why – "the cap of this extrusion", "every face raised from this profile
+  segment" – never by position in a traversal. An index-based reference is the
   thing that makes a parametric model silently point at the wrong face after an
   upstream edit.
 - **What is not understood is preserved, not dropped.** An object whose type
@@ -82,7 +82,7 @@ geometry kernels or user interfaces, and it never will.
 
 FerriteCAD is not a SolidWorks or KOMPAS-3D replacement and calling it one
 would be dishonest. The target for the first beta is narrower and worth
-stating plainly: **a fast local parametric part modeller** — sketch, extrude,
+stating plainly: **a fast local parametric part modeller** – sketch, extrude,
 revolve, cut, fillet, chamfer, shell, pattern; save, reopen and rebuild
 without cache; STEP in and out; STL out.
 

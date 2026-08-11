@@ -42,7 +42,7 @@ Two rules follow from those terms and are enforced rather than remembered:
 - **Source:** FreeCAD 1.0.1, `src/Mod/Sketcher/App/planegcs`, archive SHA-256
   `f62bc07c477544eff62b6ab0fc3bb63fa7f1e6f94763c51b0049507842d444f3`
 - **Modifications:** none. The sources are used byte-identical. Three headers
-  beside them — `SketcherGlobal.h`, `FCConfig.h` and `Base/Console.h` — are
+  beside them – `SketcherGlobal.h`, `FCConfig.h` and `Base/Console.h` – are
   FerriteCAD's own MIT build glue, written because FreeCAD's versions reach
   into Qt and its build system, and marked as such.
 - **Replacing it:** `tools/build-planegcs.sh` fetches the pinned release,
