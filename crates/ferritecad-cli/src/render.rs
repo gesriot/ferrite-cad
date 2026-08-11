@@ -200,6 +200,20 @@ fn describe(payload: &ObjectPayload) -> Option<String> {
             Some(tip) => format!("tip feature {tip}"),
             None => "empty".to_owned(),
         },
+        ObjectPayload::ImportedStep(i) => format!(
+            "{} definitions, {} placements, {} byte(s) of source ({}), read by {}{}",
+            i.scene.definitions.len(),
+            i.scene.instances.len(),
+            i.source_byte_len,
+            i.source_name.as_deref().unwrap_or("origin not recorded"),
+            i.imported_by,
+            // Counted, not repeated: `inspect` describes a document's shape,
+            // and what a reading reported belongs with that reading.
+            match i.diagnostics_at_import.len() {
+                0 => String::new(),
+                one => format!(", which reported {one} thing(s) at the time"),
+            }
+        ),
         ObjectPayload::Unknown(u) => format!(
             "preserved verbatim: {} v{}, requires {}",
             u.type_name,

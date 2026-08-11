@@ -7,6 +7,8 @@
 //! here first.
 
 mod export;
+mod import;
+mod publish;
 mod rebuild;
 mod render;
 mod sample;
@@ -28,6 +30,15 @@ const EXIT_FAILED: u8 = 2;
 /// find geometry. Distinct from both of the above: nothing went wrong with the
 /// command, and the document is not malformed — it has simply lost a name.
 const EXIT_UNRESOLVED: u8 = 3;
+/// An import that produced a complete document, with things noticed on the way.
+///
+/// Separate from success because a script should be able to tell the two apart
+/// without parsing prose, and separate from failure because the document is
+/// there and is whole. It does not mean the file is worse than one that exits
+/// zero — only that this reader said something about it.
+const EXIT_NOTICED: u8 = 4;
+/// A file the importer would not read at all. Nothing was written.
+const EXIT_REJECTED: u8 = 5;
 
 #[derive(Debug, Parser)]
 #[command(name = "ferritecad", version, about, long_about = None)]
@@ -54,6 +65,29 @@ enum Command {
     Rebuild(RebuildArgs),
     /// Rebuild a document and report what each stored reference resolves to.
     PrintTopology(DocumentArgs),
+    /// Read a STEP file into a new document, source bytes and all.
+    ImportStep(ImportStepArgs),
+}
+
+#[derive(Debug, Args)]
+struct ImportStepArgs {
+    /// Path to the STEP file. Opened once, read, and never written to.
+    path: PathBuf,
+
+    /// Path of the document to create.
+    #[arg(long, short)]
+    output: PathBuf,
+
+    /// What to call the imported object in the document.
+    ///
+    /// Defaults to the STEP file's own name. The names the file gave its parts
+    /// are kept as the file gave them and are not affected by this.
+    #[arg(long)]
+    name: Option<String>,
+
+    /// Replace the output document if it already exists.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -184,6 +218,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::ExportStl(args) => export::export_stl(args),
         Command::Rebuild(args) => rebuild::rebuild(args),
         Command::PrintTopology(args) => topology::print_topology(args),
+        Command::ImportStep(args) => import::import_step(args),
     }
 }
 

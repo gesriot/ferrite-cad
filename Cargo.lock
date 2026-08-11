@@ -235,6 +235,7 @@ dependencies = [
  "clap",
  "ferritecad-document",
  "ferritecad-eval",
+ "ferritecad-exchange",
  "ferritecad-export",
  "ferritecad-fixtures",
  "ferritecad-kernel",

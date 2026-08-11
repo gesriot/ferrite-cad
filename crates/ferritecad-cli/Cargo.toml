@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 ferritecad-document.workspace = true
 ferritecad-eval.workspace = true
+ferritecad-exchange.workspace = true
 ferritecad-export.workspace = true
 ferritecad-kernel.workspace = true
 ferritecad-occt.workspace = true
