@@ -73,6 +73,16 @@ definitions and instances, names, colours, units and placements — as well as
 shape validity and geometry. Equal solids and volume alone do not establish an
 equivalent import.
 
+One of these damages an identity rather than a value.
+`06-duplicate-product-definition.step` writes `#31` twice with different
+contents — the second carries another part's formation and context — so one
+identifier names two product definitions while every reference in the file
+still resolves. It exists because a definition in an imported assembly is keyed
+by that identifier, and until this file the corpus could not say what happens
+when the key's own identifier is written twice. `05-duplicate-entity-id.step`
+does not ask that question: it duplicates a shape representation, and
+duplicates it identically, so nothing about it is ambiguous.
+
 The reproducible observation is made by `tools/step-diagnostic` in the pinned
 OCCT workflow. It records load diagnostics even when `ReadFile` refuses the
 file, records transfer diagnostics separately, and describes definition
@@ -87,7 +97,8 @@ the raw uploaded artefacts are not rewritten.
 | `03-missing-terminator.step` | 20063 | `231bfbc2a09d925738a208954b6beb87e3f45245a68a0a1375bb2ce3c1d7d1a5` |
 | `04-corrupted-number.step` | 10283 | `3bd6eb2919480afb41041d6f76cc7da78661f50f870f242959b67ad678ed4b68` |
 | `05-duplicate-entity-id.step` | 15831 | `e787d181af1d706aab71180ff12baeb59168a7902fbabd442798ba53df43a6bb` |
-| `DAMAGE-REPORT.txt` | 1177 | `c26c91e0aad69de7a2339abdd5ce404176df8cbd3199d619d07393e08f8730e1` |
+| `06-duplicate-product-definition.step` | 23577 | `a7d15d7f14c0d558c69ff15c1f0ac70a34151f8016ca39b4705abdc9dd732b2f` |
+| `DAMAGE-REPORT.txt` | 1490 | `ac057d314f3b96b6d804eef55e136a39287334005edfdb448331404c2b7967c9` |
 
 ## Regenerating
 

@@ -786,12 +786,21 @@ jobs:
             echo "::error::the probe found no file with definitions at all"
             exit 1
           fi
-          if ! grep -qE "^ +product definition usable on $total/$total files\r?$" step-key-matrix.txt; then
-            echo "::error::PRODUCT_DEFINITION is not usable as a key on all $total files with definitions"
-            grep -E 'usable on' step-key-matrix.txt
+          # The gate is an exact set, not a count. One file in the corpus is
+          # built to collide product definition identifiers, and it must go on
+          # having no key: a candidate that stops working on a sound file and a
+          # candidate that starts working on that one are both regressions, and
+          # only naming the files catches the second.
+          expected='06-duplicate-product-definition.step'
+          actual="$(sed -n '/^ *product definition usable on /{n;s/^ *unusable on: *//;s/\r$//;p;}' \
+            step-key-matrix.txt)"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::PRODUCT_DEFINITION is unusable on [$actual]; expected exactly [$expected]"
+            grep -A 1 -E 'usable on' step-key-matrix.txt
             exit 1
           fi
-          echo "PRODUCT_DEFINITION is present, unique and unchanged on a second read for all $total files"
+          echo "PRODUCT_DEFINITION is present, unique and unchanged on a second read"
+          echo "for every file with definitions except the one built to collide identifiers"
 
       - name: Upload the definition key matrix
         if: always()

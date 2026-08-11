@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
-//! Reading the committed STEP corpus, seven sound files and five damaged.
+//! Reading the committed STEP corpus, seven sound files and six damaged.
 //!
-//! The seven say what a correct import looks like. The five say what happens
+//! The seven say what a correct import looks like. The six say what happens
 //! when a file is not correct, and the answer measured on 8.0.1 is not one
-//! thing: two are refused, two are read and described precisely, and one is
+//! thing: two are refused, three are read and described precisely, and one is
 //! read, transferred and reported clean while carrying a malformed
 //! coordinate. These tests hold the import to reporting all of that and to
 //! claiming none of it as soundness.
@@ -237,6 +237,10 @@ fn a_recovered_file_imports_and_says_what_was_wrong_with_it() {
     for (name, expected) in [
         ("02-broken-reference.step", "unresolved"),
         ("05-duplicate-entity-id.step", "SEVERAL TIMES"),
+        // Reads as a complete, ordinary assembly. What it has lost is not
+        // geometry but the identity of one node, which only a reader asking
+        // that question notices — and Open CASCADE does say so here.
+        ("06-duplicate-product-definition.step", "SEVERAL TIMES"),
     ] {
         let outcome = import(&mut kernel, "damaged", name);
         let scene = outcome

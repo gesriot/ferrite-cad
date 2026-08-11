@@ -25,7 +25,7 @@
 // unchanged when the same bytes are read a second time in a second reader.
 //
 // It reports. It does not decide, and it does not pick a winner: a candidate
-// that holds on twelve files and three platforms is evidence, and the decision
+// that holds across the corpus and three platforms is evidence, and the decision
 // belongs in FerriteCAD where it can be refused when the evidence runs out.
 
 #include <IFSelect_ReturnStatus.hxx>
@@ -529,6 +529,12 @@ int main(int argc, char **argv) {
   // rather than on a human reading three columns per file.
   int with_definitions = 0;
   int usable[3] = {0, 0, 0};
+  // Named, not just counted. A count says how many files kept a key; the names
+  // say which lost one, and that is what a gate can hold to exactly — a
+  // candidate that stops working somewhere new and a candidate that starts
+  // working where it must not are both regressions, and a count catches
+  // neither on its own.
+  std::vector<std::string> unusable[3];
 
   for (int i = 1; i < argc; ++i) {
     const std::string path = argv[i];
@@ -610,6 +616,8 @@ int main(int argc, char **argv) {
       out << "        usable as a key: " << (ok ? "yes" : "no") << "\n";
       if (ok) {
         ++usable[candidate];
+      } else {
+        unusable[candidate].push_back(name);
       }
     }
     out << "\n";
@@ -628,6 +636,17 @@ int main(int argc, char **argv) {
     std::snprintf(summary, sizeof(summary), "    %s usable on %d/%d files",
                   candidate_name(candidate), usable[candidate], with_definitions);
     out << summary << "\n";
+
+    std::vector<std::string> named = unusable[candidate];
+    std::sort(named.begin(), named.end());
+    out << "        unusable on:";
+    if (named.empty()) {
+      out << " nothing";
+    }
+    for (const std::string &file : named) {
+      out << " " << file;
+    }
+    out << "\n";
   }
 
   std::cout << out.str();

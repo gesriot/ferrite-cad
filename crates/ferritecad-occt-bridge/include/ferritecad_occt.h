@@ -249,7 +249,7 @@ FcOcctStatus fc_occt_decode_shape(FcOcctSession *session,
  *       message          length-prefixed UTF-8
  *
  * There is no "valid" flag and there will not be one. Measured on 8.0.1: of
- * five deliberately damaged files, two are refused outright, two are read and
+ * six deliberately damaged files, two are refused outright, three are read and
  * reported precisely, and one is read, transferred and reported clean while
  * carrying a malformed coordinate. A file that produced no diagnostics is a
  * file nothing was noticed about, which is not the same as a sound one, and a

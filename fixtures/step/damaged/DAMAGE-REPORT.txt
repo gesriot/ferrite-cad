@@ -31,3 +31,8 @@
     entity #10 is defined twice, the second time identically
     at byte 866, 15770 bytes before and 15831 after
 
+06-duplicate-product-definition.step
+    from duplicate product definition
+    #31 is defined twice with different contents: the second carries #380's formation and context, so one identifier names two product definitions while every reference still resolves
+    at byte 2024, 23528 bytes before and 23577 after
+

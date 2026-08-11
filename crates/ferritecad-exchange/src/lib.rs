@@ -9,8 +9,8 @@
 //!
 //! # There is no `valid` flag
 //!
-//! Measured against Open CASCADE 8.0.1 on the committed corpus: of five
-//! deliberately damaged files, two are refused outright, two are read and
+//! Measured against Open CASCADE 8.0.1 on the committed corpus: of six
+//! deliberately damaged files, two are refused outright, three are read and
 //! described precisely in the diagnostics, and one is read, transferred and
 //! reported clean while carrying a malformed coordinate. So "nothing was
 //! noticed" is a fact about the reader, not about the file, and a flag saying
@@ -186,7 +186,7 @@ pub enum Import {
     /// stopped, which is often the most useful thing an import can offer.
     Rejected { diagnostics: Vec<Diagnostic> },
     /// A scene was built. Diagnostics may still be present and may still
-    /// matter: two of the corpus's damaged files import completely and are
+    /// matter: three of the corpus's damaged files import completely and are
     /// described here in detail.
     Imported {
         scene: Scene,

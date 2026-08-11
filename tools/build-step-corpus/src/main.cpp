@@ -263,6 +263,8 @@ int corrupt(const std::string &from, const std::string &to) {
       {"03-nested-assembly.step", "03-missing-terminator.step", "missing terminator"},
       {"04-instance-colours.step", "04-corrupted-number.step", "corrupted number"},
       {"05-inch-units.step", "05-duplicate-entity-id.step", "duplicate entity id"},
+      {"02-flat-assembly.step", "06-duplicate-product-definition.step",
+       "duplicate product definition"},
   };
 
   std::vector<Damage> report;
@@ -341,6 +343,42 @@ int corrupt(const std::string &from, const std::string &to) {
       damaged = original.substr(0, damage.offset) + "30.." +
                 original.substr(damage.offset + 3);
       damage.what = "the coordinate token 30. is malformed as 30..";
+    } else if (damage.kind == "duplicate product definition") {
+      // The one damage that attacks an identity rather than a value.
+      //
+      // A definition in an imported assembly is keyed by the identifier its
+      // PRODUCT_DEFINITION carries in the file, so the question this file
+      // exists to ask is what happens when one identifier names two different
+      // product definitions. The existing duplicate-entity-id variant does not
+      // ask it: what it duplicates is a shape representation, and it
+      // duplicates it identically, so nothing is ambiguous about what #10
+      // means.
+      //
+      // Here #31 is written a second time with the contents of #380 — Pin's
+      // formation and context under Base's identifier. Nothing is left
+      // dangling: #380 is still defined, and every reference in the file still
+      // resolves to something. The only thing wrong with the file is that one
+      // identifier now says two different things, which is exactly the
+      // condition a key must not be assumed away.
+      const std::string base = "\n#31 = PRODUCT_DEFINITION('design','',#32,#35);";
+      const std::string pin = "\n#380 = PRODUCT_DEFINITION('design','',#381,#384);";
+      std::size_t pin_at = 0;
+      if (!only_occurrence(original, base, damage.offset) ||
+          !only_occurrence(original, pin, pin_at)) {
+        std::fprintf(stderr,
+                     "%s: the two product definitions are not each unique\n",
+                     recipe.source);
+        return 1;
+      }
+      const std::size_t line_end = damage.offset + base.size();
+      // The other definition's body, relabelled to collide.
+      const std::string collision =
+          "\n#31 = " + pin.substr(std::string("\n#380 = ").size());
+      damaged = original.substr(0, line_end) + collision + original.substr(line_end);
+      damage.what =
+          "#31 is defined twice with different contents: the second carries "
+          "#380's formation and context, so one identifier names two product "
+          "definitions while every reference still resolves";
     } else {
       // A second definition of an entity that already exists.
       const std::string needle = "\n#10 = ";

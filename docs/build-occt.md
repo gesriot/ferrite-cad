@@ -458,11 +458,12 @@ that are easy to confuse: `#12` is an identifier the file wrote, while `(#12)`
 is where the entity sits in the model this run. Open CASCADE prints them
 similarly and only the first is an identity.
 
-**PRODUCT_DEFINITION is present, unique and stable on all ten files that
-produce a scene.** The two files Open CASCADE refuses outright have no scene
-and so nothing to key, which is the right answer rather than a gap. The
-identifiers are identical on Linux, Windows and macOS, and identical when the
-same bytes are read a second time in a second reader.
+**PRODUCT_DEFINITION is present, unique and stable on every file that produces
+a scene except the one built to collide identifiers.** The two files Open
+CASCADE refuses outright have no scene and so nothing to key, which is the
+right answer rather than a gap. The identifiers are identical on Linux, Windows
+and macOS, and identical when the same bytes are read a second time in a second
+reader.
 
 **The route to it is typed, not a graph search.** The chain runs up and then
 down, and every transition checks both the concrete STEP type and the field
@@ -498,11 +499,32 @@ because they are the shape of the risk rather than incidents:
   components alone. The probe reports no key in that case rather than choosing,
   and the corpus does not currently contain such a file.
 
-**What the corpus does not establish.** `05-duplicate-entity-id.step` duplicates
-an `ADVANCED_BREP_SHAPE_REPRESENTATION`, not a `PRODUCT_DEFINITION`, so nothing
-here measures what happens when the identifier a key rests on is itself written
-twice. Uniqueness is therefore a measurement on this corpus and not a property
-of the format, and an importer must check it at read time rather than assume it.
+**What a collided identifier does, measured.**
+`06-duplicate-product-definition.step` exists because the corpus previously
+could not answer this: `05-duplicate-entity-id.step` duplicates a shape
+representation, and duplicates it identically, so nothing about it is
+ambiguous. The new file writes `#31` twice with different contents — the second
+carrying another part's formation and context — while every reference in the
+file still resolves.
+
+Open CASCADE reads it (`RetDone`), says `F: Ident defined SEVERAL TIMES : #31`
+at load, transfers it successfully, and produces the same three nodes with the
+same volumes as the undamaged assembly. **The geometry is untouched; what is
+lost is an identity.** The two parts keep their keys, and the *assembly* loses
+its own: its components' occurrences name the other `#31`, so the parent every
+component agrees on is empty and the probe reports no key rather than choosing
+between them.
+
+That is the failure mode to design for, and it is not the obvious one. A
+collided identifier does not produce two definitions sharing a key, which a
+uniqueness check would catch. It produces a node with **no** key, in a file that
+imports and looks entirely normal. An importer must therefore check that every
+definition has a key, not only that the keys it has are distinct — and the load
+diagnostic is available to explain why, which is more than
+`04-corrupted-number.step` offers.
+
+Uniqueness across arbitrary vendor files remains a measurement on this corpus
+rather than a property of the format, so both checks belong at read time.
 
 The workflow's denominator is independent of the key probe: the earlier
 diagnostic probe counts files that transferred, and the key gate requires the

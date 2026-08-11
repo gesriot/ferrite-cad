@@ -4,9 +4,9 @@
 // about on the way.
 //
 // This exists because the obvious question — "did the import work?" — has no
-// single answer. Measured on the corpus: two of five damaged files are
-// refused outright, and three are read successfully and produce the same
-// geometry as the undamaged original. Of those three, two are described
+// single answer. Measured on the corpus: two of six damaged files are
+// refused outright, and four are read successfully and produce the same
+// geometry as the undamaged original. Of those four, three are described
 // precisely in the reader's check list and one passes without a word.
 //
 // So a policy cannot be built on the return status, and cannot be built on
