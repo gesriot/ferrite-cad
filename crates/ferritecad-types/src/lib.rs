@@ -21,7 +21,7 @@ mod units;
 
 pub use error::{BoxError, CadError, ErrorKind, Result};
 pub use hash::{CanonicalHasher, ContentHash, normalize_f64};
-pub use ids::{DocumentId, FeatureId, ObjectId, StableEntityId};
+pub use ids::{DocumentId, FeatureId, ImportedSourceId, ObjectId, StableEntityId};
 pub use tolerance::Tolerance;
 pub use transform::{Point3, Transform, Vec3};
 pub use units::{Dimension, Quantity, Unit};

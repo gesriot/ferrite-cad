@@ -12,9 +12,9 @@ use crate::error::CadError;
 ///
 /// All FerriteCAD identifiers are UUIDv7 so that insertion order is recoverable
 /// from the identifier itself, and all of them serialise to exactly sixteen
-/// bytes in binary formats. The macro exists because the five identifier types
-/// are identical apart from the name; the distinct types are what stop an
-/// object identifier being passed where a document identifier is meant.
+/// bytes in binary formats. The macro exists because the identifier types are
+/// identical apart from the name; the distinct types are what stop an object
+/// identifier being passed where a document identifier is meant.
 macro_rules! define_id {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
@@ -150,6 +150,15 @@ define_id! {
     /// reverse conversion does not exist, because not every object is a
     /// feature.
     FeatureId
+}
+
+define_id! {
+    /// Identifies the exact bytes of a file imported into a document.
+    ///
+    /// A source is immutable: importing different bytes mints a new identifier
+    /// rather than changing what an existing one names, so an object that
+    /// recorded what it was built from keeps naming those bytes and no others.
+    ImportedSourceId
 }
 
 define_id! {

@@ -14,6 +14,20 @@
 //! durability settings: the document is journalled conservatively so that it
 //! stays a single portable file, while the sidecar uses WAL for speed.
 //!
+//! # An imported file is source of truth too
+//!
+//! A STEP file brought into a document is stored whole, byte for byte, in
+//! `imported_sources`. It is not a cache and not a convenience: the scene
+//! stored beside it is one kernel's reading of those bytes, and a reading can
+//! be redone in a new session, but only while the bytes are still here. An
+//! external path would make the document depend on a file it does not own; a
+//! chunked or linked mode is deferred until measured sizes justify one.
+//!
+//! Nothing here calls a kernel. [`Document::reopen_step_import`] is handed the
+//! importer and checks the bytes against their stored length and hash before
+//! that importer sees them, then compares the whole scene it produced with the
+//! one stored, and only then lets a caller near the new handles.
+//!
 //! # Forward compatibility
 //!
 //! Every object payload is a CBOR envelope carrying its type, schema version
@@ -31,14 +45,16 @@ mod validate;
 
 pub use cache::{CacheEntry, CacheStore};
 pub use document::{
-    Access, Document, DocumentMeta, DocumentWriter, ObjectRecord, StoredTopologyRef,
+    Access, Document, DocumentMeta, DocumentWriter, ObjectRecord, ReopenedStepImport,
+    StepImportRequest, StoredStepImport, StoredTopologyRef,
 };
 pub use envelope::{Envelope, UnknownObject};
 pub use graph::{Dependency, DependencyRole, evaluation_order};
 pub use model::{
     Body, CORE_CAPABILITY, CapSide, DatumPlane, EndCondition, EntityKind, Expression, Extrude,
-    GeomSignature, ObjectKind, ObjectPayload, Parameter, Point2, SelectionRule, SemanticRole,
-    Sketch, SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
+    GeomSignature, IMPORTED_STEP_CAPABILITY, ImportedStep, ImporterIdentity, ObjectKind,
+    ObjectPayload, Parameter, Point2, STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch,
+    SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
 };
 pub use schema::{
     CACHE_EXTENSION, DOCUMENT_EXTENSION, FORMAT_VERSION, MINIMUM_READER_VERSION,

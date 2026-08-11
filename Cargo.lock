@@ -249,6 +249,8 @@ name = "ferritecad-document"
 version = "0.0.1"
 dependencies = [
  "ciborium",
+ "ferritecad-exchange",
+ "ferritecad-kernel",
  "ferritecad-types",
  "rusqlite",
  "serde",

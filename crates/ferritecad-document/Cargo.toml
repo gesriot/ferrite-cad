@@ -8,7 +8,18 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+# ferritecad-exchange supplies the one thing a document must store about an
+# imported file and must not re-describe in its own words: the handle-free
+# projection of a scene, which is also what re-binding compares against. Two
+# definitions of that projection would be two things obliged to agree, and the
+# whole point of this slice is that they cannot silently stop agreeing.
+#
+# ferritecad-kernel arrives with it and is named explicitly for one purpose:
+# KernelIdentity, recorded as provenance of an import. Nothing here calls a
+# kernel, links one, or needs one present to open a document.
 [dependencies]
+ferritecad-exchange.workspace = true
+ferritecad-kernel.workspace = true
 ferritecad-types.workspace = true
 
 ciborium = "0.2"

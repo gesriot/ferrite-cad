@@ -3,14 +3,20 @@ use std::collections::BTreeSet;
 use std::io::{ErrorKind as IoErrorKind, Read};
 use std::path::{Path, PathBuf};
 
+use ferritecad_exchange::{Diagnostic as ImportDiagnostic, Import, Scene};
+use ferritecad_kernel::KernelIdentity;
 use ferritecad_types::{
-    CadError, ContentHash, Dimension, DocumentId, ObjectId, Result, StableEntityId, Unit,
+    CadError, ContentHash, Dimension, DocumentId, ImportedSourceId, ObjectId, Result,
+    StableEntityId, Unit,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 
 use crate::envelope::Envelope;
 use crate::graph::{Dependency, DependencyRole, evaluation_order};
-use crate::model::{CORE_CAPABILITY, EntityKind, ObjectPayload, TopologyRef, TopologyRefPayload};
+use crate::model::{
+    CORE_CAPABILITY, EntityKind, ImportedStep, ImporterIdentity, ObjectPayload, STEP_SOURCE_FORMAT,
+    TopologyRef, TopologyRefPayload,
+};
 use crate::schema::{
     self, CACHE_EXTENSION, DOCUMENT_APPLICATION_ID, FORMAT_VERSION, MINIMUM_READER_VERSION,
     SUPPORTED_CAPABILITIES,
@@ -76,6 +82,57 @@ impl ObjectRecord {
 
 /// A topology reference as stored, including its owner and producer.
 pub type StoredTopologyRef = TopologyRef;
+
+/// An imported STEP object together with the exact bytes it was built from.
+///
+/// The bytes have already been checked against their stored length and content
+/// hash by the time this exists; see [`Document::step_import`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredStepImport {
+    pub imported: ImportedStep,
+    pub source: Vec<u8>,
+}
+
+/// What a caller holds after importing a file and before storing it.
+///
+/// Everything here already exists: the bytes have been read, the kernel has
+/// made what it can of them, and the result is in hand. That is the point —
+/// nothing that can fail is left to happen inside the writing transaction.
+#[derive(Debug)]
+pub struct StepImportRequest<'a> {
+    pub object: ObjectId,
+    /// What to call the object in the document. The names the file gave its own
+    /// parts are in the scene and are not touched.
+    pub name: Option<&'a str>,
+    /// The exact bytes. These become the document's copy and its source of
+    /// truth; no path is followed and no external file is consulted again.
+    pub source: &'a [u8],
+    /// What the file was called where it came from, if that is worth recording.
+    /// Provenance for a person to read, never a location anything opens.
+    pub source_name: Option<&'a str>,
+    pub import: &'a Import,
+    pub importer: &'a KernelIdentity,
+}
+
+/// A stored import, read again in a live kernel session.
+///
+/// The two diagnostic sets are named apart because they are two observations,
+/// made at different times by possibly different builds. Merging them, or
+/// letting one stand in for the other, would attribute to one reading what only
+/// the other ever saw.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReopenedStepImport {
+    /// Handles issued by the session that has just re-read the bytes, and only
+    /// after the whole scene was proven to match what was stored.
+    pub scene: Scene,
+    /// What the importer said when the file was first brought into this
+    /// document. Historical; this build did not observe it.
+    pub diagnostics_at_import: Vec<ImportDiagnostic>,
+    /// What the importer said just now, reading the same bytes.
+    pub diagnostics_now: Vec<ImportDiagnostic>,
+    /// Which kernel produced the stored scene.
+    pub imported_by: ImporterIdentity,
+}
 
 /// An open native document.
 #[derive(Debug)]
@@ -254,6 +311,7 @@ impl Document {
 
         match outcome {
             Ok(value) => {
+                reclaim_imported_sources(&tx)?;
                 rebuild_capabilities(&tx)?;
                 tx.execute(
                     &format!("UPDATE meta SET modified_at = {NOW_UTC} WHERE id = 1"),
@@ -404,6 +462,189 @@ impl Document {
         Ok(refs)
     }
 
+    /// Stores a successful import as one object and one copy of its bytes.
+    ///
+    /// The ordering is the contract. Reading the file, transferring it and
+    /// projecting its scene have all happened before this is called; what is
+    /// left that could fail — projecting the scene, sizing the source — is done
+    /// before the transaction opens, and the transaction itself writes the
+    /// bytes, the object and the object's claim on those bytes together or not
+    /// at all. A [`Import::Rejected`] has no scene to store and is refused here
+    /// without the document being opened for writing.
+    ///
+    /// Returns what was written, including the source identifier that ended up
+    /// holding the bytes — which is an existing one when this document already
+    /// held an identical file.
+    pub fn store_step_import(&mut self, request: StepImportRequest<'_>) -> Result<ImportedStep> {
+        let scene = match request.import {
+            Import::Imported { scene, .. } => scene,
+            Import::Rejected { diagnostics } => {
+                return Err(CadError::input(format!(
+                    "this file was not imported, so there is no scene to store: {}",
+                    describe(diagnostics)
+                )));
+            }
+        };
+
+        let persisted = scene.persist()?;
+        let source_hash = ContentHash::of_bytes(request.source);
+        let source_byte_len = request.source.len() as u64;
+        let imported_by = ImporterIdentity::of(request.importer);
+        let diagnostics_at_import = request.import.diagnostics().to_vec();
+
+        let source_bytes = request.source;
+        let object = request.object;
+        let name = request.name;
+        let source_name = request.source_name.map(str::to_owned);
+
+        self.write(move |w| {
+            let source = w.put_step_source(source_bytes)?;
+            let imported = ImportedStep {
+                source,
+                source_hash,
+                source_byte_len,
+                source_name,
+                scene: persisted,
+                imported_by,
+                diagnostics_at_import,
+            };
+            w.put_imported_step(object, None, 0, name, &imported)?;
+            Ok(imported)
+        })
+    }
+
+    /// Reads an imported STEP object and the bytes it names.
+    ///
+    /// Everything checkable is checked here, before the bytes go anywhere that
+    /// would interpret them: the source row exists, its blob is as long as it
+    /// says, its content hash matches what is actually stored, and both agree
+    /// with what the object recorded when it was written. A caller that reaches
+    /// a kernel with these bytes has already been told if they are not the ones
+    /// this document was built from.
+    ///
+    /// `Ok(None)` means no such object. An object of another type is an error:
+    /// asking a sketch for its STEP bytes is a mistake, not an absence.
+    pub fn step_import(&self, id: ObjectId) -> Result<Option<StoredStepImport>> {
+        let Some(record) = self.object(id)? else {
+            return Ok(None);
+        };
+        let ObjectPayload::ImportedStep(imported) = record.payload else {
+            return Err(CadError::input(format!(
+                "object {id} is a {}, not an imported STEP file",
+                record.payload.type_name()
+            )));
+        };
+
+        let source = self.read_imported_source(&imported)?;
+        Ok(Some(StoredStepImport { imported, source }))
+    }
+
+    /// Re-reads a stored import in a live kernel session.
+    ///
+    /// `import` is handed bytes this document has already verified and must
+    /// return what a kernel made of them. Whatever it produces is checked
+    /// against the stored scene in full — units, schema, every definition, the
+    /// whole instance tree, placements and colours — and only then are its
+    /// handles returned. A file that no longer imports as what was saved is
+    /// refused; nothing is matched up approximately.
+    ///
+    /// A differing [`ImporterIdentity`] is not itself a refusal. `build`
+    /// carries the target triple, so the same release on another operating
+    /// system differs there by construction, and a document that could not
+    /// cross platforms would be no use. What must agree is the scene.
+    pub fn reopen_step_import(
+        &self,
+        id: ObjectId,
+        import: impl FnOnce(&[u8]) -> Result<Import>,
+    ) -> Result<ReopenedStepImport> {
+        let stored = self.step_import(id)?.ok_or_else(|| {
+            CadError::input(format!("this document has no imported STEP object {id}"))
+        })?;
+
+        let outcome = import(&stored.source)?;
+        let (scene, diagnostics_now) = match outcome {
+            Import::Imported { scene, diagnostics } => (scene, diagnostics),
+            Import::Rejected { diagnostics } => {
+                return Err(CadError::input(format!(
+                    "the STEP file stored as {id} imported when it was saved and is refused now, \
+                     so its scene could not be re-attached: {}",
+                    describe(&diagnostics)
+                )));
+            }
+        };
+
+        let scene = stored.imported.scene.bind(scene)?;
+        Ok(ReopenedStepImport {
+            scene,
+            diagnostics_at_import: stored.imported.diagnostics_at_import,
+            diagnostics_now,
+            imported_by: stored.imported.imported_by,
+        })
+    }
+
+    fn read_imported_source(&self, imported: &ImportedStep) -> Result<Vec<u8>> {
+        let source = imported.source;
+        let row: Option<(Vec<u8>, Vec<u8>, i64, String)> = self
+            .conn
+            .query_row(
+                "SELECT bytes, content_hash, byte_len, format FROM imported_sources WHERE id = ?1",
+                params![source.to_bytes().as_slice()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(|e| CadError::io(format!("reading imported source {source}"), e))?;
+
+        let (bytes, content_hash, byte_len, format) = row.ok_or_else(|| {
+            CadError::input(format!(
+                "imported source {source} is not in this document; its bytes are the only copy \
+                 and cannot be recovered from what is left"
+            ))
+        })?;
+
+        if format != STEP_SOURCE_FORMAT {
+            return Err(CadError::input(format!(
+                "imported source {source} is stored as {format:?}, and this object was imported \
+                 from {STEP_SOURCE_FORMAT:?}"
+            )));
+        }
+
+        let stored_hash = ContentHash::from_slice(&content_hash)?;
+        let byte_len = u64::try_from(byte_len).map_err(|_| {
+            CadError::input(format!(
+                "imported source {source} declares {byte_len} bytes"
+            ))
+        })?;
+
+        // Length first: the cheapest disagreement to find, and the one a
+        // truncated write produces.
+        if bytes.len() as u64 != byte_len {
+            return Err(CadError::input(format!(
+                "imported source {source} holds {} byte(s) and declares {byte_len}",
+                bytes.len()
+            )));
+        }
+        if byte_len != imported.source_byte_len {
+            return Err(CadError::input(format!(
+                "imported source {source} holds {byte_len} byte(s); the object built from it \
+                 recorded {}",
+                imported.source_byte_len
+            )));
+        }
+        if ContentHash::of_bytes(&bytes) != stored_hash {
+            return Err(CadError::input(format!(
+                "imported source {source} does not match its stored hash; the file may be corrupt"
+            )));
+        }
+        if stored_hash != imported.source_hash {
+            return Err(CadError::input(format!(
+                "imported source {source} holds different bytes from the ones this object was \
+                 built from: stored {stored_hash}, expected {}",
+                imported.source_hash
+            )));
+        }
+        Ok(bytes)
+    }
+
     /// The order features must be rebuilt in.
     pub fn evaluation_order(&self) -> Result<Vec<ObjectId>> {
         let nodes: Vec<ObjectId> = self.objects()?.into_iter().map(|o| o.id).collect();
@@ -443,6 +684,24 @@ impl DocumentWriter<'_> {
         name: Option<&str>,
         payload: &ObjectPayload,
     ) -> Result<ContentHash> {
+        if let ObjectPayload::ImportedStep(_) = payload {
+            return Err(CadError::unsupported(
+                "an imported STEP object owns source bytes as well as a payload; write it with \
+                 put_imported_step so the object and its claim on those bytes are recorded \
+                 together",
+            ));
+        }
+        self.write_object(id, parent, ordinal, name, payload)
+    }
+
+    fn write_object(
+        &mut self,
+        id: ObjectId,
+        parent: Option<ObjectId>,
+        ordinal: i64,
+        name: Option<&str>,
+        payload: &ObjectPayload,
+    ) -> Result<ContentHash> {
         let bytes = payload.to_storage_bytes()?;
         let hash = ContentHash::of_bytes(&bytes);
 
@@ -471,6 +730,111 @@ impl DocumentWriter<'_> {
             )
             .map_err(|e| CadError::io(format!("writing object {id}"), e))?;
 
+        Ok(hash)
+    }
+
+    /// Stores the exact bytes of a STEP file, reusing an identical source.
+    ///
+    /// The bytes are the source of truth; the scene stored beside them is one
+    /// reading of them and can be redone. Content is the identity, so importing
+    /// the same file twice costs one copy — and, for the same reason, bytes
+    /// that differ by one character are a different source with a different
+    /// identifier, never an edit of an existing one.
+    ///
+    /// A source nothing refers to does not survive the transaction that created
+    /// it: reachability is what keeps bytes in a document, and
+    /// [`put_imported_step`][Self::put_imported_step] is what establishes it.
+    pub fn put_step_source(&mut self, bytes: &[u8]) -> Result<ImportedSourceId> {
+        let hash = ContentHash::of_bytes(bytes);
+        let byte_len = i64::try_from(bytes.len()).map_err(|_| {
+            CadError::input(format!(
+                "a source of {} bytes is beyond what this document addresses",
+                bytes.len()
+            ))
+        })?;
+
+        let existing: Option<Vec<u8>> = self
+            .tx
+            .query_row(
+                "SELECT id FROM imported_sources WHERE format = ?1 AND content_hash = ?2",
+                params![STEP_SOURCE_FORMAT, hash.as_bytes().as_slice()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| CadError::io("looking for an identical imported source", e))?;
+        if let Some(id) = existing {
+            return ImportedSourceId::from_slice(&id);
+        }
+
+        let id = ImportedSourceId::new();
+        self.tx
+            .execute(
+                &format!(
+                    "INSERT INTO imported_sources (id, format, bytes, content_hash, byte_len, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, {NOW_UTC})"
+                ),
+                params![
+                    id.to_bytes().as_slice(),
+                    STEP_SOURCE_FORMAT,
+                    bytes,
+                    hash.as_bytes().as_slice(),
+                    byte_len,
+                ],
+            )
+            .map_err(|e| CadError::io("writing imported source bytes", e))?;
+        Ok(id)
+    }
+
+    /// Records an imported STEP object and its claim on the source bytes.
+    ///
+    /// Both rows are written here so neither can be forgotten: an object
+    /// without the claim would have its bytes reclaimed at the end of this very
+    /// transaction, and a claim without an object would keep bytes nothing can
+    /// reach. The source must already exist — write it with
+    /// [`put_step_source`][Self::put_step_source] first, inside the same
+    /// [`Document::write`].
+    ///
+    /// Everything that can fail about an import — reading it, hashing it,
+    /// projecting the scene, comparing it — has to have happened before the
+    /// payload handed here could be constructed, which is what keeps a refused
+    /// import from ever opening a transaction.
+    pub fn put_imported_step(
+        &mut self,
+        id: ObjectId,
+        parent: Option<ObjectId>,
+        ordinal: i64,
+        name: Option<&str>,
+        imported: &ImportedStep,
+    ) -> Result<ContentHash> {
+        let payload = ObjectPayload::ImportedStep(imported.clone());
+        let hash = self.write_object(id, parent, ordinal, name, &payload)?;
+
+        // Rewriting an object may point it at different bytes; the claim it
+        // used to make must go with the reading it used to hold.
+        self.tx
+            .execute(
+                "DELETE FROM imported_source_refs WHERE object_id = ?1",
+                params![id.to_bytes().as_slice()],
+            )
+            .map_err(|e| CadError::io(format!("clearing source claims of object {id}"), e))?;
+        self.tx
+            .execute(
+                "INSERT INTO imported_source_refs (object_id, source_id) VALUES (?1, ?2)",
+                params![
+                    id.to_bytes().as_slice(),
+                    imported.source.to_bytes().as_slice(),
+                ],
+            )
+            .map_err(|e| {
+                CadError::io(
+                    format!(
+                        "recording that object {id} is built from source {}; it must be written \
+                         first",
+                        imported.source
+                    ),
+                    e,
+                )
+            })?;
         Ok(hash)
     }
 
@@ -755,6 +1119,39 @@ fn declared_capabilities(conn: &Connection) -> Result<BTreeSet<String>> {
         }
     }
     Ok(capabilities)
+}
+
+/// Summarises diagnostics for an error message, keeping it to one line.
+fn describe(diagnostics: &[ImportDiagnostic]) -> String {
+    if diagnostics.is_empty() {
+        return "it said nothing about why".to_owned();
+    }
+    diagnostics
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Drops source bytes nothing refers to any more, inside the same transaction.
+///
+/// Deleting an imported object cascades away its claim on a source; without
+/// this the bytes would stay, reachable by nothing and removable by no command.
+/// A source is only ever written together with the object that claims it, so
+/// this cannot collect something a caller was about to use.
+///
+/// It runs on the successful path of every edit, and only there. A document
+/// holding an object this build cannot read opens read-only, so it never gets
+/// here — which is what stops a future object's source from being reclaimed by
+/// a build that cannot see the reference inside it.
+fn reclaim_imported_sources(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute(
+        "DELETE FROM imported_sources
+         WHERE id NOT IN (SELECT source_id FROM imported_source_refs)",
+        [],
+    )
+    .map_err(|e| CadError::io("reclaiming unreferenced imported sources", e))?;
+    Ok(())
 }
 
 /// Rebuilds the denormalised capabilities index after a successful edit.

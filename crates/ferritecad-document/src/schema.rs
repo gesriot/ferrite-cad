@@ -8,7 +8,15 @@ pub const DOCUMENT_EXTENSION: &str = "fcad";
 /// Extension of the regenerable cache sidecar.
 pub const CACHE_EXTENSION: &str = "fcad-cache";
 
-/// Schema version this build writes.
+/// Version of the document *format* this build writes, recorded in `meta`.
+///
+/// Distinct from the SQL schema version in `PRAGMA user_version`, and the two
+/// have been apart since schema v2. The SQL version counts migrations and moves
+/// whenever a table or column is added; this one describes what a reader must
+/// understand to make sense of the contents, and moves only when that changes.
+/// Adding a table that older builds neither read nor need does not change it,
+/// and a capability declaration is the finer-grained instrument for saying what
+/// a document now depends on.
 pub const FORMAT_VERSION: u32 = 1;
 
 /// The oldest reader able to make sense of what this build writes.
@@ -21,7 +29,7 @@ pub const MINIMUM_READER_VERSION: u32 = 1;
 ///
 /// A document that requires anything outside this list opens read-only: it is
 /// better to refuse to write than to drop what we did not understand.
-pub const SUPPORTED_CAPABILITIES: &[&str] = &["core.part.v1"];
+pub const SUPPORTED_CAPABILITIES: &[&str] = &["core.part.v1", "exchange.step.imported.v1"];
 
 /// `PRAGMA application_id` for a document: the ASCII bytes `FCAD`.
 ///
@@ -109,6 +117,48 @@ CREATE INDEX topology_refs_by_producer ON topology_refs(producer_feature);
     r#"
 ALTER TABLE topology_refs
     ADD COLUMN payload_hash BLOB CHECK (payload_hash IS NULL OR length(payload_hash) = 32);
+"#,
+    // v3: the exact bytes of an imported file. They are source of truth in the
+    // same sense the feature graph is — the scene stored beside them is one
+    // reading, and a reading can be redone in a new kernel session, but only
+    // while the bytes are still here. They are deliberately not in an object
+    // payload: a payload is decoded to be understood, and multi-megabyte
+    // source data has no business being decoded to answer a question about a
+    // document's structure.
+    r#"
+CREATE TABLE imported_sources (
+    id           BLOB    PRIMARY KEY NOT NULL CHECK (length(id) = 16),
+    -- A project-owned tag rather than a media type: what this names is how
+    -- FerriteCAD reads the bytes, which is a narrower claim than what the
+    -- bytes are, and one this project is entitled to make.
+    format       TEXT    NOT NULL,
+    bytes        BLOB    NOT NULL,
+    -- BLAKE3-256, the same digest as objects.payload_hash and
+    -- topology_refs.payload_hash. Checked on every read, before the bytes
+    -- reach anything that would interpret them.
+    content_hash BLOB    NOT NULL CHECK (length(content_hash) = 32),
+    byte_len     INTEGER NOT NULL CHECK (byte_len >= 0),
+    created_at   TEXT    NOT NULL,
+    -- A length that disagrees with the blob is corruption SQLite can catch
+    -- without help, so it does.
+    CHECK (length(bytes) = byte_len)
+) STRICT;
+
+-- One file, one row, however many objects were imported from it. A source is
+-- immutable, so identical content is the same source rather than a copy.
+CREATE UNIQUE INDEX imported_sources_by_content ON imported_sources(format, content_hash);
+
+-- What makes a source reachable, as a row rather than a field inside a CBOR
+-- payload. SQLite can enforce a row: deleting an object drops its claim on the
+-- bytes even when this build cannot decode that object, and an object this
+-- build has never heard of keeps its source alive for the build that can.
+CREATE TABLE imported_source_refs (
+    object_id BLOB NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
+    source_id BLOB NOT NULL REFERENCES imported_sources(id) ON DELETE RESTRICT,
+    PRIMARY KEY (object_id, source_id)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX imported_source_refs_by_source ON imported_source_refs(source_id);
 "#,
 ];
 
@@ -327,10 +377,117 @@ mod tests {
     fn migration_is_idempotent() {
         let mut conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
         migrate_document(&mut conn).expect("fresh database migrates");
-        assert_eq!(schema_version(&conn).expect("version readable"), 2);
+        assert_eq!(schema_version(&conn).expect("version readable"), 3);
 
         migrate_document(&mut conn).expect("re-running applies nothing");
-        assert_eq!(schema_version(&conn).expect("version readable"), 2);
+        assert_eq!(schema_version(&conn).expect("version readable"), 3);
+    }
+
+    /// Brings a database up to `version` and no further, as an older build
+    /// would have left it.
+    fn migrate_to(conn: &mut Connection, version: usize) {
+        conn.pragma_update(None, "application_id", DOCUMENT_APPLICATION_ID)
+            .expect("pragma is writable");
+        for statements in &MIGRATIONS[..version] {
+            conn.execute_batch(statements).expect("migration applies");
+        }
+        conn.pragma_update(None, "user_version", version as i64)
+            .expect("pragma is writable");
+    }
+
+    #[test]
+    fn a_schema_v2_document_reaches_v3_with_everything_it_had() {
+        let mut conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
+        migrate_to(&mut conn, 2);
+
+        let object = [7u8; 16];
+        let reference = [9u8; 16];
+        conn.execute(
+            "INSERT INTO objects (id, kind, schema_version, ordinal, name, payload, payload_hash)
+             VALUES (?1, 'sketch', 1, 0, 'Profile', ?2, ?3)",
+            rusqlite::params![
+                object.as_slice(),
+                b"payload".as_slice(),
+                [1u8; 32].as_slice()
+            ],
+        )
+        .expect("v2 accepts an object");
+        conn.execute(
+            "INSERT INTO topology_refs (id, owner_id, producer_feature, expected_kind, payload)
+             VALUES (?1, ?2, ?2, 'face', ?3)",
+            rusqlite::params![
+                reference.as_slice(),
+                object.as_slice(),
+                b"reference".as_slice()
+            ],
+        )
+        .expect("v2 accepts a topology reference");
+
+        migrate_document(&mut conn).expect("v2 migrates to v3");
+        assert_eq!(schema_version(&conn).expect("version readable"), 3);
+
+        let (name, payload): (String, Vec<u8>) = conn
+            .query_row(
+                "SELECT name, payload FROM objects WHERE id = ?1",
+                rusqlite::params![object.as_slice()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("the object survived");
+        assert_eq!(name, "Profile");
+        assert_eq!(payload, b"payload");
+
+        let stored: Vec<u8> = conn
+            .query_row(
+                "SELECT payload FROM topology_refs WHERE id = ?1",
+                rusqlite::params![reference.as_slice()],
+                |row| row.get(0),
+            )
+            .expect("the topology reference survived");
+        assert_eq!(stored, b"reference");
+
+        // And the new table is there and empty, rather than absent or guessed at.
+        let sources: i64 = conn
+            .query_row("SELECT count(*) FROM imported_sources", [], |row| {
+                row.get(0)
+            })
+            .expect("imported_sources exists");
+        assert_eq!(sources, 0);
+    }
+
+    #[test]
+    fn a_source_must_agree_with_its_own_length() {
+        let mut conn = Connection::open_in_memory().expect("in-memory sqlite always opens");
+        migrate_document(&mut conn).expect("fresh database migrates");
+
+        let insert =
+            "INSERT INTO imported_sources (id, format, bytes, content_hash, byte_len, created_at)
+                      VALUES (?1, 'exchange.step', ?2, ?3, ?4, '2026-01-01T00:00:00.000Z')";
+        assert!(
+            conn.execute(
+                insert,
+                rusqlite::params![
+                    [1u8; 16].as_slice(),
+                    b"ISO-10303-21;".as_slice(),
+                    [2u8; 32].as_slice(),
+                    99i64
+                ],
+            )
+            .is_err(),
+            "a blob shorter than its declared length is corruption SQLite can catch"
+        );
+        assert!(
+            conn.execute(
+                insert,
+                rusqlite::params![
+                    [1u8; 16].as_slice(),
+                    b"ISO-10303-21;".as_slice(),
+                    [2u8; 31].as_slice(),
+                    13i64
+                ],
+            )
+            .is_err(),
+            "a 31-byte digest is not a BLAKE3-256 hash"
+        );
     }
 
     #[test]

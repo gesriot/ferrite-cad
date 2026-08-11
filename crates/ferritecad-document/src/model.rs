@@ -6,9 +6,11 @@
 //! to a geometry kernel, a face index or a traversal order, because none of
 //! those survive a rebuild.
 
+use ferritecad_exchange::{Diagnostic as ImportDiagnostic, PersistedScene};
+use ferritecad_kernel::KernelIdentity;
 use ferritecad_types::{
-    CadError, CanonicalHasher, ContentHash, Dimension, ObjectId, Point3, Result, StableEntityId,
-    Transform, normalize_f64,
+    CadError, CanonicalHasher, ContentHash, Dimension, ImportedSourceId, ObjectId, Point3, Result,
+    StableEntityId, Transform, normalize_f64,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -17,6 +19,18 @@ use crate::envelope::{Envelope, UnknownObject};
 
 /// The capability every object this build writes depends on.
 pub const CORE_CAPABILITY: &str = "core.part.v1";
+
+/// The capability an [`ImportedStep`] object depends on.
+///
+/// Declared separately from [`CORE_CAPABILITY`] so a build that predates this
+/// slice reaches the right conclusion on its own: it does not recognise the
+/// capability, so it opens the document read-only and preserves the object it
+/// cannot read, rather than rewriting a document whose source-of-truth bytes it
+/// has no idea are there.
+pub const IMPORTED_STEP_CAPABILITY: &str = "exchange.step.imported.v1";
+
+/// The `format` tag written to `imported_sources` for STEP bytes.
+pub const STEP_SOURCE_FORMAT: &str = "exchange.step";
 
 /// An object type this build implements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -27,6 +41,7 @@ pub enum ObjectKind {
     Sketch,
     Body,
     Extrude,
+    ImportedStep,
 }
 
 impl ObjectKind {
@@ -38,6 +53,7 @@ impl ObjectKind {
             Self::Sketch => "sketch",
             Self::Body => "body",
             Self::Extrude => "feature.extrude",
+            Self::ImportedStep => "exchange.step.imported",
         }
     }
 
@@ -50,7 +66,17 @@ impl ObjectKind {
             "sketch" => Some(Self::Sketch),
             "body" => Some(Self::Body),
             "feature.extrude" => Some(Self::Extrude),
+            "exchange.step.imported" => Some(Self::ImportedStep),
             _ => None,
+        }
+    }
+
+    /// The capabilities a reader must implement to rewrite an object of this
+    /// type without losing what it means.
+    pub fn required_capabilities(self) -> Vec<String> {
+        match self {
+            Self::ImportedStep => vec![IMPORTED_STEP_CAPABILITY.to_owned()],
+            _ => vec![CORE_CAPABILITY.to_owned()],
         }
     }
 
@@ -452,6 +478,101 @@ pub(crate) struct TopologyRefPayload {
     pub fallback_signature: Option<GeomSignature>,
 }
 
+/// Which kernel read an imported file, at the moment it was read.
+///
+/// [`KernelIdentity`] written down. It is provenance and nothing else: a
+/// document whose import was read by another build, another Open CASCADE or
+/// another operating system still opens, still re-imports and is still checked
+/// against what was stored. The identity is what lets a difference in the
+/// result be explained rather than merely noticed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImporterIdentity {
+    pub id: String,
+    pub version: String,
+    /// Whatever else changes results — patch level, compiler, target triple.
+    /// This is why a differing identity is not grounds to refuse a document:
+    /// the same release built for another platform differs here by design.
+    pub build: String,
+}
+
+impl ImporterIdentity {
+    pub fn of(kernel: &KernelIdentity) -> Self {
+        Self {
+            id: kernel.id().to_owned(),
+            version: kernel.version().to_owned(),
+            build: kernel.build().to_owned(),
+        }
+    }
+
+    /// Reconstructs the kernel contract's own type, applying its validation.
+    pub fn to_kernel_identity(&self) -> Result<KernelIdentity> {
+        KernelIdentity::new(&self.id, &self.version, &self.build)
+    }
+}
+
+impl std::fmt::Display for ImporterIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.build.is_empty() {
+            write!(f, "{} {}", self.id, self.version)
+        } else {
+            write!(f, "{} {} ({})", self.id, self.version, self.build)
+        }
+    }
+}
+
+/// A STEP file this document carries, and what reading it once produced.
+///
+/// The bytes are not here. They live in `imported_sources`, addressed by
+/// [`source`][Self::source], because a payload is something a reader decodes to
+/// learn a document's shape and a source file is something it must not have to
+/// decode for that. What is here is the reading: the portable scene, who read
+/// it, and what they said about it.
+///
+/// # Two of these facts are repeated from the source row on purpose
+///
+/// [`source_hash`][Self::source_hash] and [`source_byte_len`][Self::source_byte_len]
+/// also appear as columns beside the bytes. The duplication is the check: the
+/// row proves its own bytes are intact, and this object proves the intact bytes
+/// are the ones *it* was built from. A source row swapped underneath an object
+/// would satisfy the first and fail the second.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportedStep {
+    /// The row holding the exact bytes. Immutable: importing different bytes
+    /// mints a new source rather than editing this one.
+    pub source: ImportedSourceId,
+    pub source_hash: ContentHash,
+    pub source_byte_len: u64,
+    /// What the file was called where it came from, if that was worth keeping.
+    /// A hint for a person, never a path anything opens: the bytes in this
+    /// document are the source, and no external file is consulted.
+    #[serde(default)]
+    pub source_name: Option<String>,
+    /// The handle-free projection of the scene that import produced.
+    pub scene: PersistedScene,
+    pub imported_by: ImporterIdentity,
+    /// What the importer reported *then*.
+    ///
+    /// Historical, and never rewritten. Re-importing in a later session
+    /// produces its own diagnostics from its own reading, possibly by a
+    /// different kernel build; presenting either as the other would claim an
+    /// observation nobody made.
+    pub diagnostics_at_import: Vec<ImportDiagnostic>,
+}
+
+impl ImportedStep {
+    fn validate(&self) -> Result<()> {
+        self.scene.validate()?;
+        self.imported_by.to_kernel_identity()?;
+        if self.source_byte_len > i64::MAX as u64 {
+            return Err(CadError::input(format!(
+                "an imported source of {} bytes is beyond what this document addresses",
+                self.source_byte_len
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// The decoded content of a stored object.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -461,6 +582,8 @@ pub enum ObjectPayload {
     Sketch(Sketch),
     Body(Body),
     Extrude(Extrude),
+    /// A STEP file and the scene one reading of it produced.
+    ImportedStep(ImportedStep),
     /// An object of a type this build does not implement, preserved verbatim.
     Unknown(UnknownObject),
 }
@@ -475,6 +598,7 @@ impl ObjectPayload {
             Self::Sketch(_) => ObjectKind::Sketch.as_str(),
             Self::Body(_) => ObjectKind::Body.as_str(),
             Self::Extrude(_) => ObjectKind::Extrude.as_str(),
+            Self::ImportedStep(_) => ObjectKind::ImportedStep.as_str(),
             Self::Unknown(unknown) => &unknown.type_name,
         }
     }
@@ -497,7 +621,10 @@ impl ObjectPayload {
     pub fn required_capabilities(&self) -> Vec<String> {
         match self {
             Self::Unknown(unknown) => unknown.required_capabilities.clone(),
-            _ => vec![CORE_CAPABILITY.to_owned()],
+            known => known
+                .kind()
+                .map(ObjectKind::required_capabilities)
+                .unwrap_or_else(|| vec![CORE_CAPABILITY.to_owned()]),
         }
     }
 
@@ -516,6 +643,7 @@ impl ObjectPayload {
             Self::Sketch(v) => Envelope::encode(name, version, capabilities, v)?,
             Self::Body(v) => Envelope::encode(name, version, capabilities, v)?,
             Self::Extrude(v) => Envelope::encode(name, version, capabilities, v)?,
+            Self::ImportedStep(v) => Envelope::encode(name, version, capabilities, v)?,
             Self::Unknown(unknown) => return Ok(unknown.raw_envelope().to_vec()),
         };
         envelope.to_bytes()
@@ -534,7 +662,7 @@ impl ObjectPayload {
         // also prevents a same-version type with a future capability from
         // being re-written without that capability.
         if envelope.schema_version != kind.schema_version()
-            || envelope.required_capabilities != vec![CORE_CAPABILITY.to_owned()]
+            || envelope.required_capabilities != kind.required_capabilities()
         {
             return Ok(Self::Unknown(UnknownObject::new(envelope, bytes.to_vec())));
         }
@@ -545,6 +673,7 @@ impl ObjectPayload {
             ObjectKind::Sketch => Self::Sketch(envelope.decode()?),
             ObjectKind::Body => Self::Body(envelope.decode()?),
             ObjectKind::Extrude => Self::Extrude(envelope.decode()?),
+            ObjectKind::ImportedStep => Self::ImportedStep(envelope.decode()?),
         };
         payload.validate()?;
         Ok(payload)
@@ -606,6 +735,7 @@ impl ObjectPayload {
                     )),
                 }
             }
+            Self::ImportedStep(imported) => imported.validate(),
             Self::Unknown(_) => Ok(()),
         }
     }
