@@ -127,6 +127,12 @@ pub struct StepImportRequest<'a> {
 /// here links one, and the adapter that does implements this from the other
 /// side.
 pub trait StepImporter {
+    /// Which implementation is making the current observation.
+    ///
+    /// This is provenance, not a compatibility gate. It is returned beside
+    /// `diagnostics_now` so a caller can attribute both readings instead of
+    /// knowing only who made the historical one.
+    fn identity(&self) -> &KernelIdentity;
     fn import(&mut self, source: &[u8]) -> Result<Import>;
     /// Called for every shape of a scene that could not be bound.
     fn release(&mut self, shape: ShapeHandle);
@@ -150,6 +156,8 @@ pub struct ReopenedStepImport {
     pub diagnostics_now: Vec<ImportDiagnostic>,
     /// Which kernel produced the stored scene.
     pub imported_by: ImporterIdentity,
+    /// Which kernel produced the fresh handles and `diagnostics_now`.
+    pub reopened_by: ImporterIdentity,
 }
 
 /// An open native document.
@@ -316,6 +324,11 @@ impl Document {
                 self.path.display()
             )));
         }
+
+        // Reachability rows are the only thing that makes automatic source
+        // reclamation safe. Refuse to edit a damaged document before a
+        // transaction can turn recoverable orphan bytes into permanent loss.
+        self.require_imported_source_reachability()?;
 
         let tx = self
             .conn
@@ -553,6 +566,7 @@ impl Document {
             )));
         };
 
+        require_imported_source_ref(&self.conn, id, imported.source)?;
         let source = self.read_imported_source(&imported)?;
         Ok(Some(StoredStepImport { imported, source }))
     }
@@ -582,6 +596,7 @@ impl Document {
             CadError::input(format!("this document has no imported STEP object {id}"))
         })?;
 
+        let reopened_by = ImporterIdentity::of(importer.identity());
         let outcome = importer.import(&stored.source)?;
         let (scene, diagnostics_now) = match outcome {
             Import::Imported { scene, diagnostics } => (scene, diagnostics),
@@ -611,70 +626,45 @@ impl Document {
             diagnostics_at_import: stored.imported.diagnostics_at_import,
             diagnostics_now,
             imported_by: stored.imported.imported_by,
+            reopened_by,
         })
     }
 
-    fn read_imported_source(&self, imported: &ImportedStep) -> Result<Vec<u8>> {
-        let source = imported.source;
-        let row: Option<(Vec<u8>, Vec<u8>, i64, String)> = self
+    /// Confirms the denormalised reachability table is safe to use for GC.
+    ///
+    /// This deliberately does not hash every potentially large source before
+    /// every edit; `step_import` and `validate` do that when the bytes are
+    /// read. Here the question is narrower: would collecting an unreferenced
+    /// row destroy bytes a known object still names?
+    pub(crate) fn require_imported_source_reachability(&self) -> Result<()> {
+        for record in self.objects()? {
+            if let ObjectPayload::ImportedStep(imported) = record.payload {
+                require_imported_source_ref(&self.conn, record.id, imported.source)?;
+            }
+        }
+
+        let orphan_count: i64 = self
             .conn
             .query_row(
-                "SELECT bytes, content_hash, byte_len, format FROM imported_sources WHERE id = ?1",
-                params![source.to_bytes().as_slice()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                "SELECT count(*) FROM imported_sources s
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM imported_source_refs r WHERE r.source_id = s.id
+                 )",
+                [],
+                |row| row.get(0),
             )
-            .optional()
-            .map_err(|e| CadError::io(format!("reading imported source {source}"), e))?;
+            .map_err(|e| CadError::io("checking imported source reachability", e))?;
+        if orphan_count != 0 {
+            return Err(CadError::input(format!(
+                "this document has {orphan_count} imported source row(s) with no owning object; \
+                 refusing to edit because automatic cleanup could destroy recoverable source bytes"
+            )));
+        }
+        Ok(())
+    }
 
-        let (bytes, content_hash, byte_len, format) = row.ok_or_else(|| {
-            CadError::input(format!(
-                "imported source {source} is not in this document; its bytes are the only copy \
-                 and cannot be recovered from what is left"
-            ))
-        })?;
-
-        if format != STEP_SOURCE_FORMAT {
-            return Err(CadError::input(format!(
-                "imported source {source} is stored as {format:?}, and this object was imported \
-                 from {STEP_SOURCE_FORMAT:?}"
-            )));
-        }
-
-        let stored_hash = ContentHash::from_slice(&content_hash)?;
-        let byte_len = u64::try_from(byte_len).map_err(|_| {
-            CadError::input(format!(
-                "imported source {source} declares {byte_len} bytes"
-            ))
-        })?;
-
-        // Length first: the cheapest disagreement to find, and the one a
-        // truncated write produces.
-        if bytes.len() as u64 != byte_len {
-            return Err(CadError::input(format!(
-                "imported source {source} holds {} byte(s) and declares {byte_len}",
-                bytes.len()
-            )));
-        }
-        if byte_len != imported.source_byte_len {
-            return Err(CadError::input(format!(
-                "imported source {source} holds {byte_len} byte(s); the object built from it \
-                 recorded {}",
-                imported.source_byte_len
-            )));
-        }
-        if ContentHash::of_bytes(&bytes) != stored_hash {
-            return Err(CadError::input(format!(
-                "imported source {source} does not match its stored hash; the file may be corrupt"
-            )));
-        }
-        if stored_hash != imported.source_hash {
-            return Err(CadError::input(format!(
-                "imported source {source} holds different bytes from the ones this object was \
-                 built from: stored {stored_hash}, expected {}",
-                imported.source_hash
-            )));
-        }
-        Ok(bytes)
+    fn read_imported_source(&self, imported: &ImportedStep) -> Result<Vec<u8>> {
+        read_imported_source(&self.conn, imported)
     }
 
     /// The order features must be rebuilt in.
@@ -700,6 +690,115 @@ impl Document {
     }
 }
 
+/// Reads and verifies one immutable source row.
+///
+/// Shared by the ordinary read path and the low-level writer: persistence must
+/// reject a mismatched source/object pair when it is written, not merely the
+/// next time somebody tries to use it.
+fn read_imported_source(conn: &Connection, imported: &ImportedStep) -> Result<Vec<u8>> {
+    let source = imported.source;
+    let row: Option<(Vec<u8>, Vec<u8>, i64, String)> = conn
+        .query_row(
+            "SELECT bytes, content_hash, byte_len, format FROM imported_sources WHERE id = ?1",
+            params![source.to_bytes().as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()
+        .map_err(|e| CadError::io(format!("reading imported source {source}"), e))?;
+
+    let (bytes, content_hash, byte_len, format) = row.ok_or_else(|| {
+        CadError::input(format!(
+            "imported source {source} is not in this document; its bytes are the only copy \
+             and cannot be recovered from what is left"
+        ))
+    })?;
+
+    if format != STEP_SOURCE_FORMAT {
+        return Err(CadError::input(format!(
+            "imported source {source} is stored as {format:?}, and this object was imported \
+             from {STEP_SOURCE_FORMAT:?}"
+        )));
+    }
+
+    let stored_hash = ContentHash::from_slice(&content_hash)?;
+    let byte_len = u64::try_from(byte_len).map_err(|_| {
+        CadError::input(format!(
+            "imported source {source} declares {byte_len} bytes"
+        ))
+    })?;
+
+    // Length first: the cheapest disagreement to find, and the one a
+    // truncated write produces.
+    if bytes.len() as u64 != byte_len {
+        return Err(CadError::input(format!(
+            "imported source {source} holds {} byte(s) and declares {byte_len}",
+            bytes.len()
+        )));
+    }
+    if byte_len != imported.source_byte_len {
+        return Err(CadError::input(format!(
+            "imported source {source} holds {byte_len} byte(s); the object built from it \
+             recorded {}",
+            imported.source_byte_len
+        )));
+    }
+    if ContentHash::of_bytes(&bytes) != stored_hash {
+        return Err(CadError::input(format!(
+            "imported source {source} does not match its stored hash; the file may be corrupt"
+        )));
+    }
+    if stored_hash != imported.source_hash {
+        return Err(CadError::input(format!(
+            "imported source {source} holds different bytes from the ones this object was \
+             built from: stored {stored_hash}, expected {}",
+            imported.source_hash
+        )));
+    }
+    Ok(bytes)
+}
+
+/// Requires exactly one reachability row, and requires it to name the source
+/// the object's payload names. Multiple rows are corruption too: this object
+/// contract has exactly one source.
+fn require_imported_source_ref(
+    conn: &Connection,
+    object: ObjectId,
+    expected: ImportedSourceId,
+) -> Result<()> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT source_id FROM imported_source_refs
+             WHERE object_id = ?1 ORDER BY source_id",
+        )
+        .map_err(|e| CadError::io("preparing imported source reference query", e))?;
+    let rows = stmt
+        .query_map(params![object.to_bytes().as_slice()], |row| {
+            row.get::<_, Vec<u8>>(0)
+        })
+        .map_err(|e| CadError::io(format!("reading source claims of object {object}"), e))?;
+    let mut found = Vec::new();
+    for row in rows {
+        found.push(
+            row.map_err(|e| CadError::io(format!("reading source claim of object {object}"), e))?,
+        );
+    }
+
+    if found.len() != 1 {
+        return Err(CadError::input(format!(
+            "imported STEP object {object} must claim exactly one source row, found {}",
+            found.len()
+        )));
+    }
+    let actual = ImportedSourceId::from_slice(&found[0])?;
+    if actual != expected {
+        return Err(CadError::input(format!(
+            "imported STEP object {object} names source {expected} in its payload but claims \
+             source {actual} in the reachability table"
+        )));
+    }
+    Ok(())
+}
+
 /// The write half of a document, valid only inside [`Document::write`].
 #[derive(Debug)]
 pub struct DocumentWriter<'a> {
@@ -723,7 +822,22 @@ impl DocumentWriter<'_> {
                  together",
             ));
         }
-        self.write_object(id, parent, ordinal, name, payload)
+        let hash = self.write_object(id, parent, ordinal, name, payload)?;
+
+        if !matches!(payload, ObjectPayload::Unknown(_)) {
+            // Replacing an imported object with a known ordinary one also
+            // replaces its ownership contract. Leaving the old claim behind
+            // would keep a BLOB that no object can reach forever. An unknown
+            // payload is different: this build cannot prove it does not own
+            // the source, so forward-compatible preservation keeps its claim.
+            self.tx
+                .execute(
+                    "DELETE FROM imported_source_refs WHERE object_id = ?1",
+                    params![id.to_bytes().as_slice()],
+                )
+                .map_err(|e| CadError::io(format!("clearing source claims of object {id}"), e))?;
+        }
+        Ok(hash)
     }
 
     fn write_object(
@@ -785,16 +899,23 @@ impl DocumentWriter<'_> {
             ))
         })?;
 
-        let existing: Option<Vec<u8>> = self
+        let existing: Option<(Vec<u8>, Vec<u8>, i64)> = self
             .tx
             .query_row(
-                "SELECT id FROM imported_sources WHERE format = ?1 AND content_hash = ?2",
+                "SELECT id, bytes, byte_len FROM imported_sources
+                 WHERE format = ?1 AND content_hash = ?2",
                 params![STEP_SOURCE_FORMAT, hash.as_bytes().as_slice()],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(|e| CadError::io("looking for an identical imported source", e))?;
-        if let Some(id) = existing {
+        if let Some((id, stored, stored_len)) = existing {
+            if stored_len != byte_len || stored.as_slice() != bytes {
+                return Err(CadError::input(
+                    "an imported source has this content hash but different bytes or length; \
+                     refusing to reuse a corrupt row or assume a hash collision is harmless",
+                ));
+            }
             return ImportedSourceId::from_slice(&id);
         }
 
@@ -838,6 +959,12 @@ impl DocumentWriter<'_> {
         name: Option<&str>,
         imported: &ImportedStep,
     ) -> Result<ContentHash> {
+        // The payload repeats the source hash and length so a swapped source
+        // row can be detected later. Enforce the relationship on the way in as
+        // well: the low-level writer is public and must not be able to create a
+        // document that only discovers its own inconsistency on reopening.
+        read_imported_source(self.tx, imported)?;
+
         let payload = ObjectPayload::ImportedStep(imported.clone());
         let hash = self.write_object(id, parent, ordinal, name, &payload)?;
 

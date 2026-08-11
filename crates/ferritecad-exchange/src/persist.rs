@@ -29,6 +29,14 @@
 //! the same importer yield the same scene in the same order. Where that does
 //! not hold — a different kernel that orders an assembly differently, say —
 //! the comparison fails and the caller is told, which is the intended outcome.
+//!
+//! There is one deliberate boundary to that statement. Two definitions with
+//! identical persisted fields and perfectly symmetric occurrences are not
+//! distinguishable by this projection; swapping both the definitions and
+//! those indistinguishable occurrences leaves no portable value changed. No
+//! durable reference points into an imported assembly yet. Before one does, a
+//! source-stable definition key from the STEP/XDE layer is required — adding a
+//! geometric guess here would only rename silent retargeting.
 
 use ferritecad_types::{CadError, Result, normalize_f64};
 use serde::{Deserialize, Serialize};
@@ -153,6 +161,11 @@ impl PersistedScene {
     /// refused and nothing is bound. What comes back is `current` itself, so
     /// the only handles a caller can reach are the ones its own session issued.
     pub fn bind(&self, current: Scene) -> Result<Scene> {
+        // Public fields and serde can construct a PersistedScene without ever
+        // going through Scene::persist. Binding is the last boundary before
+        // session-local handles become visible, so it must not rely on a
+        // caller having remembered to validate the stored half first.
+        self.validate()?;
         let fresh = current.persist()?;
         self.require_same_as(&fresh)?;
         Ok(current)
@@ -627,5 +640,16 @@ mod tests {
         broken.instances[1].definition = 0;
         broken.instances[1].placement[0] = f64::NAN;
         assert!(broken.validate().is_err());
+    }
+
+    #[test]
+    fn binding_validates_the_stored_half_it_was_given() {
+        let current = scene(SessionId::new());
+        let mut stored = current.persist().expect("projects");
+        stored.instances[1].definition = 99;
+
+        stored
+            .bind(current)
+            .expect_err("a malformed stored scene must not reach its handles");
     }
 }

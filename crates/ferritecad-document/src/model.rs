@@ -22,11 +22,12 @@ pub const CORE_CAPABILITY: &str = "core.part.v1";
 
 /// The capability an [`ImportedStep`] object depends on.
 ///
-/// Declared separately from [`CORE_CAPABILITY`] so a build that predates this
-/// slice reaches the right conclusion on its own: it does not recognise the
-/// capability, so it opens the document read-only and preserves the object it
-/// cannot read, rather than rewriting a document whose source-of-truth bytes it
-/// has no idea are there.
+/// Declared separately from [`CORE_CAPABILITY`] so a reader that understands
+/// SQL schema v3 but not this object reaches the right conclusion on its own:
+/// it opens the document read-only and preserves the object it cannot read,
+/// rather than rewriting a document whose source-of-truth bytes it has no idea
+/// are there. A pre-v3 binary is stricter still and refuses the newer SQL
+/// schema before it reaches capability negotiation.
 pub const IMPORTED_STEP_CAPABILITY: &str = "exchange.step.imported.v1";
 
 /// The `format` tag written to `imported_sources` for STEP bytes.

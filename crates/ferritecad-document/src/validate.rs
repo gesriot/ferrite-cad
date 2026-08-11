@@ -116,6 +116,18 @@ pub(crate) fn validate(document: &Document) -> Result<ValidationReport> {
         check_payload_integrity(object, &mut report);
         check_parent(object, &by_id, &mut report);
         check_semantic_references(object, &by_id, &edges, &mut report);
+        if matches!(object.payload, ObjectPayload::ImportedStep(_))
+            && let Err(error) = document.step_import(object.id)
+        {
+            report.error(
+                "imported-source.invalid",
+                Some(object.id),
+                error.to_string(),
+            );
+        }
+    }
+    if let Err(error) = document.require_imported_source_reachability() {
+        report.error("imported-source.unreachable", None, error.to_string());
     }
     check_parent_cycles(&objects, &mut report);
 

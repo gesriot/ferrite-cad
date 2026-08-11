@@ -14,9 +14,10 @@ pub const CACHE_EXTENSION: &str = "fcad-cache";
 /// have been apart since schema v2. The SQL version counts migrations and moves
 /// whenever a table or column is added; this one describes what a reader must
 /// understand to make sense of the contents, and moves only when that changes.
-/// Adding a table that older builds neither read nor need does not change it,
-/// and a capability declaration is the finer-grained instrument for saying what
-/// a document now depends on.
+/// Adding a storage table does not by itself change it: SQL compatibility is
+/// enforced independently (a schema-v2 binary refuses schema v3), while a
+/// capability declaration is the finer-grained instrument for readers that do
+/// understand the container schema but not a particular object's meaning.
 pub const FORMAT_VERSION: u32 = 1;
 
 /// The oldest reader able to make sense of what this build writes.

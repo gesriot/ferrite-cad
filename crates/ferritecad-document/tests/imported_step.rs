@@ -12,8 +12,8 @@
 #![allow(clippy::panic)]
 
 use ferritecad_document::{
-    Access, Document, IMPORTED_STEP_CAPABILITY, ImportedStep, ImporterIdentity, ObjectPayload,
-    STEP_SOURCE_FORMAT, StepImportRequest, StepImporter,
+    Access, Body, Document, IMPORTED_STEP_CAPABILITY, ImportedStep, ImporterIdentity,
+    ObjectPayload, STEP_SOURCE_FORMAT, StepImportRequest, StepImporter,
 };
 use ferritecad_exchange::{
     ColourSource, Definition, Diagnostic, Import, Instance, Scene, Severity, Stage,
@@ -110,6 +110,7 @@ fn imported(session: SessionId, diagnostics: Vec<Diagnostic>) -> Import {
 /// record of being asked and of being given anything back.
 struct Importer<F> {
     reply: F,
+    identity: KernelIdentity,
     asked: bool,
     released: Vec<ShapeHandle>,
 }
@@ -118,6 +119,16 @@ impl<F: FnMut(&[u8]) -> Result<Import>> Importer<F> {
     fn new(reply: F) -> Self {
         Self {
             reply,
+            identity: kernel(),
+            asked: false,
+            released: Vec::new(),
+        }
+    }
+
+    fn with_identity(identity: KernelIdentity, reply: F) -> Self {
+        Self {
+            reply,
+            identity,
             asked: false,
             released: Vec::new(),
         }
@@ -125,6 +136,10 @@ impl<F: FnMut(&[u8]) -> Result<Import>> Importer<F> {
 }
 
 impl<F: FnMut(&[u8]) -> Result<Import>> StepImporter for Importer<F> {
+    fn identity(&self) -> &KernelIdentity {
+        &self.identity
+    }
+
     fn import(&mut self, source: &[u8]) -> Result<Import> {
         self.asked = true;
         (self.reply)(source)
@@ -389,7 +404,11 @@ fn another_kernel_may_reopen_what_this_one_stored() {
     // so it differs by construction. A document that could not cross platforms
     // would be no use, and the scene is what has to agree.
     let document = Document::open(&path).expect("reopens");
-    let mut importer = Importer::new(|_: &[u8]| Ok(imported(SessionId::new(), Vec::new())));
+    let mac = KernelIdentity::new("occt", "8.0.1", "aarch64-apple-darwin/different-build")
+        .expect("valid");
+    let mut importer = Importer::with_identity(mac.clone(), |_: &[u8]| {
+        Ok(imported(SessionId::new(), Vec::new()))
+    });
     let reopened = document
         .reopen_step_import(object, &mut importer)
         .expect("another platform reopens it");
@@ -398,6 +417,11 @@ fn another_kernel_may_reopen_what_this_one_stored() {
     assert_eq!(
         reopened.imported_by.build, "x86_64-unknown-linux-gnu/abc",
         "the identity is provenance and is reported as read, not as re-observed"
+    );
+    assert_eq!(
+        reopened.reopened_by,
+        ImporterIdentity::of(&mac),
+        "the current diagnostics and handles must name their own producer"
     );
 }
 
@@ -583,6 +607,13 @@ fn corrupted_source_bytes_are_noticed_before_any_importer_sees_them() {
     });
 
     let document = Document::open(&path).expect("reopens");
+    let report = document.validate().expect("validation itself runs");
+    assert!(
+        report
+            .errors()
+            .any(|diagnostic| diagnostic.code == "imported-source.invalid"),
+        "validate must not call a document rebuildable when its source bytes are corrupt: {report:?}"
+    );
     let mut importer = Importer::new(|_: &[u8]| Ok(imported(SessionId::new(), Vec::new())));
     let error = document
         .reopen_step_import(object, &mut importer)
@@ -674,6 +705,170 @@ fn an_imported_object_cannot_be_written_as_a_plain_object() {
     assert_eq!(error.kind(), ErrorKind::Unsupported);
     assert!(error.to_string().contains("put_imported_step"), "{error}");
     document.close().expect("closes");
+}
+
+#[test]
+fn replacing_an_import_with_an_ordinary_object_releases_its_source() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let (object, _) =
+        store(&mut document, &imported(SessionId::new(), Vec::new())).expect("stores");
+
+    document
+        .write(|w| {
+            w.put_object(
+                object,
+                None,
+                0,
+                Some("Native body"),
+                &ObjectPayload::Body(Body { tip_feature: None }),
+            )?;
+            Ok(())
+        })
+        .expect("replaces the object");
+    document.close().expect("closes");
+
+    let (sources, refs): (i64, i64) = with_sql(&path, |conn| {
+        conn.query_row(
+            "SELECT (SELECT count(*) FROM imported_sources),
+                    (SELECT count(*) FROM imported_source_refs)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("counts")
+    });
+    assert_eq!((sources, refs), (0, 0));
+}
+
+#[test]
+fn a_low_level_writer_cannot_pair_an_object_with_different_source_facts() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let result = document.write(|w| {
+        let source = w.put_step_source(SOURCE)?;
+        w.put_imported_step(
+            ObjectId::new(),
+            None,
+            0,
+            None,
+            &ImportedStep {
+                source,
+                source_hash: ContentHash::of_bytes(b"different"),
+                source_byte_len: SOURCE.len() as u64,
+                source_name: None,
+                scene: scene(SessionId::new()).persist()?,
+                imported_by: ImporterIdentity::of(&kernel()),
+                diagnostics_at_import: Vec::new(),
+            },
+        )?;
+        Ok(())
+    });
+    assert!(
+        result.is_err(),
+        "the mismatch must be refused while writing"
+    );
+    document.close().expect("closes");
+
+    let (objects, sources): (i64, i64) = with_sql(&path, |conn| {
+        conn.query_row(
+            "SELECT (SELECT count(*) FROM objects),
+                    (SELECT count(*) FROM imported_sources)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("counts")
+    });
+    assert_eq!((objects, sources), (0, 0));
+}
+
+#[test]
+fn a_corrupt_deduplicated_source_is_not_reused_for_a_new_import() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let (_, stored) =
+        store(&mut document, &imported(SessionId::new(), Vec::new())).expect("stores");
+    document.close().expect("closes");
+
+    let mut damaged = SOURCE.to_vec();
+    damaged[8] ^= 1;
+    with_sql(&path, |conn| {
+        conn.execute(
+            "UPDATE imported_sources SET bytes = ?1 WHERE id = ?2",
+            rusqlite::params![damaged, stored.source.to_bytes().as_slice()],
+        )
+        .expect("damages while preserving length and recorded hash");
+    });
+
+    let mut document = Document::open(&path).expect("opens");
+    let before = document.objects().expect("reads").len();
+    let error = document
+        .store_step_import(StepImportRequest {
+            object: ObjectId::new(),
+            name: None,
+            source: SOURCE,
+            source_name: None,
+            import: &imported(SessionId::new(), Vec::new()),
+            importer: &kernel(),
+        })
+        .expect_err("a corrupt row must not be reused by hash alone");
+    assert!(error.to_string().contains("different bytes"), "{error}");
+    assert_eq!(document.objects().expect("reads").len(), before);
+}
+
+#[test]
+fn a_missing_reachability_row_blocks_edits_before_gc_can_destroy_the_source() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let (object, stored) =
+        store(&mut document, &imported(SessionId::new(), Vec::new())).expect("stores");
+    document.close().expect("closes");
+
+    with_sql(&path, |conn| {
+        conn.execute(
+            "DELETE FROM imported_source_refs WHERE object_id = ?1",
+            rusqlite::params![object.to_bytes().as_slice()],
+        )
+        .expect("removes the reachability row");
+    });
+
+    let mut document = Document::open(&path).expect("opens");
+    let report = document.validate().expect("validation itself runs");
+    assert!(
+        report.errors().any(|diagnostic| {
+            matches!(
+                diagnostic.code,
+                "imported-source.invalid" | "imported-source.unreachable"
+            )
+        }),
+        "validate must report a broken ownership row: {report:?}"
+    );
+    let new_object = ObjectId::new();
+    let error = document
+        .write(|w| {
+            w.put_object(
+                new_object,
+                None,
+                0,
+                None,
+                &ObjectPayload::Body(Body { tip_feature: None }),
+            )?;
+            Ok(())
+        })
+        .expect_err("an unrelated edit must not collect recoverable bytes");
+    assert!(error.to_string().contains("exactly one source"), "{error}");
+    document.close().expect("closes");
+
+    let (sources, objects): (i64, i64) = with_sql(&path, |conn| {
+        conn.query_row(
+            "SELECT (SELECT count(*) FROM imported_sources),
+                    (SELECT count(*) FROM objects WHERE id = ?1)",
+            rusqlite::params![new_object.to_bytes().as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("counts")
+    });
+    assert_eq!(sources, 1, "source {} was destroyed", stored.source);
+    assert_eq!(objects, 0, "the unrelated edit partially committed");
 }
 
 #[test]

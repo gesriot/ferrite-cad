@@ -36,6 +36,10 @@ use tempfile::TempDir;
 struct Session<'a>(&'a mut OcctKernel);
 
 impl StepImporter for Session<'_> {
+    fn identity(&self) -> &ferritecad_kernel::KernelIdentity {
+        self.0.identity()
+    }
+
     fn import(&mut self, source: &[u8]) -> Result<Import> {
         self.0.import_step(source)
     }
@@ -175,6 +179,11 @@ fn every_sound_file_reopens_in_a_session_that_never_read_it() {
             reopened.imported_by,
             ImporterIdentity::of(kernel.identity()),
             "{name}: the same build read it both times"
+        );
+        assert_eq!(
+            reopened.reopened_by,
+            ImporterIdentity::of(kernel.identity()),
+            "{name}: the fresh handles and diagnostics need current provenance"
         );
 
         for shape in fresh {
