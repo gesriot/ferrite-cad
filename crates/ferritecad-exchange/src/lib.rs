@@ -19,14 +19,26 @@
 //! What an [`Import`] offers instead is everything that was noticed, with the
 //! stage it was noticed at. A caller decides what to do about it; this says
 //! what happened.
+//!
+//! # What survives the session
+//!
+//! A [`Scene`] is session-bound and cannot be stored. [`PersistedScene`] is
+//! its portable projection — everything the file said, with no handle in it —
+//! and [`PersistedScene::bind`] is the only way back: it re-checks the whole
+//! projection against a fresh import before letting a caller near the new
+//! handles. See the [`persist`][mod@persist] module for why binding verifies
+//! rather than matches.
 
 mod decode;
+mod persist;
 
 pub use decode::decode;
+pub use persist::{PersistedDefinition, PersistedInstance, PersistedScene};
 
 use std::fmt;
 
 use ferritecad_kernel::ShapeHandle;
+use serde::{Deserialize, Serialize};
 
 /// A shape the file describes, once, however often it is placed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +55,8 @@ pub struct Definition {
 /// A component may be painted over the definition it refers to. A reader that
 /// reported only the final colour would make those two cases identical, and
 /// an editor built on it could not tell which one the user was changing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ColourSource {
     /// Nothing said what colour this is.
@@ -83,7 +96,8 @@ impl Instance {
 }
 
 /// Which part of the import noticed something.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Stage {
     /// Parsing the file.
@@ -92,7 +106,8 @@ pub enum Stage {
     Transfer,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Severity {
     Warning,
@@ -100,7 +115,10 @@ pub enum Severity {
 }
 
 /// One thing the importer noticed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serialisable because a document keeps what an import reported at the time
+/// it happened; see [`PersistedScene`] for what may and may not be stored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostic {
     pub stage: Stage,
     pub severity: Severity,

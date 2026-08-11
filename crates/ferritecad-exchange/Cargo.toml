@@ -13,9 +13,15 @@ authors.workspace = true
 # backend-neutral, session-bound ShapeHandle so callers can use imported shapes
 # without weakening the ownership checks. Nothing here mentions Open CASCADE,
 # and another adapter can produce the same scene.
+#
+# serde reaches only the handle-free half of this crate — the persisted
+# projection and the diagnostics. A `Scene` still cannot be serialised, and
+# that is checked by a test rather than left to review.
 [dependencies]
 ferritecad-kernel.workspace = true
 ferritecad-types.workspace = true
+
+serde = { version = "1", features = ["derive"] }
 
 [lints]
 workspace = true
