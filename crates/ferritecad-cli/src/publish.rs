@@ -12,17 +12,25 @@
 //! publishes it — and a second copy of those details is a second place for them
 //! to drift apart.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use ferritecad_types::{CadError, ObjectId, Result};
 
-/// A scratch file beside its destination, removed on every path out.
+/// A scratch file in a private directory beside its destination.
+///
+/// The directory is created atomically before the file is handed to its
+/// producer. That matters for SQLite: unlike the STL writer, it cannot be
+/// given an already-open `create_new` file, so reserving only the file name
+/// would leave a check/use window in which a symlink could be put there.
 #[derive(Debug)]
-pub(crate) struct Temporary(Option<PathBuf>);
+pub(crate) struct Temporary {
+    directory: PathBuf,
+    path: PathBuf,
+}
 
 impl Temporary {
-    /// Reserves a unique scratch name beside `destination`.
+    /// Reserves a unique private scratch directory beside `destination`.
     ///
     /// Beside it rather than in the system temporary directory, because a
     /// rename is only atomic within one filesystem and `/tmp` is often another
@@ -31,42 +39,46 @@ impl Temporary {
     /// scratch file, and a fixed name is one anything else can be waiting at.
     ///
     /// The file itself is not created here. What creates it decides how — the
-    /// export opens it with `create_new`, the import hands the name to SQLite —
-    /// and the guard removes whatever ended up there.
+    /// export opens it with `create_new`, the import hands the name to SQLite.
+    /// Its parent, however, already belongs to this guard, so neither path has
+    /// a check/use gap at the file name.
     pub(crate) fn beside(destination: &Path) -> Result<Self> {
-        let directory = destination
+        let parent = destination
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
 
-        let name = destination.file_name().ok_or_else(|| {
+        destination.file_name().ok_or_else(|| {
             CadError::input(format!("{} is not a file name", destination.display()))
         })?;
-        let mut scratch = OsString::from(".");
-        scratch.push(name);
-        scratch.push(".");
-        scratch.push(ObjectId::new().to_string());
-        scratch.push(".partial");
 
-        let path = directory.join(scratch);
-        // A fresh UUIDv7 does not collide, so anything already at this name is
-        // something else entirely — including a dangling symlink, which is why
-        // this asks for the link's own metadata rather than following it.
-        if path_entry_exists(&path)? {
-            return Err(CadError::io(
-                format!("reserving {}", path.display()),
-                std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    "something is already at a name that should have been unused",
-                ),
-            ));
+        // Do not include the destination's full name: a legal name close to a
+        // filesystem's component limit must not become illegal merely because
+        // a UUID was appended to it.
+        let mut name = OsString::from(".ferritecad-");
+        name.push(ObjectId::new().to_string());
+        name.push(".partial");
+        let directory = parent.join(name);
+
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
         }
-        Ok(Self(Some(path)))
+        builder
+            .create(&directory)
+            .map_err(|e| CadError::io(format!("reserving {}", directory.display()), e))?;
+
+        Ok(Self {
+            path: directory.join("payload"),
+            directory,
+        })
     }
 
     pub(crate) fn path(&self) -> &Path {
-        self.0.as_deref().expect("a live guard always has a path")
+        &self.path
     }
 
     /// Publishes the scratch file as `destination`.
@@ -77,14 +89,12 @@ impl Temporary {
     /// on makes this fail rather than being overwritten. With `--force` the
     /// caller explicitly authorised replacement, so a rename gives the usual
     /// atomic old-or-new view.
-    pub(crate) fn publish(mut self, destination: &Path, force: bool) -> Result<()> {
-        let scratch = self.0.take().expect("a live guard always has a path");
-
+    pub(crate) fn publish(self, destination: &Path, force: bool) -> Result<()> {
         let published = if force {
-            std::fs::rename(&scratch, destination)
+            std::fs::rename(&self.path, destination)
                 .map_err(|e| CadError::io(format!("replacing {}", destination.display()), e))
         } else {
-            std::fs::hard_link(&scratch, destination).map_err(|error| {
+            std::fs::hard_link(&self.path, destination).map_err(|error| {
                 if error.kind() == std::io::ErrorKind::AlreadyExists {
                     CadError::input(format!(
                         "{} already exists; pass --force to replace it",
@@ -99,11 +109,23 @@ impl Temporary {
             })
         };
 
-        // After a rename the scratch name is already gone. After hard-link
-        // publication it is a second name for the published file, and only that
-        // name is removed. A failure leaves nothing behind either way.
-        let _ = std::fs::remove_file(&scratch);
+        // Drop removes the scratch name after a hard-link publication and the
+        // now-empty private directory after either kind of publication.
         published
+    }
+
+    fn clean(&self) {
+        let _ = std::fs::remove_file(&self.path);
+        // SQLite normally removes these itself. Naming them explicitly keeps
+        // a failed open or close from turning a private scratch directory into
+        // a permanent one, without using recursive deletion on a path whose
+        // contents this code did not create knowingly.
+        for suffix in ["-journal", "-wal", "-shm"] {
+            let mut sidecar = self.path.as_os_str().to_owned();
+            sidecar.push(OsStr::new(suffix));
+            let _ = std::fs::remove_file(PathBuf::from(sidecar));
+        }
+        let _ = std::fs::remove_dir(&self.directory);
     }
 }
 
@@ -111,9 +133,7 @@ impl Drop for Temporary {
     fn drop(&mut self) {
         // A failure here is not worth reporting over whatever error is already
         // on its way out, and there is nothing useful to do about it.
-        if let Some(path) = &self.0 {
-            let _ = std::fs::remove_file(path);
-        }
+        self.clean();
     }
 }
 
@@ -150,4 +170,71 @@ pub(crate) fn refuse_source_as_destination(
         return Err(CadError::input(what.to_owned()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_scratch_namespace_is_reserved_before_the_file_is_created() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let destination = root.path().join("part.fcad");
+        let scratch = Temporary::beside(&destination).expect("reserves scratch space");
+
+        assert!(scratch.directory.is_dir());
+        assert!(!scratch.path().exists());
+        assert_eq!(scratch.path().parent(), Some(scratch.directory.as_path()));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&scratch.directory)
+                .expect("stats the directory")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o700);
+        }
+
+        drop(scratch);
+        assert!(
+            std::fs::read_dir(root.path())
+                .expect("lists the parent")
+                .next()
+                .is_none(),
+            "the guard left its private directory behind"
+        );
+    }
+
+    #[test]
+    fn a_long_destination_name_does_not_make_the_scratch_component_longer() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let destination = root.path().join("x".repeat(240));
+        let scratch = Temporary::beside(&destination).expect("reserves scratch space");
+
+        assert!(scratch.directory.file_name().expect("has a name").len() < 80);
+    }
+
+    #[test]
+    fn publication_removes_the_private_namespace_not_the_finished_file() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let destination = root.path().join("part.stl");
+        let scratch = Temporary::beside(&destination).expect("reserves scratch space");
+        std::fs::write(scratch.path(), b"complete file").expect("writes the scratch file");
+
+        scratch
+            .publish(&destination, false)
+            .expect("publishes without replacing");
+
+        assert_eq!(
+            std::fs::read(&destination).expect("reads the published file"),
+            b"complete file"
+        );
+        let entries: Vec<_> = std::fs::read_dir(root.path())
+            .expect("lists the parent")
+            .map(|entry| entry.expect("reads an entry").path())
+            .collect();
+        assert_eq!(entries, vec![destination]);
+    }
 }

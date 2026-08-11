@@ -335,6 +335,33 @@ fn a_failed_import_leaves_no_scratch_file_behind() {
 }
 
 #[test]
+fn a_publication_failure_after_writing_the_document_leaves_no_scratch_directory() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    if !has_kernel(dir.path()) {
+        return;
+    }
+
+    let input = source(dir.path(), "canonical", "01-single-part.step");
+    let output = dir.path().join("occupied");
+    std::fs::create_dir(&output).expect("creates a destination that cannot be replaced by a file");
+    std::fs::write(output.join("keep"), b"somebody else's work").expect("writes valuable data");
+
+    let result = import(&input, &output, &["--force"]);
+    assert_eq!(code(&result), FAILED, "{}", stdout(&result));
+    assert_eq!(
+        std::fs::read(output.join("keep")).expect("the destination remains"),
+        b"somebody else's work"
+    );
+
+    let leftovers: Vec<PathBuf> = std::fs::read_dir(dir.path())
+        .expect("lists")
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.to_string_lossy().contains(".partial"))
+        .collect();
+    assert!(leftovers.is_empty(), "scratch paths remain: {leftovers:?}");
+}
+
+#[test]
 fn the_step_file_cannot_be_named_as_its_own_destination() {
     let dir = tempfile::tempdir().expect("temp dir");
     let input = source(dir.path(), "canonical", "01-single-part.step");
