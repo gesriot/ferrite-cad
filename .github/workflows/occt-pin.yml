@@ -733,6 +733,61 @@ jobs:
           path: step-import-matrix.txt
           if-no-files-found: warn
 
+      - name: Ask whether a definition has an identity that comes from the file
+        env:
+          FCAD_OCCT_CONFIG_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          cmake -S tools/step-key-probe -B key-probe-build -G Ninja ${{ matrix.cmake_extra }} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOpenCASCADE_DIR="$FCAD_OCCT_CONFIG_DIR" \
+            -DCMAKE_BUILD_RPATH="$FCAD_OCCT_LIB_DIR"
+          cmake --build key-probe-build --parallel
+
+          case '${{ matrix.name }}' in
+            windows) export PATH="$FCAD_OCCT_LIB_DIR:$PATH" ;;
+            linux) export LD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
+            macos) ;;
+          esac
+
+          binary="$(find key-probe-build -type f \( -name 'step_key_probe' -o -name 'step_key_probe.exe' \) -print -quit)"
+          if [ -z "$binary" ] || [ ! -x "$binary" ]; then
+            echo "the key probe was not built" >&2
+            exit 1
+          fi
+
+          # Both halves of the corpus. The damaged files matter here as much as
+          # the sound ones: a key that exists only while a file is undamaged is
+          # a key that disappears exactly when a user needs to be told which
+          # component stopped resolving.
+          "$binary" fixtures/step/canonical/*.step fixtures/step/damaged/*.step \
+            | tee step-key-matrix.txt
+
+          # The gate. Durable selection into an imported assembly cannot be
+          # built on a key that is missing, ambiguous or different on a second
+          # reading, so every file that produced a scene must offer one. This
+          # is a fact the probe counts, not a verdict it reaches.
+          total="$(sed -n 's/^ *files with definitions \([0-9]*\)$/\1/p' step-key-matrix.txt)"
+          if [ -z "$total" ] || [ "$total" -eq 0 ]; then
+            echo "::error::the probe found no file with definitions at all"
+            exit 1
+          fi
+          if ! grep -qE "^ +product definition usable on $total/$total files\r?$" step-key-matrix.txt; then
+            echo "::error::PRODUCT_DEFINITION is not usable as a key on all $total files with definitions"
+            grep -E 'usable on' step-key-matrix.txt
+            exit 1
+          fi
+          echo "PRODUCT_DEFINITION is present, unique and unchanged on a second read for all $total files"
+
+      - name: Upload the definition key matrix
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: step-key-matrix-${{ matrix.name }}
+          path: step-key-matrix.txt
+          if-no-files-found: warn
+
       - name: Upload the STEP corpus
         if: always()
         uses: actions/upload-artifact@v7
@@ -871,6 +926,49 @@ jobs:
             fi
           done
           echo "all three platforms produced one normalized STEP import matrix" \
+            >> "$GITHUB_STEP_SUMMARY"
+          sha256sum "$reference" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download all three definition key matrices
+        uses: actions/download-artifact@v8
+        with:
+          pattern: step-key-matrix-*
+          path: key-matrices
+
+      - name: Require one identical definition key matrix per platform
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          matrices=(key-matrices/step-key-matrix-*/step-key-matrix.txt)
+          if [ "${#matrices[@]}" -ne 3 ]; then
+            echo "::error::expected three platform key matrices, found ${#matrices[@]}"
+            printf '  %s\n' "${matrices[@]}"
+            exit 1
+          fi
+
+          # A key that differs between platforms is not a key. The identifiers
+          # come from the file, so agreement here is the claim being tested:
+          # that what FerriteCAD would store on one operating system is what it
+          # would look up on another. CRLF is normalized for the same reason as
+          # the import matrix above, and the uploaded reports stay untouched.
+          normalized_dir="$(mktemp -d)"
+          normalized=()
+          for matrix in "${matrices[@]}"; do
+            platform="$(basename "$(dirname "$matrix")")"
+            output="$normalized_dir/$platform.txt"
+            sed -e 's/\r$//' -e '/^# Measured with Open CASCADE/d' "$matrix" > "$output"
+            normalized+=("$output")
+          done
+
+          reference="${normalized[0]}"
+          for matrix in "${normalized[@]}"; do
+            sha256sum "$matrix"
+            if ! diff -u "$reference" "$matrix"; then
+              echo "::error::$matrix disagrees with $reference after normalization"
+              exit 1
+            fi
+          done
+          echo "all three platforms agree on every definition key" \
             >> "$GITHUB_STEP_SUMMARY"
           sha256sum "$reference" >> "$GITHUB_STEP_SUMMARY"
 

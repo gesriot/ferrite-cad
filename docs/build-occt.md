@@ -442,6 +442,62 @@ tables, the output records whether the 5.0/5.1/6.0 plate boundary was refused
 by the builder itself or by FerriteCAD's validity check. A green test alone
 proves the policy but cannot distinguish those mechanisms.
 
+## What identifies an imported definition
+
+Durable selection into an imported assembly — "this bolt, the one I picked" —
+needs a key that names something in the file rather than something in the
+reader. Four candidates were ruled out before measuring: a `TDF_Label` entry is
+a position in a document Open CASCADE built this run, a name is neither unique
+nor always present, a position in the definition list is exactly what
+`PersistedScene::bind` already refuses to trust, and geometry is a guess
+wearing a number.
+
+`tools/step-key-probe` measures what is left, on both halves of the corpus, and
+the pin workflow runs it on all three platforms. Two things it distinguishes
+that are easy to confuse: `#12` is an identifier the file wrote, while `(#12)`
+is where the entity sits in the model this run. Open CASCADE prints them
+similarly and only the first is an identity.
+
+**PRODUCT_DEFINITION is present, unique and stable on all ten files that
+produce a scene.** The two files Open CASCADE refuses outright have no scene
+and so nothing to key, which is the right answer rather than a gap. The
+identifiers are identical on Linux, Windows and macOS, and identical when the
+same bytes are read a second time in a second reader.
+
+**The route to it is typed, not a graph search.** The chain runs up and then
+down, and a crawl deep enough to turn that corner by accident is also deep
+enough to arrive at a neighbouring part:
+
+    MANIFOLD_SOLID_BREP
+      <- shared by  ADVANCED_BREP_SHAPE_REPRESENTATION
+      <- shared by  SHAPE_DEFINITION_REPRESENTATION
+      -> refers to  PRODUCT_DEFINITION_SHAPE
+      -> refers to  PRODUCT_DEFINITION
+
+**An assembly has no geometry, so it has no entity of its own.** The shape
+entity is available for only four of the ten files' definitions — every leaf
+part has one and no assembly does. An assembly is instead named by the
+occurrences that put its components inside it: `NEXT_ASSEMBLY_USAGE_OCCURRENCE`
+relates the assembly to each component, so the parent every component agrees on
+identifies it. This is why `shape entity` is measured and reported but cannot
+be the key: it disappears exactly on the nodes a user is most likely to select.
+
+Two findings came out of getting this wrong first, and both are recorded
+because they are the shape of the risk rather than incidents:
+
+- One assembly may contain the same part several times, and each placement is
+  its own occurrence. Collecting parents without collapsing duplicates made a
+  correct nested assembly look unidentifiable.
+- Two assemblies with identical component sets cannot be told apart from their
+  components alone. The probe reports no key in that case rather than choosing,
+  and the corpus does not currently contain such a file.
+
+**What the corpus does not establish.** `05-duplicate-entity-id.step` duplicates
+an `ADVANCED_BREP_SHAPE_REPRESENTATION`, not a `PRODUCT_DEFINITION`, so nothing
+here measures what happens when the identifier a key rests on is itself written
+twice. Uniqueness is therefore a measurement on this corpus and not a property
+of the format, and an importer must check it at read time rather than assume it.
+
 ## What meshing does, and does not, do
 
 Three things about `BRepMesh_IncrementalMesh` that the adapter depends on,
