@@ -482,12 +482,13 @@ The assembly half is equally strict: only
 `PRODUCT_DEFINITION_RELATIONSHIP` base class.
 
 **An assembly has no geometry, so it has no entity of its own.** The shape
-entity is available for only four of the ten files' definitions — every leaf
-part has one and no assembly does. An assembly is instead named by the
-occurrences that put its components inside it: `NEXT_ASSEMBLY_USAGE_OCCURRENCE`
-relates the assembly to each component, so the parent every component agrees on
-identifies it. This is why `shape entity` is measured and reported but cannot
-be the key: it disappears exactly on the nodes a user is most likely to select.
+entity is usable for every definition in only four of the eleven files that
+produce a scene — every leaf part has one and no assembly does. An assembly is
+instead named by the occurrences that put its components inside it:
+`NEXT_ASSEMBLY_USAGE_OCCURRENCE` relates the assembly to each component, so the
+parent every component agrees on identifies it. This is why `shape entity` is
+measured and reported but cannot be the key: it disappears exactly on the
+nodes a user is most likely to select.
 
 Two findings came out of getting this wrong first, and both are recorded
 because they are the shape of the risk rather than incidents:

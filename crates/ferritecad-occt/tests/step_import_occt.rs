@@ -231,7 +231,7 @@ fn a_file_that_cannot_be_read_is_rejected_with_its_reasons() {
 fn a_recovered_file_imports_and_says_what_was_wrong_with_it() {
     let mut kernel = kernel_or_skip!();
 
-    // These two are read completely and produce the same geometry as the
+    // These three are read completely and produce the same geometry as the
     // undamaged originals. What separates them from a sound file is only the
     // diagnostics, which is exactly why they must not be discarded.
     for (name, expected) in [
@@ -277,6 +277,73 @@ fn a_recovered_file_imports_and_says_what_was_wrong_with_it() {
 
         release(&mut kernel, &outcome);
     }
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
+fn a_collided_definition_identifier_loses_identity_not_geometry() {
+    let mut kernel = kernel_or_skip!();
+
+    let original = import(&mut kernel, "canonical", "02-flat-assembly.step");
+    let original_scene = original.scene().expect("the source assembly imports");
+    let original_portable = original_scene.persist().expect("projects the source scene");
+    let mut original_shapes = original_scene
+        .definitions
+        .iter()
+        .map(|definition| {
+            let (faces, volume) = kernel
+                .shape_stats(definition.shape)
+                .unwrap_or_else(|e| panic!("measuring {}: {e}", definition.name));
+            (definition.name.clone(), faces, volume)
+        })
+        .collect::<Vec<_>>();
+    original_shapes.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let collided = import(
+        &mut kernel,
+        "damaged",
+        "06-duplicate-product-definition.step",
+    );
+    let collided_scene = collided
+        .scene()
+        .expect("the collided identifier still transfers");
+    assert_eq!(
+        collided_scene
+            .persist()
+            .expect("projects the collided scene"),
+        original_portable,
+        "the collision must not change the portable scene"
+    );
+
+    let mut collided_shapes = collided_scene
+        .definitions
+        .iter()
+        .map(|definition| {
+            let (faces, volume) = kernel
+                .shape_stats(definition.shape)
+                .unwrap_or_else(|e| panic!("measuring {}: {e}", definition.name));
+            (definition.name.clone(), faces, volume)
+        })
+        .collect::<Vec<_>>();
+    collided_shapes.sort_by(|left, right| left.0.cmp(&right.0));
+
+    assert_eq!(collided_shapes.len(), original_shapes.len());
+    for ((name, faces, volume), (expected_name, expected_faces, expected_volume)) in
+        collided_shapes.iter().zip(&original_shapes)
+    {
+        assert_eq!(name, expected_name);
+        assert_eq!(
+            faces, expected_faces,
+            "{name}: the collision changed its faces"
+        );
+        assert!(
+            (volume - expected_volume).abs() < 1e-9,
+            "{name}: the collision changed its volume from {expected_volume} to {volume}"
+        );
+    }
+
+    release(&mut kernel, &collided);
+    release(&mut kernel, &original);
     assert_eq!(kernel.live_shape_count(), 0);
 }
 
