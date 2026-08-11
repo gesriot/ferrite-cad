@@ -17,7 +17,7 @@ use ferritecad_types::{CadError, Result};
 use crate::{ColourSource, Definition, Diagnostic, Import, Instance, Scene, Severity, Stage};
 
 const MAGIC: &[u8; 4] = b"FCSI";
-const FORMAT_VERSION: u16 = 1;
+const FORMAT_VERSION: u16 = 2;
 const NO_PARENT: u32 = u32::MAX;
 
 /// Reads an import result, attaching shapes to `session`.
@@ -60,10 +60,31 @@ pub fn decode(bytes: &[u8], session: SessionId) -> Result<Import> {
                 "definition {index} has the reserved shape handle 0"
             )));
         }
+        let name = reader.text("definition name")?;
+        let solids = reader.u32("definition solids")?;
+        let key = reader.text("definition key")?;
+        // Checked here as well as in the bridge that produced it. This side
+        // cannot release the shapes an importer already registered, so it is
+        // the weaker of the two guards and exists to stop a malformed buffer
+        // becoming a scene — not to make the bridge's check optional.
+        if key.is_empty() {
+            return Err(malformed(format!(
+                "definition {index} arrived without an identity, and a scene                  whose parts cannot be named again must not be built"
+            )));
+        }
+        if let Some(earlier) = definitions
+            .iter()
+            .position(|other: &Definition| other.key == key)
+        {
+            return Err(malformed(format!(
+                "definitions {earlier} and {index} both claim the identity                  {key}, so a reference to either would resolve to whichever                  was looked up first"
+            )));
+        }
         definitions.push(Definition {
             shape: ShapeHandle::new(session, shape),
-            name: reader.text("definition name")?,
-            solids: reader.u32("definition solids")?,
+            name,
+            solids,
+            key,
         });
     }
 
@@ -134,6 +155,7 @@ pub fn decode(bytes: &[u8], session: SessionId) -> Result<Import> {
         let stage = match reader.u8("diagnostic stage")? {
             0 => Stage::Load,
             1 => Stage::Transfer,
+            2 => Stage::Identity,
             other => {
                 return Err(malformed(format!(
                     "a diagnostic claims stage {other}, which this build does \
@@ -276,6 +298,29 @@ mod tests {
         placement: usize,
     }
 
+    /// Two definitions and one placement of each, so the tests can say
+    /// something about how definitions relate to one another.
+    fn two_definitions(first_key: &str, second_key: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        bytes.push(0);
+        put_text(&mut bytes, "millimetre");
+        put_text(&mut bytes, "AP242");
+
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        for (slot, name, key) in [(1u64, "Plate", first_key), (2, "Bolt", second_key)] {
+            bytes.extend_from_slice(&slot.to_le_bytes());
+            put_text(&mut bytes, name);
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+            put_text(&mut bytes, key);
+        }
+
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes
+    }
+
     fn put_text(out: &mut Vec<u8>, text: &str) {
         out.extend_from_slice(&(text.len() as u32).to_le_bytes());
         out.extend_from_slice(text.as_bytes());
@@ -294,6 +339,7 @@ mod tests {
         bytes.extend_from_slice(&1u64.to_le_bytes());
         put_text(&mut bytes, "Plate");
         bytes.extend_from_slice(&1u32.to_le_bytes());
+        put_text(&mut bytes, "step.product_definition#5");
 
         bytes.extend_from_slice(&1u32.to_le_bytes());
         let definition = bytes.len();
@@ -395,6 +441,54 @@ mod tests {
         forward_parent.bytes[forward_parent.parent..forward_parent.parent + 4]
             .copy_from_slice(&0u32.to_le_bytes());
         assert!(decode(&forward_parent.bytes, SessionId::new()).is_err());
+    }
+
+    #[test]
+    fn a_definition_without_an_identity_is_refused() {
+        let error = decode(
+            &two_definitions("step.product_definition#5", ""),
+            SessionId::new(),
+        )
+        .expect_err("a nameless definition must not become a scene");
+        assert!(error.to_string().contains("without an identity"), "{error}");
+    }
+
+    #[test]
+    fn two_definitions_may_not_claim_one_identity() {
+        let shared = "step.product_definition#31";
+        let error = decode(&two_definitions(shared, shared), SessionId::new())
+            .expect_err("a shared identity must not become a scene");
+        assert!(error.to_string().contains("both claim"), "{error}");
+
+        // The same buffer with distinct identities is the control: what is
+        // refused above is the collision, not the shape of the message.
+        let scene = decode(
+            &two_definitions(shared, "step.product_definition#5"),
+            SessionId::new(),
+        )
+        .expect("distinct identities decode");
+        assert_eq!(scene.scene().expect("imported").definitions.len(), 2);
+    }
+
+    #[test]
+    fn an_identity_diagnostic_survives_the_wire() {
+        let mut bytes = rejected();
+        // One diagnostic, stage 2, which is neither loading nor building.
+        let count = bytes.len() - 4;
+        bytes[count..].copy_from_slice(&1u32.to_le_bytes());
+        bytes.push(2);
+        bytes.push(1);
+        put_text(&mut bytes, "step.product_definition#31");
+        put_text(&mut bytes, "two definitions carry the same identity");
+
+        let outcome = decode(&bytes, SessionId::new()).expect("decodes");
+        let diagnostic = &outcome.diagnostics()[0];
+        assert_eq!(diagnostic.stage, Stage::Identity);
+        assert_eq!(diagnostic.severity, Severity::Fail);
+        assert!(
+            diagnostic.to_string().contains("identifying"),
+            "{diagnostic}"
+        );
     }
 
     #[test]

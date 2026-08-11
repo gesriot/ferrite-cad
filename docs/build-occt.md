@@ -500,6 +500,20 @@ because they are the shape of the risk rather than incidents:
   components alone. The probe reports no key in that case rather than choosing,
   and the corpus does not currently contain such a file.
 
+**What the importer does about it.** Since §18D-2A the bridge computes this key
+for every definition and refuses the scene if any definition has none or two
+share one. Both are refusals rather than warnings, and both release every shape
+the import registered: Open CASCADE really built those solids, so an error
+return that merely reported the problem would leak an entire assembly per
+attempt. The refusal carries an identity diagnostic — a third stage beside load
+and transfer, because attributing it to either would blame Open CASCADE for a
+file it read without complaint.
+
+That makes FerriteCAD stricter than the kernel on exactly one corpus file, and
+deliberately so. A scene stored with an unidentifiable definition could never be
+re-attached to geometry: the handles go with the session, and the only thing
+left to find them by is what was written down.
+
 **What a collided identifier does, measured.**
 `06-duplicate-product-definition.step` exists because the corpus previously
 could not answer this: `05-duplicate-entity-id.step` duplicates a shape

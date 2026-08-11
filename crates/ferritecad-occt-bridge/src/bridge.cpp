@@ -9,6 +9,9 @@
 // opaque identifiers.
 
 #include "ferritecad_occt.h"
+#include "step_identity.hpp"
+
+#include <XSControl_WorkSession.hxx>
 
 #include <cmath>
 #include <cstring>
@@ -347,6 +350,23 @@ void collect_diagnostics(const std::string &report, uint8_t stage,
     put_text(out, message);
     ++count;
   }
+}
+
+/// Records something this bridge noticed, as opposed to something Open
+/// CASCADE reported.
+///
+/// Stage 2 is FerriteCAD's own: neither reading nor building, but the check
+/// that what was built can be identified. Folding it into either of the
+/// kernel's stages would attribute this refusal to Open CASCADE, which read
+/// the file without complaint.
+void put_identity_diagnostic(std::vector<uint8_t> &out, uint32_t &count,
+                             const std::string &entity,
+                             const std::string &message) {
+  put<uint8_t>(out, 2);  // identity
+  put<uint8_t>(out, 1);  // fail
+  put_text(out, entity);
+  put_text(out, message);
+  ++count;
 }
 
 }  // namespace
@@ -824,7 +844,7 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
     encoded.push_back('C');
     encoded.push_back('S');
     encoded.push_back('I');
-    put<uint16_t>(encoded, 1);
+    put<uint16_t>(encoded, 2);
 
     // The reader wants a stream, and this is where the caller's bytes become
     // one. Nothing here touches the filesystem.
@@ -849,7 +869,11 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
       collect_diagnostics(report.str(), 0, diagnostics, diagnostic_count);
     }
 
-    const auto finish = [&]() -> FcOcctStatus {
+    // `keep` is false on a refusal raised after definitions were registered:
+    // the buffer still has to reach the caller, and the shapes still have to
+    // go. Leaving them to the guard's rollback is what makes that one word
+    // rather than a second cleanup path.
+    const auto finish = [&](bool keep) -> FcOcctStatus {
       // Everything else is already in `encoded`; the diagnostics go last so a
       // rejected import still carries what was noticed before it stopped.
       put<uint32_t>(encoded, diagnostic_count);
@@ -865,7 +889,9 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
         return FC_OCCT_INVALID_INPUT;
       }
       std::memcpy(out_buffer, encoded.data(), encoded.size());
-      imported_shapes.commit();
+      if (keep) {
+        imported_shapes.commit();
+      }
       return FC_OCCT_OK;
     };
 
@@ -875,7 +901,7 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
       put_text(encoded, std::string());
       put<uint32_t>(encoded, 0);
       put<uint32_t>(encoded, 0);
-      return finish();
+      return finish(true);
     }
 
     const bool transferred = reader.Transfer(doc) == Standard_True;
@@ -890,7 +916,7 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
       put_text(encoded, std::string());
       put<uint32_t>(encoded, 0);
       put<uint32_t>(encoded, 0);
-      return finish();
+      return finish(true);
     }
 
     encoded.push_back(0);  // imported
@@ -933,15 +959,27 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
     // Definitions are collected first and instanced afterwards, so a part
     // used four times is one definition and four placements rather than four
     // copies of the same solid.
-    std::vector<TDF_Label> definitions;
-    std::vector<uint8_t> definition_bytes;
+    //
+    // Their bytes are written after the walk rather than during it, because a
+    // definition's key is not knowable while it is being visited: an assembly
+    // is identified through the components inside it, and those are not all
+    // known until the walk reaches them.
+    struct DefinitionRecord {
+      TDF_Label label;
+      TopoDS_Shape shape;
+      uint64_t id = 0;
+      uint32_t solids = 0;
+    };
+    std::vector<DefinitionRecord> definitions;
+    // Which definitions sit directly inside which, by position above.
+    std::vector<std::vector<std::size_t>> children_of;
+
     const auto definition_index = [&](const TDF_Label &label) -> uint32_t {
       for (std::size_t i = 0; i < definitions.size(); ++i) {
-        if (definitions[i].IsEqual(label)) {
+        if (definitions[i].label.IsEqual(label)) {
           return static_cast<uint32_t>(i);
         }
       }
-      definitions.push_back(label);
 
       ShapeRecord record;
       record.shape = shapes->GetShape(label);
@@ -949,35 +987,36 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
       // output names anything here.
       record.decoded = true;
 
-      uint32_t solids = 0;
+      DefinitionRecord entry;
+      entry.label = label;
+      entry.shape = record.shape;
       if (!record.shape.IsNull()) {
         for (TopExp_Explorer it(record.shape, TopAbs_SOLID); it.More(); it.Next()) {
-          ++solids;
+          ++entry.solids;
         }
       }
 
-      uint64_t id = 0;
       if (measuring) {
         // A number of the right width and no session entry behind it. The
         // caller never sees this buffer.
-        id = static_cast<uint64_t>(definitions.size());
+        entry.id = static_cast<uint64_t>(definitions.size() + 1);
       } else {
-        id = session->next_shape++;
-        imported_shapes.remember(id);
-        session->shapes.emplace(id, std::move(record));
+        entry.id = session->next_shape++;
+        imported_shapes.remember(entry.id);
+        session->shapes.emplace(entry.id, std::move(record));
       }
 
-      put<uint64_t>(definition_bytes, id);
-      put_text(definition_bytes, label_name(label));
-      put<uint32_t>(definition_bytes, solids);
+      definitions.push_back(std::move(entry));
+      children_of.emplace_back();
       return static_cast<uint32_t>(definitions.size() - 1);
     };
 
     std::vector<uint8_t> instance_bytes;
     uint32_t instance_count = 0;
 
-    std::function<void(const TDF_Label &, uint32_t, const TopLoc_Location &)> walk =
-        [&](const TDF_Label &label, uint32_t parent, const TopLoc_Location &placement) {
+    std::function<uint32_t(const TDF_Label &, uint32_t, const TopLoc_Location &)> walk =
+        [&](const TDF_Label &label, uint32_t parent,
+            const TopLoc_Location &placement) -> uint32_t {
           TDF_Label definition = label;
           if (shapes->IsReference(label)) {
             shapes->GetReferredShape(label, definition);
@@ -1019,9 +1058,11 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
           TDF_LabelSequence children;
           shapes->GetComponents(definition, children);
           for (int i = 1; i <= children.Length(); ++i) {
-            walk(children.Value(i), self,
-                 shapes->GetShape(children.Value(i)).Location());
+            const uint32_t child = walk(children.Value(i), self,
+                                        shapes->GetShape(children.Value(i)).Location());
+            children_of[index].push_back(child);
           }
+          return index;
         };
 
     TDF_LabelSequence roots;
@@ -1030,11 +1071,70 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
       walk(roots.Value(i), 0xFFFFFFFFu, TopLoc_Location());
     }
 
+    // What identifies each definition in the file, as opposed to in this
+    // reading of it. Computed once the whole tree is known, because an
+    // assembly is named through the components inside it.
+    std::vector<TopoDS_Shape> definition_shapes;
+    definition_shapes.reserve(definitions.size());
+    for (const DefinitionRecord &definition : definitions) {
+      definition_shapes.push_back(definition.shape);
+    }
+
+    Handle(XSControl_WorkSession) work = reader.Reader().WS();
+    Handle(XSControl_TransferReader) transfer =
+        work.IsNull() ? Handle(XSControl_TransferReader)() : work->TransferReader();
+    std::vector<std::string> keys(definitions.size());
+    if (!work.IsNull() && !model.IsNull()) {
+      keys = ferritecad::definition_keys(work->Graph(), model, transfer,
+                                         definition_shapes, children_of);
+    }
+
+    // The scene is not handed over until every definition can be told apart
+    // from every other. A caller that stored a scene now and discovered later
+    // that two of its parts share a name would have no way back: the handles
+    // are gone with the session, and the only thing left to re-attach them by
+    // is what was written down here.
+    //
+    // Both failures are refusals rather than warnings, and both release every
+    // shape this import built. A scene with an unidentifiable definition is
+    // not a lesser scene; it is one that cannot be reopened.
+    const auto refuse = [&](const std::string &entity,
+                            const std::string &message) -> FcOcctStatus {
+      encoded.resize(7);  // magic, version, and the status byte to overwrite
+      encoded[6] = 1;     // rejected
+      put_text(encoded, std::string());
+      put_text(encoded, std::string());
+      put<uint32_t>(encoded, 0);
+      put<uint32_t>(encoded, 0);
+      put_identity_diagnostic(diagnostics, diagnostic_count, entity, message);
+      return finish(false);
+    };
+
+    const std::size_t nameless = ferritecad::first_without_key(keys);
+    if (nameless < keys.size()) {
+      return refuse(label_name(definitions[nameless].label),
+                    "this file does not say which product definition this "
+                    "shape is, so nothing could name it again after the "
+                    "session that read it has gone");
+    }
+    const std::size_t repeated = ferritecad::first_repeated_key(keys);
+    if (repeated < keys.size()) {
+      return refuse(keys[repeated],
+                    "two definitions in this file carry the same identity, so "
+                    "a reference to either would resolve to whichever was "
+                    "looked up first");
+    }
+
     put<uint32_t>(encoded, static_cast<uint32_t>(definitions.size()));
-    encoded.insert(encoded.end(), definition_bytes.begin(), definition_bytes.end());
+    for (std::size_t i = 0; i < definitions.size(); ++i) {
+      put<uint64_t>(encoded, definitions[i].id);
+      put_text(encoded, label_name(definitions[i].label));
+      put<uint32_t>(encoded, definitions[i].solids);
+      put_text(encoded, keys[i]);
+    }
     put<uint32_t>(encoded, instance_count);
     encoded.insert(encoded.end(), instance_bytes.begin(), instance_bytes.end());
-    return finish();
+    return finish(true);
   });
 }
 

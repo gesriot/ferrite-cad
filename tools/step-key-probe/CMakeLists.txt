@@ -43,7 +43,12 @@ if(NOT _occt_link_libs)
 endif()
 
 add_executable(step_key_probe src/main.cpp)
-target_include_directories(step_key_probe PRIVATE ${OpenCASCADE_INCLUDE_DIR})
+# The bridge's own identity route, included rather than copied: this tool
+# exists to measure what the importer does, and a private copy would measure
+# itself. See crates/ferritecad-occt-bridge/src/step_identity.hpp.
+target_include_directories(step_key_probe PRIVATE
+  ${OpenCASCADE_INCLUDE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../crates/ferritecad-occt-bridge/src)
 target_link_directories(step_key_probe PRIVATE ${OpenCASCADE_LIBRARY_DIR})
 target_link_libraries(step_key_probe PRIVATE ${_occt_link_libs})
 

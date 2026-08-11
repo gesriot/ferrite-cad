@@ -3,9 +3,11 @@
 //!
 //! The seven say what a correct import looks like. The six say what happens
 //! when a file is not correct, and the answer measured on 8.0.1 is not one
-//! thing: two are refused, three are read and described precisely, and one is
-//! read, transferred and reported clean while carrying a malformed
-//! coordinate. These tests hold the import to reporting all of that and to
+//! thing: Open CASCADE refuses two and reads four. Of those four, one is
+//! refused here instead, because a definition in it has no identity and a
+//! scene whose parts cannot be named again is worse than none; two are read
+//! and described precisely; and one is read, transferred and reported clean
+//! while carrying a malformed coordinate. These tests hold the import to reporting all of that and to
 //! claiming none of it as soundness.
 
 // A test asserting the shape of a value has nowhere to return an error to.
@@ -15,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
 use std::thread;
 
-use ferritecad_exchange::{ColourSource, Import, Severity};
+use ferritecad_exchange::{ColourSource, Import, Severity, Stage};
 use ferritecad_kernel::GeometryKernel;
 use ferritecad_occt::{OcctKernel, is_available};
 
@@ -237,10 +239,6 @@ fn a_recovered_file_imports_and_says_what_was_wrong_with_it() {
     for (name, expected) in [
         ("02-broken-reference.step", "unresolved"),
         ("05-duplicate-entity-id.step", "SEVERAL TIMES"),
-        // Reads as a complete, ordinary assembly. What it has lost is not
-        // geometry but the identity of one node, which only a reader asking
-        // that question notices — and Open CASCADE does say so here.
-        ("06-duplicate-product-definition.step", "SEVERAL TIMES"),
     ] {
         let outcome = import(&mut kernel, "damaged", name);
         let scene = outcome
@@ -281,69 +279,122 @@ fn a_recovered_file_imports_and_says_what_was_wrong_with_it() {
 }
 
 #[test]
-fn a_collided_definition_identifier_loses_identity_not_geometry() {
+fn a_collided_definition_identifier_is_refused_and_releases_everything() {
     let mut kernel = kernel_or_skip!();
 
-    let original = import(&mut kernel, "canonical", "02-flat-assembly.step");
-    let original_scene = original.scene().expect("the source assembly imports");
-    let original_portable = original_scene.persist().expect("projects the source scene");
-    let mut original_shapes = original_scene
+    // The control: the same assembly, undamaged, reads into a scene whose
+    // definitions can each be told apart.
+    let sound = import(&mut kernel, "canonical", "02-flat-assembly.step");
+    let sound_scene = sound.scene().expect("the source assembly imports");
+    let mut keys: Vec<&str> = sound_scene
         .definitions
         .iter()
-        .map(|definition| {
-            let (faces, volume) = kernel
-                .shape_stats(definition.shape)
-                .unwrap_or_else(|e| panic!("measuring {}: {e}", definition.name));
-            (definition.name.clone(), faces, volume)
-        })
-        .collect::<Vec<_>>();
-    original_shapes.sort_by(|left, right| left.0.cmp(&right.0));
+        .map(|definition| definition.key.as_str())
+        .collect();
+    keys.sort_unstable();
+    let distinct = keys.len();
+    keys.dedup();
+    assert_eq!(
+        keys.len(),
+        distinct,
+        "the sound file's keys are not distinct"
+    );
+    assert!(
+        keys.iter().all(|key| !key.is_empty()),
+        "the sound file has a definition with no identity"
+    );
+    release(&mut kernel, &sound);
 
+    // Open CASCADE reads the collided file, transfers it, and produces the
+    // same geometry — that is measured in the pin workflow's import matrix and
+    // is exactly why this has to be refused here rather than noticed later.
+    // What cannot be produced is an identity for one of its definitions.
     let collided = import(
         &mut kernel,
         "damaged",
         "06-duplicate-product-definition.step",
     );
-    let collided_scene = collided
-        .scene()
-        .expect("the collided identifier still transfers");
-    assert_eq!(
-        collided_scene
-            .persist()
-            .expect("projects the collided scene"),
-        original_portable,
-        "the collision must not change the portable scene"
+    assert!(
+        matches!(collided, Import::Rejected { .. }),
+        "a definition that cannot be named again must not become a scene"
+    );
+    assert!(
+        collided.scene().is_none(),
+        "a refused import produced a scene"
     );
 
-    let mut collided_shapes = collided_scene
-        .definitions
+    // Refused for the right reason, and said so as its own kind of finding
+    // rather than as something the kernel reported.
+    let identity: Vec<&ferritecad_exchange::Diagnostic> = collided
+        .diagnostics()
         .iter()
-        .map(|definition| {
-            let (faces, volume) = kernel
-                .shape_stats(definition.shape)
-                .unwrap_or_else(|e| panic!("measuring {}: {e}", definition.name));
-            (definition.name.clone(), faces, volume)
-        })
-        .collect::<Vec<_>>();
-    collided_shapes.sort_by(|left, right| left.0.cmp(&right.0));
+        .filter(|diagnostic| diagnostic.stage == Stage::Identity)
+        .collect();
+    assert_eq!(
+        identity.len(),
+        1,
+        "expected one identity finding, got {:?}",
+        collided.diagnostics()
+    );
+    assert_eq!(identity[0].severity, Severity::Fail);
+    assert!(
+        identity[0].to_string().contains("identifying"),
+        "{}",
+        identity[0]
+    );
 
-    assert_eq!(collided_shapes.len(), original_shapes.len());
-    for ((name, faces, volume), (expected_name, expected_faces, expected_volume)) in
-        collided_shapes.iter().zip(&original_shapes)
-    {
-        assert_eq!(name, expected_name);
-        assert_eq!(
-            faces, expected_faces,
-            "{name}: the collision changed its faces"
-        );
+    // The whole point of refusing inside the bridge: Open CASCADE really built
+    // those solids and the session really registered them, so a refusal that
+    // merely returned an error would leak an entire assembly per attempt.
+    assert_eq!(
+        kernel.live_shape_count(),
+        0,
+        "a refused import left its shapes behind"
+    );
+}
+
+#[test]
+fn every_sound_file_names_its_definitions_the_same_way_twice() {
+    let mut kernel = kernel_or_skip!();
+
+    for name in [
+        "01-single-part.step",
+        "02-flat-assembly.step",
+        "03-nested-assembly.step",
+        "04-instance-colours.step",
+        "05-inch-units.step",
+        "06-unicode-names.step",
+        "07-bare-geometry.step",
+    ] {
+        let first = import(&mut kernel, "canonical", name);
+        let first_keys: Vec<String> = first
+            .scene()
+            .unwrap_or_else(|| panic!("{name} was rejected"))
+            .definitions
+            .iter()
+            .map(|definition| definition.key.clone())
+            .collect();
+        release(&mut kernel, &first);
+
+        // A key that changed between two readings of the same bytes would be
+        // useless for the thing it exists for, and nothing but reading twice
+        // establishes that it does not.
+        let second = import(&mut kernel, "canonical", name);
+        let second_keys: Vec<String> = second
+            .scene()
+            .expect("imports again")
+            .definitions
+            .iter()
+            .map(|definition| definition.key.clone())
+            .collect();
+        release(&mut kernel, &second);
+
+        assert_eq!(first_keys, second_keys, "{name}: the keys moved");
         assert!(
-            (volume - expected_volume).abs() < 1e-9,
-            "{name}: the collision changed its volume from {expected_volume} to {volume}"
+            first_keys.iter().all(|key| key.starts_with("step.")),
+            "{name}: a key does not say what kind of identity it is: {first_keys:?}"
         );
     }
-
-    release(&mut kernel, &collided);
-    release(&mut kernel, &original);
     assert_eq!(kernel.live_shape_count(), 0);
 }
 

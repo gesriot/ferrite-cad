@@ -25,8 +25,15 @@
 // unchanged when the same bytes are read a second time in a second reader.
 //
 // It reports. It does not decide, and it does not pick a winner: a candidate
-// that holds across the corpus and three platforms is evidence, and the decision
-// belongs in FerriteCAD where it can be refused when the evidence runs out.
+// that holds across the corpus and three platforms is evidence, and the
+// decision belongs in FerriteCAD where it can be refused when the evidence
+// runs out.
+//
+// The route it measures is the bridge's own, from
+// `crates/ferritecad-occt-bridge/src/step_identity.hpp`, rather than a second
+// implementation of it. A probe with its own copy would measure the probe.
+
+#include "step_identity.hpp"
 
 #include <IFSelect_ReturnStatus.hxx>
 #include <Interface_EntityIterator.hxx>
@@ -139,152 +146,6 @@ Ident ident_of(const Handle(StepData_StepModel) & model,
   return ident;
 }
 
-/// The entity Open CASCADE says produced a shape.
-///
-/// Four modes and two locations are tried because the shape XDE stores is not
-/// obliged to be the shape the transfer recorded — it may be the same geometry
-/// under a different location. Each attempt is cheap; a definition with no
-/// entity at all is a measurement worth having, but only after asking properly.
-std::vector<Handle(Standard_Transient)> entities_from(
-    const Handle(XSControl_TransferReader) & reader, const TopoDS_Shape &shape) {
-  std::vector<Handle(Standard_Transient)> found;
-  if (reader.IsNull() || shape.IsNull()) {
-    return found;
-  }
-  const TopoDS_Shape unplaced = shape.Located(TopLoc_Location());
-  for (const TopoDS_Shape &candidate : {shape, unplaced}) {
-    for (int mode = 0; mode <= 3; ++mode) {
-      Handle(Standard_Transient) entity =
-          reader->EntityFromShapeResult(candidate, mode);
-      if (!entity.IsNull() &&
-          !std::any_of(found.begin(), found.end(), [&](const auto &known) {
-            return known == entity;
-          })) {
-        found.push_back(entity);
-      }
-    }
-  }
-  return found;
-}
-
-/// Walks outward from an entity to the PRODUCT_DEFINITION that owns it.
-///
-/// Typed, not a graph crawl. The first attempt at this followed sharings in
-/// every direction and found nothing, because the chain does not run one way:
-///
-///     MANIFOLD_SOLID_BREP
-///       <- shared by  ADVANCED_BREP_SHAPE_REPRESENTATION
-///       <- shared by  SHAPE_DEFINITION_REPRESENTATION
-///       -> refers to  PRODUCT_DEFINITION_SHAPE
-///       -> refers to  PRODUCT_DEFINITION
-///
-/// Every transition is checked by its concrete STEP type and by the field that
-/// points back to the entity just visited. Merely limiting a generic Sharings
-/// crawl to two or three hops would not make it typed: it could still enter an
-/// unrelated property representation and return a neighbouring part.
-Handle(StepBasic_ProductDefinition) product_definition_of(
-    const Interface_Graph &graph, const Handle(Standard_Transient) & start) {
-  if (start.IsNull()) {
-    return Handle(StepBasic_ProductDefinition)();
-  }
-
-  std::vector<Handle(StepShape_AdvancedBrepShapeRepresentation)> representations;
-  const auto remember_representation = [&](const Handle(Standard_Transient) &entity) {
-    Handle(StepShape_AdvancedBrepShapeRepresentation) representation =
-        Handle(StepShape_AdvancedBrepShapeRepresentation)::DownCast(entity);
-    if (!representation.IsNull() &&
-        !std::any_of(representations.begin(), representations.end(),
-                     [&](const auto &known) { return known == representation; })) {
-      representations.push_back(representation);
-    }
-  };
-
-  // EntityFromShapeResult may already return the representation, or one of
-  // the representation's items. Those are the only two typed starting cases.
-  remember_representation(start);
-  Interface_EntityIterator representation_sharings = graph.Sharings(start);
-  for (representation_sharings.Start(); representation_sharings.More();
-       representation_sharings.Next()) {
-    remember_representation(representation_sharings.Value());
-  }
-
-  std::vector<Handle(StepBasic_ProductDefinition)> products;
-  for (const auto &representation : representations) {
-    Interface_EntityIterator definition_sharings = graph.Sharings(representation);
-    for (definition_sharings.Start(); definition_sharings.More();
-         definition_sharings.Next()) {
-      Handle(StepShape_ShapeDefinitionRepresentation) shape_definition =
-          Handle(StepShape_ShapeDefinitionRepresentation)::DownCast(
-              definition_sharings.Value());
-      if (shape_definition.IsNull() ||
-          shape_definition->UsedRepresentation() != representation) {
-        continue;
-      }
-
-      Handle(StepRepr_ProductDefinitionShape) property =
-          Handle(StepRepr_ProductDefinitionShape)::DownCast(
-              shape_definition->Definition().PropertyDefinition());
-      if (property.IsNull()) {
-        continue;
-      }
-      Handle(StepBasic_ProductDefinition) product =
-          property->Definition().ProductDefinition();
-      if (!product.IsNull() &&
-          !std::any_of(products.begin(), products.end(),
-                       [&](const auto &known) { return known == product; })) {
-        products.push_back(product);
-      }
-    }
-  }
-
-  // Several typed routes to the same product are harmless. Several products
-  // are ambiguity, and ambiguity is absence rather than "the first one".
-  return products.size() == 1 ? products.front()
-                              : Handle(StepBasic_ProductDefinition)();
-}
-
-/// The assemblies a part is a component of, according to the file.
-///
-/// An assembly has no geometry of its own, so the route above has nothing to
-/// start from. What it does have is components, and the file says so in
-/// NEXT_ASSEMBLY_USAGE_OCCURRENCE: the relating product definition is the
-/// assembly, the related one is the part. This reads that relation backwards,
-/// from a known child to its possible parents.
-std::vector<Handle(StepBasic_ProductDefinition)> assemblies_containing(
-    const Interface_Graph &graph,
-    const Handle(StepBasic_ProductDefinition) & child) {
-  std::vector<Handle(StepBasic_ProductDefinition)> parents;
-  if (child.IsNull()) {
-    return parents;
-  }
-  Interface_EntityIterator sharings = graph.Sharings(child);
-  for (sharings.Start(); sharings.More(); sharings.Next()) {
-    Handle(StepRepr_NextAssemblyUsageOccurrence) usage =
-        Handle(StepRepr_NextAssemblyUsageOccurrence)::DownCast(sharings.Value());
-    if (usage.IsNull()) {
-      continue;
-    }
-    // Only the occurrences where this really is the component. The same
-    // relation type is used the other way round elsewhere in the schema.
-    if (usage->RelatedProductDefinition() != child) {
-      continue;
-    }
-    Handle(StepBasic_ProductDefinition) parent = usage->RelatingProductDefinition();
-    // One assembly containing the same part twice writes two occurrences, and
-    // that is ordinary: it is how four bolts in one plate are said. What is
-    // being collected here is which assemblies, not how many times, so the
-    // same assembly named twice is named once.
-    if (!parent.IsNull() &&
-        !std::any_of(parents.begin(), parents.end(),
-                     [&](const Handle(StepBasic_ProductDefinition) &known) {
-                       return known == parent;
-                     })) {
-      parents.push_back(parent);
-    }
-  }
-  return parents;
-}
-
 /// Reads one file and probes every definition it describes.
 ///
 /// Returns an empty vector when the file did not get far enough to have
@@ -366,82 +227,24 @@ std::vector<Probe> probe(const std::string &path, std::string &complaint) {
     walk(roots.Value(r));
   }
 
-  // What the geometry itself can say. A part reaches its product definition
-  // through the representation holding its solid; an assembly has no solid and
-  // is left empty here.
-  std::vector<Handle(StepBasic_ProductDefinition)> product_definitions(
-      definitions.size());
+  // The bridge's own resolution, not a second copy of it: parts through the
+  // representation holding their solid, assemblies through the occurrences
+  // that put their components inside them.
+  std::vector<TopoDS_Shape> definition_shapes;
+  definition_shapes.reserve(definitions.size());
+  for (const TDF_Label &definition : definitions) {
+    definition_shapes.push_back(shapes->GetShape(definition));
+  }
+  const std::vector<Handle(StepBasic_ProductDefinition)> product_definitions =
+      ferritecad::resolve_product_definitions(graph, transfer, definition_shapes,
+                                              children_of);
+
   std::vector<Ident> shape_entities(definitions.size());
   for (std::size_t i = 0; i < definitions.size(); ++i) {
     const std::vector<Handle(Standard_Transient)> entities =
-        entities_from(transfer, shapes->GetShape(definitions[i]));
+        ferritecad::entities_from(transfer, definition_shapes[i]);
     if (!entities.empty()) {
       shape_entities[i] = ident_of(model, entities.front());
-    }
-
-    std::vector<Handle(StepBasic_ProductDefinition)> products;
-    for (const auto &entity : entities) {
-      Handle(StepBasic_ProductDefinition) product =
-          product_definition_of(graph, entity);
-      if (!product.IsNull() &&
-          !std::any_of(products.begin(), products.end(),
-                       [&](const auto &known) { return known == product; })) {
-        products.push_back(product);
-      }
-    }
-    if (products.size() == 1) {
-      product_definitions[i] = products.front();
-    }
-  }
-
-  // And what the assembly structure can say about the rest. A definition with
-  // no geometry is named by the occurrences that put its components inside it:
-  // the parent every one of them agrees on, if they agree on exactly one.
-  // Repeated to a fixed point so an assembly of assemblies resolves from the
-  // parts upward rather than depending on the order they were walked in.
-  for (bool changed = true; changed;) {
-    changed = false;
-    for (std::size_t i = 0; i < definitions.size(); ++i) {
-      if (!product_definitions[i].IsNull() || children_of[i].empty()) {
-        continue;
-      }
-
-      std::vector<Handle(StepBasic_ProductDefinition)> agreed;
-      bool first = true;
-      bool usable = true;
-      for (const std::size_t child : children_of[i]) {
-        if (product_definitions[child].IsNull()) {
-          usable = false;
-          break;
-        }
-        std::vector<Handle(StepBasic_ProductDefinition)> parents =
-            assemblies_containing(graph, product_definitions[child]);
-        if (first) {
-          agreed = parents;
-          first = false;
-          continue;
-        }
-        // Only the parents every component names. A component used in two
-        // assemblies offers both, and the intersection is what narrows it.
-        std::vector<Handle(StepBasic_ProductDefinition)> both;
-        for (const Handle(StepBasic_ProductDefinition) &candidate : agreed) {
-          if (std::any_of(parents.begin(), parents.end(),
-                          [&](const Handle(StepBasic_ProductDefinition) &other) {
-                            return other == candidate;
-                          })) {
-            both.push_back(candidate);
-          }
-        }
-        agreed.swap(both);
-      }
-
-      // Exactly one, or none. Two assemblies containing the same components
-      // are indistinguishable from here, and guessing between them is the
-      // failure this whole exercise exists to avoid.
-      if (usable && agreed.size() == 1) {
-        product_definitions[i] = agreed.front();
-        changed = true;
-      }
     }
   }
 

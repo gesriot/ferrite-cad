@@ -54,11 +54,13 @@ fn scene(session: SessionId) -> Scene {
                 shape: ShapeHandle::new(session, 1),
                 name: "Plate".to_owned(),
                 solids: 1,
+                key: "step.product_definition#5".to_owned(),
             },
             Definition {
                 shape: ShapeHandle::new(session, 2),
                 name: "Bolt".to_owned(),
                 solids: 1,
+                key: "step.product_definition#31".to_owned(),
             },
         ],
         instances: vec![

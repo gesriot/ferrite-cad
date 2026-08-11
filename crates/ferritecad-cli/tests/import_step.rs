@@ -281,6 +281,47 @@ fn a_refused_file_writes_nothing_at_all() {
 }
 
 #[test]
+fn a_file_whose_parts_cannot_be_named_writes_no_document() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    if !has_kernel(dir.path()) {
+        return;
+    }
+
+    // Open CASCADE reads this one and produces the same geometry as the
+    // undamaged assembly. What it cannot produce is an identity for one of its
+    // definitions, and a document written from it could never be reopened —
+    // the handles go with the session and there would be nothing left to
+    // re-attach them by. So it is refused here, before a file exists.
+    let input = source(
+        dir.path(),
+        "damaged",
+        "06-duplicate-product-definition.step",
+    );
+    let before = snapshot(dir.path());
+    let output = dir.path().join("collided.fcad");
+
+    let result = import(&input, &output, &[]);
+    assert_eq!(code(&result), REJECTED, "{}", stdout(&result));
+
+    let report = stdout(&result);
+    assert!(report.starts_with("refused "), "{report}");
+    assert!(report.contains("nothing was written"), "{report}");
+    // Reported as this project's own finding, not as something the kernel
+    // said: it read the file without complaining about anything of the sort.
+    assert!(
+        report.contains("identifying"),
+        "the refusal should say it was an identity that was missing: {report}"
+    );
+
+    assert!(!output.exists(), "a document was written from it");
+    assert_eq!(
+        snapshot(dir.path()),
+        before,
+        "a refused import changed the directory"
+    );
+}
+
+#[test]
 fn an_existing_document_is_not_replaced_without_being_asked() {
     let dir = tempfile::tempdir().expect("temp dir");
     if !has_kernel(dir.path()) {

@@ -10,11 +10,13 @@
 //! # There is no `valid` flag
 //!
 //! Measured against Open CASCADE 8.0.1 on the committed corpus: of six
-//! deliberately damaged files, two are refused outright, three are read and
-//! described precisely in the diagnostics, and one is read, transferred and
-//! reported clean while carrying a malformed coordinate. So "nothing was
-//! noticed" is a fact about the reader, not about the file, and a flag saying
-//! `valid: true` would state the second while knowing only the first.
+//! deliberately damaged files, the kernel refuses two outright and reads four.
+//! Of those four, one more is refused by the importer because a definition has
+//! no identity, two are read and described precisely in the diagnostics, and
+//! one is read, transferred and reported clean while carrying a malformed
+//! coordinate. So "nothing was noticed" is a fact about the reader, not about
+//! the file, and a flag saying `valid: true` would state the second while
+//! knowing only the first.
 //!
 //! What an [`Import`] offers instead is everything that was noticed, with the
 //! stage it was noticed at. A caller decides what to do about it; this says
@@ -48,6 +50,20 @@ pub struct Definition {
     /// What the file called it, or empty when it called it nothing.
     pub name: String,
     pub solids: u32,
+    /// What identifies this definition *inside its source*, never empty.
+    ///
+    /// The importer refuses a file rather than hand back a definition it
+    /// cannot name, so a scene that exists has a key for every definition and
+    /// no two alike. What the text means is the importer's business; what
+    /// matters here is that it came from the file rather than from the reading.
+    ///
+    /// # Local to one source
+    ///
+    /// `step.product_definition#31` identifies something within one STEP file
+    /// and nothing at all between two. A durable reference into an imported
+    /// assembly must carry the identity of the source alongside this, and this
+    /// alone is not one.
+    pub key: String,
 }
 
 /// Where a colour came from, which is not the same as what it is.
@@ -104,6 +120,13 @@ pub enum Stage {
     Load,
     /// Building geometry from what was parsed.
     Transfer,
+    /// Asking whether what was built can be told apart and found again.
+    ///
+    /// This one is FerriteCAD's, not the kernel's. A file can be read and
+    /// transferred without complaint and still describe a definition nothing
+    /// can name a second time; reporting that under [`Stage::Load`] would
+    /// attribute to Open CASCADE a refusal it had no part in.
+    Identity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +155,7 @@ impl fmt::Display for Diagnostic {
         let stage = match self.stage {
             Stage::Load => "reading",
             Stage::Transfer => "building",
+            Stage::Identity => "identifying",
         };
         let severity = match self.severity {
             Severity::Warning => "warning",
@@ -186,7 +210,7 @@ pub enum Import {
     /// stopped, which is often the most useful thing an import can offer.
     Rejected { diagnostics: Vec<Diagnostic> },
     /// A scene was built. Diagnostics may still be present and may still
-    /// matter: three of the corpus's damaged files import completely and are
+    /// matter: two of the corpus's damaged files import completely and are
     /// described here in detail.
     Imported {
         scene: Scene,

@@ -422,11 +422,13 @@ mod tests {
                     shape: ShapeHandle::new(session, 11),
                     name: "Plate".to_owned(),
                     solids: 1,
+                    key: "step.product_definition#5".to_owned(),
                 },
                 Definition {
                     shape: ShapeHandle::new(session, 12),
                     name: "Bolt".to_owned(),
                     solids: 2,
+                    key: "step.product_definition#31".to_owned(),
                 },
             ],
             instances: vec![

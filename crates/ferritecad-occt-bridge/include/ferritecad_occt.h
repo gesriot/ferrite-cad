@@ -235,6 +235,7 @@ FcOcctStatus fc_occt_decode_shape(FcOcctSession *session,
  *       shape            u64, a handle into this session
  *       name             length-prefixed UTF-8
  *       solids           u32
+ *       key              length-prefixed UTF-8, never empty
  *   instance count u32, then per instance:
  *       definition       u32
  *       parent           u32, or 0xFFFFFFFF for a root
@@ -243,17 +244,32 @@ FcOcctStatus fc_occt_decode_shape(FcOcctSession *session,
  *       colour source    u8   0 = none, 1 = from the instance, 2 = inherited
  *       colour           3 f64, linear RGB, meaningless when the source is 0
  *   diagnostic count u32, then per diagnostic:
- *       stage            u8   0 = load, 1 = transfer
+ *       stage            u8   0 = load, 1 = transfer, 2 = identity
  *       severity         u8   0 = warning, 1 = fail
  *       entity           length-prefixed UTF-8, empty when not attributed
  *       message          length-prefixed UTF-8
  *
+ * The key says what identifies a definition in the file rather than in this
+ * reading of it, and it is the one field this bridge refuses to hand over a
+ * scene without. A definition it cannot name, or two that carry one name, end
+ * the import: status becomes rejected, an identity diagnostic says which, and
+ * every shape the import registered is released. That is stricter than Open
+ * CASCADE, which reads such a file without complaint — and it has to be,
+ * because the alternative is a stored scene that can never be re-attached to
+ * geometry once the session that read it is gone.
+ *
+ * A key is local to its source. `step.product_definition#31` identifies
+ * something within one file and nothing at all between two, so a durable
+ * reference has to carry the identity of the source alongside it.
+ *
  * There is no "valid" flag and there will not be one. Measured on 8.0.1: of
- * six deliberately damaged files, two are refused outright, three are read and
- * reported precisely, and one is read, transferred and reported clean while
- * carrying a malformed coordinate. A file that produced no diagnostics is a
- * file nothing was noticed about, which is not the same as a sound one, and a
- * flag would collapse that distinction exactly where it matters.
+ * six deliberately damaged files, Open CASCADE refuses two outright and reads
+ * four. Of those four, this bridge refuses one more because a definition has
+ * no identity, two are read and reported precisely, and one is read,
+ * transferred and reported clean while carrying a malformed coordinate. A file
+ * that produced no diagnostics is a file nothing was noticed about, which is
+ * not the same as a sound one, and a flag would collapse that distinction
+ * exactly where it matters.
  */
 FcOcctStatus fc_occt_import_step(
     FcOcctSession *session, const uint8_t *bytes, size_t length,
