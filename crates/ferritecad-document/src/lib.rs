@@ -46,7 +46,7 @@ mod validate;
 pub use cache::{CacheEntry, CacheStore};
 pub use document::{
     Access, Document, DocumentMeta, DocumentWriter, ObjectRecord, ReopenedStepImport,
-    StepImportRequest, StoredStepImport, StoredTopologyRef,
+    StepImportRequest, StepImporter, StoredStepImport, StoredTopologyRef,
 };
 pub use envelope::{Envelope, UnknownObject};
 pub use graph::{Dependency, DependencyRole, evaluation_order};

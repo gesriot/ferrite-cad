@@ -4,7 +4,7 @@ use std::io::{ErrorKind as IoErrorKind, Read};
 use std::path::{Path, PathBuf};
 
 use ferritecad_exchange::{Diagnostic as ImportDiagnostic, Import, Scene};
-use ferritecad_kernel::KernelIdentity;
+use ferritecad_kernel::{KernelIdentity, ShapeHandle};
 use ferritecad_types::{
     CadError, ContentHash, Dimension, DocumentId, ImportedSourceId, ObjectId, Result,
     StableEntityId, Unit,
@@ -112,6 +112,24 @@ pub struct StepImportRequest<'a> {
     pub source_name: Option<&'a str>,
     pub import: &'a Import,
     pub importer: &'a KernelIdentity,
+}
+
+/// What a document needs from a kernel session to re-read a stored import.
+///
+/// A trait rather than a closure because re-reading has two halves that must
+/// belong to the same session: building shapes, and taking them back. A refusal
+/// happens *after* the importer has built a whole scene, and something has to
+/// release it — not the caller, which never sees a scene it was not allowed to
+/// have, and not the document, which has no session. So the session that made
+/// them is asked.
+///
+/// This is also the boundary that keeps this crate free of any kernel. Nothing
+/// here links one, and the adapter that does implements this from the other
+/// side.
+pub trait StepImporter {
+    fn import(&mut self, source: &[u8]) -> Result<Import>;
+    /// Called for every shape of a scene that could not be bound.
+    fn release(&mut self, shape: ShapeHandle);
 }
 
 /// A stored import, read again in a live kernel session.
@@ -541,12 +559,15 @@ impl Document {
 
     /// Re-reads a stored import in a live kernel session.
     ///
-    /// `import` is handed bytes this document has already verified and must
+    /// `importer` is handed bytes this document has already verified and must
     /// return what a kernel made of them. Whatever it produces is checked
     /// against the stored scene in full — units, schema, every definition, the
     /// whole instance tree, placements and colours — and only then are its
     /// handles returned. A file that no longer imports as what was saved is
     /// refused; nothing is matched up approximately.
+    ///
+    /// A refusal releases every shape the importer built. Nothing is bound, so
+    /// nothing is left held.
     ///
     /// A differing [`ImporterIdentity`] is not itself a refusal. `build`
     /// carries the target triple, so the same release on another operating
@@ -555,13 +576,13 @@ impl Document {
     pub fn reopen_step_import(
         &self,
         id: ObjectId,
-        import: impl FnOnce(&[u8]) -> Result<Import>,
+        importer: &mut impl StepImporter,
     ) -> Result<ReopenedStepImport> {
         let stored = self.step_import(id)?.ok_or_else(|| {
             CadError::input(format!("this document has no imported STEP object {id}"))
         })?;
 
-        let outcome = import(&stored.source)?;
+        let outcome = importer.import(&stored.source)?;
         let (scene, diagnostics_now) = match outcome {
             Import::Imported { scene, diagnostics } => (scene, diagnostics),
             Import::Rejected { diagnostics } => {
@@ -573,7 +594,18 @@ impl Document {
             }
         };
 
-        let scene = stored.imported.scene.bind(scene)?;
+        // Collected before the scene is handed over, because binding consumes
+        // it and a refusal must still be able to give the shapes back.
+        let shapes: Vec<ShapeHandle> = scene.shapes().collect();
+        let scene = match stored.imported.scene.bind(scene) {
+            Ok(scene) => scene,
+            Err(error) => {
+                for shape in shapes {
+                    importer.release(shape);
+                }
+                return Err(error);
+            }
+        };
         Ok(ReopenedStepImport {
             scene,
             diagnostics_at_import: stored.imported.diagnostics_at_import,

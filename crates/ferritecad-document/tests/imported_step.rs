@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 //! Storing an imported file and reading it back into a new kernel session.
 //!
-//! No Open CASCADE here. The importer is a closure, which is exactly the shape
-//! the real one has, and it lets these tests state things a kernel cannot be
-//! asked to produce on demand: a scene whose definitions were reordered, a
+//! No Open CASCADE here. The importer is a stand-in implementing the same trait
+//! the real adapter does, and it lets these tests state things a kernel cannot
+//! be asked to produce on demand: a scene whose definitions were reordered, a
 //! source blob corrupted underneath a document, a reading that now refuses a
 //! file it once accepted. What runs against the real kernel is in
 //! `crates/ferritecad-occt/tests/step_persistence_occt.rs`.
@@ -11,11 +11,9 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
-use std::cell::Cell;
-
 use ferritecad_document::{
     Access, Document, IMPORTED_STEP_CAPABILITY, ImportedStep, ImporterIdentity, ObjectPayload,
-    STEP_SOURCE_FORMAT, StepImportRequest,
+    STEP_SOURCE_FORMAT, StepImportRequest, StepImporter,
 };
 use ferritecad_exchange::{
     ColourSource, Definition, Diagnostic, Import, Instance, Scene, Severity, Stage,
@@ -108,6 +106,35 @@ fn imported(session: SessionId, diagnostics: Vec<Diagnostic>) -> Import {
     }
 }
 
+/// A kernel session that answers with whatever it was told to, and keeps a
+/// record of being asked and of being given anything back.
+struct Importer<F> {
+    reply: F,
+    asked: bool,
+    released: Vec<ShapeHandle>,
+}
+
+impl<F: FnMut(&[u8]) -> Result<Import>> Importer<F> {
+    fn new(reply: F) -> Self {
+        Self {
+            reply,
+            asked: false,
+            released: Vec::new(),
+        }
+    }
+}
+
+impl<F: FnMut(&[u8]) -> Result<Import>> StepImporter for Importer<F> {
+    fn import(&mut self, source: &[u8]) -> Result<Import> {
+        self.asked = true;
+        (self.reply)(source)
+    }
+
+    fn release(&mut self, shape: ShapeHandle) {
+        self.released.push(shape);
+    }
+}
+
 /// Stores one import of [`SOURCE`] and returns the object it was stored as.
 fn store(document: &mut Document, import: &Import) -> Result<(ObjectId, ImportedStep)> {
     let object = ObjectId::new();
@@ -139,15 +166,21 @@ fn a_stored_import_reopens_into_a_new_session_with_that_session_s_handles() {
     current.definitions[1].shape = ShapeHandle::new(later, 4002);
 
     let document = Document::open(&path).expect("reopens");
-    let reopened = document
-        .reopen_step_import(object, |bytes| {
-            assert_eq!(bytes, SOURCE, "the importer must be given the stored bytes");
-            Ok(Import::Imported {
-                scene: current,
-                diagnostics: Vec::new(),
-            })
+    let mut current = Some(current);
+    let mut importer = Importer::new(|bytes: &[u8]| {
+        assert_eq!(bytes, SOURCE, "the importer must be given the stored bytes");
+        Ok(Import::Imported {
+            scene: current.take().expect("read once"),
+            diagnostics: Vec::new(),
         })
+    });
+    let reopened = document
+        .reopen_step_import(object, &mut importer)
         .expect("the same file binds");
+    assert!(
+        importer.released.is_empty(),
+        "a successful binding gave shapes back that the caller now holds"
+    );
 
     let fresh: Vec<ShapeHandle> = reopened.scene.shapes().collect();
     assert_eq!(
@@ -180,13 +213,14 @@ fn what_the_import_said_then_and_what_it_says_now_stay_apart() {
 
     let now = vec![warned("entity defined SEVERAL TIMES")];
     let document = Document::open(&path).expect("reopens");
-    let reopened = document
-        .reopen_step_import(object, |_| {
-            Ok(Import::Imported {
-                scene: scene(SessionId::new()),
-                diagnostics: now.clone(),
-            })
+    let mut importer = Importer::new(|_: &[u8]| {
+        Ok(Import::Imported {
+            scene: scene(SessionId::new()),
+            diagnostics: now.clone(),
         })
+    });
+    let reopened = document
+        .reopen_step_import(object, &mut importer)
         .expect("binds");
 
     assert_eq!(reopened.diagnostics_at_import, then);
@@ -213,17 +247,27 @@ fn a_scene_that_no_longer_matches_is_refused_rather_than_bound() {
     let document = Document::open(&path).expect("reopens");
 
     let refuses = |what: &str, damage: fn(&mut Scene)| {
-        let error = document
-            .reopen_step_import(object, |_| {
-                let mut current = scene(SessionId::new());
-                damage(&mut current);
-                Ok(Import::Imported {
-                    scene: current,
-                    diagnostics: Vec::new(),
-                })
+        let mut importer = Importer::new(|_: &[u8]| {
+            let mut current = scene(SessionId::new());
+            damage(&mut current);
+            Ok(Import::Imported {
+                scene: current,
+                diagnostics: Vec::new(),
             })
+        });
+        let error = document
+            .reopen_step_import(object, &mut importer)
             .expect_err(&format!("{what} should not have bound"));
         assert_eq!(error.kind(), ErrorKind::Input, "{what}: {error}");
+        // A refusal binds nothing, so it may hold nothing: every shape that
+        // reading built was handed back to the session that made it.
+        let mut released: Vec<u64> = importer.released.iter().map(ShapeHandle::index).collect();
+        released.sort_unstable();
+        assert_eq!(
+            released,
+            vec![1, 2],
+            "{what}: the refused scene's shapes were not all given back"
+        );
     };
 
     refuses("a reordered pair of definitions", |scene| {
@@ -259,12 +303,13 @@ fn a_scene_that_no_longer_matches_is_refused_rather_than_bound() {
 
     // A file that once imported and now does not is a refusal, not an empty
     // scene silently bound to nothing.
-    let error = document
-        .reopen_step_import(object, |_| {
-            Ok(Import::Rejected {
-                diagnostics: vec![warned("syntax error")],
-            })
+    let mut importer = Importer::new(|_: &[u8]| {
+        Ok(Import::Rejected {
+            diagnostics: vec![warned("syntax error")],
         })
+    });
+    let error = document
+        .reopen_step_import(object, &mut importer)
         .expect_err("a rejection cannot be bound");
     assert!(error.to_string().contains("refused now"), "{error}");
 }
@@ -300,18 +345,19 @@ fn definitions_of_the_same_name_are_not_told_apart_by_it() {
     document.close().expect("closes");
 
     let document = Document::open(&path).expect("reopens");
-    let error = document
-        .reopen_step_import(object, |_| {
-            let mut swapped = same_name(SessionId::new());
-            swapped.definitions.swap(0, 1);
-            for instance in &mut swapped.instances {
-                instance.definition = 1 - instance.definition;
-            }
-            Ok(Import::Imported {
-                scene: swapped,
-                diagnostics: Vec::new(),
-            })
+    let mut importer = Importer::new(|_: &[u8]| {
+        let mut swapped = same_name(SessionId::new());
+        swapped.definitions.swap(0, 1);
+        for instance in &mut swapped.instances {
+            instance.definition = 1 - instance.definition;
+        }
+        Ok(Import::Imported {
+            scene: swapped,
+            diagnostics: Vec::new(),
         })
+    });
+    let error = document
+        .reopen_step_import(object, &mut importer)
         .expect_err("a shared name must not license a swap");
     assert!(
         error.to_string().contains("solid count"),
@@ -343,8 +389,9 @@ fn another_kernel_may_reopen_what_this_one_stored() {
     // so it differs by construction. A document that could not cross platforms
     // would be no use, and the scene is what has to agree.
     let document = Document::open(&path).expect("reopens");
+    let mut importer = Importer::new(|_: &[u8]| Ok(imported(SessionId::new(), Vec::new())));
     let reopened = document
-        .reopen_step_import(object, |_| Ok(imported(SessionId::new(), Vec::new())))
+        .reopen_step_import(object, &mut importer)
         .expect("another platform reopens it");
 
     assert_eq!(reopened.imported_by, ImporterIdentity::of(&linux));
@@ -536,15 +583,12 @@ fn corrupted_source_bytes_are_noticed_before_any_importer_sees_them() {
     });
 
     let document = Document::open(&path).expect("reopens");
-    let asked = Cell::new(false);
+    let mut importer = Importer::new(|_: &[u8]| Ok(imported(SessionId::new(), Vec::new())));
     let error = document
-        .reopen_step_import(object, |_| {
-            asked.set(true);
-            Ok(imported(SessionId::new(), Vec::new()))
-        })
+        .reopen_step_import(object, &mut importer)
         .expect_err("damaged bytes must not be imported");
     assert!(
-        !asked.get(),
+        !importer.asked,
         "the importer was handed bytes this document already knew were wrong"
     );
     assert!(error.to_string().contains("stored hash"), "{error}");
