@@ -761,14 +761,27 @@ jobs:
           # the sound ones: a key that exists only while a file is undamaged is
           # a key that disappears exactly when a user needs to be told which
           # component stopped resolving.
-          "$binary" fixtures/step/canonical/*.step fixtures/step/damaged/*.step \
-            | tee step-key-matrix.txt
+          inputs=(fixtures/step/canonical/*.step fixtures/step/damaged/*.step)
+          "$binary" "${inputs[@]}" | tee step-key-matrix.txt
 
           # The gate. Durable selection into an imported assembly cannot be
           # built on a key that is missing, ambiguous or different on a second
           # reading, so every file that produced a scene must offer one. This
           # is a fact the probe counts, not a verdict it reaches.
           total="$(sed -n 's/^ *files with definitions \([0-9]*\)$/\1/p' step-key-matrix.txt)"
+          examined="$(sed -n 's/^ *files examined \([0-9]*\)$/\1/p' step-key-matrix.txt)"
+          if [ "$examined" != "${#inputs[@]}" ]; then
+            echo "::error::the probe reported $examined files but was given ${#inputs[@]}"
+            exit 1
+          fi
+          # Independent denominator: the diagnostic probe above already said
+          # which files transferred. If the key probe silently loses one of
+          # those files, N/N with a smaller N must not stay green.
+          transferred="$(grep -cE '^ +transfer succeeded\r?$' step-import-matrix.txt)"
+          if [ "$total" != "$transferred" ]; then
+            echo "::error::the key probe found definitions in $total files, but $transferred transferred"
+            exit 1
+          fi
           if [ -z "$total" ] || [ "$total" -eq 0 ]; then
             echo "::error::the probe found no file with definitions at all"
             exit 1

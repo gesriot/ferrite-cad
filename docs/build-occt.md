@@ -465,14 +465,20 @@ identifiers are identical on Linux, Windows and macOS, and identical when the
 same bytes are read a second time in a second reader.
 
 **The route to it is typed, not a graph search.** The chain runs up and then
-down, and a crawl deep enough to turn that corner by accident is also deep
-enough to arrive at a neighbouring part:
+down, and every transition checks both the concrete STEP type and the field
+that refers back to the entity just visited. A hop-limited walk over arbitrary
+`Sharings` would still be a graph crawl, and could still arrive at a
+neighbouring part:
 
     MANIFOLD_SOLID_BREP
       <- shared by  ADVANCED_BREP_SHAPE_REPRESENTATION
       <- shared by  SHAPE_DEFINITION_REPRESENTATION
       -> refers to  PRODUCT_DEFINITION_SHAPE
       -> refers to  PRODUCT_DEFINITION
+
+The assembly half is equally strict: only
+`NEXT_ASSEMBLY_USAGE_OCCURRENCE` is accepted, not its generic
+`PRODUCT_DEFINITION_RELATIONSHIP` base class.
 
 **An assembly has no geometry, so it has no entity of its own.** The shape
 entity is available for only four of the ten files' definitions — every leaf
@@ -497,6 +503,11 @@ an `ADVANCED_BREP_SHAPE_REPRESENTATION`, not a `PRODUCT_DEFINITION`, so nothing
 here measures what happens when the identifier a key rests on is itself written
 twice. Uniqueness is therefore a measurement on this corpus and not a property
 of the format, and an importer must check it at read time rather than assume it.
+
+The workflow's denominator is independent of the key probe: the earlier
+diagnostic probe counts files that transferred, and the key gate requires the
+same number of files with definitions. Otherwise a regression that silently
+dropped one file could still report a smaller but apparently perfect `N/N`.
 
 ## What meshing does, and does not, do
 

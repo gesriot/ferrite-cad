@@ -41,10 +41,14 @@
 #include <StepBasic_ProductDefinitionFormation.hxx>
 #include <StepBasic_ProductDefinitionRelationship.hxx>
 #include <StepRepr_CharacterizedDefinition.hxx>
+#include <StepRepr_NextAssemblyUsageOccurrence.hxx>
 #include <StepRepr_PropertyDefinition.hxx>
 #include <StepRepr_PropertyDefinitionRepresentation.hxx>
+#include <StepRepr_ProductDefinitionShape.hxx>
 #include <StepRepr_Representation.hxx>
 #include <StepRepr_RepresentedDefinition.hxx>
+#include <StepShape_AdvancedBrepShapeRepresentation.hxx>
+#include <StepShape_ShapeDefinitionRepresentation.hxx>
 #include <StepData_StepModel.hxx>
 #include <Standard_Failure.hxx>
 #include <Standard_Version.hxx>
@@ -65,7 +69,6 @@
 #include <cstdio>
 #include <functional>
 #include <iostream>
-#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -142,22 +145,26 @@ Ident ident_of(const Handle(StepData_StepModel) & model,
 /// obliged to be the shape the transfer recorded — it may be the same geometry
 /// under a different location. Each attempt is cheap; a definition with no
 /// entity at all is a measurement worth having, but only after asking properly.
-Handle(Standard_Transient) entity_from(const Handle(XSControl_TransferReader) & reader,
-                                       const TopoDS_Shape &shape) {
+std::vector<Handle(Standard_Transient)> entities_from(
+    const Handle(XSControl_TransferReader) & reader, const TopoDS_Shape &shape) {
+  std::vector<Handle(Standard_Transient)> found;
   if (reader.IsNull() || shape.IsNull()) {
-    return Handle(Standard_Transient)();
+    return found;
   }
   const TopoDS_Shape unplaced = shape.Located(TopLoc_Location());
   for (const TopoDS_Shape &candidate : {shape, unplaced}) {
     for (int mode = 0; mode <= 3; ++mode) {
       Handle(Standard_Transient) entity =
           reader->EntityFromShapeResult(candidate, mode);
-      if (!entity.IsNull()) {
-        return entity;
+      if (!entity.IsNull() &&
+          !std::any_of(found.begin(), found.end(), [&](const auto &known) {
+            return known == entity;
+          })) {
+        found.push_back(entity);
       }
     }
   }
-  return Handle(Standard_Transient)();
+  return found;
 }
 
 /// Walks outward from an entity to the PRODUCT_DEFINITION that owns it.
@@ -171,49 +178,69 @@ Handle(Standard_Transient) entity_from(const Handle(XSControl_TransferReader) & 
 ///       -> refers to  PRODUCT_DEFINITION_SHAPE
 ///       -> refers to  PRODUCT_DEFINITION
 ///
-/// Two hops up and then two hops down through named fields. A crawl deep
-/// enough to turn that corner by accident is also deep enough to arrive at a
-/// neighbouring part, and would have reported a key that identified the wrong
-/// thing rather than no key at all.
+/// Every transition is checked by its concrete STEP type and by the field that
+/// points back to the entity just visited. Merely limiting a generic Sharings
+/// crawl to two or three hops would not make it typed: it could still enter an
+/// unrelated property representation and return a neighbouring part.
 Handle(StepBasic_ProductDefinition) product_definition_of(
     const Interface_Graph &graph, const Handle(Standard_Transient) & start) {
   if (start.IsNull()) {
     return Handle(StepBasic_ProductDefinition)();
   }
 
-  // Up to the representation holding this geometry, then to the statement
-  // that says what that representation is a representation *of*.
-  std::vector<Handle(Standard_Transient)> frontier{start};
-  std::set<const Standard_Transient *> seen{start.get()};
-  for (int depth = 0; depth < 3 && !frontier.empty(); ++depth) {
-    std::vector<Handle(Standard_Transient)> next;
-    for (const Handle(Standard_Transient) &entity : frontier) {
-      Interface_EntityIterator sharings = graph.Sharings(entity);
-      for (sharings.Start(); sharings.More(); sharings.Next()) {
-        const Handle(Standard_Transient) &sharing = sharings.Value();
-        if (sharing.IsNull() || !seen.insert(sharing.get()).second) {
-          continue;
-        }
-        Handle(StepRepr_PropertyDefinitionRepresentation) definition_of =
-            Handle(StepRepr_PropertyDefinitionRepresentation)::DownCast(sharing);
-        if (!definition_of.IsNull()) {
-          Handle(StepRepr_PropertyDefinition) property =
-              definition_of->Definition().PropertyDefinition();
-          if (!property.IsNull()) {
-            Handle(StepBasic_ProductDefinition) product =
-                property->Definition().ProductDefinition();
-            if (!product.IsNull()) {
-              return product;
-            }
-          }
-          continue;
-        }
-        next.push_back(sharing);
+  std::vector<Handle(StepShape_AdvancedBrepShapeRepresentation)> representations;
+  const auto remember_representation = [&](const Handle(Standard_Transient) &entity) {
+    Handle(StepShape_AdvancedBrepShapeRepresentation) representation =
+        Handle(StepShape_AdvancedBrepShapeRepresentation)::DownCast(entity);
+    if (!representation.IsNull() &&
+        !std::any_of(representations.begin(), representations.end(),
+                     [&](const auto &known) { return known == representation; })) {
+      representations.push_back(representation);
+    }
+  };
+
+  // EntityFromShapeResult may already return the representation, or one of
+  // the representation's items. Those are the only two typed starting cases.
+  remember_representation(start);
+  Interface_EntityIterator representation_sharings = graph.Sharings(start);
+  for (representation_sharings.Start(); representation_sharings.More();
+       representation_sharings.Next()) {
+    remember_representation(representation_sharings.Value());
+  }
+
+  std::vector<Handle(StepBasic_ProductDefinition)> products;
+  for (const auto &representation : representations) {
+    Interface_EntityIterator definition_sharings = graph.Sharings(representation);
+    for (definition_sharings.Start(); definition_sharings.More();
+         definition_sharings.Next()) {
+      Handle(StepShape_ShapeDefinitionRepresentation) shape_definition =
+          Handle(StepShape_ShapeDefinitionRepresentation)::DownCast(
+              definition_sharings.Value());
+      if (shape_definition.IsNull() ||
+          shape_definition->UsedRepresentation() != representation) {
+        continue;
+      }
+
+      Handle(StepRepr_ProductDefinitionShape) property =
+          Handle(StepRepr_ProductDefinitionShape)::DownCast(
+              shape_definition->Definition().PropertyDefinition());
+      if (property.IsNull()) {
+        continue;
+      }
+      Handle(StepBasic_ProductDefinition) product =
+          property->Definition().ProductDefinition();
+      if (!product.IsNull() &&
+          !std::any_of(products.begin(), products.end(),
+                       [&](const auto &known) { return known == product; })) {
+        products.push_back(product);
       }
     }
-    frontier.swap(next);
   }
-  return Handle(StepBasic_ProductDefinition)();
+
+  // Several typed routes to the same product are harmless. Several products
+  // are ambiguity, and ambiguity is absence rather than "the first one".
+  return products.size() == 1 ? products.front()
+                              : Handle(StepBasic_ProductDefinition)();
 }
 
 /// The assemblies a part is a component of, according to the file.
@@ -232,8 +259,8 @@ std::vector<Handle(StepBasic_ProductDefinition)> assemblies_containing(
   }
   Interface_EntityIterator sharings = graph.Sharings(child);
   for (sharings.Start(); sharings.More(); sharings.Next()) {
-    Handle(StepBasic_ProductDefinitionRelationship) usage =
-        Handle(StepBasic_ProductDefinitionRelationship)::DownCast(sharings.Value());
+    Handle(StepRepr_NextAssemblyUsageOccurrence) usage =
+        Handle(StepRepr_NextAssemblyUsageOccurrence)::DownCast(sharings.Value());
     if (usage.IsNull()) {
       continue;
     }
@@ -346,10 +373,25 @@ std::vector<Probe> probe(const std::string &path, std::string &complaint) {
       definitions.size());
   std::vector<Ident> shape_entities(definitions.size());
   for (std::size_t i = 0; i < definitions.size(); ++i) {
-    const Handle(Standard_Transient) entity =
-        entity_from(transfer, shapes->GetShape(definitions[i]));
-    shape_entities[i] = ident_of(model, entity);
-    product_definitions[i] = product_definition_of(graph, entity);
+    const std::vector<Handle(Standard_Transient)> entities =
+        entities_from(transfer, shapes->GetShape(definitions[i]));
+    if (!entities.empty()) {
+      shape_entities[i] = ident_of(model, entities.front());
+    }
+
+    std::vector<Handle(StepBasic_ProductDefinition)> products;
+    for (const auto &entity : entities) {
+      Handle(StepBasic_ProductDefinition) product =
+          product_definition_of(graph, entity);
+      if (!product.IsNull() &&
+          !std::any_of(products.begin(), products.end(),
+                       [&](const auto &known) { return known == product; })) {
+        products.push_back(product);
+      }
+    }
+    if (products.size() == 1) {
+      product_definitions[i] = products.front();
+    }
   }
 
   // And what the assembly structure can say about the rest. A definition with
@@ -577,6 +619,8 @@ int main(int argc, char **argv) {
   // not counted against a candidate. Only files that produced a scene are.
   out << "# summary\n";
   char summary[256];
+  std::snprintf(summary, sizeof(summary), "    files examined %d", argc - 1);
+  out << summary << "\n";
   std::snprintf(summary, sizeof(summary), "    files with definitions %d",
                 with_definitions);
   out << summary << "\n";
