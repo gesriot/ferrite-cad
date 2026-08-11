@@ -727,7 +727,7 @@ jobs:
 
       - name: Upload the STEP import matrix
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: step-import-matrix-${{ matrix.name }}
           path: step-import-matrix.txt
@@ -735,7 +735,7 @@ jobs:
 
       - name: Upload the STEP corpus
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: step-corpus-${{ matrix.name }}
           path: step-corpus
