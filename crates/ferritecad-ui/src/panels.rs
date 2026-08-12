@@ -25,21 +25,37 @@ pub struct Chosen {
     pub view: Option<StandardView>,
     /// The user wants to open a different document.
     pub open: bool,
+    /// The user has stopped waiting for the document being read.
+    pub cancel: bool,
 }
 
-/// The toolbar: a document to open, and the directions a drawing would name.
+/// What the window is doing, as far as the toolbar needs to know.
+///
+/// `line` is a finished sentence and `progress` is how far through a reading
+/// it is. `None` there is not "nought per cent": it is nothing being read,
+/// which is what decides whether there is anything to offer to stop.
+///
+/// Not `#[non_exhaustive]`, unlike [`Chosen`]: this one is an argument, and a
+/// caller that cannot name every field cannot pass one at all.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct Activity<'a> {
+    pub line: &'a str,
+    pub progress: Option<f32>,
+}
+
+/// The toolbar: a document to open, the directions a drawing would name, what
+/// the window is doing, and a way to stop it.
 ///
 /// Returns what was pressed. The order of the views is the one a drawing
 /// office reads in, and the keyboard shortcuts beside each name are the same
 /// ones the window binds, so the panel documents them rather than making the
 /// user find out.
-/// The toolbar: a document to open, the directions a drawing would name, and
-/// what the window has to say about the document it is showing.
 ///
-/// `status` is a finished sentence. What the states are and which one applies
-/// is decided where the loading happens; drawing it here rather than composing
-/// it here is what keeps one account of what is going on.
-pub fn toolbar(ui: &mut egui::Ui, status: &str) -> Chosen {
+/// [`Activity::line`] arrives as a finished sentence. What the states are and
+/// which one applies is decided where the loading happens; drawing it here
+/// rather than composing it here is what keeps one account of what is going
+/// on.
+pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
     let mut chosen = Chosen::default();
     ui.horizontal(|ui| {
         // First, and separated: opening replaces everything else on screen,
@@ -54,11 +70,18 @@ pub fn toolbar(ui: &mut egui::Ui, status: &str) -> Chosen {
             }
         }
 
-        // Last, and given whatever room is left: it is the one thing here
-        // that can be any length, and a long file name must push no button
-        // off the toolbar.
+        // Last, and given whatever room is left: the line is the one thing
+        // here that can be any length, and a long file name must push no
+        // button off the toolbar.
         ui.separator();
-        ui.add(egui::Label::new(status).truncate());
+        if let Some(fraction) = activity.progress {
+            // Offered only while there is something to stop. A button that is
+            // there all the time and does nothing most of the time teaches
+            // people not to trust it.
+            chosen.cancel = ui.button("Cancel").clicked();
+            ui.add(egui::ProgressBar::new(fraction).desired_width(80.0));
+        }
+        ui.add(egui::Label::new(activity.line).truncate());
     });
     chosen
 }
@@ -160,7 +183,7 @@ mod tests {
         let context = egui::Context::default();
         let mut chosen = Chosen::default();
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            chosen = toolbar(ui, "");
+            chosen = toolbar(ui, Activity::default());
         });
         output.textures_delta.clear();
 
@@ -178,6 +201,11 @@ mod tests {
     /// simulates the toolbar itself: the widget under that point is whichever
     /// one really got laid out there.
     fn click_at(context: &egui::Context, at: egui::Pos2) -> Chosen {
+        click_on(context, at, Activity::default())
+    }
+
+    /// The same, for a window that is in the middle of reading something.
+    fn click_on(context: &egui::Context, at: egui::Pos2, activity: Activity<'_>) -> Chosen {
         let input = egui::RawInput {
             events: vec![
                 egui::Event::PointerMoved(at),
@@ -199,7 +227,7 @@ mod tests {
 
         let mut chosen = Chosen::default();
         let mut output = context.run_ui(input, |ui| {
-            chosen = toolbar(ui, "");
+            chosen = toolbar(ui, activity);
         });
         output.textures_delta.clear();
         chosen
@@ -233,6 +261,47 @@ mod tests {
         let chosen = click_at(&context, elsewhere);
         assert!(!chosen.open, "a view button opened the file dialog");
         assert!(chosen.view.is_some(), "the point tested hit no view button");
+    }
+
+    #[test]
+    fn a_reading_can_be_given_up_on_and_nothing_else_can() {
+        let context = egui::Context::default();
+        let reading = Activity {
+            line: "Opening part.fcad… 40%",
+            progress: Some(0.4),
+        };
+
+        // Where the Cancel button is: after the views, so the row up to it is
+        // laid out the same either way and the difference is this button.
+        let mut cancel = None;
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.horizontal(|ui| {
+                let _ = ui.button("Open…");
+                ui.separator();
+                ui.label("View");
+                for (_, name, key) in VIEWS {
+                    let _ = ui.button(format!("{name} ({key})"));
+                }
+                ui.separator();
+                cancel = Some(ui.button("Cancel").rect);
+            });
+        });
+        output.textures_delta.clear();
+        let centre = cancel.expect("the reference row was laid out").center();
+
+        assert!(
+            click_on(&context, centre, reading).cancel,
+            "nothing there gives up on the reading"
+        );
+
+        // And with nothing being read there is nothing to give up on, so that
+        // same place must not be a button that quietly does something else.
+        let idle = click_on(&context, centre, Activity::default());
+        assert!(
+            !idle.cancel,
+            "a window with nothing to stop offered to stop it"
+        );
+        assert!(idle.view.is_none() && !idle.open);
     }
 
     #[test]
