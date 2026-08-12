@@ -307,6 +307,56 @@ impl Loads {
     }
 }
 
+/// Starts a chosen load and makes its new status visible.
+///
+/// `Loads` owns the state transition; this application boundary owns the fact
+/// that a visible transition is a reason to draw. Keeping the two in one
+/// operation prevents a caller from starting real work while leaving the old
+/// status on screen until that work happens to finish.
+fn begin_load(
+    loads: &mut Loads,
+    input: &mut ViewportInput,
+    chosen: Option<&Path>,
+    spawn: impl FnOnce(LoadGeneration, &CancelToken) -> JoinHandle<()>,
+) -> Option<LoadGeneration> {
+    let generation = loads.open(chosen, spawn);
+    if generation.is_some() {
+        input.request_redraw();
+    }
+    generation
+}
+
+/// What accepting or discarding an answer did at the application boundary.
+#[derive(Debug, PartialEq, Eq)]
+struct AnswerEffect {
+    status_changed: bool,
+    /// Present only for the current request's failure.
+    error: Option<String>,
+}
+
+/// Finishes an answer after its picture has either been committed or refused.
+///
+/// `Loads::answered` is the one generation check. Its answer controls both
+/// things visible outside that state machine: a redraw and an error in the
+/// diagnostic stream. A stale error must not bypass it merely because stderr
+/// and the toolbar are two different places to report something.
+fn finish_answer(
+    loads: &mut Loads,
+    input: &mut ViewportInput,
+    generation: LoadGeneration,
+    outcome: Result<()>,
+) -> AnswerEffect {
+    let error = outcome.as_ref().err().map(ToString::to_string);
+    let status_changed = loads.answered(generation, outcome);
+    if status_changed {
+        input.request_redraw();
+    }
+    AnswerEffect {
+        status_changed,
+        error: if status_changed { error } else { None },
+    }
+}
+
 /// Runs a load away from the event loop and delivers the answer back to it.
 ///
 /// Both halves are arguments so that this can be shown to return while the
@@ -494,13 +544,9 @@ impl ApplicationHandler<AppEvent> for App {
                 } else {
                     (*result).map(|_| ())
                 };
-                if let Err(error) = &outcome {
+                let effect = finish_answer(&mut self.loads, &mut self.input, generation, outcome);
+                if let Some(error) = effect.error {
                     eprintln!("ferritecad: {error}");
-                }
-                // A line that changed is a reason to draw, and the only one
-                // this path has when the picture itself did not change.
-                if self.loads.answered(generation, outcome) {
-                    self.input.request_redraw();
                 }
                 if self.input.take_redraw() {
                     self.request_frame_now(event_loop);
@@ -644,36 +690,41 @@ impl App {
         let proxy = self.proxy.clone();
         let chosen = self.document.clone();
 
-        self.loads.open(Some(&chosen), |generation, cancel| {
-            let context = OperationContext::default().with_cancel(cancel.clone());
-            spawn_load(
-                move || {
-                    // The kernel is made and dropped inside the worker. An Open
-                    // CASCADE session belongs to the thread that opened it, and
-                    // ending it with the thread means an abandoned load cannot
-                    // outlive the shapes it was holding.
-                    let mut kernel = OcctKernel::new()?;
-                    snapshot_of(
-                        &path,
-                        &mut kernel,
-                        // How this kernel re-reads a STEP file the document
-                        // stores. Handed over as a function so one session
-                        // builds both the rebuilt bodies and the imported ones.
-                        |kernel, source| kernel.import_step(source),
-                        &TessellationParams::default(),
-                        &context,
-                    )
-                },
-                move |result| {
-                    // A closed event loop is an ordinary end state, and there
-                    // is nowhere useful to report a failed wake-up after it.
-                    let _ = proxy.send_event(AppEvent::Loaded {
-                        generation,
-                        result: Box::new(result),
-                    });
-                },
-            )
-        });
+        begin_load(
+            &mut self.loads,
+            &mut self.input,
+            Some(&chosen),
+            |generation, cancel| {
+                let context = OperationContext::default().with_cancel(cancel.clone());
+                spawn_load(
+                    move || {
+                        // The kernel is made and dropped inside the worker. An Open
+                        // CASCADE session belongs to the thread that opened it, and
+                        // ending it with the thread means an abandoned load cannot
+                        // outlive the shapes it was holding.
+                        let mut kernel = OcctKernel::new()?;
+                        snapshot_of(
+                            &path,
+                            &mut kernel,
+                            // How this kernel re-reads a STEP file the document
+                            // stores. Handed over as a function so one session
+                            // builds both the rebuilt bodies and the imported ones.
+                            |kernel, source| kernel.import_step(source),
+                            &TessellationParams::default(),
+                            &context,
+                        )
+                    },
+                    move |result| {
+                        // A closed event loop is an ordinary end state, and there
+                        // is nowhere useful to report a failed wake-up after it.
+                        let _ = proxy.send_event(AppEvent::Loaded {
+                            generation,
+                            result: Box::new(result),
+                        });
+                    },
+                )
+            },
+        );
     }
 
     /// Puts a finished load on screen, or leaves the screen alone.
@@ -1092,7 +1143,7 @@ mod tests {
         input: &mut ViewportInput,
         generation: LoadGeneration,
         result: Result<RenderSnapshot>,
-    ) -> bool {
+    ) -> AnswerEffect {
         // The same order the event loop uses: whether to show it, then
         // showing it, then saying so. Announcing first would let the window
         // call a document ready before the frame that put it there.
@@ -1107,7 +1158,7 @@ mod tests {
         } else {
             result.map(|_| ())
         };
-        loads.answered(generation, outcome)
+        finish_answer(loads, input, generation, outcome)
     }
 
     #[test]
@@ -1213,7 +1264,7 @@ mod tests {
         assert_eq!(loads.status().line(), "Opening bracket.fcad…");
 
         assert!(
-            deliver(&mut loads, &mut input, a, Ok(scene_at(0.0))),
+            deliver(&mut loads, &mut input, a, Ok(scene_at(0.0))).status_changed,
             "the line changed and the window was not asked to draw it"
         );
         assert_eq!(
@@ -1246,14 +1297,20 @@ mod tests {
                 std::thread::spawn(|| {})
             })
             .expect("a document was named");
+        let effect = deliver(
+            &mut loads,
+            &mut input,
+            b,
+            Err(CadError::input("this is not a document")),
+        );
         assert!(
-            deliver(
-                &mut loads,
-                &mut input,
-                b,
-                Err(CadError::input("this is not a document")),
-            ),
+            effect.status_changed,
             "a failure changed the line and asked for no frame to show it"
+        );
+        assert_eq!(
+            effect.error.as_deref(),
+            Some("invalid input: this is not a document"),
+            "the current failure was hidden from the diagnostic stream"
         );
 
         // The failure is about the document that failed, and the model the
@@ -1289,7 +1346,7 @@ mod tests {
         // window must ignore it: the picture, and the sentence under it.
         let waiting_for_b = loads.status().clone();
         assert!(
-            !deliver(&mut loads, &mut input, a, Ok(scene_at(5000.0))),
+            !deliver(&mut loads, &mut input, a, Ok(scene_at(5000.0))).status_changed,
             "an abandoned answer asked for a frame"
         );
         assert_eq!(*loads.status(), waiting_for_b);
@@ -1306,14 +1363,19 @@ mod tests {
 
         // And a failure that belonged to A, arriving even later, says nothing
         // about B – which is the document on screen.
+        let stale = deliver(
+            &mut loads,
+            &mut input,
+            a,
+            Err(CadError::input("A was unreadable")),
+        );
         assert!(
-            !deliver(
-                &mut loads,
-                &mut input,
-                a,
-                Err(CadError::input("A was unreadable")),
-            ),
+            !stale.status_changed,
             "an abandoned failure asked for a frame"
+        );
+        assert_eq!(
+            stale.error, None,
+            "an abandoned failure escaped to the diagnostic stream"
         );
         assert_eq!(
             *loads.status(),
@@ -1330,11 +1392,22 @@ mod tests {
     #[test]
     fn closing_the_dialog_without_choosing_changes_nothing() {
         let mut loads = Loads::default();
-        let a = loads
-            .open(Some(Path::new("open.fcad")), |_, _| {
-                std::thread::spawn(|| {})
-            })
-            .expect("a document was named");
+        let mut input = ViewportInput::new();
+        assert!(
+            input.take_redraw(),
+            "the initial frame was not accounted for"
+        );
+        let a = begin_load(
+            &mut loads,
+            &mut input,
+            Some(Path::new("open.fcad")),
+            |_, _| std::thread::spawn(|| {}),
+        )
+        .expect("a document was named");
+        assert!(
+            input.take_redraw(),
+            "opening changed the line to Loading but requested no frame"
+        );
         let waiting = loads.status().clone();
 
         // A dialog the user closed. No generation, no worker, and above all no
@@ -1342,12 +1415,16 @@ mod tests {
         // The spawn is never called, and if it ever were, the load it started
         // would be recorded and counted below.
         let mut spawned = false;
-        let started = loads.open(None, |_, _| {
+        let started = begin_load(&mut loads, &mut input, None, |_, _| {
             spawned = true;
             std::thread::spawn(|| {})
         });
         assert_eq!(started, None);
         assert!(!spawned, "a cancelled dialog started a load");
+        assert!(
+            !input.take_redraw(),
+            "a cancelled dialog asked to redraw an unchanged line"
+        );
         assert_eq!(*loads.status(), waiting);
         assert!(loads.accepts(a), "the request in flight was abandoned");
         assert_eq!(loads.running.len(), 1, "a worker appeared from nowhere");
