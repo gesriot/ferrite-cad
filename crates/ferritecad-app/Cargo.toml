@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "ferritecad-app"
+description = "The FerriteCAD window: event loop, surface and frame composition"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "ferritecad-viewer"
+path = "src/main.rs"
+
+# The only crate that owns a window, an event loop and a surface. Everything it
+# decides was decided elsewhere and tested there: what a drag means lives in
+# ferritecad-ui, what a frame is lives in ferritecad-viewport-gpu.
+#
+# winit without default features: the defaults pull Wayland client-side
+# decorations, and those pull an unmaintained font parser that this project's
+# cargo-deny policy refuses. A viewport does not draw its own title bar.
+[dependencies]
+ferritecad-kernel.workspace = true
+ferritecad-types.workspace = true
+ferritecad-ui.workspace = true
+ferritecad-viewport.workspace = true
+ferritecad-viewport-gpu.workspace = true
+
+egui = { version = "0.36", default-features = false }
+egui-wgpu = { version = "0.36", default-features = false }
+egui-winit = { version = "0.36", default-features = false }
+wgpu = "=30.0.0"
+winit = { version = "0.30", default-features = false, features = ["x11", "wayland", "rwh_06"] }
+
+[lints]
+workspace = true

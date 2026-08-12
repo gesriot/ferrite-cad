@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "ferritecad-ui"
+description = "Panels and input handling for the FerriteCAD viewport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# No window, no surface, no renderer and no event loop. This crate decides what
+# a gesture means and what the panels say; who delivered the gesture and who
+# draws the result are somebody else's problem, which is what lets the deciding
+# be tested without any of it.
+[dependencies]
+ferritecad-types.workspace = true
+ferritecad-viewport.workspace = true
+
+egui = { version = "0.36", default-features = false }
+
+[lints]
+workspace = true
