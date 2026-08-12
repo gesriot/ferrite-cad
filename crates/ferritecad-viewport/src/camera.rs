@@ -18,6 +18,60 @@
 
 use ferritecad_types::{CadError, Result};
 
+/// Which way is up, everywhere except a plan view.
+///
+/// The document's own convention: lengths are millimetres and Z is up. A
+/// viewport that chose differently would make every standard view an argument.
+const WORLD_UP: [f32; 3] = [0.0, 0.0, 1.0];
+
+/// The directions a drawing names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum StandardView {
+    /// Looking along +Y, which is the direction a new camera starts in.
+    Front,
+    Back,
+    /// Looking at the left-hand side of the model, from -X.
+    Left,
+    /// Looking at the right-hand side, from +X.
+    Right,
+    /// Straight down. North is up, as on a plan.
+    Top,
+    /// Straight up. North is down, so the view reads as the mirror of the top
+    /// rather than as a rotation of it.
+    Bottom,
+    /// Down the corner between front, right and top.
+    Isometric,
+}
+
+impl StandardView {
+    /// The unit vector from the target towards the eye, and which way is up.
+    fn direction_and_up(self) -> ([f32; 3], [f32; 3]) {
+        // A third of a right angle either way is what makes an isometric view
+        // isometric: the three axes meet the screen at the same angle.
+        const ISO: f32 = 0.577_350_3; // 1 / sqrt(3)
+        match self {
+            Self::Front => ([0.0, -1.0, 0.0], WORLD_UP),
+            Self::Back => ([0.0, 1.0, 0.0], WORLD_UP),
+            Self::Left => ([-1.0, 0.0, 0.0], WORLD_UP),
+            Self::Right => ([1.0, 0.0, 0.0], WORLD_UP),
+            Self::Top => ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+            Self::Bottom => ([0.0, 0.0, -1.0], [0.0, -1.0, 0.0]),
+            Self::Isometric => ([ISO, -ISO, ISO], WORLD_UP),
+        }
+    }
+}
+
+/// Where the near and far planes belong for a view of this size.
+///
+/// One definition, used by framing and by every interaction, so a camera that
+/// has been moved is clipped the same way as one that was just framed.
+fn depth_range(distance: f32, radius: f32) -> (f32, f32) {
+    let near = (distance - radius).max(radius * 1e-3);
+    let far = distance + radius * 1.05;
+    (near, far)
+}
+
 /// Looking at a model from somewhere.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Camera {
@@ -28,6 +82,12 @@ pub struct Camera {
     fov: f32,
     near: f32,
     far: f32,
+    /// How big the thing being looked at is, as [`Camera::frame`] measured it.
+    ///
+    /// Kept because the clipping range has to follow the distance: a camera
+    /// that zoomed in a hundredfold while its near plane stayed where framing
+    /// left it would clip away the model it just moved closer to.
+    radius: f32,
     width: u32,
     height: u32,
 }
@@ -41,6 +101,7 @@ impl Default for Camera {
             fov: std::f32::consts::FRAC_PI_4,
             near: 0.1,
             far: 1000.0,
+            radius: 1.0,
             width: 0,
             height: 0,
         }
@@ -141,15 +202,24 @@ impl Camera {
         // portrait viewport, and leave a small margin for f32 rounding.
         let limiting_half_fov = vertical_half_fov.min(horizontal_half_fov);
         let distance = radius / limiting_half_fov.sin() * 1.05;
-        let eye_y = centre[1] - distance;
-        if !distance.is_finite() || !eye_y.is_finite() || eye_y == centre[1] {
+
+        // The direction is kept. Framing answers "show me all of it", not
+        // "and from the front": a user who has just turned the model to look
+        // at a feature and then asks to see the whole thing has not asked to
+        // be sent back where they started.
+        let direction = self.direction();
+        let eye = [
+            centre[0] + direction[0] * distance,
+            centre[1] + direction[1] * distance,
+            centre[2] + direction[2] * distance,
+        ];
+        if !distance.is_finite() || eye.iter().any(|value| !value.is_finite()) || eye == centre {
             return Err(CadError::input(
                 "a camera cannot represent a useful view of a box at this scale",
             ));
         }
 
-        let near = (distance - radius).max(radius * 1e-3);
-        let far = distance + radius * 1.05;
+        let (near, far) = depth_range(distance, radius);
         if !near.is_finite() || !far.is_finite() || far <= near {
             return Err(CadError::input(
                 "a camera cannot represent the clipping range this box requires",
@@ -157,10 +227,179 @@ impl Camera {
         }
 
         self.target = centre;
-        self.eye = [centre[0], eye_y, centre[2]];
+        self.eye = eye;
+        self.radius = radius;
         self.near = near;
         self.far = far;
         Ok(())
+    }
+
+    /// How far the eye is from what it is looking at.
+    pub fn distance(&self) -> f32 {
+        let offset = sub(self.eye, self.target);
+        dot(offset, offset).sqrt()
+    }
+
+    /// The unit vector from the target towards the eye.
+    ///
+    /// Falls back to looking along +Y – the same direction a new camera starts
+    /// in – when the eye has landed on the target and there is no direction to
+    /// report.
+    fn direction(&self) -> [f32; 3] {
+        normalise(sub(self.eye, self.target)).unwrap_or([0.0, -1.0, 0.0])
+    }
+
+    /// How much world the target plane covers per pixel of the viewport.
+    ///
+    /// Zero when there is no viewport to measure against, which makes a drag on
+    /// a window of no size move nothing rather than move everything.
+    pub fn world_per_pixel(&self) -> f32 {
+        if self.height == 0 {
+            return 0.0;
+        }
+        let visible_height = 2.0 * self.distance() * (self.fov * 0.5).tan();
+        let per_pixel = visible_height / self.height as f32;
+        if per_pixel.is_finite() {
+            per_pixel
+        } else {
+            0.0
+        }
+    }
+
+    /// Swings the eye around the target, keeping its distance.
+    ///
+    /// `yaw` turns about the world's up axis and `pitch` raises or lowers the
+    /// eye, both in radians. The pitch is clamped just short of straight up and
+    /// straight down: at exactly vertical the up axis and the view direction
+    /// are parallel, there is no side vector to be had, and the view would flip
+    /// about an axis the user did not touch.
+    ///
+    /// Orbiting is defined about the world's up axis, so it restores that as
+    /// the camera's up. A view that had been rolled – [`StandardView::Top`]
+    /// tilts it so that north is up – is levelled by the first orbit.
+    pub fn orbit(&mut self, yaw: f32, pitch: f32) {
+        if !yaw.is_finite() || !pitch.is_finite() {
+            return;
+        }
+        let distance = self.distance();
+        if !distance.is_finite() || distance <= f32::EPSILON {
+            return;
+        }
+
+        let offset = sub(self.eye, self.target);
+        let current_yaw = offset[1].atan2(offset[0]);
+        let current_pitch = (offset[2] / distance).clamp(-1.0, 1.0).asin();
+
+        const LIMIT: f32 = std::f32::consts::FRAC_PI_2 - 1e-3;
+        let yaw = current_yaw + yaw;
+        let pitch = (current_pitch + pitch).clamp(-LIMIT, LIMIT);
+
+        let horizontal = pitch.cos() * distance;
+        self.eye = [
+            self.target[0] + horizontal * yaw.cos(),
+            self.target[1] + horizontal * yaw.sin(),
+            self.target[2] + pitch.sin() * distance,
+        ];
+        self.up = WORLD_UP;
+    }
+
+    /// Slides the view sideways and up, in pixels of the current viewport.
+    ///
+    /// Positive `right` moves the view to the right, so what is on screen
+    /// appears to move left, by exactly that many pixels at the target plane.
+    /// Which way a mouse drag maps onto that is the window layer's business:
+    /// this takes camera axes so no windowing system's idea of which way `y`
+    /// grows has to be baked in here.
+    pub fn pan(&mut self, right: f32, up: f32) {
+        if !right.is_finite() || !up.is_finite() {
+            return;
+        }
+        let scale = self.world_per_pixel();
+        if scale == 0.0 {
+            return;
+        }
+
+        let forward = normalise(sub(self.target, self.eye)).unwrap_or([0.0, 1.0, 0.0]);
+        let side = normalise(cross(forward, self.up)).unwrap_or([1.0, 0.0, 0.0]);
+        let screen_up = cross(side, forward);
+
+        let shift = [
+            (side[0] * right + screen_up[0] * up) * scale,
+            (side[1] * right + screen_up[1] * up) * scale,
+            (side[2] * right + screen_up[2] * up) * scale,
+        ];
+        if shift.iter().any(|value| !value.is_finite()) {
+            return;
+        }
+
+        for (axis, distance) in shift.iter().enumerate() {
+            self.eye[axis] += distance;
+            self.target[axis] += distance;
+        }
+        self.refresh_depth();
+    }
+
+    /// Moves the eye towards or away from the target.
+    ///
+    /// Positive `amount` moves closer. The step is exponential so that a notch
+    /// of a wheel covers the same proportion of the remaining distance wherever
+    /// it is used, and the distance is clamped: at zero the eye would be inside
+    /// what it is looking at and there would be no direction left to look in.
+    pub fn zoom(&mut self, amount: f32) {
+        if !amount.is_finite() {
+            return;
+        }
+        let distance = self.distance();
+        if !distance.is_finite() || distance <= f32::EPSILON {
+            return;
+        }
+
+        let scaled = distance * (-amount).exp();
+        let bounded = scaled.clamp(self.radius * 1e-3, self.radius * 1e5);
+        if !bounded.is_finite() || bounded <= f32::EPSILON {
+            return;
+        }
+
+        let direction = self.direction();
+        self.eye = [
+            self.target[0] + direction[0] * bounded,
+            self.target[1] + direction[1] * bounded,
+            self.target[2] + direction[2] * bounded,
+        ];
+        self.refresh_depth();
+    }
+
+    /// Looks from one of the directions a drawing would name.
+    ///
+    /// Keeps the target and the distance: asking for the top view means turning
+    /// the model over, not stepping back from it. Top and bottom are looked at
+    /// along the world's up axis, where that axis is no use as an up vector, so
+    /// they carry their own – north is up, which is what a plan view means.
+    pub fn look_from(&mut self, view: StandardView) {
+        let distance = self.distance();
+        let distance = if distance.is_finite() && distance > f32::EPSILON {
+            distance
+        } else {
+            self.radius.max(f32::EPSILON)
+        };
+
+        let (direction, up) = view.direction_and_up();
+        self.eye = [
+            self.target[0] + direction[0] * distance,
+            self.target[1] + direction[1] * distance,
+            self.target[2] + direction[2] * distance,
+        ];
+        self.up = up;
+        self.refresh_depth();
+    }
+
+    /// Puts the clipping range back where the current distance wants it.
+    fn refresh_depth(&mut self) {
+        let (near, far) = depth_range(self.distance(), self.radius);
+        if near.is_finite() && far.is_finite() && far > near {
+            self.near = near;
+            self.far = far;
+        }
     }
 
     /// The matrix a vertex shader multiplies by, column-major.

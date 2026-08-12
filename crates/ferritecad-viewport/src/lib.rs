@@ -38,5 +38,11 @@
 mod camera;
 mod snapshot;
 
-pub use camera::Camera;
+// Interaction lives here, as arithmetic over a [`Camera`] and nothing else.
+// Orbit, pan, zoom and the standard views are pure operations with no window,
+// no event loop and no input device anywhere near them, so what a drag means
+// is settled and tested before anything has to deliver one. The layer that
+// binds them to real events can then be thin enough to read.
+
+pub use camera::{Camera, StandardView};
 pub use snapshot::{DrawItem, PackedMesh, PickId, RenderSnapshot, SnapshotBuilder, VERTEX_FLOATS};
