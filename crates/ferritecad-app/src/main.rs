@@ -508,6 +508,13 @@ impl App {
     /// A cancelled dialog is an answer, not a failure, and leaves the document
     /// already on screen exactly as it was.
     fn ask_for_a_document(&mut self) {
+        // A toolbar cannot be drawn without a live window, so reaching this
+        // without one would be a wiring error. Do not silently turn that into
+        // an unowned top-level dialog: its parent is what keeps it in front of
+        // this viewer and gives the XDG portal a non-empty window identifier.
+        let Some(live) = &self.live else {
+            return;
+        };
         let chosen = rfd::FileDialog::new()
             .set_title("Open a document")
             .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
@@ -517,6 +524,7 @@ impl App {
                     .filter(|parent| !parent.as_os_str().is_empty())
                     .unwrap_or(Path::new(".")),
             )
+            .set_parent(live.window.as_ref())
             .pick_file();
 
         if let Some(path) = chosen {
