@@ -13,8 +13,11 @@
 //! once per event: a drag delivers a pointer position for every sample the
 //! hardware took, and drawing each one would render the same model at every
 //! intermediate place the cursor passed through. Instead every reason to
-//! redraw sets a flag, the flag is cleared when a frame is drawn, and
-//! `RedrawRequested` is asked for once per batch of reasons.
+//! redraw sets a flag. Taking that flag enters a one-frame scheduler, and only
+//! the first reason in a batch calls `Window::request_redraw`; the slot opens
+//! again when `RedrawRequested` begins. Delayed `egui` repaint requests become
+//! a `ControlFlow::WaitUntil`, so waiting still serves animations without
+//! turning the loop into a poller.
 //!
 //! # The scene is fixed, on purpose
 //!
@@ -23,7 +26,7 @@
 //! order holds; a model arriving from a `.fcad` file is the next thing, and
 //! putting it in now would mean debugging two new things at once.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use ferritecad_kernel::{
     Mesh, MeshFaceRange, SessionId, ShapeHandle, SubShapeHandle, SubShapeKind,
@@ -33,24 +36,85 @@ use ferritecad_ui::{PointerButton, ViewportEvent, ViewportInput};
 use ferritecad_viewport::{RenderSnapshot, SnapshotBuilder, StandardView};
 use ferritecad_viewport_gpu::{PreparedSnapshot, Renderer, WindowSurface};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, StartCause, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 fn main() -> Result<()> {
-    let event_loop = EventLoop::new().map_err(|error| {
-        ferritecad_types::CadError::rendering_because("opening a window", error)
-    })?;
+    let event_loop = EventLoop::<AppEvent>::with_user_event()
+        .build()
+        .map_err(|error| {
+            ferritecad_types::CadError::rendering_because("opening a window", error)
+        })?;
     // Wait rather than poll: a viewport with nothing happening in it should
     // cost nothing. Every path that changes what is on screen asks for a
     // redraw explicitly.
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let mut app = App::default();
+    let mut app = App::new(event_loop.create_proxy());
     event_loop
         .run_app(&mut app)
         .map_err(|error| ferritecad_types::CadError::rendering_because("running the window", error))
+}
+
+/// A wake-up requested from outside winit's event-loop thread.
+#[derive(Debug)]
+enum AppEvent {
+    RepaintAt(Instant),
+}
+
+/// The one outstanding frame and the earliest future reason to draw another.
+///
+/// `ViewportInput` coalesces reasons at the application boundary. This second
+/// gate is deliberately at the OS boundary: calling `Window::request_redraw`
+/// twenty times and relying on a platform to merge them is not the same
+/// contract as asking the platform once.
+#[derive(Debug, Default)]
+struct FrameScheduler {
+    queued: bool,
+    deadline: Option<Instant>,
+}
+
+impl FrameScheduler {
+    /// Records an immediate frame, returning whether winit must be asked.
+    fn request_now(&mut self) -> bool {
+        // An immediate frame supersedes a timer. The frame will run egui again,
+        // which will request a new delay if the animation still needs one.
+        self.deadline = None;
+        !std::mem::replace(&mut self.queued, true)
+    }
+
+    /// Records the earliest future frame, returning a changed deadline.
+    fn request_at(&mut self, deadline: Instant, now: Instant) -> Option<Instant> {
+        if deadline <= now {
+            return None;
+        }
+        // A frame already on the OS queue is earlier than any future one. Its
+        // egui pass will ask again if the delayed repaint remains necessary.
+        if self.queued {
+            return None;
+        }
+        if self.deadline.is_some_and(|current| current <= deadline) {
+            return None;
+        }
+        self.deadline = Some(deadline);
+        Some(deadline)
+    }
+
+    /// Promotes a timer that has elapsed into an immediate reason to draw.
+    fn take_due(&mut self, now: Instant) -> bool {
+        if self.deadline.is_none_or(|deadline| deadline > now) {
+            return false;
+        }
+        self.deadline = None;
+        true
+    }
+
+    /// The queued frame has begun and no longer occupies the one-frame slot.
+    fn frame_started(&mut self) {
+        self.queued = false;
+    }
 }
 
 /// What exists only once a window does.
@@ -64,13 +128,23 @@ struct Live {
     egui_renderer: egui_wgpu::Renderer,
 }
 
-#[derive(Default)]
 struct App {
     live: Option<Live>,
     input: ViewportInput,
+    repaint_proxy: EventLoopProxy<AppEvent>,
+    frames: FrameScheduler,
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<AppEvent> for App {
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, _cause: StartCause) {
+        // An unrelated OS event may wake the loop at or just after the
+        // deadline, so check the clock for every batch rather than only for a
+        // particular StartCause variant.
+        if self.frames.take_due(Instant::now()) {
+            self.request_frame_now(event_loop);
+        }
+    }
+
     /// Everything that needs a display is built here and not before.
     ///
     /// `resumed` is the only place a window may be created, and on some
@@ -82,11 +156,25 @@ impl ApplicationHandler for App {
             return;
         }
         match self.start(event_loop) {
-            Ok(live) => self.live = Some(live),
+            Ok(live) => {
+                self.live = Some(live);
+                // Construction, resize and framing all owe the first picture.
+                // Do not depend on a platform happening to send another event
+                // after `resumed` before the window first becomes visible.
+                if self.input.take_redraw() {
+                    self.request_frame_now(event_loop);
+                }
+            }
             Err(error) => {
                 eprintln!("ferritecad: {error}");
                 event_loop.exit();
             }
+        }
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+        match event {
+            AppEvent::RepaintAt(deadline) => self.request_frame_at(event_loop, deadline),
         }
     }
 
@@ -119,15 +207,11 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                self.frames.frame_started();
                 if let Err(error) = live.draw(&self.input) {
                     eprintln!("ferritecad: {error}");
                     event_loop.exit();
                 }
-                // Cleared here and only here: whatever asked for this frame has
-                // been paid, and several requests since the last one collapse
-                // into this single draw.
-                self.input.take_redraw();
-                return;
             }
             other => {
                 for event in translate(&other) {
@@ -147,17 +231,43 @@ impl ApplicationHandler for App {
             }
         }
 
-        // One request per batch of reasons. winit coalesces the requests
-        // themselves, and the flag makes sure a frame is asked for only when
-        // something actually changed.
+        // The reducer collapses semantic reasons; the scheduler below
+        // collapses the actual request made to the window.
         if self.input.take_redraw() {
-            self.input.request_redraw();
-            live.window.request_redraw();
+            self.request_frame_now(event_loop);
         }
     }
 }
 
 impl App {
+    fn new(repaint_proxy: EventLoopProxy<AppEvent>) -> Self {
+        Self {
+            live: None,
+            input: ViewportInput::new(),
+            repaint_proxy,
+            frames: FrameScheduler::default(),
+        }
+    }
+
+    fn request_frame_now(&mut self, event_loop: &ActiveEventLoop) {
+        // An immediate request cancels a previously installed WaitUntil.
+        event_loop.set_control_flow(ControlFlow::Wait);
+        if self.frames.request_now()
+            && let Some(live) = &self.live
+        {
+            live.window.request_redraw();
+        }
+    }
+
+    fn request_frame_at(&mut self, event_loop: &ActiveEventLoop, deadline: Instant) {
+        let now = Instant::now();
+        if deadline <= now {
+            self.request_frame_now(event_loop);
+        } else if let Some(deadline) = self.frames.request_at(deadline, now) {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+        }
+    }
+
     fn start(&mut self, event_loop: &ActiveEventLoop) -> Result<Live> {
         let window = Arc::new(
             event_loop
@@ -196,6 +306,18 @@ impl App {
         let prepared = renderer.prepare(snapshot)?;
 
         let egui = egui::Context::default();
+        let repaint_proxy = self.repaint_proxy.clone();
+        egui.set_request_repaint_callback(move |request| {
+            if request.viewport_id != egui::ViewportId::ROOT {
+                return;
+            }
+            let Some(deadline) = Instant::now().checked_add(request.delay) else {
+                return;
+            };
+            // Closing the event loop is an ordinary end state. There is no
+            // useful place to report a failed wake-up after that point.
+            let _ = repaint_proxy.send_event(AppEvent::RepaintAt(deadline));
+        });
         let egui_state = egui_winit::State::new(
             egui.clone(),
             egui.viewport_id(),
@@ -353,6 +475,7 @@ fn translate(event: &WindowEvent) -> Vec<ViewportEvent> {
                 .map(|view| vec![ViewportEvent::Look(view)])
                 .unwrap_or_default()
         }
+        WindowEvent::Focused(false) => vec![ViewportEvent::GestureCancelled],
         _ => Vec::new(),
     }
 }
@@ -441,4 +564,73 @@ fn box_mesh(x: f32, y: f32, z: f32) -> Mesh {
         });
     }
     mesh
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn many_immediate_reasons_make_one_window_request() {
+        let mut frames = FrameScheduler::default();
+
+        assert!(frames.request_now(), "the first reason requested nothing");
+        for _ in 0..21 {
+            assert!(
+                !frames.request_now(),
+                "a second reason made a second OS request"
+            );
+        }
+
+        frames.frame_started();
+        assert!(
+            frames.request_now(),
+            "starting a frame did not open the slot for the next one"
+        );
+    }
+
+    #[test]
+    fn the_earliest_delayed_repaint_is_the_only_timer() {
+        let mut frames = FrameScheduler::default();
+        let now = Instant::now();
+        let late = now + Duration::from_secs(2);
+        let early = now + Duration::from_secs(1);
+
+        assert_eq!(frames.request_at(late, now), Some(late));
+        assert_eq!(frames.request_at(late + Duration::from_secs(1), now), None);
+        assert_eq!(frames.request_at(early, now), Some(early));
+        assert!(!frames.take_due(now + Duration::from_millis(999)));
+        assert!(frames.take_due(early));
+        assert!(!frames.take_due(late));
+    }
+
+    #[test]
+    fn an_immediate_frame_supersedes_a_delayed_one() {
+        let mut frames = FrameScheduler::default();
+        let now = Instant::now();
+        let later = now + Duration::from_secs(1);
+
+        assert_eq!(frames.request_at(later, now), Some(later));
+        assert!(frames.request_now());
+        assert!(
+            !frames.take_due(later),
+            "the cancelled timer requested an extra frame"
+        );
+        assert_eq!(
+            frames.request_at(later + Duration::from_secs(1), later),
+            None,
+            "a timer was installed while an earlier frame was queued"
+        );
+    }
+
+    #[test]
+    fn focus_loss_translates_to_gesture_cancellation() {
+        assert_eq!(
+            translate(&WindowEvent::Focused(false)),
+            vec![ViewportEvent::GestureCancelled]
+        );
+        assert!(translate(&WindowEvent::Focused(true)).is_empty());
+    }
 }

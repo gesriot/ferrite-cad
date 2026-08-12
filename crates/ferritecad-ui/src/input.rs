@@ -60,6 +60,8 @@ pub enum ViewportEvent {
     },
     PointerPressed(PointerButton),
     PointerReleased(PointerButton),
+    /// The window can no longer promise a matching release event.
+    GestureCancelled,
     /// Positive scrolls towards the model.
     Wheel {
         delta: f32,
@@ -126,9 +128,11 @@ impl ViewportInput {
     /// Applies one event.
     ///
     /// `claimed_by_ui` is what the interface said when asked whether it wanted
-    /// this event. A claimed event never moves the camera and never starts a
-    /// gesture; it only keeps track of where the pointer is, so that letting go
-    /// of a panel and dragging the model does not jump.
+    /// this event. A claimed pointer event never moves the camera and never
+    /// starts a gesture; it only keeps track of where the pointer is, so that
+    /// letting go of a panel and dragging the model does not jump. Cancellation
+    /// always ends a gesture because focus loss belongs to the window rather
+    /// than to either region inside it.
     ///
     /// A gesture already under way is not interrupted by the interface
     /// claiming a later event. Once a drag has started in the viewport it
@@ -176,6 +180,14 @@ impl ViewportInput {
                 if self.dragging == Some(button) {
                     self.dragging = None;
                 }
+            }
+            ViewportEvent::GestureCancelled => {
+                // Losing focus while a button is down need not be followed by
+                // a release event. Forget both halves of the gesture so the
+                // next move cannot continue a drag the user already ended or
+                // jump from a position recorded in an earlier focus lifetime.
+                self.dragging = None;
+                self.pointer = None;
             }
             ViewportEvent::Wheel { delta } => {
                 if claimed_by_ui {
@@ -345,6 +357,29 @@ mod tests {
             "the drag stopped when the cursor crossed a panel"
         );
         assert!(input.is_dragging());
+    }
+
+    #[test]
+    fn losing_focus_ends_a_gesture_without_moving_the_camera() {
+        let mut input = ready();
+
+        input.handle(ViewportEvent::PointerMoved { x: 400.0, y: 300.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        let before = *input.camera();
+
+        input.handle(ViewportEvent::GestureCancelled, false);
+        input.handle(ViewportEvent::PointerMoved { x: 700.0, y: 500.0 }, false);
+
+        assert!(!input.is_dragging(), "focus loss left a gesture running");
+        assert_eq!(
+            *input.camera(),
+            before,
+            "a move after focus returned continued the abandoned gesture"
+        );
+        assert!(
+            !input.take_redraw(),
+            "ending a gesture changed no pixels and owed no frame"
+        );
     }
 
     #[test]
