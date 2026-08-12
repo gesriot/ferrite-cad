@@ -73,5 +73,6 @@ pub use renderer::{
     COLOUR_FORMAT, DEPTH_FORMAT, Frame, PICK_FORMAT, PreparedSnapshot, Renderer, RendererId,
 };
 pub use surface::{
-    Presented, SurfaceFrame, SurfaceRecovery, WindowSurface, recovery_for, usable_size,
+    ComposedSurfaceFrame, Presented, SurfaceFrame, SurfaceRecovery, WindowSurface, recovery_for,
+    usable_size,
 };

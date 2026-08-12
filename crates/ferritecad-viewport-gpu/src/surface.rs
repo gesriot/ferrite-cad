@@ -341,17 +341,17 @@ impl WindowSurface {
     ///     prepared: &PreparedSnapshot,
     ///     camera: &Camera,
     /// ) -> ferritecad_types::Result<()> {
-    ///     let Some(mut frame) = surface.begin(renderer)? else {
+    ///     let Some(frame) = surface.begin(renderer)? else {
     ///         return Ok(()); // Nothing to draw into, and nothing wrong.
     ///     };
-    ///     frame.draw_scene(renderer, prepared, camera)?;
+    ///     let frame = frame.draw_scene(prepared, camera)?;
     ///     // An interface would draw into `frame.view()` here, on top of the
     ///     // model and before anything is published.
-    ///     frame.present(renderer);
+    ///     frame.present();
     ///     Ok(())
     /// }
     /// ```
-    pub fn begin(&mut self, renderer: &Renderer) -> Result<Option<SurfaceFrame<'_>>> {
+    pub fn begin<'a>(&'a mut self, renderer: &'a mut Renderer) -> Result<Option<SurfaceFrame<'a>>> {
         require_renderer(self.renderer, renderer.id())?;
         if !self.is_drawable() {
             return Ok(None);
@@ -387,6 +387,7 @@ impl WindowSurface {
         let view = texture.texture.create_view(&Default::default());
         Ok(Some(SurfaceFrame {
             surface: self,
+            renderer,
             texture: Some(texture),
             view,
             reconfigure_after,
@@ -412,22 +413,32 @@ impl WindowSurface {
         prepared: &PreparedSnapshot,
         camera: &Camera,
     ) -> Result<Presented> {
-        let Some(mut frame) = self.begin(renderer)? else {
+        let Some(frame) = self.begin(renderer)? else {
             return Ok(Presented::Skipped);
         };
-        frame.draw_scene(renderer, prepared, camera)?;
-        frame.present(renderer);
+        let frame = frame.draw_scene(prepared, camera)?;
+        frame.present();
         Ok(Presented::Drawn)
     }
 }
 
-/// One frame's texture, while it is being composed.
+/// One frame's texture, before its clearing scene pass.
 ///
-/// Holds the window's surface for as long as it lives, so nothing can resize
-/// or reconfigure while a texture is outstanding.
+/// Holds both the window's surface and its renderer for as long as it lives:
+/// nothing can resize the surface or substitute another device while a texture
+/// is outstanding. It intentionally exposes no texture view; only
+/// [`Self::draw_scene`] advances it into the state an overlay may use.
+///
+/// ```compile_fail
+/// # use ferritecad_viewport_gpu::SurfaceFrame;
+/// fn overlay_before_the_scene(frame: &SurfaceFrame<'_>) {
+///     let _ = frame.view();
+/// }
+/// ```
 #[derive(Debug)]
 pub struct SurfaceFrame<'a> {
     surface: &'a mut WindowSurface,
+    renderer: &'a mut Renderer,
     /// Taken by [`Self::present`]. Dropping it without presenting discards the
     /// frame, which is what a caller that gave up part way through means.
     texture: Option<wgpu::SurfaceTexture>,
@@ -437,40 +448,63 @@ pub struct SurfaceFrame<'a> {
     height: u32,
 }
 
-impl SurfaceFrame<'_> {
-    /// What to draw into. An overlay renderer wants this, the format and the
-    /// size, and nothing else this crate owns.
-    pub fn view(&self) -> &wgpu::TextureView {
-        &self.view
-    }
-
-    pub fn format(&self) -> wgpu::TextureFormat {
-        self.surface.format
-    }
-
-    pub fn size(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-
+impl<'a> SurfaceFrame<'a> {
     /// Draws the model, clearing first.
     ///
-    /// First, and once. This is the pass that clears the colour and the depth,
-    /// so anything drawn before it is erased and anything drawn after it sits
-    /// on top – which is exactly the order an interface over a model wants.
+    /// Consumes the uncomposed frame and returns the only type that exposes its
+    /// texture view. This makes "scene first and once" a type property rather
+    /// than a call-order convention: an overlay cannot see the view before the
+    /// clearing pass, and there is no `draw_scene` on the composed result with
+    /// which to erase it later.
     pub fn draw_scene(
-        &mut self,
-        renderer: &mut Renderer,
+        self,
         prepared: &PreparedSnapshot,
         camera: &Camera,
-    ) -> Result<()> {
-        renderer.draw_into(
+    ) -> Result<ComposedSurfaceFrame<'a>> {
+        self.renderer.draw_into(
             prepared,
             camera,
             &self.view,
             self.surface.format,
             self.width,
             self.height,
-        )
+        )?;
+        Ok(ComposedSurfaceFrame { frame: self })
+    }
+}
+
+/// A surface frame after its clearing scene pass and before publication.
+///
+/// This is the only state that exposes the target to overlays, so drawing an
+/// interface before the scene or clearing it away afterwards cannot be
+/// expressed through the public API.
+#[derive(Debug)]
+pub struct ComposedSurfaceFrame<'a> {
+    frame: SurfaceFrame<'a>,
+}
+
+impl ComposedSurfaceFrame<'_> {
+    /// What to draw an overlay into, after the model and before publication.
+    pub fn view(&self) -> &wgpu::TextureView {
+        &self.frame.view
+    }
+
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.frame.surface.format
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        (self.frame.width, self.frame.height)
+    }
+
+    /// The device that owns the target, for an overlay renderer.
+    pub fn device(&self) -> &wgpu::Device {
+        self.frame.renderer.device()
+    }
+
+    /// The queue that presents the target, for an overlay renderer.
+    pub fn queue(&self) -> &wgpu::Queue {
+        self.frame.renderer.queue()
     }
 
     /// Publishes the composed frame.
@@ -479,12 +513,12 @@ impl SurfaceFrame<'_> {
     /// reconfiguration a suboptimal acquisition asked for happens here, after
     /// the texture has gone: reconfiguring while it was still alive is the
     /// panic the borrow above exists to prevent.
-    pub fn present(mut self, renderer: &mut Renderer) {
-        if let Some(texture) = self.texture.take() {
-            renderer.present(texture);
+    pub fn present(mut self) {
+        if let Some(texture) = self.frame.texture.take() {
+            self.frame.renderer.present(texture);
         }
-        if self.reconfigure_after {
-            self.surface.reconfigure(renderer);
+        if self.frame.reconfigure_after {
+            self.frame.surface.reconfigure(self.frame.renderer);
         }
     }
 }

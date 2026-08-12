@@ -226,6 +226,10 @@ impl Renderer {
         &self.device
     }
 
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
     /// The largest texture this device will make, which is also the largest
     /// window it can be asked to fill.
     pub fn max_texture_dimension(&self) -> u32 {
