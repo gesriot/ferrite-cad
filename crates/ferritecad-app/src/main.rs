@@ -148,18 +148,73 @@ struct Loads {
     /// The request whose answer may still reach the screen.
     current: Option<LoadGeneration>,
     running: Vec<Loading>,
+    status: Status,
+}
+
+/// What the window says about the document it is showing.
+///
+/// One sentence, and it is about the request the user last made rather than
+/// about whatever finished most recently. A viewer that reported the state of
+/// an abandoned reading would be describing a document nobody asked for.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+enum Status {
+    /// Nothing has been asked for. True only before the first request.
+    #[default]
+    Idle,
+    /// Being read. Whatever was on screen before is still on screen.
+    Loading {
+        generation: LoadGeneration,
+        file: String,
+    },
+    /// On screen, which is a thing only the frame that replaced it can say.
+    Ready { file: String },
+    /// Could not be read. The previous model stays, and this says why.
+    Failed { file: String, message: String },
+}
+
+impl Status {
+    /// The line to put in front of the user.
+    fn line(&self) -> String {
+        match self {
+            Self::Idle => "No document".to_owned(),
+            Self::Loading { file, .. } => format!("Opening {file}…"),
+            Self::Ready { file } => file.clone(),
+            Self::Failed { file, message } => format!("{file}: {message}"),
+        }
+    }
+}
+
+/// What to call a document in one line.
+///
+/// The file's own name rather than the path it was found at: a status line is
+/// a few centimetres wide, and the part that identifies a document to the
+/// person who opened it is the end of the path rather than the beginning.
+fn short_name(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
 }
 
 impl Loads {
-    /// Abandons whatever was being read and starts a new request.
+    /// Opens what the user chose, if they chose anything.
     ///
-    /// `spawn` is handed the generation to label its answer with and the token
-    /// that stops it. Starting and recording are one operation so there is no
-    /// arrangement of calls in which a running worker is untracked.
-    fn start(
+    /// `None` is a dialog they closed, and it does exactly nothing: no
+    /// generation, no worker, and above all no change to what the window says
+    /// about the document already on screen.
+    ///
+    /// Otherwise whatever was being read is abandoned and a new request takes
+    /// its place. `spawn` is handed the generation to label its answer with
+    /// and the token that stops it; starting and recording are one operation,
+    /// so there is no arrangement of calls in which a running worker is
+    /// untracked.
+    fn open(
         &mut self,
+        chosen: Option<&Path>,
         spawn: impl FnOnce(LoadGeneration, &CancelToken) -> JoinHandle<()>,
-    ) -> LoadGeneration {
+    ) -> Option<LoadGeneration> {
+        let path = chosen?;
+
         for loading in &self.running {
             loading.cancel.cancel();
         }
@@ -170,7 +225,11 @@ impl Loads {
         let worker = spawn(generation, &cancel);
         self.running.push(Loading { cancel, worker });
         self.current = Some(generation);
-        generation
+        self.status = Status::Loading {
+            generation,
+            file: short_name(path),
+        };
+        Some(generation)
     }
 
     /// Whether this answer is still the one that was asked for.
@@ -178,8 +237,39 @@ impl Loads {
         self.current == Some(generation)
     }
 
-    /// Notes that a generation has answered, and joins whatever has ended.
-    fn answered(&mut self, generation: LoadGeneration) {
+    /// What the window should be saying.
+    fn status(&self) -> &Status {
+        &self.status
+    }
+
+    /// Notes what a generation answered, and joins whatever has ended.
+    ///
+    /// Returns whether the line changed, because a line that changed is a
+    /// reason to draw a frame and nothing else here is.
+    ///
+    /// The outcome is reported for every answer, current or not, and this
+    /// decides what it is worth. Asking callers to filter would put the rule
+    /// in two places, and the place that forgot it would be the one that
+    /// announced a document the user is no longer opening.
+    fn answered(&mut self, generation: LoadGeneration, outcome: Result<()>) -> bool {
+        let changed = match &self.status {
+            Status::Loading {
+                generation: waiting,
+                file,
+            } if *waiting == generation => {
+                let file = file.clone();
+                self.status = match outcome {
+                    Ok(()) => Status::Ready { file },
+                    Err(error) => Status::Failed {
+                        file,
+                        message: error.to_string(),
+                    },
+                };
+                true
+            }
+            _ => false,
+        };
+
         if self.current == Some(generation) {
             self.current = None;
         }
@@ -195,6 +285,7 @@ impl Loads {
                 index += 1;
             }
         }
+        changed
     }
 
     /// Stops every load and waits for all of them.
@@ -392,17 +483,27 @@ impl ApplicationHandler<AppEvent> for App {
         match event {
             AppEvent::RepaintAt(deadline) => self.request_frame_at(event_loop, deadline),
             AppEvent::Loaded { generation, result } => {
-                let wanted = self.loads.accepts(generation);
-                self.loads.answered(generation);
-                // An answer to a question the user has since replaced. Neither
-                // shown nor reported: "this document could not be opened" about
-                // a document they are no longer opening would be a complaint
-                // about the wrong file, arriving after they moved on.
-                if wanted {
-                    self.show(*result);
-                    if self.input.take_redraw() {
-                        self.request_frame_now(event_loop);
-                    }
+                // An answer to a question the user has since replaced is not
+                // shown and is not announced: "this document could not be
+                // opened", about a document they are no longer opening, is a
+                // complaint about the wrong file arriving after they moved on.
+                // Which of the two this is belongs to `Loads`, so the outcome
+                // is reported the same way whatever it turns out to be.
+                let outcome = if self.loads.accepts(generation) {
+                    self.show(*result)
+                } else {
+                    (*result).map(|_| ())
+                };
+                if let Err(error) = &outcome {
+                    eprintln!("ferritecad: {error}");
+                }
+                // A line that changed is a reason to draw, and the only one
+                // this path has when the picture itself did not change.
+                if self.loads.answered(generation, outcome) {
+                    self.input.request_redraw();
+                }
+                if self.input.take_redraw() {
+                    self.request_frame_now(event_loop);
                 }
             }
         }
@@ -438,7 +539,7 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::RedrawRequested => {
                 self.frames.frame_started();
-                match live.draw(&self.input) {
+                match live.draw(&self.input, &self.loads.status().line()) {
                     // A button pressed during this frame reaches the camera
                     // the same way a keystroke does, through the reducer.
                     Ok(chosen) => {
@@ -541,8 +642,9 @@ impl App {
         self.document = path;
         let path = self.document.clone();
         let proxy = self.proxy.clone();
+        let chosen = self.document.clone();
 
-        self.loads.start(|generation, cancel| {
+        self.loads.open(Some(&chosen), |generation, cancel| {
             let context = OperationContext::default().with_cancel(cancel.clone());
             spawn_load(
                 move || {
@@ -581,29 +683,25 @@ impl App {
     /// happens: the model already on screen stays on screen, because a viewer
     /// that went blank would lose the drawing the user was reading while they
     /// work out what went wrong.
-    fn show(&mut self, loaded: Result<RenderSnapshot>) {
+    fn show(&mut self, loaded: Result<RenderSnapshot>) -> Result<()> {
         let Some(live) = self.live.as_mut() else {
             // No window to show it in, which means the loop is already on its
-            // way out. Preserve an error for the log, but do not change state
-            // that can no longer be observed.
-            if let Err(error) = loaded {
-                eprintln!("ferritecad: {error}");
-            }
-            return;
+            // way out. The outcome is still the outcome; nothing here changes
+            // state that can no longer be observed.
+            return loaded.map(|_| ());
         };
 
-        match prepare_load(&self.input, loaded, |snapshot| {
+        let (input, prepared) = prepare_load(&self.input, loaded, |snapshot| {
             live.renderer.prepare(snapshot)
-        }) {
-            Ok((input, prepared)) => {
-                // Every operation above can fail; neither assignment can. No
-                // event observes the application between these two lines, so
-                // camera and resident geometry become current together.
-                self.input = input;
-                live.prepared = prepared;
-            }
-            Err(error) => eprintln!("ferritecad: {error}"),
-        }
+        })?;
+
+        // Every operation above can fail; neither assignment can. No event
+        // observes the application between these two lines, so camera and
+        // resident geometry become current together – and only after both is
+        // the document a thing the window may call ready.
+        self.input = input;
+        live.prepared = prepared;
+        Ok(())
     }
 
     fn request_frame_now(&mut self, event_loop: &ActiveEventLoop) {
@@ -712,7 +810,7 @@ impl Live {
     /// One texture, acquired once. The order is not a convention here – the
     /// seam enforces it, because the model's pass is what clears the target
     /// and the type only offers a view to draw into afterwards.
-    fn draw(&mut self, input: &ViewportInput) -> Result<Chosen> {
+    fn draw(&mut self, input: &ViewportInput, status: &str) -> Result<Chosen> {
         let Some(frame) = self.surface.begin(&mut self.renderer)? else {
             // No area, nobody watching, or the compositor was busy. None of
             // those is an error.
@@ -727,7 +825,7 @@ impl Live {
             // request means to the camera is the reducer's, and having one
             // place for that is what stops a button and a keystroke drifting
             // apart.
-            chosen = ferritecad_ui::toolbar(ui);
+            chosen = ferritecad_ui::toolbar(ui, status);
         });
         self.egui_state
             .handle_platform_output(&self.window, output.platform_output);
@@ -924,11 +1022,15 @@ mod tests {
 
         let mut generations = Vec::new();
         for _ in 0..3 {
-            generations.push(loads.start(|_, cancel| {
-                let (worker, release) = held_worker(cancel);
-                holds.push(release);
-                worker
-            }));
+            generations.push(
+                loads
+                    .open(Some(Path::new("a.fcad")), |_, cancel| {
+                        let (worker, release) = held_worker(cancel);
+                        holds.push(release);
+                        worker
+                    })
+                    .expect("a document was named, so a load started"),
+            );
         }
 
         // Monotonic, so a late answer can be recognised as late rather than as
@@ -949,7 +1051,7 @@ mod tests {
         let mut first = None;
         let mut holds = Vec::new();
 
-        loads.start(|_, cancel| {
+        loads.open(Some(Path::new("a.fcad")), |_, cancel| {
             first = Some(cancel.clone());
             let (worker, release) = held_worker(cancel);
             holds.push(release);
@@ -960,7 +1062,7 @@ mod tests {
 
         // The second request returns while the first reading is still going:
         // this line is reached with that worker alive, which is the property.
-        loads.start(|_, cancel| {
+        loads.open(Some(Path::new("a.fcad")), |_, cancel| {
             let (worker, release) = held_worker(cancel);
             holds.push(release);
             worker
@@ -981,21 +1083,31 @@ mod tests {
 
     /// Applies an answer the way the event loop does, minus the GPU.
     ///
-    /// What `App::show` adds is the upload; what it decides is here.
+    /// What `App::show` adds is the upload; what it decides is here. Returns
+    /// what the event loop uses to decide whether to draw: a line that changed
+    /// is a reason to draw a frame, and on the path where a load failed it is
+    /// the only one.
     fn deliver(
         loads: &mut Loads,
         input: &mut ViewportInput,
         generation: LoadGeneration,
         result: Result<RenderSnapshot>,
-    ) {
-        let wanted = loads.accepts(generation);
-        loads.answered(generation);
-        if !wanted {
-            return;
-        }
-        if let Ok((updated, ())) = prepare_load(input, result, |_| Ok(())) {
-            *input = updated;
-        }
+    ) -> bool {
+        // The same order the event loop uses: whether to show it, then
+        // showing it, then saying so. Announcing first would let the window
+        // call a document ready before the frame that put it there.
+        let outcome = if loads.accepts(generation) {
+            match prepare_load(input, result, |_| Ok(())) {
+                Ok((updated, ())) => {
+                    *input = updated;
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            result.map(|_| ())
+        };
+        loads.answered(generation, outcome)
     }
 
     #[test]
@@ -1013,8 +1125,12 @@ mod tests {
         // Two documents opened in quick succession, and the first one answers
         // last: the slow reading is exactly the one a user gives up waiting
         // for, so this order is the usual one rather than the unlucky one.
-        let a = loads.start(|_, cancel| spawn(cancel));
-        let b = loads.start(|_, cancel| spawn(cancel));
+        let a = loads
+            .open(Some(Path::new("a.fcad")), |_, cancel| spawn(cancel))
+            .expect("a load started");
+        let b = loads
+            .open(Some(Path::new("b.fcad")), |_, cancel| spawn(cancel))
+            .expect("a load started");
 
         deliver(&mut loads, &mut input, b, Ok(scene_at(0.0)));
         let showing_b = *input.camera();
@@ -1041,8 +1157,12 @@ mod tests {
             worker
         };
 
-        let a = loads.start(|_, cancel| spawn(cancel));
-        let b = loads.start(|_, cancel| spawn(cancel));
+        let a = loads
+            .open(Some(Path::new("a.fcad")), |_, cancel| spawn(cancel))
+            .expect("a load started");
+        let b = loads
+            .open(Some(Path::new("b.fcad")), |_, cancel| spawn(cancel))
+            .expect("a load started");
 
         deliver(&mut loads, &mut input, b, Ok(scene_at(0.0)));
         let showing_b = *input.camera();
@@ -1068,6 +1188,174 @@ mod tests {
     }
 
     #[test]
+    fn the_line_says_what_is_being_opened_and_then_that_it_is_open() {
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        assert_eq!(loads.status().line(), "No document");
+
+        let a = loads
+            .open(Some(Path::new("/models/bracket.fcad")), |_, _| {
+                std::thread::spawn(|| {})
+            })
+            .expect("a document was named");
+
+        // While it is being read the previous picture is still the picture,
+        // and the line says which document the window is waiting for. The path
+        // it was found at is not the name of it.
+        assert_eq!(
+            *loads.status(),
+            Status::Loading {
+                generation: a,
+                file: "bracket.fcad".to_owned()
+            }
+        );
+        assert_eq!(loads.status().line(), "Opening bracket.fcad…");
+
+        assert!(
+            deliver(&mut loads, &mut input, a, Ok(scene_at(0.0))),
+            "the line changed and the window was not asked to draw it"
+        );
+        assert_eq!(
+            *loads.status(),
+            Status::Ready {
+                file: "bracket.fcad".to_owned()
+            }
+        );
+        assert_eq!(loads.status().line(), "bracket.fcad");
+
+        loads.stop_all();
+    }
+
+    #[test]
+    fn a_document_that_could_not_be_read_says_why_and_keeps_the_picture() {
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+
+        let a = loads
+            .open(Some(Path::new("good.fcad")), |_, _| {
+                std::thread::spawn(|| {})
+            })
+            .expect("a document was named");
+        deliver(&mut loads, &mut input, a, Ok(scene_at(0.0)));
+        let showing = *input.camera();
+
+        let b = loads
+            .open(Some(Path::new("broken.fcad")), |_, _| {
+                std::thread::spawn(|| {})
+            })
+            .expect("a document was named");
+        assert!(
+            deliver(
+                &mut loads,
+                &mut input,
+                b,
+                Err(CadError::input("this is not a document")),
+            ),
+            "a failure changed the line and asked for no frame to show it"
+        );
+
+        // The failure is about the document that failed, and the model the
+        // user was reading is still on screen underneath the message.
+        assert_eq!(
+            *loads.status(),
+            Status::Failed {
+                file: "broken.fcad".to_owned(),
+                message: "invalid input: this is not a document".to_owned(),
+            }
+        );
+        assert!(loads.status().line().contains("broken.fcad"));
+        assert!(loads.status().line().contains("not a document"));
+        assert_eq!(*input.camera(), showing, "the picture changed as well");
+
+        loads.stop_all();
+    }
+
+    #[test]
+    fn the_answer_to_the_older_request_changes_neither_picture_nor_line() {
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+
+        let a = loads
+            .open(Some(Path::new("a.fcad")), |_, _| std::thread::spawn(|| {}))
+            .expect("a document was named");
+        let b = loads
+            .open(Some(Path::new("b.fcad")), |_, _| std::thread::spawn(|| {}))
+            .expect("a document was named");
+
+        // The reading of A finishes after B was asked for. Both halves of the
+        // window must ignore it: the picture, and the sentence under it.
+        let waiting_for_b = loads.status().clone();
+        assert!(
+            !deliver(&mut loads, &mut input, a, Ok(scene_at(5000.0))),
+            "an abandoned answer asked for a frame"
+        );
+        assert_eq!(*loads.status(), waiting_for_b);
+        assert_eq!(loads.status().line(), "Opening b.fcad…");
+
+        deliver(&mut loads, &mut input, b, Ok(scene_at(0.0)));
+        let showing_b = *input.camera();
+        assert_eq!(
+            *loads.status(),
+            Status::Ready {
+                file: "b.fcad".to_owned()
+            }
+        );
+
+        // And a failure that belonged to A, arriving even later, says nothing
+        // about B – which is the document on screen.
+        assert!(
+            !deliver(
+                &mut loads,
+                &mut input,
+                a,
+                Err(CadError::input("A was unreadable")),
+            ),
+            "an abandoned failure asked for a frame"
+        );
+        assert_eq!(
+            *loads.status(),
+            Status::Ready {
+                file: "b.fcad".to_owned()
+            },
+            "an abandoned document's failure was reported as this one's"
+        );
+        assert_eq!(*input.camera(), showing_b);
+
+        loads.stop_all();
+    }
+
+    #[test]
+    fn closing_the_dialog_without_choosing_changes_nothing() {
+        let mut loads = Loads::default();
+        let a = loads
+            .open(Some(Path::new("open.fcad")), |_, _| {
+                std::thread::spawn(|| {})
+            })
+            .expect("a document was named");
+        let waiting = loads.status().clone();
+
+        // A dialog the user closed. No generation, no worker, and above all no
+        // change to what the window says about the document already there.
+        // The spawn is never called, and if it ever were, the load it started
+        // would be recorded and counted below.
+        let mut spawned = false;
+        let started = loads.open(None, |_, _| {
+            spawned = true;
+            std::thread::spawn(|| {})
+        });
+        assert_eq!(started, None);
+        assert!(!spawned, "a cancelled dialog started a load");
+        assert_eq!(*loads.status(), waiting);
+        assert!(loads.accepts(a), "the request in flight was abandoned");
+        assert_eq!(loads.running.len(), 1, "a worker appeared from nowhere");
+
+        loads.stop_all();
+    }
+
+    #[test]
     fn nothing_is_still_running_when_the_loop_ends() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1081,7 +1369,7 @@ mod tests {
 
         for _ in 0..3 {
             let tidied = Arc::clone(&tidied);
-            loads.start(|_, cancel| {
+            loads.open(Some(Path::new("a.fcad")), |_, cancel| {
                 tokens.push(cancel.clone());
                 let cancel = cancel.clone();
                 std::thread::spawn(move || {
@@ -1113,9 +1401,11 @@ mod tests {
         let mut loads = Loads::default();
 
         // One that ends by itself, one that will not end until it is told to.
-        let done = loads.start(|_, _| std::thread::spawn(|| {}));
+        let done = loads
+            .open(Some(Path::new("a.fcad")), |_, _| std::thread::spawn(|| {}))
+            .expect("a load started");
         let mut release = None;
-        loads.start(|_, cancel| {
+        loads.open(Some(Path::new("a.fcad")), |_, cancel| {
             let (worker, sender) = held_worker(cancel);
             release = Some(sender);
             worker
@@ -1136,7 +1426,7 @@ mod tests {
         // in flight would be the freeze this whole design exists to avoid.
         let started = Instant::now();
         while loads.running.len() > 1 {
-            loads.answered(done);
+            loads.answered(done, Ok(()));
             std::thread::yield_now();
         }
         let waited = started.elapsed();

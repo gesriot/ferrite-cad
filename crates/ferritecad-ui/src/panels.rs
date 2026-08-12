@@ -33,7 +33,13 @@ pub struct Chosen {
 /// office reads in, and the keyboard shortcuts beside each name are the same
 /// ones the window binds, so the panel documents them rather than making the
 /// user find out.
-pub fn toolbar(ui: &mut egui::Ui) -> Chosen {
+/// The toolbar: a document to open, the directions a drawing would name, and
+/// what the window has to say about the document it is showing.
+///
+/// `status` is a finished sentence. What the states are and which one applies
+/// is decided where the loading happens; drawing it here rather than composing
+/// it here is what keeps one account of what is going on.
+pub fn toolbar(ui: &mut egui::Ui, status: &str) -> Chosen {
     let mut chosen = Chosen::default();
     ui.horizontal(|ui| {
         // First, and separated: opening replaces everything else on screen,
@@ -47,6 +53,12 @@ pub fn toolbar(ui: &mut egui::Ui) -> Chosen {
                 chosen.view = Some(*view);
             }
         }
+
+        // Last, and given whatever room is left: it is the one thing here
+        // that can be any length, and a long file name must push no button
+        // off the toolbar.
+        ui.separator();
+        ui.add(egui::Label::new(status).truncate());
     });
     chosen
 }
@@ -148,7 +160,7 @@ mod tests {
         let context = egui::Context::default();
         let mut chosen = Chosen::default();
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            chosen = toolbar(ui);
+            chosen = toolbar(ui, "");
         });
         output.textures_delta.clear();
 
@@ -187,7 +199,7 @@ mod tests {
 
         let mut chosen = Chosen::default();
         let mut output = context.run_ui(input, |ui| {
-            chosen = toolbar(ui);
+            chosen = toolbar(ui, "");
         });
         output.textures_delta.clear();
         chosen
