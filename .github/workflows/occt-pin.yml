@@ -630,6 +630,13 @@ jobs:
           # and not here.
           cargo test -p ferritecad-cli --tests
 
+          # And the loader, for the same reason one step further up: everything
+          # about it is settled against the mock, which cannot say whether the
+          # numbers are real. Its OCCT gate is the only place a picture built
+          # from a document on disk is measured against geometry Open CASCADE
+          # actually computed.
+          cargo test -p ferritecad-scene --tests
+
       - name: Generate the STEP corpus and compare two runs
         env:
           FCAD_OCCT_CONFIG_DIR: ${{ steps.occt.outputs.config_dir }}
