@@ -23,6 +23,7 @@ bytemuck = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 ferritecad-kernel.workspace = true
+ferritecad-viewport.workspace = true
 
 [lints]
 workspace = true

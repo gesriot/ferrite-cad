@@ -300,26 +300,61 @@ impl WindowSurface {
         );
     }
 
-    /// Draws a prepared snapshot into the window and presents it.
+    /// Takes the frame's one texture, so several things can draw into it.
     ///
-    /// Returns [`Presented::Skipped`] when there was nothing to draw into – a
-    /// window with no area, or a frame the compositor was not ready to hand
-    /// over. Neither is an error, and treating them as one would make an
-    /// ordinary minimise look like a fault.
+    /// A window frame is composed, not drawn once: the model goes in, then the
+    /// interface on top of it, and only then is the whole thing published. A
+    /// surface hands out one texture per frame, so that sequence has to share
+    /// one – an overlay that acquired its own would be asking for a second
+    /// frame, and one that ran after `present` would be drawing into something
+    /// already on screen.
     ///
-    /// A surface that has gone stale is reconfigured and the frame retried
-    /// once. Once, and not in a loop: a surface that is stale again immediately
-    /// is not going to be fixed by asking a third time, and a renderer that
-    /// spun here would hang the event loop that called it.
-    pub fn present(
-        &mut self,
-        renderer: &mut Renderer,
-        prepared: &PreparedSnapshot,
-        camera: &Camera,
-    ) -> Result<Presented> {
+    /// Returns `None` when there is nothing to draw into: a window with no
+    /// area, one nobody can see, or a frame the compositor was not ready to
+    /// hand over. None of those is an error.
+    ///
+    /// The returned frame borrows this surface for as long as it lives, which
+    /// is what stops the window being reconfigured underneath an outstanding
+    /// texture. That is not tidiness: wgpu documents `configure` as panicking
+    /// while a surface texture is alive, so the borrow turns a crash into a
+    /// compile error.
+    ///
+    /// ```compile_fail
+    /// # use ferritecad_viewport_gpu::{Renderer, WindowSurface};
+    /// fn resize_while_a_frame_is_open(surface: &mut WindowSurface, renderer: &mut Renderer) {
+    ///     let frame = surface.begin(renderer);
+    ///     // The surface is borrowed by the frame, so this does not compile.
+    ///     let _ = surface.resize(renderer, 800, 600);
+    ///     drop(frame);
+    /// }
+    /// ```
+    ///
+    /// The same code without the resize does compile, which is what says the
+    /// refusal above is about the borrow and not about a typo:
+    ///
+    /// ```no_run
+    /// # use ferritecad_viewport_gpu::{PreparedSnapshot, Renderer, WindowSurface};
+    /// # use ferritecad_viewport::Camera;
+    /// fn compose(
+    ///     surface: &mut WindowSurface,
+    ///     renderer: &mut Renderer,
+    ///     prepared: &PreparedSnapshot,
+    ///     camera: &Camera,
+    /// ) -> ferritecad_types::Result<()> {
+    ///     let Some(mut frame) = surface.begin(renderer)? else {
+    ///         return Ok(()); // Nothing to draw into, and nothing wrong.
+    ///     };
+    ///     frame.draw_scene(renderer, prepared, camera)?;
+    ///     // An interface would draw into `frame.view()` here, on top of the
+    ///     // model and before anything is published.
+    ///     frame.present(renderer);
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn begin(&mut self, renderer: &Renderer) -> Result<Option<SurfaceFrame<'_>>> {
         require_renderer(self.renderer, renderer.id())?;
         if !self.is_drawable() {
-            return Ok(Presented::Skipped);
+            return Ok(None);
         }
 
         let first = SurfaceOutcome::from_wgpu(self.surface.get_current_texture());
@@ -332,7 +367,7 @@ impl WindowSurface {
                 texture,
                 reconfigure_after,
             } => (texture, reconfigure_after),
-            Acquisition::Skip => return Ok(Presented::Skipped),
+            Acquisition::Skip => return Ok(None),
             Acquisition::Fatal {
                 after_reconfigure,
                 outcome,
@@ -350,13 +385,107 @@ impl WindowSurface {
             .configured
             .expect("a drawable surface has a configured size");
         let view = texture.texture.create_view(&Default::default());
-        renderer.draw_into(prepared, camera, &view, self.format, width, height)?;
-        renderer.present(texture);
+        Ok(Some(SurfaceFrame {
+            surface: self,
+            texture: Some(texture),
+            view,
+            reconfigure_after,
+            width,
+            height,
+        }))
+    }
 
-        if reconfigure_after {
-            self.reconfigure(renderer);
-        }
+    /// Draws a prepared snapshot into the window and presents it.
+    ///
+    /// The whole of a frame when there is nothing above the model. Composed
+    /// from [`Self::begin`] rather than beside it, so a window with an
+    /// interface and one without take the same path through the same
+    /// acquisition and the same reconfiguration.
+    ///
+    /// Returns [`Presented::Skipped`] when there was nothing to draw into – a
+    /// window with no area, or a frame the compositor was not ready to hand
+    /// over. Neither is an error, and treating them as one would make an
+    /// ordinary minimise look like a fault.
+    pub fn present(
+        &mut self,
+        renderer: &mut Renderer,
+        prepared: &PreparedSnapshot,
+        camera: &Camera,
+    ) -> Result<Presented> {
+        let Some(mut frame) = self.begin(renderer)? else {
+            return Ok(Presented::Skipped);
+        };
+        frame.draw_scene(renderer, prepared, camera)?;
+        frame.present(renderer);
         Ok(Presented::Drawn)
+    }
+}
+
+/// One frame's texture, while it is being composed.
+///
+/// Holds the window's surface for as long as it lives, so nothing can resize
+/// or reconfigure while a texture is outstanding.
+#[derive(Debug)]
+pub struct SurfaceFrame<'a> {
+    surface: &'a mut WindowSurface,
+    /// Taken by [`Self::present`]. Dropping it without presenting discards the
+    /// frame, which is what a caller that gave up part way through means.
+    texture: Option<wgpu::SurfaceTexture>,
+    view: wgpu::TextureView,
+    reconfigure_after: bool,
+    width: u32,
+    height: u32,
+}
+
+impl SurfaceFrame<'_> {
+    /// What to draw into. An overlay renderer wants this, the format and the
+    /// size, and nothing else this crate owns.
+    pub fn view(&self) -> &wgpu::TextureView {
+        &self.view
+    }
+
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.surface.format
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Draws the model, clearing first.
+    ///
+    /// First, and once. This is the pass that clears the colour and the depth,
+    /// so anything drawn before it is erased and anything drawn after it sits
+    /// on top – which is exactly the order an interface over a model wants.
+    pub fn draw_scene(
+        &mut self,
+        renderer: &mut Renderer,
+        prepared: &PreparedSnapshot,
+        camera: &Camera,
+    ) -> Result<()> {
+        renderer.draw_into(
+            prepared,
+            camera,
+            &self.view,
+            self.surface.format,
+            self.width,
+            self.height,
+        )
+    }
+
+    /// Publishes the composed frame.
+    ///
+    /// Consuming, because a surface texture is presented exactly once. The
+    /// reconfiguration a suboptimal acquisition asked for happens here, after
+    /// the texture has gone: reconfiguring while it was still alive is the
+    /// panic the borrow above exists to prevent.
+    pub fn present(mut self, renderer: &mut Renderer) {
+        if let Some(texture) = self.texture.take() {
+            renderer.present(texture);
+        }
+        if self.reconfigure_after {
+            self.surface.reconfigure(renderer);
+        }
     }
 }
 

@@ -47,6 +47,19 @@
 //! A machine may hold several, and the first that can compute is not always
 //! one connected to the display the window is on.
 //!
+//! # A frame is composed, not drawn once
+//!
+//! A surface hands out one texture per frame. A window that shows a model with
+//! an interface over it therefore has to share that one texture: the model
+//! goes in, the interface goes on top, and only then is the whole thing
+//! published. [`WindowSurface::begin`] is that seam. An overlay that acquired
+//! its own texture would be asking for a second frame, and one that ran after
+//! the frame was presented would be drawing into something already on screen.
+//!
+//! [`WindowSurface::present`] remains the whole of a frame when there is
+//! nothing above the model, and is built from the same seam so both paths
+//! acquire and reconfigure identically.
+//!
 //! # Without a device
 //!
 //! [`Renderer::new`] fails when no adapter is available, which is an ordinary
@@ -59,4 +72,6 @@ mod surface;
 pub use renderer::{
     COLOUR_FORMAT, DEPTH_FORMAT, Frame, PICK_FORMAT, PreparedSnapshot, Renderer, RendererId,
 };
-pub use surface::{Presented, SurfaceRecovery, WindowSurface, recovery_for, usable_size};
+pub use surface::{
+    Presented, SurfaceFrame, SurfaceRecovery, WindowSurface, recovery_for, usable_size,
+};
