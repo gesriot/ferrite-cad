@@ -111,23 +111,55 @@ impl Camera {
             }
         }
 
+        // Halving first avoids overflowing two large, same-sign coordinates
+        // merely while finding the point between them.
         let centre = [
-            (min[0] + max[0]) * 0.5,
-            (min[1] + max[1]) * 0.5,
-            (min[2] + max[2]) * 0.5,
+            min[0] * 0.5 + max[0] * 0.5,
+            min[1] * 0.5 + max[1] * 0.5,
+            min[2] * 0.5 + max[2] * 0.5,
         ];
         let extent = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
-        let radius =
-            (extent[0] * extent[0] + extent[1] * extent[1] + extent[2] * extent[2]).sqrt() * 0.5;
+        if extent.iter().any(|value| !value.is_finite()) {
+            return Err(CadError::input(
+                "a camera cannot frame a box whose extent exceeds its number format",
+            ));
+        }
+        let radius = extent[0].hypot(extent[1]).hypot(extent[2]) * 0.5;
+        if !radius.is_finite() {
+            return Err(CadError::input(
+                "a camera cannot frame a box whose diagonal exceeds its number format",
+            ));
+        }
         // A single point still needs a distance to be looked at from, or the
         // eye lands on the target and the view matrix has no direction.
         let radius = if radius > f32::EPSILON { radius } else { 1.0 };
 
-        let distance = radius / (self.fov * 0.5).tan();
+        let vertical_half_fov = self.fov * 0.5;
+        let horizontal_half_fov = (vertical_half_fov.tan() * self.aspect()).atan();
+        // A sphere fits through a perspective cone at r / sin(theta), not at
+        // r / tan(theta). Use the narrower axis, which is horizontal in a
+        // portrait viewport, and leave a small margin for f32 rounding.
+        let limiting_half_fov = vertical_half_fov.min(horizontal_half_fov);
+        let distance = radius / limiting_half_fov.sin() * 1.05;
+        let eye_y = centre[1] - distance;
+        if !distance.is_finite() || !eye_y.is_finite() || eye_y == centre[1] {
+            return Err(CadError::input(
+                "a camera cannot represent a useful view of a box at this scale",
+            ));
+        }
+
+        let near = (distance - radius).max(radius * 1e-3);
+        let far = distance + radius * 1.05;
+        if !near.is_finite() || !far.is_finite() || far <= near {
+            return Err(CadError::input(
+                "a camera cannot represent the clipping range this box requires",
+            ));
+        }
+
         self.target = centre;
-        self.eye = [centre[0], centre[1] - distance, centre[2]];
-        self.near = (distance - radius).max(radius * 1e-3);
-        self.far = distance + radius * 2.0;
+        self.eye = [centre[0], eye_y, centre[2]];
+        self.near = near;
+        self.far = far;
         Ok(())
     }
 
@@ -172,9 +204,13 @@ impl Camera {
         // near and far have met shows nothing either way; what matters is that
         // it shows nothing rather than writing a NaN into a uniform.
         let (scale, offset) = if depth > f32::EPSILON {
-            (self.far / depth, -self.far * self.near / depth)
+            // `view` is right-handed: points in front have negative Z. wgpu's
+            // depth interval is 0..1, hence clip.w = -view.z and the negative
+            // depth scale. The opposite signs put the whole model behind the
+            // clip volume even though every matrix entry remains finite.
+            (-self.far / depth, -self.far * self.near / depth)
         } else {
-            (1.0, 0.0)
+            (-1.0, 0.0)
         };
 
         [
@@ -189,7 +225,7 @@ impl Camera {
             0.0,
             0.0,
             scale,
-            1.0,
+            -1.0,
             0.0,
             0.0,
             offset,

@@ -13,7 +13,7 @@
 //! reference to that something would be born. This one cannot deliver more than
 //! it can honestly promise.
 //!
-//! Every placement of a definition is drawn — four bolts are four draws — but
+//! Every placement of a definition is drawn – four bolts are four draws – but
 //! a pick identifies the *definition*, never the placement. A definition has an
 //! identity its source file wrote down, and a reference to one survives the
 //! document being closed, reopened and re-imported in a new kernel session. An
@@ -24,16 +24,16 @@
 //! So a caller may turn a pick into a reference to a definition, and there is
 //! no way for it to make one to an occurrence, because the information it would
 //! need never leaves this crate. When occurrences gain identities of their own,
-//! that will be a new thing this can return — not a promotion of an index that
+//! that will be a new thing this can return – not a promotion of an index that
 //! was being handed out all along.
 //!
-//! # Nothing here can be written down
+//! # Picks are not a persistence format
 //!
-//! This crate has no serialisation dependency at all, so a [`PickId`] cannot be
-//! stored even by a caller who wants to. That is a stronger guarantee than a
-//! rule about how it should be used, and it is why the type needs no test
-//! proving it is not serialisable: there is nothing in the dependency graph
-//! that could serialise it.
+//! [`PickId`] does not implement a serialisation trait. A caller can still write
+//! its raw integer deliberately – [`PickId::to_raw`] has to exist for a GPU pick
+//! buffer – but that integer has meaning only together with the exact snapshot
+//! that rendered it. Durable selection starts from a definition identity in the
+//! document, never from this value.
 
 mod camera;
 mod snapshot;

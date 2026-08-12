@@ -34,6 +34,17 @@ fn moved(x: f64, y: f64, z: f64) -> Transform {
     Transform::from_translation(Vec3::new(x, y, z).expect("finite")).expect("finite")
 }
 
+fn projected(matrix: &[f32; 16], point: [f32; 3]) -> [f32; 3] {
+    let clip = [
+        matrix[0] * point[0] + matrix[4] * point[1] + matrix[8] * point[2] + matrix[12],
+        matrix[1] * point[0] + matrix[5] * point[1] + matrix[9] * point[2] + matrix[13],
+        matrix[2] * point[0] + matrix[6] * point[1] + matrix[10] * point[2] + matrix[14],
+        matrix[3] * point[0] + matrix[7] * point[1] + matrix[11] * point[2] + matrix[15],
+    ];
+    assert!(clip[3] > 0.0, "a point in front has clip.w {}", clip[3]);
+    [clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]]
+}
+
 #[test]
 fn a_mesh_is_packed_as_interleaved_position_and_normal() {
     let mut builder = SnapshotBuilder::new();
@@ -76,6 +87,37 @@ fn a_mesh_a_gpu_could_not_draw_is_refused_before_it_is_packed() {
     let mut broken_normal = triangle();
     broken_normal.normals[2] = f32::NAN;
     assert!(builder.add_mesh(&broken_normal).is_err());
+}
+
+#[test]
+fn values_that_only_overflow_when_narrowed_for_a_gpu_are_refused() {
+    let mut builder = SnapshotBuilder::new();
+    let mesh = builder.add_mesh(&triangle()).expect("packs");
+
+    assert!(
+        builder
+            .place(mesh, None, &moved(f64::MAX, 0.0, 0.0), [1.0; 3])
+            .is_err()
+    );
+    assert!(
+        builder
+            .place(mesh, None, &Transform::IDENTITY, [f64::MAX, 1.0, 1.0])
+            .is_err()
+    );
+
+    // Every matrix entry fits in f32, but multiplying the x coordinate by the
+    // largest one does not. This is the arithmetic the vertex shader performs.
+    let overflowing_scale = Transform::from_rows([
+        [f64::from(f32::MAX), 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+    ])
+    .expect("finite f64 transform");
+    assert!(
+        builder
+            .place(mesh, None, &overflowing_scale, [1.0; 3])
+            .is_err()
+    );
 }
 
 #[test]
@@ -161,6 +203,31 @@ fn the_draw_order_is_the_order_placements_were_given() {
 }
 
 #[test]
+fn signed_zero_does_not_create_a_different_snapshot_identity() {
+    let build = |negative: bool| {
+        let mut source = triangle();
+        source.positions[0] = if negative { -0.0 } else { 0.0 };
+        let mut builder = SnapshotBuilder::new();
+        let mesh = builder.add_mesh(&source).expect("packs");
+        builder
+            .place(
+                mesh,
+                None,
+                &Transform::IDENTITY,
+                [if negative { -0.0 } else { 0.0 }, 0.5, 0.5],
+            )
+            .expect("places");
+        builder.build()
+    };
+
+    assert_eq!(
+        build(false),
+        build(true),
+        "equal f32 values must not produce pick generations that compare unequal"
+    );
+}
+
+#[test]
 fn a_pick_names_a_definition_and_cannot_name_a_placement() {
     let mut builder = SnapshotBuilder::new();
     let plate = builder.add_mesh(&triangle()).expect("packs");
@@ -189,7 +256,7 @@ fn a_pick_names_a_definition_and_cannot_name_a_placement() {
     assert_eq!(snapshot.definition(snapshot.draws()[0].pick), Some(plate));
 
     // Nothing is not a definition, and a definition is never nothing.
-    assert_eq!(PickId::NOTHING.definition(), None);
+    assert_eq!(snapshot.definition(PickId::NOTHING), None);
     assert!(picks.iter().all(|pick| *pick != PickId::NOTHING));
 }
 
@@ -211,6 +278,35 @@ fn a_pick_value_from_outside_lands_on_the_background() {
 
     let real = snapshot.draws()[0].pick;
     assert_eq!(PickId::from_raw(real.to_raw(), &snapshot), real);
+}
+
+#[test]
+fn a_pick_already_decoded_for_one_snapshot_cannot_retarget_in_another() {
+    let build = |colour| {
+        let mut builder = SnapshotBuilder::new();
+        let mesh = builder.add_mesh(&triangle()).expect("packs");
+        builder
+            .place(mesh, None, &Transform::IDENTITY, colour)
+            .expect("places");
+        builder.build()
+    };
+    let first = build([1.0, 0.0, 0.0]);
+    let second = build([0.0, 0.0, 1.0]);
+    let old_pick = first.draws()[0].pick;
+
+    assert_eq!(first.definition(old_pick), Some(0));
+    assert_eq!(
+        second.definition(old_pick),
+        None,
+        "the same in-range integer must not silently name new geometry"
+    );
+
+    // Decoding the integer against the second snapshot is a distinct act. A
+    // renderer may do it only while retaining the snapshot that produced its
+    // readback; that lifetime is part of §19B rather than this headless layer.
+    let second_pick = PickId::from_raw(old_pick.to_raw(), &second);
+    assert_eq!(second.definition(second_pick), Some(0));
+    assert_ne!(old_pick, second_pick);
 }
 
 #[test]
@@ -287,6 +383,48 @@ fn framing_puts_the_whole_model_in_front_of_the_camera() {
             .frame(([f32::NAN, 0.0, 0.0], [1.0, 1.0, 1.0]))
             .is_err()
     );
+    assert!(
+        camera
+            .frame(([-1.0e38, 0.0, 0.0], [1.0e38, 0.0, 0.0]))
+            .is_err(),
+        "a finite box whose required far plane overflows must be refused"
+    );
+}
+
+#[test]
+fn framing_keeps_every_corner_inside_a_portrait_clip_volume() {
+    let bounds = ([-20.0, -3.0, -10.0], [20.0, 3.0, 10.0]);
+    let mut camera = Camera::new();
+    camera.resize(240, 1200);
+    camera.frame(bounds).expect("frames");
+    let matrix = camera.view_projection();
+
+    for corner in 0..8 {
+        let point = [
+            if corner & 1 == 0 {
+                bounds.0[0]
+            } else {
+                bounds.1[0]
+            },
+            if corner & 2 == 0 {
+                bounds.0[1]
+            } else {
+                bounds.1[1]
+            },
+            if corner & 4 == 0 {
+                bounds.0[2]
+            } else {
+                bounds.1[2]
+            },
+        ];
+        let ndc = projected(&matrix, point);
+        assert!(
+            (-1.0..=1.0).contains(&ndc[0])
+                && (-1.0..=1.0).contains(&ndc[1])
+                && (0.0..=1.0).contains(&ndc[2]),
+            "corner {point:?} projected outside wgpu's clip volume: {ndc:?}"
+        );
+    }
 }
 
 #[test]
@@ -298,5 +436,36 @@ fn an_empty_snapshot_draws_nothing_and_says_so() {
         snapshot.bounds(),
         None,
         "an empty model has no extent, and inventing one would frame nothing"
+    );
+}
+
+#[test]
+fn placing_an_empty_mesh_does_not_invent_or_enlarge_an_extent() {
+    let mut empty_only = SnapshotBuilder::new();
+    let empty = empty_only.add_mesh(&Mesh::default()).expect("packs");
+    empty_only
+        .place(empty, None, &moved(1000.0, 0.0, 0.0), [1.0; 3])
+        .expect("places");
+    let empty_only = empty_only.build();
+    assert!(empty_only.is_empty());
+    assert_eq!(empty_only.bounds(), None);
+    assert_eq!(
+        empty_only.draws().len(),
+        1,
+        "the scene tree is still retained"
+    );
+
+    let mut mixed = SnapshotBuilder::new();
+    let empty = mixed.add_mesh(&Mesh::default()).expect("packs");
+    let solid = mixed.add_mesh(&triangle()).expect("packs");
+    mixed
+        .place(empty, None, &moved(1000.0, 0.0, 0.0), [1.0; 3])
+        .expect("places");
+    mixed
+        .place(solid, None, &Transform::IDENTITY, [1.0; 3])
+        .expect("places");
+    assert_eq!(
+        mixed.build().bounds(),
+        Some(([0.0, 0.0, 0.0], [2.0, 3.0, 0.0]))
     );
 }

@@ -19,11 +19,11 @@
 //! next import is free to renumber.
 //!
 //! So the information needed to tell two placements apart never reaches a pick
-//! result. Not filtered out at the end — never carried, so no later change can
+//! result. Not filtered out at the end – never carried, so no later change can
 //! start leaking it by accident.
 
 use ferritecad_kernel::Mesh;
-use ferritecad_types::{CadError, Result, Transform};
+use ferritecad_types::{CadError, CanonicalHasher, ContentHash, Result, Transform};
 
 /// Floats per packed vertex: three of position, three of normal.
 pub const VERTEX_FLOATS: usize = 6;
@@ -31,36 +31,49 @@ pub const VERTEX_FLOATS: usize = 6;
 /// What a pick can identify.
 ///
 /// Transient by construction: it indexes into the snapshot that produced it and
-/// means nothing against any other. Deliberately not serialisable — see the
+/// means nothing against any other. Deliberately not serialisable – see the
 /// module documentation for why a durable pick would have to name a definition
 /// through the document rather than through a picture of one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PickId(u32);
+pub struct PickId {
+    raw: u32,
+    snapshot: ContentHash,
+}
 
 impl PickId {
     /// What the background reads as, so an empty pick is not definition zero.
-    pub const NOTHING: Self = Self(0);
-
-    /// The definition this identifies, or `None` for the background.
-    pub fn definition(self) -> Option<usize> {
-        (self.0 != 0).then(|| self.0 as usize - 1)
-    }
+    pub const NOTHING: Self = Self {
+        raw: 0,
+        snapshot: ContentHash::from_bytes([0; 32]),
+    };
 
     /// The value a pick buffer stores.
     pub fn to_raw(self) -> u32 {
-        self.0
+        self.raw
     }
 
     /// Reads a value back out of a pick buffer.
     ///
     /// A value naming no definition in `snapshot` reads as
     /// [`NOTHING`][Self::NOTHING]: a pick buffer is written by a GPU and read
-    /// back over a bus, and a stale or torn value must land on the background
-    /// rather than on whichever definition it happens to number.
+    /// back over a bus, and a value outside this snapshot's definition range
+    /// must land on the background rather than on whichever definition it
+    /// happens to number. The caller must decode a readback against the exact
+    /// snapshot that rendered it: an in-range integer carries no generation.
     pub fn from_raw(raw: u32, snapshot: &RenderSnapshot) -> Self {
         match (raw as usize).checked_sub(1) {
-            Some(definition) if definition < snapshot.meshes.len() => Self(raw),
+            Some(definition) if definition < snapshot.meshes.len() => Self {
+                raw,
+                snapshot: snapshot.identity,
+            },
             _ => Self::NOTHING,
+        }
+    }
+
+    fn unbound(raw: u32) -> Self {
+        Self {
+            raw,
+            snapshot: ContentHash::from_bytes([0; 32]),
         }
     }
 }
@@ -126,6 +139,8 @@ pub struct RenderSnapshot {
     items: Vec<DrawItem>,
     min: [f32; 3],
     max: [f32; 3],
+    has_geometry: bool,
+    identity: ContentHash,
 }
 
 impl RenderSnapshot {
@@ -135,7 +150,7 @@ impl RenderSnapshot {
 
     /// The draw list, in the order the placements were added.
     ///
-    /// That order is the caller's — document order, in practice — and is kept
+    /// That order is the caller's – document order, in practice – and is kept
     /// rather than sorted. Two builds of the same input produce the same list,
     /// which is what lets one frame be compared with another.
     pub fn draws(&self) -> &[DrawItem] {
@@ -143,17 +158,20 @@ impl RenderSnapshot {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
+        !self.has_geometry
     }
 
     /// The world-space bounds of everything drawn, or `None` when nothing is.
     pub fn bounds(&self) -> Option<([f32; 3], [f32; 3])> {
-        (!self.items.is_empty()).then_some((self.min, self.max))
+        self.has_geometry.then_some((self.min, self.max))
     }
 
     /// The definition a pick identifies, if it identifies one.
     pub fn definition(&self, pick: PickId) -> Option<usize> {
-        pick.definition().filter(|index| *index < self.meshes.len())
+        (pick.snapshot == self.identity)
+            .then(|| (pick.raw as usize).checked_sub(1))
+            .flatten()
+            .filter(|index| *index < self.meshes.len())
     }
 }
 
@@ -269,27 +287,50 @@ impl SnapshotBuilder {
                      would be uploaded as whatever the driver made of it",
                 ));
             }
-            *slot = value as f32;
+            let value = value as f32;
+            if !value.is_finite() {
+                return Err(CadError::input(
+                    "a placement colour is outside the range a GPU can represent",
+                ));
+            }
+            *slot = value;
         }
         linear[3] = 1.0;
 
+        let transform = column_major(&world)?;
+        let raw_pick = u32::try_from(mesh)
+            .ok()
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| {
+                CadError::input("there are too many definitions for a u32 pick buffer")
+            })?;
+
+        if !self.meshes[mesh].indices.is_empty() {
+            ensure_placeable(&transform, &self.meshes[mesh])?;
+        }
+
         self.items.push(DrawItem {
             mesh,
-            transform: column_major(&world),
+            transform,
             colour: linear,
             // The pick identifies the definition and has no way to say which
             // placement of it this is. See the module documentation.
-            pick: PickId(mesh as u32 + 1),
+            pick: PickId::unbound(raw_pick),
         });
         self.world.push(world);
         Ok(self.items.len() - 1)
     }
 
     /// Freezes what has been collected.
-    pub fn build(self) -> RenderSnapshot {
+    pub fn build(mut self) -> RenderSnapshot {
         let mut min = [f32::INFINITY; 3];
         let mut max = [f32::NEG_INFINITY; 3];
+        let mut has_geometry = false;
         for item in &self.items {
+            if self.meshes[item.mesh].indices.is_empty() {
+                continue;
+            }
+            has_geometry = true;
             let (low, high) = self.meshes[item.mesh].bounds();
             // Every corner, not just the two: a rotated box's extent is not the
             // transform of its extent.
@@ -307,26 +348,92 @@ impl SnapshotBuilder {
             }
         }
 
+        let identity = snapshot_identity(&self.meshes, &self.items);
+        for item in &mut self.items {
+            item.pick.snapshot = identity;
+        }
+
         RenderSnapshot {
             meshes: self.meshes,
             items: self.items,
             min,
             max,
+            has_geometry,
+            identity,
         }
     }
 }
 
+/// A deterministic generation for CPU pick values.
+///
+/// It is deliberately absent from the raw GPU value: a pick target there must
+/// stay a u32. A readback therefore retains the snapshot used for the draw,
+/// while a `PickId` already decoded on the CPU refuses to resolve against a
+/// different picture instead of silently keeping the same integer meaning.
+fn snapshot_identity(meshes: &[PackedMesh], items: &[DrawItem]) -> ContentHash {
+    let mut hasher = CanonicalHasher::new("ferritecad.render-snapshot");
+    hasher.algorithm_version(1);
+    hasher.field("meshes").u64(meshes.len() as u64);
+    for mesh in meshes {
+        hasher.field("vertices").u64(mesh.vertices.len() as u64);
+        for value in &mesh.vertices {
+            hasher.u64(u64::from(canonical_f32_bits(*value)));
+        }
+        hasher.field("indices").u64(mesh.indices.len() as u64);
+        for index in &mesh.indices {
+            hasher.u64(u64::from(*index));
+        }
+    }
+    hasher.field("items").u64(items.len() as u64);
+    for item in items {
+        hasher.u64(item.mesh as u64);
+        for value in item.transform.iter().chain(item.colour.iter()) {
+            hasher.u64(u64::from(canonical_f32_bits(*value)));
+        }
+        hasher.u64(u64::from(item.pick.raw));
+    }
+    hasher.finish()
+}
+
+fn canonical_f32_bits(value: f32) -> u32 {
+    if value == 0.0 { 0 } else { value.to_bits() }
+}
+
 /// A 3x4 row-major transform as the 4x4 column-major matrix a GPU wants.
-fn column_major(transform: &Transform) -> [f32; 16] {
+fn column_major(transform: &Transform) -> Result<[f32; 16]> {
     let rows = transform.rows();
     let mut out = [0.0f32; 16];
     for column in 0..4 {
         for row in 0..3 {
-            out[column * 4 + row] = rows[row][column] as f32;
+            let value = rows[row][column] as f32;
+            if !value.is_finite() {
+                return Err(CadError::input(
+                    "a placement transform is outside the range a GPU can represent",
+                ));
+            }
+            out[column * 4 + row] = value;
         }
     }
     out[15] = 1.0;
-    out
+    Ok(out)
+}
+
+/// Checks the same corner arithmetic a vertex shader will perform.
+fn ensure_placeable(matrix: &[f32; 16], mesh: &PackedMesh) -> Result<()> {
+    let (low, high) = mesh.bounds();
+    for corner in 0..8 {
+        let point = [
+            if corner & 1 == 0 { low[0] } else { high[0] },
+            if corner & 2 == 0 { low[1] } else { high[1] },
+            if corner & 4 == 0 { low[2] } else { high[2] },
+        ];
+        if apply(matrix, point).iter().any(|value| !value.is_finite()) {
+            return Err(CadError::input(
+                "a placement would overflow while a GPU transforms its vertices",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Applies a column-major matrix to a point.

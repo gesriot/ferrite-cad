@@ -12,14 +12,14 @@ authors.workspace = true
 # No document and no geometry kernel. This crate turns meshes and placements
 # into something a GPU can consume; where they came from is the caller's
 # business, and a renderer that knew about documents would end up deciding when
-# to redraw them. `ferritecad-kernel` is the mesh vocabulary only — a contract
+# to redraw them. `ferritecad-kernel` is the mesh vocabulary only – a contract
 # crate with no Open CASCADE behind it.
 [dependencies]
 ferritecad-kernel.workspace = true
 ferritecad-types.workspace = true
 
-# No serialisation dependency, deliberately. Nothing in this crate can be
-# written to a file, which is how a transient pick identity is kept transient:
-# not by a rule, but by there being no way to spell it.
+# No direct serialisation dependency, deliberately. `PickId` implements no
+# serialisation trait; its raw u32 exists only because that is what a GPU pick
+# buffer stores, and has meaning only against the snapshot that rendered it.
 [lints]
 workspace = true
