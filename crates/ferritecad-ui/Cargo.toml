@@ -17,7 +17,10 @@ authors.workspace = true
 ferritecad-types.workspace = true
 ferritecad-viewport.workspace = true
 
-egui = { version = "0.36", default-features = false }
+# Default features, which is what brings the bundled typefaces. Text is the
+# larger half of an interface, and a build without a font draws none of it.
+# The four fonts and their licences are listed in THIRD_PARTY_LICENSES.md.
+egui = "0.36"
 
 [lints]
 workspace = true

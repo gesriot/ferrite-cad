@@ -29,6 +29,40 @@ Two rules follow from those terms and are enforced rather than remembered:
 - **Notices:** OCCT's own `LICENSE_LGPL_21.txt` and `OCCT_LGPL_EXCEPTION.txt`
   are recorded by the pin workflow and ship beside the libraries.
 
+## Bundled typefaces
+
+The interface embeds four fonts in the binary. A build without them draws no
+text at all, so they are not optional the way a library sometimes is.
+
+All four permit being bundled with an application, and all four require their
+terms to travel with it. Full texts are committed verbatim in
+[`licences/fonts/`](licences/fonts) and are copied from the crate that carries
+the font files, `epaint_default_fonts` 0.36.1, so that what ships is what was
+read rather than a link that may move.
+
+| Font | Used for | Licence | Text |
+| --- | --- | --- | --- |
+| Hack Regular | the proportional and monospace faces | MIT (Hack), with DejaVu contributions in the public domain and Bitstream Vera's own permission notice | [`Hack-Regular.txt`](licences/fonts/Hack-Regular.txt) |
+| Ubuntu Light | the lighter interface face | Ubuntu Font Licence 1.0 | [`UFL.txt`](licences/fonts/UFL.txt) |
+| Noto Emoji Regular | monochrome emoji | SIL Open Font License 1.1 | [`OFL.txt`](licences/fonts/OFL.txt) |
+| emoji-icon-font | interface glyphs | MIT | [`emoji-icon-font-mit-license.txt`](licences/fonts/emoji-icon-font-mit-license.txt) |
+
+**What the two font licences require of a distributor.** Both allow the fonts
+to be embedded in and shipped with a program, and neither imposes anything on
+the program itself: the OFL is explicit that bundling does not make the
+software subject to it, and the Ubuntu Font Licence is a font licence in the
+same sense. What both require is that the licence and its copyright notice
+accompany the font wherever it goes, which is why the texts above are in the
+repository rather than referenced.
+
+Neither font is modified here. The OFL's reserved-font-name condition and the
+Ubuntu licence's renaming rule both bite on modification, and this project
+embeds the files as published.
+
+`deny.toml` allows `OFL-1.1` and `Ubuntu-font-1.0` for this reason and only
+this one. Both reach font files and say nothing about the code that renders
+them, so the allowance widens nothing but typefaces.
+
 ## planegcs
 
 - **Licence:** GNU Library General Public License, version 2 or (at your

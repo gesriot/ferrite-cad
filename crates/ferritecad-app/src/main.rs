@@ -208,9 +208,18 @@ impl ApplicationHandler<AppEvent> for App {
             }
             WindowEvent::RedrawRequested => {
                 self.frames.frame_started();
-                if let Err(error) = live.draw(&self.input) {
-                    eprintln!("ferritecad: {error}");
-                    event_loop.exit();
+                match live.draw(&self.input) {
+                    // A button pressed during this frame reaches the camera
+                    // the same way a keystroke does, through the reducer.
+                    Ok(chosen) => {
+                        if let Some(view) = chosen {
+                            self.input.handle(ViewportEvent::Look(view), false);
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("ferritecad: {error}");
+                        event_loop.exit();
+                    }
                 }
             }
             other => {
@@ -356,28 +365,22 @@ impl Live {
     /// One texture, acquired once. The order is not a convention here – the
     /// seam enforces it, because the model's pass is what clears the target
     /// and the type only offers a view to draw into afterwards.
-    fn draw(&mut self, input: &ViewportInput) -> Result<()> {
+    fn draw(&mut self, input: &ViewportInput) -> Result<Option<StandardView>> {
         let Some(frame) = self.surface.begin(&mut self.renderer)? else {
             // No area, nobody watching, or the compositor was busy. None of
             // those is an error.
-            return Ok(());
+            return Ok(None);
         };
         let frame = frame.draw_scene(&self.prepared, input.camera())?;
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
+        let mut chosen = None;
         let output = self.egui.run_ui(raw_input, |ui| {
-            // A plain rectangle rather than a panel of controls. This build
-            // carries no font: the ones egui bundles are licensed under terms
-            // outside this project's allow list, and that is a decision to take
-            // on its own rather than to smuggle in with a window. What this
-            // does prove is the composition – the interface is drawn over the
-            // model, in the same frame, and the model does not erase it.
-            let marker = egui::Rect::from_min_size(egui::pos2(16.0, 16.0), egui::vec2(180.0, 28.0));
-            ui.painter().rect_filled(
-                marker,
-                4.0,
-                egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200),
-            );
+            // The panel returns what was asked for and applies nothing. What a
+            // request means to the camera is the reducer's, and having one
+            // place for that is what stops a button and a keystroke drifting
+            // apart.
+            chosen = ferritecad_ui::views_panel(ui);
         });
         self.egui_state
             .handle_platform_output(&self.window, output.platform_output);
@@ -438,7 +441,7 @@ impl Live {
             self.egui_renderer.free_texture(id);
         }
         frame.present();
-        Ok(())
+        Ok(chosen)
     }
 }
 

@@ -27,7 +27,7 @@ ferritecad-ui.workspace = true
 ferritecad-viewport.workspace = true
 ferritecad-viewport-gpu.workspace = true
 
-egui = { version = "0.36", default-features = false }
+egui = "0.36"
 egui-wgpu = { version = "0.36", default-features = false }
 egui-winit = { version = "0.36", default-features = false }
 wgpu = "=30.0.0"
