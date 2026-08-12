@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "ferritecad-viewport"
+description = "Immutable render snapshots, camera and draw list for viewing a model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# No document and no geometry kernel. This crate turns meshes and placements
+# into something a GPU can consume; where they came from is the caller's
+# business, and a renderer that knew about documents would end up deciding when
+# to redraw them. `ferritecad-kernel` is the mesh vocabulary only — a contract
+# crate with no Open CASCADE behind it.
+[dependencies]
+ferritecad-kernel.workspace = true
+ferritecad-types.workspace = true
+
+# No serialisation dependency, deliberately. Nothing in this crate can be
+# written to a file, which is how a transient pick identity is kept transient:
+# not by a rule, but by there being no way to spell it.
+[lints]
+workspace = true

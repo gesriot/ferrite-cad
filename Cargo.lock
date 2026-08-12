@@ -349,6 +349,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferritecad-viewport"
+version = "0.0.1"
+dependencies = [
+ "ferritecad-kernel",
+ "ferritecad-types",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
