@@ -32,7 +32,7 @@ use ferritecad_kernel::{
     Mesh, MeshFaceRange, SessionId, ShapeHandle, SubShapeHandle, SubShapeKind,
 };
 use ferritecad_types::{Result, Transform, Vec3};
-use ferritecad_ui::{PointerButton, ViewportEvent, ViewportInput};
+use ferritecad_ui::{PointerButton, VIEWS, ViewportEvent, ViewportInput};
 use ferritecad_viewport::{RenderSnapshot, SnapshotBuilder, StandardView};
 use ferritecad_viewport_gpu::{PreparedSnapshot, Renderer, WindowSurface};
 use winit::application::ApplicationHandler;
@@ -500,16 +500,9 @@ fn named_view(key: &Key) -> Option<StandardView> {
             _ => None,
         };
     };
-    match text.as_str() {
-        "1" => Some(StandardView::Front),
-        "2" => Some(StandardView::Back),
-        "3" => Some(StandardView::Left),
-        "4" => Some(StandardView::Right),
-        "5" => Some(StandardView::Top),
-        "6" => Some(StandardView::Bottom),
-        "7" => Some(StandardView::Isometric),
-        _ => None,
-    }
+    VIEWS
+        .iter()
+        .find_map(|(view, _, shortcut)| (*shortcut == text.as_str()).then_some(*view))
 }
 
 /// A box, so there is something with depth and orientation to turn around.
@@ -635,5 +628,17 @@ mod tests {
             vec![ViewportEvent::GestureCancelled]
         );
         assert!(translate(&WindowEvent::Focused(true)).is_empty());
+    }
+
+    #[test]
+    fn every_shortcut_printed_on_the_panel_reaches_that_view() {
+        for (view, name, shortcut) in VIEWS {
+            let key = Key::Character((*shortcut).into());
+            assert_eq!(
+                named_view(&key),
+                Some(*view),
+                "the {name} button prints {shortcut}, but that key selects something else"
+            );
+        }
     }
 }

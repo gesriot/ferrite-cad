@@ -33,13 +33,15 @@ allow = [
     "Unicode-3.0",
     "CC0-1.0",
     "MPL-2.0",
-    # Font licences, and they reach only font files. Both permit a font to be
-    # bundled with an application and both require the licence to travel with
-    # it, which is why THIRD_PARTY_LICENCES.md carries the full text of each
-    # rather than a link. Neither says anything about the code that renders
-    # them, so allowing them here widens nothing but typefaces.
-    "OFL-1.1",
-    "Ubuntu-font-1.0",
+]
+
+# These are font licences, not generally accepted software licences. Scope
+# them to the exact crate and version whose four embedded font files were
+# reviewed; a new crate or even an upstream font update must make its own case.
+# Both permit bundling with an application and require their terms to travel
+# with the font, so THIRD_PARTY_LICENSES.md records the verbatim texts.
+exceptions = [
+    { crate = "epaint_default_fonts@0.36.1", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
 ]
 
 [bans]

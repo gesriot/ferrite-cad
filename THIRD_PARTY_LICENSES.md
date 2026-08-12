@@ -59,9 +59,10 @@ Neither font is modified here. The OFL's reserved-font-name condition and the
 Ubuntu licence's renaming rule both bite on modification, and this project
 embeds the files as published.
 
-`deny.toml` allows `OFL-1.1` and `Ubuntu-font-1.0` for this reason and only
-this one. Both reach font files and say nothing about the code that renders
-them, so the allowance widens nothing but typefaces.
+`deny.toml` grants `OFL-1.1` and `Ubuntu-font-1.0` as an exception only to
+`epaint_default_fonts` 0.36.1. They are not in the global allow-list: another
+crate under either licence, or even an upstream font update, must be reviewed
+and carry its own terms before entering the graph.
 
 ## planegcs
 
