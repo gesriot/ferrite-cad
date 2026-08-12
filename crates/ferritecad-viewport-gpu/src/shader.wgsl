@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: MIT
+//
+// The smallest shader that draws a model and says what was clicked.
+//
+// Two colour attachments, written in one pass. Drawing the picture and drawing
+// the identities separately would mean two passes that could disagree about
+// which triangle won the depth test, and the pick would then be right about a
+// frame nobody saw.
+
+struct Globals {
+    view_projection: mat4x4<f32>,
+};
+
+struct Draw {
+    transform: mat4x4<f32>,
+    colour: vec4<f32>,
+    // What a click on this draw identifies: its definition, never the
+    // placement. The renderer is handed this value and has no way to compute
+    // one, which is where that guarantee is kept.
+    pick: u32,
+    // Three scalars rather than a vec3<u32>. A vec3 has sixteen-byte
+    // alignment, which would push this struct to 112 bytes while the Rust type
+    // that fills it is 96, and the two must agree exactly or the binding is
+    // rejected. Scalars keep both at 96.
+    padding_0: u32,
+    padding_1: u32,
+    padding_2: u32,
+};
+
+@group(0) @binding(0) var<uniform> globals: Globals;
+@group(0) @binding(1) var<uniform> draw: Draw;
+
+struct VertexOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) normal: vec3<f32>,
+};
+
+@vertex
+fn vertex_main(
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+) -> VertexOut {
+    var out: VertexOut;
+    let world = draw.transform * vec4<f32>(position, 1.0);
+    out.clip = globals.view_projection * world;
+    // The linear part only: a translation must not move a direction.
+    out.normal = (draw.transform * vec4<f32>(normal, 0.0)).xyz;
+    return out;
+}
+
+struct FragmentOut {
+    @location(0) colour: vec4<f32>,
+    @location(1) pick: u32,
+};
+
+@fragment
+fn fragment_main(in: VertexOut) -> FragmentOut {
+    // A zero-length normal cannot be normalised, and normalize() of one is a
+    // NaN that propagates into the colour attachment. Face the viewer instead.
+    let length = dot(in.normal, in.normal);
+    var normal = vec3<f32>(0.0, 0.0, 1.0);
+    if (length > 1e-12) {
+        normal = in.normal * inverseSqrt(length);
+    }
+
+    let to_light = normalize(vec3<f32>(0.3, -0.6, 0.7));
+    // Two-sided: an imported assembly is not obliged to have consistent
+    // winding, and a black facing is harder to diagnose than a lit one.
+    let lambert = abs(dot(normal, to_light)) * 0.8 + 0.2;
+
+    var out: FragmentOut;
+    out.colour = vec4<f32>(draw.colour.rgb * lambert, draw.colour.a);
+    out.pick = draw.pick;
+    return out;
+}

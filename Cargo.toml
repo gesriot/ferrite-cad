@@ -12,6 +12,7 @@ members = [
     "crates/ferritecad-solver-lab",
     "crates/ferritecad-topology",
     "crates/ferritecad-viewport",
+    "crates/ferritecad-viewport-gpu",
     "crates/ferritecad-cli",
 ]
 
@@ -34,6 +35,7 @@ ferritecad-kernel = { path = "crates/ferritecad-kernel", version = "0.0.1" }
 ferritecad-occt = { path = "crates/ferritecad-occt", version = "0.0.1" }
 ferritecad-topology = { path = "crates/ferritecad-topology", version = "0.0.1" }
 ferritecad-viewport = { path = "crates/ferritecad-viewport", version = "0.0.1" }
+ferritecad-viewport-gpu = { path = "crates/ferritecad-viewport-gpu", version = "0.0.1" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

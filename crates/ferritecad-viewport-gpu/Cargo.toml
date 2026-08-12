@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "ferritecad-viewport-gpu"
+description = "Offscreen GPU rendering of a FerriteCAD render snapshot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# Separate from ferritecad-viewport on purpose. Packing meshes, composing
+# placements and deciding what a pick may say are answerable without a graphics
+# stack, and they are tested that way; this crate is what puts the result on a
+# device. Anything that only needs the first half does not pay for the second.
+[dependencies]
+ferritecad-types.workspace = true
+ferritecad-viewport.workspace = true
+
+wgpu = "30.0.0"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+ferritecad-kernel.workspace = true
+
+[lints]
+workspace = true
