@@ -842,6 +842,24 @@ fn build_pipeline(
     colour_format: wgpu::TextureFormat,
     with_identities: bool,
 ) -> wgpu::RenderPipeline {
+    // The number of entries is part of the render-pass contract. `[colour,
+    // None]` does not mean "one target" to wgpu: it means two attachment
+    // slots, the second deliberately unwritten, and is incompatible with the
+    // single attachment a window supplies. Build a genuinely shorter list for
+    // that path.
+    let mut targets = vec![Some(wgpu::ColorTargetState {
+        format: colour_format,
+        blend: None,
+        write_mask: wgpu::ColorWrites::ALL,
+    })];
+    if with_identities {
+        targets.push(Some(wgpu::ColorTargetState {
+            format: PICK_FORMAT,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        }));
+    }
+
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("ferritecad viewport pipeline"),
         layout: Some(pipeline_layout),
@@ -870,21 +888,10 @@ fn build_pipeline(
             module: shader,
             entry_point: Some("fragment_main"),
             compilation_options: Default::default(),
-            targets: &[
-                Some(wgpu::ColorTargetState {
-                    format: colour_format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-                // The fragment shader always writes an identity. A pass with
-                // no target for it discards the value rather than needing a
-                // second shader that does not compute it.
-                with_identities.then_some(wgpu::ColorTargetState {
-                    format: PICK_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-            ],
+            // The fragment shader always writes an identity. A pipeline with
+            // no target for it discards the value rather than needing a second
+            // shader that does not compute it.
+            targets: &targets,
         }),
         primitive: wgpu::PrimitiveState {
             // No culling. An imported assembly is not obliged to have
@@ -971,4 +978,115 @@ fn align_to(value: u64, alignment: u64) -> u64 {
         return value;
     }
     value.div_ceil(alignment) * alignment
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::*;
+    use ferritecad_kernel::{
+        Mesh, MeshFaceRange, SessionId, ShapeHandle, SubShapeHandle, SubShapeKind,
+    };
+    use ferritecad_types::ErrorKind;
+    use ferritecad_types::Transform;
+    use ferritecad_viewport::SnapshotBuilder;
+
+    fn one_quad(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
+        let shape = ShapeHandle::new(SessionId::new(), 1);
+        let mesh = Mesh {
+            // XZ, facing the camera that `frame` places along -Y.
+            positions: vec![
+                -10.0, 0.0, -10.0, 10.0, 0.0, -10.0, 10.0, 0.0, 10.0, -10.0, 0.0, 10.0,
+            ],
+            normals: vec![
+                0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0,
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            faces: vec![MeshFaceRange {
+                face: SubShapeHandle::new(shape, SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 6,
+            }],
+        };
+        let mut builder = SnapshotBuilder::new();
+        let definition = builder.add_mesh(&mesh).expect("packs the quad");
+        builder
+            .place(definition, None, &Transform::IDENTITY, [0.0, 1.0, 0.0])
+            .expect("places the quad");
+        let snapshot = Arc::new(builder.build());
+        let mut camera = Camera::new();
+        camera.resize(width, height);
+        camera
+            .frame(snapshot.bounds().expect("the quad has an extent"))
+            .expect("frames the quad");
+        (snapshot, camera)
+    }
+
+    #[test]
+    fn the_window_pipeline_really_has_one_colour_target() {
+        let mut renderer = match Renderer::new() {
+            Ok(renderer) => renderer,
+            Err(error) if error.kind() == ErrorKind::Unsupported => {
+                eprintln!("skipped: {error}");
+                return;
+            }
+            Err(error) => panic!("a renderer failed after adapter discovery: {error}"),
+        };
+
+        // No surface is needed to state the contract that failed in the real
+        // window: a surface contributes one colour view, and the pipeline used
+        // with it must accept a pass with exactly that one attachment. Draw a
+        // real quad and read it back so merely accepting an empty pass cannot
+        // satisfy the gate.
+        let width = 64;
+        let height = 64;
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let target = renderer.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ferritecad single-target window gate"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        let (snapshot, camera) = one_quad(width, height);
+        let prepared = renderer
+            .prepare(snapshot)
+            .expect("uploads the window scene");
+
+        renderer
+            .draw_into(&prepared, &camera, &view, format, width, height)
+            .expect("one-target pass accepts the one-target pipeline");
+
+        let extent = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let layout = renderer
+            .validate_frame(width, height)
+            .expect("the frame fits");
+        let mut encoder = renderer
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("ferritecad single-target window readback"),
+            });
+        let readback = renderer.readback(&mut encoder, &target, extent, layout);
+        renderer.queue.submit(Some(encoder.finish()));
+        let pixels = renderer
+            .take(readback, height, layout)
+            .expect("reads the window target");
+        let centre = ((height / 2 * width + width / 2) * 4) as usize;
+        assert!(
+            pixels[centre + 1] > 0,
+            "the one-target pass accepted its pipeline but drew no green quad"
+        );
+    }
 }

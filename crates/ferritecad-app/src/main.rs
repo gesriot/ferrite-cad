@@ -124,6 +124,43 @@ fn spawn_load(
     std::thread::spawn(move || deliver(load()))
 }
 
+/// Prepares both halves of a loaded picture without changing the current one.
+///
+/// Framing the camera is part of accepting a scene. It therefore has to be
+/// staged alongside the GPU upload: if preparing the buffers fails after the
+/// camera has already moved, the old model remains resident but may be framed
+/// completely out of view. Returning both candidates lets the event-loop
+/// thread commit them together after every fallible step has succeeded.
+fn prepare_load<P>(
+    current_input: &ViewportInput,
+    loaded: Result<RenderSnapshot>,
+    prepare: impl FnOnce(Arc<RenderSnapshot>) -> Result<P>,
+) -> Result<(ViewportInput, P)> {
+    let mut input = current_input.clone();
+    let snapshot = input.accept_load(loaded)?;
+    let prepared = prepare(Arc::new(snapshot))?;
+    Ok((input, prepared))
+}
+
+/// Applies every texture upload and consumes it from egui's command set.
+fn upload_textures(
+    textures: &mut egui::TexturesDelta,
+    mut upload: impl FnMut(egui::TextureId, &egui::epaint::ImageDelta),
+) {
+    for (id, deltas) in textures.set.drain() {
+        for delta in deltas {
+            upload(id, &delta);
+        }
+    }
+}
+
+/// Frees every retired texture and consumes it from egui's command set.
+fn free_textures(textures: &mut egui::TexturesDelta, mut free: impl FnMut(&egui::TextureId)) {
+    for id in textures.free.drain() {
+        free(&id);
+    }
+}
+
 /// The one outstanding frame and the earliest future reason to draw another.
 ///
 /// `ViewportInput` coalesces reasons at the application boundary. This second
@@ -375,24 +412,27 @@ impl App {
     /// that went blank would lose the drawing the user was reading while they
     /// work out what went wrong.
     fn show(&mut self, loaded: Result<RenderSnapshot>) {
-        let uploaded =
-            self.input
-                .accept_load(loaded)
-                .and_then(|snapshot| match self.live.as_mut() {
-                    // The assignment is the last thing that happens, so a scene
-                    // that could not be uploaded leaves the previous one resident
-                    // and drawable rather than half replaced.
-                    Some(live) => {
-                        live.prepared = live.renderer.prepare(Arc::new(snapshot))?;
-                        Ok(())
-                    }
-                    // No window to show it in, which means the loop is already
-                    // on its way out: the load starts when the window is
-                    // created and the window is not taken away while it runs.
-                    None => Ok(()),
-                });
-        if let Err(error) = uploaded {
-            eprintln!("ferritecad: {error}");
+        let Some(live) = self.live.as_mut() else {
+            // No window to show it in, which means the loop is already on its
+            // way out. Preserve an error for the log, but do not change state
+            // that can no longer be observed.
+            if let Err(error) = loaded {
+                eprintln!("ferritecad: {error}");
+            }
+            return;
+        };
+
+        match prepare_load(&self.input, loaded, |snapshot| {
+            live.renderer.prepare(snapshot)
+        }) {
+            Ok((input, prepared)) => {
+                // Every operation above can fail; neither assignment can. No
+                // event observes the application between these two lines, so
+                // camera and resident geometry become current together.
+                self.input = input;
+                live.prepared = prepared;
+            }
+            Err(error) => eprintln!("ferritecad: {error}"),
         }
     }
 
@@ -527,7 +567,7 @@ impl Live {
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let mut chosen = None;
-        let output = self.egui.run_ui(raw_input, |ui| {
+        let mut output = self.egui.run_ui(raw_input, |ui| {
             // The panel returns what was asked for and applies nothing. What a
             // request means to the camera is the reducer's, and having one
             // place for that is what stops a button and a keystroke drifting
@@ -545,12 +585,11 @@ impl Live {
         let primitives = self
             .egui
             .tessellate(output.shapes, self.egui.pixels_per_point());
-        for (id, deltas) in &output.textures_delta.set {
-            for delta in deltas {
-                self.egui_renderer
-                    .update_texture(frame.device(), frame.queue(), *id, delta);
-            }
-        }
+        let mut textures = std::mem::take(&mut output.textures_delta);
+        upload_textures(&mut textures, |id, delta| {
+            self.egui_renderer
+                .update_texture(frame.device(), frame.queue(), id, delta);
+        });
 
         let mut encoder = frame
             .device()
@@ -589,9 +628,7 @@ impl Live {
         }
         frame.queue().submit(Some(encoder.finish()));
 
-        for id in &output.textures_delta.free {
-            self.egui_renderer.free_texture(id);
-        }
+        free_textures(&mut textures, |id| self.egui_renderer.free_texture(id));
         frame.present();
         Ok(chosen)
     }
@@ -662,6 +699,33 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    fn distant_scene() -> RenderSnapshot {
+        use ferritecad_kernel::{
+            Mesh, MeshFaceRange, SessionId, ShapeHandle, SubShapeHandle, SubShapeKind,
+        };
+        use ferritecad_types::Transform;
+
+        let mut mesh = Mesh::default();
+        mesh.positions.extend_from_slice(&[
+            900.0, 900.0, 900.0, 910.0, 900.0, 900.0, 900.0, 910.0, 900.0,
+        ]);
+        mesh.normals
+            .extend_from_slice(&[0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
+        mesh.indices.extend_from_slice(&[0, 1, 2]);
+        mesh.faces.push(MeshFaceRange {
+            face: SubShapeHandle::new(ShapeHandle::new(SessionId::new(), 1), SubShapeKind::Face, 0),
+            first_index: 0,
+            index_count: 3,
+        });
+
+        let mut builder = SnapshotBuilder::new();
+        let definition = builder.add_mesh(&mesh).expect("the mesh is valid");
+        builder
+            .place(definition, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+            .expect("places it");
+        builder.build()
+    }
 
     #[test]
     fn many_immediate_reasons_make_one_window_request() {
@@ -788,6 +852,60 @@ mod tests {
             .expect_err("this load failed");
         assert!(error.to_string().contains("no such document"));
         worker.join().expect("the worker finished cleanly");
+    }
+
+    #[test]
+    fn a_scene_the_gpu_refused_moves_neither_the_picture_nor_the_camera() {
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        input
+            .frame(([-5.0, -5.0, -5.0], [5.0, 5.0, 5.0]))
+            .expect("frames the current picture");
+        input.take_redraw();
+        let before = *input.camera();
+
+        let error = prepare_load::<()>(&input, Ok(distant_scene()), |_| {
+            Err(CadError::rendering("the device refused the upload"))
+        })
+        .expect_err("a failed upload must not become current");
+
+        assert!(error.to_string().contains("refused the upload"), "{error}");
+        assert_eq!(
+            *input.camera(),
+            before,
+            "the camera moved to geometry that never reached the GPU"
+        );
+        assert!(
+            !input.take_redraw(),
+            "an upload that changed no picture still requested a frame"
+        );
+    }
+
+    #[test]
+    fn every_texture_command_is_consumed_after_it_is_applied() {
+        let context = egui::Context::default();
+        let mut output = context.run_ui(Default::default(), |ui| {
+            ui.label("this allocates the font atlas");
+        });
+        let mut textures = std::mem::take(&mut output.textures_delta);
+        assert!(
+            !textures.set.is_empty(),
+            "the gate produced no texture upload"
+        );
+
+        let retired = egui::TextureId::Managed(u64::MAX);
+        textures.free(retired);
+        let mut uploads = 0;
+        let mut frees = Vec::new();
+        upload_textures(&mut textures, |_, _| uploads += 1);
+        free_textures(&mut textures, |id| frees.push(*id));
+
+        assert!(uploads > 0, "the atlas was silently dropped");
+        assert_eq!(frees, vec![retired], "a retired texture was kept alive");
+        assert!(
+            textures.is_empty(),
+            "applied texture commands remained marked as pending"
+        );
     }
 
     #[test]
