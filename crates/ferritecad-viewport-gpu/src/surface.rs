@@ -15,7 +15,7 @@
 
 use ferritecad_types::{CadError, Result};
 
-use crate::renderer::{PreparedSnapshot, Renderer};
+use crate::renderer::{PreparedSnapshot, Renderer, RendererId};
 use ferritecad_viewport::Camera;
 
 /// Whether a frame reached the window.
@@ -55,27 +55,123 @@ pub enum SurfaceRecovery {
 /// be built without a device, so the tests cover the five that can – which are
 /// exactly the ones with a decision in them.
 pub fn recovery_for(outcome: &wgpu::CurrentSurfaceTexture) -> SurfaceRecovery {
+    SurfaceOutcome::without_texture(outcome).recovery()
+}
+
+/// The part of an acquisition result that does not require a GPU texture.
+///
+/// Kept separate from [`SurfaceRecovery`] because `Suboptimal` has two
+/// consequences: draw this texture *and* reconfigure after presenting it. A
+/// single `Draw` value loses the second half of that decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SurfaceOutcome<T> {
+    Optimal(T),
+    Suboptimal(T),
+    Lost,
+    Outdated,
+    Timeout,
+    Occluded,
+    Validation,
+}
+
+impl<T> SurfaceOutcome<T> {
+    /// The single-answer policy used by both the public table and the actual
+    /// two-answer acquisition state machine.
+    fn recovery(&self) -> SurfaceRecovery {
+        match self {
+            // Suboptimal is drawn, not discarded. The picture is right; it is
+            // the configuration that has drifted, and throwing the frame away
+            // would show a stutter to fix something the user cannot see.
+            Self::Optimal(_) | Self::Suboptimal(_) => SurfaceRecovery::Draw,
+            // The surface no longer matches the window. Reconfiguring from the
+            // size already held is exactly the fix.
+            Self::Lost | Self::Outdated => SurfaceRecovery::Reconfigure,
+            // Busy, or not on screen at all. Both end by themselves.
+            Self::Timeout | Self::Occluded => SurfaceRecovery::Skip,
+            // A validation error is this program's mistake.
+            Self::Validation => SurfaceRecovery::Fatal,
+        }
+    }
+}
+
+impl SurfaceOutcome<()> {
+    /// Projects out the texture so callers asking only for policy cannot keep
+    /// it alive or accidentally present it.
+    fn without_texture(outcome: &wgpu::CurrentSurfaceTexture) -> Self {
+        match outcome {
+            wgpu::CurrentSurfaceTexture::Success(_) => Self::Optimal(()),
+            wgpu::CurrentSurfaceTexture::Suboptimal(_) => Self::Suboptimal(()),
+            wgpu::CurrentSurfaceTexture::Lost => Self::Lost,
+            wgpu::CurrentSurfaceTexture::Outdated => Self::Outdated,
+            wgpu::CurrentSurfaceTexture::Timeout => Self::Timeout,
+            wgpu::CurrentSurfaceTexture::Occluded => Self::Occluded,
+            wgpu::CurrentSurfaceTexture::Validation => Self::Validation,
+        }
+    }
+}
+
+impl SurfaceOutcome<wgpu::SurfaceTexture> {
+    fn from_wgpu(outcome: wgpu::CurrentSurfaceTexture) -> Self {
+        match outcome {
+            wgpu::CurrentSurfaceTexture::Success(texture) => Self::Optimal(texture),
+            wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Self::Suboptimal(texture),
+            wgpu::CurrentSurfaceTexture::Lost => Self::Lost,
+            wgpu::CurrentSurfaceTexture::Outdated => Self::Outdated,
+            wgpu::CurrentSurfaceTexture::Timeout => Self::Timeout,
+            wgpu::CurrentSurfaceTexture::Occluded => Self::Occluded,
+            wgpu::CurrentSurfaceTexture::Validation => Self::Validation,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Acquisition<T> {
+    Draw {
+        texture: T,
+        reconfigure_after: bool,
+    },
+    Skip,
+    Fatal {
+        after_reconfigure: bool,
+        outcome: SurfaceOutcome<T>,
+    },
+}
+
+/// Resolves at most two surface answers into one action.
+///
+/// `retry` owns the reconfiguration as well as the second acquisition. It is
+/// called only after `Lost` or `Outdated`, so the production path cannot retry
+/// a timeout or validation failure by accident. Keeping both answers in one
+/// state machine also makes the `Lost -> Suboptimal` path testable without a
+/// window or a real [`wgpu::SurfaceTexture`].
+fn acquire_after_one_retry<T>(
+    first: SurfaceOutcome<T>,
+    retry: impl FnOnce() -> SurfaceOutcome<T>,
+) -> Acquisition<T> {
+    if first.recovery() == SurfaceRecovery::Reconfigure {
+        finish_acquisition(retry(), true)
+    } else {
+        finish_acquisition(first, false)
+    }
+}
+
+/// Turns one answer into a terminal action. A recoverable answer is fatal here
+/// only when it was the second answer: the one permitted retry is spent.
+fn finish_acquisition<T>(outcome: SurfaceOutcome<T>, after_reconfigure: bool) -> Acquisition<T> {
     match outcome {
-        // Suboptimal is drawn, not discarded. The picture is right; it is the
-        // configuration that has drifted, and throwing the frame away would
-        // show the user a stutter to fix something they cannot see.
-        wgpu::CurrentSurfaceTexture::Success(_) | wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
-            SurfaceRecovery::Draw
-        }
-        // The surface no longer matches the window: resized, moved to a display
-        // with another format, or the device was reset underneath it.
-        // Reconfiguring from the size already held is exactly the fix.
-        wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-            SurfaceRecovery::Reconfigure
-        }
-        // Busy, or not on screen at all. Both end by themselves, and both
-        // deserve a skipped frame rather than a spin or an error.
-        wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-            SurfaceRecovery::Skip
-        }
-        // A validation error is this program's mistake. Retrying would hide it
-        // behind a stream of identical frames.
-        wgpu::CurrentSurfaceTexture::Validation => SurfaceRecovery::Fatal,
+        SurfaceOutcome::Optimal(texture) => Acquisition::Draw {
+            texture,
+            reconfigure_after: false,
+        },
+        SurfaceOutcome::Suboptimal(texture) => Acquisition::Draw {
+            texture,
+            reconfigure_after: true,
+        },
+        SurfaceOutcome::Timeout | SurfaceOutcome::Occluded => Acquisition::Skip,
+        outcome => Acquisition::Fatal {
+            after_reconfigure,
+            outcome,
+        },
     }
 }
 
@@ -100,6 +196,10 @@ pub fn usable_size(width: u32, height: u32, limit: u32) -> Option<(u32, u32)> {
 #[derive(Debug)]
 pub struct WindowSurface {
     surface: wgpu::Surface<'static>,
+    /// The device that configured this surface. A surface texture cannot be
+    /// drawn by an arbitrary second device even when that device also happens
+    /// to support the window.
+    renderer: RendererId,
     format: wgpu::TextureFormat,
     alpha_mode: wgpu::CompositeAlphaMode,
     present_mode: wgpu::PresentMode,
@@ -136,6 +236,7 @@ impl WindowSurface {
 
         let mut window = Self {
             surface,
+            renderer: renderer.id(),
             format,
             alpha_mode,
             // Fifo is the only mode every backend guarantees, and a viewport
@@ -145,7 +246,7 @@ impl WindowSurface {
             configured: None,
             limit: renderer.max_texture_dimension(),
         };
-        window.resize(renderer, width, height);
+        window.resize(renderer, width, height)?;
         Ok(window)
     }
 
@@ -168,9 +269,11 @@ impl WindowSurface {
     ///
     /// A zero size deconfigures rather than failing: the window still exists
     /// and will come back, and the caller should go on running its event loop.
-    pub fn resize(&mut self, renderer: &Renderer, width: u32, height: u32) {
+    pub fn resize(&mut self, renderer: &Renderer, width: u32, height: u32) -> Result<()> {
+        require_renderer(self.renderer, renderer.id())?;
         self.configured = usable_size(width, height, self.limit);
         self.reconfigure(renderer);
+        Ok(())
     }
 
     /// Applies the current configuration to the surface.
@@ -199,10 +302,10 @@ impl WindowSurface {
 
     /// Draws a prepared snapshot into the window and presents it.
     ///
-    /// Returns `Ok(None)` when there was nothing to draw into – a window with
-    /// no area, or a frame the compositor was not ready to hand over. Neither
-    /// is an error, and treating them as one would make an ordinary minimise
-    /// look like a fault.
+    /// Returns [`Presented::Skipped`] when there was nothing to draw into – a
+    /// window with no area, or a frame the compositor was not ready to hand
+    /// over. Neither is an error, and treating them as one would make an
+    /// ordinary minimise look like a fault.
     ///
     /// A surface that has gone stale is reconfigured and the frame retried
     /// once. Once, and not in a loop: a surface that is stale again immediately
@@ -214,46 +317,33 @@ impl WindowSurface {
         prepared: &PreparedSnapshot,
         camera: &Camera,
     ) -> Result<Presented> {
+        require_renderer(self.renderer, renderer.id())?;
         if !self.is_drawable() {
             return Ok(Presented::Skipped);
         }
 
-        let mut suboptimal = false;
-        let texture = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(texture) => texture,
-            wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
-                // Drawn now, reconfigured after presenting: the picture is
-                // right and only the configuration has drifted.
-                suboptimal = true;
-                texture
+        let first = SurfaceOutcome::from_wgpu(self.surface.get_current_texture());
+        let acquisition = acquire_after_one_retry(first, || {
+            self.reconfigure(renderer);
+            SurfaceOutcome::from_wgpu(self.surface.get_current_texture())
+        });
+        let (texture, reconfigure_after) = match acquisition {
+            Acquisition::Draw {
+                texture,
+                reconfigure_after,
+            } => (texture, reconfigure_after),
+            Acquisition::Skip => return Ok(Presented::Skipped),
+            Acquisition::Fatal {
+                after_reconfigure,
+                outcome,
+            } => {
+                let message = if after_reconfigure {
+                    "this window's surface could not be rebuilt"
+                } else {
+                    "this window's surface cannot be drawn into"
+                };
+                return Err(CadError::rendering(format!("{message}: {outcome:?}")));
             }
-            other => match recovery_for(&other) {
-                SurfaceRecovery::Reconfigure => {
-                    self.reconfigure(renderer);
-                    // Once, and not in a loop. A surface that is stale again
-                    // immediately will not be fixed by a third attempt, and a
-                    // renderer that spun here would hang the event loop that
-                    // called it.
-                    match self.surface.get_current_texture() {
-                        wgpu::CurrentSurfaceTexture::Success(texture)
-                        | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
-                        again => {
-                            return match recovery_for(&again) {
-                                SurfaceRecovery::Skip => Ok(Presented::Skipped),
-                                _ => Err(CadError::rendering(format!(
-                                    "this window's surface could not be rebuilt: {again:?}"
-                                ))),
-                            };
-                        }
-                    }
-                }
-                SurfaceRecovery::Skip => return Ok(Presented::Skipped),
-                _ => {
-                    return Err(CadError::rendering(format!(
-                        "this window's surface cannot be drawn into: {other:?}"
-                    )));
-                }
-            },
         };
 
         let (width, height) = self
@@ -263,11 +353,26 @@ impl WindowSurface {
         renderer.draw_into(prepared, camera, &view, self.format, width, height)?;
         renderer.present(texture);
 
-        if suboptimal {
+        if reconfigure_after {
             self.reconfigure(renderer);
         }
         Ok(Presented::Drawn)
     }
+}
+
+/// A surface texture belongs to the device that configured its surface.
+///
+/// Checked before resize changes remembered state and before present acquires a
+/// texture. A late driver validation error would name neither renderer and
+/// would make the ownership mistake much harder to find than it was to make.
+fn require_renderer(expected: RendererId, actual: RendererId) -> Result<()> {
+    if expected != actual {
+        return Err(CadError::rendering(format!(
+            "this window surface belongs to {expected} and cannot be used by {actual}: its \
+             textures belong to the other device"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -325,5 +430,61 @@ mod tests {
             recovery_for(&wgpu::CurrentSurfaceTexture::Validation),
             SurfaceRecovery::Fatal
         );
+    }
+
+    #[test]
+    fn a_suboptimal_retry_is_drawn_and_then_reconfigured() {
+        let retries = std::cell::Cell::new(0);
+        let acquired = acquire_after_one_retry(SurfaceOutcome::Lost, || {
+            retries.set(retries.get() + 1);
+            SurfaceOutcome::Suboptimal(17_u8)
+        });
+
+        assert_eq!(retries.get(), 1);
+        assert_eq!(
+            acquired,
+            Acquisition::Draw {
+                texture: 17,
+                reconfigure_after: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_retry_is_never_a_loop_or_a_retry_of_a_transient_answer() {
+        let retries = std::cell::Cell::new(0);
+        let second_loss = acquire_after_one_retry(SurfaceOutcome::<()>::Outdated, || {
+            retries.set(retries.get() + 1);
+            SurfaceOutcome::Lost
+        });
+        assert_eq!(retries.get(), 1);
+        assert_eq!(
+            second_loss,
+            Acquisition::Fatal {
+                after_reconfigure: true,
+                outcome: SurfaceOutcome::Lost,
+            }
+        );
+
+        let timeout = acquire_after_one_retry(SurfaceOutcome::<()>::Timeout, || {
+            retries.set(retries.get() + 1);
+            SurfaceOutcome::Optimal(())
+        });
+        assert_eq!(retries.get(), 1, "a timeout must not acquire again");
+        assert_eq!(timeout, Acquisition::Skip);
+    }
+
+    #[test]
+    fn a_window_surface_cannot_move_between_renderers() {
+        let owner = RendererId::next();
+        let other = RendererId::next();
+
+        require_renderer(owner, owner).expect("its own renderer is accepted");
+        let error = require_renderer(owner, other).expect_err("another renderer is refused");
+        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Rendering);
+        let message = error.to_string();
+        assert!(message.contains(&owner.to_string()), "{message}");
+        assert!(message.contains(&other.to_string()), "{message}");
+        assert!(!message.contains("  "), "broken whitespace: {message}");
     }
 }

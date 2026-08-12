@@ -45,7 +45,7 @@ struct DrawUniform {
 pub struct RendererId(u64);
 
 impl RendererId {
-    fn next() -> Self {
+    pub(crate) fn next() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
     }
