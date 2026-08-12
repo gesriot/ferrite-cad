@@ -40,6 +40,8 @@
 //! within one STEP file and nothing at all between two, so a durable reference
 //! has to carry the identity of the source alongside one.
 
+use std::collections::BTreeMap;
+
 use ferritecad_types::{CadError, Result};
 use serde::{Deserialize, Serialize};
 
@@ -251,6 +253,11 @@ impl PersistedScene {
     /// types without going through [`Scene::persist`], so a stored scene is not
     /// trustworthy merely because it decoded.
     pub fn validate(&self) -> Result<()> {
+        // This path runs whenever an imported object is decoded or written.
+        // Index once rather than scanning all earlier definitions for every
+        // key, then scanning all definitions again for every placement: real
+        // assemblies can contain thousands of both.
+        let mut definition_keys = BTreeMap::new();
         for (index, definition) in self.definitions.iter().enumerate() {
             if definition.key.is_empty() {
                 return Err(CadError::input(format!(
@@ -258,10 +265,7 @@ impl PersistedScene {
                      named could never be found again"
                 )));
             }
-            if let Some(earlier) = self.definitions[..index]
-                .iter()
-                .position(|other| other.key == definition.key)
-            {
+            if let Some(earlier) = definition_keys.insert(definition.key.as_str(), index) {
                 return Err(CadError::input(format!(
                     "definitions {earlier} and {index} both claim the identity {}, \
                      so a reference to it would resolve to whichever was looked up \
@@ -279,11 +283,7 @@ impl PersistedScene {
         })?;
 
         for (index, instance) in self.instances.iter().enumerate() {
-            if !self
-                .definitions
-                .iter()
-                .any(|definition| definition.key == instance.definition)
-            {
+            if !definition_keys.contains_key(instance.definition.as_str()) {
                 return Err(CadError::input(format!(
                     "instance {index} places {}, which this scene does not describe",
                     instance.definition

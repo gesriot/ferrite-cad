@@ -1123,6 +1123,94 @@ fn an_import_this_build_cannot_read_keeps_its_bytes_and_its_document() {
 }
 
 #[test]
+fn a_newer_import_layout_with_a_known_capability_survives_an_edit() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let (object, stored) =
+        store(&mut document, &imported(SessionId::new(), Vec::new())).expect("stores");
+    document.close().expect("closes");
+
+    // Simulate exactly the compatibility decision made for scene v2 from the
+    // point of view of this reader: the capability is already understood but
+    // the payload layout is newer. The envelope must be preserved as an
+    // unknown object without making the whole document read-only.
+    let future = ferritecad_document::Envelope::new(
+        "exchange.step.imported",
+        3,
+        vec![IMPORTED_STEP_CAPABILITY.to_owned()],
+        vec![0xf6],
+    )
+    .to_bytes()
+    .expect("serialises");
+    with_sql(&path, |conn| {
+        conn.execute(
+            "UPDATE objects SET schema_version = 3, payload = ?1, payload_hash = ?2 WHERE id = ?3",
+            rusqlite::params![
+                future.as_slice(),
+                ContentHash::of_bytes(&future).as_bytes().as_slice(),
+                object.to_bytes().as_slice()
+            ],
+        )
+        .expect("updates");
+    });
+
+    let mut document = Document::open(&path).expect("opens");
+    assert_eq!(
+        document.access(),
+        &Access::ReadWrite,
+        "a known capability does not make an unknown layout read-only"
+    );
+    let record = document.object(object).expect("reads").expect("is there");
+    assert!(matches!(record.payload, ObjectPayload::Unknown(_)));
+    assert_eq!(
+        record.payload.to_storage_bytes().expect("writes back"),
+        future
+    );
+
+    // Exercise the successful write path, including source reclamation and
+    // capability-index rebuilding. Neither may discard data owned by an
+    // envelope whose layout this reader cannot inspect.
+    document
+        .write(|writer| {
+            writer.put_object(
+                ObjectId::new(),
+                None,
+                1,
+                Some("Body1"),
+                &ObjectPayload::Body(Body { tip_feature: None }),
+            )?;
+            Ok(())
+        })
+        .expect("an unrelated edit succeeds");
+    document.close().expect("closes");
+
+    let document = Document::open(&path).expect("reopens");
+    let record = document.object(object).expect("reads").expect("is there");
+    assert_eq!(
+        record.payload.to_storage_bytes().expect("writes back"),
+        future,
+        "the unknown imported envelope was rewritten"
+    );
+    document.close().expect("closes");
+
+    let (sources, refs): (i64, i64) = with_sql(&path, |conn| {
+        conn.query_row(
+            "SELECT (SELECT count(*) FROM imported_sources),
+                    (SELECT count(*) FROM imported_source_refs
+                     WHERE object_id = ?1 AND source_id = ?2)",
+            rusqlite::params![
+                object.to_bytes().as_slice(),
+                stored.source.to_bytes().as_slice()
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("counts")
+    });
+    assert_eq!(sources, 1, "source {} was reclaimed", stored.source);
+    assert_eq!(refs, 1, "the unknown object's source claim was lost");
+}
+
+#[test]
 fn an_import_declares_its_own_capability_and_its_own_format() {
     let (_dir, path) = workspace();
     let mut document = Document::create(&path).expect("creates");

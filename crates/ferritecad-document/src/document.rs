@@ -1299,10 +1299,11 @@ fn describe(diagnostics: &[ImportDiagnostic]) -> String {
 /// A source is only ever written together with the object that claims it, so
 /// this cannot collect something a caller was about to use.
 ///
-/// It runs on the successful path of every edit, and only there. A document
-/// holding an object this build cannot read opens read-only, so it never gets
-/// here — which is what stops a future object's source from being reclaimed by
-/// a build that cannot see the reference inside it.
+/// It runs on the successful path of every edit, and only there. An object with
+/// an unsupported capability makes the document read-only. A newer layout with
+/// a capability this build already knows may remain writable, but its explicit
+/// `imported_source_refs` row is preserved with the unknown envelope and keeps
+/// the source reachable even though this build cannot inspect its payload.
 fn reclaim_imported_sources(tx: &Transaction<'_>) -> Result<()> {
     tx.execute(
         "DELETE FROM imported_sources
