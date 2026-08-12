@@ -423,18 +423,25 @@ fn geometry_is_uploaded_once_and_repeat_frames_only_move_the_camera() {
 
     let mut camera = Camera::new();
     camera.resize(48, 48);
-    camera
-        .frame(snapshot.bounds().expect("geometry"))
-        .expect("frames");
+    let (minimum, maximum) = snapshot.bounds().expect("geometry");
 
     // Ten frames from ten camera positions. Nothing is uploaded again: what
     // changes between frames is a matrix, and that is the whole point of
     // preparing a snapshot rather than handing one over per frame.
     let after_upload = renderer.geometry_uploads();
+    let mut matrices = Vec::new();
     let mut pictures = Vec::new();
     for step in 0..10 {
-        camera.resize(48 + step, 48);
+        let shift = step as f32 * 2.0;
+        camera
+            .frame((
+                [minimum[0] + shift, minimum[1], minimum[2]],
+                [maximum[0] + shift, maximum[1], maximum[2]],
+            ))
+            .expect("moves the camera without resizing the target");
+        matrices.push(camera.view_projection());
         let frame = renderer.render(&prepared, &camera).expect("draws");
+        assert_eq!((frame.width(), frame.height()), (48, 48));
         pictures.push(frame.colour().to_vec());
     }
     assert_eq!(
@@ -443,8 +450,14 @@ fn geometry_is_uploaded_once_and_repeat_frames_only_move_the_camera() {
         "a repeat frame uploaded geometry again"
     );
 
-    // And the camera really did move: a renderer that ignored it would give
-    // ten identical pictures, and this test would pass while proving nothing.
+    assert!(
+        matrices.windows(2).all(|pair| pair[0] != pair[1]),
+        "two requested camera positions produced one matrix"
+    );
+
+    // And the renderer really used those matrices. Every target has the same
+    // dimensions, so a difference cannot come merely from a longer readback.
+    // A renderer that ignored the camera would give ten identical pictures.
     assert!(
         pictures.windows(2).any(|pair| pair[0] != pair[1]),
         "ten different cameras produced one picture"
@@ -454,13 +467,9 @@ fn geometry_is_uploaded_once_and_repeat_frames_only_move_the_camera() {
 #[test]
 fn a_snapshot_prepared_by_another_renderer_is_refused() {
     let mut mine = renderer_or_skip!();
-    let mut theirs = match Renderer::new() {
-        Ok(renderer) => renderer,
-        Err(reason) => {
-            eprintln!("skipped: a second device was not available: {reason}");
-            return;
-        }
-    };
+    // The first renderer proved that an adapter exists. Failure to open the
+    // second is therefore a gate failure, not the no-adapter skip condition.
+    let mut theirs = Renderer::new().expect("opens a second renderer on the available adapter");
     assert_ne!(mine.id(), theirs.id(), "two renderers share an identity");
 
     let (snapshot, camera) = one_quad(32, 32);
@@ -494,6 +503,7 @@ fn an_older_frame_keeps_resolving_against_the_snapshot_it_was_drawn_from() {
     let old = renderer.render(&first_prepared, &camera).expect("draws");
     let old_hit = old.pick_at(16, 16);
     assert_ne!(old_hit, PickId::NOTHING);
+    assert_eq!(old_hit.to_raw(), 1);
 
     // A different model, prepared and drawn afterwards. The renderer has moved
     // on; the old frame has not.
@@ -507,6 +517,7 @@ fn an_older_frame_keeps_resolving_against_the_snapshot_it_was_drawn_from() {
     let new = renderer.render(&second_prepared, &camera).expect("draws");
     let new_hit = new.pick_at(16, 16);
     assert_ne!(new_hit, PickId::NOTHING);
+    assert_eq!(new_hit.to_raw(), 1);
 
     // Both name definition zero of their own snapshot, and neither resolves
     // inside the other. A frame that answered against whatever the renderer

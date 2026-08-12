@@ -246,7 +246,7 @@ impl Renderer {
     /// tie them to this renderer's camera buffer. Drawing the result again
     /// costs a matrix write and a pass.
     ///
-    /// The result belongs to this renderer. Another one will refuse it — see
+    /// The result belongs to this renderer. Another one will refuse it – see
     /// [`Self::render`].
     pub fn prepare(&mut self, snapshot: Arc<RenderSnapshot>) -> Result<PreparedSnapshot> {
         let draw_buffer_size = self.validate_snapshot(&snapshot)?;
@@ -664,7 +664,7 @@ struct GpuMesh {
 /// A snapshot whose geometry is on a device and stays there.
 ///
 /// Holds the [`RenderSnapshot`] it was built from as well as the buffers, so
-/// what is on the device and what it means cannot be separated — the same
+/// what is on the device and what it means cannot be separated – the same
 /// arrangement [`Frame`] uses, one step earlier.
 ///
 /// Belongs to the renderer that prepared it. Another renderer refuses it rather

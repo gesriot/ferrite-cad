@@ -27,7 +27,7 @@
 //! one reading of it in a [`Frame`].
 //!
 //! A [`PreparedSnapshot`] belongs to the renderer that prepared it, and another
-//! refuses to draw it rather than reaching into a different device's memory —
+//! refuses to draw it rather than reaching into a different device's memory –
 //! the same arrangement the kernel uses for shape handles and sessions, for the
 //! same reason. A [`Frame`] keeps its own snapshot, so a frame drawn before the
 //! model changed still answers about the model it drew.
