@@ -7,8 +7,8 @@
 //! refused here instead, because a definition in it has no identity and a
 //! scene whose parts cannot be named again is worse than none; two are read
 //! and described precisely; and one is read, transferred and reported clean
-//! while carrying a malformed coordinate. These tests hold the import to reporting all of that and to
-//! claiming none of it as soundness.
+//! while carrying a malformed coordinate. These tests hold the import to
+//! reporting all of that and to claiming none of it as soundness.
 
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]

@@ -12,6 +12,8 @@
 //! whatever the bytes happened to say.
 
 use ferritecad_kernel::{SessionId, ShapeHandle};
+use std::collections::HashMap;
+
 use ferritecad_types::{CadError, Result};
 
 use crate::{ColourSource, Definition, Diagnostic, Import, Instance, Scene, Severity, Stage};
@@ -53,6 +55,7 @@ pub fn decode(bytes: &[u8], session: SessionId) -> Result<Import> {
 
     let definition_count = reader.u32("definition count")?;
     let mut definitions = Vec::with_capacity(definition_count.min(4096) as usize);
+    let mut definition_keys = HashMap::with_capacity(definition_count.min(4096) as usize);
     for index in 0..definition_count {
         let shape = reader.u64("definition shape")?;
         if shape == 0 {
@@ -69,15 +72,22 @@ pub fn decode(bytes: &[u8], session: SessionId) -> Result<Import> {
         // becoming a scene — not to make the bridge's check optional.
         if key.is_empty() {
             return Err(malformed(format!(
-                "definition {index} arrived without an identity, and a scene                  whose parts cannot be named again must not be built"
+                concat!(
+                    "definition {index} arrived without an identity, and a scene ",
+                    "whose parts cannot be named again must not be built"
+                ),
+                index = index
             )));
         }
-        if let Some(earlier) = definitions
-            .iter()
-            .position(|other: &Definition| other.key == key)
-        {
+        if let Some(earlier) = definition_keys.insert(key.clone(), index) {
             return Err(malformed(format!(
-                "definitions {earlier} and {index} both claim the identity                  {key}, so a reference to either would resolve to whichever                  was looked up first"
+                concat!(
+                    "definitions {earlier} and {index} both claim the identity {key}, ",
+                    "so a reference to either would resolve to whichever was looked up first"
+                ),
+                earlier = earlier,
+                index = index,
+                key = key
             )));
         }
         definitions.push(Definition {

@@ -38,6 +38,7 @@
 
 #include <algorithm>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace ferritecad {
@@ -234,16 +235,25 @@ inline std::vector<Handle(StepBasic_ProductDefinition)> resolve_product_definiti
   std::vector<Handle(StepBasic_ProductDefinition)> products(count);
 
   // What the geometry itself can say. A part reaches its product definition
-  // through the representation holding its solid.
+  // through the representation holding its solid. Several result entities
+  // that lead to the same product are harmless; result entities that lead to
+  // different products are ambiguity, so this geometry route stays empty
+  // rather than taking whichever result Open CASCADE returned first. The
+  // assembly route below may still provide the one unambiguous parent key.
   for (std::size_t i = 0; i < count; ++i) {
+    std::vector<Handle(StepBasic_ProductDefinition)> candidates;
     for (const Handle(Standard_Transient) &entity :
          entities_from(transfer, shapes[i])) {
       Handle(StepBasic_ProductDefinition) product =
           product_definition_of(graph, entity);
-      if (!product.IsNull()) {
-        products[i] = product;
-        break;
+      if (!product.IsNull() &&
+          !std::any_of(candidates.begin(), candidates.end(),
+                       [&](const auto &known) { return known == product; })) {
+        candidates.push_back(product);
       }
+    }
+    if (candidates.size() == 1) {
+      products[i] = candidates.front();
     }
   }
 
@@ -325,11 +335,11 @@ inline std::size_t first_without_key(const std::vector<std::string> &keys) {
 
 /// The first key that some earlier definition already used, or `count`.
 inline std::size_t first_repeated_key(const std::vector<std::string> &keys) {
+  std::unordered_map<std::string, std::size_t> first_seen;
+  first_seen.reserve(keys.size());
   for (std::size_t i = 0; i < keys.size(); ++i) {
-    for (std::size_t j = 0; j < i; ++j) {
-      if (!keys[i].empty() && keys[i] == keys[j]) {
-        return i;
-      }
+    if (!keys[i].empty() && !first_seen.emplace(keys[i], i).second) {
+      return i;
     }
   }
   return keys.size();

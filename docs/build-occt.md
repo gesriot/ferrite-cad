@@ -505,7 +505,7 @@ for every definition and refuses the scene if any definition has none or two
 share one. Both are refusals rather than warnings, and both release every shape
 the import registered: Open CASCADE really built those solids, so an error
 return that merely reported the problem would leak an entire assembly per
-attempt. The refusal carries an identity diagnostic — a third stage beside load
+attempt. The refusal carries an identity diagnostic – a third stage beside load
 and transfer, because attributing it to either would blame Open CASCADE for a
 file it read without complaint.
 
