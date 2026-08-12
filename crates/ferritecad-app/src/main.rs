@@ -28,15 +28,16 @@
 //! empty scene and gains the model when the model is ready.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 use std::{sync::Arc, time::Instant};
 
+use ferritecad_document::DOCUMENT_EXTENSION;
 use ferritecad_kernel::{CancelToken, OperationContext, TessellationParams};
 use ferritecad_occt::OcctKernel;
 use ferritecad_scene::snapshot_of;
 use ferritecad_types::{CadError, Result};
-use ferritecad_ui::{PointerButton, VIEWS, ViewportEvent, ViewportInput};
+use ferritecad_ui::{Chosen, PointerButton, VIEWS, ViewportEvent, ViewportInput};
 use ferritecad_viewport::{RenderSnapshot, SnapshotBuilder, StandardView};
 use ferritecad_viewport_gpu::{PreparedSnapshot, Renderer, WindowSurface};
 use winit::application::ApplicationHandler;
@@ -103,13 +104,116 @@ enum AppEvent {
     ///
     /// Boxed because a scene is the largest thing this application moves, and
     /// every other event would otherwise be that size too.
-    Loaded(Box<Result<RenderSnapshot>>),
+    Loaded {
+        generation: LoadGeneration,
+        result: Box<Result<RenderSnapshot>>,
+    },
 }
 
-/// A load that has not been answered yet.
+/// Which request an answer belongs to.
+///
+/// Monotonic and never reused. Identifying a load by the document it reads
+/// would not do: opening the same file twice would produce two answers that
+/// cannot be told apart, and the older one would be as welcome as the newer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct LoadGeneration(u64);
+
+/// A load that has been started and not yet joined.
+///
+/// Which generation it belongs to is not kept here: what a running load is
+/// for is to be stopped and waited for, and both are the same for all of them.
+/// Only the answer carries a generation, because only the answer is a thing
+/// that can arrive too late.
 struct Loading {
     cancel: CancelToken,
     worker: JoinHandle<()>,
+}
+
+/// Every load this application has started and not yet finished with.
+///
+/// # Nothing here waits
+///
+/// Opening a second document while the first is still being read cancels the
+/// first and carries on. Cancelling is a request: a kernel inside a rebuild
+/// notices at the next feature, and that moment is one the window would
+/// otherwise spend frozen with nothing on screen changing.
+///
+/// The abandoned worker is kept rather than dropped. Dropping a `JoinHandle`
+/// detaches the thread, and a detached worker owns a kernel session nobody
+/// will ever wait for; these are joined when they end, and all of them are
+/// joined before the process does.
+#[derive(Default)]
+struct Loads {
+    issued: u64,
+    /// The request whose answer may still reach the screen.
+    current: Option<LoadGeneration>,
+    running: Vec<Loading>,
+}
+
+impl Loads {
+    /// Abandons whatever was being read and starts a new request.
+    ///
+    /// `spawn` is handed the generation to label its answer with and the token
+    /// that stops it. Starting and recording are one operation so there is no
+    /// arrangement of calls in which a running worker is untracked.
+    fn start(
+        &mut self,
+        spawn: impl FnOnce(LoadGeneration, &CancelToken) -> JoinHandle<()>,
+    ) -> LoadGeneration {
+        for loading in &self.running {
+            loading.cancel.cancel();
+        }
+
+        self.issued += 1;
+        let generation = LoadGeneration(self.issued);
+        let cancel = CancelToken::new();
+        let worker = spawn(generation, &cancel);
+        self.running.push(Loading { cancel, worker });
+        self.current = Some(generation);
+        generation
+    }
+
+    /// Whether this answer is still the one that was asked for.
+    fn accepts(&self, generation: LoadGeneration) -> bool {
+        self.current == Some(generation)
+    }
+
+    /// Notes that a generation has answered, and joins whatever has ended.
+    fn answered(&mut self, generation: LoadGeneration) {
+        if self.current == Some(generation) {
+            self.current = None;
+        }
+        // Only the threads that have already finished, which join at once.
+        // Waiting here for one that is still reading would be the freeze this
+        // whole arrangement exists to avoid.
+        let mut index = 0;
+        while index < self.running.len() {
+            if self.running[index].worker.is_finished() {
+                let done = self.running.swap_remove(index);
+                let _ = done.worker.join();
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    /// Stops every load and waits for all of them.
+    ///
+    /// The one place that blocks, and the last thing that happens: a worker
+    /// owns a kernel session, and leaving it to be cut short by process exit
+    /// would make the one path that releases geometry the one nobody takes.
+    fn stop_all(&mut self) {
+        self.current = None;
+        for loading in &self.running {
+            loading.cancel.cancel();
+        }
+        // Cancelled first, all of them, and only then waited for. Cancelling
+        // one and waiting for it before asking the next to stop would add up
+        // every reading's remaining work.
+        for loading in self.running.drain(..) {
+            let _ = loading.worker.join();
+        }
+    }
 }
 
 /// Runs a load away from the event loop and delivers the answer back to it.
@@ -231,7 +335,7 @@ struct App {
     proxy: EventLoopProxy<AppEvent>,
     frames: FrameScheduler,
     document: PathBuf,
-    loading: Option<Loading>,
+    loads: Loads,
 }
 
 impl ApplicationHandler<AppEvent> for App {
@@ -259,7 +363,7 @@ impl ApplicationHandler<AppEvent> for App {
                 self.live = Some(live);
                 // The window is up and empty; reading the document starts now
                 // and finishes whenever it finishes.
-                self.loading = Some(self.start_load());
+                self.open(self.document.clone());
                 // Construction, resize and framing all owe the first picture.
                 // Do not depend on a platform happening to send another event
                 // after `resumed` before the window first becomes visible.
@@ -281,17 +385,24 @@ impl ApplicationHandler<AppEvent> for App {
     /// one place a load in flight can be stopped without listing the ways a
     /// window can end.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        self.abandon_load();
+        self.loads.stop_all();
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::RepaintAt(deadline) => self.request_frame_at(event_loop, deadline),
-            AppEvent::Loaded(loaded) => {
-                self.loading = None;
-                self.show(*loaded);
-                if self.input.take_redraw() {
-                    self.request_frame_now(event_loop);
+            AppEvent::Loaded { generation, result } => {
+                let wanted = self.loads.accepts(generation);
+                self.loads.answered(generation);
+                // An answer to a question the user has since replaced. Neither
+                // shown nor reported: "this document could not be opened" about
+                // a document they are no longer opening would be a complaint
+                // about the wrong file, arriving after they moved on.
+                if wanted {
+                    self.show(*result);
+                    if self.input.take_redraw() {
+                        self.request_frame_now(event_loop);
+                    }
                 }
             }
         }
@@ -331,8 +442,16 @@ impl ApplicationHandler<AppEvent> for App {
                     // A button pressed during this frame reaches the camera
                     // the same way a keystroke does, through the reducer.
                     Ok(chosen) => {
-                        if let Some(view) = chosen {
+                        if let Some(view) = chosen.view {
                             self.input.handle(ViewportEvent::Look(view), false);
+                        }
+                        // Asked for after the frame was published, never
+                        // during it: a modal dialog runs its own event loop,
+                        // and opening one while this application held an
+                        // acquired surface texture would keep that texture for
+                        // as long as the user browsed.
+                        if chosen.open {
+                            self.ask_for_a_document();
                         }
                     }
                     Err(error) => {
@@ -375,42 +494,76 @@ impl App {
             proxy,
             frames: FrameScheduler::default(),
             document,
-            loading: None,
+            loads: Loads::default(),
         }
     }
 
-    /// Starts reading the document on a thread of its own.
-    fn start_load(&self) -> Loading {
-        let cancel = CancelToken::new();
-        let context = OperationContext::default().with_cancel(cancel.clone());
+    /// Asks the system for a document, and opens it if one was chosen.
+    ///
+    /// Blocking on purpose. A file dialog is modal: while it is up, the user
+    /// is choosing a file and not turning a model, and every toolkit runs the
+    /// window's events for the duration. Reading the document it names is the
+    /// part that must not block, and that has its own thread.
+    ///
+    /// A cancelled dialog is an answer, not a failure, and leaves the document
+    /// already on screen exactly as it was.
+    fn ask_for_a_document(&mut self) {
+        let chosen = rfd::FileDialog::new()
+            .set_title("Open a document")
+            .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
+            .set_directory(
+                self.document
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or(Path::new(".")),
+            )
+            .pick_file();
+
+        if let Some(path) = chosen {
+            self.open(path);
+        }
+    }
+
+    /// Starts reading a document on a thread of its own.
+    ///
+    /// Whatever was being read is abandoned. The reading that replaces it is
+    /// the only one whose answer can reach the screen, however the two
+    /// readings finish relative to each other.
+    fn open(&mut self, path: PathBuf) {
+        self.document = path;
         let path = self.document.clone();
         let proxy = self.proxy.clone();
 
-        let worker = spawn_load(
-            move || {
-                // The kernel is made and dropped inside the worker. An Open
-                // CASCADE session belongs to the thread that opened it, and
-                // ending it with the thread means an abandoned load cannot
-                // outlive the shapes it was holding.
-                let mut kernel = OcctKernel::new()?;
-                snapshot_of(
-                    &path,
-                    &mut kernel,
-                    // How this kernel re-reads a STEP file the document
-                    // stores. Handed over as a function so one session builds
-                    // both the rebuilt bodies and the imported ones.
-                    |kernel, source| kernel.import_step(source),
-                    &TessellationParams::default(),
-                    &context,
-                )
-            },
-            move |loaded| {
-                // A closed event loop is an ordinary end state, and there is
-                // nowhere useful to report a failed wake-up after it.
-                let _ = proxy.send_event(AppEvent::Loaded(Box::new(loaded)));
-            },
-        );
-        Loading { cancel, worker }
+        self.loads.start(|generation, cancel| {
+            let context = OperationContext::default().with_cancel(cancel.clone());
+            spawn_load(
+                move || {
+                    // The kernel is made and dropped inside the worker. An Open
+                    // CASCADE session belongs to the thread that opened it, and
+                    // ending it with the thread means an abandoned load cannot
+                    // outlive the shapes it was holding.
+                    let mut kernel = OcctKernel::new()?;
+                    snapshot_of(
+                        &path,
+                        &mut kernel,
+                        // How this kernel re-reads a STEP file the document
+                        // stores. Handed over as a function so one session
+                        // builds both the rebuilt bodies and the imported ones.
+                        |kernel, source| kernel.import_step(source),
+                        &TessellationParams::default(),
+                        &context,
+                    )
+                },
+                move |result| {
+                    // A closed event loop is an ordinary end state, and there
+                    // is nowhere useful to report a failed wake-up after it.
+                    let _ = proxy.send_event(AppEvent::Loaded {
+                        generation,
+                        result: Box::new(result),
+                    });
+                },
+            )
+        });
     }
 
     /// Puts a finished load on screen, or leaves the screen alone.
@@ -443,21 +596,6 @@ impl App {
             }
             Err(error) => eprintln!("ferritecad: {error}"),
         }
-    }
-
-    /// Stops a load in flight and waits for it to let go of its geometry.
-    ///
-    /// Joined rather than detached: the worker owns a kernel session, and
-    /// leaving it to be cut short by process exit would make the one path that
-    /// releases shapes the one path nobody takes.
-    fn abandon_load(&mut self) {
-        let Some(loading) = self.loading.take() else {
-            return;
-        };
-        loading.cancel.cancel();
-        // A worker that has already answered, or one that panicked, is nothing
-        // to wait for and nothing to report: the window is closing either way.
-        let _ = loading.worker.join();
     }
 
     fn request_frame_now(&mut self, event_loop: &ActiveEventLoop) {
@@ -566,22 +704,22 @@ impl Live {
     /// One texture, acquired once. The order is not a convention here – the
     /// seam enforces it, because the model's pass is what clears the target
     /// and the type only offers a view to draw into afterwards.
-    fn draw(&mut self, input: &ViewportInput) -> Result<Option<StandardView>> {
+    fn draw(&mut self, input: &ViewportInput) -> Result<Chosen> {
         let Some(frame) = self.surface.begin(&mut self.renderer)? else {
             // No area, nobody watching, or the compositor was busy. None of
             // those is an error.
-            return Ok(None);
+            return Ok(Chosen::default());
         };
         let frame = frame.draw_scene(&self.prepared, input.camera())?;
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
-        let mut chosen = None;
+        let mut chosen = Chosen::default();
         let mut output = self.egui.run_ui(raw_input, |ui| {
             // The panel returns what was asked for and applies nothing. What a
             // request means to the camera is the reducer's, and having one
             // place for that is what stops a button and a keystroke drifting
             // apart.
-            chosen = ferritecad_ui::views_panel(ui);
+            chosen = ferritecad_ui::toolbar(ui);
         });
         self.egui_state
             .handle_platform_output(&self.window, output.platform_output);
@@ -710,6 +848,14 @@ mod tests {
     use super::*;
 
     fn distant_scene() -> RenderSnapshot {
+        scene_at(900.0)
+    }
+
+    /// One triangle, somewhere nobody else is.
+    ///
+    /// Two documents have to be told apart by where the camera ends up, so the
+    /// only thing that varies is the place.
+    fn scene_at(x: f32) -> RenderSnapshot {
         use ferritecad_kernel::{
             Mesh, MeshFaceRange, SessionId, ShapeHandle, SubShapeHandle, SubShapeKind,
         };
@@ -717,7 +863,15 @@ mod tests {
 
         let mut mesh = Mesh::default();
         mesh.positions.extend_from_slice(&[
-            900.0, 900.0, 900.0, 910.0, 900.0, 900.0, 900.0, 910.0, 900.0,
+            x,
+            900.0,
+            900.0,
+            x + 10.0,
+            900.0,
+            900.0,
+            x,
+            910.0,
+            900.0,
         ]);
         mesh.normals
             .extend_from_slice(&[0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
@@ -734,6 +888,258 @@ mod tests {
             .place(definition, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
             .expect("places it");
         builder.build()
+    }
+
+    /// A worker that does nothing until it is let go, or cancelled.
+    ///
+    /// Real threads and a real token: what these tests are about is what
+    /// happens while a reading is still going on, and a stand-in that finished
+    /// immediately would have no such moment.
+    fn held_worker(cancel: &CancelToken) -> (JoinHandle<()>, std::sync::mpsc::Sender<()>) {
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let cancel = cancel.clone();
+        let worker = std::thread::spawn(move || {
+            while !cancel.is_cancelled() {
+                match held.recv_timeout(Duration::from_millis(5)) {
+                    Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                }
+            }
+        });
+        (worker, release)
+    }
+
+    #[test]
+    fn every_request_gets_its_own_generation() {
+        let mut loads = Loads::default();
+        let mut holds = Vec::new();
+
+        let mut generations = Vec::new();
+        for _ in 0..3 {
+            generations.push(loads.start(|_, cancel| {
+                let (worker, release) = held_worker(cancel);
+                holds.push(release);
+                worker
+            }));
+        }
+
+        // Monotonic, so a late answer can be recognised as late rather than as
+        // coincidentally equal to something started afterwards.
+        assert!(generations[0] < generations[1] && generations[1] < generations[2]);
+        assert!(loads.accepts(generations[2]));
+        assert!(
+            !loads.accepts(generations[0]),
+            "an abandoned load is current"
+        );
+
+        loads.stop_all();
+    }
+
+    #[test]
+    fn opening_a_second_document_stops_the_first_without_waiting_for_it() {
+        let mut loads = Loads::default();
+        let mut first = None;
+        let mut holds = Vec::new();
+
+        loads.start(|_, cancel| {
+            first = Some(cancel.clone());
+            let (worker, release) = held_worker(cancel);
+            holds.push(release);
+            worker
+        });
+        let first = first.expect("the first load was spawned");
+        assert!(!first.is_cancelled());
+
+        // The second request returns while the first reading is still going:
+        // this line is reached with that worker alive, which is the property.
+        loads.start(|_, cancel| {
+            let (worker, release) = held_worker(cancel);
+            holds.push(release);
+            worker
+        });
+        assert!(
+            first.is_cancelled(),
+            "the abandoned reading was left running"
+        );
+        assert_eq!(
+            loads.running.len(),
+            2,
+            "an abandoned worker was dropped, which detaches its thread"
+        );
+
+        loads.stop_all();
+        assert!(loads.running.is_empty(), "a worker was left unjoined");
+    }
+
+    /// Applies an answer the way the event loop does, minus the GPU.
+    ///
+    /// What `App::show` adds is the upload; what it decides is here.
+    fn deliver(
+        loads: &mut Loads,
+        input: &mut ViewportInput,
+        generation: LoadGeneration,
+        result: Result<RenderSnapshot>,
+    ) {
+        let wanted = loads.accepts(generation);
+        loads.answered(generation);
+        if !wanted {
+            return;
+        }
+        if let Ok((updated, ())) = prepare_load(input, result, |_| Ok(())) {
+            *input = updated;
+        }
+    }
+
+    #[test]
+    fn the_answer_to_the_older_request_never_reaches_the_screen() {
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut holds = Vec::new();
+        let mut spawn = |cancel: &CancelToken| {
+            let (worker, release) = held_worker(cancel);
+            holds.push(release);
+            worker
+        };
+
+        // Two documents opened in quick succession, and the first one answers
+        // last: the slow reading is exactly the one a user gives up waiting
+        // for, so this order is the usual one rather than the unlucky one.
+        let a = loads.start(|_, cancel| spawn(cancel));
+        let b = loads.start(|_, cancel| spawn(cancel));
+
+        deliver(&mut loads, &mut input, b, Ok(scene_at(0.0)));
+        let showing_b = *input.camera();
+        deliver(&mut loads, &mut input, a, Ok(scene_at(5000.0)));
+
+        assert_eq!(
+            *input.camera(),
+            showing_b,
+            "the abandoned document replaced the one the user asked for"
+        );
+
+        loads.stop_all();
+    }
+
+    #[test]
+    fn a_failure_from_an_abandoned_request_changes_nothing_either() {
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut holds = Vec::new();
+        let mut spawn = |cancel: &CancelToken| {
+            let (worker, release) = held_worker(cancel);
+            holds.push(release);
+            worker
+        };
+
+        let a = loads.start(|_, cancel| spawn(cancel));
+        let b = loads.start(|_, cancel| spawn(cancel));
+
+        deliver(&mut loads, &mut input, b, Ok(scene_at(0.0)));
+        let showing_b = *input.camera();
+        // B's own arrival owed a frame; take it, so what is measured below is
+        // what the discarded answer asked for and not what B did.
+        assert!(input.take_redraw());
+
+        // A document nobody is waiting for failed. What is on screen is not
+        // that document, so nothing about it changes.
+        deliver(
+            &mut loads,
+            &mut input,
+            a,
+            Err(CadError::input("no such document")),
+        );
+        assert_eq!(*input.camera(), showing_b);
+        assert!(
+            !input.take_redraw(),
+            "an answer that was discarded still asked for a frame"
+        );
+
+        loads.stop_all();
+    }
+
+    #[test]
+    fn nothing_is_still_running_when_the_loop_ends() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let mut loads = Loads::default();
+        let mut tokens = Vec::new();
+        // Counted by the workers themselves, after they have noticed. Each one
+        // takes its time about finishing, the way a kernel between two
+        // features does, so a `stop_all` that only forgot them rather than
+        // waiting for them would reach the assertion below first.
+        let tidied = Arc::new(AtomicUsize::new(0));
+
+        for _ in 0..3 {
+            let tidied = Arc::clone(&tidied);
+            loads.start(|_, cancel| {
+                tokens.push(cancel.clone());
+                let cancel = cancel.clone();
+                std::thread::spawn(move || {
+                    while !cancel.is_cancelled() {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    std::thread::sleep(Duration::from_millis(150));
+                    tidied.fetch_add(1, Ordering::SeqCst);
+                })
+            });
+        }
+
+        // Every worker holds a kernel session. Exiting without waiting would
+        // end the process while three of those sessions still held geometry,
+        // and the session is what releases it.
+        loads.stop_all();
+        assert_eq!(
+            tidied.load(Ordering::SeqCst),
+            3,
+            "the loop stopped waiting before its workers had finished"
+        );
+        assert!(loads.running.is_empty());
+        assert!(tokens.iter().all(CancelToken::is_cancelled));
+        assert!(!loads.accepts(LoadGeneration(3)), "a load is still current");
+    }
+
+    #[test]
+    fn a_worker_that_has_finished_is_joined_without_waiting_for_the_others() {
+        let mut loads = Loads::default();
+
+        // One that ends by itself, one that will not end until it is told to.
+        let done = loads.start(|_, _| std::thread::spawn(|| {}));
+        let mut release = None;
+        loads.start(|_, cancel| {
+            let (worker, sender) = held_worker(cancel);
+            release = Some(sender);
+            worker
+        });
+
+        // The held reading is let go after a while by somebody else. Without
+        // that, an implementation that waited for it would hang this test
+        // instead of failing it, and a hung test is a timeout rather than an
+        // answer.
+        let release = release.expect("the held worker was spawned");
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(2));
+            let _ = release.send(());
+        });
+
+        // Reaping happens on the event-loop thread, so it may only ever join
+        // threads that have already ended. Waiting here for the reading still
+        // in flight would be the freeze this whole design exists to avoid.
+        let started = Instant::now();
+        while loads.running.len() > 1 {
+            loads.answered(done);
+            std::thread::yield_now();
+        }
+        let waited = started.elapsed();
+
+        assert_eq!(loads.running.len(), 1, "the reading in flight was joined");
+        assert!(
+            waited < Duration::from_millis(500),
+            "reaping waited {waited:?} for a reading that had not finished"
+        );
+
+        loads.stop_all();
     }
 
     #[test]

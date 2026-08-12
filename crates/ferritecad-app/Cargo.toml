@@ -21,6 +21,7 @@ path = "src/main.rs"
 # decorations, and those pull an unmaintained font parser that this project's
 # cargo-deny policy refuses. A viewport does not draw its own title bar.
 [dependencies]
+ferritecad-document.workspace = true
 ferritecad-kernel.workspace = true
 ferritecad-occt.workspace = true
 ferritecad-scene.workspace = true
@@ -32,6 +33,20 @@ ferritecad-viewport-gpu.workspace = true
 egui = "0.36"
 egui-wgpu = { version = "0.36", default-features = false }
 egui-winit = { version = "0.36", default-features = false }
+# The system file dialog, and deliberately nothing else it offers.
+#
+# The features are named rather than taken by default, for the same reason
+# winit's are: a default that changes is a dependency tree that changes without
+# anyone deciding to. They cost two crates in total – rfd itself, and
+# objc2-app-kit on macOS. Everything the Linux backend needs is already here
+# through wgpu and winit.
+#
+# Measured before it was adopted. rfd 0.15 reaches the XDG portal through ashpd
+# and zbus, which is seventy-two crates including a whole async runtime and
+# ICU; 0.17 speaks the portal protocol itself. `wayland` is free here because
+# winit already brings those crates, and it is what lets the dialog belong to
+# this window rather than float loose.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
 wgpu = "=30.0.0"
 winit = { version = "0.30", default-features = false, features = ["x11", "wayland", "rwh_06"] }
 

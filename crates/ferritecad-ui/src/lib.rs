@@ -20,4 +20,4 @@ mod input;
 mod panels;
 
 pub use input::{PointerButton, ViewportEvent, ViewportInput};
-pub use panels::{VIEWS, views_panel};
+pub use panels::{Chosen, VIEWS, toolbar};
