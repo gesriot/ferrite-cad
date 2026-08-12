@@ -12,8 +12,8 @@
 #![allow(clippy::panic)]
 
 use ferritecad_document::{
-    Access, Body, Document, IMPORTED_STEP_CAPABILITY, ImportedStep, ImporterIdentity,
-    ObjectPayload, STEP_SOURCE_FORMAT, StepImportRequest, StepImporter,
+    Access, Body, Document, IMPORTED_STEP_CAPABILITY, ImportedDefinitionRef, ImportedStep,
+    ImporterIdentity, ObjectPayload, STEP_SOURCE_FORMAT, StepImportRequest, StepImporter,
 };
 use ferritecad_exchange::{
     ColourSource, Definition, Diagnostic, Import, Instance, LegacyDefinition, LegacyInstance,
@@ -350,6 +350,160 @@ fn a_scene_that_no_longer_matches_is_refused_rather_than_bound() {
 }
 
 #[test]
+fn a_reference_resolves_only_inside_the_source_it_names() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+
+    // Two imports of two different files whose definitions happen to share a
+    // key. This is not contrived: the committed corpus does it, because a STEP
+    // entity identifier is only ever unique within its own file.
+    let first = ObjectId::new();
+    let stored_first = document
+        .store_step_import(StepImportRequest {
+            object: first,
+            name: Some("Plate"),
+            source: SOURCE,
+            source_name: None,
+            import: &imported(SessionId::new(), Vec::new()),
+            importer: &kernel(),
+        })
+        .expect("stores");
+
+    let second = ObjectId::new();
+    let other_bytes: &[u8] = b"ISO-10303-21;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n";
+    let stored_second = document
+        .store_step_import(StepImportRequest {
+            object: second,
+            name: Some("Bracket"),
+            source: other_bytes,
+            source_name: None,
+            import: &imported(SessionId::new(), Vec::new()),
+            importer: &kernel(),
+        })
+        .expect("stores");
+    document.close().expect("closes");
+
+    assert_ne!(
+        stored_first.source, stored_second.source,
+        "two different files are two different sources"
+    );
+
+    // Both scenes describe a definition keyed step.product_definition#5.
+    let shared = "step.product_definition#5";
+    let into_first = ImportedDefinitionRef::new(stored_first.source, shared).expect("valid");
+    let into_second = ImportedDefinitionRef::new(stored_second.source, shared).expect("valid");
+    assert_ne!(
+        into_first, into_second,
+        "the source is part of the identity"
+    );
+
+    let document = Document::open(&path).expect("reopens");
+    let later = SessionId::new();
+    let mut importer = Importer::new(move |_: &[u8]| Ok(imported(later, Vec::new())));
+    let reopened = document
+        .reopen_step_import(second, &mut importer)
+        .expect("binds");
+
+    // The reference into this source resolves, and to this session's handle.
+    let handle = reopened.resolve(&into_second).expect("resolves");
+    assert_eq!(handle.session(), later);
+    assert_eq!(
+        handle,
+        reopened
+            .scene
+            .definitions
+            .iter()
+            .find(|definition| definition.key == shared)
+            .expect("the key is there")
+            .shape
+    );
+
+    // The identical key belonging to the other source is refused, not
+    // resolved to the plausible thing sitting right here.
+    let error = reopened
+        .resolve(&into_first)
+        .expect_err("a key from another file must not resolve here");
+    assert_eq!(error.kind(), ErrorKind::Input, "{error}");
+    assert!(error.to_string().contains("another file"), "{error}");
+}
+
+#[test]
+fn a_key_this_file_no_longer_describes_is_lost_not_approximated() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let (object, stored) =
+        store(&mut document, &imported(SessionId::new(), Vec::new())).expect("stores");
+    document.close().expect("closes");
+
+    let document = Document::open(&path).expect("reopens");
+    let mut importer = Importer::new(|_: &[u8]| Ok(imported(SessionId::new(), Vec::new())));
+    let reopened = document
+        .reopen_step_import(object, &mut importer)
+        .expect("binds");
+
+    let missing =
+        ImportedDefinitionRef::new(stored.source, "step.product_definition#404").expect("valid");
+    let error = reopened
+        .resolve(&missing)
+        .expect_err("an unknown key must not resolve");
+
+    // Lost, and reported as such: a document that opened and rebuilt and no
+    // longer finds a name is a different thing from one that is malformed.
+    assert_eq!(error.kind(), ErrorKind::Topology, "{error}");
+    assert!(error.to_string().contains("no longer names"), "{error}");
+
+    // Nothing was resolved to the nearest available part.
+    for definition in &reopened.scene.definitions {
+        assert_ne!(definition.key, missing.definition_key());
+    }
+}
+
+#[test]
+fn a_reference_must_name_something() {
+    let source = ferritecad_types::ImportedSourceId::new();
+    assert!(ImportedDefinitionRef::new(source, "").is_err());
+    assert!(ImportedDefinitionRef::new(source, "   ").is_err());
+    assert!(ImportedDefinitionRef::new(source, "step.product_definition#1").is_ok());
+
+    // And a stored one is validated on the way back in rather than trusted
+    // for having decoded. Written in the wire shape by hand, because the
+    // constructor will not produce an empty key to encode.
+    #[derive(serde::Serialize)]
+    struct Raw {
+        source: ferritecad_types::ImportedSourceId,
+        definition_key: &'static str,
+    }
+
+    let mut empty = Vec::new();
+    ciborium::into_writer(
+        &Raw {
+            source,
+            definition_key: "",
+        },
+        &mut empty,
+    )
+    .expect("encodes");
+    assert!(
+        ciborium::from_reader::<ImportedDefinitionRef, _>(empty.as_slice()).is_err(),
+        "an empty key decoded into a reference"
+    );
+
+    let mut whole = Vec::new();
+    ciborium::into_writer(
+        &Raw {
+            source,
+            definition_key: "step.product_definition#1",
+        },
+        &mut whole,
+    )
+    .expect("encodes");
+    let read: ImportedDefinitionRef =
+        ciborium::from_reader(whole.as_slice()).expect("a valid reference round-trips");
+    assert_eq!(read.source(), source);
+    assert_eq!(read.definition_key(), "step.product_definition#1");
+}
+
+#[test]
 fn a_document_written_before_identities_still_opens_and_binds() {
     let (_dir, path) = workspace();
     let mut document = Document::create(&path).expect("creates");
@@ -415,6 +569,21 @@ fn a_document_written_before_identities_still_opens_and_binds() {
         .reopen_step_import(object, &mut importer)
         .expect("a version 1 scene binds by position");
     assert_eq!(reopened.scene.definitions.len(), 2);
+    assert_eq!(reopened.stored_version, 1);
+
+    // What it cannot do is answer a durable reference. The definitions in this
+    // reading do carry keys — every import produces them now — but this
+    // document never recorded which key belonged to which part, so resolving
+    // against them would answer from this reading rather than from anything
+    // stored. That is refused, and refused as its own kind: the key is not
+    // lost, it never existed here.
+    let present = reopened.scene.definitions[0].key.clone();
+    let reference = ImportedDefinitionRef::new(stored.source, &present).expect("valid");
+    let error = reopened
+        .resolve(&reference)
+        .expect_err("a version 1 scene has no identities to resolve against");
+    assert_eq!(error.kind(), ErrorKind::Unsupported, "{error}");
+    assert!(error.to_string().contains("never recorded"), "{error}");
 
     // And a reordering is refused, because position was all it ever had.
     let mut importer = Importer::new(|_: &[u8]| {

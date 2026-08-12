@@ -540,6 +540,84 @@ impl std::fmt::Display for ImporterIdentity {
     }
 }
 
+/// A lasting way to say "that part of that imported file".
+///
+/// Both halves are needed and neither is enough. The key identifies a
+/// definition *inside one file*: `step.product_definition#31` names something
+/// in the file that wrote it and something else, or nothing, in the next one.
+/// The corpus makes that concrete — `01-single-part.step` and
+/// `02-flat-assembly.step` both contain `step.product_definition#5`, and they
+/// are a plate and a bracket. A reference carrying only the key would resolve
+/// to whichever import it was asked about.
+///
+/// So the two travel together as one validated value rather than as two fields
+/// a caller has to remember to check against each other.
+///
+/// # What it deliberately cannot do
+///
+/// It names a definition — a part the file describes — and not an occurrence
+/// of one. A definition has an identity its source wrote down; an occurrence
+/// is still only a position in a tree, and a reference mixing the two would
+/// look durable while resting on an index.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "RawImportedDefinitionRef")]
+pub struct ImportedDefinitionRef {
+    source: ImportedSourceId,
+    definition_key: String,
+}
+
+impl ImportedDefinitionRef {
+    /// Names a definition in one imported source.
+    ///
+    /// Refuses an empty key: a reference that names nothing could only be
+    /// resolved by guessing, and guessing is what this type exists to prevent.
+    pub fn new(source: ImportedSourceId, definition_key: impl Into<String>) -> Result<Self> {
+        let definition_key = definition_key.into();
+        if definition_key.trim().is_empty() {
+            return Err(CadError::input(
+                "a reference into an imported file must name a definition; an empty key \
+                 could only be resolved by guessing",
+            ));
+        }
+        Ok(Self {
+            source,
+            definition_key,
+        })
+    }
+
+    /// The source whose bytes this reference is about, and the only one it may
+    /// ever be resolved against.
+    pub fn source(&self) -> ImportedSourceId {
+        self.source
+    }
+
+    pub fn definition_key(&self) -> &str {
+        &self.definition_key
+    }
+}
+
+impl std::fmt::Display for ImportedDefinitionRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} in source {}", self.definition_key, self.source)
+    }
+}
+
+/// The wire form, so a stored reference is validated on the way in rather than
+/// trusted for having decoded.
+#[derive(Deserialize)]
+struct RawImportedDefinitionRef {
+    source: ImportedSourceId,
+    definition_key: String,
+}
+
+impl TryFrom<RawImportedDefinitionRef> for ImportedDefinitionRef {
+    type Error = CadError;
+
+    fn try_from(raw: RawImportedDefinitionRef) -> Result<Self> {
+        Self::new(raw.source, raw.definition_key)
+    }
+}
+
 /// A STEP file this document carries, and what reading it once produced.
 ///
 /// The bytes are not here. They live in `imported_sources`, addressed by

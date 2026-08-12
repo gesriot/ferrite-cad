@@ -35,6 +35,13 @@
 //! existed keep binding by position, which is the guarantee they were written
 //! under — see [`ferritecad_exchange::StoredScene`].
 //!
+//! [`ImportedDefinitionRef`] is what a lasting reference into an imported file
+//! looks like: the source and the key together, because a key alone identifies
+//! a part within one file and something else in the next. It resolves inside
+//! the source it names and nowhere else, and never falls back to a name, a
+//! position or a nearest match. A reference into a scene stored before
+//! identities existed is refused outright rather than answered from a position.
+//!
 //! # Forward compatibility
 //!
 //! Every object payload is a CBOR envelope carrying its type, schema version
@@ -59,9 +66,9 @@ pub use envelope::{Envelope, UnknownObject};
 pub use graph::{Dependency, DependencyRole, evaluation_order};
 pub use model::{
     Body, CORE_CAPABILITY, CapSide, DatumPlane, EndCondition, EntityKind, Expression, Extrude,
-    GeomSignature, IMPORTED_STEP_CAPABILITY, ImportedStep, ImporterIdentity, ObjectKind,
-    ObjectPayload, Parameter, Point2, STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch,
-    SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
+    GeomSignature, IMPORTED_STEP_CAPABILITY, ImportedDefinitionRef, ImportedStep, ImporterIdentity,
+    ObjectKind, ObjectPayload, Parameter, Point2, STEP_SOURCE_FORMAT, SelectionRule, SemanticRole,
+    Sketch, SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
 };
 pub use schema::{
     CACHE_EXTENSION, DOCUMENT_EXTENSION, FORMAT_VERSION, MINIMUM_READER_VERSION,

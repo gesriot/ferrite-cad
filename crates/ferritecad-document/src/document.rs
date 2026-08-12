@@ -14,8 +14,8 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use crate::envelope::Envelope;
 use crate::graph::{Dependency, DependencyRole, evaluation_order};
 use crate::model::{
-    CORE_CAPABILITY, EntityKind, ImportedStep, ImporterIdentity, ObjectPayload, STEP_SOURCE_FORMAT,
-    TopologyRef, TopologyRefPayload,
+    CORE_CAPABILITY, EntityKind, ImportedDefinitionRef, ImportedStep, ImporterIdentity,
+    ObjectPayload, STEP_SOURCE_FORMAT, TopologyRef, TopologyRefPayload,
 };
 use crate::schema::{
     self, CACHE_EXTENSION, DOCUMENT_APPLICATION_ID, FORMAT_VERSION, MINIMUM_READER_VERSION,
@@ -149,6 +149,16 @@ pub struct ReopenedStepImport {
     /// Handles issued by the session that has just re-read the bytes, and only
     /// after the whole scene was proven to match what was stored.
     pub scene: Scene,
+    /// The bytes this reading came from.
+    ///
+    /// Kept so a reference can be checked against the source it names rather
+    /// than resolved against whatever import happens to be at hand.
+    pub source: ImportedSourceId,
+    /// The layout the stored scene was written at.
+    ///
+    /// Version 1 recorded no identities, so nothing it holds can answer a
+    /// durable reference; see [`Self::resolve`].
+    pub stored_version: u32,
     /// What the importer said when the file was first brought into this
     /// document. Historical; this build did not observe it.
     pub diagnostics_at_import: Vec<ImportDiagnostic>,
@@ -158,6 +168,70 @@ pub struct ReopenedStepImport {
     pub imported_by: ImporterIdentity,
     /// Which kernel produced the fresh handles and `diagnostics_now`.
     pub reopened_by: ImporterIdentity,
+}
+
+impl ReopenedStepImport {
+    /// Finds the definition a durable reference names, in this reading.
+    ///
+    /// Resolution happens inside one source and nowhere else. The reference
+    /// names the bytes it belongs to, this reading knows which bytes it came
+    /// from, and a mismatch is refused rather than searched around: the same
+    /// key text occurs in unrelated files and means something different in
+    /// each. Nothing falls back to a name, a position or a nearest match,
+    /// because a reference that resolves to something plausible is worse than
+    /// one that does not resolve at all.
+    ///
+    /// The three ways this fails are three different facts, and they are
+    /// reported as three different kinds so a caller can tell them apart
+    /// without reading prose:
+    ///
+    /// * [`Input`][ferritecad_types::ErrorKind::Input] — the reference is about
+    ///   another source. It is not lost; it was never about this import.
+    /// * [`Unsupported`][ferritecad_types::ErrorKind::Unsupported] — the stored
+    ///   scene predates identities. The key is not missing; no key was ever
+    ///   recorded, and inventing one from a position would answer a question
+    ///   this document never agreed to.
+    /// * [`Topology`][ferritecad_types::ErrorKind::Topology] — the right
+    ///   source, and nothing in it carries that identity any more. That is a
+    ///   lost reference, which is the one case a user has to be told about by
+    ///   name.
+    pub fn resolve(&self, reference: &ImportedDefinitionRef) -> Result<ShapeHandle> {
+        if reference.source() != self.source {
+            return Err(CadError::input(format!(
+                "{reference} cannot be resolved against source {}: a definition key \
+                 identifies a part within one file, and the same key in another file \
+                 is another part",
+                self.source
+            )));
+        }
+        if self.stored_version < 2 {
+            return Err(CadError::unsupported(format!(
+                "the scene stored for source {} was written before definitions carried \
+                 identities, so {reference} cannot be resolved. It is not lost; it was \
+                 never recorded. Importing the file again gives this document \
+                 identities it can answer for.",
+                self.source
+            )));
+        }
+
+        let mut found = self
+            .scene
+            .definitions
+            .iter()
+            .filter(|definition| definition.key == reference.definition_key());
+        let definition = found.next().ok_or_else(|| {
+            CadError::topology(format!(
+                "{reference} no longer names anything this file describes"
+            ))
+        })?;
+        if found.next().is_some() {
+            return Err(CadError::input(format!(
+                "{reference} names more than one definition in this reading, so it \
+                 would resolve to whichever was looked at first"
+            )));
+        }
+        Ok(definition.shape)
+    }
 }
 
 /// An open native document.
@@ -623,6 +697,8 @@ impl Document {
         };
         Ok(ReopenedStepImport {
             scene,
+            source: stored.imported.source,
+            stored_version: stored.imported.scene.version(),
             diagnostics_at_import: stored.imported.diagnostics_at_import,
             diagnostics_now,
             imported_by: stored.imported.imported_by,

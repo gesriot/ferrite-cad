@@ -19,13 +19,14 @@
 use std::path::PathBuf;
 
 use ferritecad_document::{
-    Document, ImportedStep, ImporterIdentity, ObjectPayload, StepImportRequest, StepImporter,
+    Document, ImportedDefinitionRef, ImportedStep, ImporterIdentity, ObjectPayload,
+    StepImportRequest, StepImporter,
 };
 use ferritecad_exchange::StoredScene;
 use ferritecad_exchange::{Import, Severity};
 use ferritecad_kernel::{GeometryKernel, ShapeHandle};
 use ferritecad_occt::{OcctKernel, is_available};
-use ferritecad_types::{ContentHash, ObjectId, Result};
+use ferritecad_types::{ContentHash, ErrorKind, ObjectId, Result};
 use tempfile::TempDir;
 
 /// The adapter behind the document's importer contract.
@@ -528,6 +529,146 @@ fn a_stored_scene_that_does_not_describe_the_file_is_refused() {
         "the refused reading left its shapes behind"
     );
     document.close().expect("closes");
+}
+
+#[test]
+fn a_durable_reference_survives_a_new_session_and_never_crosses_sources() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+
+    let (_dir, path) = workspace();
+    let plate_bytes = corpus("canonical", "01-single-part.step");
+    let assembly_bytes = corpus("canonical", "02-flat-assembly.step");
+    let plate_object = ObjectId::new();
+    let assembly_object = ObjectId::new();
+
+    // Two files, two sources, one document.
+    let (plate_ref, assembly_ref, first_handle) = {
+        let mut kernel = OcctKernel::new().expect("opens");
+        let mut document = Document::create(&path).expect("creates");
+
+        let plate = kernel.import_step(&plate_bytes).expect("imports");
+        let stored_plate = document
+            .store_step_import(StepImportRequest {
+                object: plate_object,
+                name: Some("Plate"),
+                source: &plate_bytes,
+                source_name: Some("01-single-part.step"),
+                import: &plate,
+                importer: kernel.identity(),
+            })
+            .expect("stores");
+        release(&mut kernel, &plate);
+
+        let assembly = kernel.import_step(&assembly_bytes).expect("imports");
+        let stored_assembly = document
+            .store_step_import(StepImportRequest {
+                object: assembly_object,
+                name: Some("Bracket"),
+                source: &assembly_bytes,
+                source_name: Some("02-flat-assembly.step"),
+                import: &assembly,
+                importer: kernel.identity(),
+            })
+            .expect("stores");
+
+        // The collision this reference type exists for, taken from the corpus
+        // rather than invented: a STEP entity identifier is unique inside its
+        // own file and nowhere else, so both of these files describe a
+        // definition keyed step.product_definition#5 — a plate in one and a
+        // bracket in the other.
+        let StoredScene::V2(plate_scene) = &stored_plate.scene else {
+            panic!("a fresh import stores a v2 scene");
+        };
+        let StoredScene::V2(assembly_scene) = &stored_assembly.scene else {
+            panic!("a fresh import stores a v2 scene");
+        };
+        let shared: Vec<&str> = plate_scene
+            .definitions
+            .iter()
+            .map(|definition| definition.key.as_str())
+            .filter(|key| {
+                assembly_scene
+                    .definitions
+                    .iter()
+                    .any(|other| other.key == *key)
+            })
+            .collect();
+        assert!(
+            !shared.is_empty(),
+            "the corpus no longer demonstrates a key shared between two files, \
+             which is the case this reference type exists for"
+        );
+        let key = shared[0].to_owned();
+
+        let handle = assembly
+            .scene()
+            .expect("imports")
+            .definitions
+            .iter()
+            .find(|definition| definition.key == key)
+            .expect("the shared key is in this file")
+            .shape;
+        release(&mut kernel, &assembly);
+        document.close().expect("closes");
+
+        (
+            ImportedDefinitionRef::new(stored_plate.source, &key).expect("valid"),
+            ImportedDefinitionRef::new(stored_assembly.source, &key).expect("valid"),
+            handle,
+        )
+    };
+    // Both the session that read those files and the document are gone by here.
+
+    assert_ne!(
+        plate_ref, assembly_ref,
+        "the same key in two files must not be the same reference"
+    );
+
+    let mut kernel = OcctKernel::new().expect("opens a second session");
+    let document = Document::open(&path).expect("reopens");
+    let reopened = document
+        .reopen_step_import(assembly_object, &mut Session(&mut kernel))
+        .expect("the assembly binds");
+
+    // The reference into this source resolves, to this session's handle and
+    // not to the one that died with the first session.
+    let resolved = reopened.resolve(&assembly_ref).expect("resolves");
+    assert_ne!(
+        resolved, first_handle,
+        "resolving handed back a handle from a session that is gone"
+    );
+    assert!(kernel.is_valid(resolved).expect("checks"));
+    assert_eq!(
+        resolved,
+        reopened
+            .scene
+            .definitions
+            .iter()
+            .find(|definition| definition.key == assembly_ref.definition_key())
+            .expect("the key is there")
+            .shape
+    );
+
+    // The identical key belonging to the other file is refused, although a
+    // definition carrying that very text is sitting right here.
+    let error = reopened
+        .resolve(&plate_ref)
+        .expect_err("a key from another source must not resolve here");
+    assert_eq!(error.kind(), ErrorKind::Input, "{error}");
+
+    // And a key this file does not describe is lost rather than approximated.
+    let missing = ImportedDefinitionRef::new(reopened.source, "step.product_definition#999999")
+        .expect("valid");
+    let error = reopened.resolve(&missing).expect_err("nothing names that");
+    assert_eq!(error.kind(), ErrorKind::Topology, "{error}");
+
+    for shape in reopened.scene.shapes() {
+        kernel.release(shape);
+    }
+    assert_eq!(kernel.live_shape_count(), 0);
 }
 
 #[test]
