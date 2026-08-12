@@ -61,9 +61,19 @@ impl std::fmt::Display for RendererId {
 #[derive(Debug)]
 pub struct Renderer {
     id: RendererId,
+    /// Kept so a window's surface can be asked what it supports, and so the
+    /// adapter that was checked for compatibility is the one that draws.
+    adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// The offscreen pipeline, which writes colour and identities together.
     pipeline: wgpu::RenderPipeline,
+    /// One pipeline per surface format met so far. A window chooses its own
+    /// format and a pipeline is built for the format it is drawn into, not for
+    /// the one this crate would have preferred.
+    surface_pipelines: std::collections::HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    shader: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
     layout: wgpu::BindGroupLayout,
     /// The camera's matrix, rewritten each frame rather than reallocated.
     /// Shared by every prepared snapshot this renderer owns, which is why
@@ -91,7 +101,35 @@ impl Renderer {
                     "no graphics adapter is available to draw with: {error}"
                 ))
             })?;
+        Self::on(adapter)
+    }
 
+    /// Opens a device on an adapter that can present to `surface`.
+    ///
+    /// The distinction matters and is not cosmetic. A machine may hold several
+    /// adapters, and the first one that can compute is not always one that can
+    /// put pixels in a particular window – a discrete card with no connection
+    /// to the display the window is on, or a software adapter with no
+    /// presentation support at all. Asking for any adapter and then handing it
+    /// a surface fails later, inside the driver, with a message about neither.
+    ///
+    /// The surface must outlive nothing here: it is borrowed only for the
+    /// question. Give it to [`WindowSurface::new`][crate::WindowSurface::new]
+    /// afterwards.
+    pub fn for_surface(instance: &wgpu::Instance, surface: &wgpu::Surface<'_>) -> Result<Self> {
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            compatible_surface: Some(surface),
+            ..Default::default()
+        }))
+        .map_err(|error| {
+            CadError::unsupported(format!(
+                "no graphics adapter can present to this window: {error}"
+            ))
+        })?;
+        Self::on(adapter)
+    }
+
+    fn on(adapter: wgpu::Adapter) -> Result<Self> {
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("ferritecad viewport"),
             ..Default::default()
@@ -142,65 +180,7 @@ impl Renderer {
             immediate_size: 0,
         });
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("ferritecad viewport pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vertex_main"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: (VERTEX_FLOATS * std::mem::size_of::<f32>()) as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x3,
-                            offset: 0,
-                            shader_location: 0,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x3,
-                            offset: (3 * std::mem::size_of::<f32>()) as u64,
-                            shader_location: 1,
-                        },
-                    ],
-                })],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fragment_main"),
-                compilation_options: Default::default(),
-                targets: &[
-                    Some(wgpu::ColorTargetState {
-                        format: COLOUR_FORMAT,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                    Some(wgpu::ColorTargetState {
-                        format: PICK_FORMAT,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                ],
-            }),
-            primitive: wgpu::PrimitiveState {
-                // No culling. An imported assembly is not obliged to have
-                // consistent winding, and a part that vanished because of it
-                // would be blamed on the import.
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = build_pipeline(&device, &shader, &pipeline_layout, COLOUR_FORMAT, true);
 
         let draw_stride = align_to(
             std::mem::size_of::<DrawUniform>() as u64,
@@ -216,9 +196,13 @@ impl Renderer {
 
         Ok(Self {
             id: RendererId::next(),
+            adapter,
             device,
             queue,
             pipeline,
+            surface_pipelines: std::collections::HashMap::new(),
+            shader,
+            pipeline_layout,
             layout,
             globals,
             draw_stride,
@@ -228,6 +212,160 @@ impl Renderer {
 
     pub fn id(&self) -> RendererId {
         self.id
+    }
+
+    /// The adapter this renderer draws with.
+    ///
+    /// A surface must be asked what *this* adapter supports, not what some
+    /// other one would have.
+    pub fn adapter(&self) -> &wgpu::Adapter {
+        &self.adapter
+    }
+
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    /// The largest texture this device will make, which is also the largest
+    /// window it can be asked to fill.
+    pub fn max_texture_dimension(&self) -> u32 {
+        self.device.limits().max_texture_dimension_2d
+    }
+
+    /// Draws a prepared snapshot into a view somebody else owns.
+    ///
+    /// Used for a window, whose texture comes from its surface and is presented
+    /// rather than read back. The geometry is the geometry that was prepared;
+    /// nothing is uploaded here.
+    ///
+    /// Identities are not written on this path. A window frame is drawn many
+    /// times a second and a pick is asked for when somebody clicks, so paying
+    /// for the second on every one of the first would be paying continuously
+    /// for something wanted occasionally. Picking renders offscreen, through
+    /// [`Self::render`], at the same camera.
+    pub(crate) fn draw_into(
+        &mut self,
+        prepared: &PreparedSnapshot,
+        camera: &Camera,
+        view: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        self.require_own(prepared)?;
+
+        self.ensure_surface_pipeline(format);
+        let depth = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ferritecad viewport window depth"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth.create_view(&Default::default());
+
+        self.queue.write_buffer(
+            &self.globals,
+            0,
+            bytemuck::cast_slice(&camera.view_projection()),
+        );
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("ferritecad viewport window frame"),
+            });
+        {
+            let pipeline = self
+                .surface_pipelines
+                .get(&format)
+                .expect("the pipeline for this format was just ensured");
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ferritecad viewport window pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+
+            pass.set_pipeline(pipeline);
+            for (index, item) in prepared.snapshot.draws().iter().enumerate() {
+                let mesh = &prepared.meshes[item.mesh];
+                if mesh.index_count == 0 {
+                    continue;
+                }
+                pass.set_bind_group(
+                    0,
+                    &prepared.bindings,
+                    &[(index as u64 * self.draw_stride) as u32],
+                );
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            }
+        }
+        self.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
+    /// Refuses buffers that live on another device.
+    ///
+    /// One definition, used by the offscreen path and the window one alike. A
+    /// second copy would be a second thing to keep in step, and the one that
+    /// drifted would be whichever is harder to reach from a test.
+    fn require_own(&self, prepared: &PreparedSnapshot) -> Result<()> {
+        if prepared.renderer != self.id {
+            return Err(CadError::rendering(format!(
+                "this snapshot was prepared by {} and cannot be drawn by {}: its buffers \
+                 belong to the other device",
+                prepared.renderer, self.id
+            )));
+        }
+        Ok(())
+    }
+
+    /// Hands a drawn surface texture to the compositor.
+    pub(crate) fn present(&self, texture: wgpu::SurfaceTexture) {
+        self.queue.present(texture);
+    }
+
+    /// Builds the pipeline for a window format, once per format met.
+    fn ensure_surface_pipeline(&mut self, format: wgpu::TextureFormat) {
+        if self.surface_pipelines.contains_key(&format) {
+            return;
+        }
+        let pipeline = build_pipeline(
+            &self.device,
+            &self.shader,
+            &self.pipeline_layout,
+            format,
+            // No identity target: see `draw_into`.
+            false,
+        );
+        self.surface_pipelines.insert(format, pipeline);
     }
 
     /// How many mesh buffers this renderer has uploaded.
@@ -341,13 +479,7 @@ impl Renderer {
     /// Only the camera changes between frames. The geometry was uploaded when
     /// the snapshot was prepared and is not touched here.
     pub fn render(&mut self, prepared: &PreparedSnapshot, camera: &Camera) -> Result<Frame> {
-        if prepared.renderer != self.id {
-            return Err(CadError::rendering(format!(
-                "this snapshot was prepared by {} and cannot be drawn by {}: its buffers \
-                 belong to the other device",
-                prepared.renderer, self.id
-            )));
-        }
+        self.require_own(prepared)?;
 
         let snapshot = Arc::clone(&prepared.snapshot);
         let (width, height) = (camera.width(), camera.height());
@@ -690,6 +822,84 @@ impl PreparedSnapshot {
     pub fn renderer(&self) -> RendererId {
         self.renderer
     }
+}
+
+/// One definition of the pipeline, whatever it is drawn into.
+///
+/// The colour format is the window's when there is a window and this crate's
+/// own when there is not, and `with_identities` says whether the pick target is
+/// there to be written. A second copy of this for the window path would be a
+/// second place for the vertex layout, the depth state and the culling rule to
+/// drift from each other.
+fn build_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    pipeline_layout: &wgpu::PipelineLayout,
+    colour_format: wgpu::TextureFormat,
+    with_identities: bool,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("ferritecad viewport pipeline"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vertex_main"),
+            compilation_options: Default::default(),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: (VERTEX_FLOATS * std::mem::size_of::<f32>()) as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x3,
+                        offset: 0,
+                        shader_location: 0,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x3,
+                        offset: (3 * std::mem::size_of::<f32>()) as u64,
+                        shader_location: 1,
+                    },
+                ],
+            })],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fragment_main"),
+            compilation_options: Default::default(),
+            targets: &[
+                Some(wgpu::ColorTargetState {
+                    format: colour_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+                // The fragment shader always writes an identity. A pass with
+                // no target for it discards the value rather than needing a
+                // second shader that does not compute it.
+                with_identities.then_some(wgpu::ColorTargetState {
+                    format: PICK_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+            ],
+        }),
+        primitive: wgpu::PrimitiveState {
+            // No culling. An imported assembly is not obliged to have
+            // consistent winding, and a part that vanished because of it
+            // would be blamed on the import.
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Less),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 /// One drawn frame, and the snapshot it was drawn from.
