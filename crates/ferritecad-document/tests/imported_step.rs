@@ -488,19 +488,13 @@ fn a_reference_must_name_something() {
         "an empty key decoded into a reference"
     );
 
+    let valid =
+        ImportedDefinitionRef::new(source, "step.product_definition#1").expect("valid reference");
     let mut whole = Vec::new();
-    ciborium::into_writer(
-        &Raw {
-            source,
-            definition_key: "step.product_definition#1",
-        },
-        &mut whole,
-    )
-    .expect("encodes");
+    ciborium::into_writer(&valid, &mut whole).expect("encodes the public type");
     let read: ImportedDefinitionRef =
         ciborium::from_reader(whole.as_slice()).expect("a valid reference round-trips");
-    assert_eq!(read.source(), source);
-    assert_eq!(read.definition_key(), "step.product_definition#1");
+    assert_eq!(read, valid);
 }
 
 #[test]
@@ -569,7 +563,7 @@ fn a_document_written_before_identities_still_opens_and_binds() {
         .reopen_step_import(object, &mut importer)
         .expect("a version 1 scene binds by position");
     assert_eq!(reopened.scene.definitions.len(), 2);
-    assert_eq!(reopened.stored_version, 1);
+    assert_eq!(reopened.stored_version(), 1);
 
     // What it cannot do is answer a durable reference. The definitions in this
     // reading do carry keys — every import produces them now — but this

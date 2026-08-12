@@ -660,7 +660,7 @@ fn a_durable_reference_survives_a_new_session_and_never_crosses_sources() {
     assert_eq!(error.kind(), ErrorKind::Input, "{error}");
 
     // And a key this file does not describe is lost rather than approximated.
-    let missing = ImportedDefinitionRef::new(reopened.source, "step.product_definition#999999")
+    let missing = ImportedDefinitionRef::new(reopened.source(), "step.product_definition#999999")
         .expect("valid");
     let error = reopened.resolve(&missing).expect_err("nothing names that");
     assert_eq!(error.kind(), ErrorKind::Topology, "{error}");

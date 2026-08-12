@@ -153,12 +153,12 @@ pub struct ReopenedStepImport {
     ///
     /// Kept so a reference can be checked against the source it names rather
     /// than resolved against whatever import happens to be at hand.
-    pub source: ImportedSourceId,
+    source: ImportedSourceId,
     /// The layout the stored scene was written at.
     ///
     /// Version 1 recorded no identities, so nothing it holds can answer a
     /// durable reference; see [`Self::resolve`].
-    pub stored_version: u32,
+    stored_version: u32,
     /// What the importer said when the file was first brought into this
     /// document. Historical; this build did not observe it.
     pub diagnostics_at_import: Vec<ImportDiagnostic>,
@@ -171,6 +171,25 @@ pub struct ReopenedStepImport {
 }
 
 impl ReopenedStepImport {
+    /// The immutable source identity this reading was verified against.
+    ///
+    /// Read-only on purpose: allowing a caller to replace it would turn the
+    /// source check in [`Self::resolve`] into a value the caller can arrange to
+    /// pass for bytes this reading did not come from.
+    pub fn source(&self) -> ImportedSourceId {
+        self.source
+    }
+
+    /// The stored scene layout whose identity contract this reading was bound
+    /// under.
+    ///
+    /// Read-only because changing a legacy reading from v1 to v2 would make
+    /// [`Self::resolve`] answer from keys observed now even though the document
+    /// never recorded which key belonged to which definition.
+    pub fn stored_version(&self) -> u32 {
+        self.stored_version
+    }
+
     /// Finds the definition a durable reference names, in this reading.
     ///
     /// Resolution happens inside one source and nowhere else. The reference
