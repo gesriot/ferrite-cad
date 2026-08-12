@@ -35,16 +35,44 @@ struct DrawUniform {
     padding: [u32; 3],
 }
 
-/// A device, a pipeline and the textures one frame is drawn into.
+/// Distinguishes one renderer from another.
+///
+/// The same idea as the kernel's `SessionId`, for the same reason: a buffer
+/// belongs to the device that allocated it, and handing it to another one is a
+/// lifetime mistake that would otherwise surface as a driver error far from its
+/// cause. Every renderer gets a value no earlier one in this process has used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RendererId(u64);
+
+impl RendererId {
+    fn next() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+impl std::fmt::Display for RendererId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "renderer#{}", self.0)
+    }
+}
+
+/// A device, a pipeline and the buffers a frame is drawn with.
 #[derive(Debug)]
 pub struct Renderer {
+    id: RendererId,
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
+    /// The camera's matrix, rewritten each frame rather than reallocated.
+    /// Shared by every prepared snapshot this renderer owns, which is why
+    /// drawing takes `&mut self`: two frames in flight would race on it.
+    globals: wgpu::Buffer,
     /// The alignment a dynamic uniform offset must be a multiple of, which is a
     /// property of the device and not a constant anyone may assume.
     draw_stride: u64,
+    geometry_uploads: u64,
 }
 
 impl Renderer {
@@ -179,66 +207,49 @@ impl Renderer {
             u64::from(device.limits().min_uniform_buffer_offset_alignment),
         );
 
+        let globals = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ferritecad viewport globals"),
+            size: std::mem::size_of::<[f32; 16]>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Ok(Self {
+            id: RendererId::next(),
             device,
             queue,
             pipeline,
             layout,
+            globals,
             draw_stride,
+            geometry_uploads: 0,
         })
     }
 
-    /// Draws one snapshot through one camera and reads the result back.
-    ///
-    /// The snapshot is moved into the returned frame, so what was drawn and
-    /// what a pick is interpreted against cannot come apart.
-    ///
-    /// Buffers are uploaded per call. There is no window yet and so nothing
-    /// draws continuously; keeping geometry resident belongs with the slice
-    /// that has something to keep it resident *for*.
-    pub fn render(&mut self, snapshot: Arc<RenderSnapshot>, camera: &Camera) -> Result<Frame> {
-        let (width, height) = (camera.width(), camera.height());
-        if !camera.is_drawable() {
-            // A minimised window, or the moment before a first layout. There is
-            // nothing to draw into and nothing to read back, and that is an
-            // answer rather than an error.
-            return Ok(Frame {
-                snapshot,
-                width,
-                height,
-                colour: Vec::new(),
-                picks: Vec::new(),
-            });
-        }
+    pub fn id(&self) -> RendererId {
+        self.id
+    }
 
-        let readback = self.validate_frame(width, height)?;
+    /// How many mesh buffers this renderer has uploaded.
+    ///
+    /// Exposed so "the geometry is uploaded once" can be asserted from outside
+    /// rather than believed. The kernel adapter offers `live_shape_count` for
+    /// the same reason: an ownership claim nobody can check is a comment.
+    pub fn geometry_uploads(&self) -> u64 {
+        self.geometry_uploads
+    }
+
+    /// Uploads a snapshot's geometry and keeps it on the device.
+    ///
+    /// Everything that does not depend on the camera happens here and once:
+    /// vertex and index buffers, the per-draw uniforms, and the bindings that
+    /// tie them to this renderer's camera buffer. Drawing the result again
+    /// costs a matrix write and a pass.
+    ///
+    /// The result belongs to this renderer. Another one will refuse it — see
+    /// [`Self::render`].
+    pub fn prepare(&mut self, snapshot: Arc<RenderSnapshot>) -> Result<PreparedSnapshot> {
         let draw_buffer_size = self.validate_snapshot(&snapshot)?;
-
-        let extent = wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        };
-        let colour = self.target("colour", extent, COLOUR_FORMAT);
-        let pick = self.target("pick", extent, PICK_FORMAT);
-        let depth = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("ferritecad viewport depth"),
-            size: extent,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-
-        let globals = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("ferritecad viewport globals"),
-                contents: bytemuck::cast_slice(&camera.view_projection()),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
 
         // Every draw's uniform data in one buffer, each at a device-aligned
         // offset. An empty snapshot still needs one stride of buffer, because a
@@ -273,7 +284,7 @@ impl Renderer {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: globals.as_entire_binding(),
+                    resource: self.globals.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -287,27 +298,101 @@ impl Renderer {
         });
 
         // One vertex and one index buffer per packed mesh.
-        let geometry: Vec<(wgpu::Buffer, wgpu::Buffer, u32)> = snapshot
-            .meshes()
-            .iter()
-            .map(|mesh| {
-                let vertices = self
-                    .device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("ferritecad viewport vertices"),
-                        contents: bytemuck::cast_slice(mesh.vertices()),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    });
-                let indices = self
-                    .device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("ferritecad viewport indices"),
-                        contents: bytemuck::cast_slice(mesh.indices()),
-                        usage: wgpu::BufferUsages::INDEX,
-                    });
-                (vertices, indices, mesh.indices().len() as u32)
-            })
-            .collect();
+        let mut meshes = Vec::new();
+        meshes
+            .try_reserve_exact(snapshot.meshes().len())
+            .map_err(|error| CadError::rendering_because("recording mesh buffers", error))?;
+        for mesh in snapshot.meshes() {
+            let vertices = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("ferritecad viewport vertices"),
+                    contents: bytemuck::cast_slice(mesh.vertices()),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+            let indices = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("ferritecad viewport indices"),
+                    contents: bytemuck::cast_slice(mesh.indices()),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+            meshes.push(GpuMesh {
+                vertices,
+                indices,
+                index_count: mesh.indices().len() as u32,
+            });
+            self.geometry_uploads += 1;
+        }
+
+        Ok(PreparedSnapshot {
+            renderer: self.id,
+            snapshot,
+            meshes,
+            bindings,
+        })
+    }
+
+    /// Draws a prepared snapshot through one camera and reads the result back.
+    ///
+    /// The snapshot travels into the returned frame, so what was drawn and what
+    /// a pick is interpreted against cannot come apart.
+    ///
+    /// Only the camera changes between frames. The geometry was uploaded when
+    /// the snapshot was prepared and is not touched here.
+    pub fn render(&mut self, prepared: &PreparedSnapshot, camera: &Camera) -> Result<Frame> {
+        if prepared.renderer != self.id {
+            return Err(CadError::rendering(format!(
+                "this snapshot was prepared by {} and cannot be drawn by {}: its buffers \
+                 belong to the other device",
+                prepared.renderer, self.id
+            )));
+        }
+
+        let snapshot = Arc::clone(&prepared.snapshot);
+        let (width, height) = (camera.width(), camera.height());
+        if !camera.is_drawable() {
+            // A minimised window, or the moment before a first layout. There is
+            // nothing to draw into and nothing to read back, and that is an
+            // answer rather than an error.
+            return Ok(Frame {
+                snapshot,
+                width,
+                height,
+                colour: Vec::new(),
+                picks: Vec::new(),
+            });
+        }
+
+        let readback = self.validate_frame(width, height)?;
+
+        let extent = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let colour = self.target("colour", extent, COLOUR_FORMAT);
+        let pick = self.target("pick", extent, PICK_FORMAT);
+        let depth = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ferritecad viewport depth"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+
+        // The one thing that differs from frame to frame.
+        self.queue.write_buffer(
+            &self.globals,
+            0,
+            bytemuck::cast_slice(&camera.view_projection()),
+        );
+
+        let bindings = &prepared.bindings;
+        let geometry = &prepared.meshes;
 
         let mut encoder = self
             .device
@@ -361,14 +446,14 @@ impl Renderer {
             // In the order the snapshot lists them. A renderer that sorted to
             // save state changes would make two frames of one model differ.
             for (index, item) in snapshot.draws().iter().enumerate() {
-                let (vertices, indices, count) = &geometry[item.mesh];
-                if *count == 0 {
+                let mesh = &geometry[item.mesh];
+                if mesh.index_count == 0 {
                     continue;
                 }
-                pass.set_bind_group(0, &bindings, &[(index as u64 * self.draw_stride) as u32]);
-                pass.set_vertex_buffer(0, vertices.slice(..));
-                pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..*count, 0, 0..1);
+                pass.set_bind_group(0, bindings, &[(index as u64 * self.draw_stride) as u32]);
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
             }
         }
 
@@ -566,6 +651,45 @@ struct ReadbackLayout {
     padded: u32,
     buffer_size: u64,
     tight_size: usize,
+}
+
+/// One definition's geometry, resident on a device.
+#[derive(Debug)]
+struct GpuMesh {
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    index_count: u32,
+}
+
+/// A snapshot whose geometry is on a device and stays there.
+///
+/// Holds the [`RenderSnapshot`] it was built from as well as the buffers, so
+/// what is on the device and what it means cannot be separated — the same
+/// arrangement [`Frame`] uses, one step earlier.
+///
+/// Belongs to the renderer that prepared it. Another renderer refuses it rather
+/// than drawing another device's memory.
+#[derive(Debug)]
+pub struct PreparedSnapshot {
+    renderer: RendererId,
+    snapshot: Arc<RenderSnapshot>,
+    meshes: Vec<GpuMesh>,
+    /// The per-draw uniforms are not held separately: a bind group keeps the
+    /// resources it names alive, so a second handle to that buffer would only
+    /// be a second thing to keep in step.
+    bindings: wgpu::BindGroup,
+}
+
+impl PreparedSnapshot {
+    /// What this was prepared from.
+    pub fn snapshot(&self) -> &Arc<RenderSnapshot> {
+        &self.snapshot
+    }
+
+    /// Which renderer owns these buffers.
+    pub fn renderer(&self) -> RendererId {
+        self.renderer
+    }
 }
 
 /// One drawn frame, and the snapshot it was drawn from.

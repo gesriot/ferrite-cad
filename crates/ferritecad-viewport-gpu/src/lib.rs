@@ -17,6 +17,21 @@
 //! not refused but made impossible: the frame and the snapshot it belongs to
 //! cannot be separated.
 //!
+//! # What belongs to what
+//!
+//! Geometry is uploaded once, by [`Renderer::prepare`], and stays on the
+//! device. Drawing the result again writes a matrix and runs a pass; the
+//! vertices are not touched. So the three things a viewport keeps live in
+//! three places, each owned by whatever it actually belongs to: the model's
+//! meaning in a [`RenderSnapshot`], its buffers in a [`PreparedSnapshot`], and
+//! one reading of it in a [`Frame`].
+//!
+//! A [`PreparedSnapshot`] belongs to the renderer that prepared it, and another
+//! refuses to draw it rather than reaching into a different device's memory —
+//! the same arrangement the kernel uses for shape handles and sessions, for the
+//! same reason. A [`Frame`] keeps its own snapshot, so a frame drawn before the
+//! model changed still answers about the model it drew.
+//!
 //! # Without a device
 //!
 //! [`Renderer::new`] fails when no adapter is available, which is an ordinary
@@ -25,4 +40,6 @@
 
 mod renderer;
 
-pub use renderer::{COLOUR_FORMAT, DEPTH_FORMAT, Frame, PICK_FORMAT, Renderer};
+pub use renderer::{
+    COLOUR_FORMAT, DEPTH_FORMAT, Frame, PICK_FORMAT, PreparedSnapshot, Renderer, RendererId,
+};
