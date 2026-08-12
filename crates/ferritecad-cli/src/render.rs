@@ -201,9 +201,10 @@ fn describe(payload: &ObjectPayload) -> Option<String> {
             None => "empty".to_owned(),
         },
         ObjectPayload::ImportedStep(i) => format!(
-            "{} definitions, {} placements, {} byte(s) of source ({}), read by {}{}",
-            i.scene.definitions.len(),
-            i.scene.instances.len(),
+            "scene v{}, {} definitions, {} placements, {} byte(s) of source ({}), read by {}{}",
+            i.scene.version(),
+            i.scene.definition_count(),
+            i.scene.instance_count(),
             i.source_byte_len,
             i.source_name.as_deref().unwrap_or("origin not recorded"),
             i.imported_by,

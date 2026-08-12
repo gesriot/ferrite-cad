@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use ferritecad_document::{
     Document, ImportedStep, ImporterIdentity, ObjectPayload, StepImportRequest, StepImporter,
 };
+use ferritecad_exchange::StoredScene;
 use ferritecad_exchange::{Import, Severity};
 use ferritecad_kernel::{GeometryKernel, ShapeHandle};
 use ferritecad_occt::{OcctKernel, is_available};
@@ -165,15 +166,19 @@ fn every_sound_file_reopens_in_a_session_that_never_read_it() {
 
         // Binding already required this; asserting it names what was at stake.
         let now = reopened.scene.persist().expect("projects");
-        assert_eq!(now, stored.scene, "{name}: the scene changed");
-        assert_eq!(now.source_unit, stored.scene.source_unit);
-        assert_eq!(now.schema, stored.scene.schema);
+        assert_eq!(
+            StoredScene::V2(now.clone()),
+            stored.scene,
+            "{name}: the scene changed"
+        );
+        assert_eq!(now.source_unit, stored.scene.source_unit());
+        assert_eq!(now.schema, stored.scene.schema());
         assert_eq!(
             now.definitions.len(),
-            stored.scene.definitions.len(),
+            stored.scene.definition_count(),
             "{name}"
         );
-        assert_eq!(now.instances.len(), stored.scene.instances.len(), "{name}");
+        assert_eq!(now.instances.len(), stored.scene.instance_count(), "{name}");
 
         assert_eq!(
             reopened.imported_by,
@@ -238,11 +243,14 @@ fn names_units_colours_and_the_tree_are_what_survives() {
             .unwrap_or_else(|e| panic!("{name}: did not bind: {e}"));
         let now = reopened.scene.persist().expect("projects");
 
-        for (before, after) in stored.scene.definitions.iter().zip(&now.definitions) {
+        let StoredScene::V2(stored_scene) = &stored.scene else {
+            panic!("{name}: a fresh import must store a v2 scene");
+        };
+        for (before, after) in stored_scene.definitions.iter().zip(&now.definitions) {
             assert_eq!(before.name, after.name, "{name}: a name changed");
             assert_eq!(before.solids, after.solids, "{name}: a solid count changed");
         }
-        for (before, after) in stored.scene.instances.iter().zip(&now.instances) {
+        for (before, after) in stored_scene.instances.iter().zip(&now.instances) {
             assert_eq!(before.parent, after.parent, "{name}: the tree changed");
             assert_eq!(before.definition, after.definition, "{name}");
             assert_eq!(before.name, after.name, "{name}");
@@ -260,12 +268,12 @@ fn names_units_colours_and_the_tree_are_what_survives() {
                 let bolt = now
                     .definitions
                     .iter()
-                    .position(|definition| definition.name == "Bolt")
+                    .find(|definition| definition.name == "Bolt")
                     .expect("the bolt is named");
                 assert_eq!(
                     now.instances
                         .iter()
-                        .filter(|instance| instance.definition as usize == bolt)
+                        .filter(|instance| instance.definition == bolt.key)
                         .count(),
                     4,
                     "four placements of one definition"
@@ -485,7 +493,7 @@ fn a_stored_scene_that_does_not_describe_the_file_is_refused() {
                     source_hash: ContentHash::of_bytes(&bytes),
                     source_byte_len: bytes.len() as u64,
                     source_name: None,
-                    scene: persisted,
+                    scene: StoredScene::V2(persisted),
                     imported_by: ImporterIdentity::of(kernel.identity()),
                     diagnostics_at_import: Vec::new(),
                 },
@@ -520,6 +528,113 @@ fn a_stored_scene_that_does_not_describe_the_file_is_refused() {
         "the refused reading left its shapes behind"
     );
     document.close().expect("closes");
+}
+
+#[test]
+fn a_reordered_reading_of_the_same_file_still_binds() {
+    let mut kernel = kernel_or_skip!();
+
+    let (_dir, path) = workspace();
+    let bytes = corpus("canonical", "02-flat-assembly.step");
+    let object = ObjectId::new();
+
+    let outcome = kernel.import_step(&bytes).expect("imports");
+    let mut document = Document::create(&path).expect("creates");
+    let stored = document
+        .store_step_import(StepImportRequest {
+            object,
+            name: None,
+            source: &bytes,
+            source_name: None,
+            import: &outcome,
+            importer: kernel.identity(),
+        })
+        .expect("stores");
+    release(&mut kernel, &outcome);
+    document.close().expect("closes");
+
+    let StoredScene::V2(scene) = &stored.scene else {
+        panic!("a fresh import stores a v2 scene");
+    };
+    assert!(
+        scene
+            .definitions
+            .iter()
+            .all(|definition| !definition.key.is_empty()),
+        "every stored definition carries the identity its file gave it"
+    );
+
+    // Open CASCADE is not asked to reorder anything — it has no reason to and
+    // this cannot make it. What is checked is that when the same file comes
+    // back described in another order, the stored scene recognises it. So the
+    // reading is real and the reordering is applied to it afterwards.
+    let mut kernel = OcctKernel::new().expect("opens a second session");
+    let document = Document::open(&path).expect("reopens");
+    let mut reordering = Reordering {
+        kernel: &mut kernel,
+    };
+    let reopened = document
+        .reopen_step_import(object, &mut reordering)
+        .expect("the same assembly, listed differently, is the same assembly");
+
+    // Every placement still holds the part it names, which is what a stored
+    // position could not have promised.
+    let bound = &reopened.scene;
+    for instance in &bound.instances {
+        let definition = &bound.definitions[instance.definition];
+        let expected = scene
+            .instances
+            .iter()
+            .find(|stored| stored.name == instance.name)
+            .expect("the same placements came back");
+        assert_eq!(
+            definition.key, expected.definition,
+            "{} was re-attached to the wrong part",
+            instance.name
+        );
+    }
+
+    for shape in bound.shapes() {
+        kernel.release(shape);
+    }
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+/// An importer that reads normally and then reverses the definition order.
+///
+/// The reversal is the test's, not the kernel's. What is being measured is the
+/// binding rule, and no corpus file makes Open CASCADE hand its definitions
+/// back in a different order on demand.
+struct Reordering<'a> {
+    kernel: &'a mut OcctKernel,
+}
+
+impl StepImporter for Reordering<'_> {
+    fn identity(&self) -> &ferritecad_kernel::KernelIdentity {
+        self.kernel.identity()
+    }
+
+    fn import(&mut self, source: &[u8]) -> Result<Import> {
+        let outcome = self.kernel.import_step(source)?;
+        let Import::Imported { scene, diagnostics } = outcome else {
+            return Ok(outcome);
+        };
+
+        let count = scene.definitions.len();
+        let mut reversed = scene;
+        reversed.definitions.reverse();
+        for instance in &mut reversed.instances {
+            instance.definition = count - 1 - instance.definition;
+        }
+        Ok(Import::Imported {
+            scene: reversed,
+            diagnostics,
+        })
+    }
+
+    fn release(&mut self, shape: ShapeHandle) {
+        self.kernel.release(shape);
+    }
 }
 
 #[test]

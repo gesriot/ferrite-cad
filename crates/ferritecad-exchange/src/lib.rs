@@ -32,10 +32,13 @@
 //! rather than matches.
 
 mod decode;
+mod legacy;
 mod persist;
+mod project;
 
 pub use decode::decode;
-pub use persist::{PersistedDefinition, PersistedInstance, PersistedScene};
+pub use legacy::{LegacyDefinition, LegacyInstance, LegacyScene};
+pub use persist::{PersistedDefinition, PersistedInstance, PersistedScene, StoredScene};
 
 use std::fmt;
 

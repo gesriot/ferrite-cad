@@ -155,36 +155,43 @@ fn imported(
     writeln!(
         out,
         "  declared      {} in {}",
-        blank_as(&scene.schema, "no schema"),
-        blank_as(&scene.source_unit, "no unit")
+        blank_as(scene.schema(), "no schema"),
+        blank_as(scene.source_unit(), "no unit")
     )
     .expect("cannot fail");
     writeln!(
         out,
         "  object        {object}  {name}  ({} definition{}, {} placement{})",
-        scene.definitions.len(),
-        plural(scene.definitions.len()),
-        scene.instances.len(),
-        plural(scene.instances.len())
+        scene.definition_count(),
+        plural(scene.definition_count()),
+        scene.instance_count(),
+        plural(scene.instance_count())
     )
     .expect("cannot fail");
 
+    // Listed from the scene that was just read rather than from the stored
+    // projection: the two are the same by construction here, and the live one
+    // does not have to be matched against a layout version to be read.
     out.push('\n');
-    for (index, definition) in scene.definitions.iter().enumerate() {
-        let placements = scene
-            .instances
-            .iter()
-            .filter(|instance| instance.definition as usize == index)
-            .count();
-        writeln!(
-            out,
-            "  {:<30}  {} solid{}, {placements} placement{}",
-            blank_as(&definition.name, "(unnamed)"),
-            definition.solids,
-            plural(definition.solids as usize),
-            plural(placements)
-        )
-        .expect("cannot fail");
+    if let Some(live) = outcome.scene() {
+        for (index, definition) in live.definitions.iter().enumerate() {
+            let placements = live
+                .instances
+                .iter()
+                .filter(|instance| instance.definition == index)
+                .count();
+            writeln!(
+                out,
+                "  {:<30}  {} solid{}, {placements} placement{}",
+                blank_as(&definition.name, "(unnamed)"),
+                definition.solids,
+                plural(definition.solids as usize),
+                plural(placements)
+            )
+            .expect("cannot fail");
+            // What a later reference to this part will have to name it by.
+            writeln!(out, "      {}", definition.key).expect("cannot fail");
+        }
     }
 
     out.push('\n');

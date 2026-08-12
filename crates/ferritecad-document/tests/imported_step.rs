@@ -16,7 +16,8 @@ use ferritecad_document::{
     ObjectPayload, STEP_SOURCE_FORMAT, StepImportRequest, StepImporter,
 };
 use ferritecad_exchange::{
-    ColourSource, Definition, Diagnostic, Import, Instance, Scene, Severity, Stage,
+    ColourSource, Definition, Diagnostic, Import, Instance, LegacyDefinition, LegacyInstance,
+    LegacyScene, Scene, Severity, Stage, StoredScene,
 };
 use ferritecad_kernel::{KernelIdentity, SessionId, ShapeHandle};
 use ferritecad_types::{CadError, ContentHash, ErrorKind, ObjectId, Result};
@@ -211,7 +212,7 @@ fn a_stored_import_reopens_into_a_new_session_with_that_session_s_handles() {
 
     // Everything portable came back as it went in.
     let persisted = reopened.scene.persist().expect("projects");
-    assert_eq!(persisted, stored.scene);
+    assert_eq!(StoredScene::V2(persisted.clone()), stored.scene);
     assert_eq!(persisted.source_unit, "MM");
     assert_eq!(persisted.definitions[1].name, "Bolt");
     assert_eq!(persisted.instances[2].colour_source, ColourSource::Instance);
@@ -264,11 +265,17 @@ fn a_scene_that_no_longer_matches_is_refused_rather_than_bound() {
     let document = Document::open(&path).expect("reopens");
 
     let refuses = |what: &str, damage: fn(&mut Scene)| {
+        // Built out here so the test knows exactly which shapes that reading
+        // produced, rather than assuming a count the damage may have changed.
+        let mut damaged = scene(SessionId::new());
+        damage(&mut damaged);
+        let mut built: Vec<u64> = damaged.shapes().map(|shape| shape.index()).collect();
+        built.sort_unstable();
+
+        let mut damaged = Some(damaged);
         let mut importer = Importer::new(|_: &[u8]| {
-            let mut current = scene(SessionId::new());
-            damage(&mut current);
             Ok(Import::Imported {
-                scene: current,
+                scene: damaged.take().expect("read once"),
                 diagnostics: Vec::new(),
             })
         });
@@ -281,17 +288,28 @@ fn a_scene_that_no_longer_matches_is_refused_rather_than_bound() {
         let mut released: Vec<u64> = importer.released.iter().map(ShapeHandle::index).collect();
         released.sort_unstable();
         assert_eq!(
-            released,
-            vec![1, 2],
+            released, built,
             "{what}: the refused scene's shapes were not all given back"
         );
     };
 
-    refuses("a reordered pair of definitions", |scene| {
-        scene.definitions.swap(0, 1);
+    refuses("a definition that is no longer there", |scene| {
+        scene.definitions.remove(1);
         for instance in &mut scene.instances {
-            instance.definition = 1 - instance.definition;
+            instance.definition = 0;
         }
+    });
+    refuses("a definition that was not there before", |scene| {
+        let mut extra = scene.definitions[1].clone();
+        extra.key = "step.product_definition#99".to_owned();
+        extra.name = "Washer".to_owned();
+        scene.definitions.push(extra);
+    });
+    refuses("a definition whose identity changed", |scene| {
+        scene.definitions[1].key = "step.product_definition#99".to_owned();
+    });
+    refuses("two definitions claiming one identity", |scene| {
+        scene.definitions[1].key = scene.definitions[0].key.clone();
     });
     refuses("a renamed definition", |scene| {
         scene.definitions[1].name = "Screw".to_owned();
@@ -332,12 +350,158 @@ fn a_scene_that_no_longer_matches_is_refused_rather_than_bound() {
 }
 
 #[test]
-fn definitions_of_the_same_name_are_not_told_apart_by_it() {
+fn a_document_written_before_identities_still_opens_and_binds() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let (object, stored) =
+        store(&mut document, &imported(SessionId::new(), Vec::new())).expect("stores");
+    document.close().expect("closes");
+
+    // Rewrite the object as a version 1 build left it: the same import with a
+    // scene that names its definitions by position and has no keys at all.
+    let StoredScene::V2(scene_v2) = &stored.scene else {
+        panic!("a fresh import stores a v2 scene");
+    };
+    let legacy = LegacyScene {
+        source_unit: scene_v2.source_unit.clone(),
+        schema: scene_v2.schema.clone(),
+        definitions: scene_v2
+            .definitions
+            .iter()
+            .map(|definition| LegacyDefinition {
+                name: definition.name.clone(),
+                solids: definition.solids,
+            })
+            .collect(),
+        instances: scene_v2
+            .instances
+            .iter()
+            .map(|instance| LegacyInstance {
+                definition: scene_v2
+                    .definitions
+                    .iter()
+                    .position(|definition| definition.key == instance.definition)
+                    .expect("the stored scene is consistent") as u32,
+                parent: instance.parent,
+                name: instance.name.clone(),
+                placement: instance.placement,
+                colour_source: instance.colour_source,
+                colour: instance.colour,
+            })
+            .collect(),
+    };
+    write_legacy_object(&path, object, &stored, &legacy);
+
+    let document = Document::open(&path).expect("a version 1 document still opens");
+    assert_eq!(
+        document.access(),
+        &Access::ReadWrite,
+        "a version 1 import is understood, not merely preserved"
+    );
+
+    let read = document
+        .step_import(object)
+        .expect("reads")
+        .expect("is there");
+    assert_eq!(read.imported.scene.version(), 1);
+    assert!(
+        read.imported.scene.keys().is_none(),
+        "a version 1 scene must not claim identities it does not have"
+    );
+
+    // It still binds, by the rule it was written under.
+    let mut importer = Importer::new(|_: &[u8]| Ok(imported(SessionId::new(), Vec::new())));
+    let reopened = document
+        .reopen_step_import(object, &mut importer)
+        .expect("a version 1 scene binds by position");
+    assert_eq!(reopened.scene.definitions.len(), 2);
+
+    // And a reordering is refused, because position was all it ever had.
+    let mut importer = Importer::new(|_: &[u8]| {
+        let mut swapped = scene(SessionId::new());
+        swapped.definitions.swap(0, 1);
+        for instance in &mut swapped.instances {
+            instance.definition = 1 - instance.definition;
+        }
+        Ok(Import::Imported {
+            scene: swapped,
+            diagnostics: Vec::new(),
+        })
+    });
+    let error = document
+        .reopen_step_import(object, &mut importer)
+        .expect_err("version 1 cannot tell a reordering from a change");
+    assert_eq!(error.kind(), ErrorKind::Input, "{error}");
+    assert_eq!(
+        importer.released.len(),
+        2,
+        "the refused reading kept its shapes"
+    );
+}
+
+/// Rewrites an imported object's payload as a version 1 build would have.
+///
+/// There is no supported way to write one, and there should not be: a build
+/// that has keys must not produce a scene without them. This reaches past the
+/// writer for the one thing only a test needs — a document that predates the
+/// format it is being read by.
+fn write_legacy_object(
+    path: &std::path::Path,
+    object: ObjectId,
+    stored: &ImportedStep,
+    scene: &LegacyScene,
+) {
+    #[derive(serde::Serialize)]
+    struct LegacyPayload<'a> {
+        source: ferritecad_types::ImportedSourceId,
+        source_hash: ContentHash,
+        source_byte_len: u64,
+        source_name: Option<String>,
+        scene: &'a LegacyScene,
+        imported_by: ImporterIdentity,
+        diagnostics_at_import: Vec<Diagnostic>,
+    }
+
+    let envelope = ferritecad_document::Envelope::encode(
+        "exchange.step.imported",
+        1,
+        vec![IMPORTED_STEP_CAPABILITY.to_owned()],
+        &LegacyPayload {
+            source: stored.source,
+            source_hash: stored.source_hash,
+            source_byte_len: stored.source_byte_len,
+            source_name: stored.source_name.clone(),
+            scene,
+            imported_by: stored.imported_by.clone(),
+            diagnostics_at_import: stored.diagnostics_at_import.clone(),
+        },
+    )
+    .expect("encodes")
+    .to_bytes()
+    .expect("serialises");
+
+    with_sql(path, |conn| {
+        conn.execute(
+            "UPDATE objects SET schema_version = 1, payload = ?1, payload_hash = ?2 WHERE id = ?3",
+            rusqlite::params![
+                envelope.as_slice(),
+                ContentHash::of_bytes(&envelope).as_bytes().as_slice(),
+                object.to_bytes().as_slice()
+            ],
+        )
+        .expect("updates");
+    });
+}
+
+#[test]
+fn a_reordered_import_binds_and_every_placement_keeps_its_own_geometry() {
     let (_dir, path) = workspace();
     let mut document = Document::create(&path).expect("creates");
 
-    // Two definitions sharing a name and differing in what they hold. Nothing
-    // but position distinguishes them, so nothing but position may bind them.
+    // Two definitions sharing a name and differing in what they hold. Under
+    // version 1 nothing but position told them apart, so this was the case
+    // that had to be refused; with keys it is an ordinary reordering, and the
+    // point is that each placement still gets the geometry it asked for.
     let same_name = |session: SessionId| {
         let mut scene = scene(session);
         scene.definitions[1].name = "Plate".to_owned();
@@ -361,9 +525,10 @@ fn definitions_of_the_same_name_are_not_told_apart_by_it() {
         .expect("stores");
     document.close().expect("closes");
 
+    let later = SessionId::new();
     let document = Document::open(&path).expect("reopens");
     let mut importer = Importer::new(|_: &[u8]| {
-        let mut swapped = same_name(SessionId::new());
+        let mut swapped = same_name(later);
         swapped.definitions.swap(0, 1);
         for instance in &mut swapped.instances {
             instance.definition = 1 - instance.definition;
@@ -373,13 +538,29 @@ fn definitions_of_the_same_name_are_not_told_apart_by_it() {
             diagnostics: Vec::new(),
         })
     });
-    let error = document
+    let reopened = document
         .reopen_step_import(object, &mut importer)
-        .expect_err("a shared name must not license a swap");
+        .expect("a reordered import describes the same assembly");
     assert!(
-        error.to_string().contains("solid count"),
-        "the refusal should name what gave it away: {error}"
+        importer.released.is_empty(),
+        "a successful binding gave shapes back"
     );
+
+    // The assembly is the plate, and the two bolts are the three-solid part.
+    // Reading that off the keys rather than off the positions is the whole
+    // difference between this and version 1.
+    let bound = &reopened.scene;
+    let placed = |instance: usize| &bound.definitions[bound.instances[instance].definition];
+    assert_eq!(placed(0).key, "step.product_definition#5");
+    assert_eq!(placed(0).solids, 1);
+    assert_eq!(placed(1).key, "step.product_definition#31");
+    assert_eq!(placed(1).solids, 3);
+    assert_eq!(placed(2).key, "step.product_definition#31");
+
+    // And the handles are this session's, attached to the part each placement
+    // actually names.
+    assert_eq!(placed(1).shape.session(), later);
+    assert_ne!(placed(0).shape, placed(1).shape);
 }
 
 #[test]
@@ -758,7 +939,7 @@ fn a_low_level_writer_cannot_pair_an_object_with_different_source_facts() {
                 source_hash: ContentHash::of_bytes(b"different"),
                 source_byte_len: SOURCE.len() as u64,
                 source_name: None,
-                scene: scene(SessionId::new()).persist()?,
+                scene: StoredScene::V2(scene(SessionId::new()).persist()?),
                 imported_by: ImporterIdentity::of(&kernel()),
                 diagnostics_at_import: Vec::new(),
             },

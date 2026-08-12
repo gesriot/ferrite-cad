@@ -28,6 +28,13 @@
 //! that importer sees them, then compares the whole scene it produced with the
 //! one stored, and only then lets a caller near the new handles.
 //!
+//! A stored scene records what identifies each definition in its source file,
+//! so re-attaching matches identities rather than positions: a file that comes
+//! back describing the same parts in another order binds, while one that has
+//! gained, lost or renamed a part does not. Scenes written before identities
+//! existed keep binding by position, which is the guarantee they were written
+//! under — see [`ferritecad_exchange::StoredScene`].
+//!
 //! # Forward compatibility
 //!
 //! Every object payload is a CBOR envelope carrying its type, schema version

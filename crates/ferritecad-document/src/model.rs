@@ -6,7 +6,9 @@
 //! to a geometry kernel, a face index or a traversal order, because none of
 //! those survive a rebuild.
 
-use ferritecad_exchange::{Diagnostic as ImportDiagnostic, PersistedScene};
+use ferritecad_exchange::{
+    Diagnostic as ImportDiagnostic, LegacyScene, PersistedScene, StoredScene,
+};
 use ferritecad_kernel::KernelIdentity;
 use ferritecad_types::{
     CadError, CanonicalHasher, ContentHash, Dimension, ImportedSourceId, ObjectId, Point3, Result,
@@ -83,7 +85,24 @@ impl ObjectKind {
 
     /// Layout version of this object type's payload.
     pub fn schema_version(self) -> u32 {
-        1
+        match self {
+            // v2 gave every definition the identity its source file wrote
+            // down, and made instances name theirs by it rather than by
+            // position. v1 objects are still read; see [`ImportedStep::scene`].
+            Self::ImportedStep => 2,
+            _ => 1,
+        }
+    }
+
+    /// Payload layouts of this type that this build can still read.
+    ///
+    /// Newest first. A layout listed here is one whose meaning is fully
+    /// recoverable; anything else is preserved verbatim and not interpreted.
+    pub fn readable_schema_versions(self) -> &'static [u32] {
+        match self {
+            Self::ImportedStep => &[2, 1],
+            _ => &[1],
+        }
     }
 
     /// Whether an object of this kind participates in the rebuild as a feature.
@@ -536,7 +555,7 @@ impl std::fmt::Display for ImporterIdentity {
 /// row proves its own bytes are intact, and this object proves the intact bytes
 /// are the ones *it* was built from. A source row swapped underneath an object
 /// would satisfy the first and fail the second.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ImportedStep {
     /// The row holding the exact bytes. Immutable: importing different bytes
     /// mints a new source rather than editing this one.
@@ -546,10 +565,15 @@ pub struct ImportedStep {
     /// What the file was called where it came from, if that was worth keeping.
     /// A hint for a person, never a path anything opens: the bytes in this
     /// document are the source, and no external file is consulted.
-    #[serde(default)]
     pub source_name: Option<String>,
     /// The handle-free projection of the scene that import produced.
-    pub scene: PersistedScene,
+    ///
+    /// Stored at whichever layout it was written with. A document written
+    /// before definitions had identities keeps binding by position and keeps
+    /// working; what it cannot do is answer a durable reference, because
+    /// inventing a key from a position would produce something that looks like
+    /// an identity and behaves like an index.
+    pub scene: StoredScene,
     pub imported_by: ImporterIdentity,
     /// What the importer reported *then*.
     ///
@@ -558,6 +582,49 @@ pub struct ImportedStep {
     /// different kernel build; presenting either as the other would claim an
     /// observation nobody made.
     pub diagnostics_at_import: Vec<ImportDiagnostic>,
+}
+
+/// The stored form of an imported object, at one scene layout.
+///
+/// Generic over the scene because the two layouts differ in that field and
+/// nothing else: two near-identical structs would be two things obliged to
+/// agree about source hashes, lengths and provenance forever after.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct StoredImport<S> {
+    source: ImportedSourceId,
+    source_hash: ContentHash,
+    source_byte_len: u64,
+    #[serde(default)]
+    source_name: Option<String>,
+    scene: S,
+    imported_by: ImporterIdentity,
+    diagnostics_at_import: Vec<ImportDiagnostic>,
+}
+
+impl<S> StoredImport<S> {
+    fn around(imported: &ImportedStep, scene: S) -> Self {
+        Self {
+            source: imported.source,
+            source_hash: imported.source_hash,
+            source_byte_len: imported.source_byte_len,
+            source_name: imported.source_name.clone(),
+            scene,
+            imported_by: imported.imported_by.clone(),
+            diagnostics_at_import: imported.diagnostics_at_import.clone(),
+        }
+    }
+
+    fn into_imported(self, scene: StoredScene) -> ImportedStep {
+        ImportedStep {
+            source: self.source,
+            source_hash: self.source_hash,
+            source_byte_len: self.source_byte_len,
+            source_name: self.source_name,
+            scene,
+            imported_by: self.imported_by,
+            diagnostics_at_import: self.diagnostics_at_import,
+        }
+    }
 }
 
 impl ImportedStep {
@@ -611,6 +678,10 @@ impl ObjectPayload {
     pub fn schema_version(&self) -> u32 {
         match self {
             Self::Unknown(unknown) => unknown.schema_version,
+            // An imported scene is stored at the layout it holds. A version 1
+            // scene rewritten under a version 2 header would claim identities
+            // it does not have, and the next reader would believe the header.
+            Self::ImportedStep(imported) => imported.scene.version(),
             known => known
                 .kind()
                 .map(ObjectKind::schema_version)
@@ -644,7 +715,30 @@ impl ObjectPayload {
             Self::Sketch(v) => Envelope::encode(name, version, capabilities, v)?,
             Self::Body(v) => Envelope::encode(name, version, capabilities, v)?,
             Self::Extrude(v) => Envelope::encode(name, version, capabilities, v)?,
-            Self::ImportedStep(v) => Envelope::encode(name, version, capabilities, v)?,
+            // Written back at the layout it was read at. A version 1 scene
+            // has no keys, and inventing them from positions would turn a
+            // document that honestly lacks identities into one that claims
+            // them.
+            Self::ImportedStep(v) => match &v.scene {
+                StoredScene::V1(scene) => Envelope::encode(
+                    name,
+                    version,
+                    capabilities,
+                    &StoredImport::around(v, scene.clone()),
+                )?,
+                StoredScene::V2(scene) => Envelope::encode(
+                    name,
+                    version,
+                    capabilities,
+                    &StoredImport::around(v, scene.clone()),
+                )?,
+                _ => {
+                    return Err(CadError::unsupported(format!(
+                        "this build cannot write a v{} imported scene",
+                        v.scene.version()
+                    )));
+                }
+            },
             Self::Unknown(unknown) => return Ok(unknown.raw_envelope().to_vec()),
         };
         envelope.to_bytes()
@@ -662,7 +756,9 @@ impl ObjectPayload {
         // this build writes is not something to guess at. Keeping it verbatim
         // also prevents a same-version type with a future capability from
         // being re-written without that capability.
-        if envelope.schema_version != kind.schema_version()
+        if !kind
+            .readable_schema_versions()
+            .contains(&envelope.schema_version)
             || envelope.required_capabilities != kind.required_capabilities()
         {
             return Ok(Self::Unknown(UnknownObject::new(envelope, bytes.to_vec())));
@@ -674,7 +770,18 @@ impl ObjectPayload {
             ObjectKind::Sketch => Self::Sketch(envelope.decode()?),
             ObjectKind::Body => Self::Body(envelope.decode()?),
             ObjectKind::Extrude => Self::Extrude(envelope.decode()?),
-            ObjectKind::ImportedStep => Self::ImportedStep(envelope.decode()?),
+            ObjectKind::ImportedStep => Self::ImportedStep(match envelope.schema_version {
+                1 => {
+                    let stored: StoredImport<LegacyScene> = envelope.decode()?;
+                    let scene = StoredScene::V1(stored.scene.clone());
+                    stored.into_imported(scene)
+                }
+                _ => {
+                    let stored: StoredImport<PersistedScene> = envelope.decode()?;
+                    let scene = StoredScene::V2(stored.scene.clone());
+                    stored.into_imported(scene)
+                }
+            }),
         };
         payload.validate()?;
         Ok(payload)

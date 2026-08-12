@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use std::io::{ErrorKind as IoErrorKind, Read};
 use std::path::{Path, PathBuf};
 
-use ferritecad_exchange::{Diagnostic as ImportDiagnostic, Import, Scene};
+use ferritecad_exchange::{Diagnostic as ImportDiagnostic, Import, Scene, StoredScene};
 use ferritecad_kernel::{KernelIdentity, ShapeHandle};
 use ferritecad_types::{
     CadError, ContentHash, Dimension, DocumentId, ImportedSourceId, ObjectId, Result,
@@ -535,7 +535,7 @@ impl Document {
                 source_hash,
                 source_byte_len,
                 source_name,
-                scene: persisted,
+                scene: StoredScene::V2(persisted),
                 imported_by,
                 diagnostics_at_import,
             };
