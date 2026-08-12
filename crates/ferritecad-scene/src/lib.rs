@@ -36,11 +36,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use ferritecad_document::{Document, ObjectPayload, StepImporter};
+use ferritecad_document::{Document, ObjectPayload, ObjectRecord, StepImporter};
 use ferritecad_eval::rebuild_cold;
 use ferritecad_exchange::{ColourSource, Import, Scene};
 use ferritecad_kernel::{
-    GeometryKernel, KernelIdentity, OperationContext, ShapeHandle, TessellationParams,
+    GeometryKernel, KernelIdentity, OperationContext, ProgressSink, ShapeHandle, TessellationParams,
 };
 use ferritecad_types::{CadError, Result, Transform};
 use ferritecad_viewport::{RenderSnapshot, SnapshotBuilder};
@@ -81,10 +81,17 @@ where
 {
     let document = Document::open_read_only(path)?;
 
+    // Two phases of one job, so they share one scale. Building the geometry
+    // is the slow half and gets most of it; the rest is drawing what was
+    // built. A bar that reached the end when the rebuild did would sit at
+    // "finished" for the whole of the meshing.
+    let building = phase(context, 0.0, BUILDING);
+    let drawing = phase(context, BUILDING, 1.0);
+
     // Cold on purpose, as everywhere else a result must be right rather than
     // quick: consulting a cache would make what is on screen depend on the
     // state of a sidecar that exists only to save time.
-    let built = rebuild_cold(&document, kernel, context)?;
+    let built = rebuild_cold(&document, kernel, &building)?;
 
     // Handles this function obtained itself, as opposed to the ones the
     // rebuild owns. Filled as it goes so that a failure halfway through an
@@ -95,8 +102,28 @@ where
     // handed back in one place whatever the outcome.
     let snapshot = (|| -> Result<RenderSnapshot> {
         let mut builder = SnapshotBuilder::new();
-        for object in document.objects()? {
+        let objects = document.objects()?;
+
+        // Counted before anything is drawn, so each one can say what fraction
+        // of the drawing it is. An object that draws nothing is not part of
+        // the count: the bar would stall on it and then jump.
+        let drawable = objects.iter().filter(|object| draws(object)).count();
+        let mut done = 0usize;
+
+        for object in objects {
             context.check_cancelled()?;
+            // This object's share of the drawing phase. The kernel reports
+            // that it finished a mesh, and that report arrives as the part of
+            // the load it actually is.
+            let scoped = phase(
+                &drawing,
+                done as f64 / drawable.max(1) as f64,
+                (done + 1) as f64 / drawable.max(1) as f64,
+            );
+            if draws(&object) {
+                done += 1;
+            }
+
             match &object.payload {
                 ObjectPayload::Body(body) => {
                     // A body with no tip feature is empty by definition rather
@@ -110,7 +137,7 @@ where
                             object.id
                         ))
                     })?;
-                    let mesh = kernel.tessellate(shape, params, context)?;
+                    let mesh = kernel.tessellate(shape, params, &scoped)?;
                     let definition = builder.add_mesh(&mesh)?;
                     builder.place(definition, None, &Transform::IDENTITY, BODY_COLOUR)?;
                 }
@@ -127,7 +154,7 @@ where
                         document.reopen_step_import(object.id, &mut reader)?
                     };
                     imported.extend(reopened.scene.shapes());
-                    draw_scene(&mut builder, kernel, &reopened.scene, params, context)?;
+                    draw_scene(&mut builder, kernel, &reopened.scene, params, &scoped)?;
                 }
 
                 _ => continue,
@@ -236,6 +263,39 @@ fn draw_scene<K: GeometryKernel + ?Sized>(
         builder.place(mesh, None, &world[index], colour)?;
     }
     Ok(())
+}
+
+/// Whether this object puts anything on screen.
+///
+/// A body with nothing built into it yet draws nothing, and neither does
+/// anything that is not geometry at all.
+fn draws(object: &ObjectRecord) -> bool {
+    match &object.payload {
+        ObjectPayload::Body(body) => body.tip_feature.is_some(),
+        ObjectPayload::ImportedStep(_) => true,
+        _ => false,
+    }
+}
+
+/// How much of a load is building geometry rather than drawing it.
+///
+/// A guess, and the honest kind: nothing here can know the ratio for a
+/// particular document, and any number would be wrong for some of them. What
+/// it must not do is reach the end before the work does.
+const BUILDING: f64 = 0.75;
+
+/// A slice of the whole load, as its own `0..1`.
+///
+/// The phases below report how far through themselves they are; a caller
+/// wants to know how far through the load it is. Composing that here means
+/// neither phase has to know what else the load does.
+fn phase(context: &OperationContext, from: f64, to: f64) -> OperationContext {
+    let outer = context.progress().clone();
+    OperationContext::new(context.tolerance())
+        .with_cancel(context.cancel().clone())
+        .with_progress(ProgressSink::new(move |fraction| {
+            outer.report(from + fraction * (to - from));
+        }))
 }
 
 /// Turns a scene's row-major 3x4 placement into a transform.
@@ -818,6 +878,63 @@ mod tests {
 
         assert_eq!(snapshot.meshes().len(), 1);
         assert_eq!(implementation.live_shape_count(), 0);
+    }
+
+    #[test]
+    fn a_load_reports_how_far_through_it_is() {
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("three.fcad");
+        several_bodies(&path, 3);
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = std::sync::Arc::clone(&seen);
+        let context = OperationContext::default().with_progress(
+            ferritecad_kernel::ProgressSink::new(move |fraction| {
+                record
+                    .lock()
+                    .expect("no test thread panicked")
+                    .push(fraction);
+            }),
+        );
+
+        let mut kernel = MockKernel::new();
+        snapshot_of(&path, &mut kernel, no_imports, &params(), &context)
+            .expect("the document loads");
+
+        let seen = seen.lock().expect("no test thread panicked").clone();
+        assert!(!seen.is_empty(), "a load reported no progress at all");
+        assert!(
+            seen.windows(2).all(|pair| pair[0] <= pair[1]),
+            "progress went backwards: {seen:?}"
+        );
+        assert!(
+            seen.iter().all(|fraction| (0.0..=1.0).contains(fraction)),
+            "progress left the scale: {seen:?}"
+        );
+
+        // The two halves are one scale. Building reports below the split and
+        // drawing above it, so a bar fed from this does not reach the end
+        // while the model is still being meshed.
+        assert!(
+            seen.iter().any(|fraction| *fraction < BUILDING),
+            "nothing was reported while the geometry was being built: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|fraction| *fraction > BUILDING),
+            "nothing was reported while the model was being drawn: {seen:?}"
+        );
+
+        // And it ends at the end, once. Three bodies, each reporting when its
+        // own mesh is done: a loader that passed the kernel's own numbers
+        // through would announce a finished load three times, the first of
+        // them with two thirds of the drawing still to do.
+        let finished = seen.iter().filter(|fraction| **fraction >= 1.0).count();
+        assert_eq!(
+            finished, 1,
+            "the load reported itself finished {finished} times: {seen:?}"
+        );
+        let last = seen.last().copied().expect("something was reported");
+        assert!((last - 1.0).abs() < 1e-6, "a finished load reported {last}");
     }
 
     #[test]

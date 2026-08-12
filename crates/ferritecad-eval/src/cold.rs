@@ -29,8 +29,8 @@ use std::collections::BTreeMap;
 use ferritecad_document::TopologyRef;
 use ferritecad_document::{CacheStore, Document, ObjectPayload, ObjectRecord};
 use ferritecad_kernel::{
-    ExtrudeRequest, GeometryKernel, OperationContext, Profile, ShapeHandle, SketchPlane,
-    SubShapeHandle,
+    ExtrudeRequest, GeometryKernel, OperationContext, Profile, ProgressSink, ShapeHandle,
+    SketchPlane, SubShapeHandle,
 };
 use ferritecad_topology::{TopologyMap, archive_feature, restore_feature};
 use ferritecad_types::{CadError, ObjectId, Result};
@@ -203,10 +203,15 @@ fn run<K: GeometryKernel + ?Sized>(
 
     let mut planes: BTreeMap<ObjectId, SketchPlane> = BTreeMap::new();
 
-    for id in plan.order() {
+    let total = plan.order().len();
+    for (position, id) in plan.order().iter().enumerate() {
         // Checked between features rather than only inside the kernel: a
         // document of many cheap features must still stop promptly.
         context.check_cancelled()?;
+
+        // What the kernel says about this one feature, on the scale of the
+        // whole document. See `within`.
+        let scoped = within(context, position, total);
 
         let object = objects.get(id).ok_or_else(|| {
             CadError::input(format!(
@@ -248,12 +253,12 @@ fn run<K: GeometryKernel + ?Sized>(
                 let request = extrude_request(feature, profile)?;
 
                 let restored = match cache.as_deref_mut() {
-                    Some(cache) => restore(kernel, cache, context, *id, &request, state, events)?,
+                    Some(cache) => restore(kernel, cache, &scoped, *id, &request, state, events)?,
                     None => false,
                 };
 
                 if !restored {
-                    let result = kernel.extrude(&request, context)?;
+                    let result = kernel.extrude(&request, &scoped)?;
 
                     // Register ownership before checking again: a kernel can
                     // finish the operation and then invoke a progress callback
@@ -273,7 +278,7 @@ fn run<K: GeometryKernel + ?Sized>(
                     state.shapes.insert(*id, result.shape);
 
                     if let Some(cache) = cache.as_deref_mut() {
-                        store(kernel, cache, context, *id, &request, state, events);
+                        store(kernel, cache, &scoped, *id, &request, state, events);
                     }
                 }
             }
@@ -471,6 +476,37 @@ fn store<K: GeometryKernel + ?Sized>(
             Some(error.to_string()),
         ));
     }
+}
+
+/// One feature's slice of the whole rebuild's progress.
+///
+/// A kernel reports how far it is through the operation it was given; someone
+/// watching a rebuild wants to know how far it is through the document. This
+/// wraps the caller's sink so a kernel's `0.0` and `1.0` for feature `done` of
+/// `total` arrive as the fractions of the document they actually are.
+///
+/// Wrapping rather than forwarding is what keeps one meaning on one channel: a
+/// sink that saw the kernel's numbers unchanged would watch the count sweep to
+/// completion once per feature, with no way to tell that from being finished.
+///
+/// Only what a kernel reports moves the count. A plan item that asks no
+/// kernel anything – a datum, a sketch, a stored import – passes in silence,
+/// because a progress report has always meant that geometry was worked on and
+/// broadening it here would let a callback cancel a rebuild earlier than the
+/// work it was watching.
+///
+/// Everything else about the context travels unchanged, the cancel token
+/// included: it is the same token, so a progress callback can still stop the
+/// rebuild it is watching.
+fn within(context: &OperationContext, done: usize, total: usize) -> OperationContext {
+    let outer = context.progress().clone();
+    let (done, total) = (done as f64, total.max(1) as f64);
+
+    OperationContext::new(context.tolerance())
+        .with_cancel(context.cancel().clone())
+        .with_progress(ProgressSink::new(move |fraction| {
+            outer.report((done + fraction) / total);
+        }))
 }
 
 fn ensure_rebuildable(document: &Document) -> Result<()> {

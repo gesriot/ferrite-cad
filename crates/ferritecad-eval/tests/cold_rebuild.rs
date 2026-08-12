@@ -373,6 +373,45 @@ fn cancelling_partway_through_releases_the_finished_features() {
 }
 
 #[test]
+fn progress_is_reported_as_a_fraction_of_the_document() {
+    let (_dir, document, _plate) = sample();
+
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let record = std::sync::Arc::clone(&seen);
+    let context = OperationContext::default().with_progress(ProgressSink::new(move |fraction| {
+        record
+            .lock()
+            .expect("no test thread panicked")
+            .push(fraction);
+    }));
+
+    let mut kernel = MockKernel::new();
+    let built = rebuild_cold(&document, &mut kernel, &context).expect("builds");
+    built.release_all(&mut kernel);
+
+    let seen = seen.lock().expect("no test thread panicked").clone();
+    assert!(!seen.is_empty(), "a rebuild reported no progress at all");
+
+    // The kernel reports 0.0 and 1.0 for the one extrusion it is asked about.
+    // What reaches the caller is where that operation sits in the document: a
+    // sink that saw the kernel's own numbers would watch a four-object plan
+    // sweep to completion and have no way to tell that from being finished.
+    assert!(
+        seen.iter().all(|fraction| *fraction < 1.0),
+        "the plate has objects after its extrusion, so nothing in it is the \
+         whole document: {seen:?}"
+    );
+    assert!(
+        seen.windows(2).all(|pair| pair[0] <= pair[1]),
+        "progress went backwards: {seen:?}"
+    );
+    assert!(
+        seen.iter().any(|fraction| *fraction > 0.0),
+        "every report was zero: {seen:?}"
+    );
+}
+
+#[test]
 fn cancellation_at_the_last_progress_event_releases_the_result() {
     let (_dir, mut document, plate) = sample();
     document
