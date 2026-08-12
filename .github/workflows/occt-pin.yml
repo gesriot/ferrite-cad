@@ -628,14 +628,19 @@ jobs:
           # Every test target, not a list of them: a gate that has to be added
           # here by hand is a gate that will one day be added everywhere else
           # and not here.
-          cargo test -p ferritecad-cli --tests
+          #
+          # `--nocapture` for the same reason it is passed above: these tests
+          # skip themselves when the machine has no usable GPU adapter, and a
+          # skipped test reports as passed. Without the output there is no way
+          # to tell a run that drew pixels from one that decided not to try.
+          cargo test -p ferritecad-cli --tests -- --nocapture
 
           # And the loader, for the same reason one step further up: everything
           # about it is settled against the mock, which cannot say whether the
           # numbers are real. Its OCCT gate is the only place a picture built
           # from a document on disk is measured against geometry Open CASCADE
           # actually computed.
-          cargo test -p ferritecad-scene --tests
+          cargo test -p ferritecad-scene --tests -- --nocapture
 
       - name: Generate the STEP corpus and compare two runs
         env:
