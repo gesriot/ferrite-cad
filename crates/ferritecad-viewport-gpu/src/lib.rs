@@ -12,7 +12,7 @@
 //! [`Frame`] holds the very [`RenderSnapshot`] that produced it, and
 //! [`Frame::pick_at`] resolves against that one. A pick buffer read against a
 //! newer snapshot would land on whichever definition now occupies the number,
-//! which is a wrong answer that looks like a right one — and exactly the shape
+//! which is a wrong answer that looks like a right one – and exactly the shape
 //! of mistake the rest of this project spends its effort refusing. Here it is
 //! not refused but made impossible: the frame and the snapshot it belongs to
 //! cannot be separated.

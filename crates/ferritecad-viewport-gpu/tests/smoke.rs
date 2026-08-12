@@ -21,7 +21,7 @@ use std::sync::Arc;
 use ferritecad_kernel::{
     Mesh, MeshFaceRange, SessionId, ShapeHandle, SubShapeHandle, SubShapeKind,
 };
-use ferritecad_types::{Transform, Vec3};
+use ferritecad_types::{ErrorKind, Transform, Vec3};
 use ferritecad_viewport::{Camera, PickId, RenderSnapshot, SnapshotBuilder};
 use ferritecad_viewport_gpu::Renderer;
 
@@ -30,12 +30,43 @@ macro_rules! renderer_or_skip {
     () => {
         match Renderer::new() {
             Ok(renderer) => renderer,
-            Err(reason) => {
+            Err(reason) if reason.kind() == ErrorKind::Unsupported => {
                 eprintln!("skipped: {reason}");
                 return;
             }
+            Err(reason) => panic!("a renderer failed after adapter discovery: {reason}"),
         }
     };
+}
+
+fn tilted_quad(baked_scale: bool) -> Mesh {
+    let shape = ShapeHandle::new(SessionId::new(), 2);
+    let scale = if baked_scale { 4.0 } else { 1.0 };
+    let normal = if baked_scale {
+        [0.242_535_62, -0.970_142_5, 0.0]
+    } else {
+        [
+            std::f32::consts::FRAC_1_SQRT_2,
+            -std::f32::consts::FRAC_1_SQRT_2,
+            0.0,
+        ]
+    };
+    let positions = [
+        [-scale, -1.0, -1.0],
+        [scale, 1.0, -1.0],
+        [scale, 1.0, 1.0],
+        [-scale, -1.0, 1.0],
+    ];
+    Mesh {
+        positions: positions.into_iter().flatten().collect(),
+        normals: [normal; 4].into_iter().flatten().collect(),
+        indices: vec![0, 1, 2, 0, 2, 3],
+        faces: vec![MeshFaceRange {
+            face: SubShapeHandle::new(shape, SubShapeKind::Face, 0),
+            first_index: 0,
+            index_count: 6,
+        }],
+    }
 }
 
 /// A square in the XZ plane, facing -Y, two triangles.
@@ -256,25 +287,93 @@ fn a_viewport_of_no_size_draws_nothing_and_says_so() {
 }
 
 #[test]
-fn an_empty_snapshot_draws_a_cleared_frame() {
+fn a_viewport_larger_than_the_device_can_hold_is_refused_before_allocation() {
     let mut renderer = renderer_or_skip!();
     let snapshot = Arc::new(SnapshotBuilder::new().build());
+    let mut camera = Camera::new();
+    camera.resize(u32::MAX, 1);
 
-    // No draws at all still has to produce a frame: a device that refused an
-    // empty pass would make "the document is empty" a rendering error.
+    let error = renderer
+        .render(snapshot, &camera)
+        .expect_err("an impossible target must be refused");
+    assert_eq!(error.kind(), ErrorKind::Input);
+}
+
+#[test]
+fn a_normal_and_its_baked_equivalent_receive_the_same_light() {
+    let mut renderer = renderer_or_skip!();
+    let build = |baked| {
+        let mut builder = SnapshotBuilder::new();
+        let mesh = builder.add_mesh(&tilted_quad(baked)).expect("packs");
+        let transform = if baked {
+            Transform::IDENTITY
+        } else {
+            Transform::from_rows([
+                [4.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+            ])
+            .expect("finite")
+        };
+        builder
+            .place(mesh, None, &transform, [0.8, 0.6, 0.2])
+            .expect("places");
+        Arc::new(builder.build())
+    };
+    let transformed = build(false);
+    let baked = build(true);
+    assert_eq!(transformed.bounds(), baked.bounds());
+
+    let mut camera = Camera::new();
+    camera.resize(64, 64);
+    camera
+        .frame(transformed.bounds().expect("geometry"))
+        .expect("frames");
+    let transformed = renderer.render(transformed, &camera).expect("draws");
+    let baked = renderer.render(baked, &camera).expect("draws");
+    assert_eq!(
+        transformed.colour(),
+        baked.colour(),
+        "non-uniform scaling changed the lighting of the same world-space surface"
+    );
+}
+
+#[test]
+fn an_empty_snapshot_draws_a_cleared_frame() {
+    let mut renderer = renderer_or_skip!();
+    let empty = Arc::new(SnapshotBuilder::new().build());
+    let placed_empty = {
+        let mesh = Mesh {
+            positions: Vec::new(),
+            normals: Vec::new(),
+            indices: Vec::new(),
+            faces: Vec::new(),
+        };
+        let mut builder = SnapshotBuilder::new();
+        let mesh = builder.add_mesh(&mesh).expect("packs an empty mesh");
+        builder
+            .place(mesh, None, &Transform::IDENTITY, [1.0, 0.0, 0.0])
+            .expect("places an empty mesh");
+        Arc::new(builder.build())
+    };
+
     let mut camera = Camera::new();
     camera.resize(16, 16);
-    let frame = renderer.render(snapshot, &camera).expect("draws nothing");
 
-    assert_eq!(frame.colour().len(), 16 * 16 * 4);
-    assert!(
-        frame
-            .colour()
-            .chunks_exact(4)
-            .all(|pixel| pixel == [0, 0, 0, 255]),
-        "an empty snapshot left something other than the clear colour"
-    );
-    assert_eq!(frame.pick_at(8, 8), PickId::NOTHING);
+    // Neither no draws nor a placed definition with no triangles may make an
+    // empty document (or an XDE assembly node) a rendering error.
+    for snapshot in [empty, placed_empty] {
+        let frame = renderer.render(snapshot, &camera).expect("draws nothing");
+        assert_eq!(frame.colour().len(), 16 * 16 * 4);
+        assert!(
+            frame
+                .colour()
+                .chunks_exact(4)
+                .all(|pixel| pixel == [0, 0, 0, 255]),
+            "an empty snapshot left something other than the clear colour"
+        );
+        assert_eq!(frame.pick_at(8, 8), PickId::NOTHING);
+    }
 }
 
 #[test]
@@ -290,7 +389,7 @@ fn two_frames_of_one_snapshot_are_the_same_picture() {
         .expect("draws");
 
     // Not a claim about GPUs in general: it is a claim that nothing in this
-    // renderer varies between frames — no time, no frame counter, no iteration
+    // renderer varies between frames – no time, no frame counter, no iteration
     // over anything unordered.
     assert_eq!(first.colour(), second.colour());
     assert_eq!(first.pick_at(24, 24), second.pick_at(24, 24));

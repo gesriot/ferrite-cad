@@ -43,8 +43,16 @@ fn vertex_main(
     var out: VertexOut;
     let world = draw.transform * vec4<f32>(position, 1.0);
     out.clip = globals.view_projection * world;
-    // The linear part only: a translation must not move a direction.
-    out.normal = (draw.transform * vec4<f32>(normal, 0.0)).xyz;
+    // A normal follows the inverse transpose, not the transform itself. The
+    // cofactor matrix is the inverse transpose multiplied by determinant;
+    // normalisation below removes its magnitude, and the two-sided lighting
+    // makes the determinant's sign immaterial. This form also stays defined
+    // for a singular transform instead of dividing by zero.
+    let x = draw.transform[0].xyz;
+    let y = draw.transform[1].xyz;
+    let z = draw.transform[2].xyz;
+    let normal_matrix = mat3x3<f32>(cross(y, z), cross(z, x), cross(x, y));
+    out.normal = normal_matrix * normal;
     return out;
 }
 

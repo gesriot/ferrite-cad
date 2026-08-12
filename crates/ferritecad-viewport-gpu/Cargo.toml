@@ -17,7 +17,7 @@ authors.workspace = true
 ferritecad-types.workspace = true
 ferritecad-viewport.workspace = true
 
-wgpu = "30.0.0"
+wgpu = "=30.0.0"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 

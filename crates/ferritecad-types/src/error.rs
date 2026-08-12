@@ -23,6 +23,8 @@ pub enum ErrorKind {
     Topology,
     /// The geometry kernel refused or failed to produce a result.
     Kernel,
+    /// The graphics device or renderer failed to produce a frame.
+    Rendering,
     /// Storage or filesystem failure.
     Io,
     /// The operation was cancelled before it produced a result.
@@ -38,6 +40,7 @@ impl ErrorKind {
             Self::Constraint => "constraint",
             Self::Topology => "topology",
             Self::Kernel => "kernel",
+            Self::Rendering => "rendering",
             Self::Io => "io",
             Self::Cancellation => "cancellation",
             Self::Unsupported => "unsupported",
@@ -79,6 +82,13 @@ pub enum CadError {
         source: Option<BoxError>,
     },
 
+    #[error("rendering failure: {message}")]
+    Rendering {
+        message: String,
+        #[source]
+        source: Option<BoxError>,
+    },
+
     #[error("{context}")]
     Io {
         context: String,
@@ -100,6 +110,7 @@ impl CadError {
             Self::Constraint { .. } => ErrorKind::Constraint,
             Self::Topology { .. } => ErrorKind::Topology,
             Self::Kernel { .. } => ErrorKind::Kernel,
+            Self::Rendering { .. } => ErrorKind::Rendering,
             Self::Io { .. } => ErrorKind::Io,
             Self::Cancelled => ErrorKind::Cancellation,
             Self::Unsupported { .. } => ErrorKind::Unsupported,
@@ -146,6 +157,20 @@ impl CadError {
         }
     }
 
+    pub fn rendering(message: impl Into<String>) -> Self {
+        Self::Rendering {
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    pub fn rendering_because(message: impl Into<String>, source: impl Into<BoxError>) -> Self {
+        Self::Rendering {
+            message: message.into(),
+            source: Some(source.into()),
+        }
+    }
+
     pub fn io(context: impl Into<String>, source: impl Into<BoxError>) -> Self {
         Self::Io {
             context: context.into(),
@@ -185,5 +210,12 @@ mod tests {
         let err = CadError::topology("ExtrudeCap(Top) of feature 3 no longer exists");
         assert_eq!(err.kind(), ErrorKind::Topology);
         assert!(std::error::Error::source(&err).is_none());
+    }
+
+    #[test]
+    fn rendering_is_not_misclassified_as_a_geometry_kernel_failure() {
+        let err = CadError::rendering("the graphics device was lost");
+        assert_eq!(err.kind(), ErrorKind::Rendering);
+        assert_eq!(err.kind().as_str(), "rendering");
     }
 }

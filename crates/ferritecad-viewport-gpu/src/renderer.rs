@@ -69,9 +69,7 @@ impl Renderer {
             ..Default::default()
         }))
         .map_err(|error| {
-            CadError::unsupported(format!(
-                "a graphics adapter was found but refused a device: {error}"
-            ))
+            CadError::rendering_because("a graphics adapter was found but refused a device", error)
         })?;
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -213,6 +211,9 @@ impl Renderer {
             });
         }
 
+        let readback = self.validate_frame(width, height)?;
+        let draw_buffer_size = self.validate_snapshot(&snapshot)?;
+
         let extent = wgpu::Extent3d {
             width,
             height,
@@ -242,8 +243,11 @@ impl Renderer {
         // Every draw's uniform data in one buffer, each at a device-aligned
         // offset. An empty snapshot still needs one stride of buffer, because a
         // zero-sized uniform buffer is not a thing a device will bind.
-        let mut draw_bytes =
-            vec![0u8; (self.draw_stride as usize).max(1) * snapshot.draws().len().max(1)];
+        let mut draw_bytes = Vec::new();
+        draw_bytes
+            .try_reserve_exact(draw_buffer_size)
+            .map_err(|error| CadError::rendering_because("allocating draw uniforms", error))?;
+        draw_bytes.resize(draw_buffer_size, 0);
         for (index, item) in snapshot.draws().iter().enumerate() {
             let uniform = DrawUniform {
                 transform: item.transform,
@@ -368,12 +372,12 @@ impl Renderer {
             }
         }
 
-        let colour_read = self.readback(&mut encoder, &colour, extent, 4);
-        let pick_read = self.readback(&mut encoder, &pick, extent, 4);
+        let colour_read = self.readback(&mut encoder, &colour, extent, readback);
+        let pick_read = self.readback(&mut encoder, &pick, extent, readback);
         self.queue.submit(Some(encoder.finish()));
 
-        let colour = self.take(colour_read, width, height, 4)?;
-        let picks = self.take(pick_read, width, height, 4)?;
+        let colour = self.take(colour_read, height, readback)?;
+        let picks = self.take(pick_read, height, readback)?;
 
         Ok(Frame {
             snapshot,
@@ -405,6 +409,88 @@ impl Renderer {
         })
     }
 
+    fn validate_frame(&self, width: u32, height: u32) -> Result<ReadbackLayout> {
+        let limits = self.device.limits();
+        let maximum = limits.max_texture_dimension_2d;
+        if width > maximum || height > maximum {
+            return Err(CadError::input(format!(
+                "viewport {width}x{height} exceeds this device's {maximum}x{maximum} texture limit"
+            )));
+        }
+
+        let row = u64::from(width)
+            .checked_mul(4)
+            .ok_or_else(|| CadError::input("viewport row size overflows its number format"))?;
+        let padded = align_to(row, u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
+        let padded = u32::try_from(padded)
+            .map_err(|_| CadError::input("viewport padded row does not fit the graphics API"))?;
+        let buffer_size = u64::from(padded)
+            .checked_mul(u64::from(height))
+            .ok_or_else(|| CadError::input("viewport readback size overflows its number format"))?;
+        if buffer_size > limits.max_buffer_size {
+            return Err(CadError::input(format!(
+                "viewport readback needs {buffer_size} bytes, exceeding this device's {}-byte buffer limit",
+                limits.max_buffer_size
+            )));
+        }
+        let tight_size = row
+            .checked_mul(u64::from(height))
+            .and_then(|size| usize::try_from(size).ok())
+            .ok_or_else(|| CadError::input("viewport does not fit in host address space"))?;
+
+        Ok(ReadbackLayout {
+            row: row as usize,
+            padded,
+            buffer_size,
+            tight_size,
+        })
+    }
+
+    fn validate_snapshot(&self, snapshot: &RenderSnapshot) -> Result<usize> {
+        let limits = self.device.limits();
+        let draws = snapshot.draws().len().max(1);
+        let buffer_size = self.draw_stride.checked_mul(draws as u64).ok_or_else(|| {
+            CadError::input("draw uniform buffer size overflows its number format")
+        })?;
+        if buffer_size > limits.max_buffer_size {
+            return Err(CadError::input(format!(
+                "draw uniforms need {buffer_size} bytes, exceeding this device's {}-byte buffer limit",
+                limits.max_buffer_size
+            )));
+        }
+        if let Some(last) = snapshot.draws().len().checked_sub(1) {
+            let offset = self
+                .draw_stride
+                .checked_mul(last as u64)
+                .ok_or_else(|| CadError::input("dynamic uniform offset overflows"))?;
+            if offset > u64::from(u32::MAX) {
+                return Err(CadError::input(
+                    "draw uniforms exceed the u32 dynamic-offset address space",
+                ));
+            }
+        }
+
+        for (index, mesh) in snapshot.meshes().iter().enumerate() {
+            for (what, elements, element_size) in [
+                ("vertex", mesh.vertices().len(), std::mem::size_of::<f32>()),
+                ("index", mesh.indices().len(), std::mem::size_of::<u32>()),
+            ] {
+                let bytes = elements.checked_mul(element_size).ok_or_else(|| {
+                    CadError::input(format!("mesh {index} {what} buffer size overflows"))
+                })?;
+                if bytes as u64 > limits.max_buffer_size {
+                    return Err(CadError::input(format!(
+                        "mesh {index} {what} buffer needs {bytes} bytes, exceeding this device's {}-byte limit",
+                        limits.max_buffer_size
+                    )));
+                }
+            }
+        }
+
+        usize::try_from(buffer_size)
+            .map_err(|_| CadError::input("draw uniform buffer does not fit in host address space"))
+    }
+
     /// Copies a target into a buffer a host can map.
     ///
     /// Rows are padded to the alignment a copy demands, which is why the result
@@ -414,15 +500,11 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         texture: &wgpu::Texture,
         extent: wgpu::Extent3d,
-        bytes_per_pixel: u32,
+        layout: ReadbackLayout,
     ) -> wgpu::Buffer {
-        let padded = align_to(
-            u64::from(extent.width * bytes_per_pixel),
-            u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
-        );
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ferritecad viewport readback"),
-            size: padded * u64::from(extent.height),
+            size: layout.buffer_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -438,7 +520,7 @@ impl Renderer {
                 buffer: &buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(padded as u32),
+                    bytes_per_row: Some(layout.padded),
                     rows_per_image: Some(extent.height),
                 },
             },
@@ -448,13 +530,7 @@ impl Renderer {
     }
 
     /// Waits for a readback and strips the row padding back out.
-    fn take(
-        &self,
-        buffer: wgpu::Buffer,
-        width: u32,
-        height: u32,
-        bytes_per_pixel: u32,
-    ) -> Result<Vec<u8>> {
+    fn take(&self, buffer: wgpu::Buffer, height: u32, layout: ReadbackLayout) -> Result<Vec<u8>> {
         let slice = buffer.slice(..);
         let (sender, receiver) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
@@ -462,29 +538,34 @@ impl Renderer {
         });
         self.device
             .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|error| CadError::kernel(format!("waiting for the frame: {error}")))?;
+            .map_err(|error| CadError::rendering_because("waiting for the frame", error))?;
         receiver
             .recv()
-            .map_err(|error| CadError::kernel(format!("the frame was never read back: {error}")))?
-            .map_err(|error| CadError::kernel(format!("reading the frame back: {error}")))?;
+            .map_err(|error| CadError::rendering_because("the frame was never read back", error))?
+            .map_err(|error| CadError::rendering_because("reading the frame back", error))?;
 
-        let row = width * bytes_per_pixel;
-        let padded = align_to(
-            u64::from(row),
-            u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
-        );
         let mapped = slice
             .get_mapped_range()
-            .map_err(|error| CadError::kernel(format!("mapping the frame: {error}")))?;
-        let mut out = Vec::with_capacity((row * height) as usize);
+            .map_err(|error| CadError::rendering_because("mapping the frame", error))?;
+        let mut out = Vec::new();
+        out.try_reserve_exact(layout.tight_size)
+            .map_err(|error| CadError::rendering_because("allocating the frame readback", error))?;
         for line in 0..height as usize {
-            let at = line * padded as usize;
-            out.extend_from_slice(&mapped[at..at + row as usize]);
+            let at = line * layout.padded as usize;
+            out.extend_from_slice(&mapped[at..at + layout.row]);
         }
         drop(mapped);
         buffer.unmap();
         Ok(out)
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ReadbackLayout {
+    row: usize,
+    padded: u32,
+    buffer_size: u64,
+    tight_size: usize,
 }
 
 /// One drawn frame, and the snapshot it was drawn from.
