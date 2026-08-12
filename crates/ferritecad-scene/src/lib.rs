@@ -33,7 +33,7 @@
 //! adapter back at the document. Passing the kernel to the function instead of
 //! capturing it is what lets one `&mut` satisfy both.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use ferritecad_document::{Document, ObjectPayload, ObjectRecord, StepImporter};
@@ -225,6 +225,22 @@ fn draw_scene<K: GeometryKernel + ?Sized>(
         world.push(placed);
     }
 
+    // One imported object can hold many definitions. The caller gives the
+    // object one slice of the load; divide that slice among the unique leaf
+    // definitions that actually need a mesh. Reusing the object's context for
+    // every definition would make progress run from the beginning to the end
+    // of the same slice once per part, going backwards between parts and
+    // announcing completion more than once.
+    let definitions_to_mesh = scene
+        .instances
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !structural[*index])
+        .map(|(_, instance)| instance.definition)
+        .collect::<BTreeSet<_>>()
+        .len();
+    let mut definitions_meshed = 0usize;
+
     let mut meshes: BTreeMap<usize, usize> = BTreeMap::new();
     for (index, instance) in scene.instances.iter().enumerate() {
         if structural[index] {
@@ -241,7 +257,13 @@ fn draw_scene<K: GeometryKernel + ?Sized>(
                         instance.definition
                     ))
                 })?;
-                let mesh = kernel.tessellate(definition.shape, params, context)?;
+                let scoped = phase(
+                    context,
+                    definitions_meshed as f64 / definitions_to_mesh.max(1) as f64,
+                    (definitions_meshed + 1) as f64 / definitions_to_mesh.max(1) as f64,
+                );
+                let mesh = kernel.tessellate(definition.shape, params, &scoped)?;
+                definitions_meshed += 1;
                 let packed = builder.add_mesh(&mesh)?;
                 meshes.insert(instance.definition, packed);
                 packed
@@ -935,6 +957,74 @@ mod tests {
         );
         let last = seen.last().copied().expect("something was reported");
         assert!((last - 1.0).abs() < 1e-6, "a finished load reported {last}");
+    }
+
+    #[test]
+    fn an_imported_assembly_reports_one_monotonic_drawing_phase() {
+        let mut kernel = MockKernel::new();
+        let scene = Scene {
+            source_unit: "MILLIMETRE".to_owned(),
+            schema: "AP214".to_owned(),
+            definitions: vec![
+                definition(&mut kernel, "Assembly", 2, "step.product_definition#1"),
+                definition(&mut kernel, "First", 1, "step.product_definition#2"),
+                definition(&mut kernel, "Second", 1, "step.product_definition#3"),
+            ],
+            instances: vec![
+                instance(0, None, [0.0, 0.0, 0.0], ColourSource::None, [0.0; 3]),
+                instance(
+                    1,
+                    Some(0),
+                    [0.0, 0.0, 0.0],
+                    ColourSource::Definition,
+                    [0.1, 0.2, 0.3],
+                ),
+                instance(
+                    2,
+                    Some(0),
+                    [20.0, 0.0, 0.0],
+                    ColourSource::Definition,
+                    [0.3, 0.2, 0.1],
+                ),
+            ],
+        };
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = std::sync::Arc::clone(&seen);
+        let context = OperationContext::default().with_progress(
+            ferritecad_kernel::ProgressSink::new(move |fraction| {
+                record
+                    .lock()
+                    .expect("no test thread panicked")
+                    .push(fraction);
+            }),
+        );
+
+        let mut builder = SnapshotBuilder::new();
+        draw_scene(&mut builder, &mut kernel, &scene, &params(), &context)
+            .expect("the assembly draws");
+        let snapshot = builder.build();
+        assert_eq!(snapshot.meshes().len(), 2, "a leaf definition was missed");
+
+        let seen = seen.lock().expect("no test thread panicked").clone();
+        assert!(
+            seen.windows(2).all(|pair| pair[0] <= pair[1]),
+            "progress went backwards between imported definitions: {seen:?}"
+        );
+        assert_eq!(
+            seen.iter().filter(|fraction| **fraction >= 1.0).count(),
+            1,
+            "the imported object announced completion once per definition: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|fraction| (0.0..1.0).contains(fraction)),
+            "the first definition consumed the whole drawing phase: {seen:?}"
+        );
+
+        for shape in scene.shapes() {
+            kernel.release(shape);
+        }
+        assert_eq!(kernel.live_shape_count(), 0, "the test kept its shapes");
     }
 
     #[test]
