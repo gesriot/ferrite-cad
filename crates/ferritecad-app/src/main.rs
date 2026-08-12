@@ -19,19 +19,23 @@
 //! a `ControlFlow::WaitUntil`, so waiting still serves animations without
 //! turning the loop into a poller.
 //!
-//! # The scene is fixed, on purpose
+//! # The document is read somewhere else
 //!
-//! There is no document here and no geometry kernel. This slice exists to show
-//! that a window opens, a surface survives being resized, and the composition
-//! order holds; a model arriving from a `.fcad` file is the next thing, and
-//! putting it in now would mean debugging two new things at once.
+//! Reading a `.fcad` file means rebuilding its features and tessellating the
+//! result, which is seconds of work on a model of any size. Doing that between
+//! two events would freeze the window for exactly that long, so it happens on
+//! its own thread and comes back as one more event. The window opens on an
+//! empty scene and gains the model when the model is ready.
 
+use std::ffi::OsString;
+use std::path::PathBuf;
+use std::thread::JoinHandle;
 use std::{sync::Arc, time::Instant};
 
-use ferritecad_kernel::{
-    Mesh, MeshFaceRange, SessionId, ShapeHandle, SubShapeHandle, SubShapeKind,
-};
-use ferritecad_types::{Result, Transform, Vec3};
+use ferritecad_kernel::{CancelToken, OperationContext, TessellationParams};
+use ferritecad_occt::OcctKernel;
+use ferritecad_scene::snapshot_of;
+use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{PointerButton, VIEWS, ViewportEvent, ViewportInput};
 use ferritecad_viewport::{RenderSnapshot, SnapshotBuilder, StandardView};
 use ferritecad_viewport_gpu::{PreparedSnapshot, Renderer, WindowSurface};
@@ -42,6 +46,15 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 fn main() -> Result<()> {
+    let document = match document_argument(std::env::args_os().skip(1)) {
+        Ok(document) => document,
+        Err(error) => {
+            // Printed rather than returned: an error out of `main` is shown in
+            // its debug form, and a usage line is for a person to read.
+            eprintln!("{error}");
+            std::process::exit(2);
+        }
+    };
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .map_err(|error| {
@@ -52,16 +65,57 @@ fn main() -> Result<()> {
     // redraw explicitly.
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let mut app = App::new(event_loop.create_proxy());
+    let mut app = App::new(event_loop.create_proxy(), document);
     event_loop
         .run_app(&mut app)
         .map_err(|error| ferritecad_types::CadError::rendering_because("running the window", error))
+}
+
+/// The document to look at, from the command line.
+///
+/// One argument and no options: a viewer that guessed which of several files
+/// was meant, or opened the current directory, would be doing something the
+/// user did not ask for with a file they may not have meant.
+fn document_argument(arguments: impl Iterator<Item = OsString>) -> Result<PathBuf> {
+    const USAGE: &str = "usage: ferritecad-viewer <file.fcad>";
+
+    let mut arguments = arguments;
+    let Some(path) = arguments.next() else {
+        return Err(CadError::input(USAGE));
+    };
+    if arguments.next().is_some() {
+        return Err(CadError::input(format!("{USAGE}; one document at a time")));
+    }
+    Ok(PathBuf::from(path))
 }
 
 /// A wake-up requested from outside winit's event-loop thread.
 #[derive(Debug)]
 enum AppEvent {
     RepaintAt(Instant),
+    /// A document has finished loading, or has finished failing to.
+    ///
+    /// Boxed because a scene is the largest thing this application moves, and
+    /// every other event would otherwise be that size too.
+    Loaded(Box<Result<RenderSnapshot>>),
+}
+
+/// A load that has not been answered yet.
+struct Loading {
+    cancel: CancelToken,
+    worker: JoinHandle<()>,
+}
+
+/// Runs a load away from the event loop and delivers the answer back to it.
+///
+/// Both halves are arguments so that this can be shown to return while the
+/// load is still running, which is the whole property: the window stays alive
+/// while a document is read.
+fn spawn_load(
+    load: impl FnOnce() -> Result<RenderSnapshot> + Send + 'static,
+    deliver: impl FnOnce(Result<RenderSnapshot>) + Send + 'static,
+) -> JoinHandle<()> {
+    std::thread::spawn(move || deliver(load()))
 }
 
 /// The one outstanding frame and the earliest future reason to draw another.
@@ -131,8 +185,10 @@ struct Live {
 struct App {
     live: Option<Live>,
     input: ViewportInput,
-    repaint_proxy: EventLoopProxy<AppEvent>,
+    proxy: EventLoopProxy<AppEvent>,
     frames: FrameScheduler,
+    document: PathBuf,
+    loading: Option<Loading>,
 }
 
 impl ApplicationHandler<AppEvent> for App {
@@ -158,6 +214,9 @@ impl ApplicationHandler<AppEvent> for App {
         match self.start(event_loop) {
             Ok(live) => {
                 self.live = Some(live);
+                // The window is up and empty; reading the document starts now
+                // and finishes whenever it finishes.
+                self.loading = Some(self.start_load());
                 // Construction, resize and framing all owe the first picture.
                 // Do not depend on a platform happening to send another event
                 // after `resumed` before the window first becomes visible.
@@ -175,6 +234,13 @@ impl ApplicationHandler<AppEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::RepaintAt(deadline) => self.request_frame_at(event_loop, deadline),
+            AppEvent::Loaded(loaded) => {
+                self.loading = None;
+                self.show(*loaded);
+                if self.input.take_redraw() {
+                    self.request_frame_now(event_loop);
+                }
+            }
         }
     }
 
@@ -192,6 +258,7 @@ impl ApplicationHandler<AppEvent> for App {
 
         match event {
             WindowEvent::CloseRequested => {
+                self.abandon_load();
                 event_loop.exit();
                 return;
             }
@@ -249,13 +316,81 @@ impl ApplicationHandler<AppEvent> for App {
 }
 
 impl App {
-    fn new(repaint_proxy: EventLoopProxy<AppEvent>) -> Self {
+    fn new(proxy: EventLoopProxy<AppEvent>, document: PathBuf) -> Self {
         Self {
             live: None,
             input: ViewportInput::new(),
-            repaint_proxy,
+            proxy,
             frames: FrameScheduler::default(),
+            document,
+            loading: None,
         }
+    }
+
+    /// Starts reading the document on a thread of its own.
+    fn start_load(&self) -> Loading {
+        let cancel = CancelToken::new();
+        let context = OperationContext::default().with_cancel(cancel.clone());
+        let path = self.document.clone();
+        let proxy = self.proxy.clone();
+
+        let worker = spawn_load(
+            move || {
+                // The kernel is made and dropped inside the worker. An Open
+                // CASCADE session belongs to the thread that opened it, and
+                // ending it with the thread means an abandoned load cannot
+                // outlive the shapes it was holding.
+                let mut kernel = OcctKernel::new()?;
+                snapshot_of(&path, &mut kernel, &TessellationParams::default(), &context)
+            },
+            move |loaded| {
+                // A closed event loop is an ordinary end state, and there is
+                // nowhere useful to report a failed wake-up after it.
+                let _ = proxy.send_event(AppEvent::Loaded(Box::new(loaded)));
+            },
+        );
+        Loading { cancel, worker }
+    }
+
+    /// Puts a finished load on screen, or leaves the screen alone.
+    ///
+    /// What a failure means to the camera is the reducer's rule and is tested
+    /// there. What is left here is that a failure is reported and nothing else
+    /// happens: the model already on screen stays on screen, because a viewer
+    /// that went blank would lose the drawing the user was reading while they
+    /// work out what went wrong.
+    fn show(&mut self, loaded: Result<RenderSnapshot>) {
+        let uploaded =
+            self.input
+                .accept_load(loaded)
+                .and_then(|snapshot| match self.live.as_mut() {
+                    // The assignment is the last thing that happens, so a scene
+                    // that could not be uploaded leaves the previous one resident
+                    // and drawable rather than half replaced.
+                    Some(live) => {
+                        live.prepared = live.renderer.prepare(Arc::new(snapshot))?;
+                        Ok(())
+                    }
+                    None => Ok(()),
+                });
+        if let Err(error) = uploaded {
+            eprintln!("ferritecad: {error}");
+        }
+    }
+
+    /// Stops a load in flight and waits for it to let go of its geometry.
+    ///
+    /// Joined rather than detached: the worker owns a kernel session, and
+    /// leaving it to be cut short by process exit would make the one path that
+    /// releases shapes the one path nobody takes.
+    fn abandon_load(&mut self) {
+        let Some(loading) = self.loading.take() else {
+            return;
+        };
+        loading.cancel.cancel();
+        // A worker that has already answered, or one that panicked, is nothing
+        // to wait for and nothing to report: the window is closing either way.
+        let _ = loading.worker.join();
     }
 
     fn request_frame_now(&mut self, event_loop: &ActiveEventLoop) {
@@ -308,14 +443,13 @@ impl App {
         let (width, height) = self.input.resize(size.width, size.height);
         let window_surface = WindowSurface::new(&renderer, surface, width, height)?;
 
-        let snapshot = Arc::new(fixed_scene()?);
-        if let Some(bounds) = snapshot.bounds() {
-            self.input.frame(bounds)?;
-        }
-        let prepared = renderer.prepare(snapshot)?;
+        // Empty until the document arrives. The window is worth opening before
+        // then: it is how the user learns that the file is being read rather
+        // than that nothing happened.
+        let prepared = renderer.prepare(Arc::new(SnapshotBuilder::new().build()))?;
 
         let egui = egui::Context::default();
-        let repaint_proxy = self.repaint_proxy.clone();
+        let repaint_proxy = self.proxy.clone();
         egui.set_request_repaint_callback(move |request| {
             if request.viewport_id != egui::ViewportId::ROOT {
                 return;
@@ -505,63 +639,6 @@ fn named_view(key: &Key) -> Option<StandardView> {
         .find_map(|(view, _, shortcut)| (*shortcut == text.as_str()).then_some(*view))
 }
 
-/// A box, so there is something with depth and orientation to turn around.
-fn fixed_scene() -> Result<RenderSnapshot> {
-    let mut builder = SnapshotBuilder::new();
-    let mesh = builder.add_mesh(&box_mesh(30.0, 20.0, 10.0))?;
-    builder.place(mesh, None, &Transform::IDENTITY, [0.35, 0.55, 0.85])?;
-    builder.place(
-        mesh,
-        None,
-        &Transform::from_translation(Vec3::new(45.0, 0.0, 0.0)?)?,
-        [0.85, 0.45, 0.25],
-    )?;
-    Ok(builder.build())
-}
-
-/// An axis-aligned box centred on the origin, with flat-shaded faces.
-fn box_mesh(x: f32, y: f32, z: f32) -> Mesh {
-    let (hx, hy, hz) = (x * 0.5, y * 0.5, z * 0.5);
-    let corners = [
-        [-hx, -hy, -hz],
-        [hx, -hy, -hz],
-        [hx, hy, -hz],
-        [-hx, hy, -hz],
-        [-hx, -hy, hz],
-        [hx, -hy, hz],
-        [hx, hy, hz],
-        [-hx, hy, hz],
-    ];
-    let faces = [
-        ([0, 3, 2, 1], [0.0, 0.0, -1.0]),
-        ([4, 5, 6, 7], [0.0, 0.0, 1.0]),
-        ([0, 1, 5, 4], [0.0, -1.0, 0.0]),
-        ([2, 3, 7, 6], [0.0, 1.0, 0.0]),
-        ([1, 2, 6, 5], [1.0, 0.0, 0.0]),
-        ([3, 0, 4, 7], [-1.0, 0.0, 0.0]),
-    ];
-
-    // Vertices are not shared between faces: a box drawn with shared corners
-    // would have to average its normals and would look like a ball.
-    let mut mesh = Mesh::default();
-    let shape = ShapeHandle::new(SessionId::new(), 1);
-    for (face, (indices, normal)) in faces.iter().enumerate() {
-        let first = mesh.vertex_count() as u32;
-        for index in indices {
-            mesh.positions.extend_from_slice(&corners[*index]);
-            mesh.normals.extend_from_slice(normal);
-        }
-        mesh.indices
-            .extend_from_slice(&[first, first + 1, first + 2, first, first + 2, first + 3]);
-        mesh.faces.push(MeshFaceRange {
-            face: SubShapeHandle::new(shape, SubShapeKind::Face, face as u64),
-            first_index: face as u32 * 6,
-            index_count: 6,
-        });
-    }
-    mesh
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -619,6 +696,72 @@ mod tests {
             None,
             "a timer was installed while an earlier frame was queued"
         );
+    }
+
+    #[test]
+    fn one_document_is_asked_for_and_one_is_accepted() {
+        let path = document_argument(["part.fcad".into()].into_iter()).expect("one path is enough");
+        assert_eq!(path, PathBuf::from("part.fcad"));
+
+        let missing = document_argument(std::iter::empty()).expect_err("no document was named");
+        assert!(missing.to_string().contains("usage"), "{missing}");
+
+        // Two files is a request this viewer cannot honour, and opening the
+        // first silently would be honouring half of it.
+        let extra = document_argument(["a.fcad".into(), "b.fcad".into()].into_iter())
+            .expect_err("two documents must not be taken as one");
+        assert!(
+            extra.to_string().contains("one document at a time"),
+            "{extra}"
+        );
+    }
+
+    #[test]
+    fn the_event_loop_keeps_running_while_a_document_is_read() {
+        // The load is held open until this thread has already carried on, so
+        // the test proves the ordering rather than guessing at a duration: a
+        // loader called on the event-loop thread could not reach the assertion
+        // below at all.
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let (finished, answers) = std::sync::mpsc::channel();
+
+        let worker = spawn_load(
+            move || {
+                // Waited for with a deadline rather than for ever: a load run
+                // on the calling thread must fail this test, not hang it.
+                let _ = held.recv_timeout(Duration::from_secs(5));
+                Ok(SnapshotBuilder::new().build())
+            },
+            move |loaded| finished.send(loaded).expect("the test is still waiting"),
+        );
+
+        assert!(
+            answers.try_recv().is_err(),
+            "the load answered before it was allowed to run, so it ran here"
+        );
+        release.send(()).expect("the worker is still waiting");
+
+        let loaded = answers
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the answer never came back");
+        assert!(loaded.is_ok());
+        worker.join().expect("the worker finished cleanly");
+    }
+
+    #[test]
+    fn a_load_that_failed_is_delivered_rather_than_swallowed() {
+        let (finished, answers) = std::sync::mpsc::channel();
+        let worker = spawn_load(
+            || Err(CadError::input("no such document")),
+            move |loaded| finished.send(loaded).expect("the test is still waiting"),
+        );
+
+        let error = answers
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the answer never came back")
+            .expect_err("this load failed");
+        assert!(error.to_string().contains("no such document"));
+        worker.join().expect("the worker finished cleanly");
     }
 
     #[test]

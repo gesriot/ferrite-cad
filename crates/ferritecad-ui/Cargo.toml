@@ -22,5 +22,10 @@ ferritecad-viewport.workspace = true
 # The four fonts and their licences are listed in THIRD_PARTY_LICENSES.md.
 egui = "0.36"
 
+# Only to build a mesh to hand to the reducer, which is the kernel's vocabulary
+# for one. Nothing in the shipped graph points from panels at a kernel.
+[dev-dependencies]
+ferritecad-kernel.workspace = true
+
 [lints]
 workspace = true

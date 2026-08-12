@@ -20,7 +20,7 @@
 //! first drag afterwards would jump the model by the width of it.
 
 use ferritecad_types::Result;
-use ferritecad_viewport::{Camera, StandardView};
+use ferritecad_viewport::{Camera, RenderSnapshot, StandardView};
 
 /// How far a wheel notch moves the camera.
 ///
@@ -204,6 +204,26 @@ impl ViewportInput {
                 self.redraw = true;
             }
         }
+    }
+
+    /// Takes what a finished load produced, and says what to do about it.
+    ///
+    /// A scene that arrived is pointed at: a document opened under the camera
+    /// the last one left behind is usually off screen entirely, and a viewer
+    /// that showed nothing while insisting it had loaded something would be
+    /// worse than one that failed.
+    ///
+    /// A load that failed changes nothing – not the camera, not the frame that
+    /// is owed. What is on screen stays on screen, because the alternative is
+    /// going blank on a problem the user may well be able to fix, and losing
+    /// the model they were looking at while they do.
+    pub fn accept_load(&mut self, loaded: Result<RenderSnapshot>) -> Result<RenderSnapshot> {
+        let snapshot = loaded?;
+        if let Some(bounds) = snapshot.bounds() {
+            self.camera.frame(bounds)?;
+        }
+        self.redraw = true;
+        Ok(snapshot)
     }
 
     /// Asks for the next frame to be drawn.
@@ -440,6 +460,85 @@ mod tests {
             false,
         );
         assert!(!input.take_redraw(), "moving the cursor asked for a frame");
+    }
+
+    /// One triangle somewhere far from where the camera is now looking.
+    fn distant_scene() -> RenderSnapshot {
+        use ferritecad_kernel::{
+            Mesh, MeshFaceRange, SessionId, ShapeHandle, SubShapeHandle, SubShapeKind,
+        };
+        use ferritecad_types::Transform;
+
+        let mut mesh = Mesh::default();
+        mesh.positions.extend_from_slice(&[
+            900.0, 900.0, 900.0, 910.0, 900.0, 900.0, 900.0, 910.0, 900.0,
+        ]);
+        mesh.normals
+            .extend_from_slice(&[0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
+        mesh.indices.extend_from_slice(&[0, 1, 2]);
+        mesh.faces.push(MeshFaceRange {
+            face: SubShapeHandle::new(ShapeHandle::new(SessionId::new(), 1), SubShapeKind::Face, 0),
+            first_index: 0,
+            index_count: 3,
+        });
+
+        let mut builder = ferritecad_viewport::SnapshotBuilder::new();
+        let definition = builder.add_mesh(&mesh).expect("the mesh is valid");
+        builder
+            .place(definition, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+            .expect("places it");
+        builder.build()
+    }
+
+    #[test]
+    fn a_loaded_scene_is_pointed_at_and_asks_for_a_frame() {
+        let mut input = ready();
+        let before = *input.camera();
+
+        let snapshot = input
+            .accept_load(Ok(distant_scene()))
+            .expect("a scene that loaded is a scene to show");
+        assert_eq!(snapshot.draws().len(), 1, "the scene was not handed back");
+        assert_ne!(
+            input.camera().target(),
+            before.target(),
+            "the camera stayed where the previous document left it"
+        );
+        assert!(input.take_redraw(), "a new model did not ask to be drawn");
+    }
+
+    #[test]
+    fn a_load_that_failed_leaves_the_picture_alone() {
+        let mut input = ready();
+        let before = *input.camera();
+
+        let error = input
+            .accept_load(Err(ferritecad_types::CadError::input("no such document")))
+            .expect_err("a failed load must not produce a scene");
+        assert!(error.to_string().contains("no such document"));
+
+        // Nothing moved and no frame is owed, so whatever was drawn is still
+        // what is on screen.
+        assert_eq!(input.camera().eye(), before.eye());
+        assert_eq!(input.camera().target(), before.target());
+        assert!(
+            !input.take_redraw(),
+            "a failed load asked for a frame that would draw the same picture"
+        );
+    }
+
+    #[test]
+    fn an_empty_document_does_not_move_the_camera_nowhere() {
+        let mut input = ready();
+        let before = *input.camera();
+
+        // A document with no geometry has no extent to point at. Framing it
+        // would have to invent one, and a camera at an invented distance from
+        // nothing is worse than one left where it was.
+        let empty = ferritecad_viewport::SnapshotBuilder::new().build();
+        input.accept_load(Ok(empty)).expect("an empty scene loads");
+        assert_eq!(input.camera().eye(), before.eye());
+        assert_eq!(input.camera().target(), before.target());
     }
 
     #[test]

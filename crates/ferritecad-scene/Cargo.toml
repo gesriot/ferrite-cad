@@ -22,6 +22,9 @@ ferritecad-viewport.workspace = true
 
 [dev-dependencies]
 ferritecad-fixtures.workspace = true
+# The pin run must see the real kernel produce the real plate. Dev-only: this
+# crate never names an implementation, so a viewer could use another one.
+ferritecad-occt.workspace = true
 # Only to put a document into a state another program could have left it in,
 # so that reading it can be shown not to rewrite it.
 rusqlite = { version = "0.37", features = ["bundled"] }

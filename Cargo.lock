@@ -693,6 +693,8 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "ferritecad-kernel",
+ "ferritecad-occt",
+ "ferritecad-scene",
  "ferritecad-types",
  "ferritecad-ui",
  "ferritecad-viewport",
@@ -806,6 +808,7 @@ dependencies = [
  "ferritecad-eval",
  "ferritecad-fixtures",
  "ferritecad-kernel",
+ "ferritecad-occt",
  "ferritecad-types",
  "ferritecad-viewport",
  "rusqlite",
@@ -840,6 +843,7 @@ name = "ferritecad-ui"
 version = "0.0.1"
 dependencies = [
  "egui",
+ "ferritecad-kernel",
  "ferritecad-types",
  "ferritecad-viewport",
 ]
