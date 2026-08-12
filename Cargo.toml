@@ -10,6 +10,7 @@ members = [
     "crates/ferritecad-fixtures",
     "crates/ferritecad-kernel",
     "crates/ferritecad-occt",
+    "crates/ferritecad-scene",
     "crates/ferritecad-solver-lab",
     "crates/ferritecad-topology",
     "crates/ferritecad-ui",
@@ -35,6 +36,7 @@ ferritecad-export = { path = "crates/ferritecad-export", version = "0.0.1" }
 ferritecad-fixtures = { path = "crates/ferritecad-fixtures", version = "0.0.1" }
 ferritecad-kernel = { path = "crates/ferritecad-kernel", version = "0.0.1" }
 ferritecad-occt = { path = "crates/ferritecad-occt", version = "0.0.1" }
+ferritecad-scene = { path = "crates/ferritecad-scene", version = "0.0.1" }
 ferritecad-topology = { path = "crates/ferritecad-topology", version = "0.0.1" }
 ferritecad-ui = { path = "crates/ferritecad-ui", version = "0.0.1" }
 ferritecad-viewport = { path = "crates/ferritecad-viewport", version = "0.0.1" }

@@ -799,6 +799,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferritecad-scene"
+version = "0.0.1"
+dependencies = [
+ "ferritecad-document",
+ "ferritecad-eval",
+ "ferritecad-fixtures",
+ "ferritecad-kernel",
+ "ferritecad-types",
+ "ferritecad-viewport",
+ "rusqlite",
+ "tempfile",
+]
+
+[[package]]
 name = "ferritecad-solver-lab"
 version = "0.0.1"
 

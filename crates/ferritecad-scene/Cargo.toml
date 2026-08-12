@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "ferritecad-scene"
+description = "Turning a stored document into a picture of what it describes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# The one place that knows both a document and a viewport. Deliberately not a
+# window and not a kernel: a kernel is handed in, so this can be exercised
+# against the mock without Open CASCADE present, and there is no event loop
+# here for a long load to block.
+[dependencies]
+ferritecad-document.workspace = true
+ferritecad-eval.workspace = true
+ferritecad-kernel.workspace = true
+ferritecad-types.workspace = true
+ferritecad-viewport.workspace = true
+
+[dev-dependencies]
+ferritecad-fixtures.workspace = true
+# Only to put a document into a state another program could have left it in,
+# so that reading it can be shown not to rewrite it.
+rusqlite = { version = "0.37", features = ["bundled"] }
+tempfile = "3"
+
+[lints]
+workspace = true
