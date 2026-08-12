@@ -483,7 +483,7 @@ fn framed() -> Camera {
 }
 
 fn length(vector: [f32; 3]) -> f32 {
-    (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt()
+    vector[0].hypot(vector[1]).hypot(vector[2])
 }
 
 fn offset(camera: &Camera) -> [f32; 3] {
@@ -660,15 +660,18 @@ fn panning_moves_the_view_by_the_pixels_it_was_given() {
 
 #[test]
 fn panning_a_viewport_of_no_size_moves_nothing() {
-    let mut camera = framed();
-    camera.resize(0, 0);
-    let before = camera;
+    for size in [(0, 0), (800, 0), (0, 600)] {
+        let mut camera = framed();
+        camera.resize(size.0, size.1);
+        let before = camera;
 
-    // There is no pixel to measure against, so a drag has no length. Moving by
-    // some default instead would send the model off to nowhere in particular.
-    assert_eq!(camera.world_per_pixel(), 0.0);
-    camera.pan(50.0, -50.0);
-    assert_eq!(camera, before);
+        // There is no drawable pixel when either dimension is zero, so a drag
+        // has no length. Checking only 0x0 would let a collapsed vertical pane
+        // move despite having no horizontal coordinate system.
+        assert_eq!(camera.world_per_pixel(), 0.0, "{size:?}");
+        camera.pan(50.0, -50.0);
+        assert_eq!(camera, before, "{size:?}");
+    }
 }
 
 #[test]
@@ -880,6 +883,72 @@ fn framing_shows_the_whole_model_without_turning_it_back_to_the_front() {
     }
     assert!((camera.target()[0] - 100.0).abs() < 1e-3);
     assert!(camera.view_projection().iter().all(|v| v.is_finite()));
+
+    // Direction alone is not the whole plan view. Its own up vector carries
+    // north, and framing after Top must keep that too rather than making the
+    // new view degenerate by restoring WORLD_UP along its sight line.
+    camera.look_from(StandardView::Top);
+    camera
+        .frame(([190.0, 190.0, 190.0], [210.0, 210.0, 210.0]))
+        .expect("reframes a plan view");
+    let centre = camera.target();
+    let north = [centre[0], centre[1] + 1.0, centre[2]];
+    let north = on_screen(&camera, north);
+    assert!(north[1] > 0.0, "framing lost north-up: {north:?}");
+    assert!(north[0].abs() < 1e-3, "framing rolled north: {north:?}");
+}
+
+#[test]
+fn a_large_finite_model_still_has_a_usable_interactive_camera() {
+    let mut camera = Camera::new();
+    camera.resize(800, 600);
+    camera
+        .frame(([-1.0e20; 3], [1.0e20; 3]))
+        .expect("the bounds and clipping range are representable");
+
+    // A squared-length implementation overflows here even though the vector
+    // and its length are finite. That used to make interaction stop and made a
+    // standard view fall through to the default direction.
+    assert!(camera.distance().is_finite());
+    assert!(camera.view_projection().iter().all(|v| v.is_finite()));
+
+    camera.look_from(StandardView::Right);
+    let direction = offset(&camera);
+    let distance = length(direction);
+    assert!(distance.is_finite() && distance > 0.0);
+    assert!(
+        (direction[0] / distance - 1.0).abs() < 1e-4,
+        "{direction:?}"
+    );
+    assert!((direction[1] / distance).abs() < 1e-4, "{direction:?}");
+    assert!((direction[2] / distance).abs() < 1e-4, "{direction:?}");
+
+    camera.orbit(0.2, 0.1);
+    camera.zoom(0.2);
+    assert!(camera.distance().is_finite());
+    assert!(camera.view_projection().iter().all(|v| v.is_finite()));
+}
+
+#[test]
+fn a_finite_pan_cannot_overflow_half_of_the_camera() {
+    let mut camera = framed();
+
+    // Every individual delta and shift is finite. Repeating it eventually
+    // reaches the coordinate range's edge; that last gesture must be refused
+    // atomically rather than commit infinities to eye and target one field at
+    // a time.
+    for _ in 0..100 {
+        camera.pan(f32::MAX, f32::MAX);
+        assert!(camera.eye().iter().all(|value| value.is_finite()));
+        assert!(camera.target().iter().all(|value| value.is_finite()));
+        assert_ne!(camera.eye(), camera.target());
+        assert!(
+            camera
+                .view_projection()
+                .iter()
+                .all(|value| value.is_finite())
+        );
+    }
 }
 
 #[test]

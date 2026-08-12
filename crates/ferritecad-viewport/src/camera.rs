@@ -226,18 +226,29 @@ impl Camera {
             ));
         }
 
-        self.target = centre;
-        self.eye = eye;
-        self.radius = radius;
-        self.near = near;
-        self.far = far;
+        let mut candidate = *self;
+        candidate.target = centre;
+        candidate.eye = eye;
+        candidate.radius = radius;
+        candidate.near = near;
+        candidate.far = far;
+        if candidate
+            .view_projection()
+            .iter()
+            .any(|value| !value.is_finite())
+        {
+            return Err(CadError::input(
+                "a camera cannot represent this view without overflowing its matrix",
+            ));
+        }
+        *self = candidate;
         Ok(())
     }
 
     /// How far the eye is from what it is looking at.
     pub fn distance(&self) -> f32 {
         let offset = sub(self.eye, self.target);
-        dot(offset, offset).sqrt()
+        offset[0].hypot(offset[1]).hypot(offset[2])
     }
 
     /// The unit vector from the target towards the eye.
@@ -254,7 +265,7 @@ impl Camera {
     /// Zero when there is no viewport to measure against, which makes a drag on
     /// a window of no size move nothing rather than move everything.
     pub fn world_per_pixel(&self) -> f32 {
-        if self.height == 0 {
+        if !self.is_drawable() {
             return 0.0;
         }
         let visible_height = 2.0 * self.distance() * (self.fov * 0.5).tan();
@@ -295,12 +306,12 @@ impl Camera {
         let pitch = (current_pitch + pitch).clamp(-LIMIT, LIMIT);
 
         let horizontal = pitch.cos() * distance;
-        self.eye = [
+        let eye = [
             self.target[0] + horizontal * yaw.cos(),
             self.target[1] + horizontal * yaw.sin(),
             self.target[2] + pitch.sin() * distance,
         ];
-        self.up = WORLD_UP;
+        self.accept_pose(eye, self.target, WORLD_UP);
     }
 
     /// Slides the view sideways and up, in pixels of the current viewport.
@@ -332,11 +343,13 @@ impl Camera {
             return;
         }
 
+        let mut eye = self.eye;
+        let mut target = self.target;
         for (axis, distance) in shift.iter().enumerate() {
-            self.eye[axis] += distance;
-            self.target[axis] += distance;
+            eye[axis] += distance;
+            target[axis] += distance;
         }
-        self.refresh_depth();
+        self.accept_pose(eye, target, self.up);
     }
 
     /// Moves the eye towards or away from the target.
@@ -361,12 +374,12 @@ impl Camera {
         }
 
         let direction = self.direction();
-        self.eye = [
+        let eye = [
             self.target[0] + direction[0] * bounded,
             self.target[1] + direction[1] * bounded,
             self.target[2] + direction[2] * bounded,
         ];
-        self.refresh_depth();
+        self.accept_pose(eye, self.target, self.up);
     }
 
     /// Looks from one of the directions a drawing would name.
@@ -384,13 +397,32 @@ impl Camera {
         };
 
         let (direction, up) = view.direction_and_up();
-        self.eye = [
+        let eye = [
             self.target[0] + direction[0] * distance,
             self.target[1] + direction[1] * distance,
             self.target[2] + direction[2] * distance,
         ];
-        self.up = up;
-        self.refresh_depth();
+        self.accept_pose(eye, self.target, up);
+    }
+
+    /// Commits a complete pose, or none of it when the GPU matrix would cease
+    /// to be a finite value. Interactive operations return no partial camera.
+    fn accept_pose(&mut self, eye: [f32; 3], target: [f32; 3], up: [f32; 3]) {
+        if !usable_eye(eye, target) {
+            return;
+        }
+        let mut candidate = *self;
+        candidate.eye = eye;
+        candidate.target = target;
+        candidate.up = up;
+        candidate.refresh_depth();
+        if candidate
+            .view_projection()
+            .iter()
+            .all(|value| value.is_finite())
+        {
+            *self = candidate;
+        }
     }
 
     /// Puts the clipping range back where the current distance wants it.
@@ -447,7 +479,10 @@ impl Camera {
             // depth interval is 0..1, hence clip.w = -view.z and the negative
             // depth scale. The opposite signs put the whole model behind the
             // clip volume even though every matrix entry remains finite.
-            (-self.far / depth, -self.far * self.near / depth)
+            // Divide before multiplying: `far * near` can overflow for a
+            // large but otherwise representable model even when the final
+            // ratio is finite.
+            (-self.far / depth, -(self.far / depth) * self.near)
         } else {
             (-1.0, 0.0)
         };
@@ -503,7 +538,14 @@ fn dot(left: [f32; 3], right: [f32; 3]) -> f32 {
 
 /// A unit vector, or `None` when there is no direction to normalise.
 fn normalise(vector: [f32; 3]) -> Option<[f32; 3]> {
-    let length = dot(vector, vector).sqrt();
+    // Squaring overflows long before a finite `f32` vector does. `hypot`
+    // scales its operands, so a large model accepted by `frame()` remains a
+    // camera one can orbit and zoom.
+    let length = vector[0].hypot(vector[1]).hypot(vector[2]);
     (length > f32::EPSILON && length.is_finite())
         .then(|| [vector[0] / length, vector[1] / length, vector[2] / length])
+}
+
+fn usable_eye(eye: [f32; 3], target: [f32; 3]) -> bool {
+    eye.iter().all(|value| value.is_finite()) && normalise(sub(eye, target)).is_some()
 }
