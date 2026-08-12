@@ -86,6 +86,12 @@ fn document_argument(arguments: impl Iterator<Item = OsString>) -> Result<PathBu
     if arguments.next().is_some() {
         return Err(CadError::input(format!("{USAGE}; one document at a time")));
     }
+    // There are no options, so anything that looks like one is a question
+    // about how to use this rather than a file to open. Answering it by
+    // failing to find a document called `--help` would answer nothing.
+    if path.as_encoded_bytes().first() == Some(&b'-') {
+        return Err(CadError::input(USAGE));
+    }
     Ok(PathBuf::from(path))
 }
 
@@ -231,6 +237,16 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
+    /// The last thing the loop does, whichever way it came to an end.
+    ///
+    /// Every exit passes through here – the close button, a surface that could
+    /// not be reconfigured, a frame that could not be drawn – so this is the
+    /// one place a load in flight can be stopped without listing the ways a
+    /// window can end.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.abandon_load();
+    }
+
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::RepaintAt(deadline) => self.request_frame_at(event_loop, deadline),
@@ -258,7 +274,6 @@ impl ApplicationHandler<AppEvent> for App {
 
         match event {
             WindowEvent::CloseRequested => {
-                self.abandon_load();
                 event_loop.exit();
                 return;
             }
@@ -371,6 +386,9 @@ impl App {
                         live.prepared = live.renderer.prepare(Arc::new(snapshot))?;
                         Ok(())
                     }
+                    // No window to show it in, which means the loop is already
+                    // on its way out: the load starts when the window is
+                    // created and the window is not taken away while it runs.
                     None => Ok(()),
                 });
         if let Err(error) = uploaded {
@@ -714,6 +732,14 @@ mod tests {
             extra.to_string().contains("one document at a time"),
             "{extra}"
         );
+
+        // A question about usage, answered as one rather than as a document
+        // called `--help` that could not be found.
+        for flag in ["--help", "-h", "--version"] {
+            let asked = document_argument([flag.into()].into_iter())
+                .expect_err("an option is not a document");
+            assert!(asked.to_string().contains("usage"), "{flag}: {asked}");
+        }
     }
 
     #[test]
