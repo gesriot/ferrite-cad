@@ -715,7 +715,10 @@ dependencies = [
  "ferritecad-fixtures",
  "ferritecad-kernel",
  "ferritecad-occt",
+ "ferritecad-scene",
  "ferritecad-types",
+ "ferritecad-viewport",
+ "ferritecad-viewport-gpu",
  "rusqlite",
  "tempfile",
 ]
@@ -739,6 +742,7 @@ name = "ferritecad-eval"
 version = "0.0.1"
 dependencies = [
  "ferritecad-document",
+ "ferritecad-exchange",
  "ferritecad-kernel",
  "ferritecad-topology",
  "ferritecad-types",
@@ -806,6 +810,7 @@ version = "0.0.1"
 dependencies = [
  "ferritecad-document",
  "ferritecad-eval",
+ "ferritecad-exchange",
  "ferritecad-fixtures",
  "ferritecad-kernel",
  "ferritecad-occt",

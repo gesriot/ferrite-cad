@@ -393,7 +393,16 @@ impl App {
                 // ending it with the thread means an abandoned load cannot
                 // outlive the shapes it was holding.
                 let mut kernel = OcctKernel::new()?;
-                snapshot_of(&path, &mut kernel, &TessellationParams::default(), &context)
+                snapshot_of(
+                    &path,
+                    &mut kernel,
+                    // How this kernel re-reads a STEP file the document
+                    // stores. Handed over as a function so one session builds
+                    // both the rebuilt bodies and the imported ones.
+                    |kernel, source| kernel.import_step(source),
+                    &TessellationParams::default(),
+                    &context,
+                )
             },
             move |loaded| {
                 // A closed event loop is an ordinary end state, and there is

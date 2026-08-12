@@ -14,6 +14,13 @@
 use ferritecad_kernel::{OperationContext, TessellationParams};
 use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_scene::snapshot_of;
+use ferritecad_types::{CadError, Result};
+
+/// The plate is a native document: nothing here reads a STEP file, and this
+/// refusing before it can do anything is what says so.
+fn no_imports<K>(_: &mut K, _: &[u8]) -> Result<ferritecad_exchange::Import> {
+    Err(CadError::unsupported("the plate holds no imports"))
+}
 
 #[test]
 fn the_plate_is_read_from_disk_into_real_geometry() {
@@ -31,6 +38,7 @@ fn the_plate_is_read_from_disk_into_real_geometry() {
     let snapshot = snapshot_of(
         &path,
         &mut kernel,
+        no_imports,
         &TessellationParams::default(),
         &OperationContext::default(),
     )
@@ -90,6 +98,7 @@ fn a_cancelled_load_leaves_the_real_session_empty() {
     snapshot_of(
         &path,
         &mut kernel,
+        no_imports,
         &TessellationParams::default(),
         &OperationContext::default(),
     )
@@ -100,6 +109,7 @@ fn a_cancelled_load_leaves_the_real_session_empty() {
     let error = snapshot_of(
         &path,
         &mut kernel,
+        no_imports,
         &TessellationParams::default(),
         &OperationContext::default().with_cancel(cancel),
     )

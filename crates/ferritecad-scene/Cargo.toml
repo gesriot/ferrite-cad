@@ -16,6 +16,7 @@ authors.workspace = true
 [dependencies]
 ferritecad-document.workspace = true
 ferritecad-eval.workspace = true
+ferritecad-exchange.workspace = true
 ferritecad-kernel.workspace = true
 ferritecad-types.workspace = true
 ferritecad-viewport.workspace = true

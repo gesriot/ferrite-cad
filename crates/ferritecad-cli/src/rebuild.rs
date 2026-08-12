@@ -78,6 +78,21 @@ fn report(document: &Document, built: &RebuildResult, kernel: String) -> Result<
         if shapes == 1 { "" } else { "s" }
     )
     .expect("writing to a String cannot fail");
+
+    // Said out loud rather than left to be inferred from a smaller count: this
+    // document holds geometry that a rebuild has nothing to recompute, and a
+    // report that mentioned only what it built would read as if that were
+    // everything the file contains.
+    let imports = built.imports().len();
+    if imports > 0 {
+        writeln!(
+            out,
+            "  {imports} imported object{} carrying stored geometry, which a rebuild does not \
+             recompute",
+            if imports == 1 { "" } else { "s" }
+        )
+        .expect("writing to a String cannot fail");
+    }
     out.push('\n');
 
     for id in built.order() {

@@ -66,6 +66,7 @@ pub struct RebuildResult {
     topology: TopologyMap,
     order: Vec<ObjectId>,
     owned: Vec<ShapeHandle>,
+    imports: Vec<ObjectId>,
 }
 
 impl RebuildResult {
@@ -99,6 +100,16 @@ impl RebuildResult {
     /// The objects that were evaluated, in the order they were evaluated.
     pub fn order(&self) -> &[ObjectId] {
         &self.order
+    }
+
+    /// The imported objects this rebuild found and did not build.
+    ///
+    /// Their geometry is stored rather than derived, so there is nothing here
+    /// to recompute. Reported so that a caller which needs the whole document
+    /// – an export, a viewport – can tell that this result is not all of it,
+    /// instead of inferring completeness from the absence of an error.
+    pub fn imports(&self) -> &[ObjectId] {
+        &self.imports
     }
 
     /// How many shapes this rebuild created and still holds.
@@ -283,6 +294,21 @@ fn run(
             // Parameters carry no geometry. Expressions arrive with their own
             // stage; evaluating one here would be inventing a semantics.
             ObjectPayload::Parameter(_) => {}
+
+            // An imported STEP object holds geometry that was never built from
+            // features. It comes from bytes the document stores, and reading
+            // them again needs an importer rather than a geometry kernel –
+            // which is why this stops here rather than being wired through:
+            // nothing in the shipped graph points from a kernel adapter back
+            // at the document, and rebuilding through this crate would.
+            //
+            // Named rather than skipped. A document that holds imported
+            // geometry and rebuilds "completely" would be telling a caller
+            // that this result covers everything in it, and it does not.
+            ObjectPayload::ImportedStep(_) => {
+                state.imports.push(*id);
+                continue;
+            }
 
             ObjectPayload::Unknown(unknown) => {
                 return Err(CadError::unsupported(format!(

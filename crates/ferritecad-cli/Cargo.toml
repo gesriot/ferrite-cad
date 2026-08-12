@@ -23,8 +23,13 @@ ferritecad-types.workspace = true
 
 clap = { version = "4", features = ["derive"] }
 
+# The vertical gate ends in pixels, so the test needs the loader and a GPU.
+# Dev-only: the command line neither opens a window nor draws anything.
 [dev-dependencies]
 ferritecad-fixtures.workspace = true
+ferritecad-scene.workspace = true
+ferritecad-viewport.workspace = true
+ferritecad-viewport-gpu.workspace = true
 rusqlite = { version = "0.37", features = ["bundled"] }
 tempfile = "3"
 

@@ -18,12 +18,30 @@
 //! this makes is released before it returns, on the path that succeeds and on
 //! every path that does not: a viewer that leaked a session's worth of solids
 //! per failed load would run out of memory while showing an error message.
+//!
+//! # Two kinds of geometry, one session
+//!
+//! A native body is rebuilt from its features. An imported STEP object is not
+//! built at all: its geometry comes from bytes the document stores, and
+//! reading them again needs an importer. Both must end up in the same kernel
+//! session, because both are drawn in the same picture and released by the
+//! same session at the end.
+//!
+//! That is why reading a STEP file arrives as a function rather than as a
+//! second object: `GeometryKernel` is the kernel's contract and `StepImporter`
+//! is the document's, and nothing in the shipped graph points from the kernel
+//! adapter back at the document. Passing the kernel to the function instead of
+//! capturing it is what lets one `&mut` satisfy both.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
-use ferritecad_document::{Document, ObjectPayload};
+use ferritecad_document::{Document, ObjectPayload, StepImporter};
 use ferritecad_eval::rebuild_cold;
-use ferritecad_kernel::{GeometryKernel, OperationContext, TessellationParams};
+use ferritecad_exchange::{ColourSource, Import, Scene};
+use ferritecad_kernel::{
+    GeometryKernel, KernelIdentity, OperationContext, ShapeHandle, TessellationParams,
+};
 use ferritecad_types::{CadError, Result, Transform};
 use ferritecad_viewport::{RenderSnapshot, SnapshotBuilder};
 
@@ -38,20 +56,29 @@ const BODY_COLOUR: [f64; 3] = [0.62, 0.66, 0.70];
 
 /// Reads a document and builds a picture of it.
 ///
-/// The bodies it describes, in document order, each tessellated once and
-/// placed at the origin. A native document has no assembly structure yet, so
-/// every body is its own definition with one placement; when instancing
-/// arrives it belongs here, in the projection, and not in the renderer.
+/// Native bodies and imported scenes, in document order. A body is tessellated
+/// once and placed at the origin; an imported scene is re-read from the bytes
+/// the document stores, and every definition that is actually drawn is
+/// tessellated once however many places it appears in.
 ///
-/// Cancellation is checked between bodies as well as inside the rebuild, so a
-/// document whose geometry takes a while can be abandoned without waiting for
-/// it to finish.
-pub fn snapshot_of(
+/// `read_step` is how this asks the kernel to read a stored STEP file again.
+/// It takes the kernel rather than holding it, so the same session builds
+/// both kinds of geometry; a document with no imports never calls it, which is
+/// why a caller with no importer can pass one that refuses.
+///
+/// Cancellation is checked between objects and between definitions as well as
+/// inside the rebuild, so a document whose geometry takes a while can be
+/// abandoned without waiting for it to finish.
+pub fn snapshot_of<K>(
     path: &Path,
-    kernel: &mut dyn GeometryKernel,
+    kernel: &mut K,
+    mut read_step: impl FnMut(&mut K, &[u8]) -> Result<Import>,
     params: &TessellationParams,
     context: &OperationContext,
-) -> Result<RenderSnapshot> {
+) -> Result<RenderSnapshot>
+where
+    K: GeometryKernel,
+{
     let document = Document::open_read_only(path)?;
 
     // Cold on purpose, as everywhere else a result must be right rather than
@@ -59,50 +86,220 @@ pub fn snapshot_of(
     // state of a sidecar that exists only to save time.
     let built = rebuild_cold(&document, kernel, context)?;
 
+    // Handles this function obtained itself, as opposed to the ones the
+    // rebuild owns. Filled as it goes so that a failure halfway through an
+    // assembly still gives back what had already been read.
+    let mut imported: Vec<ShapeHandle> = Vec::new();
+
     // Everything that can fail happens in here, so that the shapes can be
     // handed back in one place whatever the outcome.
     let snapshot = (|| -> Result<RenderSnapshot> {
         let mut builder = SnapshotBuilder::new();
         for object in document.objects()? {
-            let ObjectPayload::Body(body) = &object.payload else {
-                continue;
-            };
-            // A body with no tip feature is empty by definition rather than
-            // broken: nothing has been built into it yet.
-            if body.tip_feature.is_none() {
-                continue;
-            }
             context.check_cancelled()?;
+            match &object.payload {
+                ObjectPayload::Body(body) => {
+                    // A body with no tip feature is empty by definition rather
+                    // than broken: nothing has been built into it yet.
+                    if body.tip_feature.is_none() {
+                        continue;
+                    }
+                    let shape = built.shape(object.id).ok_or_else(|| {
+                        CadError::topology(format!(
+                            "body {} names a feature but the rebuild produced no geometry for it",
+                            object.id
+                        ))
+                    })?;
+                    let mesh = kernel.tessellate(shape, params, context)?;
+                    let definition = builder.add_mesh(&mesh)?;
+                    builder.place(definition, None, &Transform::IDENTITY, BODY_COLOUR)?;
+                }
 
-            let shape = built.shape(object.id).ok_or_else(|| {
-                CadError::topology(format!(
-                    "body {} names a feature but the rebuild produced no geometry for it",
-                    object.id
-                ))
-            })?;
-            let mesh = kernel.tessellate(shape, params, context)?;
-            let definition = builder.add_mesh(&mesh)?;
-            builder.place(definition, None, &Transform::IDENTITY, BODY_COLOUR)?;
+                ObjectPayload::ImportedStep(_) => {
+                    // Scoped so the borrow ends before the kernel is needed
+                    // for meshing. A refusal here releases what it built; what
+                    // it returns is this function's to give back.
+                    let reopened = {
+                        let mut reader = Reader {
+                            kernel: &mut *kernel,
+                            read: &mut read_step,
+                        };
+                        document.reopen_step_import(object.id, &mut reader)?
+                    };
+                    imported.extend(reopened.scene.shapes());
+                    draw_scene(&mut builder, kernel, &reopened.scene, params, context)?;
+                }
+
+                _ => continue,
+            }
         }
         Ok(builder.build())
     })();
 
+    for shape in imported.into_iter().rev() {
+        kernel.release(shape);
+    }
     built.release_all(kernel);
     snapshot
+}
+
+/// Adds an imported scene to the picture being built.
+///
+/// # Only the leaves carry geometry
+///
+/// An assembly arrives as both: a definition whose shape is the whole
+/// assembly, and separate instances of the parts inside it. Drawing every
+/// instance would draw the same solids twice – once through the assembly's own
+/// compound and once through each component – so an instance that has children
+/// is structure and is not drawn. Its placement still counts: it is what its
+/// children sit in.
+///
+/// # Composed here
+///
+/// A file records each placement relative to its parent, which is the file's
+/// own structure and worth keeping in the document. A picture needs world
+/// positions, so the chain is multiplied out once, here, where the tree is
+/// still in hand.
+fn draw_scene<K: GeometryKernel>(
+    builder: &mut SnapshotBuilder,
+    kernel: &mut K,
+    scene: &Scene,
+    params: &TessellationParams,
+    context: &OperationContext,
+) -> Result<()> {
+    let mut structural = vec![false; scene.instances.len()];
+    for (index, instance) in scene.instances.iter().enumerate() {
+        let Some(parent) = instance.parent else {
+            continue;
+        };
+        let holds = structural.get_mut(parent).ok_or_else(|| {
+            CadError::input(format!(
+                "instance {index} sits inside {parent}, which this scene does not have"
+            ))
+        })?;
+        *holds = true;
+    }
+
+    // Parents come before children, so one pass composes the whole tree.
+    let mut world: Vec<Transform> = Vec::with_capacity(scene.instances.len());
+    for (index, instance) in scene.instances.iter().enumerate() {
+        let local = placement_of(&instance.placement)?;
+        let placed = match instance.parent {
+            None => local,
+            Some(parent) => {
+                let outer = world.get(parent).ok_or_else(|| {
+                    CadError::input(format!(
+                        "instance {index} sits inside {parent}, which the scene lists after it"
+                    ))
+                })?;
+                local.then(outer)?
+            }
+        };
+        world.push(placed);
+    }
+
+    let mut meshes: BTreeMap<usize, usize> = BTreeMap::new();
+    for (index, instance) in scene.instances.iter().enumerate() {
+        if structural[index] {
+            continue;
+        }
+        context.check_cancelled()?;
+
+        let mesh = match meshes.get(&instance.definition) {
+            Some(mesh) => *mesh,
+            None => {
+                let definition = scene.definitions.get(instance.definition).ok_or_else(|| {
+                    CadError::input(format!(
+                        "instance {index} draws definition {}, which this scene does not have",
+                        instance.definition
+                    ))
+                })?;
+                let mesh = kernel.tessellate(definition.shape, params, context)?;
+                let packed = builder.add_mesh(&mesh)?;
+                meshes.insert(instance.definition, packed);
+                packed
+            }
+        };
+
+        // Linear RGB as the importer read it out of the file. Where the file
+        // said nothing, the same neutral colour a native body gets: inventing
+        // one per part would present a decision nobody made as something the
+        // file recorded.
+        // Any source at all means the number beside it came from the file.
+        // Written this way rather than by naming the two known sources: a
+        // third would be another place a colour can come from, not a reason to
+        // stop using it.
+        let colour = match instance.colour_source {
+            ColourSource::None => BODY_COLOUR,
+            _ => instance.colour,
+        };
+        builder.place(mesh, None, &world[index], colour)?;
+    }
+    Ok(())
+}
+
+/// Turns a scene's row-major 3x4 placement into a transform.
+fn placement_of(placement: &[f64; 12]) -> Result<Transform> {
+    Transform::from_rows([
+        [placement[0], placement[1], placement[2], placement[3]],
+        [placement[4], placement[5], placement[6], placement[7]],
+        [placement[8], placement[9], placement[10], placement[11]],
+    ])
+}
+
+/// A kernel, behind the contract the document uses to re-read a STEP file.
+///
+/// Holds the kernel for exactly as long as one reopening takes. Identity and
+/// release come from the kernel itself, so the only thing a caller has to
+/// supply is how this particular kernel reads STEP bytes.
+struct Reader<'a, K, F> {
+    kernel: &'a mut K,
+    read: F,
+}
+
+impl<K, F> StepImporter for Reader<'_, K, F>
+where
+    K: GeometryKernel,
+    F: FnMut(&mut K, &[u8]) -> Result<Import>,
+{
+    fn identity(&self) -> &KernelIdentity {
+        self.kernel.identity()
+    }
+
+    fn import(&mut self, source: &[u8]) -> Result<Import> {
+        (self.read)(self.kernel, source)
+    }
+
+    fn release(&mut self, shape: ShapeHandle) {
+        self.kernel.release(shape);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use ferritecad_document::StepImportRequest;
+    use ferritecad_exchange::{Definition, Instance};
     use ferritecad_kernel::mock::MockKernel;
     use ferritecad_kernel::{
         ArchiveSlot, BrepBlob, CancelToken, ExtrudeRequest, ExtrudeResult, KernelIdentity, Mesh,
         OperationResult, ShapeHandle, SubShapeHandle,
     };
+    use ferritecad_types::ObjectId;
 
     /// The committed plate, copied somewhere the test owns.
     ///
+    /// What a caller with no importer passes.
+    ///
+    /// A document with no imports never asks, so this refusing before it can
+    /// do anything is also the check that it never asked.
+    fn no_imports<K>(_: &mut K, _: &[u8]) -> Result<Import> {
+        Err(CadError::unsupported(
+            "this test opened a document that was supposed to hold no imports",
+        ))
+    }
+
     /// Copied rather than opened in place because a test that touched the
     /// checkout would be the very thing this crate promises not to do.
     fn plate() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -226,13 +423,369 @@ mod tests {
         .expect("the defaults are valid")
     }
 
+    /// One mock solid, so a fabricated scene refers to geometry that exists.
+    fn solid(kernel: &mut MockKernel) -> ShapeHandle {
+        use ferritecad_kernel::{
+            ExtrudeExtent, PlanarPoint, Profile, ProfileLoop, ProfileSegment, SegmentGeometry,
+            SketchPlane,
+        };
+        use ferritecad_types::StableEntityId;
+
+        let corners = [
+            PlanarPoint::new(0.0, 0.0),
+            PlanarPoint::new(10.0, 0.0),
+            PlanarPoint::new(10.0, 10.0),
+            PlanarPoint::new(0.0, 10.0),
+        ]
+        .map(|corner| corner.expect("finite"));
+        let segments = corners
+            .iter()
+            .enumerate()
+            .map(|(index, start)| {
+                ProfileSegment::new(
+                    StableEntityId::new(),
+                    SegmentGeometry::line(*start, corners[(index + 1) % corners.len()])
+                        .expect("distinct"),
+                )
+            })
+            .collect();
+        let profile = Profile::new(
+            SketchPlane::world_xy(),
+            ProfileLoop::new(segments).expect("closes"),
+            Vec::new(),
+        )
+        .expect("valid");
+        let request = ExtrudeRequest::new(
+            profile,
+            ExtrudeExtent::blind(10.0).expect("positive"),
+            false,
+        );
+
+        kernel
+            .extrude(&request, &OperationContext::default())
+            .expect("the mock builds a solid")
+            .shape
+    }
+
+    fn definition(kernel: &mut MockKernel, name: &str, solids: u32, key: &str) -> Definition {
+        Definition {
+            shape: solid(kernel),
+            name: name.to_owned(),
+            solids,
+            key: key.to_owned(),
+        }
+    }
+
+    fn instance(
+        definition: usize,
+        parent: Option<usize>,
+        at: [f64; 3],
+        colour_source: ColourSource,
+        colour: [f64; 3],
+    ) -> Instance {
+        Instance {
+            definition,
+            parent,
+            name: String::new(),
+            placement: [
+                1.0, 0.0, 0.0, at[0], 0.0, 1.0, 0.0, at[1], 0.0, 0.0, 1.0, at[2],
+            ],
+            colour_source,
+            colour,
+        }
+    }
+
+    /// The shape of `fixtures/step/canonical/03-nested-assembly.step`.
+    ///
+    /// Measured from the real import rather than imagined: two groups of two
+    /// cubes inside an outer group, where every placement is relative to its
+    /// parent and the two group definitions carry the whole compound of what
+    /// is inside them. That last part is what makes drawing every instance
+    /// wrong, so a made-up scene that left it out would agree with a wrong
+    /// implementation.
+    fn nested_assembly(kernel: &mut MockKernel) -> Scene {
+        Scene {
+            source_unit: "MILLIMETRE".to_owned(),
+            schema: "AP214".to_owned(),
+            definitions: vec![
+                definition(kernel, "OuterGroup", 4, "step.product_definition#5"),
+                definition(kernel, "InnerGroup", 2, "step.product_definition#31"),
+                definition(kernel, "Cube", 1, "step.product_definition#58"),
+            ],
+            instances: vec![
+                instance(0, None, [0.0, 0.0, 0.0], ColourSource::None, [0.0; 3]),
+                instance(1, Some(0), [0.0, 0.0, 0.0], ColourSource::None, [0.0; 3]),
+                instance(
+                    2,
+                    Some(1),
+                    [0.0, 0.0, 0.0],
+                    ColourSource::Definition,
+                    [0.1, 0.2, 0.3],
+                ),
+                instance(
+                    2,
+                    Some(1),
+                    [30.0, 0.0, 0.0],
+                    ColourSource::Definition,
+                    [0.1, 0.2, 0.3],
+                ),
+                instance(1, Some(0), [0.0, 40.0, 0.0], ColourSource::None, [0.0; 3]),
+                instance(
+                    2,
+                    Some(4),
+                    [0.0, 0.0, 0.0],
+                    ColourSource::Definition,
+                    [0.1, 0.2, 0.3],
+                ),
+                instance(
+                    2,
+                    Some(4),
+                    [30.0, 0.0, 0.0],
+                    ColourSource::Instance,
+                    [0.9, 0.1, 0.1],
+                ),
+            ],
+        }
+    }
+
+    /// A document holding one stored import of `scene`.
+    ///
+    /// The bytes are not a STEP file and never need to be: the document stores
+    /// whatever it was handed and hands the same back, and what reads them is
+    /// the importer this test supplies.
+    fn document_with_import(path: &Path, kernel: &mut MockKernel) -> ObjectId {
+        let scene = nested_assembly(kernel);
+        let import = Import::Imported {
+            scene,
+            diagnostics: Vec::new(),
+        };
+        let object = ObjectId::new();
+        let mut document = Document::create(path).expect("creates a document");
+        document
+            .store_step_import(StepImportRequest {
+                object,
+                name: Some("Assembly"),
+                source: SOURCE,
+                source_name: Some("03-nested-assembly.step"),
+                import: &import,
+                importer: kernel.identity(),
+            })
+            .expect("stores the import");
+        for shape in import
+            .scene()
+            .expect("this import produced a scene")
+            .shapes()
+        {
+            kernel.release(shape);
+        }
+        object
+    }
+
+    const SOURCE: &[u8] = b"ISO-10303-21; this is what the document stores";
+
+    #[test]
+    fn a_stored_assembly_is_drawn_once_per_place_it_appears() {
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("assembly.fcad");
+        let mut kernel = MockKernel::new();
+        document_with_import(&path, &mut kernel);
+        assert_eq!(kernel.live_shape_count(), 0, "the setup kept shapes");
+
+        let snapshot = snapshot_of(
+            &path,
+            &mut kernel,
+            // Reading the file again produces the same scene with new handles,
+            // which is what a second kernel session does.
+            |kernel, source| {
+                assert_eq!(source, SOURCE, "the document handed over other bytes");
+                Ok(Import::Imported {
+                    scene: nested_assembly(kernel),
+                    diagnostics: Vec::new(),
+                })
+            },
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("the stored assembly reopens");
+
+        // One mesh: four cubes in four places are one definition, and the two
+        // groups are structure. A loader that tessellated every definition
+        // would report three, and one that drew every instance would put the
+        // whole assembly on screen twice.
+        assert_eq!(snapshot.meshes().len(), 1, "definitions were meshed twice");
+        assert_eq!(snapshot.draws().len(), 4, "one draw per cube, and no more");
+        for item in snapshot.draws() {
+            assert_eq!(item.mesh, 0);
+        }
+
+        // Where each cube ended up: the inner placement composed with the
+        // group it sits in. A loader that ignored the tree would put all four
+        // at two positions.
+        let mut corners: Vec<[i64; 3]> = snapshot
+            .draws()
+            .iter()
+            .map(|item| {
+                // Column-major, so the translation is the last column.
+                [
+                    item.transform[12].round() as i64,
+                    item.transform[13].round() as i64,
+                    item.transform[14].round() as i64,
+                ]
+            })
+            .collect();
+        corners.sort_unstable();
+        assert_eq!(
+            corners,
+            vec![[0, 0, 0], [0, 40, 0], [30, 0, 0], [30, 40, 0]]
+        );
+
+        assert_eq!(
+            kernel.live_shape_count(),
+            0,
+            "the imported shapes were never given back"
+        );
+    }
+
+    #[test]
+    fn what_the_file_said_about_colour_is_what_is_drawn() {
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("assembly.fcad");
+        let mut kernel = MockKernel::new();
+        document_with_import(&path, &mut kernel);
+
+        let snapshot = snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel, _| {
+                Ok(Import::Imported {
+                    scene: nested_assembly(kernel),
+                    diagnostics: Vec::new(),
+                })
+            },
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("the stored assembly reopens");
+
+        // Three cubes take their definition's colour and one is painted over
+        // it. Linear RGB, straight from the file: converting here would guess
+        // at a transfer function the importer deliberately did not apply.
+        let mut colours: Vec<[u32; 3]> = snapshot
+            .draws()
+            .iter()
+            .map(|item| {
+                [
+                    (item.colour[0] * 1000.0).round() as u32,
+                    (item.colour[1] * 1000.0).round() as u32,
+                    (item.colour[2] * 1000.0).round() as u32,
+                ]
+            })
+            .collect();
+        colours.sort_unstable();
+        assert_eq!(
+            colours,
+            vec![
+                [100, 200, 300],
+                [100, 200, 300],
+                [100, 200, 300],
+                [900, 100, 100]
+            ]
+        );
+        for item in snapshot.draws() {
+            assert_eq!(item.colour[3], 1.0, "an imported part is not transparent");
+        }
+    }
+
+    #[test]
+    fn an_import_that_cannot_be_reopened_keeps_nothing() {
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("assembly.fcad");
+        let mut kernel = MockKernel::new();
+        document_with_import(&path, &mut kernel);
+
+        // The file reads, and describes something else. Binding refuses, and
+        // the shapes it built are the importer's to take back – which is the
+        // document's contract, checked here because this is the caller that
+        // would otherwise be holding them.
+        let error = snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel, _| {
+                let mut scene = nested_assembly(kernel);
+                scene.definitions[2].name = "Cuboid".to_owned();
+                Ok(Import::Imported {
+                    scene,
+                    diagnostics: Vec::new(),
+                })
+            },
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect_err("a scene that is not what was stored must be refused");
+        assert!(error.to_string().contains("Cuboid"), "{error}");
+        assert_eq!(kernel.live_shape_count(), 0);
+
+        // And a reading that fails outright.
+        let error = snapshot_of(
+            &path,
+            &mut kernel,
+            |_, _| Err(CadError::kernel("the file could not be read again")),
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect_err("a reading that failed is not a picture");
+        assert!(error.to_string().contains("could not be read again"));
+        assert_eq!(kernel.live_shape_count(), 0);
+    }
+
+    #[test]
+    fn cancelling_between_the_parts_of_an_assembly_gives_them_all_back() {
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("assembly.fcad");
+        let mut kernel = MockKernel::new();
+        document_with_import(&path, &mut kernel);
+
+        // Cancelled the moment the scene has been read and bound, with every
+        // imported solid live and none of them drawn yet.
+        let token = CancelToken::new();
+        let context = OperationContext::default().with_cancel(token.clone());
+        let error = snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel, _| {
+                let scene = nested_assembly(kernel);
+                token.cancel();
+                Ok(Import::Imported {
+                    scene,
+                    diagnostics: Vec::new(),
+                })
+            },
+            &params(),
+            &context,
+        )
+        .expect_err("a cancelled load must not produce a picture");
+
+        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Cancellation);
+        assert_eq!(
+            kernel.live_shape_count(),
+            0,
+            "cancelling left the imported assembly in the session"
+        );
+    }
+
     #[test]
     fn the_committed_plate_becomes_something_to_draw() {
         let (_directory, path) = plate();
         let mut kernel = MockKernel::new();
 
-        let snapshot = snapshot_of(&path, &mut kernel, &params(), &OperationContext::default())
-            .expect("the plate loads");
+        let snapshot = snapshot_of(
+            &path,
+            &mut kernel,
+            no_imports,
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("the plate loads");
 
         assert_eq!(snapshot.meshes().len(), 1, "the plate is one body");
         assert_eq!(snapshot.draws().len(), 1);
@@ -252,8 +805,14 @@ mod tests {
     fn every_definition_can_be_named_and_told_apart() {
         let (_directory, path) = plate();
         let mut kernel = MockKernel::new();
-        let snapshot = snapshot_of(&path, &mut kernel, &params(), &OperationContext::default())
-            .expect("the plate loads");
+        let snapshot = snapshot_of(
+            &path,
+            &mut kernel,
+            no_imports,
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("the plate loads");
 
         // The viewport's own rule, met here rather than discovered on the GPU.
         for (index, item) in snapshot.draws().iter().enumerate() {
@@ -271,8 +830,14 @@ mod tests {
         let before = std::fs::read(&path).expect("reads");
 
         let mut kernel = MockKernel::new();
-        snapshot_of(&path, &mut kernel, &params(), &OperationContext::default())
-            .expect("the plate loads");
+        snapshot_of(
+            &path,
+            &mut kernel,
+            no_imports,
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("the plate loads");
 
         // Byte for byte. `Document::open` would have migrated the schema and
         // set persistent pragmas, and either would be an edit to a file the
@@ -297,8 +862,14 @@ mod tests {
         let before = std::fs::read(&path).expect("reads");
 
         let mut kernel = MockKernel::new();
-        let error = snapshot_of(&path, &mut kernel, &params(), &OperationContext::default())
-            .expect_err("a WAL document must be refused rather than converted");
+        let error = snapshot_of(
+            &path,
+            &mut kernel,
+            no_imports,
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect_err("a WAL document must be refused rather than converted");
         assert!(
             error.to_string().contains("WAL"),
             "the refusal does not say what is wrong: {error}"
@@ -322,8 +893,14 @@ mod tests {
         let (_directory, path) = plate();
         let mut kernel = MockKernel::new();
 
-        snapshot_of(&path, &mut kernel, &params(), &OperationContext::default())
-            .expect("the plate loads");
+        snapshot_of(
+            &path,
+            &mut kernel,
+            no_imports,
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("the plate loads");
         assert_eq!(
             kernel.live_shape_count(),
             0,
@@ -344,6 +921,7 @@ mod tests {
             snapshot_of(
                 &rubbish,
                 &mut kernel,
+                no_imports,
                 &params(),
                 &OperationContext::default()
             )
@@ -356,6 +934,7 @@ mod tests {
             snapshot_of(
                 &directory.path().join("absent.fcad"),
                 &mut kernel,
+                no_imports,
                 &params(),
                 &OperationContext::default()
             )
@@ -373,7 +952,7 @@ mod tests {
         token.cancel();
         let context = OperationContext::default().with_cancel(token);
 
-        let error = snapshot_of(&path, &mut kernel, &params(), &context)
+        let error = snapshot_of(&path, &mut kernel, no_imports, &params(), &context)
             .expect_err("a cancelled load must not produce a picture");
         assert_eq!(error.kind(), ferritecad_types::ErrorKind::Cancellation);
         assert_eq!(kernel.live_shape_count(), 0);
@@ -498,7 +1077,7 @@ mod tests {
         let mut kernel = StopsAfterBuilding::new(Stop::Cancelled(token.clone()));
         let context = OperationContext::default().with_cancel(token);
 
-        let error = snapshot_of(&path, &mut kernel, &params(), &context)
+        let error = snapshot_of(&path, &mut kernel, no_imports, &params(), &context)
             .expect_err("a cancelled load must not produce a picture");
         assert_eq!(error.kind(), ferritecad_types::ErrorKind::Cancellation);
 
@@ -516,8 +1095,14 @@ mod tests {
         let (_directory, path) = plate();
         let mut kernel = StopsAfterBuilding::new(Stop::Failed);
 
-        let error = snapshot_of(&path, &mut kernel, &params(), &OperationContext::default())
-            .expect_err("meshing failed, so there is no picture");
+        let error = snapshot_of(
+            &path,
+            &mut kernel,
+            no_imports,
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect_err("meshing failed, so there is no picture");
         assert_eq!(error.kind(), ferritecad_types::ErrorKind::Topology);
 
         assert!(kernel.inner.extrude_count() > 0, "nothing was ever built");
@@ -536,8 +1121,14 @@ mod tests {
         assert_eq!(bodies.len(), 3);
 
         let mut kernel = MockKernel::new();
-        let snapshot = snapshot_of(&path, &mut kernel, &params(), &OperationContext::default())
-            .expect("the document loads");
+        let snapshot = snapshot_of(
+            &path,
+            &mut kernel,
+            no_imports,
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("the document loads");
 
         assert_eq!(snapshot.meshes().len(), 3, "bodies were merged or dropped");
         assert_eq!(snapshot.draws().len(), 3);
@@ -587,8 +1178,14 @@ mod tests {
         // viewer that refused to open such a document would refuse the first
         // document anyone makes.
         let mut kernel = MockKernel::new();
-        let snapshot = snapshot_of(&path, &mut kernel, &params(), &OperationContext::default())
-            .expect("a document with an empty body still opens");
+        let snapshot = snapshot_of(
+            &path,
+            &mut kernel,
+            no_imports,
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("a document with an empty body still opens");
         assert!(snapshot.draws().is_empty());
         assert!(snapshot.bounds().is_none(), "empty geometry has no extent");
     }
@@ -607,7 +1204,7 @@ mod tests {
         let mut kernel = StopsAfterBuilding::new(Stop::BetweenBodies(token.clone()));
         let context = OperationContext::default().with_cancel(token);
 
-        let error = snapshot_of(&path, &mut kernel, &params(), &context)
+        let error = snapshot_of(&path, &mut kernel, no_imports, &params(), &context)
             .expect_err("a cancelled load must not produce a picture");
         assert_eq!(error.kind(), ferritecad_types::ErrorKind::Cancellation);
         assert_eq!(
