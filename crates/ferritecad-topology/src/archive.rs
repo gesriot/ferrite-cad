@@ -157,8 +157,8 @@ impl ArchivedFeature {
 ///
 /// The order the sub-shapes are handed to the kernel is the order of
 /// [`BoundName`], so two runs of the same rebuild archive the same way.
-pub fn archive_feature(
-    kernel: &mut dyn GeometryKernel,
+pub fn archive_feature<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
     map: &TopologyMap,
     producer: ObjectId,
 ) -> Result<ArchivedFeature> {
@@ -266,8 +266,8 @@ pub fn archive_feature(
 /// `into.feature(archived.producer())` and must eventually release it through
 /// the same kernel session. On failure, this function releases any shape that
 /// it decoded before returning.
-pub fn restore_feature(
-    kernel: &mut dyn GeometryKernel,
+pub fn restore_feature<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
     archived: &ArchivedFeature,
     into: &mut TopologyMap,
 ) -> Result<()> {

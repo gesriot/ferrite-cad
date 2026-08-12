@@ -118,7 +118,7 @@ impl RebuildResult {
     }
 
     /// Hands every shape back to the kernel.
-    pub fn release_all(self, kernel: &mut dyn GeometryKernel) {
+    pub fn release_all(self, kernel: &mut (impl GeometryKernel + ?Sized)) {
         // Later features may share storage with their inputs in a real kernel,
         // so unwind ownership in the opposite order from construction.
         for shape in self.owned.into_iter().rev() {
@@ -135,9 +135,9 @@ impl RebuildResult {
 ///
 /// Reads and writes no cache, and cannot be made to: there is no parameter
 /// through which one could be supplied.
-pub fn rebuild_cold(
+pub fn rebuild_cold<K: GeometryKernel + ?Sized>(
     document: &Document,
-    kernel: &mut dyn GeometryKernel,
+    kernel: &mut K,
     context: &OperationContext,
 ) -> Result<RebuildResult> {
     rebuild(document, kernel, None, context).map(|(result, _)| result)
@@ -150,18 +150,18 @@ pub fn rebuild_cold(
 /// costs time and nothing else: every failure to use an entry falls back to
 /// computing the feature, and a failure to store one leaves a rebuild that
 /// already succeeded successful.
-pub fn rebuild_cached(
+pub fn rebuild_cached<K: GeometryKernel + ?Sized>(
     document: &Document,
-    kernel: &mut dyn GeometryKernel,
+    kernel: &mut K,
     cache: &mut CacheStore,
     context: &OperationContext,
 ) -> Result<(RebuildResult, Vec<CacheEvent>)> {
     rebuild(document, kernel, Some(cache), context)
 }
 
-fn rebuild(
+fn rebuild<K: GeometryKernel + ?Sized>(
     document: &Document,
-    kernel: &mut dyn GeometryKernel,
+    kernel: &mut K,
     cache: Option<&mut CacheStore>,
     context: &OperationContext,
 ) -> Result<(RebuildResult, Vec<CacheEvent>)> {
@@ -182,9 +182,9 @@ fn rebuild(
     }
 }
 
-fn run(
+fn run<K: GeometryKernel + ?Sized>(
     document: &Document,
-    kernel: &mut dyn GeometryKernel,
+    kernel: &mut K,
     mut cache: Option<&mut CacheStore>,
     context: &OperationContext,
     state: &mut RebuildResult,
@@ -388,8 +388,8 @@ impl CacheEvent {
 /// means the caller must extrude, and says why in `events`. An error is a
 /// genuine failure of the rebuild — cancellation, or a kernel that restored a
 /// shape it will not then describe — never a disappointing cache.
-fn restore(
-    kernel: &mut dyn GeometryKernel,
+fn restore<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
     cache: &CacheStore,
     context: &OperationContext,
     id: ObjectId,
@@ -451,8 +451,8 @@ fn restore(
 /// Deliberately infallible. The geometry is already correct and already in
 /// hand; turning a storage problem into a failed rebuild would trade a slow
 /// next run for no result at all.
-fn store(
-    kernel: &mut dyn GeometryKernel,
+fn store<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
     cache: &mut CacheStore,
     context: &OperationContext,
     id: ObjectId,

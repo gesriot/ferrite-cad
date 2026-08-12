@@ -77,7 +77,7 @@ pub fn snapshot_of<K>(
     context: &OperationContext,
 ) -> Result<RenderSnapshot>
 where
-    K: GeometryKernel,
+    K: GeometryKernel + ?Sized,
 {
     let document = Document::open_read_only(path)?;
 
@@ -160,7 +160,7 @@ where
 /// own structure and worth keeping in the document. A picture needs world
 /// positions, so the chain is multiplied out once, here, where the tree is
 /// still in hand.
-fn draw_scene<K: GeometryKernel>(
+fn draw_scene<K: GeometryKernel + ?Sized>(
     builder: &mut SnapshotBuilder,
     kernel: &mut K,
     scene: &Scene,
@@ -252,14 +252,14 @@ fn placement_of(placement: &[f64; 12]) -> Result<Transform> {
 /// Holds the kernel for exactly as long as one reopening takes. Identity and
 /// release come from the kernel itself, so the only thing a caller has to
 /// supply is how this particular kernel reads STEP bytes.
-struct Reader<'a, K, F> {
+struct Reader<'a, K: ?Sized, F> {
     kernel: &'a mut K,
     read: F,
 }
 
 impl<K, F> StepImporter for Reader<'_, K, F>
 where
-    K: GeometryKernel,
+    K: GeometryKernel + ?Sized,
     F: FnMut(&mut K, &[u8]) -> Result<Import>,
 {
     fn identity(&self) -> &KernelIdentity {
@@ -294,7 +294,7 @@ mod tests {
     ///
     /// A document with no imports never asks, so this refusing before it can
     /// do anything is also the check that it never asked.
-    fn no_imports<K>(_: &mut K, _: &[u8]) -> Result<Import> {
+    fn no_imports<K: ?Sized>(_: &mut K, _: &[u8]) -> Result<Import> {
         Err(CadError::unsupported(
             "this test opened a document that was supposed to hold no imports",
         ))
@@ -799,6 +799,25 @@ mod tests {
         assert!((size[0] - 60.0).abs() < 1e-3, "{size:?}");
         assert!((size[1] - 40.0).abs() < 1e-3, "{size:?}");
         assert!((size[2] - 10.0).abs() < 1e-3, "{size:?}");
+    }
+
+    #[test]
+    fn a_loader_accepts_the_kernel_contract_without_knowing_its_implementation() {
+        let (_directory, path) = plate();
+        let mut implementation = MockKernel::new();
+        let kernel: &mut dyn GeometryKernel = &mut implementation;
+
+        let snapshot = snapshot_of(
+            &path,
+            kernel,
+            no_imports,
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("the contract is enough to load a native document");
+
+        assert_eq!(snapshot.meshes().len(), 1);
+        assert_eq!(implementation.live_shape_count(), 0);
     }
 
     #[test]

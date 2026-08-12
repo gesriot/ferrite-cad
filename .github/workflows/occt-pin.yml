@@ -524,6 +524,11 @@ jobs:
           # for a contributor without the kernel and wrong for a run whose
           # purpose is to prove the adapter works against the pinned version.
           export FERRITECAD_REQUIRE_OCCT=1
+          # This run also carries the only end-to-end STEP -> document -> GPU
+          # -> pixel gate. A contributor with no adapter may skip that test;
+          # this workflow may not, or green would require reading its log to
+          # learn whether the asserted path ran at all.
+          export FERRITECAD_REQUIRE_GPU=1
           export OpenCASCADE_DIR="$FCAD_OCCT_CONFIG_DIR"
 
           case '${{ matrix.name }}' in
@@ -629,10 +634,9 @@ jobs:
           # here by hand is a gate that will one day be added everywhere else
           # and not here.
           #
-          # `--nocapture` for the same reason it is passed above: these tests
-          # skip themselves when the machine has no usable GPU adapter, and a
-          # skipped test reports as passed. Without the output there is no way
-          # to tell a run that drew pixels from one that decided not to try.
+          # Keep the output because it is useful evidence; unlike an ordinary
+          # developer run, FERRITECAD_REQUIRE_GPU above makes a missing adapter
+          # a failure rather than a green skip.
           cargo test -p ferritecad-cli --tests -- --nocapture
 
           # And the loader, for the same reason one step further up: everything

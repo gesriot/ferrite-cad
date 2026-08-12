@@ -26,6 +26,50 @@ use ferritecad_types::ErrorKind;
 use ferritecad_viewport::{Camera, RenderSnapshot};
 use ferritecad_viewport_gpu::Renderer;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MissingAdapter {
+    Skip,
+    Fail,
+}
+
+fn missing_adapter(required: bool) -> MissingAdapter {
+    if required {
+        MissingAdapter::Fail
+    } else {
+        MissingAdapter::Skip
+    }
+}
+
+/// A renderer, unless this machine is allowed not to have one.
+///
+/// A contributor's headless machine may skip this gate. The pin workflow sets
+/// `FERRITECAD_REQUIRE_GPU=1`, because its green result is a product claim that
+/// the vertical path reached pixels rather than merely a log somebody has to
+/// inspect for a skip line.
+fn renderer_or_skip() -> Option<Renderer> {
+    match Renderer::new() {
+        Ok(renderer) => Some(renderer),
+        Err(reason) if reason.kind() == ErrorKind::Unsupported => {
+            match missing_adapter(std::env::var("FERRITECAD_REQUIRE_GPU").as_deref() == Ok("1")) {
+                MissingAdapter::Fail => panic!(
+                    "FERRITECAD_REQUIRE_GPU=1 was set, so the pixel gate may not skip: {reason}"
+                ),
+                MissingAdapter::Skip => {
+                    eprintln!("skipped: {reason}");
+                    None
+                }
+            }
+        }
+        Err(reason) => panic!("a renderer failed after adapter discovery: {reason}"),
+    }
+}
+
+#[test]
+fn the_pin_run_cannot_turn_a_missing_gpu_into_a_green_skip() {
+    assert_eq!(missing_adapter(false), MissingAdapter::Skip);
+    assert_eq!(missing_adapter(true), MissingAdapter::Fail);
+}
+
 fn ferritecad() -> PathBuf {
     let mut path = std::env::current_exe().expect("the test knows where it is");
     path.pop();
@@ -121,13 +165,8 @@ fn a_nested_assembly_goes_from_step_to_pixels() {
         "four cubes 30 and 40 apart measure {size:?}"
     );
 
-    let mut renderer = match Renderer::new() {
-        Ok(renderer) => renderer,
-        Err(reason) if reason.kind() == ErrorKind::Unsupported => {
-            eprintln!("skipped: {reason}");
-            return;
-        }
-        Err(reason) => panic!("a renderer failed after adapter discovery: {reason}"),
+    let Some(mut renderer) = renderer_or_skip() else {
+        return;
     };
 
     let mut camera = Camera::new();
