@@ -113,13 +113,145 @@ fn one_quad(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
     (snapshot, camera)
 }
 
+/// Two quads side by side, each its own definition, and one of them placed
+/// twice. Enough to ask both questions a selection has to answer: does it
+/// reach every placement of what was chosen, and does it leave everything
+/// else alone.
+fn two_definitions(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
+    let mut builder = SnapshotBuilder::new();
+    let left = builder.add_mesh(&quad(10.0)).expect("packs");
+    let right = builder.add_mesh(&quad(10.0)).expect("packs");
+
+    let at = |x: f64| {
+        Transform::from_translation(ferritecad_types::Vec3::new(x, 0.0, 0.0).expect("finite"))
+            .expect("finite")
+    };
+    builder
+        .place(left, None, &at(-14.0), [0.0, 1.0, 0.0])
+        .expect("places");
+    builder
+        .place(left, None, &at(0.0), [0.0, 1.0, 0.0])
+        .expect("places");
+    builder
+        .place(right, None, &at(14.0), [0.0, 1.0, 0.0])
+        .expect("places");
+    let snapshot = Arc::new(builder.build());
+
+    let mut camera = Camera::new();
+    camera.resize(width, height);
+    camera
+        .frame(snapshot.bounds().expect("something is drawn"))
+        .expect("frames");
+    (snapshot, camera)
+}
+
+#[test]
+fn choosing_a_definition_changes_every_placement_of_it_and_nothing_else() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = two_definitions(96, 96);
+
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let plain = renderer
+        .render(&prepared, &camera, PickId::NOTHING)
+        .expect("draws");
+
+    // Find a pixel of each definition by asking the frame what is under it.
+    let mut of = [None, None];
+    for y in 0..plain.height() {
+        for x in 0..plain.width() {
+            if let Some(definition) = snapshot.definition(plain.pick_at(x, y))
+                && definition < 2
+                && of[definition].is_none()
+            {
+                of[definition] = Some((x, y));
+            }
+        }
+    }
+    let first = of[0].expect("the first definition was drawn");
+    let second = of[1].expect("the second definition was drawn");
+
+    // Both placements of the first definition, found the same way.
+    let placements: Vec<(u32, u32)> = (0..plain.height())
+        .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+        .filter(|(x, y)| snapshot.definition(plain.pick_at(*x, *y)) == Some(0))
+        .collect();
+    assert!(
+        placements.len() > 200,
+        "the first definition covers {} pixels",
+        placements.len()
+    );
+
+    let chosen = plain.pick_at(first.0, first.1);
+    let lit = renderer.render(&prepared, &camera, chosen).expect("draws");
+
+    // Every pixel of the chosen definition changed, wherever it was drawn:
+    // the two placements share one identity, so choosing reaches both.
+    for (x, y) in &placements {
+        assert_ne!(
+            lit.colour_at(*x, *y),
+            plain.colour_at(*x, *y),
+            "a placement of the chosen definition was left as it was at {x},{y}"
+        );
+    }
+
+    // And nothing else moved, which is what makes it a selection rather than
+    // a change of lighting.
+    assert_eq!(
+        lit.colour_at(second.0, second.1),
+        plain.colour_at(second.0, second.1),
+        "choosing one definition changed another"
+    );
+}
+
+#[test]
+fn a_selection_from_another_snapshot_selects_nothing() {
+    let mut renderer = renderer_or_skip!();
+    let (mine, camera) = two_definitions(64, 64);
+    let (theirs, _) = one_quad(64, 64);
+
+    let prepared = renderer.prepare(Arc::clone(&mine)).expect("uploads");
+    let plain = renderer
+        .render(&prepared, &camera, PickId::NOTHING)
+        .expect("draws");
+
+    // A pick taken from a different picture. Its number is in range here, so
+    // nothing but the snapshot it was issued against can tell that it means
+    // another definition – which is why the renderer asks.
+    let elsewhere = renderer.prepare(Arc::clone(&theirs)).expect("uploads");
+    let other_camera = {
+        let mut camera = Camera::new();
+        camera.resize(64, 64);
+        camera
+            .frame(theirs.bounds().expect("something is drawn"))
+            .expect("frames");
+        camera
+    };
+    let other = renderer
+        .render(&elsewhere, &other_camera, PickId::NOTHING)
+        .expect("draws");
+    let foreign = (0..other.height())
+        .flat_map(|y| (0..other.width()).map(move |x| (x, y)))
+        .map(|(x, y)| other.pick_at(x, y))
+        .find(|pick| theirs.definition(*pick).is_some())
+        .expect("the other picture drew something");
+
+    let after = renderer.render(&prepared, &camera, foreign).expect("draws");
+    assert_eq!(
+        after.colour(),
+        plain.colour(),
+        "a pick from another picture selected something in this one"
+    );
+}
+
 #[test]
 fn a_snapshot_reaches_the_colour_target() {
     let mut renderer = renderer_or_skip!();
     let (snapshot, camera) = one_quad(64, 64);
 
     let prepared = renderer.prepare(snapshot).expect("uploads");
-    let frame = renderer.render(&prepared, &camera).expect("draws");
+    let frame = renderer
+        .render(&prepared, &camera, PickId::NOTHING)
+        .expect("draws");
     assert_eq!(frame.width(), 64);
     assert_eq!(frame.height(), 64);
     assert_eq!(frame.colour().len(), 64 * 64 * 4);
@@ -148,7 +280,9 @@ fn the_pick_target_comes_back_carrying_the_identities_that_went_in() {
     let expected = snapshot.draws()[0].pick;
 
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
-    let frame = renderer.render(&prepared, &camera).expect("draws");
+    let frame = renderer
+        .render(&prepared, &camera, PickId::NOTHING)
+        .expect("draws");
 
     let hit = frame.pick_at(32, 32);
     assert_eq!(
@@ -185,7 +319,9 @@ fn every_placement_is_drawn_and_they_all_pick_their_definition() {
         .expect("frames");
 
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
-    let frame = renderer.render(&prepared, &camera).expect("draws");
+    let frame = renderer
+        .render(&prepared, &camera, PickId::NOTHING)
+        .expect("draws");
 
     // Scanned rather than sampled at guessed coordinates: where the framing
     // puts each quad is the camera's business, and a test that hardcoded it
@@ -228,7 +364,9 @@ fn a_frame_cannot_be_read_against_a_different_snapshot() {
     let mut renderer = renderer_or_skip!();
     let (first, camera) = one_quad(32, 32);
     let prepared = renderer.prepare(Arc::clone(&first)).expect("uploads");
-    let frame = renderer.render(&prepared, &camera).expect("draws");
+    let frame = renderer
+        .render(&prepared, &camera, PickId::NOTHING)
+        .expect("draws");
 
     // A second snapshot describing something else. Its definition zero is a
     // different part, and the raw number in the frame's pick buffer would name
@@ -265,7 +403,9 @@ fn a_viewport_of_no_size_draws_nothing_and_says_so() {
     let mut camera = Camera::new();
     camera.resize(0, 0);
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
-    let frame = renderer.render(&prepared, &camera).expect("draws nothing");
+    let frame = renderer
+        .render(&prepared, &camera, PickId::NOTHING)
+        .expect("draws nothing");
     assert_eq!(frame.width(), 0);
     assert!(frame.colour().is_empty());
     assert_eq!(frame.pick_at(0, 0), PickId::NOTHING);
@@ -278,7 +418,7 @@ fn a_viewport_of_no_size_draws_nothing_and_says_so() {
     camera.resize(16, 0);
     assert!(
         renderer
-            .render(&prepared, &camera)
+            .render(&prepared, &camera, PickId::NOTHING)
             .expect("draws nothing")
             .colour()
             .is_empty()
@@ -294,7 +434,7 @@ fn a_viewport_larger_than_the_device_can_hold_is_refused_before_allocation() {
 
     let prepared = renderer.prepare(snapshot).expect("uploads");
     let error = renderer
-        .render(&prepared, &camera)
+        .render(&prepared, &camera, PickId::NOTHING)
         .expect_err("an impossible target must be refused");
     assert_eq!(error.kind(), ErrorKind::Input);
 }
@@ -332,9 +472,11 @@ fn a_normal_and_its_baked_equivalent_receive_the_same_light() {
     let transformed_prepared = renderer.prepare(transformed).expect("uploads");
     let baked_prepared = renderer.prepare(baked).expect("uploads");
     let transformed = renderer
-        .render(&transformed_prepared, &camera)
+        .render(&transformed_prepared, &camera, PickId::NOTHING)
         .expect("draws");
-    let baked = renderer.render(&baked_prepared, &camera).expect("draws");
+    let baked = renderer
+        .render(&baked_prepared, &camera, PickId::NOTHING)
+        .expect("draws");
     assert_eq!(
         transformed.colour(),
         baked.colour(),
@@ -368,7 +510,9 @@ fn an_empty_snapshot_draws_a_cleared_frame() {
     // empty document (or an XDE assembly node) a rendering error.
     for snapshot in [empty, placed_empty] {
         let prepared = renderer.prepare(snapshot).expect("uploads");
-        let frame = renderer.render(&prepared, &camera).expect("draws nothing");
+        let frame = renderer
+            .render(&prepared, &camera, PickId::NOTHING)
+            .expect("draws nothing");
         assert_eq!(frame.colour().len(), 16 * 16 * 4);
         assert!(
             frame
@@ -387,8 +531,12 @@ fn two_frames_of_one_snapshot_are_the_same_picture() {
     let (snapshot, camera) = one_quad(48, 48);
 
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
-    let first = renderer.render(&prepared, &camera).expect("draws");
-    let second = renderer.render(&prepared, &camera).expect("draws");
+    let first = renderer
+        .render(&prepared, &camera, PickId::NOTHING)
+        .expect("draws");
+    let second = renderer
+        .render(&prepared, &camera, PickId::NOTHING)
+        .expect("draws");
 
     // Not a claim about GPUs in general: it is a claim that nothing in this
     // renderer varies between frames – no time, no frame counter, no iteration
@@ -440,7 +588,9 @@ fn geometry_is_uploaded_once_and_repeat_frames_only_move_the_camera() {
             ))
             .expect("moves the camera without resizing the target");
         matrices.push(camera.view_projection());
-        let frame = renderer.render(&prepared, &camera).expect("draws");
+        let frame = renderer
+            .render(&prepared, &camera, PickId::NOTHING)
+            .expect("draws");
         assert_eq!((frame.width(), frame.height()), (48, 48));
         pictures.push(frame.colour().to_vec());
     }
@@ -480,7 +630,7 @@ fn a_snapshot_prepared_by_another_renderer_is_refused() {
     // lifetime mistake surfacing as a driver error far from its cause, so it
     // is refused by name instead.
     let error = mine
-        .render(&prepared, &camera)
+        .render(&prepared, &camera, PickId::NOTHING)
         .expect_err("another renderer's buffers must not be drawn");
     assert_eq!(error.kind(), ErrorKind::Rendering, "{error}");
     assert!(
@@ -489,7 +639,9 @@ fn a_snapshot_prepared_by_another_renderer_is_refused() {
     );
 
     // The renderer that owns them still draws them.
-    theirs.render(&prepared, &camera).expect("its own buffers");
+    theirs
+        .render(&prepared, &camera, PickId::NOTHING)
+        .expect("its own buffers");
 }
 
 #[test]
@@ -500,7 +652,9 @@ fn an_older_frame_keeps_resolving_against_the_snapshot_it_was_drawn_from() {
     // the snapshot each frame carries can tell them apart.
     let (first, camera) = one_quad(32, 32);
     let first_prepared = renderer.prepare(Arc::clone(&first)).expect("uploads");
-    let old = renderer.render(&first_prepared, &camera).expect("draws");
+    let old = renderer
+        .render(&first_prepared, &camera, PickId::NOTHING)
+        .expect("draws");
     let old_hit = old.pick_at(16, 16);
     assert_ne!(old_hit, PickId::NOTHING);
     assert_eq!(old_hit.to_raw(), 1);
@@ -514,7 +668,9 @@ fn an_older_frame_keeps_resolving_against_the_snapshot_it_was_drawn_from() {
         .expect("places");
     let second = Arc::new(builder.build());
     let second_prepared = renderer.prepare(Arc::clone(&second)).expect("uploads");
-    let new = renderer.render(&second_prepared, &camera).expect("draws");
+    let new = renderer
+        .render(&second_prepared, &camera, PickId::NOTHING)
+        .expect("draws");
     let new_hit = new.pick_at(16, 16);
     assert_ne!(new_hit, PickId::NOTHING);
     assert_eq!(new_hit.to_raw(), 1);

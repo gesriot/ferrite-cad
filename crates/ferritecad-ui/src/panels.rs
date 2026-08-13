@@ -41,6 +41,9 @@ pub struct Chosen {
 pub struct Activity<'a> {
     pub line: &'a str,
     pub progress: Option<f32>,
+    /// What is chosen, said the way a document would say it. `None` is
+    /// nothing chosen, which is what clicking the background leaves behind.
+    pub selection: Option<&'a str>,
 }
 
 /// The toolbar: a document to open, the directions a drawing would name, what
@@ -82,6 +85,14 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
             ui.add(egui::ProgressBar::new(fraction).desired_width(80.0));
         }
         ui.add(egui::Label::new(activity.line).truncate());
+        if let Some(selection) = activity.selection {
+            ui.separator();
+            // The name the file or the document gave it, not the number the
+            // picture used: that number means nothing once the picture is
+            // redrawn, and putting it in front of a person would invite them
+            // to write it down.
+            ui.add(egui::Label::new(selection).truncate());
+        }
     });
     chosen
 }
@@ -269,6 +280,7 @@ mod tests {
         let reading = Activity {
             line: "Opening part.fcad… 40%",
             progress: Some(0.4),
+            selection: None,
         };
 
         // Where the Cancel button is: after the views, so the row up to it is

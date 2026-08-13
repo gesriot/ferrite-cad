@@ -36,14 +36,49 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use ferritecad_document::{Document, ObjectPayload, ObjectRecord, StepImporter};
+use ferritecad_document::{
+    Document, ImportedDefinitionRef, ObjectPayload, ObjectRecord, StepImporter,
+};
 use ferritecad_eval::rebuild_cold;
 use ferritecad_exchange::{ColourSource, Import, Scene};
 use ferritecad_kernel::{
     GeometryKernel, KernelIdentity, OperationContext, ProgressSink, ShapeHandle, TessellationParams,
 };
-use ferritecad_types::{CadError, Result, Transform};
+use ferritecad_types::{CadError, ImportedSourceId, ObjectId, Result, Transform};
 use ferritecad_viewport::{RenderSnapshot, SnapshotBuilder};
+use serde::{Deserialize, Serialize};
+
+/// A picture, and what each part of it is.
+///
+/// The two halves answer different questions and are kept apart on purpose.
+/// [`RenderSnapshot`] is what a GPU draws and holds nothing that outlives the
+/// session that made it; the catalogue is what a click *means*, in terms a
+/// document can store.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadedScene {
+    pub snapshot: RenderSnapshot,
+    /// What each packed mesh is, indexed the way the snapshot indexes them.
+    pub catalogue: Vec<SceneItem>,
+}
+
+/// What one drawn definition is, in terms that outlive this reading.
+///
+/// A pick names a definition inside one snapshot and means nothing outside it
+/// – that is what makes it safe to throw away. This is the other half: the
+/// same definition said in a way a document could store, so a selection can
+/// become something durable without a viewport ever holding a durable name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SceneItem {
+    /// A body of this document, named by the object that holds it.
+    Body(ObjectId),
+    /// A definition inside an imported file, named by the file and the key
+    /// that file gave it. Never by where it sits in the assembly: an
+    /// occurrence has only a position, and a position is renumbered by the
+    /// next import.
+    Imported(ImportedDefinitionRef),
+}
 
 /// What every body is drawn in.
 ///
@@ -75,7 +110,7 @@ pub fn snapshot_of<K>(
     mut read_step: impl FnMut(&mut K, &[u8]) -> Result<Import>,
     params: &TessellationParams,
     context: &OperationContext,
-) -> Result<RenderSnapshot>
+) -> Result<LoadedScene>
 where
     K: GeometryKernel + ?Sized,
 {
@@ -100,8 +135,9 @@ where
 
     // Everything that can fail happens in here, so that the shapes can be
     // handed back in one place whatever the outcome.
-    let snapshot = (|| -> Result<RenderSnapshot> {
+    let snapshot = (|| -> Result<LoadedScene> {
         let mut builder = SnapshotBuilder::new();
+        let mut catalogue: Vec<SceneItem> = Vec::new();
         let objects = document.objects()?;
 
         // Counted before anything is drawn, so each one can say what fraction
@@ -139,6 +175,11 @@ where
                     })?;
                     let mesh = kernel.tessellate(shape, params, &scoped)?;
                     let definition = builder.add_mesh(&mesh)?;
+                    // Added in step with the meshes, so the catalogue is
+                    // indexed the way the snapshot is by construction rather
+                    // than by two loops agreeing.
+                    debug_assert_eq!(definition, catalogue.len());
+                    catalogue.push(SceneItem::Body(object.id));
                     builder.place(definition, None, &Transform::IDENTITY, BODY_COLOUR)?;
                 }
 
@@ -154,13 +195,24 @@ where
                         document.reopen_step_import(object.id, &mut reader)?
                     };
                     imported.extend(reopened.scene.shapes());
-                    draw_scene(&mut builder, kernel, &reopened.scene, params, &scoped)?;
+                    draw_scene(
+                        &mut builder,
+                        &mut catalogue,
+                        kernel,
+                        reopened.source(),
+                        &reopened.scene,
+                        params,
+                        &scoped,
+                    )?;
                 }
 
                 _ => continue,
             }
         }
-        Ok(builder.build())
+        Ok(LoadedScene {
+            snapshot: builder.build(),
+            catalogue,
+        })
     })();
 
     for shape in imported.into_iter().rev() {
@@ -189,7 +241,9 @@ where
 /// still in hand.
 fn draw_scene<K: GeometryKernel + ?Sized>(
     builder: &mut SnapshotBuilder,
+    catalogue: &mut Vec<SceneItem>,
     kernel: &mut K,
+    source: ImportedSourceId,
     scene: &Scene,
     params: &TessellationParams,
     context: &OperationContext,
@@ -265,6 +319,14 @@ fn draw_scene<K: GeometryKernel + ?Sized>(
                 let mesh = kernel.tessellate(definition.shape, params, &scoped)?;
                 definitions_meshed += 1;
                 let packed = builder.add_mesh(&mesh)?;
+                // The file's own name for this definition, kept beside the
+                // source it belongs to. `#31` in one file is not `#31` in
+                // another, which is why neither half travels alone.
+                debug_assert_eq!(packed, catalogue.len());
+                catalogue.push(SceneItem::Imported(ImportedDefinitionRef::new(
+                    source,
+                    definition.key.clone(),
+                )?));
                 meshes.insert(instance.definition, packed);
                 packed
             }
@@ -673,7 +735,7 @@ mod tests {
         document_with_import(&path, &mut kernel);
         assert_eq!(kernel.live_shape_count(), 0, "the setup kept shapes");
 
-        let snapshot = snapshot_of(
+        let loaded = snapshot_of(
             &path,
             &mut kernel,
             // Reading the file again produces the same scene with new handles,
@@ -689,6 +751,7 @@ mod tests {
             &OperationContext::default(),
         )
         .expect("the stored assembly reopens");
+        let snapshot = loaded.snapshot;
 
         // One mesh: four cubes in four places are one definition, and the two
         // groups are structure. A loader that tessellated every definition
@@ -729,13 +792,13 @@ mod tests {
     }
 
     #[test]
-    fn what_the_file_said_about_colour_is_what_is_drawn() {
+    fn every_mesh_says_what_it_is_in_terms_a_document_could_store() {
         let directory = tempfile::tempdir().expect("a temporary directory is available");
         let path = directory.path().join("assembly.fcad");
         let mut kernel = MockKernel::new();
-        document_with_import(&path, &mut kernel);
+        let object = document_with_import(&path, &mut kernel);
 
-        let snapshot = snapshot_of(
+        let loaded = snapshot_of(
             &path,
             &mut kernel,
             |kernel, _| {
@@ -748,6 +811,106 @@ mod tests {
             &OperationContext::default(),
         )
         .expect("the stored assembly reopens");
+
+        // One entry per mesh, and the same index: a click gives a mesh index
+        // and this is what turns it into something that outlives the session.
+        assert_eq!(loaded.catalogue.len(), loaded.snapshot.meshes().len());
+
+        // Four cubes in four places share one definition, so the four draws
+        // resolve to the same catalogue entry. That is what makes selecting
+        // one of them select the definition rather than the placement.
+        let entries: Vec<&SceneItem> = loaded
+            .snapshot
+            .draws()
+            .iter()
+            .map(|item| &loaded.catalogue[item.mesh])
+            .collect();
+        assert_eq!(entries.len(), 4);
+        assert!(entries.windows(2).all(|pair| pair[0] == pair[1]));
+
+        // And what it says is the file's own name for that definition, beside
+        // the source it belongs to. `#58` in another file is another thing.
+        let SceneItem::Imported(reference) = entries[0] else {
+            unreachable!("an imported definition was catalogued as a native body")
+        };
+        assert_eq!(reference.definition_key(), "step.product_definition#58");
+
+        // The document that stored the import is the source it names, so a
+        // reference taken from a picture resolves in the document it came from.
+        let stored = Document::open_read_only(&path).expect("reopens");
+        let import = stored
+            .step_import(object)
+            .expect("reads")
+            .expect("the import is there");
+        assert_eq!(reference.source(), import.imported.source);
+
+        assert_eq!(kernel.live_shape_count(), 0);
+    }
+
+    #[test]
+    fn a_native_body_is_catalogued_by_the_object_that_holds_it() {
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("three.fcad");
+        let bodies = several_bodies(&path, 3);
+
+        let mut kernel = MockKernel::new();
+        let loaded = snapshot_of(
+            &path,
+            &mut kernel,
+            no_imports,
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("the document loads");
+
+        let named: Vec<SceneItem> = loaded
+            .snapshot
+            .draws()
+            .iter()
+            .map(|item| loaded.catalogue[item.mesh].clone())
+            .collect();
+        assert_eq!(
+            named,
+            bodies.into_iter().map(SceneItem::Body).collect::<Vec<_>>(),
+            "the catalogue does not name the bodies that were drawn"
+        );
+    }
+
+    #[test]
+    fn what_a_click_means_is_durable_and_what_it_was_is_not() {
+        // The catalogue survives being written down, which is the whole point
+        // of it: a selection becomes something a document can hold. Its
+        // companion cannot – a `PickId` is bound to one snapshot's identity
+        // and implements no serialisation at all, so there is no accident by
+        // which a click's transient half could be stored beside its durable
+        // one.
+        let entry = SceneItem::Body(ObjectId::new());
+        let written = serde_json::to_string(&entry).expect("a catalogue entry can be written down");
+        let read: SceneItem = serde_json::from_str(&written).expect("and read back");
+        assert_eq!(read, entry);
+    }
+
+    #[test]
+    fn what_the_file_said_about_colour_is_what_is_drawn() {
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("assembly.fcad");
+        let mut kernel = MockKernel::new();
+        document_with_import(&path, &mut kernel);
+
+        let loaded = snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel, _| {
+                Ok(Import::Imported {
+                    scene: nested_assembly(kernel),
+                    diagnostics: Vec::new(),
+                })
+            },
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("the stored assembly reopens");
+        let snapshot = loaded.snapshot;
 
         // Three cubes take their definition's colour and one is painted over
         // it. Linear RGB, straight from the file: converting here would guess
@@ -860,7 +1023,7 @@ mod tests {
         let (_directory, path) = plate();
         let mut kernel = MockKernel::new();
 
-        let snapshot = snapshot_of(
+        let loaded = snapshot_of(
             &path,
             &mut kernel,
             no_imports,
@@ -868,6 +1031,7 @@ mod tests {
             &OperationContext::default(),
         )
         .expect("the plate loads");
+        let snapshot = loaded.snapshot;
 
         assert_eq!(snapshot.meshes().len(), 1, "the plate is one body");
         assert_eq!(snapshot.draws().len(), 1);
@@ -889,7 +1053,7 @@ mod tests {
         let mut implementation = MockKernel::new();
         let kernel: &mut dyn GeometryKernel = &mut implementation;
 
-        let snapshot = snapshot_of(
+        let loaded = snapshot_of(
             &path,
             kernel,
             no_imports,
@@ -898,7 +1062,7 @@ mod tests {
         )
         .expect("the contract is enough to load a native document");
 
-        assert_eq!(snapshot.meshes().len(), 1);
+        assert_eq!(loaded.snapshot.meshes().len(), 1);
         assert_eq!(implementation.live_shape_count(), 0);
     }
 
@@ -1001,8 +1165,17 @@ mod tests {
         );
 
         let mut builder = SnapshotBuilder::new();
-        draw_scene(&mut builder, &mut kernel, &scene, &params(), &context)
-            .expect("the assembly draws");
+        let mut catalogue = Vec::new();
+        draw_scene(
+            &mut builder,
+            &mut catalogue,
+            &mut kernel,
+            ImportedSourceId::new(),
+            &scene,
+            &params(),
+            &context,
+        )
+        .expect("the assembly draws");
         let snapshot = builder.build();
         assert_eq!(snapshot.meshes().len(), 2, "a leaf definition was missed");
 
@@ -1031,7 +1204,7 @@ mod tests {
     fn every_definition_can_be_named_and_told_apart() {
         let (_directory, path) = plate();
         let mut kernel = MockKernel::new();
-        let snapshot = snapshot_of(
+        let loaded = snapshot_of(
             &path,
             &mut kernel,
             no_imports,
@@ -1039,6 +1212,7 @@ mod tests {
             &OperationContext::default(),
         )
         .expect("the plate loads");
+        let snapshot = loaded.snapshot;
 
         // The viewport's own rule, met here rather than discovered on the GPU.
         for (index, item) in snapshot.draws().iter().enumerate() {
@@ -1347,7 +1521,7 @@ mod tests {
         assert_eq!(bodies.len(), 3);
 
         let mut kernel = MockKernel::new();
-        let snapshot = snapshot_of(
+        let loaded = snapshot_of(
             &path,
             &mut kernel,
             no_imports,
@@ -1355,6 +1529,7 @@ mod tests {
             &OperationContext::default(),
         )
         .expect("the document loads");
+        let snapshot = loaded.snapshot;
 
         assert_eq!(snapshot.meshes().len(), 3, "bodies were merged or dropped");
         assert_eq!(snapshot.draws().len(), 3);
@@ -1404,7 +1579,7 @@ mod tests {
         // viewer that refused to open such a document would refuse the first
         // document anyone makes.
         let mut kernel = MockKernel::new();
-        let snapshot = snapshot_of(
+        let loaded = snapshot_of(
             &path,
             &mut kernel,
             no_imports,
@@ -1412,6 +1587,7 @@ mod tests {
             &OperationContext::default(),
         )
         .expect("a document with an empty body still opens");
+        let snapshot = loaded.snapshot;
         assert!(snapshot.draws().is_empty());
         assert!(snapshot.bounds().is_none(), "empty geometry has no extent");
     }

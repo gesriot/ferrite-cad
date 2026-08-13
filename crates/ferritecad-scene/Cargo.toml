@@ -21,8 +21,15 @@ ferritecad-kernel.workspace = true
 ferritecad-types.workspace = true
 ferritecad-viewport.workspace = true
 
+# The catalogue is the durable half of a picture, so it is a thing a caller can
+# store. Nothing else here is serialised, and the snapshot beside it never can
+# be: it holds identities that mean nothing outside the session that made them.
+serde = { version = "1", features = ["derive"] }
+
 [dev-dependencies]
 ferritecad-fixtures.workspace = true
+# Only to show that a catalogue entry can be written down and read back.
+serde_json = "1"
 # The pin run must see the real kernel produce the real plate. Dev-only: this
 # crate never names an implementation, so a viewer could use another one.
 ferritecad-occt.workspace = true

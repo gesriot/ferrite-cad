@@ -35,6 +35,23 @@ struct DrawUniform {
     padding: [u32; 3],
 }
 
+/// What every draw in one frame is drawn against.
+///
+/// The selection lives here rather than in the per-draw uniforms, and that is
+/// what makes every placement of one definition light up together: they carry
+/// the same identity, so one comparison in the shader covers all of them. It
+/// also means that selecting something rewrites nothing that was uploaded
+/// once.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GlobalsUniform {
+    view_projection: [f32; 16],
+    /// The identity to draw as selected, or zero for none. Zero is what the
+    /// background reads as, and no definition is ever numbered zero.
+    selected: u32,
+    padding: [u32; 3],
+}
+
 /// Distinguishes one renderer from another.
 ///
 /// The same idea as the kernel's `SessionId`, for the same reason: a buffer
@@ -148,7 +165,9 @@ impl Renderer {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    // Both stages: the vertex stage projects with it, and the
+                    // fragment stage asks it what is selected.
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -189,7 +208,7 @@ impl Renderer {
 
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ferritecad viewport globals"),
-            size: std::mem::size_of::<[f32; 16]>() as u64,
+            size: std::mem::size_of::<GlobalsUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -230,6 +249,29 @@ impl Renderer {
         &self.queue
     }
 
+    /// Writes what every draw in the coming frame is drawn against.
+    ///
+    /// A selection from another snapshot selects nothing. The identity a pick
+    /// carries is only meaningful inside the snapshot that issued it, and the
+    /// same number in another one names a different definition – so the
+    /// snapshot about to be drawn is asked, and an answer it does not
+    /// recognise becomes no selection at all.
+    fn write_globals(&self, camera: &Camera, prepared: &PreparedSnapshot, selected: PickId) {
+        let selected = match prepared.snapshot().definition(selected) {
+            Some(_) => selected.to_raw(),
+            None => PickId::NOTHING.to_raw(),
+        };
+        self.queue.write_buffer(
+            &self.globals,
+            0,
+            bytemuck::bytes_of(&GlobalsUniform {
+                view_projection: camera.view_projection(),
+                selected,
+                padding: [0; 3],
+            }),
+        );
+    }
+
     /// The largest texture this device will make, which is also the largest
     /// window it can be asked to fill.
     pub fn max_texture_dimension(&self) -> u32 {
@@ -247,10 +289,15 @@ impl Renderer {
     /// for the second on every one of the first would be paying continuously
     /// for something wanted occasionally. Picking renders offscreen, through
     /// [`Self::render`], at the same camera.
+    // Seven of these are one thing each: what to draw, from where, what is
+    // chosen, where to put it, and the three facts about that target. A struct
+    // built at the one call site would hide the count rather than reduce it.
+    #[expect(clippy::too_many_arguments, reason = "see above")]
     pub(crate) fn draw_into(
         &mut self,
         prepared: &PreparedSnapshot,
         camera: &Camera,
+        selected: PickId,
         view: &wgpu::TextureView,
         format: wgpu::TextureFormat,
         width: u32,
@@ -275,11 +322,7 @@ impl Renderer {
         });
         let depth_view = depth.create_view(&Default::default());
 
-        self.queue.write_buffer(
-            &self.globals,
-            0,
-            bytemuck::cast_slice(&camera.view_projection()),
-        );
+        self.write_globals(camera, prepared, selected);
 
         let mut encoder = self
             .device
@@ -482,7 +525,12 @@ impl Renderer {
     ///
     /// Only the camera changes between frames. The geometry was uploaded when
     /// the snapshot was prepared and is not touched here.
-    pub fn render(&mut self, prepared: &PreparedSnapshot, camera: &Camera) -> Result<Frame> {
+    pub fn render(
+        &mut self,
+        prepared: &PreparedSnapshot,
+        camera: &Camera,
+        selected: PickId,
+    ) -> Result<Frame> {
         self.require_own(prepared)?;
 
         let snapshot = Arc::clone(&prepared.snapshot);
@@ -520,12 +568,8 @@ impl Renderer {
             view_formats: &[],
         });
 
-        // The one thing that differs from frame to frame.
-        self.queue.write_buffer(
-            &self.globals,
-            0,
-            bytemuck::cast_slice(&camera.view_projection()),
-        );
+        // The two things that differ from frame to frame.
+        self.write_globals(camera, prepared, selected);
 
         let bindings = &prepared.bindings;
         let geometry = &prepared.meshes;
@@ -1062,7 +1106,15 @@ mod tests {
             .expect("uploads the window scene");
 
         renderer
-            .draw_into(&prepared, &camera, &view, format, width, height)
+            .draw_into(
+                &prepared,
+                &camera,
+                PickId::NOTHING,
+                &view,
+                format,
+                width,
+                height,
+            )
             .expect("one-target pass accepts the one-target pipeline");
 
         let extent = wgpu::Extent3d {

@@ -42,7 +42,8 @@ fn the_plate_is_read_from_disk_into_real_geometry() {
         &TessellationParams::default(),
         &OperationContext::default(),
     )
-    .expect("the plate loads");
+    .expect("the plate loads")
+    .snapshot;
 
     // One body, and a box's worth of triangles at the very least: six planar
     // faces cannot be covered by fewer than twelve.

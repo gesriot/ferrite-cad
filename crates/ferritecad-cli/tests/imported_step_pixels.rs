@@ -23,7 +23,7 @@ use ferritecad_kernel::{OperationContext, TessellationParams};
 use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_scene::snapshot_of;
 use ferritecad_types::ErrorKind;
-use ferritecad_viewport::{Camera, RenderSnapshot};
+use ferritecad_viewport::{Camera, PickId};
 use ferritecad_viewport_gpu::Renderer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,7 +105,7 @@ fn import(step: &str, into: &Path) {
 }
 
 /// Loads a document the way the viewer does.
-fn picture(path: &Path) -> RenderSnapshot {
+fn picture(path: &Path) -> ferritecad_scene::LoadedScene {
     let mut kernel = OcctKernel::new().expect("opens a kernel session");
     let snapshot = snapshot_of(
         path,
@@ -154,9 +154,24 @@ fn a_nested_assembly_goes_from_step_to_pixels() {
     // Four cubes in two groups: one definition drawn in four places, and the
     // groups themselves drawn nowhere. The same numbers the headless gates
     // assert about a fabricated scene, here about the real file.
-    let snapshot = picture(&path);
+    let loaded = picture(&path);
+    let snapshot = loaded.snapshot;
     assert_eq!(snapshot.meshes().len(), 1, "the groups were meshed as well");
     assert_eq!(snapshot.draws().len(), 4);
+
+    // And what a click on any of them would mean: the file's own name for the
+    // cube, beside the source it came from. Four placements, one answer.
+    assert_eq!(loaded.catalogue.len(), 1);
+    let ferritecad_scene::SceneItem::Imported(reference) = &loaded.catalogue[0] else {
+        panic!("an imported definition was catalogued as a native body");
+    };
+    assert!(
+        reference
+            .definition_key()
+            .starts_with("step.product_definition#"),
+        "the catalogue does not name the definition the file named: {}",
+        reference.definition_key()
+    );
 
     let (min, max) = snapshot.bounds().expect("the assembly has extent");
     let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
@@ -178,7 +193,9 @@ fn a_nested_assembly_goes_from_step_to_pixels() {
     let prepared = renderer
         .prepare(std::sync::Arc::new(snapshot))
         .expect("uploads the assembly");
-    let frame = renderer.render(&prepared, &camera).expect("draws a frame");
+    let frame = renderer
+        .render(&prepared, &camera, PickId::NOTHING)
+        .expect("draws a frame");
 
     // Pixels, not a promise. A snapshot that reached the GPU and drew nothing
     // is the failure this whole file exists to catch.
@@ -198,7 +215,7 @@ fn a_nested_assembly_goes_from_step_to_pixels() {
         ))
         .expect("uploads an empty scene");
     let blank = renderer
-        .render(&nothing, &camera)
+        .render(&nothing, &camera, PickId::NOTHING)
         .expect("draws an empty frame");
     assert_eq!(drawn_pixels(&blank), 0, "the background counts as drawn");
 
@@ -220,7 +237,7 @@ fn one_part_and_four_of_a_kind_measure_what_the_files_say() {
 
     let single = directory.path().join("single.fcad");
     import("01-single-part.step", &single);
-    let snapshot = picture(&single);
+    let snapshot = picture(&single).snapshot;
     assert_eq!(snapshot.meshes().len(), 1);
     assert_eq!(snapshot.draws().len(), 1, "one part is drawn once");
 
@@ -228,7 +245,7 @@ fn one_part_and_four_of_a_kind_measure_what_the_files_say() {
     // its definition's colour by the file.
     let pattern = directory.path().join("pattern.fcad");
     import("04-instance-colours.step", &pattern);
-    let snapshot = picture(&pattern);
+    let snapshot = picture(&pattern).snapshot;
     assert_eq!(snapshot.meshes().len(), 1, "four bolts are one definition");
     assert_eq!(snapshot.draws().len(), 4);
 

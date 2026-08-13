@@ -9,6 +9,14 @@
 
 struct Globals {
     view_projection: mat4x4<f32>,
+    // Which definition is chosen, or zero for none. Compared against each
+    // draw's own identity, which is what makes every placement of one
+    // definition light up together: they carry the same number, so this is one
+    // comparison rather than a list the renderer would have to keep in step.
+    selected: u32,
+    padding_0: u32,
+    padding_1: u32,
+    padding_2: u32,
 };
 
 struct Draw {
@@ -76,8 +84,16 @@ fn fragment_main(in: VertexOut) -> FragmentOut {
     // winding, and a black facing is harder to diagnose than a lit one.
     let lambert = abs(dot(normal, to_light)) * 0.8 + 0.2;
 
+    // Lifted towards white rather than replaced by a colour of its own: what
+    // is chosen must still look like the material it is, and a part that
+    // turned orange would hide whatever the file said about it.
+    var tint = draw.colour.rgb;
+    if (globals.selected != 0u && draw.pick == globals.selected) {
+        tint = mix(tint, vec3<f32>(1.0, 1.0, 1.0), 0.55);
+    }
+
     var out: FragmentOut;
-    out.colour = vec4<f32>(draw.colour.rgb * lambert, draw.colour.a);
+    out.colour = vec4<f32>(tint * lambert, draw.colour.a);
     out.pick = draw.pick;
     return out;
 }

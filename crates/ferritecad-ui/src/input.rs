@@ -70,12 +70,24 @@ pub enum ViewportEvent {
     Look(StandardView),
 }
 
+/// How far a pointer may wander between press and release and still be a click.
+///
+/// A hand on a mouse is not still. Zero would mean that anyone who moved by a
+/// pixel while clicking selected nothing, and a large number would mean that
+/// the end of a slow orbit selected whatever it happened to stop over.
+const CLICK_SLOP: f32 = 4.0;
+
 /// The camera, and what the user is in the middle of doing to it.
 #[derive(Debug, Clone)]
 pub struct ViewportInput {
     camera: Camera,
     pointer: Option<(f32, f32)>,
     dragging: Option<PointerButton>,
+    /// Where an unclaimed primary press landed, while it might still become a
+    /// click rather than a drag.
+    pressed_at: Option<(f32, f32)>,
+    /// Where the user asked what something is, until somebody answers.
+    pick: Option<(f32, f32)>,
     redraw: bool,
 }
 
@@ -91,6 +103,8 @@ impl ViewportInput {
             camera: Camera::new(),
             pointer: None,
             dragging: None,
+            pressed_at: None,
+            pick: None,
             // The first frame has never been drawn, so it is owed.
             redraw: true,
         }
@@ -170,15 +184,32 @@ impl ViewportInput {
             }
             ViewportEvent::PointerPressed(button) => {
                 if claimed_by_ui {
-                    // The interface wanted this press, so no gesture begins and
-                    // the release that follows will find nothing to end.
+                    // The interface wanted this press, so no gesture begins,
+                    // the release that follows will find nothing to end, and
+                    // nothing in the model was asked about.
                     return;
                 }
                 self.dragging = Some(button);
+                if button == PointerButton::Primary {
+                    self.pressed_at = self.pointer;
+                }
             }
             ViewportEvent::PointerReleased(button) => {
                 if self.dragging == Some(button) {
                     self.dragging = None;
+                }
+                if button != PointerButton::Primary {
+                    return;
+                }
+                // A press and a release in nearly the same place is a question
+                // about what is there. One that travelled was an orbit, and
+                // answering it would select whatever the model stopped under.
+                if let (Some((from_x, from_y)), Some((to_x, to_y))) =
+                    (self.pressed_at.take(), self.pointer)
+                    && (to_x - from_x).abs() <= CLICK_SLOP
+                    && (to_y - from_y).abs() <= CLICK_SLOP
+                {
+                    self.pick = Some((from_x, from_y));
                 }
             }
             ViewportEvent::GestureCancelled => {
@@ -188,6 +219,7 @@ impl ViewportInput {
                 // jump from a position recorded in an earlier focus lifetime.
                 self.dragging = None;
                 self.pointer = None;
+                self.pressed_at = None;
             }
             ViewportEvent::Wheel { delta } => {
                 if claimed_by_ui {
@@ -232,6 +264,15 @@ impl ViewportInput {
     /// rebuilding, or an interface that wants to animate.
     pub fn request_redraw(&mut self) {
         self.redraw = true;
+    }
+
+    /// Takes the place the user asked about, if they asked.
+    ///
+    /// Cleared by the taking. Answering means drawing the model again offscreen
+    /// to read one pixel of it, and a question that stayed asked would mean
+    /// doing that for every frame after a click rather than once for the click.
+    pub fn take_pick(&mut self) -> Option<(f32, f32)> {
+        self.pick.take()
     }
 
     /// Whether a frame is owed, clearing the request.
@@ -539,6 +580,82 @@ mod tests {
         input.accept_load(Ok(empty)).expect("an empty scene loads");
         assert_eq!(input.camera().eye(), before.eye());
         assert_eq!(input.camera().target(), before.target());
+    }
+
+    /// Presses and releases at one place, which is what a click is.
+    fn click(input: &mut ViewportInput, at: (f32, f32), claimed: bool) {
+        input.handle(ViewportEvent::PointerMoved { x: at.0, y: at.1 }, claimed);
+        input.handle(
+            ViewportEvent::PointerPressed(PointerButton::Primary),
+            claimed,
+        );
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            claimed,
+        );
+    }
+
+    #[test]
+    fn a_click_asks_what_is_there_and_asks_only_once() {
+        let mut input = ready();
+        click(&mut input, (120.0, 80.0), false);
+
+        assert_eq!(input.take_pick(), Some((120.0, 80.0)));
+        // Answering means drawing the model again to read one pixel. A
+        // question that stayed asked would mean doing that every frame from
+        // then on.
+        assert_eq!(input.take_pick(), None, "one click asked twice");
+    }
+
+    #[test]
+    fn a_drag_is_not_a_question_about_what_is_under_the_pointer() {
+        let mut input = ready();
+        input.handle(ViewportEvent::PointerMoved { x: 100.0, y: 100.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(ViewportEvent::PointerMoved { x: 160.0, y: 140.0 }, false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+
+        assert_eq!(
+            input.take_pick(),
+            None,
+            "an orbit selected whatever it stopped over"
+        );
+
+        // A hand is not still, so a press and release a pixel apart is still a
+        // click rather than the shortest drag anyone ever made.
+        input.handle(ViewportEvent::PointerMoved { x: 200.0, y: 200.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(ViewportEvent::PointerMoved { x: 201.0, y: 199.0 }, false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        assert_eq!(input.take_pick(), Some((200.0, 200.0)));
+    }
+
+    #[test]
+    fn pressing_a_panel_asks_nothing_of_the_model() {
+        let mut input = ready();
+
+        // The interface wanted this press. The model behind the panel is not
+        // what the user was pointing at, and selecting it would be selecting
+        // by accident.
+        click(&mut input, (30.0, 12.0), true);
+        assert_eq!(input.take_pick(), None, "a panel press selected the model");
+
+        // Losing the window mid-click is not a click either: the release may
+        // never arrive, and the one after it belongs to another gesture.
+        input.handle(ViewportEvent::PointerMoved { x: 60.0, y: 60.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(ViewportEvent::GestureCancelled, false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        assert_eq!(input.take_pick(), None);
     }
 
     #[test]

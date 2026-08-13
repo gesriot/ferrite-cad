@@ -36,10 +36,10 @@ use std::{sync::Arc, time::Instant};
 use ferritecad_document::DOCUMENT_EXTENSION;
 use ferritecad_kernel::{CancelToken, OperationContext, ProgressSink, TessellationParams};
 use ferritecad_occt::OcctKernel;
-use ferritecad_scene::snapshot_of;
+use ferritecad_scene::{LoadedScene, SceneItem, snapshot_of};
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{Activity, Chosen, PointerButton, VIEWS, ViewportEvent, ViewportInput};
-use ferritecad_viewport::{RenderSnapshot, SnapshotBuilder, StandardView};
+use ferritecad_viewport::{PickId, RenderSnapshot, SnapshotBuilder, StandardView};
 use ferritecad_viewport_gpu::{PreparedSnapshot, Renderer, WindowSurface};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, StartCause, WindowEvent};
@@ -107,7 +107,7 @@ enum AppEvent {
     /// every other event would otherwise be that size too.
     Loaded {
         generation: LoadGeneration,
-        result: Box<Result<RenderSnapshot>>,
+        result: Box<Result<LoadedScene>>,
     },
     /// A load has something new to say about how far along it is.
     ///
@@ -517,14 +517,28 @@ fn finish_answer(
     }
 }
 
+/// What a pick means for what is chosen.
+///
+/// A pick that names nothing in the picture it was read from chooses nothing:
+/// clicking the background is how a person unchooses, and a pick left over
+/// from a document that has since been replaced names a definition of a
+/// picture nobody is looking at. Both arrive here as the same answer, because
+/// both mean the same thing on screen.
+fn selection_from(pick: PickId, snapshot: &RenderSnapshot) -> PickId {
+    match snapshot.definition(pick) {
+        Some(_) => pick,
+        None => PickId::NOTHING,
+    }
+}
+
 /// Runs a load away from the event loop and delivers the answer back to it.
 ///
 /// Both halves are arguments so that this can be shown to return while the
 /// load is still running, which is the whole property: the window stays alive
 /// while a document is read.
 fn spawn_load(
-    load: impl FnOnce() -> Result<RenderSnapshot> + Send + 'static,
-    deliver: impl FnOnce(Result<RenderSnapshot>) + Send + 'static,
+    load: impl FnOnce() -> Result<LoadedScene> + Send + 'static,
+    deliver: impl FnOnce(Result<LoadedScene>) + Send + 'static,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || deliver(load()))
 }
@@ -538,13 +552,14 @@ fn spawn_load(
 /// thread commit them together after every fallible step has succeeded.
 fn prepare_load<P>(
     current_input: &ViewportInput,
-    loaded: Result<RenderSnapshot>,
+    loaded: Result<LoadedScene>,
     prepare: impl FnOnce(Arc<RenderSnapshot>) -> Result<P>,
-) -> Result<(ViewportInput, P)> {
+) -> Result<(ViewportInput, P, Vec<SceneItem>)> {
     let mut input = current_input.clone();
-    let snapshot = input.accept_load(loaded)?;
+    let loaded = loaded?;
+    let snapshot = input.accept_load(Ok(loaded.snapshot))?;
     let prepared = prepare(Arc::new(snapshot))?;
-    Ok((input, prepared))
+    Ok((input, prepared, loaded.catalogue))
 }
 
 /// Applies every texture upload and consumes it from egui's command set.
@@ -625,6 +640,9 @@ struct Live {
     renderer: Renderer,
     surface: WindowSurface,
     prepared: PreparedSnapshot,
+    /// What each mesh of `prepared` is, in terms a document could store.
+    /// Replaced with the picture it describes, so the two cannot disagree.
+    catalogue: Vec<SceneItem>,
     egui: egui::Context,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
@@ -637,6 +655,10 @@ struct App {
     frames: FrameScheduler,
     document: PathBuf,
     loads: Loads,
+    /// What is chosen, for as long as the picture it was read from is the one
+    /// on screen. Never written down: see `ferritecad_scene::SceneItem` for
+    /// the half of a click that can be.
+    selection: PickId,
 }
 
 impl ApplicationHandler<AppEvent> for App {
@@ -752,11 +774,13 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::RedrawRequested => {
                 self.frames.frame_started();
                 let line = self.loads.status().line();
+                let selection = live.chosen_name(self.selection);
                 let activity = Activity {
                     line: &line,
                     progress: self.loads.status().fraction(),
+                    selection: selection.as_deref(),
                 };
-                match live.draw(&self.input, activity) {
+                match live.draw(&self.input, activity, self.selection) {
                     // A button pressed during this frame reaches the camera
                     // the same way a keystroke does, through the reducer.
                     Ok(chosen) => {
@@ -776,6 +800,13 @@ impl ApplicationHandler<AppEvent> for App {
                         // about to be replaced by the one naming what stays.
                         if chosen.cancel {
                             cancel_load(&mut self.loads, &mut self.input);
+                        }
+                        // Asked after the frame that was clicked has been
+                        // published, and only when somebody clicked: answering
+                        // means drawing the model again offscreen to read one
+                        // pixel of it.
+                        if let Some((x, y)) = self.input.take_pick() {
+                            self.choose_at(x, y);
                         }
                     }
                     Err(error) => {
@@ -819,6 +850,7 @@ impl App {
             frames: FrameScheduler::default(),
             document,
             loads: Loads::default(),
+            selection: PickId::NOTHING,
         }
     }
 
@@ -922,6 +954,45 @@ impl App {
         );
     }
 
+    /// Answers "what is under this point" and chooses it.
+    ///
+    /// One offscreen frame at the camera the window is already using, because
+    /// identities are not written on the path a window takes: paying for them
+    /// on every frame would be paying continuously for something wanted when
+    /// somebody clicks.
+    fn choose_at(&mut self, x: f32, y: f32) {
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+
+        // Rounded rather than truncated, and refused outside the picture: a
+        // pointer position is a float in window coordinates and the frame is a
+        // grid of pixels.
+        let (Ok(x), Ok(y)) = (
+            u32::try_from(x.round() as i64),
+            u32::try_from(y.round() as i64),
+        ) else {
+            return;
+        };
+
+        match live
+            .renderer
+            .render(&live.prepared, self.input.camera(), PickId::NOTHING)
+        {
+            Ok(frame) => {
+                let chosen = selection_from(frame.pick_at(x, y), frame.snapshot());
+                if chosen != self.selection {
+                    self.selection = chosen;
+                    self.input.request_redraw();
+                }
+            }
+            // A failed pick chooses nothing and changes nothing. The model is
+            // still on screen and still correct; the click simply went
+            // unanswered.
+            Err(error) => eprintln!("ferritecad: {error}"),
+        }
+    }
+
     /// Puts a finished load on screen, or leaves the screen alone.
     ///
     /// What a failure means to the camera is the reducer's rule and is tested
@@ -929,7 +1000,7 @@ impl App {
     /// happens: the model already on screen stays on screen, because a viewer
     /// that went blank would lose the drawing the user was reading while they
     /// work out what went wrong.
-    fn show(&mut self, loaded: Result<RenderSnapshot>) -> Result<()> {
+    fn show(&mut self, loaded: Result<LoadedScene>) -> Result<()> {
         let Some(live) = self.live.as_mut() else {
             // No window to show it in, which means the loop is already on its
             // way out. The outcome is still the outcome; nothing here changes
@@ -937,7 +1008,7 @@ impl App {
             return loaded.map(|_| ());
         };
 
-        let (input, prepared) = prepare_load(&self.input, loaded, |snapshot| {
+        let (input, prepared, catalogue) = prepare_load(&self.input, loaded, |snapshot| {
             live.renderer.prepare(snapshot)
         })?;
 
@@ -947,6 +1018,12 @@ impl App {
         // the document a thing the window may call ready.
         self.input = input;
         live.prepared = prepared;
+        live.catalogue = catalogue;
+        // The selection is deliberately not cleared here. A pick is bound to
+        // the picture that issued it, and both places that read one – the
+        // renderer and the catalogue – answer "nothing" for a pick this
+        // picture does not recognise. Clearing as well would be a third copy
+        // of that rule, and the one nobody could test.
         Ok(())
     }
 
@@ -1043,6 +1120,7 @@ impl App {
             renderer,
             surface: window_surface,
             prepared,
+            catalogue: Vec::new(),
             egui,
             egui_state,
             egui_renderer,
@@ -1051,18 +1129,39 @@ impl App {
 }
 
 impl Live {
+    /// What is chosen, in the words the document or the file used for it.
+    ///
+    /// The catalogue is indexed the way the picture is, so this is a lookup
+    /// rather than a search, and it answers `None` for a pick this picture
+    /// does not recognise – which is the same answer as nothing chosen.
+    fn chosen_name(&self, selection: PickId) -> Option<String> {
+        let definition = self.prepared.snapshot().definition(selection)?;
+        match self.catalogue.get(definition)? {
+            SceneItem::Body(object) => Some(format!("Body {object}")),
+            SceneItem::Imported(reference) => Some(reference.definition_key().to_owned()),
+            // A kind of thing this build does not know how to name. Saying
+            // nothing is better than inventing a name for it.
+            _ => None,
+        }
+    }
+
     /// One frame: the model, then the interface, then publication.
     ///
     /// One texture, acquired once. The order is not a convention here – the
     /// seam enforces it, because the model's pass is what clears the target
     /// and the type only offers a view to draw into afterwards.
-    fn draw(&mut self, input: &ViewportInput, activity: Activity<'_>) -> Result<Chosen> {
+    fn draw(
+        &mut self,
+        input: &ViewportInput,
+        activity: Activity<'_>,
+        selected: PickId,
+    ) -> Result<Chosen> {
         let Some(frame) = self.surface.begin(&mut self.renderer)? else {
             // No area, nobody watching, or the compositor was busy. None of
             // those is an error.
             return Ok(Chosen::default());
         };
-        let frame = frame.draw_scene(&self.prepared, input.camera())?;
+        let frame = frame.draw_scene(&self.prepared, input.camera(), selected)?;
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let mut chosen = Chosen::default();
@@ -1198,6 +1297,15 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    /// A picture with nothing catalogued, for tests that only look at where
+    /// the camera ends up.
+    fn loaded(snapshot: RenderSnapshot) -> LoadedScene {
+        LoadedScene {
+            snapshot,
+            catalogue: Vec::new(),
+        }
+    }
 
     fn distant_scene() -> RenderSnapshot {
         scene_at(900.0)
@@ -1342,14 +1450,14 @@ mod tests {
         loads: &mut Loads,
         input: &mut ViewportInput,
         generation: LoadGeneration,
-        result: Result<RenderSnapshot>,
+        result: Result<LoadedScene>,
     ) -> AnswerEffect {
         // The same order the event loop uses: whether to show it, then
         // showing it, then saying so. Announcing first would let the window
         // call a document ready before the frame that put it there.
         let outcome = if loads.accepts(generation) {
             match prepare_load(input, result, |_| Ok(())) {
-                Ok((updated, ())) => {
+                Ok((updated, (), _)) => {
                     *input = updated;
                     Ok(())
                 }
@@ -1387,9 +1495,9 @@ mod tests {
             })
             .expect("a load started");
 
-        deliver(&mut loads, &mut input, b, Ok(scene_at(0.0)));
+        deliver(&mut loads, &mut input, b, Ok(loaded(scene_at(0.0))));
         let showing_b = *input.camera();
-        deliver(&mut loads, &mut input, a, Ok(scene_at(5000.0)));
+        deliver(&mut loads, &mut input, a, Ok(loaded(scene_at(5000.0))));
 
         assert_eq!(
             *input.camera(),
@@ -1423,7 +1531,7 @@ mod tests {
             })
             .expect("a load started");
 
-        deliver(&mut loads, &mut input, b, Ok(scene_at(0.0)));
+        deliver(&mut loads, &mut input, b, Ok(loaded(scene_at(0.0))));
         let showing_b = *input.camera();
         // B's own arrival owed a frame; take it, so what is measured below is
         // what the discarded answer asked for and not what B did.
@@ -1473,7 +1581,7 @@ mod tests {
         assert_eq!(loads.status().line(), "Opening bracket.fcad… 0%");
 
         assert!(
-            deliver(&mut loads, &mut input, a, Ok(scene_at(0.0))).status_changed,
+            deliver(&mut loads, &mut input, a, Ok(loaded(scene_at(0.0)))).status_changed,
             "the line changed and the window was not asked to draw it"
         );
         assert_eq!(
@@ -1498,7 +1606,7 @@ mod tests {
                 std::thread::spawn(|| {})
             })
             .expect("a document was named");
-        deliver(&mut loads, &mut input, a, Ok(scene_at(0.0)));
+        deliver(&mut loads, &mut input, a, Ok(loaded(scene_at(0.0))));
         let showing = *input.camera();
 
         let b = loads
@@ -1559,13 +1667,13 @@ mod tests {
         // window must ignore it: the picture, and the sentence under it.
         let waiting_for_b = loads.status().clone();
         assert!(
-            !deliver(&mut loads, &mut input, a, Ok(scene_at(5000.0))).status_changed,
+            !deliver(&mut loads, &mut input, a, Ok(loaded(scene_at(5000.0)))).status_changed,
             "an abandoned answer asked for a frame"
         );
         assert_eq!(*loads.status(), waiting_for_b);
         assert_eq!(loads.status().line(), "Opening b.fcad… 0%");
 
-        deliver(&mut loads, &mut input, b, Ok(scene_at(0.0)));
+        deliver(&mut loads, &mut input, b, Ok(loaded(scene_at(0.0))));
         let showing_b = *input.camera();
         assert_eq!(
             *loads.status(),
@@ -1717,7 +1825,7 @@ mod tests {
                 std::thread::spawn(|| {})
             })
             .expect("a document was named");
-        deliver(&mut loads, &mut input, a, Ok(scene_at(0.0)));
+        deliver(&mut loads, &mut input, a, Ok(loaded(scene_at(0.0))));
         let showing = *input.camera();
 
         let b = loads
@@ -1752,7 +1860,7 @@ mod tests {
         // And the reading that was given up on still answers eventually. By
         // then it is as stale as any abandoned load, and is discarded.
         assert!(
-            !deliver(&mut loads, &mut input, b, Ok(scene_at(5000.0))).status_changed,
+            !deliver(&mut loads, &mut input, b, Ok(loaded(scene_at(5000.0)))).status_changed,
             "an abandoned reading's answer changed the line"
         );
         assert_eq!(*input.camera(), showing, "an abandoned reading took over");
@@ -1782,6 +1890,48 @@ mod tests {
         assert_eq!(loads.status().line(), "No document");
 
         loads.stop_all();
+    }
+
+    #[test]
+    fn clicking_the_background_chooses_nothing() {
+        let snapshot = distant_scene();
+
+        // Something in the picture is something.
+        let something = snapshot
+            .draws()
+            .first()
+            .expect("the picture draws something")
+            .pick;
+        assert_eq!(selection_from(something, &snapshot), something);
+
+        // The background is nothing, and that is how a person unchooses.
+        assert_eq!(
+            selection_from(PickId::NOTHING, &snapshot),
+            PickId::NOTHING,
+            "clicking away from the model kept the old choice"
+        );
+    }
+
+    #[test]
+    fn a_pick_from_the_old_picture_cannot_choose_in_the_new_one() {
+        let before = distant_scene();
+        let after = scene_at(50.0);
+
+        // The same number means a different definition in a different picture,
+        // and nothing about the number itself says which one it came from.
+        // Answering with the picture on screen is what stops a click made
+        // before Open from landing on whatever now occupies that index.
+        let chosen = before
+            .draws()
+            .first()
+            .expect("the picture draws something")
+            .pick;
+        assert_eq!(selection_from(chosen, &before), chosen);
+        assert_eq!(
+            selection_from(chosen, &after),
+            PickId::NOTHING,
+            "a choice made in the previous document was applied to this one"
+        );
     }
 
     #[test]
@@ -2008,7 +2158,7 @@ mod tests {
                 // Waited for with a deadline rather than for ever: a load run
                 // on the calling thread must fail this test, not hang it.
                 let _ = held.recv_timeout(Duration::from_secs(5));
-                Ok(SnapshotBuilder::new().build())
+                Ok(loaded(SnapshotBuilder::new().build()))
             },
             move |loaded| finished.send(loaded).expect("the test is still waiting"),
         );
@@ -2052,7 +2202,7 @@ mod tests {
         input.take_redraw();
         let before = *input.camera();
 
-        let error = prepare_load::<()>(&input, Ok(distant_scene()), |_| {
+        let error = prepare_load::<()>(&input, Ok(loaded(distant_scene())), |_| {
             Err(CadError::rendering("the device refused the upload"))
         })
         .expect_err("a failed upload must not become current");
