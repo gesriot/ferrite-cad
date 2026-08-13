@@ -69,7 +69,6 @@ pub struct LoadedScene {
 /// become something durable without a viewport ever holding a durable name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[non_exhaustive]
 pub enum SceneItem {
     /// A body of this document, named by the object that holds it.
     Body(ObjectId),

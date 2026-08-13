@@ -639,13 +639,35 @@ struct Live {
     window: Arc<Window>,
     renderer: Renderer,
     surface: WindowSurface,
-    prepared: PreparedSnapshot,
-    /// What each mesh of `prepared` is, in terms a document could store.
-    /// Replaced with the picture it describes, so the two cannot disagree.
-    catalogue: Vec<SceneItem>,
+    scene: LiveScene<PreparedSnapshot>,
     egui: egui::Context,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
+}
+
+/// The GPU picture and both meanings of a choice made in it.
+///
+/// These values describe one snapshot and are replaced as one. In particular,
+/// selection cannot survive Open merely because the next document happens to
+/// produce byte-identical geometry: the same raw pick beside a different
+/// catalogue could otherwise silently name another document object.
+struct LiveScene<P> {
+    prepared: P,
+    /// What each mesh of `prepared` is, in terms a document could store.
+    catalogue: Vec<SceneItem>,
+    /// Transient identity issued by `prepared` and nothing else.
+    selection: PickId,
+}
+
+impl<P> LiveScene<P> {
+    /// A replacement picture begins with no choice made in it.
+    fn new(prepared: P, catalogue: Vec<SceneItem>) -> Self {
+        Self {
+            prepared,
+            catalogue,
+            selection: PickId::NOTHING,
+        }
+    }
 }
 
 struct App {
@@ -655,10 +677,6 @@ struct App {
     frames: FrameScheduler,
     document: PathBuf,
     loads: Loads,
-    /// What is chosen, for as long as the picture it was read from is the one
-    /// on screen. Never written down: see `ferritecad_scene::SceneItem` for
-    /// the half of a click that can be.
-    selection: PickId,
 }
 
 impl ApplicationHandler<AppEvent> for App {
@@ -774,13 +792,13 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::RedrawRequested => {
                 self.frames.frame_started();
                 let line = self.loads.status().line();
-                let selection = live.chosen_name(self.selection);
+                let selection = live.chosen_name();
                 let activity = Activity {
                     line: &line,
                     progress: self.loads.status().fraction(),
                     selection: selection.as_deref(),
                 };
-                match live.draw(&self.input, activity, self.selection) {
+                match live.draw(&self.input, activity) {
                     // A button pressed during this frame reaches the camera
                     // the same way a keystroke does, through the reducer.
                     Ok(chosen) => {
@@ -850,7 +868,6 @@ impl App {
             frames: FrameScheduler::default(),
             document,
             loads: Loads::default(),
-            selection: PickId::NOTHING,
         }
     }
 
@@ -977,12 +994,12 @@ impl App {
 
         match live
             .renderer
-            .render(&live.prepared, self.input.camera(), PickId::NOTHING)
+            .render(&live.scene.prepared, self.input.camera(), PickId::NOTHING)
         {
             Ok(frame) => {
                 let chosen = selection_from(frame.pick_at(x, y), frame.snapshot());
-                if chosen != self.selection {
-                    self.selection = chosen;
+                if chosen != live.scene.selection {
+                    live.scene.selection = chosen;
                     self.input.request_redraw();
                 }
             }
@@ -1017,13 +1034,11 @@ impl App {
         // resident geometry become current together – and only after both is
         // the document a thing the window may call ready.
         self.input = input;
-        live.prepared = prepared;
-        live.catalogue = catalogue;
-        // The selection is deliberately not cleared here. A pick is bound to
-        // the picture that issued it, and both places that read one – the
-        // renderer and the catalogue – answer "nothing" for a pick this
-        // picture does not recognise. Clearing as well would be a third copy
-        // of that rule, and the one nobody could test.
+        // A selection belongs to the scene that issued it. Content-equal
+        // snapshots have the same deterministic identity, so asking only the
+        // new snapshot would not distinguish two documents with the same
+        // geometry and different catalogue entries.
+        live.scene = LiveScene::new(prepared, catalogue);
         Ok(())
     }
 
@@ -1119,8 +1134,7 @@ impl App {
             window,
             renderer,
             surface: window_surface,
-            prepared,
-            catalogue: Vec::new(),
+            scene: LiveScene::new(prepared, Vec::new()),
             egui,
             egui_state,
             egui_renderer,
@@ -1134,14 +1148,15 @@ impl Live {
     /// The catalogue is indexed the way the picture is, so this is a lookup
     /// rather than a search, and it answers `None` for a pick this picture
     /// does not recognise – which is the same answer as nothing chosen.
-    fn chosen_name(&self, selection: PickId) -> Option<String> {
-        let definition = self.prepared.snapshot().definition(selection)?;
-        match self.catalogue.get(definition)? {
+    fn chosen_name(&self) -> Option<String> {
+        let definition = self
+            .scene
+            .prepared
+            .snapshot()
+            .definition(self.scene.selection)?;
+        match self.scene.catalogue.get(definition)? {
             SceneItem::Body(object) => Some(format!("Body {object}")),
             SceneItem::Imported(reference) => Some(reference.definition_key().to_owned()),
-            // A kind of thing this build does not know how to name. Saying
-            // nothing is better than inventing a name for it.
-            _ => None,
         }
     }
 
@@ -1150,18 +1165,13 @@ impl Live {
     /// One texture, acquired once. The order is not a convention here – the
     /// seam enforces it, because the model's pass is what clears the target
     /// and the type only offers a view to draw into afterwards.
-    fn draw(
-        &mut self,
-        input: &ViewportInput,
-        activity: Activity<'_>,
-        selected: PickId,
-    ) -> Result<Chosen> {
+    fn draw(&mut self, input: &ViewportInput, activity: Activity<'_>) -> Result<Chosen> {
         let Some(frame) = self.surface.begin(&mut self.renderer)? else {
             // No area, nobody watching, or the compositor was busy. None of
             // those is an error.
             return Ok(Chosen::default());
         };
-        let frame = frame.draw_scene(&self.prepared, input.camera(), selected)?;
+        let frame = frame.draw_scene(&self.scene.prepared, input.camera(), self.scene.selection)?;
 
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let mut chosen = Chosen::default();
@@ -1932,6 +1942,30 @@ mod tests {
             PickId::NOTHING,
             "a choice made in the previous document was applied to this one"
         );
+    }
+
+    #[test]
+    fn replacing_even_an_identical_picture_clears_its_transient_choice() {
+        let picture = distant_scene();
+        let chosen = picture
+            .draws()
+            .first()
+            .expect("the picture draws something")
+            .pick;
+        let old = LiveScene {
+            prepared: (),
+            catalogue: vec![SceneItem::Body(ferritecad_types::ObjectId::new())],
+            selection: chosen,
+        };
+        assert_eq!(old.selection, chosen, "the gate began with no choice");
+
+        // A second document can produce byte-identical geometry and therefore
+        // the same deterministic snapshot identity while its catalogue names
+        // another object. Replacing all three pieces through the constructor
+        // is what prevents the old raw definition number from retargeting.
+        let replacement =
+            LiveScene::new((), vec![SceneItem::Body(ferritecad_types::ObjectId::new())]);
+        assert_eq!(replacement.selection, PickId::NOTHING);
     }
 
     #[test]

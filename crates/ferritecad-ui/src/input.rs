@@ -210,6 +210,11 @@ impl ViewportInput {
                     && (to_y - from_y).abs() <= CLICK_SLOP
                 {
                     self.pick = Some((from_x, from_y));
+                    // The application answers picks while drawing a frame.
+                    // Without a redraw request here, an ordinary click would
+                    // be answered only if egui or the OS happened to ask for
+                    // an unrelated frame afterwards.
+                    self.redraw = true;
                 }
             }
             ViewportEvent::GestureCancelled => {
@@ -600,6 +605,10 @@ mod tests {
         let mut input = ready();
         click(&mut input, (120.0, 80.0), false);
 
+        assert!(
+            input.take_redraw(),
+            "the click queued a question but no frame in which to answer it"
+        );
         assert_eq!(input.take_pick(), Some((120.0, 80.0)));
         // Answering means drawing the model again to read one pixel. A
         // question that stayed asked would mean doing that every frame from
