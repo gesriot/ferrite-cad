@@ -230,6 +230,59 @@ fn signed_zero_does_not_create_a_different_snapshot_identity() {
 }
 
 #[test]
+fn a_definition_can_be_asked_for_by_position_and_only_in_its_own_picture() {
+    let mut builder = SnapshotBuilder::new();
+    let plate = builder.add_mesh(&triangle()).expect("packs");
+    let bolt = builder.add_mesh(&triangle()).expect("packs");
+    builder
+        .place(plate, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+        .expect("places");
+    for x in 0..4 {
+        builder
+            .place(bolt, None, &moved(f64::from(x), 0.0, 0.0), [1.0, 1.0, 1.0])
+            .expect("places");
+    }
+    let snapshot = builder.build();
+
+    // What a list needs: a row's position becomes the same kind of value a
+    // click yields, and reads back as the definition it named.
+    for definition in [plate, bolt] {
+        let pick = snapshot
+            .pick_of(definition)
+            .expect("this snapshot has that definition");
+        assert_eq!(snapshot.definition(pick), Some(definition));
+    }
+
+    // Choosing the bolt by position is choosing what every bolt draw is, so a
+    // list and a click cannot disagree about what was chosen.
+    assert_eq!(
+        snapshot.pick_of(bolt),
+        Some(snapshot.draws()[1].pick),
+        "asking for a definition by position named something else"
+    );
+
+    // A position this picture does not have is not a definition of it.
+    assert_eq!(snapshot.pick_of(2), None);
+    assert_eq!(snapshot.pick_of(usize::MAX), None);
+    assert_eq!(SnapshotBuilder::new().build().pick_of(0), None);
+
+    // And what comes back belongs to the picture that issued it. Another
+    // picture numbers its definitions the same way and means other things by
+    // them, which is exactly what must not resolve.
+    let mut other = SnapshotBuilder::new();
+    let only = other.add_mesh(&triangle()).expect("packs");
+    other
+        .place(only, None, &moved(9.0, 9.0, 9.0), [1.0, 1.0, 1.0])
+        .expect("places");
+    let other = other.build();
+    assert_eq!(
+        other.definition(snapshot.pick_of(plate).expect("a definition")),
+        None,
+        "a definition asked for in one picture answered in another"
+    );
+}
+
+#[test]
 fn a_pick_names_a_definition_and_cannot_name_a_placement() {
     let mut builder = SnapshotBuilder::new();
     let plate = builder.add_mesh(&triangle()).expect("packs");

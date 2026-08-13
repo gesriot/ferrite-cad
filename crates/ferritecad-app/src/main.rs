@@ -672,14 +672,54 @@ impl<P> LiveScene<P> {
         }
     }
 
-    /// What is chosen, resolved through this picture and this catalogue.
+    /// What the interface shows this frame: every definition, and which one
+    /// of them is chosen.
+    ///
+    /// One answer for both halves. A list marking one row while an inspector
+    /// describes another would be two accounts of one choice, and the way to
+    /// have one account is for one resolution to produce both.
+    fn view<'a>(
+        &'a self,
+        identities: &'a [String],
+        snapshot: &RenderSnapshot,
+    ) -> (Vec<Selected<'a>>, Option<usize>) {
+        (
+            self.rows(identities),
+            self.chosen(snapshot).map(|(row, _)| row),
+        )
+    }
+
+    /// What a list of definitions shows, in the order the picture packs them.
+    ///
+    /// One row per definition and not one per placement: a definition drawn
+    /// four times is one definition, and a list with a row each would offer
+    /// four ways to choose the same thing while marking only one of them as
+    /// chosen. The identities are passed in because a row borrows one and they
+    /// must outlive the frame.
+    fn rows<'a>(&'a self, identities: &'a [String]) -> Vec<Selected<'a>> {
+        self.catalogue
+            .iter()
+            .zip(identities)
+            .map(|(entry, identity)| describe(entry, identity))
+            .collect()
+    }
+
+    /// The identifiers its rows are described by.
+    fn identities(&self) -> Vec<String> {
+        self.catalogue.iter().map(identity_of).collect()
+    }
+
+    /// What is chosen: where it sits in this picture, and what it is.
     ///
     /// Two lookups and no search: the pick names a definition of this snapshot
     /// or of no snapshot, and the catalogue is indexed the way the snapshot
     /// is. Nothing falls back to a name, because names repeat.
-    fn chosen(&self, snapshot: &RenderSnapshot) -> Option<&CatalogueEntry> {
+    ///
+    /// Both halves come from the same resolution, so the row a list shows as
+    /// chosen and the facts an inspector shows about it cannot disagree.
+    fn chosen<'a>(&'a self, snapshot: &RenderSnapshot) -> Option<(usize, &'a CatalogueEntry)> {
         let definition = snapshot.definition(self.selection)?;
-        self.catalogue.get(definition)
+        Some((definition, self.catalogue.get(definition)?))
     }
 }
 
@@ -886,6 +926,13 @@ impl ApplicationHandler<AppEvent> for App {
                         if chosen.cancel {
                             cancel_load(&mut self.loads, &mut self.input);
                         }
+                        // A definition picked out of the list. The row is a
+                        // position in the list that was just drawn; what it
+                        // means is whatever the picture says sits there, and
+                        // the picture is the only thing that can say.
+                        if let Some(row) = chosen.definition {
+                            self.choose_definition(row);
+                        }
                         // Asked after the frame that was clicked has been
                         // published, and only when somebody clicked: answering
                         // means drawing the model again offscreen to read one
@@ -1077,6 +1124,25 @@ impl App {
         }
     }
 
+    /// Chooses the definition a list row names, if the picture has one there.
+    ///
+    /// The row is turned into an identity by the snapshot that drew the list,
+    /// so a position can never become a name for anything: a row of a picture
+    /// that has since been replaced resolves to nothing, exactly as a click
+    /// made in that picture would.
+    fn choose_definition(&mut self, row: usize) {
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+        let Some(pick) = live.scene.prepared.snapshot().pick_of(row) else {
+            return;
+        };
+        if pick != live.scene.selection {
+            live.scene.selection = pick;
+            self.input.request_redraw();
+        }
+    }
+
     /// Puts a finished load on screen, or leaves the screen alone.
     ///
     /// What a failure means to the camera is the reducer's rule and is tested
@@ -1204,67 +1270,74 @@ impl App {
 }
 
 impl Live {
-    /// What is chosen, in the words the document or the file used for it.
-    ///
-    /// The catalogue is indexed the way the picture is, so this is a lookup
-    /// rather than a search, and it answers `None` for a pick this picture
-    /// does not recognise – which is the same answer as nothing chosen.
-    fn chosen(&self) -> Option<&CatalogueEntry> {
-        self.scene.chosen(self.scene.prepared.snapshot())
-    }
-
     /// One frame: the model, then the interface, then publication.
     ///
     /// One texture, acquired once. The order is not a convention here – the
     /// seam enforces it, because the model's pass is what clears the target
     /// and the type only offers a view to draw into afterwards.
     fn draw(&mut self, input: &ViewportInput, activity: Activity<'_>) -> Result<Chosen> {
-        // Read before the frame borrows the renderer, and owned rather than
-        // borrowed for the same reason. One small clone per frame, and only
-        // while something is chosen: the alternative is a second copy of the
-        // selection kept in step by hand.
-        let selected = self.chosen().cloned();
-        let identity = selected.as_ref().map(identity_of).unwrap_or_default();
+        // Taken apart so the picture can be read while the surface is being
+        // drawn into: these are different fields, and only the compiler needs
+        // telling. It also means the list below describes the catalogue itself
+        // rather than a copy of it made once a frame.
+        let Self {
+            window,
+            renderer,
+            surface,
+            scene,
+            egui,
+            egui_state,
+            egui_renderer,
+        } = self;
 
-        let Some(frame) = self.surface.begin(&mut self.renderer)? else {
+        // What each definition is, in the words a panel is allowed to use.
+        // The identities are owned because `Selected` borrows them, and they
+        // must outlive the frame they are drawn in.
+        let identities = scene.identities();
+        // One answer for both sides of the choice: the row a list marks and
+        // the facts an inspector shows come from the same resolution.
+        let (definitions, chosen_row) = scene.view(&identities, scene.prepared.snapshot());
+
+        let Some(frame) = surface.begin(renderer)? else {
             // No area, nobody watching, or the compositor was busy. None of
             // those is an error.
             return Ok(Chosen::default());
         };
-        let frame = frame.draw_scene(&self.scene.prepared, input.camera(), self.scene.selection)?;
+        let frame = frame.draw_scene(&scene.prepared, input.camera(), scene.selection)?;
 
-        let raw_input = self.egui_state.take_egui_input(&self.window);
+        let raw_input = egui_state.take_egui_input(window);
         let mut chosen = Chosen::default();
-        let mut output = self.egui.run_ui(raw_input, |ui| {
+        let mut output = egui.run_ui(raw_input, |ui| {
             // The panel returns what was asked for and applies nothing. What a
             // request means to the camera is the reducer's, and having one
             // place for that is what stops a button and a keystroke drifting
             // apart.
             chosen = ferritecad_ui::toolbar(ui, activity);
             ui.separator();
+            // Every definition in the picture, whether or not any of it is on
+            // screen: a part hidden behind another, too small to hit or out of
+            // shot is reachable here and nowhere else.
+            chosen.definition = ferritecad_ui::definitions_panel(ui, &definitions, chosen_row);
+            ui.separator();
             // Read-only, and the only place the choice is described. What it
             // is allowed to say is decided by `Selected`, which cannot name
             // anything that means something only to this frame.
             ferritecad_ui::selection_inspector(
                 ui,
-                selected.as_ref().map(|entry| describe(entry, &identity)),
+                chosen_row.and_then(|row| definitions.get(row)).copied(),
             );
         });
-        self.egui_state
-            .handle_platform_output(&self.window, output.platform_output);
+        egui_state.handle_platform_output(window, output.platform_output);
 
         let (width, height) = frame.size();
         let descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [width, height],
-            pixels_per_point: self.egui.pixels_per_point(),
+            pixels_per_point: egui.pixels_per_point(),
         };
-        let primitives = self
-            .egui
-            .tessellate(output.shapes, self.egui.pixels_per_point());
+        let primitives = egui.tessellate(output.shapes, egui.pixels_per_point());
         let mut textures = std::mem::take(&mut output.textures_delta);
         upload_textures(&mut textures, |id, delta| {
-            self.egui_renderer
-                .update_texture(frame.device(), frame.queue(), id, delta);
+            egui_renderer.update_texture(frame.device(), frame.queue(), id, delta);
         });
 
         let mut encoder = frame
@@ -1272,7 +1345,7 @@ impl Live {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("ferritecad interface"),
             });
-        self.egui_renderer.update_buffers(
+        egui_renderer.update_buffers(
             frame.device(),
             frame.queue(),
             &mut encoder,
@@ -1299,12 +1372,11 @@ impl Live {
                     multiview_mask: None,
                 })
                 .forget_lifetime();
-            self.egui_renderer
-                .render(&mut pass, &primitives, &descriptor);
+            egui_renderer.render(&mut pass, &primitives, &descriptor);
         }
         frame.queue().submit(Some(encoder.finish()));
 
-        free_textures(&mut textures, |id| self.egui_renderer.free_texture(id));
+        free_textures(&mut textures, |id| egui_renderer.free_texture(id));
         frame.present();
         Ok(chosen)
     }
@@ -2152,7 +2224,7 @@ mod tests {
         // Two lookups and no search: this snapshot names the definition, this
         // catalogue says what it is. Nothing falls back to a name, because
         // names repeat.
-        assert_eq!(scene.chosen(&picture), Some(&mine));
+        assert_eq!(scene.chosen(&picture), Some((0, &mine)));
 
         // The same raw number in another picture is another definition, and
         // this one declines to answer for it.
@@ -2170,6 +2242,160 @@ mod tests {
             selection: scene.selection,
         };
         assert_eq!(short.chosen(&picture), None);
+    }
+
+    #[test]
+    fn a_row_and_a_click_choose_the_same_thing_and_show_it_the_same_way() {
+        let mut builder = SnapshotBuilder::new();
+        let first = builder
+            .add_mesh(&distant_scene_mesh())
+            .expect("the mesh is valid");
+        let second = builder
+            .add_mesh(&distant_scene_mesh())
+            .expect("the mesh is valid");
+        let at = |x: f64| {
+            ferritecad_types::Transform::from_translation(
+                ferritecad_types::Vec3::new(x, 0.0, 0.0).expect("finite"),
+            )
+            .expect("finite")
+        };
+        builder
+            .place(first, None, &at(0.0), [0.5, 0.5, 0.5])
+            .expect("places it");
+        builder
+            .place(second, None, &at(40.0), [0.5, 0.5, 0.5])
+            .expect("places it");
+        let picture = builder.build();
+
+        let entries = vec![a_body(), a_body()];
+        let mut scene = LiveScene {
+            prepared: (),
+            catalogue: entries.clone(),
+            selection: PickId::NOTHING,
+        };
+
+        // Choosing from a list: the row becomes an identity by asking the
+        // picture, and nothing constructs one out of a number.
+        let pick = picture.pick_of(second).expect("the picture has that row");
+        scene.selection = pick;
+        assert_eq!(scene.chosen(&picture), Some((second, &entries[second])));
+
+        // Clicking the same definition in the viewport answers identically, so
+        // the list, the highlight and the inspector cannot disagree about what
+        // is chosen or which row is marked.
+        let clicked = picture
+            .draws()
+            .iter()
+            .find(|draw| picture.definition(draw.pick) == Some(second))
+            .expect("that definition is drawn")
+            .pick;
+        assert_eq!(clicked, pick, "a row and a click named different things");
+    }
+
+    #[test]
+    fn a_definition_placed_many_times_is_one_row() {
+        // What the scene crate hands over for a pattern: one entry, whatever
+        // the picture does with it.
+        let entry = CatalogueEntry {
+            item: SceneItem::Imported(
+                ferritecad_document::ImportedDefinitionRef::new(
+                    ferritecad_types::ImportedSourceId::new(),
+                    "step.product_definition#39",
+                )
+                .expect("a key names something"),
+            ),
+            name: Some("Bolt".to_owned()),
+            source_file: Some("pattern.step".to_owned()),
+            solids: Some(1),
+        };
+        let scene = LiveScene {
+            prepared: (),
+            catalogue: vec![entry],
+            selection: PickId::NOTHING,
+        };
+
+        let identities = scene.identities();
+        let rows = scene.rows(&identities);
+        assert_eq!(
+            rows.len(),
+            scene.catalogue.len(),
+            "a list of definitions is not a list of definitions"
+        );
+        assert_eq!(rows.len(), 1);
+
+        // Two entries that describe themselves identically are still two rows:
+        // what makes them two is their identity, and the list does not look at
+        // what they are called to decide how many there are.
+        let twins = LiveScene {
+            prepared: (),
+            catalogue: vec![a_body(), a_body()],
+            selection: PickId::NOTHING,
+        };
+        let identities = twins.identities();
+        assert_eq!(twins.rows(&identities).len(), 2);
+    }
+
+    #[test]
+    fn the_marked_row_and_the_described_definition_are_the_same_one() {
+        let mut builder = SnapshotBuilder::new();
+        for _ in 0..2 {
+            let mesh = builder
+                .add_mesh(&distant_scene_mesh())
+                .expect("the mesh is valid");
+            builder
+                .place(
+                    mesh,
+                    None,
+                    &ferritecad_types::Transform::IDENTITY,
+                    [0.5, 0.5, 0.5],
+                )
+                .expect("places it");
+        }
+        let picture = builder.build();
+
+        let entries = vec![a_body(), a_body()];
+        let mut scene = LiveScene {
+            prepared: (),
+            catalogue: entries.clone(),
+            selection: picture.pick_of(1).expect("the picture has that row"),
+        };
+
+        let identities = scene.identities();
+        let (rows, marked) = scene.view(&identities, &picture);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(marked, Some(1), "the list marks no row for what is chosen");
+
+        // The row the list marks is the definition the inspector describes:
+        // both come from one resolution, so a click that highlights the model
+        // cannot leave the list and the inspector saying different things.
+        let described = scene.chosen(&picture).expect("something is chosen");
+        assert_eq!(described.0, marked.expect("a row is marked"));
+        assert_eq!(described.1, &entries[1]);
+        assert_eq!(rows[described.0], describe(&entries[1], &identities[1]));
+
+        // And nothing chosen marks nothing, which is what the background does.
+        scene.selection = PickId::NOTHING;
+        let (rows, marked) = scene.view(&identities, &picture);
+        assert_eq!(marked, None, "an empty choice still marked a row");
+        assert_eq!(rows.len(), 2, "the list emptied along with the choice");
+    }
+
+    #[test]
+    fn a_row_of_a_replaced_picture_chooses_nothing() {
+        let picture = distant_scene();
+        let replacement = scene_at(50.0);
+
+        // A list is drawn from one picture and pressed against whatever is
+        // current. The row is only a position, so the picture is asked, and a
+        // picture that has since been replaced answers for its own rows.
+        let row = 0;
+        assert!(picture.pick_of(row).is_some());
+        let stale = picture.pick_of(row).expect("the old picture had that row");
+        assert_eq!(
+            replacement.definition(stale),
+            None,
+            "a row of the previous picture chose something in this one"
+        );
     }
 
     #[test]
@@ -2237,7 +2463,7 @@ mod tests {
                 catalogue: vec![entry.clone()],
                 selection: draw.pick,
             };
-            assert_eq!(scene.chosen(&picture), Some(&entry));
+            assert_eq!(scene.chosen(&picture), Some((0, &entry)));
         }
     }
 

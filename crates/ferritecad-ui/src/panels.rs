@@ -27,6 +27,12 @@ pub struct Chosen {
     pub open: bool,
     /// The user has stopped waiting for the document being read.
     pub cancel: bool,
+    /// A definition the user picked out of the list, by its place in it.
+    ///
+    /// A position in this frame's list and nothing more: the caller turns it
+    /// into an identity by asking the picture, and it means nothing once that
+    /// picture is replaced.
+    pub definition: Option<usize>,
 }
 
 /// What is chosen, in the words a document would use for it.
@@ -106,6 +112,78 @@ impl Selected<'_> {
         }
         rows
     }
+
+    /// One line naming this definition, for a list of them.
+    ///
+    /// Name and portable identity together. Two definitions may be called the
+    /// same thing – a document may hold two bodies called `Plate`, and two
+    /// files may each describe a `Bracket` – so a line that gave only the name
+    /// would offer no way to tell which row is which.
+    pub fn summary(&self) -> String {
+        match self {
+            Self::Body { name, object } => match name {
+                Some(name) => format!("{name} · {object}"),
+                None => format!("Body · {object}"),
+            },
+            Self::Imported {
+                name,
+                definition_key,
+                source_file,
+                ..
+            } => {
+                let named = match name {
+                    Some(name) => format!("{name} · {definition_key}"),
+                    None => (*definition_key).to_owned(),
+                };
+                match source_file {
+                    // The file distinguishes the same key in two of them,
+                    // which is the ordinary way a key repeats.
+                    Some(file) => format!("{named} · {file}"),
+                    None => named,
+                }
+            }
+        }
+    }
+}
+
+/// Every definition in the picture, and the one that is chosen.
+///
+/// Read-only, like the inspector: pressing a row asks for a definition to be
+/// chosen and changes nothing itself. Returns the row that was pressed, which
+/// the caller turns into an identity by asking the picture – a row's position
+/// is how a list reports a press and is not a name for anything.
+///
+/// One row per definition, in the order the picture packs them. Two imported
+/// objects that draw the same definition contribute one row between them,
+/// because they contribute one definition between them.
+pub fn definitions_panel(
+    ui: &mut egui::Ui,
+    definitions: &[Selected<'_>],
+    chosen: Option<usize>,
+) -> Option<usize> {
+    if definitions.is_empty() {
+        // A document with nothing in it says so. Offering an empty list with
+        // no explanation would look like a list that failed to load.
+        ui.label("No definitions");
+        return None;
+    }
+
+    let mut pressed = None;
+    egui::ScrollArea::vertical()
+        .max_height(140.0)
+        .show(ui, |ui| {
+            for (row, definition) in definitions.iter().enumerate() {
+                // `selectable_label` draws the chosen one differently, which
+                // is how a click in the viewport shows up here.
+                if ui
+                    .selectable_label(chosen == Some(row), definition.summary())
+                    .clicked()
+                {
+                    pressed = Some(row);
+                }
+            }
+        });
+    pressed
 }
 
 /// Shows what is chosen, and nothing when nothing is.
@@ -549,6 +627,173 @@ mod tests {
         empty.textures_delta.clear();
         chosen.textures_delta.clear();
         nothing_at_all.textures_delta.clear();
+    }
+
+    /// Runs the list once, with a click delivered at `at`.
+    fn press_list(
+        context: &egui::Context,
+        at: egui::Pos2,
+        definitions: &[Selected<'_>],
+        chosen: Option<usize>,
+    ) -> Option<usize> {
+        let input = egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let mut pressed = None;
+        let mut output = context.run_ui(input, |ui| {
+            pressed = definitions_panel(ui, definitions, chosen);
+        });
+        output.textures_delta.clear();
+        pressed
+    }
+
+    /// Where the panel lays each of its rows out.
+    ///
+    /// The same structure the panel builds, in a `Ui` that has had nothing
+    /// else put in it – which is how the panel is drawn when it is pressed
+    /// below. Measuring a second copy underneath would give the coordinates of
+    /// the copy.
+    fn rows_of(context: &egui::Context, definitions: &[Selected<'_>]) -> Vec<egui::Rect> {
+        let mut rects = Vec::new();
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(140.0)
+                .show(ui, |ui| {
+                    for definition in definitions {
+                        rects.push(ui.selectable_label(false, definition.summary()).rect);
+                    }
+                });
+        });
+        output.textures_delta.clear();
+        rects
+    }
+
+    #[test]
+    fn a_definition_nothing_is_pointing_at_can_still_be_chosen() {
+        let context = egui::Context::default();
+        // Two definitions, and the second one is the one a click could not
+        // reach: hidden behind the first, too small to hit, or off screen.
+        // A list does not care where anything is drawn.
+        let definitions = [body(), imported()];
+
+        let rows = rows_of(&context, &definitions);
+        assert_eq!(rows.len(), 2, "the list did not lay out one row each");
+
+        let pressed = press_list(&context, rows[1].center(), &definitions, None);
+        assert_eq!(
+            pressed,
+            Some(1),
+            "the second definition could not be chosen from the list"
+        );
+
+        // And pressing nothing chooses nothing: a list that reported a press
+        // every frame would reselect for as long as the window was open.
+        let quiet = context.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(definitions_panel(ui, &definitions, Some(1)), None);
+        });
+        let mut quiet = quiet;
+        quiet.textures_delta.clear();
+    }
+
+    #[test]
+    fn two_definitions_with_one_name_are_two_rows() {
+        let context = egui::Context::default();
+        // Legal, and the case a name-keyed list would collapse: same name,
+        // different portable identity.
+        let definitions = [
+            Selected::Body {
+                name: Some("Plate"),
+                object: "018f2b7c-0000-7000-8000-000000000001",
+            },
+            Selected::Body {
+                name: Some("Plate"),
+                object: "018f2b7c-0000-7000-8000-000000000002",
+            },
+        ];
+
+        let rows = rows_of(&context, &definitions);
+        assert_eq!(rows.len(), 2, "two definitions were shown as one row");
+        assert_ne!(
+            definitions[0].summary(),
+            definitions[1].summary(),
+            "two rows read alike, so nothing on screen tells them apart"
+        );
+
+        // Each is chosen on its own.
+        assert_eq!(
+            press_list(&context, rows[0].center(), &definitions, None),
+            Some(0)
+        );
+        assert_eq!(
+            press_list(&context, rows[1].center(), &definitions, None),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn an_empty_picture_says_so_and_offers_nothing_to_choose() {
+        let context = egui::Context::default();
+        let mut pressed = Some(7);
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            pressed = definitions_panel(ui, &[], None);
+        });
+        output.textures_delta.clear();
+        assert_eq!(pressed, None, "an empty list invented a choice");
+
+        // And it says something rather than drawing an empty strip.
+        let mut empty = context.run_ui(egui::RawInput::default(), |_| {});
+        let vertices = |output: &egui::FullOutput| {
+            context
+                .clone()
+                .tessellate(output.shapes.clone(), 1.0)
+                .into_iter()
+                .map(|primitive| match primitive.primitive {
+                    egui::epaint::Primitive::Mesh(mesh) => mesh.vertices.len(),
+                    egui::epaint::Primitive::Callback(_) => 0,
+                })
+                .sum::<usize>()
+        };
+        let mut said = context.run_ui(egui::RawInput::default(), |ui| {
+            let _ = definitions_panel(ui, &[], None);
+        });
+        assert!(vertices(&said) > vertices(&empty));
+        said.textures_delta.clear();
+        empty.textures_delta.clear();
+    }
+
+    #[test]
+    fn a_row_never_names_anything_that_dies_with_the_picture() {
+        for definition in [body(), imported()] {
+            let text = definition.summary().to_lowercase();
+            for word in TRANSIENT {
+                assert!(
+                    !text.contains(word),
+                    "a row would show {word:?}: {}",
+                    definition.summary()
+                );
+            }
+            assert!(
+                !definition.summary().contains('/') && !definition.summary().contains('\\'),
+                "a row would show a path: {}",
+                definition.summary()
+            );
+        }
     }
 
     #[test]

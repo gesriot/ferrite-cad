@@ -166,6 +166,31 @@ impl RenderSnapshot {
         self.has_geometry.then_some((self.min, self.max))
     }
 
+    /// The identity of one of this snapshot's definitions.
+    ///
+    /// The way anything other than a click asks for a definition: a list can
+    /// say which row was pressed, and this turns that into the same kind of
+    /// value a pick buffer yields. Checked against this snapshot for the same
+    /// reason [`Self::definition`] is – a number naming a definition of some
+    /// other picture would otherwise resolve here into whatever occupies it.
+    ///
+    /// What comes back is bound to this snapshot and outlives nothing. The
+    /// index does not appear in it and cannot be recovered from it by anything
+    /// but this snapshot, which is what keeps a row's position out of every
+    /// durable thing a selection can become.
+    pub fn pick_of(&self, definition: usize) -> Option<PickId> {
+        if definition >= self.meshes.len() {
+            return None;
+        }
+        // The same numbering `definition` reads back, and the reason zero is
+        // the background rather than the first definition.
+        let raw = u32::try_from(definition.checked_add(1)?).ok()?;
+        Some(PickId {
+            raw,
+            snapshot: self.identity,
+        })
+    }
+
     /// The definition a pick identifies, if it identifies one.
     pub fn definition(&self, pick: PickId) -> Option<usize> {
         (pick.snapshot == self.identity)
