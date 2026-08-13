@@ -189,7 +189,8 @@ impl Catalogue {
                     // one identity has one geometry, so two counts mean the
                     // document and the file disagree about what this is.
                     return Err(CadError::topology(format!(
-                        "{item:?} was read as {known} solids and again as {now}; one durable                          definition cannot be two shapes"
+                        "{item:?} was read as {known} solids and again as {now}; one durable \
+                         definition cannot be two shapes"
                     )));
                 }
                 (None, now) => entry.solids = now,
@@ -201,7 +202,8 @@ impl Catalogue {
         let index = pack()?;
         if index != self.entries.len() {
             return Err(CadError::topology(format!(
-                "a definition was packed as {index} while the catalogue held {}; a click                  resolves through both, so they cannot disagree",
+                "a definition was packed as {index} while the catalogue held {}; a click \
+                 resolves through both, so they cannot disagree",
                 self.entries.len()
             )));
         }
@@ -494,11 +496,12 @@ fn draw_scene<K: GeometryKernel + ?Sized>(
     // One imported object can hold many definitions. The caller gives the
     // object one slice of the load; divide that slice among the unique leaf
     // definitions it draws. A definition another object already drew is not
-    // meshed again, so an object that adds nothing new advances the count by
-    // less than its whole slice. Reusing the object's context for
-    // every definition would make progress run from the beginning to the end
-    // of the same slice once per part, going backwards between parts and
-    // announcing completion more than once.
+    // meshed again. Reusing the object's context for every definition would
+    // make progress run from the beginning to the end of the same slice once
+    // per part, going backwards between parts and announcing completion more
+    // than once. If canonicalisation skips some or all meshes, the explicit
+    // report at the end closes the part of this object's slice no kernel call
+    // could report.
     let definitions_to_mesh = scene
         .instances
         .iter()
@@ -560,6 +563,10 @@ fn draw_scene<K: GeometryKernel + ?Sized>(
             _ => instance.colour,
         };
         builder.place(mesh, None, &world[index], colour)?;
+    }
+
+    if definitions_to_mesh == 0 || definitions_meshed < definitions_to_mesh {
+        context.progress().report(1.0);
     }
     Ok(())
 }
@@ -1341,6 +1348,56 @@ mod tests {
             0,
             "the shapes of the second reading were never given back"
         );
+    }
+
+    #[test]
+    fn a_reused_definition_still_finishes_one_monotonic_load_progress() {
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("twice.fcad");
+        let mut setup = MockKernel::new();
+        document_with_the_same_file_twice(&path, &mut setup, ["part.step"; 2]);
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = std::sync::Arc::clone(&seen);
+        let context =
+            OperationContext::default().with_progress(ProgressSink::new(move |fraction| {
+                record
+                    .lock()
+                    .expect("no test thread panicked")
+                    .push(fraction);
+            }));
+
+        let mut kernel = MockKernel::new();
+        snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel, _| {
+                Ok(Import::Imported {
+                    scene: one_part(kernel, "Bracket"),
+                    diagnostics: Vec::new(),
+                })
+            },
+            &params(),
+            &context,
+        )
+        .expect("both imports reopen");
+
+        let seen = seen.lock().expect("no test thread panicked").clone();
+        assert!(
+            seen.windows(2).all(|pair| pair[0] <= pair[1]),
+            "progress went backwards when a definition was reused: {seen:?}"
+        );
+        assert_eq!(
+            seen.iter().filter(|fraction| **fraction >= 1.0).count(),
+            1,
+            "the load reported itself finished the wrong number of times: {seen:?}"
+        );
+        let last = seen.last().copied().expect("the load reported progress");
+        assert!(
+            (last - 1.0).abs() < 1e-6,
+            "a successful load stopped at {last}: {seen:?}"
+        );
+        assert_eq!(kernel.live_shape_count(), 0);
     }
 
     #[test]
