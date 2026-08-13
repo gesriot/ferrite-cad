@@ -254,11 +254,21 @@ impl ViewportInput {
     /// is owed. What is on screen stays on screen, because the alternative is
     /// going blank on a problem the user may well be able to fix, and losing
     /// the model they were looking at while they do.
+    ///
+    /// A successful load also ends any gesture or pick request begun in the
+    /// previous scene. Window events and load answers share one queue, so a
+    /// load may arrive between a press and its release, or after a click asked
+    /// for a redraw but before that redraw answers it. Carrying either across
+    /// the replacement would let an old click choose something in the new
+    /// document immediately after Open cleared the selection.
     pub fn accept_load(&mut self, loaded: Result<RenderSnapshot>) -> Result<RenderSnapshot> {
         let snapshot = loaded?;
         if let Some(bounds) = snapshot.bounds() {
             self.camera.frame(bounds)?;
         }
+        self.dragging = None;
+        self.pressed_at = None;
+        self.pick = None;
         self.redraw = true;
         Ok(snapshot)
     }
@@ -554,9 +564,61 @@ mod tests {
     }
 
     #[test]
+    fn a_loaded_scene_drops_interaction_with_the_previous_one() {
+        let mut input = ready();
+
+        // A complete click whose requested redraw has not answered it yet.
+        click(&mut input, (120.0, 80.0), false);
+        assert_eq!(
+            input.clone().take_pick(),
+            Some((120.0, 80.0)),
+            "the gate began without a pending pick"
+        );
+        input
+            .accept_load(Ok(distant_scene()))
+            .expect("the replacement loads");
+        assert_eq!(
+            input.take_pick(),
+            None,
+            "a pick requested from the old scene reached its replacement"
+        );
+
+        // And a press whose release arrives only after the replacement. It is
+        // not a click in either picture, because its two halves saw different
+        // documents.
+        input.handle(ViewportEvent::PointerMoved { x: 200.0, y: 120.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        assert!(input.is_dragging(), "the gate began without a gesture");
+        input
+            .accept_load(Ok(distant_scene()))
+            .expect("another replacement loads");
+        assert!(
+            !input.is_dragging(),
+            "the old scene's gesture survived Open"
+        );
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        assert_eq!(
+            input.take_pick(),
+            None,
+            "a press in the old scene and release in the new scene became a click"
+        );
+    }
+
+    #[test]
     fn a_load_that_failed_leaves_the_picture_alone() {
         let mut input = ready();
         let before = *input.camera();
+
+        // Unlike a successful replacement, an answer that changes no scene
+        // must not discard a question about the scene that remains current.
+        click(&mut input, (120.0, 80.0), false);
+        assert!(
+            input.take_redraw(),
+            "the click asked for no answering frame"
+        );
 
         let error = input
             .accept_load(Err(ferritecad_types::CadError::input("no such document")))
@@ -567,6 +629,7 @@ mod tests {
         // what is on screen.
         assert_eq!(input.camera().eye(), before.eye());
         assert_eq!(input.camera().target(), before.target());
+        assert_eq!(input.take_pick(), Some((120.0, 80.0)));
         assert!(
             !input.take_redraw(),
             "a failed load asked for a frame that would draw the same picture"
