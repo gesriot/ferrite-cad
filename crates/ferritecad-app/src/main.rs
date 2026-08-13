@@ -708,8 +708,9 @@ fn commit_scene<P>(
 ///
 /// The conversion lives here because this is where both halves are known: the
 /// scene's identity types on one side, and a panel that must not learn what a
-/// document is on the other. Nothing transient can cross, because nothing
-/// transient can be named in [`Selected`].
+/// document is on the other. `Selected` offers no role for transient state;
+/// the strings passed here come only from the durable identity and the display
+/// facts sanitised while the scene catalogue was built.
 fn describe<'a>(entry: &'a CatalogueEntry, identity: &'a str) -> Selected<'a> {
     match &entry.item {
         SceneItem::Body(_) => Selected::Body {

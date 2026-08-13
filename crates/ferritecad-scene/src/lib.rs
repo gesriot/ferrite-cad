@@ -1856,4 +1856,18 @@ mod tests {
             "cancelling between bodies left the session holding solids"
         );
     }
+
+    #[test]
+    fn provenance_reaches_the_viewer_as_a_file_name_on_either_platform() {
+        assert_eq!(
+            file_name_of(Some("/home/someone/models/plate.step")).as_deref(),
+            Some("plate.step")
+        );
+        assert_eq!(
+            file_name_of(Some(r"C:\Users\Someone\Models\plate.step")).as_deref(),
+            Some("plate.step")
+        );
+        assert_eq!(file_name_of(Some("  ")), None);
+        assert_eq!(file_name_of(None), None);
+    }
 }

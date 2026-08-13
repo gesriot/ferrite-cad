@@ -38,11 +38,12 @@ pub struct Chosen {
 ///
 /// # Portable terms only
 ///
-/// Everything here outlives the picture it was read from. A pick, a mesh
-/// index, a face index, a shape handle, a session, an occurrence position and
-/// the path a file was read from all mean something only in one reading, and
-/// none of them can be expressed in this type. See [`Selected::rows`], which
-/// is what actually reaches a screen.
+/// Everything the application assigns to these roles outlives the picture it
+/// was read from. There is no role for a pick, mesh index, face index, shape
+/// handle, session or occurrence position. The strings are borrowed display
+/// text rather than proof of their own provenance, so the application boundary
+/// remains responsible for supplying the source's leaf file name rather than
+/// its path. See [`Selected::rows`], which is what actually reaches a screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selected<'a> {
     /// A body of the open document.
@@ -54,7 +55,7 @@ pub enum Selected<'a> {
     /// A definition inside a file this document imported.
     Imported {
         name: Option<&'a str>,
-        /// The file it came from, by name. Never a path.
+        /// The file it came from, already reduced to a name by the caller.
         source_file: Option<&'a str>,
         /// The identifier the document gave those bytes.
         source: &'a str,
