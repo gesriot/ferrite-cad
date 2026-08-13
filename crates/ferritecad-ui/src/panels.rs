@@ -129,18 +129,23 @@ impl Selected<'_> {
                 name,
                 definition_key,
                 source_file,
+                source,
                 ..
             } => {
                 let named = match name {
                     Some(name) => format!("{name} · {definition_key}"),
                     None => (*definition_key).to_owned(),
                 };
-                match source_file {
-                    // The file distinguishes the same key in two of them,
-                    // which is the ordinary way a key repeats.
+                let described = match source_file {
+                    // A useful hint, but not identity: unrelated files in
+                    // different directories commonly share one basename.
                     Some(file) => format!("{named} · {file}"),
                     None => named,
-                }
+                };
+                // The key is scoped to this source. Always include both so
+                // two unrelated files with the same name and ordinary STEP
+                // numbering cannot produce rows that read alike.
+                format!("{described} · {source}")
             }
         }
     }
@@ -743,6 +748,34 @@ mod tests {
         assert_eq!(
             press_list(&context, rows[1].center(), &definitions, None),
             Some(1)
+        );
+    }
+
+    #[test]
+    fn the_same_imported_name_key_and_file_still_show_which_source_is_which() {
+        // Two unrelated files may share a basename and use the same ordinary
+        // PRODUCT_DEFINITION number. Their source identities are the only
+        // portable fact that distinguishes them, so leaving the source out of
+        // the summary makes two different rows read exactly alike.
+        let first = Selected::Imported {
+            name: Some("Bracket"),
+            source_file: Some("part.step"),
+            source: "018f2b7c-0000-7000-8000-000000000001",
+            definition_key: "step.product_definition#5",
+            solids: Some(1),
+        };
+        let second = Selected::Imported {
+            name: Some("Bracket"),
+            source_file: Some("part.step"),
+            source: "018f2b7c-0000-7000-8000-000000000002",
+            definition_key: "step.product_definition#5",
+            solids: Some(1),
+        };
+
+        assert_ne!(
+            first.summary(),
+            second.summary(),
+            "two imported definitions with different identities read alike"
         );
     }
 

@@ -533,6 +533,26 @@ fn selection_from(pick: PickId, snapshot: &RenderSnapshot) -> PickId {
     }
 }
 
+/// Chooses the definition named by a list row and draws that change once.
+///
+/// A row is deliberately not an identity. The snapshot that supplied the
+/// list must turn it into one, and a row outside that snapshot changes
+/// nothing. Repeating the current choice is not a visible change either.
+fn select_definition_row(
+    selection: &mut PickId,
+    snapshot: &RenderSnapshot,
+    input: &mut ViewportInput,
+    row: usize,
+) {
+    let Some(pick) = snapshot.pick_of(row) else {
+        return;
+    };
+    if pick != *selection {
+        *selection = pick;
+        input.request_redraw();
+    }
+}
+
 /// Runs a load away from the event loop and delivers the answer back to it.
 ///
 /// Both halves are arguments so that this can be shown to return while the
@@ -1134,13 +1154,12 @@ impl App {
         let Some(live) = self.live.as_mut() else {
             return;
         };
-        let Some(pick) = live.scene.prepared.snapshot().pick_of(row) else {
-            return;
-        };
-        if pick != live.scene.selection {
-            live.scene.selection = pick;
-            self.input.request_redraw();
-        }
+        select_definition_row(
+            &mut live.scene.selection,
+            live.scene.prepared.snapshot(),
+            &mut self.input,
+            row,
+        );
     }
 
     /// Puts a finished load on screen, or leaves the screen alone.
@@ -2290,6 +2309,43 @@ mod tests {
             .expect("that definition is drawn")
             .pick;
         assert_eq!(clicked, pick, "a row and a click named different things");
+    }
+
+    #[test]
+    fn choosing_a_definition_row_changes_the_choice_and_draws_once() {
+        let mut builder = SnapshotBuilder::new();
+        for _ in 0..2 {
+            let mesh = builder
+                .add_mesh(&distant_scene_mesh())
+                .expect("the mesh is valid");
+            builder
+                .place(
+                    mesh,
+                    None,
+                    &ferritecad_types::Transform::IDENTITY,
+                    [0.5, 0.5, 0.5],
+                )
+                .expect("places it");
+        }
+        let picture = builder.build();
+        let mut selection = PickId::NOTHING;
+        let mut input = ViewportInput::new();
+        let _ = input.take_redraw();
+
+        select_definition_row(&mut selection, &picture, &mut input, 1);
+        assert_eq!(picture.definition(selection), Some(1));
+        assert!(input.take_redraw(), "the changed highlight was not drawn");
+        assert!(
+            !input.take_redraw(),
+            "one row choice asked for more than one frame"
+        );
+
+        // Repeating the choice and pressing a row this picture does not have
+        // are both no-ops, including at the redraw boundary.
+        select_definition_row(&mut selection, &picture, &mut input, 1);
+        select_definition_row(&mut selection, &picture, &mut input, 2);
+        assert_eq!(picture.definition(selection), Some(1));
+        assert!(!input.take_redraw());
     }
 
     #[test]
