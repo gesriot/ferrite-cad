@@ -33,7 +33,7 @@
 //! adapter back at the document. Passing the kernel to the function instead of
 //! capturing it is what lets one `&mut` satisfy both.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use ferritecad_document::{
@@ -88,15 +88,148 @@ pub struct CatalogueEntry {
     pub solids: Option<u32>,
 }
 
-impl CatalogueEntry {
-    /// A body of this document.
-    fn body(object: ObjectId, name: Option<String>) -> Self {
-        Self {
-            item: SceneItem::Body(object),
-            name: name.filter(|name| !name.trim().is_empty()),
-            source_file: None,
-            solids: None,
+/// One drawn definition while the load is still going on.
+///
+/// The same identity can be met more than once: a document may hold two
+/// imported objects storing the same bytes, and the document layer gives
+/// identical bytes one source identity, so the two objects describe the same
+/// definitions. What is drawn must be one definition all the same, and what is
+/// said about it must not depend on which object was read first.
+#[derive(Debug)]
+struct Drawn {
+    item: SceneItem,
+    name: Fact,
+    source_file: Fact,
+    solids: Option<u32>,
+}
+
+/// What repeated sightings of one display fact add up to.
+///
+/// Three states rather than two. "Nobody said" and "two sources said
+/// different things" are different situations, and collapsing them would let
+/// a third sighting refill a fact that had already been found ambiguous.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Fact {
+    Unknown,
+    Known(String),
+    /// Two sightings disagreed. Nothing is shown rather than one of them
+    /// chosen by which import happened to be read first: display facts are
+    /// not identity, and a window must not present document order as though
+    /// it were a decision about which name is right.
+    Ambiguous,
+}
+
+impl Fact {
+    fn seen(&mut self, value: Option<String>) {
+        let Some(value) = value.filter(|value| !value.trim().is_empty()) else {
+            return;
+        };
+        *self = match std::mem::replace(self, Self::Unknown) {
+            Self::Unknown => Self::Known(value),
+            Self::Known(known) if known == value => Self::Known(known),
+            Self::Known(_) | Self::Ambiguous => Self::Ambiguous,
+        };
+    }
+
+    fn into_option(self) -> Option<String> {
+        match self {
+            Self::Known(value) => Some(value),
+            Self::Unknown | Self::Ambiguous => None,
         }
+    }
+}
+
+/// What one sighting of a definition said about it.
+#[derive(Debug, Default)]
+struct Seen {
+    name: Option<String>,
+    source_file: Option<String>,
+    solids: Option<u32>,
+}
+
+/// Every definition drawn in one load, one entry per portable identity.
+///
+/// Canonical across the whole document rather than within one imported
+/// object. Two objects storing the same bytes share a source identity, so a
+/// definition they both draw is one definition: packing it twice would give it
+/// two identities on the GPU, and choosing one of them would highlight half of
+/// its placements.
+///
+/// Keyed by [`SceneItem`] and by nothing else. A name, a file name, a solid
+/// count, a position in the file and an object's place in the document are all
+/// things two different definitions can share and one definition can be
+/// described by differently.
+#[derive(Debug, Default)]
+struct Catalogue {
+    entries: Vec<Drawn>,
+    /// Where each identity was packed. Never iterated – it is a lookup, and
+    /// what is ordered is the entries beside it.
+    packed: HashMap<SceneItem, usize>,
+}
+
+impl Catalogue {
+    /// The definition this identity is drawn as, packing it if it is new.
+    ///
+    /// `pack` is called only for an identity nothing has drawn yet, which is
+    /// what stops one definition from being tessellated twice merely because
+    /// two imported objects both refer to it.
+    fn definition(
+        &mut self,
+        item: SceneItem,
+        seen: Seen,
+        pack: impl FnOnce() -> Result<usize>,
+    ) -> Result<usize> {
+        if let Some(&index) = self.packed.get(&item) {
+            let entry = &mut self.entries[index];
+            entry.name.seen(seen.name);
+            entry.source_file.seen(seen.source_file);
+            match (entry.solids, seen.solids) {
+                (Some(known), Some(now)) if known != now => {
+                    // Not two definitions, and not a number to pick between:
+                    // one identity has one geometry, so two counts mean the
+                    // document and the file disagree about what this is.
+                    return Err(CadError::topology(format!(
+                        "{item:?} was read as {known} solids and again as {now}; one durable                          definition cannot be two shapes"
+                    )));
+                }
+                (None, now) => entry.solids = now,
+                _ => {}
+            }
+            return Ok(index);
+        }
+
+        let index = pack()?;
+        if index != self.entries.len() {
+            return Err(CadError::topology(format!(
+                "a definition was packed as {index} while the catalogue held {}; a click                  resolves through both, so they cannot disagree",
+                self.entries.len()
+            )));
+        }
+
+        let mut entry = Drawn {
+            item: item.clone(),
+            name: Fact::Unknown,
+            source_file: Fact::Unknown,
+            solids: seen.solids,
+        };
+        entry.name.seen(seen.name);
+        entry.source_file.seen(seen.source_file);
+        self.entries.push(entry);
+        self.packed.insert(item, index);
+        Ok(index)
+    }
+
+    /// What the load is handing over, in the order the snapshot draws it.
+    fn finish(self) -> Vec<CatalogueEntry> {
+        self.entries
+            .into_iter()
+            .map(|entry| CatalogueEntry {
+                item: entry.item,
+                name: entry.name.into_option(),
+                source_file: entry.source_file.into_option(),
+                solids: entry.solids,
+            })
+            .collect()
     }
 }
 
@@ -124,7 +257,7 @@ fn file_name_of(recorded: Option<&str>) -> Option<String> {
 /// – that is what makes it safe to throw away. This is the other half: the
 /// same definition said in a way a document could store, so a selection can
 /// become something durable without a viewport ever holding a durable name.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SceneItem {
     /// A body of this document, named by the object that holds it.
@@ -193,7 +326,10 @@ where
     // handed back in one place whatever the outcome.
     let snapshot = (|| -> Result<LoadedScene> {
         let mut builder = SnapshotBuilder::new();
-        let mut catalogue: Vec<CatalogueEntry> = Vec::new();
+        // One catalogue for the whole document, not one per imported object:
+        // two objects can store the same bytes, and what they then draw is the
+        // same definition.
+        let mut catalogue = Catalogue::default();
         let objects = document.objects()?;
 
         // Counted before anything is drawn, so each one can say what fraction
@@ -229,13 +365,20 @@ where
                             object.id
                         ))
                     })?;
-                    let mesh = kernel.tessellate(shape, params, &scoped)?;
-                    let definition = builder.add_mesh(&mesh)?;
-                    // Added in step with the meshes, so the catalogue is
-                    // indexed the way the snapshot is by construction rather
-                    // than by two loops agreeing.
-                    debug_assert_eq!(definition, catalogue.len());
-                    catalogue.push(CatalogueEntry::body(object.id, object.name.clone()));
+                    // Two bodies are two definitions however alike they look:
+                    // the object that holds one is what it is, and a document
+                    // may give two of them one name.
+                    let definition = catalogue.definition(
+                        SceneItem::Body(object.id),
+                        Seen {
+                            name: object.name.clone(),
+                            ..Seen::default()
+                        },
+                        || {
+                            let mesh = kernel.tessellate(shape, params, &scoped)?;
+                            builder.add_mesh(&mesh)
+                        },
+                    )?;
                     builder.place(definition, None, &Transform::IDENTITY, BODY_COLOUR)?;
                 }
 
@@ -274,7 +417,7 @@ where
         }
         Ok(LoadedScene {
             snapshot: builder.build(),
-            catalogue,
+            catalogue: catalogue.finish(),
         })
     })();
 
@@ -310,7 +453,7 @@ struct Provenance {
 /// still in hand.
 fn draw_scene<K: GeometryKernel + ?Sized>(
     builder: &mut SnapshotBuilder,
-    catalogue: &mut Vec<CatalogueEntry>,
+    catalogue: &mut Catalogue,
     kernel: &mut K,
     from: Provenance,
     scene: &Scene,
@@ -350,7 +493,9 @@ fn draw_scene<K: GeometryKernel + ?Sized>(
 
     // One imported object can hold many definitions. The caller gives the
     // object one slice of the load; divide that slice among the unique leaf
-    // definitions that actually need a mesh. Reusing the object's context for
+    // definitions it draws. A definition another object already drew is not
+    // meshed again, so an object that adds nothing new advances the count by
+    // less than its whole slice. Reusing the object's context for
     // every definition would make progress run from the beginning to the end
     // of the same slice once per part, going backwards between parts and
     // announcing completion more than once.
@@ -364,47 +509,43 @@ fn draw_scene<K: GeometryKernel + ?Sized>(
         .len();
     let mut definitions_meshed = 0usize;
 
-    let mut meshes: BTreeMap<usize, usize> = BTreeMap::new();
     for (index, instance) in scene.instances.iter().enumerate() {
         if structural[index] {
             continue;
         }
         context.check_cancelled()?;
 
-        let mesh = match meshes.get(&instance.definition) {
-            Some(mesh) => *mesh,
-            None => {
-                let definition = scene.definitions.get(instance.definition).ok_or_else(|| {
-                    CadError::input(format!(
-                        "instance {index} draws definition {}, which this scene does not have",
-                        instance.definition
-                    ))
-                })?;
-                let scoped = phase(
-                    context,
-                    definitions_meshed as f64 / definitions_to_mesh.max(1) as f64,
-                    (definitions_meshed + 1) as f64 / definitions_to_mesh.max(1) as f64,
-                );
-                let mesh = kernel.tessellate(definition.shape, params, &scoped)?;
-                definitions_meshed += 1;
-                let packed = builder.add_mesh(&mesh)?;
-                // The file's own name for this definition, kept beside the
-                // source it belongs to. `#31` in one file is not `#31` in
-                // another, which is why neither half travels alone.
-                debug_assert_eq!(packed, catalogue.len());
-                catalogue.push(CatalogueEntry {
-                    item: SceneItem::Imported(ImportedDefinitionRef::new(
-                        from.source,
-                        definition.key.clone(),
-                    )?),
-                    name: Some(definition.name.clone()).filter(|name| !name.trim().is_empty()),
-                    source_file: from.file.clone(),
-                    solids: Some(definition.solids),
-                });
-                meshes.insert(instance.definition, packed);
-                packed
-            }
+        let definition = scene.definitions.get(instance.definition).ok_or_else(|| {
+            CadError::input(format!(
+                "instance {index} draws definition {}, which this scene does not have",
+                instance.definition
+            ))
+        })?;
+
+        // The file's own name for this definition, kept beside the source it
+        // belongs to. `#31` in one file is not `#31` in another, which is why
+        // neither half travels alone – and why two objects storing the same
+        // bytes name the same definition when they use the same key.
+        let item = SceneItem::Imported(ImportedDefinitionRef::new(
+            from.source,
+            definition.key.clone(),
+        )?);
+        let seen = Seen {
+            name: Some(definition.name.clone()),
+            source_file: from.file.clone(),
+            solids: Some(definition.solids),
         };
+
+        let mesh = catalogue.definition(item, seen, || {
+            let scoped = phase(
+                context,
+                definitions_meshed as f64 / definitions_to_mesh.max(1) as f64,
+                (definitions_meshed + 1) as f64 / definitions_to_mesh.max(1) as f64,
+            );
+            let mesh = kernel.tessellate(definition.shape, params, &scoped)?;
+            definitions_meshed += 1;
+            builder.add_mesh(&mesh)
+        })?;
 
         // Linear RGB as the importer read it out of the file. Where the file
         // said nothing, the same neutral colour a native body gets: inventing
@@ -1029,6 +1170,179 @@ mod tests {
         }
     }
 
+    /// Two imported objects storing exactly the same bytes.
+    ///
+    /// The document layer gives identical bytes one source identity, so the
+    /// two objects draw the same definitions – the case a viewer meets when
+    /// somebody imports the same file twice.
+    fn document_with_the_same_file_twice(
+        path: &Path,
+        kernel: &mut MockKernel,
+        recorded_as: [&str; 2],
+    ) -> [ObjectId; 2] {
+        let mut document = Document::create(path).expect("creates a document");
+        let mut objects = Vec::new();
+        for name in recorded_as {
+            let import = Import::Imported {
+                scene: one_part(kernel, "Bracket"),
+                diagnostics: Vec::new(),
+            };
+            let object = ObjectId::new();
+            document
+                .store_step_import(StepImportRequest {
+                    object,
+                    name: Some("Imported"),
+                    source: SOURCE,
+                    source_name: Some(name),
+                    import: &import,
+                    importer: kernel.identity(),
+                })
+                .expect("stores the import");
+            for shape in import.scene().expect("a scene was stored").shapes() {
+                kernel.release(shape);
+            }
+            objects.push(object);
+        }
+        [objects[0], objects[1]]
+    }
+
+    #[test]
+    fn one_definition_stored_twice_is_drawn_once_and_placed_twice() {
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("twice.fcad");
+        let mut kernel = MockKernel::new();
+        let objects = document_with_the_same_file_twice(&path, &mut kernel, ["part.step"; 2]);
+
+        // The document really did give both objects one source: that is what
+        // makes their definitions one definition rather than two alike.
+        let stored = Document::open_read_only(&path).expect("reopens");
+        let sources: Vec<_> = objects
+            .iter()
+            .map(|object| {
+                stored
+                    .step_import(*object)
+                    .expect("reads")
+                    .expect("the import is there")
+                    .imported
+                    .source
+            })
+            .collect();
+        assert_eq!(sources[0], sources[1], "identical bytes were stored twice");
+        drop(stored);
+
+        let loaded = snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel, _| {
+                Ok(Import::Imported {
+                    scene: one_part(kernel, "Bracket"),
+                    diagnostics: Vec::new(),
+                })
+            },
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("both imports reopen");
+
+        // One identity, one packed mesh, one catalogue entry – and both
+        // placements, because each object still contributes its own.
+        assert_eq!(loaded.catalogue.len(), 1, "one definition was packed twice");
+        assert_eq!(loaded.snapshot.meshes().len(), 1);
+        assert_eq!(loaded.snapshot.draws().len(), 2, "an occurrence was lost");
+
+        // And every placement is the same definition, so choosing any of them
+        // chooses all of them: the picture cannot highlight half of it.
+        let picks: Vec<_> = loaded
+            .snapshot
+            .draws()
+            .iter()
+            .map(|draw| draw.pick)
+            .collect();
+        assert_eq!(
+            picks[0], picks[1],
+            "two placements of one definition differ"
+        );
+        assert_eq!(loaded.snapshot.definition(picks[0]), Some(0));
+
+        assert_eq!(kernel.live_shape_count(), 0);
+    }
+
+    #[test]
+    fn the_same_bytes_recorded_under_two_names_are_still_one_definition() {
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("twice.fcad");
+        let mut kernel = MockKernel::new();
+        document_with_the_same_file_twice(&path, &mut kernel, ["left.step", "right.step"]);
+
+        let loaded = snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel, _| {
+                Ok(Import::Imported {
+                    scene: one_part(kernel, "Bracket"),
+                    diagnostics: Vec::new(),
+                })
+            },
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("both imports reopen");
+
+        // The bytes decide, not what somebody called the file when they
+        // imported it. One identity, one entry, both placements.
+        assert_eq!(loaded.catalogue.len(), 1);
+        assert_eq!(loaded.snapshot.draws().len(), 2);
+
+        // Two file names for one identity is a disagreement, and neither is
+        // more right than the other. Nothing is shown rather than whichever
+        // object happened to be read first.
+        assert_eq!(
+            loaded.catalogue[0].source_file, None,
+            "one of two recorded names was presented as the answer"
+        );
+        // What both sightings agreed on is still said.
+        assert_eq!(loaded.catalogue[0].name.as_deref(), Some("Bracket"));
+        assert_eq!(loaded.catalogue[0].solids, Some(1));
+    }
+
+    #[test]
+    fn a_definition_two_objects_share_is_meshed_once() {
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("twice.fcad");
+        let mut setup = MockKernel::new();
+        document_with_the_same_file_twice(&path, &mut setup, ["part.step"; 2]);
+
+        // A kernel that answers every question and counts them. Packing once
+        // is not the same as meshing once: a loader could tessellate twice and
+        // then throw one away, and only the count would say so.
+        let mut kernel = StopsAfterBuilding::new(Stop::Nothing);
+        let loaded = snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel, _| {
+                Ok(Import::Imported {
+                    scene: one_part(&mut kernel.inner, "Bracket"),
+                    diagnostics: Vec::new(),
+                })
+            },
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("both imports reopen");
+
+        assert_eq!(loaded.snapshot.draws().len(), 2);
+        assert_eq!(
+            kernel.meshed, 1,
+            "one definition was tessellated {} times because two objects refer to it",
+            kernel.meshed
+        );
+        assert_eq!(
+            kernel.inner.live_shape_count(),
+            0,
+            "the shapes of the second reading were never given back"
+        );
+    }
+
     #[test]
     fn one_key_in_two_files_names_two_different_things() {
         let directory = tempfile::tempdir().expect("a temporary directory is available");
@@ -1112,6 +1426,128 @@ mod tests {
             loaded.catalogue[0].item, loaded.catalogue[1].item,
             "two bodies with one name were taken for one body"
         );
+    }
+
+    /// One identity seen twice, with whatever each sighting said about it.
+    fn twice(first: Seen, second: Seen) -> Result<Vec<CatalogueEntry>> {
+        let item = SceneItem::Body(ObjectId::new());
+        let mut catalogue = Catalogue::default();
+        catalogue.definition(item.clone(), first, || Ok(0))?;
+        catalogue.definition(item, second, || {
+            unreachable!("an identity already drawn was packed a second time")
+        })?;
+        Ok(catalogue.finish())
+    }
+
+    #[test]
+    fn a_fact_nobody_gave_is_filled_by_whoever_did() {
+        let entries = twice(
+            Seen {
+                name: None,
+                source_file: Some("part.step".to_owned()),
+                solids: None,
+            },
+            Seen {
+                name: Some("Bracket".to_owned()),
+                source_file: None,
+                solids: Some(2),
+            },
+        )
+        .expect("two sightings of one definition");
+
+        // Neither sighting is preferred; between them they said three things,
+        // and all three are known.
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name.as_deref(), Some("Bracket"));
+        assert_eq!(entries[0].source_file.as_deref(), Some("part.step"));
+        assert_eq!(entries[0].solids, Some(2));
+    }
+
+    #[test]
+    fn two_answers_to_one_question_are_no_answer() {
+        let entries = twice(
+            Seen {
+                name: Some("Bracket".to_owned()),
+                source_file: Some("left.step".to_owned()),
+                solids: Some(1),
+            },
+            Seen {
+                name: Some("Support".to_owned()),
+                source_file: Some("right.step".to_owned()),
+                solids: Some(1),
+            },
+        )
+        .expect("two sightings of one definition");
+
+        // One identity described two ways. Showing either would be presenting
+        // document order as a decision about which description is right, and
+        // splitting the identity would be worse: they are the same definition.
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, None);
+        assert_eq!(entries[0].source_file, None);
+        assert_eq!(entries[0].solids, Some(1));
+    }
+
+    #[test]
+    fn a_third_sighting_does_not_settle_what_two_left_open() {
+        let item = SceneItem::Body(ObjectId::new());
+        let mut catalogue = Catalogue::default();
+        let named = |name: &str| Seen {
+            name: Some(name.to_owned()),
+            ..Seen::default()
+        };
+
+        catalogue
+            .definition(item.clone(), named("Bracket"), || Ok(0))
+            .expect("packs");
+        catalogue
+            .definition(item.clone(), named("Support"), || Ok(0))
+            .expect("merges");
+        catalogue
+            .definition(item, named("Bracket"), || Ok(0))
+            .expect("merges");
+
+        // Two names disagreed, so the question is settled as unanswerable. A
+        // third voice does not carry it: "nobody said" and "they disagreed"
+        // are different states, and only the first can still be filled in.
+        assert_eq!(catalogue.finish()[0].name, None);
+    }
+
+    #[test]
+    fn one_identity_cannot_be_two_shapes() {
+        let error = twice(
+            Seen {
+                solids: Some(1),
+                ..Seen::default()
+            },
+            Seen {
+                solids: Some(4),
+                ..Seen::default()
+            },
+        )
+        .expect_err("two solid counts for one definition is not a thing to average");
+
+        // Not two definitions, and not a number to choose between: a durable
+        // identity names one shape, so this is the document and the file
+        // disagreeing about what that shape is.
+        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Topology);
+        assert!(
+            error.to_string().contains("cannot be two shapes"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_catalogue_that_lost_step_with_the_picture_refuses() {
+        let mut catalogue = Catalogue::default();
+
+        // The catalogue is indexed the way the snapshot is, and a click is
+        // resolved through both. A packer that returned some other index would
+        // make a click mean whatever happened to sit there.
+        let error = catalogue
+            .definition(SceneItem::Body(ObjectId::new()), Seen::default(), || Ok(3))
+            .expect_err("a definition packed out of step must not be catalogued");
+        assert!(error.to_string().contains("cannot disagree"), "{error}");
     }
 
     #[test]
@@ -1403,7 +1839,7 @@ mod tests {
         );
 
         let mut builder = SnapshotBuilder::new();
-        let mut catalogue = Vec::new();
+        let mut catalogue = Catalogue::default();
         draw_scene(
             &mut builder,
             &mut catalogue,
@@ -1601,6 +2037,8 @@ mod tests {
 
     /// What makes a kernel stop once the geometry already exists.
     enum Stop {
+        /// Nothing at all: the kernel answers, and the count is the point.
+        Nothing,
         /// The user changed their mind while the model was being meshed.
         Cancelled(CancelToken),
         /// Meshing itself failed.
@@ -1620,6 +2058,9 @@ mod tests {
     struct StopsAfterBuilding {
         inner: MockKernel,
         stop: Stop,
+        /// How many times a mesh was asked for, which is how a definition
+        /// tessellated twice is told from one packed twice.
+        meshed: usize,
     }
 
     impl StopsAfterBuilding {
@@ -1627,6 +2068,7 @@ mod tests {
             Self {
                 inner: MockKernel::new(),
                 stop,
+                meshed: 0,
             }
         }
     }
@@ -1659,7 +2101,9 @@ mod tests {
             params: &TessellationParams,
             context: &OperationContext,
         ) -> Result<Mesh> {
+            self.meshed += 1;
             match &self.stop {
+                Stop::Nothing => self.inner.tessellate(shape, params, context),
                 Stop::Cancelled(token) => {
                     // Cancelled at the moment the picture was about to be
                     // built, with every solid of the model live.

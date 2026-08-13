@@ -3,8 +3,11 @@
 A local, parametric mechanical CAD for Windows, Linux and macOS. No cloud, no
 account, no proprietary container you cannot read back.
 
-**Status: early. There is no user interface and no geometry yet.** What exists
-is the document format and the tooling around it. See
+**Status: early.** There is a document format with its tooling, geometry
+through Open CASCADE, STEP import, and a viewer window that opens a `.fcad`
+file, draws what it describes and lets a definition be selected and inspected.
+There is no modelling in the interface: nothing can be created or edited there
+yet, and everything is built through the command line. See
 [`docs/implementation-plan.md`](docs/implementation-plan.md) for what comes when,
 and please read the honest scope note at the end of this file before forming
 expectations.
@@ -16,8 +19,10 @@ cargo build
 cargo test
 ```
 
-Nothing so far needs Open CASCADE, so this builds with a Rust toolchain alone.
-The kernel arrives in stage 2; its build recipe is
+A Rust toolchain alone is enough to build and test the workspace: without Open
+CASCADE the kernel adapter compiles to a stub that refuses, and the tests that
+need real geometry skip themselves and say so. Building geometry for real needs
+the pinned kernel, whose build recipe is
 [`docs/build-occt.md`](docs/build-occt.md).
 
 ## Trying it
@@ -30,8 +35,21 @@ cargo run -p ferritecad-cli -- dump-graph part.fcad --format dot | dot -Tsvg > g
 ```
 
 `create --sample` builds a plate: a datum plane, a rectangular profile, an
-extrusion and the topology references naming that extrusion's faces. Nothing is
-evaluated into geometry yet – the point is that the *model* round-trips.
+extrusion and the topology references naming that extrusion's faces. With Open
+CASCADE present, `rebuild --cold` evaluates it into geometry and `export-stl`
+writes it out; without one, the document still round-trips on its own.
+
+## Looking at a document
+
+```sh
+cargo run -p ferritecad-app --bin ferritecad-viewer -- part.fcad
+```
+
+The viewer opens the document read-only, rebuilds it, and draws it: orbit, pan
+and zoom, the standard views, and a click selects a definition and describes it
+in portable terms. Every placement of one definition is selected together,
+because a click names the definition and never the placement it landed on.
+Opening another document is the only editing operation there is.
 
 ## How a document is put together
 
@@ -72,6 +90,15 @@ crates/
   ferritecad-types/     identifiers, units, tolerances, errors, canonical hashing
   ferritecad-document/  SQLite container, CBOR envelopes, graph, cache sidecar
   ferritecad-cli/       create, inspect, validate, dump-graph, clear-cache
+  ferritecad-kernel/    the geometry contract, and a mock that satisfies it
+  ferritecad-occt/      Open CASCADE behind that contract, over a C ABI shim
+  ferritecad-exchange/  STEP scenes: definitions, placements, diagnostics
+  ferritecad-eval/      cold and cached rebuilds of a whole document
+  ferritecad-scene/     a document read into a picture, and what its parts are
+  ferritecad-viewport/  camera and immutable render snapshots, no GPU
+  ferritecad-viewport-gpu/  wgpu renderer, offscreen and windowed
+  ferritecad-ui/        panels and the input reducer, no window
+  ferritecad-app/       the window, the event loop and the wiring
 docs/
 ```
 
