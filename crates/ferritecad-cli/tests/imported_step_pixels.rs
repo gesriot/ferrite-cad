@@ -162,7 +162,8 @@ fn a_nested_assembly_goes_from_step_to_pixels() {
     // And what a click on any of them would mean: the file's own name for the
     // cube, beside the source it came from. Four placements, one answer.
     assert_eq!(loaded.catalogue.len(), 1);
-    let ferritecad_scene::SceneItem::Imported(reference) = &loaded.catalogue[0] else {
+    let entry = &loaded.catalogue[0];
+    let ferritecad_scene::SceneItem::Imported(reference) = &entry.item else {
         panic!("an imported definition was catalogued as a native body");
     };
     assert!(

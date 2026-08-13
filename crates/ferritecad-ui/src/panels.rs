@@ -29,6 +29,108 @@ pub struct Chosen {
     pub cancel: bool,
 }
 
+/// What is chosen, in the words a document would use for it.
+///
+/// Deliberately not the scene's own type: a panel has no business knowing what
+/// a document or a kernel is, and the conversion happens where both are
+/// already in hand. What it does know is which facts exist, so a caller cannot
+/// hand it a number that means something only to this frame.
+///
+/// # Portable terms only
+///
+/// Everything here outlives the picture it was read from. A pick, a mesh
+/// index, a face index, a shape handle, a session, an occurrence position and
+/// the path a file was read from all mean something only in one reading, and
+/// none of them can be expressed in this type. See [`Selected::rows`], which
+/// is what actually reaches a screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Selected<'a> {
+    /// A body of the open document.
+    Body {
+        name: Option<&'a str>,
+        /// The identifier the document stores for it.
+        object: &'a str,
+    },
+    /// A definition inside a file this document imported.
+    Imported {
+        name: Option<&'a str>,
+        /// The file it came from, by name. Never a path.
+        source_file: Option<&'a str>,
+        /// The identifier the document gave those bytes.
+        source: &'a str,
+        /// The name the file itself gave the definition.
+        definition_key: &'a str,
+        solids: Option<u32>,
+    },
+}
+
+impl Selected<'_> {
+    /// The lines to put on screen, in order.
+    ///
+    /// Built as data rather than drawn directly so that what a person will
+    /// read can be examined without a window. A fact the loader did not find
+    /// is left out rather than shown as blank or invented.
+    pub fn rows(&self) -> Vec<(&'static str, String)> {
+        let mut rows = Vec::new();
+        match self {
+            Self::Body { name, object } => {
+                rows.push(("Kind", "Body".to_owned()));
+                if let Some(name) = name {
+                    rows.push(("Name", (*name).to_owned()));
+                }
+                rows.push(("Object", (*object).to_owned()));
+            }
+            Self::Imported {
+                name,
+                source_file,
+                source,
+                definition_key,
+                solids,
+            } => {
+                rows.push(("Kind", "Imported definition".to_owned()));
+                if let Some(name) = name {
+                    rows.push(("Name", (*name).to_owned()));
+                }
+                if let Some(file) = source_file {
+                    rows.push(("File", (*file).to_owned()));
+                }
+                rows.push(("Source", (*source).to_owned()));
+                // The file's own name for it, which is what makes it findable
+                // again in those bytes and nowhere else.
+                rows.push(("Definition", (*definition_key).to_owned()));
+                if let Some(solids) = solids {
+                    rows.push(("Solids", solids.to_string()));
+                }
+            }
+        }
+        rows
+    }
+}
+
+/// Shows what is chosen, and nothing when nothing is.
+///
+/// Read-only. Choosing happens in the viewport and clearing happens by
+/// clicking away from the model; a panel that could change the selection would
+/// be a second place where it is decided.
+pub fn selection_inspector(ui: &mut egui::Ui, selected: Option<Selected<'_>>) {
+    let Some(selected) = selected else {
+        // Said rather than left blank: an empty strip is indistinguishable
+        // from an interface that has stopped working.
+        ui.label("Nothing selected");
+        return;
+    };
+
+    egui::Grid::new("ferritecad selection")
+        .num_columns(2)
+        .show(ui, |ui| {
+            for (label, value) in selected.rows() {
+                ui.label(label);
+                ui.add(egui::Label::new(value).truncate());
+                ui.end_row();
+            }
+        });
+}
+
 /// What the window is doing, as far as the toolbar needs to know.
 ///
 /// `line` is a finished sentence and `progress` is how far through a reading
@@ -41,9 +143,6 @@ pub struct Chosen {
 pub struct Activity<'a> {
     pub line: &'a str,
     pub progress: Option<f32>,
-    /// What is chosen, said the way a document would say it. `None` is
-    /// nothing chosen, which is what clicking the background leaves behind.
-    pub selection: Option<&'a str>,
 }
 
 /// The toolbar: a document to open, the directions a drawing would name, what
@@ -85,14 +184,6 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
             ui.add(egui::ProgressBar::new(fraction).desired_width(80.0));
         }
         ui.add(egui::Label::new(activity.line).truncate());
-        if let Some(selection) = activity.selection {
-            ui.separator();
-            // The name the file or the document gave it, not the number the
-            // picture used: that number means nothing once the picture is
-            // redrawn, and putting it in front of a person would invite them
-            // to write it down.
-            ui.add(egui::Label::new(selection).truncate());
-        }
     });
     chosen
 }
@@ -280,7 +371,6 @@ mod tests {
         let reading = Activity {
             line: "Opening part.fcad… 40%",
             progress: Some(0.4),
-            selection: None,
         };
 
         // Where the Cancel button is: after the views, so the row up to it is
@@ -314,6 +404,150 @@ mod tests {
             "a window with nothing to stop offered to stop it"
         );
         assert!(idle.view.is_none() && !idle.open);
+    }
+
+    /// The words a viewport uses about one frame, none of which survives it.
+    ///
+    /// A person reading any of these could write it down and find it means
+    /// nothing an hour later, which is the whole reason the inspector deals
+    /// in what a document could store.
+    const TRANSIENT: &[&str] = &[
+        "pick",
+        "mesh",
+        "face",
+        "edge",
+        "handle",
+        "session",
+        "occurrence",
+        "instance",
+        "index",
+        "snapshot",
+    ];
+
+    fn body() -> Selected<'static> {
+        Selected::Body {
+            name: Some("Plate"),
+            object: "018f2b7c-0000-7000-8000-000000000001",
+        }
+    }
+
+    fn imported() -> Selected<'static> {
+        Selected::Imported {
+            name: Some("Cube"),
+            source_file: Some("03-nested-assembly.step"),
+            source: "018f2b7c-0000-7000-8000-0000000000ff",
+            definition_key: "step.product_definition#58",
+            solids: Some(1),
+        }
+    }
+
+    #[test]
+    fn the_inspector_says_what_a_body_is_in_the_document_s_own_terms() {
+        let rows = body().rows();
+        let value = |label: &str| {
+            rows.iter()
+                .find(|(name, _)| *name == label)
+                .map(|(_, value)| value.as_str())
+        };
+
+        assert_eq!(value("Kind"), Some("Body"));
+        assert_eq!(value("Name"), Some("Plate"));
+        assert_eq!(
+            value("Object"),
+            Some("018f2b7c-0000-7000-8000-000000000001")
+        );
+
+        // A body has no file and no counted solids, and inventing rows for
+        // them would be answering questions nobody asked of it.
+        assert_eq!(value("File"), None);
+        assert_eq!(value("Solids"), None);
+
+        // A nameless body is still a body. Nothing is invented for it.
+        let rows = Selected::Body {
+            name: None,
+            object: "018f2b7c-0000-7000-8000-000000000001",
+        }
+        .rows();
+        assert!(rows.iter().all(|(label, _)| *label != "Name"));
+    }
+
+    #[test]
+    fn the_inspector_says_what_an_imported_definition_is() {
+        let rows = imported().rows();
+        let value = |label: &str| {
+            rows.iter()
+                .find(|(name, _)| *name == label)
+                .map(|(_, value)| value.as_str())
+        };
+
+        assert_eq!(value("Kind"), Some("Imported definition"));
+        assert_eq!(value("Name"), Some("Cube"));
+        assert_eq!(value("File"), Some("03-nested-assembly.step"));
+        assert_eq!(
+            value("Source"),
+            Some("018f2b7c-0000-7000-8000-0000000000ff")
+        );
+        assert_eq!(value("Definition"), Some("step.product_definition#58"));
+        assert_eq!(value("Solids"), Some("1"));
+
+        // The key alone is not the identity, and the panel says so by always
+        // showing the file it belongs to beside it: `#58` in another file is
+        // another definition entirely.
+        assert!(rows.iter().any(|(label, _)| *label == "Source"));
+    }
+
+    #[test]
+    fn the_inspector_never_puts_a_transient_word_on_screen() {
+        for selected in [body(), imported()] {
+            for (label, value) in selected.rows() {
+                let text = format!("{label} {value}").to_lowercase();
+                for word in TRANSIENT {
+                    assert!(
+                        !text.contains(word),
+                        "the inspector would show {word:?} in {label:?}: {value:?}"
+                    );
+                }
+                assert!(
+                    !value.contains('/') && !value.contains('\\'),
+                    "the inspector would show a path in {label:?}: {value:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_empty_selection_says_so_rather_than_showing_nothing() {
+        let context = egui::Context::default();
+
+        let mut empty = context.run_ui(egui::RawInput::default(), |ui| {
+            selection_inspector(ui, None);
+        });
+        let mut chosen = context.run_ui(egui::RawInput::default(), |ui| {
+            selection_inspector(ui, Some(imported()));
+        });
+        let mut nothing_at_all = context.run_ui(egui::RawInput::default(), |_| {});
+
+        let vertices = |output: &egui::FullOutput| {
+            context
+                .clone()
+                .tessellate(output.shapes.clone(), 1.0)
+                .into_iter()
+                .map(|primitive| match primitive.primitive {
+                    egui::epaint::Primitive::Mesh(mesh) => mesh.vertices.len(),
+                    egui::epaint::Primitive::Callback(_) => 0,
+                })
+                .sum::<usize>()
+        };
+
+        // Something is drawn either way, and more of it when there is more to
+        // say. An interface that went blank on an empty selection would be
+        // indistinguishable from one that had stopped working.
+        assert!(vertices(&empty) > vertices(&nothing_at_all));
+        assert!(vertices(&chosen) > vertices(&empty));
+
+        empty.textures_delta.clear();
+        chosen.textures_delta.clear();
+        nothing_at_all.textures_delta.clear();
     }
 
     #[test]

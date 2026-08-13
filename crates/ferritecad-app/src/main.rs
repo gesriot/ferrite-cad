@@ -36,9 +36,11 @@ use std::{sync::Arc, time::Instant};
 use ferritecad_document::DOCUMENT_EXTENSION;
 use ferritecad_kernel::{CancelToken, OperationContext, ProgressSink, TessellationParams};
 use ferritecad_occt::OcctKernel;
-use ferritecad_scene::{LoadedScene, SceneItem, snapshot_of};
+use ferritecad_scene::{CatalogueEntry, LoadedScene, SceneItem, snapshot_of};
 use ferritecad_types::{CadError, Result};
-use ferritecad_ui::{Activity, Chosen, PointerButton, VIEWS, ViewportEvent, ViewportInput};
+use ferritecad_ui::{
+    Activity, Chosen, PointerButton, Selected, VIEWS, ViewportEvent, ViewportInput,
+};
 use ferritecad_viewport::{PickId, RenderSnapshot, SnapshotBuilder, StandardView};
 use ferritecad_viewport_gpu::{PreparedSnapshot, Renderer, WindowSurface};
 use winit::application::ApplicationHandler;
@@ -554,7 +556,7 @@ fn prepare_load<P>(
     current_input: &ViewportInput,
     loaded: Result<LoadedScene>,
     prepare: impl FnOnce(Arc<RenderSnapshot>) -> Result<P>,
-) -> Result<(ViewportInput, P, Vec<SceneItem>)> {
+) -> Result<(ViewportInput, P, Vec<CatalogueEntry>)> {
     let mut input = current_input.clone();
     let loaded = loaded?;
     let snapshot = input.accept_load(Ok(loaded.snapshot))?;
@@ -653,20 +655,86 @@ struct Live {
 /// catalogue could otherwise silently name another document object.
 struct LiveScene<P> {
     prepared: P,
-    /// What each mesh of `prepared` is, in terms a document could store.
-    catalogue: Vec<SceneItem>,
+    /// What each mesh of `prepared` is: an identity a document could store,
+    /// and the facts a person needs to recognise it.
+    catalogue: Vec<CatalogueEntry>,
     /// Transient identity issued by `prepared` and nothing else.
     selection: PickId,
 }
 
 impl<P> LiveScene<P> {
     /// A replacement picture begins with no choice made in it.
-    fn new(prepared: P, catalogue: Vec<SceneItem>) -> Self {
+    fn new(prepared: P, catalogue: Vec<CatalogueEntry>) -> Self {
         Self {
             prepared,
             catalogue,
             selection: PickId::NOTHING,
         }
+    }
+
+    /// What is chosen, resolved through this picture and this catalogue.
+    ///
+    /// Two lookups and no search: the pick names a definition of this snapshot
+    /// or of no snapshot, and the catalogue is indexed the way the snapshot
+    /// is. Nothing falls back to a name, because names repeat.
+    fn chosen(&self, snapshot: &RenderSnapshot) -> Option<&CatalogueEntry> {
+        let definition = snapshot.definition(self.selection)?;
+        self.catalogue.get(definition)
+    }
+}
+
+/// Puts a finished load on screen, or leaves everything exactly as it was.
+///
+/// One statement for both outcomes, so there is no arrangement in which half
+/// of a document arrives. A load that failed or was given up on changes
+/// nothing at all: the model is still the model, the camera is still framing
+/// it, and what was chosen in it is still chosen. A load that succeeded
+/// replaces the picture, what its parts are, the choice made in it and the
+/// camera together – the choice cleared, because a choice belongs to the
+/// picture that issued it and the next document may draw the same geometry
+/// while meaning something else by it.
+fn commit_scene<P>(
+    scene: &mut LiveScene<P>,
+    camera: &mut ViewportInput,
+    next: Result<(ViewportInput, P, Vec<CatalogueEntry>)>,
+) -> Result<()> {
+    let (framed, prepared, catalogue) = next?;
+    *scene = LiveScene::new(prepared, catalogue);
+    *camera = framed;
+    Ok(())
+}
+
+/// What the interface should say about a chosen definition.
+///
+/// The conversion lives here because this is where both halves are known: the
+/// scene's identity types on one side, and a panel that must not learn what a
+/// document is on the other. Nothing transient can cross, because nothing
+/// transient can be named in [`Selected`].
+fn describe<'a>(entry: &'a CatalogueEntry, identity: &'a str) -> Selected<'a> {
+    match &entry.item {
+        SceneItem::Body(_) => Selected::Body {
+            name: entry.name.as_deref(),
+            object: identity,
+        },
+        SceneItem::Imported(reference) => Selected::Imported {
+            name: entry.name.as_deref(),
+            source_file: entry.source_file.as_deref(),
+            source: identity,
+            definition_key: reference.definition_key(),
+            solids: entry.solids,
+        },
+    }
+}
+
+/// The identifier the document stores for whatever this entry names.
+///
+/// One string, because only one applies: a body is named by its object and an
+/// imported definition by the source its key belongs to. Formatting is the
+/// caller's business because the borrow has to outlive the frame.
+fn identity_of(entry: &CatalogueEntry) -> String {
+    match &entry.item {
+        SceneItem::Body(object) => object.to_string(),
+        SceneItem::Imported(reference) => reference.source().to_string(),
     }
 }
 
@@ -792,11 +860,9 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::RedrawRequested => {
                 self.frames.frame_started();
                 let line = self.loads.status().line();
-                let selection = live.chosen_name();
                 let activity = Activity {
                     line: &line,
                     progress: self.loads.status().fraction(),
-                    selection: selection.as_deref(),
                 };
                 match live.draw(&self.input, activity) {
                     // A button pressed during this frame reaches the camera
@@ -1025,21 +1091,15 @@ impl App {
             return loaded.map(|_| ());
         };
 
-        let (input, prepared, catalogue) = prepare_load(&self.input, loaded, |snapshot| {
+        // Everything that can fail happens inside `prepare_load`; committing
+        // cannot. No event observes the application in between, so the picture,
+        // what its parts are, the choice made in it and the camera all become
+        // current together – and only then is the document a thing the window
+        // may call ready.
+        let next = prepare_load(&self.input, loaded, |snapshot| {
             live.renderer.prepare(snapshot)
-        })?;
-
-        // Every operation above can fail; neither assignment can. No event
-        // observes the application between these two lines, so camera and
-        // resident geometry become current together – and only after both is
-        // the document a thing the window may call ready.
-        self.input = input;
-        // A selection belongs to the scene that issued it. Content-equal
-        // snapshots have the same deterministic identity, so asking only the
-        // new snapshot would not distinguish two documents with the same
-        // geometry and different catalogue entries.
-        live.scene = LiveScene::new(prepared, catalogue);
-        Ok(())
+        });
+        commit_scene(&mut live.scene, &mut self.input, next)
     }
 
     fn request_frame_now(&mut self, event_loop: &ActiveEventLoop) {
@@ -1148,16 +1208,8 @@ impl Live {
     /// The catalogue is indexed the way the picture is, so this is a lookup
     /// rather than a search, and it answers `None` for a pick this picture
     /// does not recognise – which is the same answer as nothing chosen.
-    fn chosen_name(&self) -> Option<String> {
-        let definition = self
-            .scene
-            .prepared
-            .snapshot()
-            .definition(self.scene.selection)?;
-        match self.scene.catalogue.get(definition)? {
-            SceneItem::Body(object) => Some(format!("Body {object}")),
-            SceneItem::Imported(reference) => Some(reference.definition_key().to_owned()),
-        }
+    fn chosen(&self) -> Option<&CatalogueEntry> {
+        self.scene.chosen(self.scene.prepared.snapshot())
     }
 
     /// One frame: the model, then the interface, then publication.
@@ -1166,6 +1218,13 @@ impl Live {
     /// seam enforces it, because the model's pass is what clears the target
     /// and the type only offers a view to draw into afterwards.
     fn draw(&mut self, input: &ViewportInput, activity: Activity<'_>) -> Result<Chosen> {
+        // Read before the frame borrows the renderer, and owned rather than
+        // borrowed for the same reason. One small clone per frame, and only
+        // while something is chosen: the alternative is a second copy of the
+        // selection kept in step by hand.
+        let selected = self.chosen().cloned();
+        let identity = selected.as_ref().map(identity_of).unwrap_or_default();
+
         let Some(frame) = self.surface.begin(&mut self.renderer)? else {
             // No area, nobody watching, or the compositor was busy. None of
             // those is an error.
@@ -1181,6 +1240,14 @@ impl Live {
             // place for that is what stops a button and a keystroke drifting
             // apart.
             chosen = ferritecad_ui::toolbar(ui, activity);
+            ui.separator();
+            // Read-only, and the only place the choice is described. What it
+            // is allowed to say is decided by `Selected`, which cannot name
+            // anything that means something only to this frame.
+            ferritecad_ui::selection_inspector(
+                ui,
+                selected.as_ref().map(|entry| describe(entry, &identity)),
+            );
         });
         self.egui_state
             .handle_platform_output(&self.window, output.platform_output);
@@ -1310,6 +1377,16 @@ mod tests {
 
     /// A picture with nothing catalogued, for tests that only look at where
     /// the camera ends up.
+    /// One catalogue entry naming a body nobody else names.
+    fn a_body() -> CatalogueEntry {
+        CatalogueEntry {
+            item: SceneItem::Body(ferritecad_types::ObjectId::new()),
+            name: Some("Plate".to_owned()),
+            source_file: None,
+            solids: None,
+        }
+    }
+
     fn loaded(snapshot: RenderSnapshot) -> LoadedScene {
         LoadedScene {
             snapshot,
@@ -1319,6 +1396,28 @@ mod tests {
 
     fn distant_scene() -> RenderSnapshot {
         scene_at(900.0)
+    }
+
+    /// The triangle `scene_at` packs, on its own.
+    fn distant_scene_mesh() -> ferritecad_kernel::Mesh {
+        use ferritecad_kernel::{Mesh, MeshFaceRange, SessionId, ShapeHandle, SubShapeKind};
+
+        let mut mesh = Mesh::default();
+        mesh.positions
+            .extend_from_slice(&[0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0, 0.0]);
+        mesh.normals
+            .extend_from_slice(&[0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
+        mesh.indices.extend_from_slice(&[0, 1, 2]);
+        mesh.faces.push(MeshFaceRange {
+            face: ferritecad_kernel::SubShapeHandle::new(
+                ShapeHandle::new(SessionId::new(), 1),
+                SubShapeKind::Face,
+                0,
+            ),
+            first_index: 0,
+            index_count: 3,
+        });
+        mesh
     }
 
     /// One triangle, somewhere nobody else is.
@@ -1954,7 +2053,7 @@ mod tests {
             .pick;
         let old = LiveScene {
             prepared: (),
-            catalogue: vec![SceneItem::Body(ferritecad_types::ObjectId::new())],
+            catalogue: vec![a_body()],
             selection: chosen,
         };
         assert_eq!(old.selection, chosen, "the gate began with no choice");
@@ -1963,9 +2062,182 @@ mod tests {
         // the same deterministic snapshot identity while its catalogue names
         // another object. Replacing all three pieces through the constructor
         // is what prevents the old raw definition number from retargeting.
-        let replacement =
-            LiveScene::new((), vec![SceneItem::Body(ferritecad_types::ObjectId::new())]);
+        let replacement = LiveScene::new((), vec![a_body()]);
         assert_eq!(replacement.selection, PickId::NOTHING);
+    }
+
+    #[test]
+    fn a_load_that_failed_leaves_the_picture_and_the_choice_alone() {
+        let picture = distant_scene();
+        let chosen = picture
+            .draws()
+            .first()
+            .expect("the picture draws something")
+            .pick;
+        let mine = a_body();
+        let mut scene = LiveScene {
+            prepared: (),
+            catalogue: vec![mine.clone()],
+            selection: chosen,
+        };
+        let mut camera = ViewportInput::new();
+        camera.resize(800, 600);
+        let framing = *camera.camera();
+
+        // A document that could not be read changes nothing that is on screen,
+        // and that includes what the user had chosen in it. Going blank, or
+        // quietly unchoosing, would both lose work while they read the message.
+        let error = commit_scene(
+            &mut scene,
+            &mut camera,
+            Err(CadError::input("this is not a document")),
+        )
+        .expect_err("a failed load must not commit a picture");
+        assert!(error.to_string().contains("not a document"));
+        assert_eq!(scene.selection, chosen);
+        assert_eq!(scene.catalogue, vec![mine]);
+        assert_eq!(*camera.camera(), framing);
+    }
+
+    #[test]
+    fn a_load_that_arrived_replaces_the_picture_and_unchooses() {
+        let picture = distant_scene();
+        let chosen = picture
+            .draws()
+            .first()
+            .expect("the picture draws something")
+            .pick;
+        let mut scene = LiveScene {
+            prepared: (),
+            catalogue: vec![a_body()],
+            selection: chosen,
+        };
+        let mut camera = ViewportInput::new();
+        camera.resize(800, 600);
+
+        let arriving = a_body();
+        let mut framed = ViewportInput::new();
+        framed.resize(640, 480);
+
+        commit_scene(
+            &mut scene,
+            &mut camera,
+            Ok((framed, (), vec![arriving.clone()])),
+        )
+        .expect("a load that arrived commits");
+
+        // All four together: the picture, what its parts are, the choice made
+        // in the old one, and the camera that frames the new one.
+        assert_eq!(scene.catalogue, vec![arriving]);
+        assert_eq!(scene.selection, PickId::NOTHING);
+        assert_eq!(camera.camera().width(), 640);
+    }
+
+    #[test]
+    fn what_is_chosen_is_resolved_through_this_picture_and_no_other() {
+        let picture = distant_scene();
+        let elsewhere = scene_at(50.0);
+        let mine = a_body();
+        let scene = LiveScene {
+            prepared: (),
+            catalogue: vec![mine.clone()],
+            selection: picture
+                .draws()
+                .first()
+                .expect("the picture draws something")
+                .pick,
+        };
+
+        // Two lookups and no search: this snapshot names the definition, this
+        // catalogue says what it is. Nothing falls back to a name, because
+        // names repeat.
+        assert_eq!(scene.chosen(&picture), Some(&mine));
+
+        // The same raw number in another picture is another definition, and
+        // this one declines to answer for it.
+        assert_eq!(
+            scene.chosen(&elsewhere),
+            None,
+            "a choice made in another picture was answered from this catalogue"
+        );
+
+        // A catalogue that does not run that far answers nothing rather than
+        // whatever is at the end of it.
+        let short = LiveScene {
+            prepared: (),
+            catalogue: Vec::new(),
+            selection: scene.selection,
+        };
+        assert_eq!(short.chosen(&picture), None);
+    }
+
+    #[test]
+    fn clicking_the_background_clears_the_inspector_as_well_as_the_highlight() {
+        let picture = distant_scene();
+        let mut scene = LiveScene {
+            prepared: (),
+            catalogue: vec![a_body()],
+            selection: picture
+                .draws()
+                .first()
+                .expect("the picture draws something")
+                .pick,
+        };
+        assert!(scene.chosen(&picture).is_some());
+
+        // One value answers both halves, so the highlight and the inspector
+        // cannot disagree about whether anything is chosen.
+        scene.selection = selection_from(PickId::NOTHING, &picture);
+        assert_eq!(scene.selection, PickId::NOTHING);
+        assert_eq!(scene.chosen(&picture), None);
+    }
+
+    #[test]
+    fn four_placements_of_one_definition_are_one_choice() {
+        // A definition drawn four times, as an imported pattern is.
+        let mut builder = SnapshotBuilder::new();
+        let mesh = builder
+            .add_mesh(&distant_scene_mesh())
+            .expect("the mesh is valid");
+        for x in 0..4 {
+            builder
+                .place(
+                    mesh,
+                    None,
+                    &ferritecad_types::Transform::from_translation(
+                        ferritecad_types::Vec3::new(f64::from(x) * 20.0, 0.0, 0.0).expect("finite"),
+                    )
+                    .expect("finite"),
+                    [0.5, 0.5, 0.5],
+                )
+                .expect("places it");
+        }
+        let picture = builder.build();
+        assert_eq!(picture.draws().len(), 4);
+
+        let entry = CatalogueEntry {
+            item: SceneItem::Imported(
+                ferritecad_document::ImportedDefinitionRef::new(
+                    ferritecad_types::ImportedSourceId::new(),
+                    "step.product_definition#39",
+                )
+                .expect("a key names something"),
+            ),
+            name: Some("Bolt".to_owned()),
+            source_file: Some("04-instance-colours.step".to_owned()),
+            solids: Some(1),
+        };
+
+        // Clicking any of the four gives the same answer, because a pick names
+        // the definition and never the placement.
+        for draw in picture.draws() {
+            let scene = LiveScene {
+                prepared: (),
+                catalogue: vec![entry.clone()],
+                selection: draw.pick,
+            };
+            assert_eq!(scene.chosen(&picture), Some(&entry));
+        }
     }
 
     #[test]

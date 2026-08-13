@@ -58,7 +58,64 @@ use serde::{Deserialize, Serialize};
 pub struct LoadedScene {
     pub snapshot: RenderSnapshot,
     /// What each packed mesh is, indexed the way the snapshot indexes them.
-    pub catalogue: Vec<SceneItem>,
+    pub catalogue: Vec<CatalogueEntry>,
+}
+
+/// One drawn definition: what it is, and what to call it.
+///
+/// The two are not the same thing and are not stored the same way. `item` is
+/// the identity and is the only part that serialises; everything beside it was
+/// read while loading so a person can be told what they chose, and none of it
+/// may be matched on. Names are not unique – two bodies may be called the same
+/// thing, and two files may each contain a `Part` – so a viewer that found a
+/// definition by its name would sometimes find the wrong one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatalogueEntry {
+    /// What this is, in terms a document could store.
+    pub item: SceneItem,
+    /// What the document or the file called it. Empty names are dropped
+    /// rather than shown as blank, and nothing is invented for the rest.
+    pub name: Option<String>,
+    /// The file an imported definition came from, by name.
+    ///
+    /// A name to read, never a path to open: the bytes in the document are the
+    /// source, and the place they were read from years ago may hold something
+    /// else entirely by now. Reduced to its last component even when the
+    /// document recorded more, so a window cannot put somebody's home
+    /// directory on screen.
+    pub source_file: Option<String>,
+    /// How many solids the definition holds, as the importer counted them.
+    pub solids: Option<u32>,
+}
+
+impl CatalogueEntry {
+    /// A body of this document.
+    fn body(object: ObjectId, name: Option<String>) -> Self {
+        Self {
+            item: SceneItem::Body(object),
+            name: name.filter(|name| !name.trim().is_empty()),
+            source_file: None,
+            solids: None,
+        }
+    }
+}
+
+/// The last component of whatever provenance the document recorded.
+///
+/// The field is a hint for a person and nothing opens it, but a document
+/// written elsewhere may hold a whole path in it, and a viewport is not the
+/// place to display one.
+fn file_name_of(recorded: Option<&str>) -> Option<String> {
+    let recorded = recorded?.trim();
+    if recorded.is_empty() {
+        return None;
+    }
+    let name = recorded
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(recorded)
+        .trim();
+    (!name.is_empty()).then(|| name.to_owned())
 }
 
 /// What one drawn definition is, in terms that outlive this reading.
@@ -136,7 +193,7 @@ where
     // handed back in one place whatever the outcome.
     let snapshot = (|| -> Result<LoadedScene> {
         let mut builder = SnapshotBuilder::new();
-        let mut catalogue: Vec<SceneItem> = Vec::new();
+        let mut catalogue: Vec<CatalogueEntry> = Vec::new();
         let objects = document.objects()?;
 
         // Counted before anything is drawn, so each one can say what fraction
@@ -178,11 +235,15 @@ where
                     // indexed the way the snapshot is by construction rather
                     // than by two loops agreeing.
                     debug_assert_eq!(definition, catalogue.len());
-                    catalogue.push(SceneItem::Body(object.id));
+                    catalogue.push(CatalogueEntry::body(object.id, object.name.clone()));
                     builder.place(definition, None, &Transform::IDENTITY, BODY_COLOUR)?;
                 }
 
-                ObjectPayload::ImportedStep(_) => {
+                ObjectPayload::ImportedStep(stored) => {
+                    // Read from the record already in hand rather than by
+                    // asking the document again: the other route would fetch
+                    // the whole source blob to learn one short string.
+                    let source_file = file_name_of(stored.source_name.as_deref());
                     // Scoped so the borrow ends before the kernel is needed
                     // for meshing. A refusal here releases what it built; what
                     // it returns is this function's to give back.
@@ -198,7 +259,10 @@ where
                         &mut builder,
                         &mut catalogue,
                         kernel,
-                        reopened.source(),
+                        Provenance {
+                            source: reopened.source(),
+                            file: source_file,
+                        },
                         &reopened.scene,
                         params,
                         &scoped,
@@ -221,6 +285,12 @@ where
     snapshot
 }
 
+/// Where an imported scene came from: its identity, and what to call it.
+struct Provenance {
+    source: ImportedSourceId,
+    file: Option<String>,
+}
+
 /// Adds an imported scene to the picture being built.
 ///
 /// # Only the leaves carry geometry
@@ -240,9 +310,9 @@ where
 /// still in hand.
 fn draw_scene<K: GeometryKernel + ?Sized>(
     builder: &mut SnapshotBuilder,
-    catalogue: &mut Vec<SceneItem>,
+    catalogue: &mut Vec<CatalogueEntry>,
     kernel: &mut K,
-    source: ImportedSourceId,
+    from: Provenance,
     scene: &Scene,
     params: &TessellationParams,
     context: &OperationContext,
@@ -322,10 +392,15 @@ fn draw_scene<K: GeometryKernel + ?Sized>(
                 // source it belongs to. `#31` in one file is not `#31` in
                 // another, which is why neither half travels alone.
                 debug_assert_eq!(packed, catalogue.len());
-                catalogue.push(SceneItem::Imported(ImportedDefinitionRef::new(
-                    source,
-                    definition.key.clone(),
-                )?));
+                catalogue.push(CatalogueEntry {
+                    item: SceneItem::Imported(ImportedDefinitionRef::new(
+                        from.source,
+                        definition.key.clone(),
+                    )?),
+                    name: Some(definition.name.clone()).filter(|name| !name.trim().is_empty()),
+                    source_file: from.file.clone(),
+                    solids: Some(definition.solids),
+                });
                 meshes.insert(instance.definition, packed);
                 packed
             }
@@ -535,11 +610,14 @@ mod tests {
                         dependency: sketch,
                         role: DependencyRole::Profile,
                     })?;
+                    // Every one of them called the same thing. A document is
+                    // entitled to allow that, so the tests here are entitled
+                    // to depend on it.
                     w.put_object(
                         body,
                         None,
                         ordinal + 3,
-                        None,
+                        Some("Plate"),
                         &ObjectPayload::Body(Body {
                             tip_feature: Some(extrude),
                         }),
@@ -822,7 +900,7 @@ mod tests {
             .snapshot
             .draws()
             .iter()
-            .map(|item| &loaded.catalogue[item.mesh])
+            .map(|item| &loaded.catalogue[item.mesh].item)
             .collect();
         assert_eq!(entries.len(), 4);
         assert!(entries.windows(2).all(|pair| pair[0] == pair[1]));
@@ -833,6 +911,18 @@ mod tests {
             unreachable!("an imported definition was catalogued as a native body")
         };
         assert_eq!(reference.definition_key(), "step.product_definition#58");
+
+        // Beside the identity, what a person needs to recognise it: the file's
+        // own name for the definition, the file it came from by name, and how
+        // many solids it holds. None of these is matched on – all four cubes
+        // are called `Cube`, and so might a definition in another file be.
+        let facts = &loaded.catalogue[loaded.snapshot.draws()[0].mesh];
+        assert_eq!(facts.name.as_deref(), Some("Cube"));
+        assert_eq!(
+            facts.source_file.as_deref(),
+            Some("03-nested-assembly.step")
+        );
+        assert_eq!(facts.solids, Some(1));
 
         // The document that stored the import is the source it names, so a
         // reference taken from a picture resolves in the document it came from.
@@ -866,12 +956,161 @@ mod tests {
             .snapshot
             .draws()
             .iter()
-            .map(|item| loaded.catalogue[item.mesh].clone())
+            .map(|item| loaded.catalogue[item.mesh].item.clone())
             .collect();
         assert_eq!(
             named,
             bodies.into_iter().map(SceneItem::Body).collect::<Vec<_>>(),
             "the catalogue does not name the bodies that were drawn"
+        );
+
+        // A body's display facts are the document's own name for it and
+        // nothing else: it came from no file and holds no counted solids.
+        let facts = &loaded.catalogue[0];
+        assert_eq!(facts.name.as_deref(), Some("Plate"));
+        assert_eq!(facts.source_file, None);
+        assert_eq!(facts.solids, None);
+    }
+
+    /// A document holding two imports whose files reuse the same key.
+    ///
+    /// Not a contrivance: `#31` is a position in a file, and the corpus's own
+    /// `01-single-part.step` and `02-flat-assembly.step` both contain
+    /// `step.product_definition#5`.
+    fn document_with_two_sources(path: &Path, kernel: &mut MockKernel) -> (ObjectId, ObjectId) {
+        let mut document = Document::create(path).expect("creates a document");
+        let mut store = |name: &str, bytes: &[u8], part: &str| {
+            let import = Import::Imported {
+                scene: one_part(kernel, part),
+                diagnostics: Vec::new(),
+            };
+            let object = ObjectId::new();
+            document
+                .store_step_import(StepImportRequest {
+                    object,
+                    name: Some(part),
+                    source: bytes,
+                    source_name: Some(name),
+                    import: &import,
+                    importer: kernel.identity(),
+                })
+                .expect("stores the import");
+            for shape in import.scene().expect("a scene was stored").shapes() {
+                kernel.release(shape);
+            }
+            object
+        };
+
+        // One of them recorded with the whole path it was read from, which a
+        // document written by another tool is entitled to do, and which a
+        // window must not put on screen.
+        let first = store(
+            "/home/someone/models/left.step",
+            b"ISO-10303-21; the first file",
+            "Bracket",
+        );
+        let second = store("right.step", b"ISO-10303-21; the second file", "Bracket");
+        (first, second)
+    }
+
+    /// One definition, one placement, under a key every file numbers alike.
+    fn one_part(kernel: &mut MockKernel, name: &str) -> Scene {
+        Scene {
+            source_unit: "MILLIMETRE".to_owned(),
+            schema: "AP214".to_owned(),
+            definitions: vec![definition(kernel, name, 1, "step.product_definition#5")],
+            instances: vec![instance(
+                0,
+                None,
+                [0.0, 0.0, 0.0],
+                ColourSource::None,
+                [0.0; 3],
+            )],
+        }
+    }
+
+    #[test]
+    fn one_key_in_two_files_names_two_different_things() {
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("two-sources.fcad");
+        let mut kernel = MockKernel::new();
+        document_with_two_sources(&path, &mut kernel);
+
+        let loaded = snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel, _| {
+                // Both files call their part `Bracket` and number it `#5`,
+                // exactly as two real files may. Nothing here distinguishes
+                // them, which is the point: only the source does.
+                Ok(Import::Imported {
+                    scene: one_part(kernel, "Bracket"),
+                    diagnostics: Vec::new(),
+                })
+            },
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("both imports reopen");
+
+        assert_eq!(loaded.catalogue.len(), 2, "two files, two definitions");
+        let keys: Vec<&str> = loaded
+            .catalogue
+            .iter()
+            .map(|entry| match &entry.item {
+                SceneItem::Imported(reference) => reference.definition_key(),
+                SceneItem::Body(_) => unreachable!("both entries came from a file"),
+            })
+            .collect();
+        assert_eq!(keys[0], keys[1], "the two files really do reuse one key");
+
+        // And the entries are still different things, because a key belongs to
+        // the file that issued it. Nothing here compares names: both parts are
+        // called `Bracket`, which is legal and says nothing.
+        assert_ne!(
+            loaded.catalogue[0].item, loaded.catalogue[1].item,
+            "one key in two files was taken for one definition"
+        );
+        assert_eq!(loaded.catalogue[0].name, loaded.catalogue[1].name);
+        assert_eq!(
+            loaded.catalogue[0].source_file.as_deref(),
+            Some("left.step")
+        );
+        assert_eq!(
+            loaded.catalogue[1].source_file.as_deref(),
+            Some("right.step")
+        );
+
+        assert_eq!(kernel.live_shape_count(), 0);
+    }
+
+    #[test]
+    fn two_bodies_may_share_a_name_and_are_still_two_bodies() {
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("twins.fcad");
+        let bodies = several_bodies(&path, 2);
+
+        assert_eq!(bodies.len(), 2);
+
+        let mut kernel = MockKernel::new();
+        let loaded = snapshot_of(
+            &path,
+            &mut kernel,
+            no_imports,
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("the document loads");
+
+        assert_eq!(
+            loaded.catalogue[0].name.as_deref(),
+            Some("Plate"),
+            "the name the document gave it was not carried"
+        );
+        assert_eq!(loaded.catalogue[0].name, loaded.catalogue[1].name);
+        assert_ne!(
+            loaded.catalogue[0].item, loaded.catalogue[1].item,
+            "two bodies with one name were taken for one body"
         );
     }
 
@@ -1169,7 +1408,10 @@ mod tests {
             &mut builder,
             &mut catalogue,
             &mut kernel,
-            ImportedSourceId::new(),
+            Provenance {
+                source: ImportedSourceId::new(),
+                file: None,
+            },
             &scene,
             &params(),
             &context,
