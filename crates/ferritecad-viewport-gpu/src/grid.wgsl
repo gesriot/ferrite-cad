@@ -64,6 +64,7 @@ fn vertex_main(@builtin(vertex_index) vertex: u32) -> VertexOut {
 struct FragmentOut {
     @location(0) colour: vec4<f32>,
     @location(1) pick: u32,
+    @location(2) face: u32,
 };
 
 @fragment
@@ -91,5 +92,7 @@ fn fragment_main(in: VertexOut) -> FragmentOut {
     // choose, so clicking one is clicking the background, and this is where
     // that is true rather than somewhere that could forget it.
     out.pick = 0u;
+    // And never a face, for the same reason: there is no surface here to name.
+    out.face = 0u;
     return out;
 }
