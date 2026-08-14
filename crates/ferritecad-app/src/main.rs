@@ -883,6 +883,36 @@ fn isolate_selected(
     true
 }
 
+/// Takes back the last change to what is drawn, and forgets the old frame.
+///
+/// Visibility only: it restores what was on screen, not what was chosen. A
+/// selection that is still drawn survives exactly; one whose definition has
+/// gone back off screen is cleared, for the same reason hiding it clears it.
+/// There is no old selection here to put back, and no argument through which
+/// one could arrive.
+///
+/// The camera is not an argument either. What the pointer was over, and any
+/// click, question or gesture in flight, belong to the frame being replaced.
+fn undo_visibility(
+    visibility: &mut Visibility,
+    selection: &mut Selection,
+    hovered: &mut Marked,
+    snapshot: &RenderSnapshot,
+    input: &mut ViewportInput,
+) -> bool {
+    if !visibility.undo(snapshot) {
+        return false;
+    }
+    if let Some(definition) = selection.owning_definition(snapshot)
+        && !visibility.shows(definition, snapshot)
+    {
+        *selection = Selection::Nothing;
+    }
+    *hovered = Marked::Nothing;
+    input.forget_pending();
+    true
+}
+
 /// What each row of this list can offer about whether it is drawn.
 ///
 /// One entry per row, in the order the picture packs them, and one offer per
@@ -1375,6 +1405,10 @@ impl ApplicationHandler<AppEvent> for App {
                     can_hide: can_hide_selection(&live.scene, live.scene.prepared.snapshot()),
                     can_show_all: live.scene.visibility.anything_hidden(),
                     can_isolate: can_isolate_selection(&live.scene, live.scene.prepared.snapshot()),
+                    can_undo_visibility: live
+                        .scene
+                        .visibility
+                        .can_undo(live.scene.prepared.snapshot()),
                 };
                 match live.draw(&self.input, activity) {
                     // A button pressed during this frame reaches the camera
@@ -1434,6 +1468,9 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if chosen.show_all {
                             self.show_everything();
+                        }
+                        if chosen.undo_visibility {
+                            self.undo_last_visibility();
                         }
                         // Asked after the frame that was clicked has been
                         // published, and only when somebody clicked: answering
@@ -1727,6 +1764,21 @@ impl App {
             &mut scene.hovered,
             scene.prepared.snapshot(),
             requested,
+            &mut self.input,
+        );
+    }
+
+    /// Takes back the last change to what is drawn.
+    fn undo_last_visibility(&mut self) {
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+        let scene = &mut live.scene;
+        undo_visibility(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            scene.prepared.snapshot(),
             &mut self.input,
         );
     }
@@ -3733,6 +3785,15 @@ mod tests {
     /// the second body is what makes isolating something that would change the
     /// picture. Written into a copy, never into the checkout.
     fn plate_and_a_second_body() -> (tempfile::TempDir, LoadedScene) {
+        plate_and_more_bodies(1)
+    }
+
+    /// The committed plate with `extra` unnamed bodies beside it.
+    ///
+    /// The plate brings durable face names, so a face can really be chosen;
+    /// the others are what make hiding and undoing something that changes the
+    /// picture. Written into a copy, never into the checkout.
+    fn plate_and_more_bodies(extra: usize) -> (tempfile::TempDir, LoadedScene) {
         use ferritecad_document::{
             Body, Dependency, DependencyRole, EndCondition, Expression, Extrude, ObjectPayload,
             Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
@@ -3752,72 +3813,82 @@ mod tests {
             .find(|object| matches!(object.payload, ObjectPayload::DatumPlane(_)))
             .expect("the plate is sketched on a plane")
             .id;
-        let (sketch, extrude, body) = (ObjectId::new(), ObjectId::new(), ObjectId::new());
-        let corners = [(100.0, 0.0), (140.0, 0.0), (140.0, 30.0), (100.0, 30.0)];
         document
             .write(|w| {
-                let mut curves = Vec::new();
-                for index in 0..corners.len() {
-                    let (sx, sy) = corners[index];
-                    let (ex, ey) = corners[(index + 1) % corners.len()];
-                    curves.push(SketchCurve {
-                        id: StableEntityId::new(),
-                        construction: false,
-                        geometry: SketchGeometry::Line {
-                            start: Point2::new(sx, sy)?,
-                            end: Point2::new(ex, ey)?,
-                        },
-                    });
+                for extra in 0..extra {
+                    let (sketch, extrude, body) =
+                        (ObjectId::new(), ObjectId::new(), ObjectId::new());
+                    let left = 100.0 + extra as f64 * 50.0;
+                    let corners = [
+                        (left, 0.0),
+                        (left + 40.0, 0.0),
+                        (left + 40.0, 30.0),
+                        (left, 30.0),
+                    ];
+                    let ordinal = 100 + extra as i64 * 3;
+                    let mut curves = Vec::new();
+                    for index in 0..corners.len() {
+                        let (sx, sy) = corners[index];
+                        let (ex, ey) = corners[(index + 1) % corners.len()];
+                        curves.push(SketchCurve {
+                            id: StableEntityId::new(),
+                            construction: false,
+                            geometry: SketchGeometry::Line {
+                                start: Point2::new(sx, sy)?,
+                                end: Point2::new(ex, ey)?,
+                            },
+                        });
+                    }
+                    w.put_object(
+                        sketch,
+                        None,
+                        ordinal,
+                        None,
+                        &ObjectPayload::Sketch(Sketch { plane, curves }),
+                    )?;
+                    w.add_dependency(Dependency {
+                        dependent: sketch,
+                        dependency: plane,
+                        role: DependencyRole::Plane,
+                    })?;
+                    w.put_object(
+                        extrude,
+                        None,
+                        ordinal + 1,
+                        None,
+                        &ObjectPayload::Extrude(Extrude {
+                            profile: sketch,
+                            end_condition: EndCondition::Blind {
+                                distance: Expression::constant(4.0)?,
+                            },
+                            reversed: false,
+                            operation: SolidOperation::NewBody,
+                            target_body: None,
+                        }),
+                    )?;
+                    w.add_dependency(Dependency {
+                        dependent: extrude,
+                        dependency: sketch,
+                        role: DependencyRole::Profile,
+                    })?;
+                    w.put_object(
+                        body,
+                        None,
+                        ordinal + 2,
+                        Some("Bracket"),
+                        &ObjectPayload::Body(Body {
+                            tip_feature: Some(extrude),
+                        }),
+                    )?;
+                    w.add_dependency(Dependency {
+                        dependent: body,
+                        dependency: extrude,
+                        role: DependencyRole::BodyTip,
+                    })?;
                 }
-                w.put_object(
-                    sketch,
-                    None,
-                    100,
-                    None,
-                    &ObjectPayload::Sketch(Sketch { plane, curves }),
-                )?;
-                w.add_dependency(Dependency {
-                    dependent: sketch,
-                    dependency: plane,
-                    role: DependencyRole::Plane,
-                })?;
-                w.put_object(
-                    extrude,
-                    None,
-                    101,
-                    None,
-                    &ObjectPayload::Extrude(Extrude {
-                        profile: sketch,
-                        end_condition: EndCondition::Blind {
-                            distance: Expression::constant(4.0)?,
-                        },
-                        reversed: false,
-                        operation: SolidOperation::NewBody,
-                        target_body: None,
-                    }),
-                )?;
-                w.add_dependency(Dependency {
-                    dependent: extrude,
-                    dependency: sketch,
-                    role: DependencyRole::Profile,
-                })?;
-                w.put_object(
-                    body,
-                    None,
-                    102,
-                    Some("Bracket"),
-                    &ObjectPayload::Body(Body {
-                        tip_feature: Some(extrude),
-                    }),
-                )?;
-                w.add_dependency(Dependency {
-                    dependent: body,
-                    dependency: extrude,
-                    role: DependencyRole::BodyTip,
-                })?;
                 Ok(())
             })
-            .expect("writes the second body");
+            .expect("writes the extra bodies");
         drop(document);
 
         let scene = snapshot_of(
@@ -3830,7 +3901,11 @@ mod tests {
             &ferritecad_kernel::OperationContext::default(),
         )
         .expect("the document loads");
-        assert_eq!(scene.snapshot.meshes().len(), 2, "two bodies were written");
+        assert_eq!(
+            scene.snapshot.meshes().len(),
+            extra + 1,
+            "the plate and its neighbours were written"
+        );
         (directory, scene)
     }
 
@@ -4930,6 +5005,506 @@ mod tests {
         .expect("a load that arrived commits");
         assert!(!scene.visibility.anything_hidden());
         assert_eq!(scene.selection, Selection::Nothing);
+    }
+
+    #[test]
+    fn all_five_ways_of_changing_what_is_drawn_can_be_taken_back() {
+        let picture = three_definitions();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let chosen = Selection::Definition(picture.pick_of(1).expect("drawn"));
+
+        // Each entry point in turn, from a fresh arrangement, and each taken
+        // back to exactly what it replaced. One rule, five doors into it.
+        for door in 0..5 {
+            let mut visibility = Visibility::new(&picture);
+            let mut selection = chosen.clone();
+            let mut hovered = Marked::Nothing;
+            if door >= 3 {
+                // Show one and Show all need something already missing.
+                assert!(hide_one(
+                    &mut visibility,
+                    &mut Selection::Nothing,
+                    &mut Marked::Nothing,
+                    &picture,
+                    picture.pick_of(0).expect("drawn"),
+                    &mut input
+                ));
+            }
+            let before = visibility.hidden_in(&picture).to_vec();
+
+            let happened = match door {
+                0 => hide_selected(
+                    &mut visibility,
+                    &mut selection,
+                    &mut hovered,
+                    &picture,
+                    &mut input,
+                ),
+                1 => hide_one(
+                    &mut visibility,
+                    &mut selection,
+                    &mut hovered,
+                    &picture,
+                    picture.pick_of(2).expect("drawn"),
+                    &mut input,
+                ),
+                2 => isolate_selected(
+                    &mut visibility,
+                    &selection,
+                    &mut hovered,
+                    &picture,
+                    &mut input,
+                ),
+                3 => show_one(
+                    &mut visibility,
+                    &mut hovered,
+                    &picture,
+                    picture.pick_of(0).expect("drawn"),
+                    &mut input,
+                ),
+                _ => show_all(&mut visibility, &mut hovered, &mut input),
+            };
+            assert!(
+                happened,
+                "door {door} did nothing, so the gate proves nothing"
+            );
+            assert_ne!(visibility.hidden_in(&picture), before.as_slice());
+
+            assert!(
+                undo_visibility(
+                    &mut visibility,
+                    &mut selection,
+                    &mut hovered,
+                    &picture,
+                    &mut input
+                ),
+                "door {door} left nothing to take back"
+            );
+            assert_eq!(
+                visibility.hidden_in(&picture),
+                before.as_slice(),
+                "door {door} was not taken back to what it replaced"
+            );
+        }
+    }
+
+    #[test]
+    fn taking_back_a_change_does_not_put_back_what_it_unchose() {
+        let picture = three_definitions();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+
+        // Hiding what is chosen unchooses it. Taking the change back puts the
+        // geometry on screen; it does not decide that it is what the user is
+        // working on again.
+        scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
+        assert!(hide_selected(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+        assert_eq!(scene.selection, Selection::Nothing);
+
+        assert!(undo_visibility(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+        assert!(scene.visibility.shows(1, &picture));
+        assert_eq!(
+            scene.selection,
+            Selection::Nothing,
+            "taking back a change resurrected a choice it had cleared"
+        );
+
+        // And a choice made after the change is cleared if taking the change
+        // back puts its definition away again. Everything is drawn at this
+        // point, so the arrangement is built from there.
+        assert!(hide_one(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            picture.pick_of(0).expect("drawn"),
+            &mut input
+        ));
+        assert!(show_one(
+            &mut scene.visibility,
+            &mut scene.hovered,
+            &picture,
+            picture.pick_of(0).expect("drawn"),
+            &mut input
+        ));
+        scene.selection = Selection::Definition(picture.pick_of(0).expect("drawn"));
+        assert!(undo_visibility(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+        assert!(!scene.visibility.shows(0, &picture));
+        assert_eq!(
+            scene.selection,
+            Selection::Nothing,
+            "a choice on geometry that went back off screen stayed chosen"
+        );
+    }
+
+    #[test]
+    fn taking_back_a_change_forgets_the_frame_and_leaves_the_camera() {
+        let picture = three_definitions();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        assert!(hide_one(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            picture.pick_of(0).expect("drawn"),
+            &mut input
+        ));
+        scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
+        let chosen = scene.selection.clone();
+        scene.hovered = Marked::Definition(picture.pick_of(2).expect("drawn"));
+        let camera = input.camera().view_projection();
+
+        input.handle(ViewportEvent::PointerMoved { x: 4.0, y: 4.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        input.handle(ViewportEvent::PointerMoved { x: 9.0, y: 9.0 }, false);
+        let _ = input.take_redraw();
+
+        assert!(undo_visibility(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+
+        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(input.take_pick(), None, "a click survived the change");
+        assert_eq!(input.take_hover(), Hover::Cleared);
+        assert!(input.take_redraw(), "taking a change back owes a frame");
+        assert_eq!(
+            scene.selection, chosen,
+            "a choice still drawn was disturbed"
+        );
+        assert_eq!(input.camera().view_projection(), camera);
+
+        // A gesture belongs to that frame too. A separate reducer, because
+        // beginning a gesture clears a hover question.
+        let mut gesture = ViewportInput::new();
+        gesture.resize(800, 600);
+        gesture.handle(ViewportEvent::PointerMoved { x: 20.0, y: 20.0 }, false);
+        gesture.handle(
+            ViewportEvent::PointerPressed(PointerButton::Secondary),
+            false,
+        );
+        assert!(gesture.is_dragging());
+        assert!(hide_one(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            picture.pick_of(2).expect("drawn"),
+            &mut gesture
+        ));
+        assert!(undo_visibility(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut gesture
+        ));
+        assert!(!gesture.is_dragging(), "a gesture survived the change");
+    }
+
+    #[test]
+    fn an_undo_with_nothing_to_take_back_changes_absolutely_nothing() {
+        let picture = three_definitions();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
+        let chosen = scene.selection.clone();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let before = scene.visibility.clone();
+
+        // Real transient state belonging to this unchanged frame, not the
+        // absence of any, and a frame already owed.
+        scene.hovered = Marked::Definition(picture.pick_of(2).expect("drawn"));
+        let hovered = scene.hovered;
+        input.handle(ViewportEvent::PointerMoved { x: 4.0, y: 4.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        input.handle(ViewportEvent::PointerMoved { x: 9.0, y: 9.0 }, false);
+        let camera = input.camera().view_projection();
+
+        assert!(!scene.visibility.can_undo(&picture));
+        assert!(!undo_visibility(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+
+        assert_eq!(scene.visibility, before);
+        assert_eq!(scene.selection, chosen);
+        assert_eq!(scene.hovered, hovered, "a no-op cleared the current hover");
+        assert_eq!(
+            input.take_pick(),
+            Some((4.0, 4.0)),
+            "a no-op cleared a pending click"
+        );
+        assert_eq!(
+            input.take_hover(),
+            Hover::At(9.0, 9.0),
+            "a no-op cleared a pending hover question"
+        );
+        assert_eq!(
+            input.camera().view_projection(),
+            camera,
+            "a no-op moved the camera"
+        );
+        assert!(
+            input.take_redraw(),
+            "a no-op threw away a frame that was already owed"
+        );
+
+        // And a gesture survives it too.
+        let mut gesture = ViewportInput::new();
+        gesture.resize(800, 600);
+        gesture.handle(ViewportEvent::PointerMoved { x: 20.0, y: 20.0 }, false);
+        gesture.handle(
+            ViewportEvent::PointerPressed(PointerButton::Secondary),
+            false,
+        );
+        let _ = gesture.take_redraw();
+        assert!(!undo_visibility(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut gesture
+        ));
+        assert!(gesture.is_dragging(), "a no-op cancelled an active gesture");
+        assert!(!gesture.take_redraw(), "a no-op asked for a frame");
+    }
+
+    #[test]
+    fn a_document_opens_with_nothing_to_take_back_and_a_failed_open_keeps_it() {
+        let picture = three_definitions();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        assert!(hide_one(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            picture.pick_of(0).expect("drawn"),
+            &mut input
+        ));
+        let mask = scene.visibility.clone();
+        let chosen = scene.selection.clone();
+        assert!(scene.visibility.can_undo(&picture));
+
+        let mut camera = ViewportInput::new();
+        commit_scene(&mut scene, &mut camera, Err(CadError::input("no")))
+            .expect_err("a failed load commits nothing");
+        assert_eq!(
+            scene.visibility, mask,
+            "a failed load disturbed the mask or its record"
+        );
+        assert_eq!(scene.selection, chosen);
+        assert!(
+            scene.visibility.can_undo(&picture),
+            "a failed load threw away what could be taken back"
+        );
+
+        let next = three_definitions();
+        let mut framed = ViewportInput::new();
+        framed.resize(640, 480);
+        commit_scene(
+            &mut scene,
+            &mut camera,
+            Ok((
+                framed,
+                (),
+                vec![a_body(), a_body(), a_body()],
+                FaceNames::default(),
+                Visibility::new(&next),
+            )),
+        )
+        .expect("a load that arrived commits");
+        assert!(!scene.visibility.anything_hidden());
+        assert!(
+            !scene.visibility.can_undo(&next),
+            "a document opened with a change from the last one to take back"
+        );
+        assert_eq!(scene.selection, Selection::Nothing);
+    }
+
+    #[test]
+    fn undo_restores_the_arrangement_one_accidental_hide_destroyed() {
+        // Four definitions: the plate, whose faces the document names, and
+        // three others. Each is drawn twice, so every claim below is about
+        // more than one placement.
+        let (_directory, scene) = plate_and_more_bodies(3);
+        let snapshot = &scene.snapshot;
+        assert_eq!(snapshot.meshes().len(), 4);
+        for definition in 0..4 {
+            assert!(
+                snapshot
+                    .pick_of(definition)
+                    .is_some_and(|pick| snapshot.bounds_of(pick).is_some()),
+                "definition {definition} draws nothing"
+            );
+        }
+
+        let mut visibility = Visibility::new(snapshot);
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+
+        // An arrangement worth keeping: two of the four already out of the
+        // way, chosen one at a time.
+        for definition in [2, 3] {
+            assert!(hide_one(
+                &mut visibility,
+                &mut Selection::Nothing,
+                &mut Marked::Nothing,
+                snapshot,
+                snapshot.pick_of(definition).expect("drawn"),
+                &mut input
+            ));
+        }
+        let arrangement = visibility.clone();
+        let before = visibility.bounds(snapshot);
+
+        // A face of the plate, chosen as that face, with what the document
+        // calls it.
+        let face = snapshot.face_of(0, 0).expect("numbered");
+        let mut chosen = Selection::at(
+            snapshot.pick_of(0).expect("drawn"),
+            face,
+            snapshot,
+            &scene.faces,
+        );
+        let Selection::Face(named) = &chosen else {
+            panic!("the plate's face is not named: {chosen:?}");
+        };
+        let meanings = named.meanings().to_vec();
+        let camera = input.camera().view_projection();
+
+        // The accident: Hide pressed on a different row, through the panel
+        // that draws it.
+        let context = egui::Context::default();
+        let identities = identities_of(&scene.catalogue);
+        let rows: Vec<Selected<'_>> = scene
+            .catalogue
+            .iter()
+            .zip(&identities)
+            .map(|(entry, identity)| describe(entry, identity))
+            .collect();
+        let offers = rows_visibility(&visibility, snapshot);
+        let asked = press_row_control(&context, &rows, None, &offers, 1);
+        let requested = match asked.visibility {
+            Some(RowVisibility::Hide(pick)) => pick,
+            other => panic!("the drawn row offers no way out: {other:?}"),
+        };
+        let mut hovered = Marked::Nothing;
+        assert!(hide_one(
+            &mut visibility,
+            &mut chosen,
+            &mut hovered,
+            snapshot,
+            requested,
+            &mut input
+        ));
+        assert_ne!(
+            visibility.hidden_in(snapshot),
+            arrangement.hidden_in(snapshot),
+            "the accident changed nothing"
+        );
+
+        // Show all is not the way back: it would return both distractions.
+        let mut everything = visibility.clone();
+        assert!(everything.show_all());
+        assert_ne!(
+            everything.hidden_in(snapshot),
+            arrangement.hidden_in(snapshot),
+            "showing everything is not what was there before"
+        );
+
+        // Undo is.
+        assert!(undo_visibility(
+            &mut visibility,
+            &mut chosen,
+            &mut hovered,
+            snapshot,
+            &mut input
+        ));
+
+        // Exactly the arrangement that was there, definition by definition,
+        // and the same extent it had. Compared by what is drawn rather than by
+        // the whole state: the record of how it got there is history, and
+        // history is not part of the picture.
+        assert_eq!(
+            visibility.hidden_in(snapshot),
+            arrangement.hidden_in(snapshot)
+        );
+        for definition in 0..4 {
+            assert_eq!(
+                visibility.shows(definition, snapshot),
+                arrangement.shows(definition, snapshot),
+                "definition {definition} came back differently"
+            );
+        }
+        assert_eq!(visibility.bounds(snapshot), before);
+
+        // The chosen face is still chosen, and still that face.
+        let Selection::Face(after) = &chosen else {
+            panic!("undoing a visibility change unchose the face: {chosen:?}");
+        };
+        assert_eq!(after.face(), face);
+        assert_eq!(after.meanings(), meanings.as_slice());
+        assert_eq!(input.camera().view_projection(), camera);
     }
 
     #[test]

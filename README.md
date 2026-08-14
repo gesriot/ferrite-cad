@@ -87,8 +87,12 @@ you were looking at; hiding the very thing that is chosen unchooses it, because
 geometry nobody can see cannot stay chosen. Any of these drops a click or
 pointer question recorded against the old picture, so geometry that has just
 arrived or just left cannot answer an interaction from a frame it was not in.
-The list keeps a row for what is hidden, marked as hidden. That is where you
-look when you wonder where something went. None of this touches the document,
+`Undo visibility` takes back the last of these changes, whichever it was, and
+puts the exact arrangement that preceded it back on screen. One level and no
+redo: it is a way out of one accidental press, not a history of the session,
+and it is deliberately not bound to a general undo key because it takes back
+nothing but what is drawn. The list keeps a row for what is hidden, marked as
+hidden. That is where you look when you wonder where something went. None of this touches the document,
 and none of it survives opening one: a file always opens with all of it on
 screen.
 

@@ -334,6 +334,17 @@ pub struct Visibility {
     /// Indexed by definition. Empty means every definition is drawn, which is
     /// what a picture nobody has hidden anything in looks like.
     hidden: Vec<bool>,
+    /// What `hidden` was immediately before the last change to it, or nothing
+    /// when there has been no change to take back.
+    ///
+    /// History and not a second mask: nothing draws from it and nothing
+    /// measures from it. It exists so that one accidental press does not
+    /// destroy an arrangement that took several deliberate ones to build.
+    ///
+    /// One level, and consumed when it is used. A stack would be a general
+    /// undo, which is a decision about the document and not about what this
+    /// window is showing at the moment.
+    previous: Option<Vec<bool>>,
     snapshot: ContentHash,
 }
 
@@ -344,6 +355,7 @@ impl Default for Visibility {
     fn default() -> Self {
         Self {
             hidden: Vec::new(),
+            previous: None,
             snapshot: ContentHash::from_bytes([0; 32]),
         }
     }
@@ -354,6 +366,7 @@ impl Visibility {
     pub fn new(snapshot: &RenderSnapshot) -> Self {
         Self {
             hidden: vec![false; snapshot.meshes.len()],
+            previous: None,
             snapshot: snapshot.identity,
         }
     }
@@ -415,8 +428,7 @@ impl Visibility {
         let Some(definition) = self.hideable_definition(mark, snapshot) else {
             return false;
         };
-        self.hidden[definition] = true;
-        true
+        self.change(|hidden| hidden[definition] = true)
     }
 
     /// Whether Isolate would remove any geometry from this picture.
@@ -450,10 +462,11 @@ impl Visibility {
         if others.is_empty() {
             return false;
         }
-        for definition in others {
-            self.hidden[definition] = true;
-        }
-        true
+        self.change(|hidden| {
+            for definition in others {
+                hidden[definition] = true;
+            }
+        })
     }
 
     /// Whether this mark names a definition that could come back on screen.
@@ -480,17 +493,42 @@ impl Visibility {
         let Some(definition) = self.showable_definition(mark, snapshot) else {
             return false;
         };
-        self.hidden[definition] = false;
+        self.change(|hidden| hidden[definition] = false)
+    }
+
+    /// Whether the last change to what is drawn can be taken back.
+    ///
+    /// Answered for the picture on screen: history belongs to the mask that
+    /// recorded it, and a mask that is not this picture's has nothing to say
+    /// about it.
+    pub fn can_undo(&self, snapshot: &RenderSnapshot) -> bool {
+        self.snapshot == snapshot.identity && self.previous.is_some()
+    }
+
+    /// Puts back what was drawn before the last change, and says whether that
+    /// happened.
+    ///
+    /// Exactly the previous arrangement, not an approximation of it and not
+    /// everything: what was hidden before the last press is hidden again, and
+    /// what was drawn is drawn again.
+    ///
+    /// One level, and the record is consumed. Pressing this twice does not
+    /// oscillate between two pictures and does not redo: the second press has
+    /// nothing to take back and says so.
+    pub fn undo(&mut self, snapshot: &RenderSnapshot) -> bool {
+        if self.snapshot != snapshot.identity {
+            return false;
+        }
+        let Some(previous) = self.previous.take() else {
+            return false;
+        };
+        self.hidden = previous;
         true
     }
 
     /// Draws everything again, and says whether that changed anything.
     pub fn show_all(&mut self) -> bool {
-        if !self.anything_hidden() {
-            return false;
-        }
-        self.hidden.fill(false);
-        true
+        self.change(|hidden| hidden.fill(false))
     }
 
     /// Where everything still drawn is, taken together.
@@ -508,6 +546,23 @@ impl Visibility {
             extent.include(&snapshot.meshes[item.mesh], item);
         }
         extent.bounds()
+    }
+
+    /// Applies one change to what is drawn, and records what it replaced.
+    ///
+    /// The single place any of these operations may write the mask, which is
+    /// what makes "every change can be taken back, and nothing else disturbs
+    /// the record" one rule rather than five. A change that turns out to alter
+    /// nothing is not a change: it writes no history, so an operation that
+    /// found nothing to do cannot destroy the record of the one before it.
+    fn change(&mut self, apply: impl FnOnce(&mut Vec<bool>)) -> bool {
+        let before = self.hidden.clone();
+        apply(&mut self.hidden);
+        if self.hidden == before {
+            return false;
+        }
+        self.previous = Some(before);
+        true
     }
 
     /// Resolves one hide request all the way to geometry that is still drawn.

@@ -35,6 +35,8 @@ pub struct Chosen {
     pub hide: bool,
     /// The user wants to stop drawing everything except what is chosen.
     pub isolate: bool,
+    /// The user wants the last change to what is drawn taken back.
+    pub undo_visibility: bool,
     /// The user wants everything drawn again.
     pub show_all: bool,
     /// A change to what is drawn, asked for from a row of the list and named
@@ -412,6 +414,8 @@ pub struct Activity<'a> {
     /// Whether there is a chosen definition still being drawn with something
     /// else still drawn beside it. On its own it is isolated already.
     pub can_isolate: bool,
+    /// Whether there is a change to what is drawn that could be taken back.
+    pub can_undo_visibility: bool,
 }
 
 /// The toolbar: a document to open, the directions a drawing would name, what
@@ -476,6 +480,15 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
             .add_enabled(
                 activity.can_show_all,
                 egui::Button::new(format!("Show all ({SHOW_ALL_KEY})")),
+            )
+            .clicked();
+        // Last of the four, and deliberately without a shortcut: this takes
+        // back a change to what is on screen and nothing else, and a key that
+        // people read as "undo" would promise to take back far more than that.
+        chosen.undo_visibility = ui
+            .add_enabled(
+                activity.can_undo_visibility,
+                egui::Button::new("Undo visibility"),
             )
             .clicked();
         ui.separator();
@@ -733,6 +746,7 @@ mod tests {
             can_hide: false,
             can_show_all: false,
             can_isolate: false,
+            can_undo_visibility: false,
         };
 
         // Where the Cancel button is: after the views, so the row up to it is
@@ -761,6 +775,10 @@ mod tests {
                 let _ = ui.add_enabled(
                     reading.can_show_all,
                     egui::Button::new(format!("Show all ({SHOW_ALL_KEY})")),
+                );
+                let _ = ui.add_enabled(
+                    reading.can_undo_visibility,
+                    egui::Button::new("Undo visibility"),
                 );
                 ui.separator();
                 ui.label("View");
@@ -1034,6 +1052,7 @@ mod tests {
             can_hide,
             can_show_all,
             can_isolate: false,
+            can_undo_visibility: false,
         };
 
         // Found by pressing along the real toolbar rather than by rebuilding
@@ -1219,6 +1238,7 @@ mod tests {
             can_hide: true,
             can_show_all: true,
             can_isolate,
+            can_undo_visibility: false,
         };
 
         // Found by pressing along the real toolbar rather than by rebuilding
@@ -1279,6 +1299,7 @@ mod tests {
                     can_hide: false,
                     can_show_all: false,
                     can_isolate: true,
+                    can_undo_visibility: false,
                 },
             );
         });
@@ -1372,6 +1393,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn taking_a_change_back_is_offered_only_when_there_is_one() {
+        let context = egui::Context::default();
+        let state = |can_undo_visibility| Activity {
+            line: "part.fcad",
+            progress: None,
+            can_frame_selection: false,
+            can_frame_scene: false,
+            can_hide: true,
+            can_show_all: true,
+            can_isolate: true,
+            can_undo_visibility,
+        };
+
+        // Found by pressing along the real toolbar rather than by rebuilding
+        // its layout here.
+        let mut undo = None;
+        for step in 0..200 {
+            let at = egui::Pos2::new(step as f32 * 8.0, 12.0);
+            if click_on(&context, at, state(true)).undo_visibility {
+                undo = Some(at);
+                break;
+            }
+        }
+        let undo = undo.expect("the toolbar offers no way to take a change back");
+
+        let press = |activity| {
+            let _ = click_on(&context, egui::Pos2::new(2000.0, 2000.0), activity);
+            click_on(&context, undo, activity)
+        };
+
+        // One press, one request, and nothing else asked for.
+        let pressed = press(state(true));
+        assert!(pressed.undo_visibility);
+        assert!(!pressed.hide && !pressed.show_all && !pressed.isolate);
+        assert!(pressed.view.is_none() && !pressed.open && !pressed.frame);
+
+        // With nothing to take back, the same place reports nothing: a button
+        // that answered anyway would be claiming a change nobody can see.
+        assert!(
+            !press(state(false)).undo_visibility,
+            "a button with nothing to take back reported a press"
+        );
     }
 
     /// Runs the list once, with a click delivered at `at`.
@@ -1655,6 +1721,7 @@ mod tests {
             can_hide: false,
             can_show_all: false,
             can_isolate: false,
+            can_undo_visibility: false,
         };
 
         // Where the button is, laid out exactly as the toolbar lays it out.
@@ -1707,6 +1774,7 @@ mod tests {
             can_hide: false,
             can_show_all: false,
             can_isolate: false,
+            can_undo_visibility: false,
         };
 
         // Where the button is, laid out exactly as the toolbar lays it out.

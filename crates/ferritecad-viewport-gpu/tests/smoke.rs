@@ -3138,3 +3138,82 @@ fn one_definition_taken_off_screen_leaves_no_trace_of_itself() {
         "hiding one definition uploaded geometry"
     );
 }
+
+#[test]
+fn taking_a_change_back_draws_the_frame_that_was_there_before_it() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = three_plates(160, 160);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let uploaded = renderer.geometry_uploads();
+
+    // A mixed arrangement, deliberately built: one of three already away.
+    let mut visibility = Visibility::new(&snapshot);
+    assert!(visibility.hide(
+        Marked::Definition(snapshot.pick_of(2).expect("drawn")),
+        &snapshot
+    ));
+    let before = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+
+    // The accident, and then taking it back.
+    assert!(visibility.hide(
+        Marked::Definition(snapshot.pick_of(0).expect("drawn")),
+        &snapshot
+    ));
+    let accident = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+    assert_ne!(
+        accident.colour(),
+        before.colour(),
+        "the accident changed nothing"
+    );
+
+    assert!(visibility.undo(&snapshot));
+    let after = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+
+    // The same frame, byte for byte, in colour and in both identity targets:
+    // every placement and every face is back exactly as it was, and the one
+    // that was already away is still away.
+    assert_eq!(after.colour(), before.colour());
+    for y in 0..after.height() {
+        for x in 0..after.width() {
+            assert_eq!(after.pick_at(x, y), before.pick_at(x, y));
+            assert_eq!(after.hit_at(x, y), before.hit_at(x, y));
+        }
+    }
+    assert!(
+        pixels_of(&after, |frame, x, y| frame.pick_at(x, y)
+            == snapshot.pick_of(2).expect("drawn"))
+        .is_empty(),
+        "taking one change back brought something else back with it"
+    );
+
+    // And nothing was uploaded for any of it.
+    assert_eq!(
+        renderer.geometry_uploads(),
+        uploaded,
+        "taking a change back uploaded geometry"
+    );
+}

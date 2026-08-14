@@ -2530,3 +2530,183 @@ fn a_mask_made_for_one_picture_cannot_be_worked_on_through_another() {
         assert!(foreign.shows(definition, &other));
     }
 }
+
+#[test]
+fn every_change_to_what_is_drawn_records_exactly_what_it_replaced() {
+    let snapshot = three_definitions_placed_twice();
+    let picks: Vec<_> = (0..3)
+        .map(|definition| snapshot.pick_of(definition).expect("drawn"))
+        .collect();
+
+    // Each of the four ways what is drawn can change, each set up in an
+    // arrangement where it really does change something, and each taken back.
+    let hide_one = |mask: &mut Visibility| mask.hide(Marked::Definition(picks[0]), &snapshot);
+    let isolate = |mask: &mut Visibility| mask.isolate(Marked::Definition(picks[1]), &snapshot);
+    let show_one = |mask: &mut Visibility| mask.show(Marked::Definition(picks[0]), &snapshot);
+    let show_all = |mask: &mut Visibility| mask.show_all();
+
+    /// One way of changing what is drawn: what to call it, what it does, and
+    /// whether it needs something already hidden to have anything to do.
+    type Operation<'a> = (&'a str, &'a dyn Fn(&mut Visibility) -> bool, bool);
+
+    let operations: [Operation<'_>; 4] = [
+        ("hide", &hide_one, false),
+        ("isolate", &isolate, false),
+        ("show", &show_one, true),
+        ("show all", &show_all, true),
+    ];
+
+    for (what, apply, needs_something_hidden) in operations {
+        let mut visibility = Visibility::new(&snapshot);
+        assert!(
+            !visibility.can_undo(&snapshot),
+            "a fresh picture has something to take back"
+        );
+        if needs_something_hidden {
+            assert!(visibility.hide(Marked::Definition(picks[0]), &snapshot));
+            assert!(visibility.hide(Marked::Definition(picks[2]), &snapshot));
+        }
+
+        let before = visibility.hidden_in(&snapshot).to_vec();
+        assert!(
+            apply(&mut visibility),
+            "{what} did nothing, so the gate proves nothing"
+        );
+        assert_ne!(
+            visibility.hidden_in(&snapshot),
+            before.as_slice(),
+            "{what} claimed a change and made none"
+        );
+        assert!(visibility.can_undo(&snapshot), "{what} recorded nothing");
+
+        assert!(visibility.undo(&snapshot), "{what} could not be taken back");
+        assert_eq!(
+            visibility.hidden_in(&snapshot),
+            before.as_slice(),
+            "taking back {what} did not restore exactly what it replaced"
+        );
+
+        // One level, consumed. A second press has nothing to take back, and
+        // does not put the change back either: this is not a toggle and not a
+        // redo.
+        assert!(!visibility.can_undo(&snapshot));
+        assert!(
+            !visibility.undo(&snapshot),
+            "{what} could be taken back twice"
+        );
+        assert_eq!(visibility.hidden_in(&snapshot), before.as_slice());
+
+        // And a later change records again, so history is not spent for good.
+        assert!(
+            apply(&mut visibility),
+            "{what} stopped working after an undo"
+        );
+        assert!(visibility.can_undo(&snapshot));
+    }
+}
+
+#[test]
+fn taking_back_show_all_restores_a_mixed_arrangement_rather_than_all_of_it() {
+    let snapshot = three_definitions_placed_twice();
+    let mut visibility = Visibility::new(&snapshot);
+    assert!(visibility.hide(
+        Marked::Definition(snapshot.pick_of(0).expect("drawn")),
+        &snapshot
+    ));
+    assert!(visibility.hide(
+        Marked::Definition(snapshot.pick_of(2).expect("drawn")),
+        &snapshot
+    ));
+    let mixed = visibility.hidden_in(&snapshot).to_vec();
+    let extent = visibility.bounds(&snapshot);
+    assert_eq!(
+        mixed,
+        [true, false, true],
+        "the gate needs a mixed arrangement"
+    );
+
+    assert!(visibility.show_all());
+    assert_eq!(visibility.bounds(&snapshot), snapshot.bounds());
+
+    // Two of three hidden, not none and not all: an approximation would be a
+    // different picture.
+    assert!(visibility.undo(&snapshot));
+    assert_eq!(visibility.hidden_in(&snapshot), mixed.as_slice());
+    assert_eq!(
+        visibility.bounds(&snapshot),
+        extent,
+        "the extent after taking it back is not the extent before"
+    );
+}
+
+#[test]
+fn geometry_that_is_nowhere_manufactures_no_history() {
+    let mut builder = SnapshotBuilder::new();
+    let drawn = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+    let empty = builder.add_mesh(&Mesh::default()).expect("packs");
+    let unplaced = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+    for part in [drawn, empty] {
+        builder
+            .place(part, None, &moved(part as f64 * 40.0, 0.0, 0.0), [1.0; 3])
+            .expect("places");
+    }
+    let snapshot = builder.build();
+    let mut visibility = Visibility::new(&snapshot);
+
+    // Neither can be hidden, shown or isolated to, so neither leaves a record
+    // of anything to take back.
+    for definition in [empty, unplaced] {
+        let pick = snapshot.pick_of(definition).expect("has a row");
+        assert!(!visibility.hide(Marked::Definition(pick), &snapshot));
+        assert!(!visibility.show(Marked::Definition(pick), &snapshot));
+        assert!(!visibility.isolate(Marked::Definition(pick), &snapshot));
+    }
+    assert!(
+        !visibility.can_undo(&snapshot),
+        "geometry that is already nowhere left something to take back"
+    );
+    assert!(!visibility.undo(&snapshot));
+}
+
+#[test]
+fn history_belongs_to_the_picture_that_recorded_it() {
+    let one = three_definitions_placed_twice();
+    let other = {
+        let mut builder = SnapshotBuilder::new();
+        let part = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+        let second = builder.add_mesh(&divided(&[2, 2])).expect("packs");
+        for definition in [part, second] {
+            builder
+                .place(
+                    definition,
+                    None,
+                    &moved(definition as f64 * 30.0, 0.0, 0.0),
+                    [1.0, 1.0, 1.0],
+                )
+                .expect("places");
+        }
+        builder.build()
+    };
+
+    let mut visibility = Visibility::new(&one);
+    assert!(visibility.hide(Marked::Definition(one.pick_of(0).expect("drawn")), &one));
+    let recorded = visibility.clone();
+
+    // A record made for one picture says nothing about another, and cannot be
+    // spent through it.
+    assert!(!visibility.can_undo(&other));
+    assert!(
+        !visibility.undo(&other),
+        "history of one picture was applied through another"
+    );
+    assert_eq!(
+        visibility.hidden_in(&one),
+        recorded.hidden_in(&one),
+        "a refused undo changed the picture it does belong to"
+    );
+
+    // And it is still there for the picture it belongs to.
+    assert!(visibility.can_undo(&one));
+    assert!(visibility.undo(&one));
+    assert!(visibility.shows(0, &one));
+}
