@@ -14,7 +14,7 @@ use ferritecad_kernel::{
 };
 use ferritecad_types::{Transform, Vec3};
 use ferritecad_viewport::{
-    Camera, PickId, RenderSnapshot, SnapshotBuilder, StandardView, VERTEX_FLOATS,
+    Camera, FacePickId, PickId, RenderSnapshot, SnapshotBuilder, StandardView, VERTEX_FLOATS,
 };
 
 /// One triangle, with distinguishable positions and normals.
@@ -247,6 +247,199 @@ fn signed_zero_does_not_create_a_different_snapshot_identity() {
 /// A mesh with no triangles at all, which is a definition that draws nothing.
 fn nothing_at_all() -> Mesh {
     Mesh::default()
+}
+
+/// Two triangles the kernel calls two faces, as a box's corner would be.
+fn two_faced(first_triangles: u32, second_triangles: u32) -> Mesh {
+    divided(&[first_triangles, second_triangles])
+}
+
+/// One strip of triangles, divided into faces of the given sizes.
+///
+/// A face of no triangles is not a face and is left out, which is what lets
+/// `two_faced(n, 0)` mean one face.
+fn divided(runs: &[u32]) -> Mesh {
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let mut mesh = Mesh::default();
+    let total: u32 = runs.iter().sum();
+    for triangle in 0..total {
+        let base = triangle as f32 * 4.0;
+        mesh.positions
+            .extend_from_slice(&[base, 0.0, 0.0, base + 2.0, 0.0, 0.0, base, 3.0, 0.0]);
+        mesh.normals
+            .extend_from_slice(&[0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
+        let first = triangle * 3;
+        mesh.indices
+            .extend_from_slice(&[first, first + 1, first + 2]);
+    }
+    let mut first_index = 0;
+    for (ordinal, triangles) in runs.iter().enumerate().filter(|(_, count)| **count > 0) {
+        mesh.faces.push(MeshFaceRange {
+            face: SubShapeHandle::new(shape, SubShapeKind::Face, ordinal as u64),
+            first_index,
+            index_count: triangles * 3,
+        });
+        first_index += triangles * 3;
+    }
+    mesh
+}
+
+#[test]
+fn two_faces_of_one_definition_are_two_identities_of_one_definition() {
+    let mut builder = SnapshotBuilder::new();
+    let part = builder.add_mesh(&two_faced(1, 1)).expect("packs");
+    builder
+        .place(part, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+        .expect("places");
+    // The same definition again, somewhere else: a face of it is one face
+    // however many times the definition appears.
+    builder
+        .place(part, None, &moved(50.0, 0.0, 0.0), [1.0, 1.0, 1.0])
+        .expect("places");
+    let snapshot = builder.build();
+
+    // The packing keeps the division the kernel made. Before it did, the two
+    // triangles were indistinguishable once packed, and the finest thing that
+    // could be pointed at was the whole definition.
+    let faces = snapshot.meshes()[part].faces_of_triangles();
+    assert_eq!(faces.len(), 2, "one identity per triangle");
+    assert_ne!(faces[0], faces[1], "two faces were packed as one");
+    assert_eq!(snapshot.meshes()[part].face_count(), 2);
+    assert_eq!(snapshot.face_count(), 2);
+
+    // Both belong to the definition they came from, and to no other.
+    for face in faces {
+        let identity = FacePickId::from_raw(*face, &snapshot);
+        assert_eq!(snapshot.definition_of_face(identity), Some(part));
+    }
+
+    // And the two draws share them: a face is a face of a definition, not of
+    // a placement, so pointing at one in either place is the same face.
+    assert_eq!(snapshot.draws().len(), 2);
+    assert_eq!(
+        snapshot.definition(snapshot.draws()[0].pick),
+        snapshot.definition(snapshot.draws()[1].pick)
+    );
+}
+
+#[test]
+fn a_face_of_many_triangles_is_still_one_face() {
+    let mut builder = SnapshotBuilder::new();
+    let part = builder.add_mesh(&two_faced(3, 2)).expect("packs");
+    builder
+        .place(part, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+        .expect("places");
+    let snapshot = builder.build();
+
+    let faces = snapshot.meshes()[part].faces_of_triangles();
+    assert_eq!(faces.len(), 5);
+    assert!(faces[0] == faces[1] && faces[1] == faces[2], "{faces:?}");
+    assert!(faces[3] == faces[4], "{faces:?}");
+    assert_ne!(faces[2], faces[3]);
+    assert_eq!(snapshot.meshes()[part].face_count(), 2);
+}
+
+#[test]
+fn the_same_triangles_divided_differently_are_a_different_picture() {
+    let picture = |first, second| {
+        let mut builder = SnapshotBuilder::new();
+        let part = builder.add_mesh(&two_faced(first, second)).expect("packs");
+        builder
+            .place(part, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+            .expect("places");
+        builder.build()
+    };
+
+    // Identical vertices and indices, divided into faces two ways. A picture
+    // that called these the same would let a face identity taken from one of
+    // them resolve in the other.
+    let (a, b) = (picture(1, 3), picture(2, 2));
+    assert_eq!(
+        a.meshes()[0].vertices(),
+        b.meshes()[0].vertices(),
+        "the two pictures were meant to share their geometry"
+    );
+    assert_eq!(a.meshes()[0].indices(), b.meshes()[0].indices());
+
+    let from_a = FacePickId::from_raw(a.meshes()[0].faces_of_triangles()[3], &a);
+    assert_eq!(a.definition_of_face(from_a), Some(0));
+    assert_eq!(
+        b.definition_of_face(from_a),
+        None,
+        "a face of one picture resolved in another"
+    );
+
+    // The same again where counting is not enough to tell the two apart: the
+    // same triangles, the same number of faces, and the last face the same
+    // size in both. Only where the boundaries fall differs.
+    let divided_as = |runs: &[u32]| {
+        let mut builder = SnapshotBuilder::new();
+        let part = builder.add_mesh(&divided(runs)).expect("packs");
+        builder
+            .place(part, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+            .expect("places");
+        builder.build()
+    };
+    let (c, d) = (divided_as(&[1, 2, 1]), divided_as(&[2, 1, 1]));
+    assert_eq!(c.face_count(), d.face_count());
+    assert_eq!(c.meshes()[0].indices(), d.meshes()[0].indices());
+    let from_c = FacePickId::from_raw(c.meshes()[0].faces_of_triangles()[0], &c);
+    assert_eq!(
+        d.definition_of_face(from_c),
+        None,
+        "two different partitions of the same triangles were one picture"
+    );
+}
+
+#[test]
+fn faces_are_numbered_across_the_whole_picture_and_not_within_a_definition() {
+    let mut builder = SnapshotBuilder::new();
+    let first = builder.add_mesh(&two_faced(1, 1)).expect("packs");
+    let second = builder.add_mesh(&two_faced(2, 1)).expect("packs");
+    for (part, x) in [(first, 0.0), (second, 50.0)] {
+        builder
+            .place(part, None, &moved(x, 0.0, 0.0), [1.0, 1.0, 1.0])
+            .expect("places");
+    }
+    let snapshot = builder.build();
+
+    // Four faces and four identities. Numbering them within each definition
+    // would give the second definition the first one's numbers, and pointing
+    // at a face of one would mark a face of the other.
+    assert_eq!(snapshot.face_count(), 4);
+    let mut seen = Vec::new();
+    for (definition, mesh) in snapshot.meshes().iter().enumerate() {
+        for raw in mesh.faces_of_triangles() {
+            let face = FacePickId::from_raw(*raw, &snapshot);
+            assert_eq!(
+                snapshot.definition_of_face(face),
+                Some(definition),
+                "a face belongs to the definition it was packed with"
+            );
+            if !seen.contains(&face) {
+                seen.push(face);
+            }
+        }
+    }
+    assert_eq!(seen.len(), 4);
+}
+
+#[test]
+fn a_mesh_with_nothing_in_it_has_no_faces() {
+    let mut builder = SnapshotBuilder::new();
+    let empty = builder.add_mesh(&Mesh::default()).expect("packs");
+    let snapshot = builder.build();
+
+    assert_eq!(snapshot.meshes()[empty].face_count(), 0);
+    assert!(snapshot.meshes()[empty].faces_of_triangles().is_empty());
+    assert_eq!(snapshot.face_count(), 0);
+
+    // Nothing is not a face, and no number names one here.
+    assert_eq!(snapshot.definition_of_face(FacePickId::NOTHING), None);
+    assert_eq!(
+        snapshot.definition_of_face(FacePickId::from_raw(1, &snapshot)),
+        None
+    );
 }
 
 #[test]
@@ -1274,4 +1467,81 @@ fn nothing_that_is_not_a_number_moves_the_camera() {
         camera, before,
         "a camera moved by something that is not a number"
     );
+}
+
+#[test]
+fn a_face_value_from_outside_lands_on_no_face() {
+    let mut builder = SnapshotBuilder::new();
+    let mesh = builder.add_mesh(&two_faced(1, 1)).expect("packs");
+    builder
+        .place(mesh, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+        .expect("places");
+    let snapshot = builder.build();
+
+    // A face buffer is written by a GPU and read back over a bus, exactly as a
+    // pick buffer is. Nothing, and anything out of range, must land on no face
+    // rather than on whichever one the number happens to reach.
+    for raw in [0, 3, 99, u32::MAX] {
+        let face = FacePickId::from_raw(raw, &snapshot);
+        assert_eq!(face, FacePickId::NOTHING, "{raw} named a face");
+        assert_eq!(snapshot.definition_of_face(face), None);
+    }
+    assert_eq!(snapshot.definition_of_face(FacePickId::NOTHING), None);
+
+    for raw in [1, 2] {
+        let face = FacePickId::from_raw(raw, &snapshot);
+        assert_eq!(snapshot.definition_of_face(face), Some(0));
+    }
+}
+
+#[test]
+fn a_face_of_one_picture_names_nothing_in_another() {
+    let build = |colour| {
+        let mut builder = SnapshotBuilder::new();
+        let mesh = builder.add_mesh(&two_faced(1, 1)).expect("packs");
+        builder
+            .place(mesh, None, &Transform::IDENTITY, colour)
+            .expect("places");
+        builder.build()
+    };
+    let first = build([1.0, 0.0, 0.0]);
+    let second = build([0.0, 0.0, 1.0]);
+    let face = FacePickId::from_raw(1, &first);
+
+    assert_eq!(first.definition_of_face(face), Some(0));
+    assert_eq!(
+        second.definition_of_face(face),
+        None,
+        "the same in-range integer must not silently name another picture's face"
+    );
+
+    // Decoding the integer against the second picture is a distinct act, and
+    // produces a distinct identity.
+    let again = FacePickId::from_raw(face.to_raw(), &second);
+    assert_eq!(second.definition_of_face(again), Some(0));
+    assert_ne!(face, again);
+}
+
+#[test]
+fn nothing_a_picture_shows_says_which_subshape_a_face_was() {
+    let mut builder = SnapshotBuilder::new();
+    let mesh = builder.add_mesh(&two_faced(1, 1)).expect("packs");
+    builder
+        .place(mesh, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+        .expect("places");
+    let snapshot = builder.build();
+
+    // A packed picture keeps the partition and nothing of the session it came
+    // out of. The kernel's handles are not in these types and cannot be read
+    // back out of them: what a document stores about a face is a topology
+    // reference, and this is not one.
+    let shown = format!("{snapshot:?}");
+    for word in ["SubShapeHandle", "ShapeHandle", "SessionId", "SubShapeKind"] {
+        assert!(!shown.contains(word), "a picture shows its kernel {word}");
+    }
+
+    // The identities are the picture's own numbering, in packing order, and
+    // say nothing about which subshape of which shape they were.
+    assert_eq!(snapshot.face_count(), 2);
+    assert_eq!(snapshot.meshes()[0].faces_of_triangles(), &[1, 2]);
 }

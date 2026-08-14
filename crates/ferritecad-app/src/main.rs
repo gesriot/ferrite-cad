@@ -42,8 +42,8 @@ use ferritecad_ui::{
     Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, Hover, PointerButton, Selected, VIEWS,
     ViewportEvent, ViewportInput,
 };
-use ferritecad_viewport::{Camera, PickId, RenderSnapshot, SnapshotBuilder, StandardView};
-use ferritecad_viewport_gpu::{PreparedSnapshot, Renderer, WindowSurface};
+use ferritecad_viewport::{Camera, Hovered, PickId, RenderSnapshot, SnapshotBuilder, StandardView};
+use ferritecad_viewport_gpu::{Hit, PreparedSnapshot, Renderer, WindowSurface};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
@@ -682,8 +682,11 @@ struct LiveScene<P> {
     /// Transient identity issued by `prepared` and nothing else.
     selection: PickId,
     /// What the pointer is over, which is a question and not a decision. Also
-    /// issued by `prepared`, also transient, and written down nowhere.
-    hovered: PickId,
+    /// issued by `prepared`, also transient, and written down nowhere. Three
+    /// states rather than one identity, because a list row can only name a
+    /// definition and a pixel can name the face under it, and the two are
+    /// different things to show.
+    hovered: Hovered,
 }
 
 impl<P> LiveScene<P> {
@@ -693,7 +696,7 @@ impl<P> LiveScene<P> {
             prepared,
             catalogue,
             selection: PickId::NOTHING,
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         }
     }
 
@@ -810,16 +813,24 @@ fn frame_scene(snapshot: &RenderSnapshot, camera: &mut ViewportInput) -> Result<
 /// Records what the pointer is over, and says whether anything changed.
 ///
 /// Answered through the picture that is on screen, so a question about a
-/// picture that has been replaced marks nothing. Returns whether the answer
-/// differs from the one already showing: pointing at the same definition
-/// again is not a reason to draw the same picture twice.
+/// picture that has been replaced marks nothing – a definition of another
+/// picture and a face of another picture alike. Returns whether the answer
+/// differs from the one already showing: pointing at the same face again is
+/// not a reason to draw the same picture twice.
 ///
 /// Given the one field it may change and nothing else, so pointing at
 /// something cannot choose it however this is called.
-fn hover_definition(hovered: &mut PickId, snapshot: &RenderSnapshot, pick: PickId) -> bool {
-    let answer = match snapshot.definition(pick) {
-        Some(_) => pick,
-        None => PickId::NOTHING,
+fn hover(hovered: &mut Hovered, snapshot: &RenderSnapshot, answer: Hovered) -> bool {
+    let answer = match answer {
+        Hovered::Nothing => Hovered::Nothing,
+        Hovered::Definition(pick) => match snapshot.definition(pick) {
+            Some(_) => Hovered::Definition(pick),
+            None => Hovered::Nothing,
+        },
+        Hovered::Face(face) => match snapshot.definition_of_face(face) {
+            Some(_) => Hovered::Face(face),
+            None => Hovered::Nothing,
+        },
     };
     if answer == *hovered {
         return false;
@@ -1315,13 +1326,21 @@ impl App {
             return;
         };
 
-        let pick = match hover_request(row, interface_has_pointer, question) {
-            // The list said which one, which needs no pixel read at all.
-            HoverRequest::Row(row) => live.scene.prepared.snapshot().pick_of(row),
+        let answer = match hover_request(row, interface_has_pointer, question) {
+            // The list said which one, which needs no pixel read at all. A row
+            // names a definition and can say nothing about a face: a list of
+            // definitions has no faces in it.
+            HoverRequest::Row(row) => live
+                .scene
+                .prepared
+                .snapshot()
+                .pick_of(row)
+                .map(Hovered::Definition),
             HoverRequest::Pixel(x, y) => {
-                // One offscreen frame, and only because the pointer moved.
-                match Self::pick_at(live, self.input.camera(), x, y) {
-                    Ok(pick) => Some(pick),
+                // One offscreen frame, and only because the pointer moved. A
+                // pixel is the only thing that knows which face it came from.
+                match Self::hit_at(live, self.input.camera(), x, y) {
+                    Ok(hit) => Some(Hovered::Face(hit.face())),
                     Err(error) => {
                         eprintln!("ferritecad: {error}");
                         return;
@@ -1330,18 +1349,18 @@ impl App {
             }
             // Away from the model, over a panel, or in the middle of a
             // gesture: whatever was under the pointer is not any more.
-            HoverRequest::Clear => Some(PickId::NOTHING),
+            HoverRequest::Clear => Some(Hovered::Nothing),
             // Nothing moved, so nothing changed.
             HoverRequest::Unchanged => None,
         };
 
-        let Some(pick) = pick else {
+        let Some(answer) = answer else {
             return;
         };
-        if hover_definition(
+        if hover(
             &mut live.scene.hovered,
             live.scene.prepared.snapshot(),
-            pick,
+            answer,
         ) {
             self.input.request_redraw();
         }
@@ -1353,19 +1372,29 @@ impl App {
     /// not written on the path a window takes, so both questions are answered
     /// the same way and neither pays for the other.
     fn pick_at(live: &mut Live, camera: &Camera, x: f32, y: f32) -> Result<PickId> {
+        Ok(Self::hit_at(live, camera, x, y)?.definition())
+    }
+
+    /// Reads one pixel, and both answers about it.
+    ///
+    /// The definition and the face come from one pixel of one frame, so they
+    /// cannot describe different triangles. A click asks only the first half
+    /// through [`Self::pick_at`]: what a click means is unchanged by any of
+    /// this.
+    fn hit_at(live: &mut Live, camera: &Camera, x: f32, y: f32) -> Result<Hit> {
         let (Ok(x), Ok(y)) = (
             u32::try_from(x.round() as i64),
             u32::try_from(y.round() as i64),
         ) else {
-            return Ok(PickId::NOTHING);
+            return Ok(Hit::NOTHING);
         };
         let frame = live.renderer.render(
             &live.scene.prepared,
             camera,
             PickId::NOTHING,
-            PickId::NOTHING,
+            Hovered::Nothing,
         )?;
-        Ok(frame.pick_at(x, y))
+        Ok(frame.hit_at(x, y))
     }
 
     /// Chooses the definition a list row names, if the picture has one there.
@@ -2422,7 +2451,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             selection: chosen,
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
         assert_eq!(old.selection, chosen, "the gate began with no choice");
 
@@ -2447,7 +2476,7 @@ mod tests {
             prepared: (),
             catalogue: vec![mine.clone()],
             selection: chosen,
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -2480,7 +2509,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             selection: chosen,
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -2516,7 +2545,7 @@ mod tests {
                 .first()
                 .expect("the picture draws something")
                 .pick,
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
 
         // Two lookups and no search: this snapshot names the definition, this
@@ -2538,7 +2567,7 @@ mod tests {
             prepared: (),
             catalogue: Vec::new(),
             selection: scene.selection,
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
         assert_eq!(short.chosen(&picture), None);
     }
@@ -2556,36 +2585,40 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             selection: chosen,
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
 
         // Pointing at the definition that is already chosen: a question about
         // what is under the pointer, and the choice is untouched by it.
-        assert!(hover_definition(&mut scene.hovered, &picture, chosen));
-        assert_eq!(scene.hovered, chosen);
+        assert!(hover(
+            &mut scene.hovered,
+            &picture,
+            Hovered::Definition(chosen)
+        ));
+        assert_eq!(scene.hovered, Hovered::Definition(chosen));
         assert_eq!(scene.selection, chosen, "pointing at something chose it");
 
         // Asking the same thing again changes nothing, so nothing asks for a
         // frame that would draw the picture that is already on screen.
         assert!(
-            !hover_definition(&mut scene.hovered, &picture, chosen),
+            !hover(&mut scene.hovered, &picture, Hovered::Definition(chosen)),
             "the same question was treated as news"
         );
 
         // Away from the model: the question is answered with nothing, and the
         // choice survives it.
-        assert!(hover_definition(
-            &mut scene.hovered,
-            &picture,
-            PickId::NOTHING
-        ));
-        assert_eq!(scene.hovered, PickId::NOTHING);
+        assert!(hover(&mut scene.hovered, &picture, Hovered::Nothing));
+        assert_eq!(scene.hovered, Hovered::Nothing);
         assert_eq!(scene.selection, chosen);
 
         // A question about a picture that has been replaced marks nothing in
         // this one, however plausible its number looks.
-        assert!(!hover_definition(&mut scene.hovered, &other, chosen));
-        assert_eq!(scene.hovered, PickId::NOTHING);
+        assert!(!hover(
+            &mut scene.hovered,
+            &other,
+            Hovered::Definition(chosen)
+        ));
+        assert_eq!(scene.hovered, Hovered::Nothing);
     }
 
     #[test]
@@ -2660,21 +2693,72 @@ mod tests {
             prepared: (),
             catalogue: entries.clone(),
             selection: PickId::NOTHING,
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
-        assert!(hover_definition(
+        assert!(hover(
             &mut scene.hovered,
             &picture,
-            picture.pick_of(first).expect("a row")
+            Hovered::Definition(picture.pick_of(first).expect("a row"))
         ));
-        assert!(hover_definition(&mut scene.hovered, &picture, by_row));
-        assert_eq!(scene.hovered, by_row);
+        assert!(hover(
+            &mut scene.hovered,
+            &picture,
+            Hovered::Definition(by_row)
+        ));
+        assert_eq!(scene.hovered, Hovered::Definition(by_row));
         assert_eq!(scene.selection, PickId::NOTHING);
         assert_eq!(
             scene.chosen(&picture),
             None,
             "a question filled the inspector"
         );
+    }
+
+    #[test]
+    fn pointing_at_a_face_asks_about_that_face_and_chooses_nothing() {
+        use ferritecad_viewport::FacePickId;
+
+        let picture = distant_scene();
+        let other = scene_at(400.0);
+        let chosen = picture
+            .draws()
+            .first()
+            .expect("the picture draws something")
+            .pick;
+        let mut scene = LiveScene {
+            prepared: (),
+            catalogue: vec![a_body()],
+            selection: chosen,
+            hovered: Hovered::Nothing,
+        };
+
+        // The face a pixel of this picture would report.
+        let face = FacePickId::from_raw(1, &picture);
+        assert_eq!(picture.definition_of_face(face), Some(0));
+
+        assert!(hover(&mut scene.hovered, &picture, Hovered::Face(face)));
+        assert_eq!(scene.hovered, Hovered::Face(face));
+        assert_eq!(scene.selection, chosen, "pointing at a face chose it");
+
+        // A face and the definition it belongs to are different answers, and
+        // moving between them is news even though the part is the same.
+        assert!(hover(
+            &mut scene.hovered,
+            &picture,
+            Hovered::Definition(chosen)
+        ));
+        assert_eq!(scene.hovered, Hovered::Definition(chosen));
+
+        // A face of a picture that has been replaced marks nothing here,
+        // however plausible its number looks: the other picture numbers its
+        // faces from one as well.
+        assert!(hover(
+            &mut scene.hovered,
+            &other,
+            Hovered::Face(FacePickId::from_raw(1, &picture))
+        ));
+        assert_eq!(scene.hovered, Hovered::Nothing);
+        assert_eq!(scene.selection, chosen);
     }
 
     #[test]
@@ -2689,7 +2773,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             selection: chosen,
-            hovered: chosen,
+            hovered: Hovered::Definition(chosen),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -2698,7 +2782,7 @@ mod tests {
         // what the pointer was over.
         commit_scene(&mut scene, &mut camera, Err(CadError::input("no")))
             .expect_err("a failed load commits nothing");
-        assert_eq!(scene.hovered, chosen);
+        assert_eq!(scene.hovered, Hovered::Definition(chosen));
         assert_eq!(scene.selection, chosen);
 
         // A load that arrived replaces all of it: the question belonged to the
@@ -2707,7 +2791,7 @@ mod tests {
         framed.resize(640, 480);
         commit_scene(&mut scene, &mut camera, Ok((framed, (), vec![a_body()])))
             .expect("a load that arrived commits");
-        assert_eq!(scene.hovered, PickId::NOTHING);
+        assert_eq!(scene.hovered, Hovered::Nothing);
         assert_eq!(scene.selection, PickId::NOTHING);
     }
 
@@ -2739,7 +2823,7 @@ mod tests {
             prepared: (),
             catalogue: entries.clone(),
             selection: PickId::NOTHING,
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
 
         // Choosing from a list: the row becomes an identity by asking the
@@ -2817,7 +2901,7 @@ mod tests {
             prepared: (),
             catalogue: vec![entry],
             selection: PickId::NOTHING,
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
 
         let identities = scene.identities();
@@ -2836,7 +2920,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body(), a_body()],
             selection: PickId::NOTHING,
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
         let identities = twins.identities();
         assert_eq!(twins.rows(&identities).len(), 2);
@@ -2865,7 +2949,7 @@ mod tests {
             prepared: (),
             catalogue: entries.clone(),
             selection: picture.pick_of(1).expect("the picture has that row"),
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
 
         let identities = scene.identities();
@@ -2913,7 +2997,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             selection: picture.pick_of(mesh).expect("the picture has that row"),
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -2969,7 +3053,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             selection: PickId::NOTHING,
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
         let identities = scene.identities();
         let (rows, marked) = scene.view(&identities, &picture);
@@ -3015,7 +3099,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body(), a_body()],
             selection: picture.pick_of(chosen).expect("the picture has that row"),
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
 
         let mut showing_choice = ViewportInput::new();
@@ -3070,7 +3154,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             selection: picture.pick_of(only).expect("the picture has that row"),
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
         assert_eq!(selection_bounds(&scene, &picture), picture.bounds());
 
@@ -3117,7 +3201,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             selection: picture.pick_of(0).expect("the picture has that row"),
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -3141,7 +3225,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             selection: PickId::NOTHING,
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
         for _ in 0..3 {
             assert!(!frame_selection(&empty, &picture, &mut camera).expect("no failure"));
@@ -3179,7 +3263,7 @@ mod tests {
                 .first()
                 .expect("the picture draws something")
                 .pick,
-            hovered: PickId::NOTHING,
+            hovered: Hovered::Nothing,
         };
         assert!(scene.chosen(&picture).is_some());
 
@@ -3233,7 +3317,7 @@ mod tests {
                 prepared: (),
                 catalogue: vec![entry.clone()],
                 selection: draw.pick,
-                hovered: PickId::NOTHING,
+                hovered: Hovered::Nothing,
             };
             assert_eq!(scene.chosen(&picture), Some((0, &entry)));
         }
