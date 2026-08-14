@@ -1008,7 +1008,8 @@ impl ApplicationHandler<AppEvent> for App {
             // where to go depends on what the picture says is chosen, and the
             // reducer is handed the answer rather than asked to find it.
             WindowEvent::KeyboardInput { ref event, .. }
-                if event.state == ElementState::Pressed && wants_frame(&event.logical_key) =>
+                if event.state == ElementState::Pressed
+                    && wants_frame(&event.logical_key, response.consumed) =>
             {
                 self.frame_selection();
             }
@@ -1512,13 +1513,18 @@ fn button_of(button: MouseButton) -> Option<PointerButton> {
     }
 }
 
-/// Whether this key is the one printed on the framing button.
+/// Whether this unclaimed key is the one printed on the framing button.
 ///
 /// Read from the same constant the panel prints, for the same reason the view
 /// keys are: a shortcut that drifts from its label is a shortcut nobody can
-/// trust. Case is ignored because a keyboard reports what was typed and the
-/// button prints one of the two.
-fn wants_frame(key: &Key) -> bool {
+/// trust. The interface has first refusal, just as it does for view keys: a
+/// focused text control that accepted an `F` did not also ask to move the
+/// model camera. Case is ignored because a keyboard reports what was typed and
+/// the button prints one of the two.
+fn wants_frame(key: &Key, claimed_by_ui: bool) -> bool {
+    if claimed_by_ui {
+        return false;
+    }
     let Key::Character(text) = key else {
         return false;
     };
@@ -3020,18 +3026,27 @@ mod tests {
     fn the_key_and_the_button_ask_for_the_same_thing() {
         // Both routes end in `App::frame_selection`, so what is left to check
         // is that the key the window listens for is the key the panel prints.
-        assert!(wants_frame(&Key::Character(FRAME_KEY.into())));
+        assert!(wants_frame(&Key::Character(FRAME_KEY.into()), false));
         assert!(
-            wants_frame(&Key::Character(FRAME_KEY.to_lowercase().into())),
+            wants_frame(&Key::Character(FRAME_KEY.to_lowercase().into()), false),
             "the button prints one case and a keyboard reports the other"
         );
 
         // And nothing else is that key, including the view shortcuts beside it.
         for (_, _, key) in VIEWS {
-            assert!(!wants_frame(&Key::Character((*key).into())));
+            assert!(!wants_frame(&Key::Character((*key).into()), false));
         }
-        assert!(!wants_frame(&Key::Named(NamedKey::Home)));
-        assert!(!wants_frame(&Key::Character("g".into())));
+        assert!(!wants_frame(&Key::Named(NamedKey::Home), false));
+        assert!(!wants_frame(&Key::Character("g".into()), false));
+    }
+
+    #[test]
+    fn the_frame_key_does_not_bypass_the_interface_that_claimed_it() {
+        assert!(wants_frame(&Key::Character(FRAME_KEY.into()), false));
+        assert!(
+            !wants_frame(&Key::Character(FRAME_KEY.into()), true),
+            "a key the interface claimed still moved the model camera"
+        );
     }
 
     #[test]
