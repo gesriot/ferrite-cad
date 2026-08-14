@@ -31,6 +31,10 @@ pub struct Chosen {
     pub frame: bool,
     /// The user wants to see the whole model.
     pub frame_all: bool,
+    /// The user wants to stop drawing what is chosen.
+    pub hide: bool,
+    /// The user wants everything drawn again.
+    pub show_all: bool,
     /// A definition the user picked out of the list, by its place in it.
     ///
     /// A position in this frame's list and nothing more: the caller turns it
@@ -231,6 +235,7 @@ pub fn definitions_panel(
     ui: &mut egui::Ui,
     definitions: &[Selected<'_>],
     chosen: Option<usize>,
+    hidden: &[bool],
 ) -> Rows {
     let mut rows = Rows::default();
     if definitions.is_empty() {
@@ -244,9 +249,32 @@ pub fn definitions_panel(
         .max_height(140.0)
         .show(ui, |ui| {
             for (row, definition) in definitions.iter().enumerate() {
+                // Every definition, whether or not it is being drawn: a list
+                // that dropped what was hidden would be a list with no way
+                // back to it, and the hidden ones are exactly what a person
+                // is looking for when they wonder where something went.
+                let is_hidden = hidden.get(row).copied().unwrap_or(false);
+                let summary = if is_hidden {
+                    format!("{} · hidden", definition.summary())
+                } else {
+                    definition.summary()
+                };
                 // `selectable_label` draws the chosen one differently, which
                 // is how a click in the viewport shows up here.
-                let response = ui.selectable_label(chosen == Some(row), definition.summary());
+                // The same widget a visible row draws, disabled: greyed rather
+                // than missing, so a person can see that the row is there and
+                // that pressing it is not the way back.
+                let response = ui.add_enabled(
+                    !is_hidden,
+                    egui::Button::selectable(chosen == Some(row), summary),
+                );
+                // A hidden row reports neither, and the rule is written here
+                // rather than left to whether a disabled widget happens to
+                // report a click: pressing it would choose geometry nobody can
+                // see, and pointing at it would mark nothing on screen.
+                if is_hidden {
+                    continue;
+                }
                 if response.clicked() {
                     rows.pressed = Some(row);
                 }
@@ -312,6 +340,12 @@ pub struct Activity<'a> {
     /// Whether the picture has any extent at all. A document with nothing in
     /// it has nowhere to point a camera, and says so by offering nothing.
     pub can_frame_scene: bool,
+    /// Whether there is a chosen definition still being drawn. Choosing
+    /// something already hidden is not a thing that can happen, so this is
+    /// exactly "something is chosen".
+    pub can_hide: bool,
+    /// Whether anything is hidden and could be brought back.
+    pub can_show_all: bool,
 }
 
 /// The toolbar: a document to open, the directions a drawing would name, what
@@ -351,6 +385,22 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
             .add_enabled(
                 activity.can_frame_scene,
                 egui::Button::new(format!("Frame all ({FRAME_ALL_KEY})")),
+            )
+            .clicked();
+        // Beside the framing buttons, because they are the same kind of
+        // thing: ways of seeing what is already there. Hiding removes a part
+        // from the picture and from what a click can reach, and putting it
+        // back is one press away and always says so.
+        chosen.hide = ui
+            .add_enabled(
+                activity.can_hide,
+                egui::Button::new(format!("Hide selected ({HIDE_KEY})")),
+            )
+            .clicked();
+        chosen.show_all = ui
+            .add_enabled(
+                activity.can_show_all,
+                egui::Button::new(format!("Show all ({SHOW_ALL_KEY})")),
             )
             .clicked();
         ui.separator();
@@ -395,6 +445,18 @@ pub const FRAME_KEY: &str = "F";
 /// actions on one key is a shortcut whose meaning depends on state nobody can
 /// see.
 pub const FRAME_ALL_KEY: &str = "A";
+
+/// The key that stops drawing what is chosen, printed on its button.
+///
+/// One place, read by the panel and by whatever binds the keys, for the same
+/// reason [`FRAME_KEY`] is one place.
+pub const HIDE_KEY: &str = "H";
+
+/// The key that draws everything again, printed on its button.
+///
+/// `U` rather than `S`: `S` is one keystroke from the view keys a drawing
+/// office reaches for, and this one undoes something.
+pub const SHOW_ALL_KEY: &str = "U";
 
 pub const VIEWS: &[(StandardView, &str, &str)] = &[
     (StandardView::Front, "Front", "1"),
@@ -554,7 +616,8 @@ mod tests {
             });
         });
         output.textures_delta.clear();
-        let centre = first.expect("the reference row was laid out").center();
+        let open = first.expect("the reference row was laid out");
+        let centre = open.center();
 
         assert!(
             click_at(&context, centre).open,
@@ -562,11 +625,20 @@ mod tests {
         );
 
         // And the rest of the toolbar is not that button: pressing where the
-        // views are must not open a file dialog.
-        let elsewhere = egui::Pos2::new(centre.x + 400.0, centre.y);
-        let chosen = click_at(&context, elsewhere);
-        assert!(!chosen.open, "a view button opened the file dialog");
-        assert!(chosen.view.is_some(), "the point tested hit no view button");
+        // views are must not open a file dialog. Found by walking the row
+        // rather than by assuming how far along it they sit, so adding a
+        // button to the toolbar cannot quietly turn this into a test that
+        // presses empty space.
+        let mut found_a_view = false;
+        for step in 1..200 {
+            let along = egui::Pos2::new(open.right() + step as f32 * 8.0, centre.y);
+            let chosen = click_at(&context, along);
+            assert!(!chosen.open, "something other than Open opened a document");
+            if chosen.view.is_some() {
+                found_a_view = true;
+            }
+        }
+        assert!(found_a_view, "no point along the toolbar reached a view");
     }
 
     #[test]
@@ -577,6 +649,8 @@ mod tests {
             progress: Some(0.4),
             can_frame_selection: false,
             can_frame_scene: false,
+            can_hide: false,
+            can_show_all: false,
         };
 
         // Where the Cancel button is: after the views, so the row up to it is
@@ -593,6 +667,14 @@ mod tests {
                 let _ = ui.add_enabled(
                     reading.can_frame_scene,
                     egui::Button::new(format!("Frame all ({FRAME_ALL_KEY})")),
+                );
+                let _ = ui.add_enabled(
+                    reading.can_hide,
+                    egui::Button::new(format!("Hide selected ({HIDE_KEY})")),
+                );
+                let _ = ui.add_enabled(
+                    reading.can_show_all,
+                    egui::Button::new(format!("Show all ({SHOW_ALL_KEY})")),
                 );
                 ui.separator();
                 ui.label("View");
@@ -855,12 +937,149 @@ mod tests {
         nothing_at_all.textures_delta.clear();
     }
 
+    #[test]
+    fn hiding_and_showing_are_offered_exactly_when_they_would_do_something() {
+        let context = egui::Context::default();
+        let state = |can_hide, can_show_all| Activity {
+            line: "part.fcad",
+            progress: None,
+            can_frame_selection: false,
+            can_frame_scene: false,
+            can_hide,
+            can_show_all,
+        };
+
+        // Found by pressing along the real toolbar rather than by rebuilding
+        // its layout here: a gate that assumed where a button sits would pass
+        // while pressing empty space.
+        let row = 12.0;
+        let mut hide = None;
+        let mut show = None;
+        for step in 0..200 {
+            let at = egui::Pos2::new(step as f32 * 8.0, row);
+            let chosen = click_on(&context, at, state(true, true));
+            if chosen.hide && hide.is_none() {
+                hide = Some(at);
+            }
+            if chosen.show_all && show.is_none() {
+                show = Some(at);
+            }
+        }
+        let hide = hide.expect("the toolbar offers no way to hide what is chosen");
+        let show = show.expect("the toolbar offers no way to show everything");
+        assert_ne!(hide, show, "one button asked for both things");
+
+        // A frame with the pointer away from the toolbar before each press.
+        // egui decides a click from the frame before as well as this one, so
+        // consecutive probes at different places would otherwise report what
+        // the previous probe left behind – and a context that has never laid
+        // the row out lays it out differently the first time.
+        let press = |at, activity| {
+            let _ = click_on(&context, egui::Pos2::new(2000.0, 2000.0), activity);
+            click_on(&context, at, activity)
+        };
+
+        // Available exactly when there is something to do: a button that
+        // reports a press with nothing to act on is a button that lies about
+        // what the window can do.
+        assert!(press(hide, state(true, false)).hide);
+        assert!(!press(hide, state(false, false)).hide);
+        assert!(press(show, state(false, true)).show_all);
+        assert!(!press(show, state(false, false)).show_all);
+
+        // And neither is the other.
+        let pressed_hide = press(hide, state(true, true));
+        assert!(pressed_hide.hide && !pressed_hide.show_all);
+        let pressed_show = press(show, state(true, true));
+        assert!(pressed_show.show_all && !pressed_show.hide);
+        // Nor is either of them a view or a way to open a document.
+        assert!(pressed_hide.view.is_none() && !pressed_hide.open);
+        assert!(pressed_show.view.is_none() && !pressed_show.open);
+    }
+
+    #[test]
+    fn a_hidden_row_is_shown_as_hidden_and_answers_nothing() {
+        let context = egui::Context::default();
+        let definitions = [body(), imported()];
+        let rows = rows_of_with(&context, &definitions, &[false, false]);
+        assert_eq!(rows.len(), 2);
+
+        // Just inside the second row, in a place that is inside it whether or
+        // not it is hidden: the mark a hidden row carries makes it wider, and
+        // a gate that pressed the far end would be pressing empty space in one
+        // of the two cases and proving nothing in the other.
+        let at = egui::Pos2::new(rows[1].left() + 4.0, rows[1].center().y);
+        let press = |hidden: &[bool]| {
+            let _ = press_list(
+                &context,
+                egui::Pos2::new(2000.0, 2000.0),
+                &definitions,
+                None,
+                hidden,
+            );
+            press_list(&context, at, &definitions, None, hidden)
+        };
+
+        // The same press, on the same row, in both states. The first half is
+        // what makes the second half mean anything.
+        let visible = press(&[false, false]);
+        assert_eq!(
+            visible.pressed,
+            Some(1),
+            "the gate pressed something that is not the row"
+        );
+        assert_eq!(visible.hovered, Some(1));
+
+        let hidden = press(&[false, true]);
+        assert_eq!(
+            hidden.pressed, None,
+            "a hidden row chose invisible geometry"
+        );
+        assert_eq!(
+            hidden.hovered, None,
+            "a hidden row asked about invisible geometry"
+        );
+
+        // Still in the list: a row that vanished when it was hidden would be a
+        // row with no way back to it.
+        assert_eq!(
+            rows_of_with(&context, &definitions, &[false, true]).len(),
+            2,
+            "a hidden definition left the list"
+        );
+
+        // And it says so: the same row reads differently when it is hidden.
+        let plain = list_text(&context, &definitions, &[false, false]);
+        let marked = list_text(&context, &definitions, &[false, true]);
+        assert_ne!(plain, marked, "nothing on screen says the row is hidden");
+        assert!(marked.contains("hidden"));
+    }
+
+    /// Every glyph the list draws, as one string.
+    fn list_text(context: &egui::Context, definitions: &[Selected<'_>], hidden: &[bool]) -> String {
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            let _ = definitions_panel(ui, definitions, None, hidden);
+        });
+        let text = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        output.textures_delta.clear();
+        text
+    }
+
     /// Runs the list once, with a click delivered at `at`.
     fn press_list(
         context: &egui::Context,
         at: egui::Pos2,
         definitions: &[Selected<'_>],
         chosen: Option<usize>,
+        hidden: &[bool],
     ) -> Rows {
         let input = egui::RawInput {
             events: vec![
@@ -883,7 +1102,7 @@ mod tests {
 
         let mut rows = Rows::default();
         let mut output = context.run_ui(input, |ui| {
-            rows = definitions_panel(ui, definitions, chosen);
+            rows = definitions_panel(ui, definitions, chosen, hidden);
         });
         output.textures_delta.clear();
         rows
@@ -896,13 +1115,31 @@ mod tests {
     /// below. Measuring a second copy underneath would give the coordinates of
     /// the copy.
     fn rows_of(context: &egui::Context, definitions: &[Selected<'_>]) -> Vec<egui::Rect> {
+        rows_of_with(context, definitions, &[])
+    }
+
+    /// The same, for a list in which some definitions are hidden.
+    fn rows_of_with(
+        context: &egui::Context,
+        definitions: &[Selected<'_>],
+        hidden: &[bool],
+    ) -> Vec<egui::Rect> {
         let mut rects = Vec::new();
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
             egui::ScrollArea::vertical()
                 .max_height(140.0)
                 .show(ui, |ui| {
-                    for definition in definitions {
-                        rects.push(ui.selectable_label(false, definition.summary()).rect);
+                    for (row, definition) in definitions.iter().enumerate() {
+                        let is_hidden = hidden.get(row).copied().unwrap_or(false);
+                        let summary = if is_hidden {
+                            format!("{} · hidden", definition.summary())
+                        } else {
+                            definition.summary()
+                        };
+                        rects.push(
+                            ui.add_enabled(!is_hidden, egui::Button::selectable(false, summary))
+                                .rect,
+                        );
                     }
                 });
         });
@@ -921,7 +1158,7 @@ mod tests {
         let rows = rows_of(&context, &definitions);
         assert_eq!(rows.len(), 2, "the list did not lay out one row each");
 
-        let pressed = press_list(&context, rows[1].center(), &definitions, None);
+        let pressed = press_list(&context, rows[1].center(), &definitions, None, &[]);
         assert_eq!(
             pressed.pressed,
             Some(1),
@@ -931,7 +1168,10 @@ mod tests {
         // And pressing nothing chooses nothing: a list that reported a press
         // every frame would reselect for as long as the window was open.
         let quiet = context.run_ui(egui::RawInput::default(), |ui| {
-            assert_eq!(definitions_panel(ui, &definitions, Some(1)).pressed, None);
+            assert_eq!(
+                definitions_panel(ui, &definitions, Some(1), &[]).pressed,
+                None
+            );
         });
         let mut quiet = quiet;
         quiet.textures_delta.clear();
@@ -952,7 +1192,7 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    asked = definitions_panel(ui, &definitions, None);
+                    asked = definitions_panel(ui, &definitions, None, &[]);
                 },
             );
             output.textures_delta.clear();
@@ -1006,11 +1246,11 @@ mod tests {
 
         // Each is chosen on its own.
         assert_eq!(
-            press_list(&context, rows[0].center(), &definitions, None).pressed,
+            press_list(&context, rows[0].center(), &definitions, None, &[]).pressed,
             Some(0)
         );
         assert_eq!(
-            press_list(&context, rows[1].center(), &definitions, None).pressed,
+            press_list(&context, rows[1].center(), &definitions, None, &[]).pressed,
             Some(1)
         );
     }
@@ -1051,7 +1291,7 @@ mod tests {
             hovered: Some(7),
         };
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            rows = definitions_panel(ui, &[], None);
+            rows = definitions_panel(ui, &[], None, &[]);
         });
         output.textures_delta.clear();
         assert_eq!(rows, Rows::default(), "an empty list invented a choice");
@@ -1070,7 +1310,7 @@ mod tests {
                 .sum::<usize>()
         };
         let mut said = context.run_ui(egui::RawInput::default(), |ui| {
-            let _ = definitions_panel(ui, &[], None);
+            let _ = definitions_panel(ui, &[], None, &[]);
         });
         assert!(vertices(&said) > vertices(&empty));
         said.textures_delta.clear();
@@ -1104,6 +1344,8 @@ mod tests {
             progress: None,
             can_frame_selection,
             can_frame_scene: false,
+            can_hide: false,
+            can_show_all: false,
         };
 
         // Where the button is, laid out exactly as the toolbar lays it out.
@@ -1153,6 +1395,8 @@ mod tests {
             progress: None,
             can_frame_selection: false,
             can_frame_scene,
+            can_hide: false,
+            can_show_all: false,
         };
 
         // Where the button is, laid out exactly as the toolbar lays it out.

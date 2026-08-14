@@ -41,10 +41,12 @@ use ferritecad_scene::{
 };
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
-    Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, Hover, PointerButton, Selected, VIEWS,
-    ViewportEvent, ViewportInput,
+    Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, HIDE_KEY, Hover, PointerButton, SHOW_ALL_KEY,
+    Selected, VIEWS, ViewportEvent, ViewportInput,
 };
-use ferritecad_viewport::{Camera, Marked, RenderSnapshot, SnapshotBuilder, StandardView};
+use ferritecad_viewport::{
+    Camera, Marked, RenderSnapshot, SnapshotBuilder, StandardView, Visibility,
+};
 use ferritecad_viewport_gpu::{Hit, PreparedSnapshot, Renderer, WindowSurface};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, StartCause, WindowEvent};
@@ -582,12 +584,17 @@ fn prepare_load<P>(
     current_input: &ViewportInput,
     loaded: Result<LoadedScene>,
     prepare: impl FnOnce(Arc<RenderSnapshot>) -> Result<P>,
-) -> Result<(ViewportInput, P, Vec<CatalogueEntry>, FaceNames)> {
+) -> Result<(ViewportInput, P, Vec<CatalogueEntry>, FaceNames, Visibility)> {
     let mut input = current_input.clone();
     let loaded = loaded?;
     let snapshot = input.accept_load(Ok(loaded.snapshot))?;
+    // Everything drawn, in the picture that arrived. Built here rather than
+    // carried over: what was hidden was hidden in a picture nobody is looking
+    // at any more, and a mask that outlived its picture would be a document
+    // opening with parts already missing.
+    let visibility = Visibility::new(&snapshot);
     let prepared = prepare(Arc::new(snapshot))?;
-    Ok((input, prepared, loaded.catalogue, loaded.faces))
+    Ok((input, prepared, loaded.catalogue, loaded.faces, visibility))
 }
 
 /// Applies every texture upload and consumes it from egui's command set.
@@ -687,6 +694,10 @@ struct LiveScene<P> {
     /// What the document durably calls each face of `prepared`, which is what
     /// makes a face selectable as a face rather than as the part it is on.
     faces: FaceNames,
+    /// Which definitions this window is drawing. Transient, bound to
+    /// `prepared`, and reset with it: what is hidden is a state of looking at
+    /// a document, not a fact about the document.
+    visibility: Visibility,
     /// What is chosen: nothing, a definition, or one face of one. One state
     /// rather than a transient field beside a semantic one, so there is no
     /// arrangement in which they describe different things.
@@ -701,11 +712,17 @@ struct LiveScene<P> {
 
 impl<P> LiveScene<P> {
     /// A replacement picture begins with no choice made in it.
-    fn new(prepared: P, catalogue: Vec<CatalogueEntry>, faces: FaceNames) -> Self {
+    fn new(
+        prepared: P,
+        catalogue: Vec<CatalogueEntry>,
+        faces: FaceNames,
+        visibility: Visibility,
+    ) -> Self {
         Self {
             prepared,
             catalogue,
             faces,
+            visibility,
             selection: Selection::Nothing,
             hovered: Marked::Nothing,
         }
@@ -770,10 +787,10 @@ impl<P> LiveScene<P> {
 fn commit_scene<P>(
     scene: &mut LiveScene<P>,
     camera: &mut ViewportInput,
-    next: Result<(ViewportInput, P, Vec<CatalogueEntry>, FaceNames)>,
+    next: Result<(ViewportInput, P, Vec<CatalogueEntry>, FaceNames, Visibility)>,
 ) -> Result<()> {
-    let (framed, prepared, catalogue, faces) = next?;
-    *scene = LiveScene::new(prepared, catalogue, faces);
+    let (framed, prepared, catalogue, faces, visibility) = next?;
+    *scene = LiveScene::new(prepared, catalogue, faces, visibility);
     *camera = framed;
     Ok(())
 }
@@ -788,6 +805,49 @@ fn selection_bounds<P>(
     snapshot: &RenderSnapshot,
 ) -> Option<([f32; 3], [f32; 3])> {
     scene.selection.bounds(snapshot)
+}
+
+/// Stops drawing what is chosen, and forgets everything that pointed at it.
+///
+/// Hiding is per definition: a chosen face hides the part it is on, because
+/// this is what a definition being hidden means and a part with one face
+/// missing is a different part.
+///
+/// The choice goes with it, and so does what the pointer was over and any
+/// question or click still in flight. Leaving a selection on something no
+/// longer drawn would leave an inspector describing a part nobody can see, and
+/// a click already recorded would be answered against the frame that is about
+/// to be replaced.
+///
+/// Returns whether anything happened, which is what an unavailable action must
+/// not claim. The camera is not an argument here: hiding is not a way to move.
+fn hide_selected(
+    visibility: &mut Visibility,
+    selection: &mut Selection,
+    hovered: &mut Marked,
+    snapshot: &RenderSnapshot,
+    input: &mut ViewportInput,
+) -> bool {
+    if !visibility.hide(selection.marked(), snapshot) {
+        return false;
+    }
+    *selection = Selection::Nothing;
+    *hovered = Marked::Nothing;
+    input.forget_pending();
+    true
+}
+
+/// Draws every definition again, and changes nothing else.
+///
+/// Deliberately not a way to choose anything: what was hidden was unchosen
+/// when it was hidden, and putting it back on screen is not the same as
+/// deciding it is what the user is working on.
+fn show_all(visibility: &mut Visibility, input: &mut ViewportInput) -> bool {
+    if !visibility.show_all() {
+        return false;
+    }
+    input.request_redraw();
+    true
 }
 
 /// Shows what is chosen, and changes nothing else.
@@ -812,8 +872,12 @@ fn frame_selection<P>(
 /// disturb one. The extent is the snapshot's own, computed once when it was
 /// packed – recomputing it here from the catalogue, the picks or the order the
 /// definitions happen to be in would be a second answer to a settled question.
-fn frame_scene(snapshot: &RenderSnapshot, camera: &mut ViewportInput) -> Result<bool> {
-    camera.frame_extent(snapshot.bounds())
+fn frame_scene(
+    visibility: &Visibility,
+    snapshot: &RenderSnapshot,
+    camera: &mut ViewportInput,
+) -> Result<bool> {
+    camera.frame_extent(visibility.bounds(snapshot))
 }
 
 /// Records what the pointer is over, and says whether anything changed.
@@ -1159,7 +1223,20 @@ impl ApplicationHandler<AppEvent> for App {
                         live.scene.prepared.snapshot(),
                     )
                     .is_some(),
-                    can_frame_scene: live.scene.prepared.snapshot().bounds().is_some(),
+                    can_frame_scene: live
+                        .scene
+                        .visibility
+                        .bounds(live.scene.prepared.snapshot())
+                        .is_some(),
+                    // Exactly when there is something chosen that is still
+                    // being drawn. Nothing hidden can be chosen, so this is
+                    // the whole of the condition.
+                    can_hide: live
+                        .scene
+                        .selection
+                        .owning_definition(live.scene.prepared.snapshot())
+                        .is_some(),
+                    can_show_all: live.scene.visibility.anything_hidden(),
                 };
                 match live.draw(&self.input, activity) {
                     // A button pressed during this frame reaches the camera
@@ -1197,6 +1274,14 @@ impl ApplicationHandler<AppEvent> for App {
                         if chosen.frame_all {
                             self.frame_whole_scene();
                         }
+                        // The button and the key ask the same function, as
+                        // framing does.
+                        if chosen.hide {
+                            self.hide_chosen();
+                        }
+                        if chosen.show_all {
+                            self.show_everything();
+                        }
                         // Asked after the frame that was clicked has been
                         // published, and only when somebody clicked: answering
                         // means drawing the model again offscreen to read one
@@ -1220,16 +1305,30 @@ impl ApplicationHandler<AppEvent> for App {
             // reducer is handed the answer rather than asked to find it.
             WindowEvent::KeyboardInput { ref event, .. }
                 if event.state == ElementState::Pressed
-                    && wants_frame(&event.logical_key, response.consumed) =>
+                    && wants(&event.logical_key, response.consumed, FRAME_KEY) =>
             {
                 self.frame_selection();
             }
 
             WindowEvent::KeyboardInput { ref event, .. }
                 if event.state == ElementState::Pressed
-                    && wants_frame_all(&event.logical_key, response.consumed) =>
+                    && wants(&event.logical_key, response.consumed, FRAME_ALL_KEY) =>
             {
                 self.frame_whole_scene();
+            }
+
+            WindowEvent::KeyboardInput { ref event, .. }
+                if event.state == ElementState::Pressed
+                    && wants(&event.logical_key, response.consumed, HIDE_KEY) =>
+            {
+                self.hide_chosen();
+            }
+
+            WindowEvent::KeyboardInput { ref event, .. }
+                if event.state == ElementState::Pressed
+                    && wants(&event.logical_key, response.consumed, SHOW_ALL_KEY) =>
+            {
+                self.show_everything();
             }
 
             other => {
@@ -1424,6 +1523,34 @@ impl App {
         }
     }
 
+    /// Stops drawing what is chosen, if anything chosen is being drawn.
+    ///
+    /// The rule lives in `hide_selected`, where it can be exercised without a
+    /// window; this is the wiring that hands it the picture. An action with
+    /// nothing to do asks for nothing, which is what makes a disabled button
+    /// and an unavailable key agree.
+    fn hide_chosen(&mut self) {
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+        let scene = &mut live.scene;
+        hide_selected(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            scene.prepared.snapshot(),
+            &mut self.input,
+        );
+    }
+
+    /// Draws every definition again.
+    fn show_everything(&mut self) {
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+        show_all(&mut live.scene.visibility, &mut self.input);
+    }
+
     /// Shows the whole model, wherever the camera had wandered to.
     ///
     /// The one operation behind both the button and the key.
@@ -1431,7 +1558,11 @@ impl App {
         let Some(live) = self.live.as_ref() else {
             return;
         };
-        if let Err(error) = frame_scene(live.scene.prepared.snapshot(), &mut self.input) {
+        if let Err(error) = frame_scene(
+            &live.scene.visibility,
+            live.scene.prepared.snapshot(),
+            &mut self.input,
+        ) {
             eprintln!("ferritecad: {error}");
         }
     }
@@ -1510,6 +1641,7 @@ impl App {
             camera,
             Marked::Nothing,
             Marked::Nothing,
+            &live.scene.visibility,
         )?;
         Ok(frame.hit_at(x, y))
     }
@@ -1650,7 +1782,12 @@ impl App {
             window,
             renderer,
             surface: window_surface,
-            scene: LiveScene::new(prepared, Vec::new(), FaceNames::default()),
+            scene: LiveScene::new(
+                prepared,
+                Vec::new(),
+                FaceNames::default(),
+                Visibility::default(),
+            ),
             egui,
             egui_state,
             egui_renderer,
@@ -1696,6 +1833,10 @@ impl Live {
         // One answer for both sides of the choice: the row a list marks and
         // the facts an inspector shows come from the same resolution.
         let (definitions, chosen_row) = scene.view(&words.identities, scene.prepared.snapshot());
+        // Which rows are not being drawn. The same mask the renderer reads, so
+        // a row marked hidden and a definition missing from the picture cannot
+        // be two different sets.
+        let hidden = scene.visibility.hidden_in(scene.prepared.snapshot());
         let described = inspected(
             &scene.selection,
             &scene.catalogue,
@@ -1714,6 +1855,7 @@ impl Live {
             input.camera(),
             scene.selection.marked(),
             scene.hovered,
+            &scene.visibility,
         )?;
 
         let raw_input = egui_state.take_egui_input(window);
@@ -1729,7 +1871,7 @@ impl Live {
             // Every definition in the picture, whether or not any of it is on
             // screen: a part hidden behind another, too small to hit or out of
             // shot is reachable here and nowhere else.
-            let rows = ferritecad_ui::definitions_panel(ui, &definitions, chosen_row);
+            let rows = ferritecad_ui::definitions_panel(ui, &definitions, chosen_row, hidden);
             chosen.definition = rows.pressed;
             pointed_row = rows.hovered;
             ui.separator();
@@ -1847,36 +1989,25 @@ fn button_of(button: MouseButton) -> Option<PointerButton> {
     }
 }
 
-/// Whether this unclaimed key is the one printed on the whole-model button.
+/// Whether this unclaimed key is the one printed on a particular button.
 ///
-/// Read from the same constant the panel prints, and refused when the
-/// interface claimed it, for the same reasons as [`wants_frame`].
-fn wants_frame_all(key: &Key, claimed_by_ui: bool) -> bool {
+/// `shortcut` is read from the same constant the panel prints, for the same
+/// reason the view keys are: a shortcut that drifts from its label is a
+/// shortcut nobody can trust. The interface has first refusal, just as it does
+/// for view keys: a focused text control that accepted an `F` did not also ask
+/// to move the model camera. Case is ignored because a keyboard reports what
+/// was typed and the button prints one of the two.
+///
+/// One function for every such button, so a fourth action cannot arrive with a
+/// fourth almost-identical rule about what counts as claimed.
+fn wants(key: &Key, claimed_by_ui: bool, shortcut: &str) -> bool {
     if claimed_by_ui {
         return false;
     }
     let Key::Character(text) = key else {
         return false;
     };
-    text.eq_ignore_ascii_case(FRAME_ALL_KEY)
-}
-
-/// Whether this unclaimed key is the one printed on the framing button.
-///
-/// Read from the same constant the panel prints, for the same reason the view
-/// keys are: a shortcut that drifts from its label is a shortcut nobody can
-/// trust. The interface has first refusal, just as it does for view keys: a
-/// focused text control that accepted an `F` did not also ask to move the
-/// model camera. Case is ignored because a keyboard reports what was typed and
-/// the button prints one of the two.
-fn wants_frame(key: &Key, claimed_by_ui: bool) -> bool {
-    if claimed_by_ui {
-        return false;
-    }
-    let Key::Character(text) = key else {
-        return false;
-    };
-    text.eq_ignore_ascii_case(FRAME_KEY)
+    text.eq_ignore_ascii_case(shortcut)
 }
 
 /// The number keys a drawing office would expect.
@@ -2093,7 +2224,7 @@ mod tests {
         // call a document ready before the frame that put it there.
         let outcome = if loads.accepts(generation) {
             match prepare_load(input, result, |_| Ok(())) {
-                Ok((updated, (), _, _)) => {
+                Ok((updated, (), _, _, _)) => {
                     *input = updated;
                     Ok(())
                 }
@@ -2588,6 +2719,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Marked::Nothing,
         };
@@ -2601,7 +2733,12 @@ mod tests {
         // the same deterministic snapshot identity while its catalogue names
         // another object. Replacing all three pieces through the constructor
         // is what prevents the old raw definition number from retargeting.
-        let replacement = LiveScene::new((), vec![a_body()], FaceNames::default());
+        let replacement = LiveScene::new(
+            (),
+            vec![a_body()],
+            FaceNames::default(),
+            Visibility::default(),
+        );
         assert_eq!(replacement.selection, Selection::Nothing);
     }
 
@@ -2618,6 +2755,7 @@ mod tests {
             prepared: (),
             catalogue: vec![mine.clone()],
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Marked::Nothing,
         };
@@ -2652,6 +2790,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Marked::Nothing,
         };
@@ -2665,7 +2804,13 @@ mod tests {
         commit_scene(
             &mut scene,
             &mut camera,
-            Ok((framed, (), vec![arriving.clone()], FaceNames::default())),
+            Ok((
+                framed,
+                (),
+                vec![arriving.clone()],
+                FaceNames::default(),
+                Visibility::default(),
+            )),
         )
         .expect("a load that arrived commits");
 
@@ -2685,6 +2830,7 @@ mod tests {
             prepared: (),
             catalogue: vec![mine.clone()],
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Definition(
                 picture
                     .draws()
@@ -2714,6 +2860,7 @@ mod tests {
             prepared: (),
             catalogue: Vec::new(),
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: scene.selection,
             hovered: Marked::Nothing,
         };
@@ -2733,6 +2880,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Marked::Nothing,
         };
@@ -2846,6 +2994,7 @@ mod tests {
             prepared: (),
             catalogue: entries.clone(),
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Marked::Nothing,
         };
@@ -2900,6 +3049,463 @@ mod tests {
         };
     }
 
+    /// A big plate with a small one directly behind it.
+    ///
+    /// From the camera `Camera::frame` chooses, the front one covers the rear
+    /// one completely: every pixel of the model is the front plate, and there
+    /// is no angle in this gate's remit that would show what is behind it.
+    fn occluding_pair() -> (std::sync::Arc<RenderSnapshot>, Camera) {
+        use ferritecad_kernel::{Mesh, MeshFaceRange, SessionId, ShapeHandle, SubShapeKind};
+
+        // A square in the XZ plane at `y`, facing the eye that framing puts on
+        // the negative side of Y.
+        let plate = |half: f32, y: f32, shape: u64| {
+            let handle = ShapeHandle::new(SessionId::new(), shape);
+            Mesh {
+                positions: vec![
+                    -half, y, -half, half, y, -half, half, y, half, -half, y, half,
+                ],
+                normals: vec![
+                    0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0,
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                faces: vec![MeshFaceRange {
+                    face: ferritecad_kernel::SubShapeHandle::new(handle, SubShapeKind::Face, 0),
+                    first_index: 0,
+                    index_count: 6,
+                }],
+            }
+        };
+
+        let mut builder = SnapshotBuilder::new();
+        let front = builder.add_mesh(&plate(20.0, 0.0, 1)).expect("packs");
+        let rear = builder.add_mesh(&plate(4.0, 9.0, 2)).expect("packs");
+        builder
+            .place(
+                front,
+                None,
+                &ferritecad_types::Transform::IDENTITY,
+                [0.8, 0.2, 0.2],
+            )
+            .expect("places");
+        builder
+            .place(
+                rear,
+                None,
+                &ferritecad_types::Transform::IDENTITY,
+                [0.2, 0.4, 0.9],
+            )
+            .expect("places");
+        let snapshot = std::sync::Arc::new(builder.build());
+
+        let mut camera = Camera::new();
+        camera.resize(128, 128);
+        camera
+            .frame(snapshot.bounds().expect("the pair has an extent"))
+            .expect("frames");
+        (snapshot, camera)
+    }
+
+    /// A picture of two definitions, each placed twice.
+    fn two_definitions() -> RenderSnapshot {
+        let mut builder = SnapshotBuilder::new();
+        let first = builder.add_mesh(&distant_scene_mesh()).expect("packs");
+        let second = builder.add_mesh(&distant_scene_mesh()).expect("packs");
+        for definition in [first, second] {
+            for x in [0.0, 40.0] {
+                builder
+                    .place(
+                        definition,
+                        None,
+                        &ferritecad_types::Transform::from_translation(
+                            ferritecad_types::Vec3::new(x + definition as f64 * 100.0, 0.0, 0.0)
+                                .expect("finite"),
+                        )
+                        .expect("finite"),
+                        [0.5, 0.5, 0.5],
+                    )
+                    .expect("places");
+            }
+        }
+        builder.build()
+    }
+
+    /// A scene with that picture, and something chosen in it.
+    fn live_with(picture: &RenderSnapshot, chosen: usize) -> LiveScene<()> {
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(picture),
+        );
+        scene.selection =
+            Selection::Definition(picture.pick_of(chosen).expect("the picture has that row"));
+        scene
+    }
+
+    #[test]
+    fn hiding_what_is_chosen_forgets_it_and_everything_pointing_at_it() {
+        let picture = two_definitions();
+        let mut scene = live_with(&picture, 0);
+        scene.hovered = Marked::Definition(picture.pick_of(0).expect("drawn"));
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let camera = input.camera().view_projection();
+        // A click and a question already in flight, about the frame on screen.
+        let click = |input: &mut ViewportInput| {
+            input.handle(ViewportEvent::PointerMoved { x: 4.0, y: 4.0 }, false);
+            input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+            input.handle(
+                ViewportEvent::PointerReleased(PointerButton::Primary),
+                false,
+            );
+        };
+        let mut proof = input.clone();
+        click(&mut proof);
+        assert!(
+            proof.take_pick().is_some(),
+            "the gate needs a click that would be answered"
+        );
+        click(&mut input);
+        input.handle(ViewportEvent::PointerMoved { x: 9.0, y: 9.0 }, false);
+
+        assert!(hide_selected(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+
+        // What was chosen is not chosen, what was pointed at is not pointed
+        // at, and nothing in flight can bring either back.
+        assert_eq!(scene.selection, Selection::Nothing);
+        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(
+            input.take_pick(),
+            None,
+            "a click survived hiding its target"
+        );
+        assert_eq!(input.take_hover(), Hover::Cleared);
+        assert!(input.take_redraw(), "hiding something owes a frame");
+        assert!(!scene.visibility.shows(0, &picture));
+        assert!(scene.visibility.shows(1, &picture));
+
+        // And the camera did not move for any of it.
+        assert_eq!(input.camera().view_projection(), camera);
+    }
+
+    #[test]
+    fn showing_everything_puts_it_back_without_choosing_anything() {
+        let picture = two_definitions();
+        let mut scene = live_with(&picture, 0);
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        assert!(hide_selected(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+        let camera = input.camera().view_projection();
+        let _ = input.take_redraw();
+
+        assert!(show_all(&mut scene.visibility, &mut input));
+        assert!(scene.visibility.shows(0, &picture));
+        assert!(!scene.visibility.anything_hidden());
+        assert!(input.take_redraw(), "showing everything owes a frame");
+
+        // Putting something back on screen is not deciding that it is what the
+        // user is working on.
+        assert_eq!(scene.selection, Selection::Nothing);
+        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(input.camera().view_projection(), camera);
+    }
+
+    #[test]
+    fn an_action_with_nothing_to_do_asks_for_nothing() {
+        let picture = two_definitions();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let _ = input.take_redraw();
+
+        // Nothing chosen, so there is nothing to hide; nothing hidden, so
+        // there is nothing to show. Neither owes a frame.
+        assert!(!hide_selected(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+        assert!(!show_all(&mut scene.visibility, &mut input));
+        assert!(
+            !input.take_redraw(),
+            "an action that did nothing asked for a frame"
+        );
+
+        // And repeating an action that has already happened is the same.
+        scene.selection = Selection::Definition(picture.pick_of(0).expect("drawn"));
+        assert!(hide_selected(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+        let _ = input.take_redraw();
+        assert!(!hide_selected(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+        assert!(show_all(&mut scene.visibility, &mut input));
+        let _ = input.take_redraw();
+        assert!(!show_all(&mut scene.visibility, &mut input));
+        assert!(!input.take_redraw());
+    }
+
+    #[test]
+    fn framing_follows_what_is_still_drawn() {
+        let picture = two_definitions();
+        let mut scene = live_with(&picture, 0);
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+
+        // Everything, then everything that is left.
+        let mut all = input.clone();
+        frame_scene(&scene.visibility, &picture, &mut all).expect("frames");
+        assert!(hide_selected(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+        let mut visible = input.clone();
+        frame_scene(&scene.visibility, &picture, &mut visible).expect("frames");
+        assert_ne!(
+            all.camera().view_projection(),
+            visible.camera().view_projection(),
+            "framing everything and framing what is left put the camera in one place"
+        );
+
+        // What is chosen was unchosen by hiding it, so there is nowhere to go.
+        assert_eq!(selection_bounds(&scene, &picture), None);
+        assert!(
+            !frame_selection(&scene, &picture, &mut input)
+                .expect("having nowhere to go is not a failure")
+        );
+
+        // With everything hidden there is no model to frame at all.
+        scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
+        assert!(hide_selected(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+        assert_eq!(scene.visibility.bounds(&picture), None);
+        assert!(!frame_scene(&scene.visibility, &picture, &mut input).expect("nowhere to go"));
+    }
+
+    #[test]
+    fn a_successful_open_shows_everything_again_and_a_failed_one_changes_nothing() {
+        let picture = two_definitions();
+        let mut scene = live_with(&picture, 0);
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        assert!(hide_selected(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+        let hidden = scene.visibility.clone();
+
+        // A load that failed leaves the picture, what is hidden in it, and
+        // what is chosen exactly as they were.
+        let mut camera = ViewportInput::new();
+        commit_scene(&mut scene, &mut camera, Err(CadError::input("no")))
+            .expect_err("a failed load commits nothing");
+        assert_eq!(scene.visibility, hidden);
+        assert!(!scene.visibility.shows(0, &picture));
+
+        // A load that arrived replaces all of it at once: a document does not
+        // open with parts already missing.
+        let next = two_definitions();
+        let mut framed = ViewportInput::new();
+        framed.resize(640, 480);
+        commit_scene(
+            &mut scene,
+            &mut camera,
+            Ok((
+                framed,
+                (),
+                vec![a_body(), a_body()],
+                FaceNames::default(),
+                Visibility::new(&next),
+            )),
+        )
+        .expect("a load that arrived commits");
+        assert!(!scene.visibility.anything_hidden());
+        assert!(scene.visibility.shows(0, &next));
+        assert_eq!(scene.selection, Selection::Nothing);
+        assert_eq!(scene.hovered, Marked::Nothing);
+    }
+
+    #[test]
+    fn the_keys_that_hide_and_show_are_the_ones_the_panel_prints() {
+        // Read from the same constants the buttons print.
+        assert!(wants(&Key::Character(HIDE_KEY.into()), false, HIDE_KEY));
+        assert!(wants(
+            &Key::Character(HIDE_KEY.to_lowercase().into()),
+            false,
+            HIDE_KEY
+        ));
+        assert!(wants(
+            &Key::Character(SHOW_ALL_KEY.into()),
+            false,
+            SHOW_ALL_KEY
+        ));
+
+        // Distinct from each other and from everything else bound here: two
+        // actions on one key is a shortcut whose meaning depends on state
+        // nobody can see.
+        let bound = [FRAME_KEY, FRAME_ALL_KEY, HIDE_KEY, SHOW_ALL_KEY];
+        for (first, one) in bound.iter().enumerate() {
+            for other in bound.iter().skip(first + 1) {
+                assert_ne!(one, other, "two actions share one key");
+            }
+            assert!(
+                VIEWS.iter().all(|(_, _, view)| view != one),
+                "{one} is also a view key"
+            );
+        }
+        assert!(named_view(&Key::Character(HIDE_KEY.into())).is_none());
+        assert!(named_view(&Key::Character(SHOW_ALL_KEY.into())).is_none());
+        assert!(!wants(&Key::Named(NamedKey::Home), false, HIDE_KEY));
+        assert!(!wants(&Key::Named(NamedKey::Home), false, SHOW_ALL_KEY));
+
+        // And the interface has first refusal for both, exactly as it does for
+        // framing: a focused text control that accepted an H did not also ask
+        // to hide a part of the model.
+        assert!(!wants(&Key::Character(HIDE_KEY.into()), true, HIDE_KEY));
+        assert!(!wants(
+            &Key::Character(SHOW_ALL_KEY.into()),
+            true,
+            SHOW_ALL_KEY
+        ));
+    }
+
+    #[test]
+    fn hiding_the_front_definition_is_the_only_way_to_reach_the_one_behind_it() {
+        let mut renderer = renderer_or_skip!();
+        let (snapshot, camera) = occluding_pair();
+        let prepared = renderer
+            .prepare(std::sync::Arc::clone(&snapshot))
+            .expect("uploads");
+
+        let plain = renderer
+            .render(
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Marked::Nothing,
+                &Visibility::new(&snapshot),
+            )
+            .expect("draws");
+
+        // The defect, stated as pixels: the rear definition is drawn, is part
+        // of the model, and cannot be reached. Every pixel of the model is the
+        // front one.
+        let front = snapshot.pick_of(0).expect("drawn");
+        let rear = snapshot.pick_of(1).expect("drawn");
+        let model: Vec<(u32, u32)> = (0..plain.height())
+            .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+            .filter(|(x, y)| plain.pick_at(*x, *y) != PickId::NOTHING)
+            .collect();
+        assert!(model.len() > 400, "the pair is drawn");
+        assert!(
+            model.iter().all(|(x, y)| plain.pick_at(*x, *y) == front),
+            "the gate needs the front definition to cover the rear one completely"
+        );
+
+        // Choosing the front one, and hiding what is chosen.
+        let mut scene = LiveScene::new(
+            (),
+            Vec::new(),
+            FaceNames::default(),
+            Visibility::new(&snapshot),
+        );
+        scene.selection = Selection::Definition(front);
+        let mut input = ViewportInput::new();
+        input.resize(128, 128);
+        let before = camera.view_projection();
+
+        assert!(
+            hide_selected(
+                &mut scene.visibility,
+                &mut scene.selection,
+                &mut scene.hovered,
+                &snapshot,
+                &mut input
+            ),
+            "hiding a chosen, visible definition must be something that happens"
+        );
+
+        let revealed = renderer
+            .render(
+                &prepared,
+                &camera,
+                scene.selection.marked(),
+                scene.hovered,
+                &scene.visibility,
+            )
+            .expect("draws");
+
+        // What was behind is now there, and is exactly itself: its own
+        // definition, and its own face.
+        let seen: Vec<(u32, u32)> = (0..revealed.height())
+            .flat_map(|y| (0..revealed.width()).map(move |x| (x, y)))
+            .filter(|(x, y)| revealed.pick_at(*x, *y) != PickId::NOTHING)
+            .collect();
+        assert!(!seen.is_empty(), "hiding the front revealed nothing");
+        for (x, y) in &seen {
+            assert_eq!(revealed.pick_at(*x, *y), rear);
+            assert_eq!(
+                revealed.hit_at(*x, *y).face(),
+                snapshot.face_of(1, 0).expect("numbered"),
+                "the revealed definition must carry its own face identity"
+            );
+        }
+        // And where only the front used to be, there is now nothing at all -
+        // not a stale pick of something no longer drawn.
+        for (x, y) in &model {
+            if revealed.pick_at(*x, *y) == PickId::NOTHING {
+                assert_eq!(revealed.hit_at(*x, *y).definition(), PickId::NOTHING);
+            }
+        }
+
+        // Nothing moved the camera to achieve it.
+        assert_eq!(camera.view_projection(), before);
+        assert_eq!(
+            input.camera().view_projection(),
+            ViewportInput::new().camera().view_projection()
+        );
+    }
+
     #[test]
     fn clicking_a_named_face_of_the_plate_selects_that_face_and_says_what_it_is() {
         let mut renderer = renderer_or_skip!();
@@ -2919,7 +3525,13 @@ mod tests {
         // "this face" from "this body".
         camera.orbit(0.7, 0.6);
         let plain = renderer
-            .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
+            .render(
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Marked::Nothing,
+                &Visibility::new(&snapshot),
+            )
             .expect("draws");
 
         // A pixel of the plate, and what the frame says is under it.
@@ -2942,7 +3554,13 @@ mod tests {
         // What is marked is that face, in the placements of its definition,
         // and not the rest of the definition.
         let selected = renderer
-            .render(&prepared, &camera, chosen.marked(), Marked::Nothing)
+            .render(
+                &prepared,
+                &camera,
+                chosen.marked(),
+                Marked::Nothing,
+                &Visibility::new(&snapshot),
+            )
             .expect("draws");
         let mut same_face = 0usize;
         let mut same_definition = 0usize;
@@ -3033,7 +3651,8 @@ mod tests {
         // And the camera actually goes to the smaller of the two.
         let mut looking_at_the_face = ViewportInput::new();
         looking_at_the_face.resize(800, 600);
-        let mut scene_with_face = LiveScene::new((), Vec::new(), FaceNames::default());
+        let mut scene_with_face =
+            LiveScene::new((), Vec::new(), FaceNames::default(), Visibility::default());
         scene_with_face.selection = chosen;
         assert!(
             frame_selection(&scene_with_face, &scene.snapshot, &mut looking_at_the_face)
@@ -3043,7 +3662,8 @@ mod tests {
 
         let mut looking_at_the_part = ViewportInput::new();
         looking_at_the_part.resize(800, 600);
-        let mut scene_with_part = LiveScene::new((), Vec::new(), FaceNames::default());
+        let mut scene_with_part =
+            LiveScene::new((), Vec::new(), FaceNames::default(), Visibility::default());
         scene_with_part.selection = definition;
         assert!(
             frame_selection(&scene_with_part, &scene.snapshot, &mut looking_at_the_part)
@@ -3059,7 +3679,12 @@ mod tests {
     #[test]
     fn a_chosen_face_survives_a_failed_open_and_not_a_successful_one() {
         let (_directory, scene, chosen) = plate_with_a_chosen_face();
-        let mut live = LiveScene::new((), vec![a_body()], FaceNames::default());
+        let mut live = LiveScene::new(
+            (),
+            vec![a_body()],
+            FaceNames::default(),
+            Visibility::default(),
+        );
         live.selection = chosen.clone();
         live.hovered = Marked::Face(scene.snapshot.face_of(0, 1).expect("numbered"));
         let mut camera = ViewportInput::new();
@@ -3081,7 +3706,13 @@ mod tests {
         commit_scene(
             &mut live,
             &mut camera,
-            Ok((framed, (), vec![a_body()], FaceNames::default())),
+            Ok((
+                framed,
+                (),
+                vec![a_body()],
+                FaceNames::default(),
+                Visibility::default(),
+            )),
         )
         .expect("a load that arrived commits");
         assert_eq!(live.selection, Selection::Nothing);
@@ -3158,6 +3789,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Marked::Nothing,
         };
@@ -3207,6 +3839,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Marked::Definition(chosen),
         };
@@ -3227,7 +3860,13 @@ mod tests {
         commit_scene(
             &mut scene,
             &mut camera,
-            Ok((framed, (), vec![a_body()], FaceNames::default())),
+            Ok((
+                framed,
+                (),
+                vec![a_body()],
+                FaceNames::default(),
+                Visibility::default(),
+            )),
         )
         .expect("a load that arrived commits");
         assert_eq!(scene.hovered, Marked::Nothing);
@@ -3262,6 +3901,7 @@ mod tests {
             prepared: (),
             catalogue: entries.clone(),
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Marked::Nothing,
         };
@@ -3341,6 +3981,7 @@ mod tests {
             prepared: (),
             catalogue: vec![entry],
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Marked::Nothing,
         };
@@ -3361,6 +4002,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body(), a_body()],
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Marked::Nothing,
         };
@@ -3391,6 +4033,7 @@ mod tests {
             prepared: (),
             catalogue: entries.clone(),
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Definition(picture.pick_of(1).expect("the picture has that row")),
             hovered: Marked::Nothing,
         };
@@ -3440,6 +4083,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Definition(
                 picture.pick_of(mesh).expect("the picture has that row"),
             ),
@@ -3499,6 +4143,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Marked::Nothing,
         };
@@ -3546,6 +4191,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body(), a_body()],
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Definition(
                 picture.pick_of(chosen).expect("the picture has that row"),
             ),
@@ -3560,7 +4206,10 @@ mod tests {
 
         let mut showing_all = ViewportInput::new();
         showing_all.resize(800, 600);
-        assert!(frame_scene(&picture, &mut showing_all).expect("a picture can be framed"));
+        assert!(
+            frame_scene(&Visibility::new(&picture), &picture, &mut showing_all)
+                .expect("a picture can be framed")
+        );
 
         // The two answer different questions. What is chosen sits at the
         // origin, so showing it looks there; the neighbour is 900 away, so
@@ -3604,6 +4253,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Definition(
                 picture.pick_of(only).expect("the picture has that row"),
             ),
@@ -3617,7 +4267,7 @@ mod tests {
 
         let mut by_everything = ViewportInput::new();
         by_everything.resize(800, 600);
-        frame_scene(&picture, &mut by_everything).expect("frames");
+        frame_scene(&Visibility::new(&picture), &picture, &mut by_everything).expect("frames");
 
         // The same answer, to the last float. Two implementations of where a
         // camera goes would agree only by accident, and stop agreeing the
@@ -3635,7 +4285,8 @@ mod tests {
 
         for _ in 0..3 {
             assert!(
-                !frame_scene(&empty, &mut camera).expect("having nowhere to go is not a failure"),
+                !frame_scene(&Visibility::new(&empty), &empty, &mut camera)
+                    .expect("having nowhere to go is not a failure"),
                 "an empty picture was framed"
             );
         }
@@ -3654,6 +4305,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Definition(picture.pick_of(0).expect("the picture has that row")),
             hovered: Marked::Nothing,
         };
@@ -3679,6 +4331,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Marked::Nothing,
         };
@@ -3714,6 +4367,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            visibility: Visibility::default(),
             selection: Selection::Definition(
                 picture
                     .draws()
@@ -3775,6 +4429,7 @@ mod tests {
                 prepared: (),
                 catalogue: vec![entry.clone()],
                 faces: FaceNames::default(),
+                visibility: Visibility::default(),
                 selection: Selection::Definition(draw.pick),
                 hovered: Marked::Nothing,
             };
@@ -4117,46 +4772,63 @@ mod tests {
     fn the_key_and_the_button_ask_for_the_same_thing() {
         // Both routes end in `App::frame_selection`, so what is left to check
         // is that the key the window listens for is the key the panel prints.
-        assert!(wants_frame(&Key::Character(FRAME_KEY.into()), false));
+        assert!(wants(&Key::Character(FRAME_KEY.into()), false, FRAME_KEY));
         assert!(
-            wants_frame(&Key::Character(FRAME_KEY.to_lowercase().into()), false),
+            wants(
+                &Key::Character(FRAME_KEY.to_lowercase().into()),
+                false,
+                FRAME_KEY
+            ),
             "the button prints one case and a keyboard reports the other"
         );
 
         // And nothing else is that key, including the view shortcuts beside it.
         for (_, _, key) in VIEWS {
-            assert!(!wants_frame(&Key::Character((*key).into()), false));
+            assert!(!wants(&Key::Character((*key).into()), false, FRAME_KEY));
         }
-        assert!(!wants_frame(&Key::Named(NamedKey::Home), false));
-        assert!(!wants_frame(&Key::Character("g".into()), false));
+        assert!(!wants(&Key::Named(NamedKey::Home), false, FRAME_KEY));
+        assert!(!wants(&Key::Character("g".into()), false, FRAME_KEY));
     }
 
     #[test]
     fn the_whole_model_key_is_its_own_and_yields_to_the_interface() {
-        assert!(wants_frame_all(
+        assert!(wants(
             &Key::Character(FRAME_ALL_KEY.into()),
-            false
+            false,
+            FRAME_ALL_KEY
         ));
         assert!(
-            wants_frame_all(&Key::Character(FRAME_ALL_KEY.to_lowercase().into()), false),
+            wants(
+                &Key::Character(FRAME_ALL_KEY.to_lowercase().into()),
+                false,
+                FRAME_ALL_KEY
+            ),
             "the button prints one case and a keyboard reports the other"
         );
 
         // A key the interface took is not a camera command: a focused text
         // control that accepted an `A` did not ask to reframe the model.
         assert!(
-            !wants_frame_all(&Key::Character(FRAME_ALL_KEY.into()), true),
+            !wants(&Key::Character(FRAME_ALL_KEY.into()), true, FRAME_ALL_KEY),
             "a key the interface claimed still moved the model camera"
         );
 
         // Nothing else is that key, and it is not the other framing key.
-        assert!(!wants_frame_all(&Key::Character(FRAME_KEY.into()), false));
-        assert!(!wants_frame(&Key::Character(FRAME_ALL_KEY.into()), false));
+        assert!(!wants(
+            &Key::Character(FRAME_KEY.into()),
+            false,
+            FRAME_ALL_KEY
+        ));
+        assert!(!wants(
+            &Key::Character(FRAME_ALL_KEY.into()),
+            false,
+            FRAME_KEY
+        ));
         for (_, _, key) in VIEWS {
-            assert!(!wants_frame_all(&Key::Character((*key).into()), false));
+            assert!(!wants(&Key::Character((*key).into()), false, FRAME_ALL_KEY));
         }
         // Home still means the isometric view and nothing else.
-        assert!(!wants_frame_all(&Key::Named(NamedKey::Home), false));
+        assert!(!wants(&Key::Named(NamedKey::Home), false, FRAME_ALL_KEY));
         assert_eq!(
             named_view(&Key::Named(NamedKey::Home)),
             Some(StandardView::Isometric)
@@ -4165,9 +4837,9 @@ mod tests {
 
     #[test]
     fn the_frame_key_does_not_bypass_the_interface_that_claimed_it() {
-        assert!(wants_frame(&Key::Character(FRAME_KEY.into()), false));
+        assert!(wants(&Key::Character(FRAME_KEY.into()), false, FRAME_KEY));
         assert!(
-            !wants_frame(&Key::Character(FRAME_KEY.into()), true),
+            !wants(&Key::Character(FRAME_KEY.into()), true, FRAME_KEY),
             "a key the interface claimed still moved the model camera"
         );
     }

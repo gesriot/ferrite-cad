@@ -14,7 +14,8 @@ use ferritecad_kernel::{
 };
 use ferritecad_types::{ContentHash, ErrorKind, Transform, Vec3};
 use ferritecad_viewport::{
-    Camera, FacePickId, PickId, RenderSnapshot, SnapshotBuilder, StandardView, VERTEX_FLOATS,
+    Camera, FacePickId, Marked, PickId, RenderSnapshot, SnapshotBuilder, StandardView,
+    VERTEX_FLOATS, Visibility,
 };
 
 /// One triangle, with distinguishable positions and normals.
@@ -1810,4 +1811,220 @@ fn a_picture_numbers_its_faces_where_it_says_it_does() {
         builder.build()
     };
     assert_eq!(other.definition_of_face(seen[0]), None);
+}
+
+/// Two definitions, each placed twice, with two faces each.
+fn two_definitions_placed_twice() -> RenderSnapshot {
+    let mut builder = SnapshotBuilder::new();
+    let first = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+    let second = builder.add_mesh(&divided(&[2, 1])).expect("packs");
+    for definition in [first, second] {
+        for x in [0.0, 200.0] {
+            builder
+                .place(
+                    definition,
+                    None,
+                    &moved(x + definition as f64 * 50.0, 0.0, 0.0),
+                    [1.0, 1.0, 1.0],
+                )
+                .expect("places");
+        }
+    }
+    builder.build()
+}
+
+#[test]
+fn a_picture_begins_with_every_definition_drawn() {
+    let snapshot = two_definitions_placed_twice();
+    let visibility = Visibility::new(&snapshot);
+
+    assert!(!visibility.anything_hidden());
+    for definition in 0..snapshot.meshes().len() {
+        assert!(visibility.shows(definition, &snapshot));
+    }
+    assert_eq!(visibility.bounds(&snapshot), snapshot.bounds());
+}
+
+#[test]
+fn hiding_one_definition_hides_all_of_it_and_none_of_its_neighbour() {
+    let snapshot = two_definitions_placed_twice();
+    let mut visibility = Visibility::new(&snapshot);
+    let hidden = snapshot.pick_of(0).expect("drawn");
+
+    assert!(visibility.hide(Marked::Definition(hidden), &snapshot));
+    assert!(visibility.anything_hidden());
+
+    // Every placement of it, because a definition is what is hidden and a
+    // placement is only where it was put.
+    assert!(!visibility.shows(0, &snapshot));
+    assert_eq!(
+        snapshot
+            .draws()
+            .iter()
+            .filter(|item| item.mesh == 0)
+            .count(),
+        2,
+        "the gate needs the hidden definition to be placed more than once"
+    );
+    // And its neighbour is untouched, in both of its placements.
+    assert!(visibility.shows(1, &snapshot));
+
+    // A face of a hidden definition is hidden with it: hiding is per
+    // definition, and there is no state in which one face of a hidden part is
+    // still on screen.
+    for ordinal in 0..snapshot.meshes()[0].face_count() {
+        let face = snapshot.face_of(0, ordinal).expect("numbered");
+        assert_eq!(snapshot.definition_of_face(face), Some(0));
+        assert!(!visibility.shows(0, &snapshot));
+    }
+
+    // Hiding a face hides the part it is on, not the face alone.
+    let mut by_face = Visibility::new(&snapshot);
+    let face = snapshot.face_of(1, 0).expect("numbered");
+    assert!(by_face.hide(Marked::Face(face), &snapshot));
+    assert!(!by_face.shows(1, &snapshot));
+    assert!(by_face.shows(0, &snapshot));
+}
+
+#[test]
+fn nothing_a_stale_or_foreign_mark_can_say_hides_anything() {
+    let snapshot = two_definitions_placed_twice();
+    let elsewhere = {
+        let mut builder = SnapshotBuilder::new();
+        let part = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+        builder
+            .place(part, None, &Transform::IDENTITY, [0.0, 0.0, 1.0])
+            .expect("places");
+        builder.build()
+    };
+    let mut visibility = Visibility::new(&snapshot);
+
+    // Nothing, a pick of another picture, and a face of another picture. The
+    // raw numbers are all in range here, which is the point: what refuses them
+    // is the identity they carry, not their size.
+    let foreign_pick = elsewhere.pick_of(0).expect("drawn");
+    let foreign_face = elsewhere.face_of(0, 0).expect("numbered");
+    for mark in [
+        Marked::Nothing,
+        Marked::Definition(foreign_pick),
+        Marked::Face(foreign_face),
+        Marked::Definition(PickId::NOTHING),
+        Marked::Face(FacePickId::NOTHING),
+    ] {
+        assert!(!visibility.hide(mark, &snapshot), "{mark:?} hid something");
+    }
+    assert!(!visibility.anything_hidden());
+
+    // And a mask made for one picture applies to no other: applied to the
+    // wrong one it hides nothing rather than hiding whatever sits at the same
+    // index.
+    let mut ours = Visibility::new(&snapshot);
+    assert!(ours.hide(
+        Marked::Definition(snapshot.pick_of(0).expect("drawn")),
+        &snapshot
+    ));
+    assert!(
+        ours.shows(0, &elsewhere),
+        "a mask reached into another picture"
+    );
+    assert_eq!(ours.hidden_in(&elsewhere), &[] as &[bool]);
+    assert_eq!(ours.bounds(&elsewhere), elsewhere.bounds());
+}
+
+#[test]
+fn what_is_hidden_is_not_part_of_where_the_model_is() {
+    let snapshot = two_definitions_placed_twice();
+    let mut visibility = Visibility::new(&snapshot);
+    let whole = snapshot.bounds().expect("the picture has an extent");
+
+    assert!(visibility.hide(
+        Marked::Definition(snapshot.pick_of(0).expect("drawn")),
+        &snapshot
+    ));
+    let visible = visibility
+        .bounds(&snapshot)
+        .expect("something is still drawn");
+    assert_ne!(visible, whole);
+    assert_eq!(
+        visible,
+        snapshot
+            .bounds_of(snapshot.pick_of(1).expect("drawn"))
+            .expect("the other definition is somewhere"),
+        "what is left is exactly the definition still drawn"
+    );
+
+    // Everything hidden is nowhere at all, which is what an empty picture is:
+    // a camera has nothing to be pointed at rather than being pointed at the
+    // origin.
+    assert!(visibility.hide(
+        Marked::Definition(snapshot.pick_of(1).expect("drawn")),
+        &snapshot
+    ));
+    assert_eq!(visibility.bounds(&snapshot), None);
+
+    // And showing everything again restores exactly what was there.
+    assert!(visibility.show_all());
+    assert_eq!(visibility.bounds(&snapshot), Some(whole));
+    for definition in 0..snapshot.meshes().len() {
+        assert!(visibility.shows(definition, &snapshot));
+    }
+}
+
+#[test]
+fn asking_twice_for_the_same_visibility_changes_nothing_the_second_time() {
+    let snapshot = two_definitions_placed_twice();
+    let mut visibility = Visibility::new(&snapshot);
+    let pick = snapshot.pick_of(0).expect("drawn");
+
+    assert!(visibility.hide(Marked::Definition(pick), &snapshot));
+    let after = visibility.clone();
+    assert!(
+        !visibility.hide(Marked::Definition(pick), &snapshot),
+        "hiding what is already hidden is not a change"
+    );
+    assert_eq!(visibility, after);
+
+    assert!(visibility.show_all());
+    let shown = visibility.clone();
+    assert!(
+        !visibility.show_all(),
+        "showing everything when nothing is hidden is not a change"
+    );
+    assert_eq!(visibility, shown);
+}
+
+#[test]
+fn two_pictures_of_the_same_triangles_do_not_share_what_is_hidden() {
+    // The same geometry, drawn the same way, meaning different things: one
+    // picture's faces carry a document's names and the other's do not. What is
+    // hidden in one must not be hidden in the other, because "the same
+    // definition" is not a claim geometry alone can make.
+    let build = |context: Option<[u8; 32]>| {
+        let mut builder = SnapshotBuilder::new();
+        if let Some(context) = context {
+            builder
+                .bind_identities_to(ContentHash::from_bytes(context))
+                .expect("binds once");
+        }
+        let part = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+        builder
+            .place(part, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+            .expect("places");
+        builder.build()
+    };
+    let one = build(Some([7; 32]));
+    let other = build(Some([9; 32]));
+
+    let mut visibility = Visibility::new(&one);
+    assert!(visibility.hide(Marked::Definition(one.pick_of(0).expect("drawn")), &one));
+
+    assert!(!visibility.shows(0, &one));
+    assert!(
+        visibility.shows(0, &other),
+        "a picture with other meanings inherited what was hidden"
+    );
+    assert!(
+        !visibility.hide(Marked::Definition(one.pick_of(0).expect("drawn")), &other),
+        "a pick of one picture hid a definition of another"
+    );
 }

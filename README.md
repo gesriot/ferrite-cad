@@ -66,7 +66,18 @@ off screen. A reference grid on the world's XY plane gives the model a floor
 to sit on, with heavier lines every ten squares and coloured axes through the
 origin; its spacing steps through 1, 2 and 5 millimetres and their decades as
 you zoom. It is a viewing aid only: it is not in the document, not in the
-model's extent, and clicking it is clicking the background. Moving the pointer
+model's extent, and clicking it is clicking the background.
+`Hide selected` (or `H`) stops drawing what is chosen, which is how you reach a
+part standing behind another one: a hidden definition leaves no pixels, cannot
+be clicked or pointed at, and is not part of what `Frame all` shows. It is
+hidden in every place it appears, because what is hidden is the definition and
+not the spot it was drawn in, and choosing a face hides the part that face is
+on. `Show all` (or `U`) brings everything back without choosing anything. The
+list keeps a row for what is hidden, marked as hidden, which is where you look
+when you wonder where something went. None of this touches the document, and
+none of it survives opening one: a file always opens with all of it on screen.
+
+Moving the pointer
 over the model marks the face under it, and the same face wherever that
 definition appears; moving it over a row of the list marks that whole
 definition everywhere. Neither chooses anything, so a part or a surface can be

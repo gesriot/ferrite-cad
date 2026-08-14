@@ -337,14 +337,27 @@ impl ViewportInput {
         if let Some(bounds) = snapshot.bounds() {
             self.camera.frame(bounds)?;
         }
+        self.forget_pending();
+        Ok(snapshot)
+    }
+
+    /// Forgets every gesture and question in flight, and asks to draw again.
+    ///
+    /// What both replacing the picture and hiding part of it need: a click
+    /// recorded against the frame on screen would be answered against the one
+    /// about to replace it, and a question about what the pointer was over
+    /// would be answered about something that is no longer there.
+    ///
+    /// The camera is deliberately untouched. Forgetting a gesture is not a way
+    /// to move, and the two callers differ in exactly that: one frames what
+    /// arrived, the other must leave the view alone.
+    pub fn forget_pending(&mut self) {
         self.dragging = None;
         self.pressed_at = None;
         self.pick = None;
-        // A question about the previous document, whose answer would be about
-        // a picture nobody is looking at any more.
+        // A question about a picture nobody is looking at any more.
         self.hover = Hover::Cleared;
         self.redraw = true;
-        Ok(snapshot)
     }
 
     /// Asks for the next frame to be drawn.

@@ -315,6 +315,138 @@ impl Marked {
     }
 }
 
+/// Which definitions of one picture are drawn, for as long as it is on screen.
+///
+/// Per definition and not per placement: a definition drawn four times is one
+/// thing, and hiding one of its four placements would be hiding something the
+/// document does not describe.
+///
+/// Bound to the picture it was made for, like every other transient identity
+/// here. A mask from another picture – including one drawn from geometry that
+/// looks identical but means something else – applies to nothing, so a
+/// replaced document cannot arrive with parts already missing.
+///
+/// Not serialisable, and not a document fact: what is hidden is what this
+/// window is not showing at the moment, and reopening the document shows
+/// everything again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Visibility {
+    /// Indexed by definition. Empty means every definition is drawn, which is
+    /// what a picture nobody has hidden anything in looks like.
+    hidden: Vec<bool>,
+    snapshot: ContentHash,
+}
+
+impl Default for Visibility {
+    /// A mask belonging to no picture, which hides nothing in any of them.
+    ///
+    /// What a window holds before a document has been read.
+    fn default() -> Self {
+        Self {
+            hidden: Vec::new(),
+            snapshot: ContentHash::from_bytes([0; 32]),
+        }
+    }
+}
+
+impl Visibility {
+    /// Everything drawn, in this picture.
+    pub fn new(snapshot: &RenderSnapshot) -> Self {
+        Self {
+            hidden: vec![false; snapshot.meshes.len()],
+            snapshot: snapshot.identity,
+        }
+    }
+
+    /// Which definitions this picture is not drawing.
+    ///
+    /// Empty for a picture this mask was not made for, which is the safe
+    /// answer in both directions: nothing is hidden that cannot be verified,
+    /// and nothing is revealed that this mask has no business revealing.
+    ///
+    /// One rule, read by every path that draws and by the one that measures,
+    /// so a hidden definition cannot be missing from a window and present in
+    /// the extent a camera is framed to.
+    pub fn hidden_in<'a>(&'a self, snapshot: &RenderSnapshot) -> &'a [bool] {
+        if self.snapshot == snapshot.identity {
+            &self.hidden
+        } else {
+            &[]
+        }
+    }
+
+    /// Whether this definition of this picture is drawn.
+    pub fn shows(&self, definition: usize, snapshot: &RenderSnapshot) -> bool {
+        !self
+            .hidden_in(snapshot)
+            .get(definition)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Whether anything is hidden at all.
+    pub fn anything_hidden(&self) -> bool {
+        self.hidden.iter().any(|hidden| *hidden)
+    }
+
+    /// Stops drawing whatever this mark is on, and says whether that changed
+    /// anything.
+    ///
+    /// A face hides the definition it belongs to, not itself: this slice hides
+    /// definitions, and hiding the one face a person could see of a part would
+    /// leave the part on screen looking like a different part.
+    ///
+    /// Resolved through the picture, so nothing, a mark from a replaced
+    /// picture and a mark from another picture all hide nothing. Hiding what
+    /// is already hidden is not a change.
+    pub fn hide(&mut self, mark: Marked, snapshot: &RenderSnapshot) -> bool {
+        if self.snapshot != snapshot.identity {
+            return false;
+        }
+        let definition = match mark.known_to(snapshot) {
+            Marked::Nothing => return false,
+            Marked::Definition(pick) => snapshot.definition(pick),
+            Marked::Face(face) => snapshot.definition_of_face(face),
+        };
+        let Some(definition) = definition else {
+            return false;
+        };
+        match self.hidden.get_mut(definition) {
+            Some(hidden) if !*hidden => {
+                *hidden = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Draws everything again, and says whether that changed anything.
+    pub fn show_all(&mut self) -> bool {
+        if !self.anything_hidden() {
+            return false;
+        }
+        self.hidden.fill(false);
+        true
+    }
+
+    /// Where everything still drawn is, taken together.
+    ///
+    /// The same arithmetic as [`RenderSnapshot::bounds`], over fewer
+    /// definitions. A model whose parts are all hidden is nowhere rather than
+    /// at the origin, exactly as an empty picture is.
+    pub fn bounds(&self, snapshot: &RenderSnapshot) -> Option<([f32; 3], [f32; 3])> {
+        let hidden = self.hidden_in(snapshot);
+        let mut extent = Extent::default();
+        for item in &snapshot.items {
+            if hidden.get(item.mesh).copied().unwrap_or(false) {
+                continue;
+            }
+            extent.include(&snapshot.meshes[item.mesh], item);
+        }
+        extent.bounds()
+    }
+}
+
 /// One placement of one definition, ready to draw.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DrawItem {

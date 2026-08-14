@@ -16,7 +16,7 @@
 use ferritecad_types::{CadError, Result};
 
 use crate::renderer::{PreparedSnapshot, Renderer, RendererId};
-use ferritecad_viewport::{Camera, Marked};
+use ferritecad_viewport::{Camera, Marked, Visibility};
 
 /// Whether a frame reached the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,17 +334,19 @@ impl WindowSurface {
     ///
     /// ```no_run
     /// # use ferritecad_viewport_gpu::{PreparedSnapshot, Renderer, WindowSurface};
-    /// # use ferritecad_viewport::{Camera, Marked};
+    /// # use ferritecad_viewport::{Camera, Marked, Visibility};
     /// fn compose(
     ///     surface: &mut WindowSurface,
     ///     renderer: &mut Renderer,
     ///     prepared: &PreparedSnapshot,
     ///     camera: &Camera,
+    ///     visibility: &Visibility,
     /// ) -> ferritecad_types::Result<()> {
     ///     let Some(frame) = surface.begin(renderer)? else {
     ///         return Ok(()); // Nothing to draw into, and nothing wrong.
     ///     };
-    ///     let frame = frame.draw_scene(prepared, camera, Marked::Nothing, Marked::Nothing)?;
+    ///     let frame =
+    ///         frame.draw_scene(prepared, camera, Marked::Nothing, Marked::Nothing, visibility)?;
     ///     // An interface would draw into `frame.view()` here, on top of the
     ///     // model and before anything is published.
     ///     frame.present();
@@ -414,11 +416,12 @@ impl WindowSurface {
         camera: &Camera,
         selected: Marked,
         hovered: Marked,
+        visibility: &Visibility,
     ) -> Result<Presented> {
         let Some(frame) = self.begin(renderer)? else {
             return Ok(Presented::Skipped);
         };
-        let frame = frame.draw_scene(prepared, camera, selected, hovered)?;
+        let frame = frame.draw_scene(prepared, camera, selected, hovered, visibility)?;
         frame.present();
         Ok(Presented::Drawn)
     }
@@ -467,12 +470,14 @@ impl<'a> SurfaceFrame<'a> {
         camera: &Camera,
         selected: Marked,
         hovered: Marked,
+        visibility: &Visibility,
     ) -> Result<ComposedSurfaceFrame<'a>> {
         self.renderer.draw_into(
             prepared,
             camera,
             selected,
             hovered,
+            visibility,
             &self.view,
             self.surface.format,
             self.width,

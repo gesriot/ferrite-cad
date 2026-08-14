@@ -4,7 +4,9 @@
 use std::sync::Arc;
 
 use ferritecad_types::{CadError, Result};
-use ferritecad_viewport::{Camera, FacePickId, Marked, PickId, RenderSnapshot, VERTEX_FLOATS};
+use ferritecad_viewport::{
+    Camera, FacePickId, Marked, PickId, RenderSnapshot, VERTEX_FLOATS, Visibility,
+};
 use wgpu::util::DeviceExt as _;
 
 /// Linear, not sRGB. The snapshot's colours are linear because that is what the
@@ -468,6 +470,7 @@ impl Renderer {
         camera: &Camera,
         selected: Marked,
         hovered: Marked,
+        visibility: &Visibility,
         view: &wgpu::TextureView,
         format: wgpu::TextureFormat,
         width: u32,
@@ -538,21 +541,7 @@ impl Renderer {
             }
 
             pass.set_pipeline(pipeline);
-            for (index, item) in prepared.snapshot.draws().iter().enumerate() {
-                let mesh = &prepared.meshes[item.mesh];
-                if mesh.index_count == 0 {
-                    continue;
-                }
-                pass.set_bind_group(
-                    0,
-                    &prepared.bindings,
-                    &[(index as u64 * self.draw_stride) as u32],
-                );
-                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                pass.set_vertex_buffer(1, mesh.faces.slice(..));
-                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
-            }
+            Self::draw_model(&mut pass, prepared, visibility, self.draw_stride);
         }
         self.queue.submit(Some(encoder.finish()));
         Ok(())
@@ -575,6 +564,38 @@ impl Renderer {
     }
 
     /// Hands a drawn surface texture to the compositor.
+    /// Draws every visible definition of a prepared picture, in order.
+    ///
+    /// One loop, called by the window path and by the offscreen one, so a
+    /// definition that is not drawn in a window cannot still be drawn into the
+    /// identities a click reads. A hidden definition is skipped rather than
+    /// dimmed: what is not drawn writes no colour, no identity and no face,
+    /// which is the whole of what hiding means here.
+    fn draw_model(
+        pass: &mut wgpu::RenderPass<'_>,
+        prepared: &PreparedSnapshot,
+        visibility: &Visibility,
+        stride: u64,
+    ) {
+        let hidden = visibility.hidden_in(prepared.snapshot());
+        // In the order the snapshot lists them. A renderer that sorted to save
+        // state changes would make two frames of one model differ.
+        for (index, item) in prepared.snapshot.draws().iter().enumerate() {
+            if hidden.get(item.mesh).copied().unwrap_or(false) {
+                continue;
+            }
+            let mesh = &prepared.meshes[item.mesh];
+            if mesh.index_count == 0 {
+                continue;
+            }
+            pass.set_bind_group(0, &prepared.bindings, &[(index as u64 * stride) as u32]);
+            pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+            pass.set_vertex_buffer(1, mesh.faces.slice(..));
+            pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+        }
+    }
+
     pub(crate) fn present(&self, texture: wgpu::SurfaceTexture) {
         self.queue.present(texture);
     }
@@ -760,6 +781,7 @@ impl Renderer {
         camera: &Camera,
         selected: Marked,
         hovered: Marked,
+        visibility: &Visibility,
     ) -> Result<Frame> {
         self.require_own(prepared)?;
 
@@ -803,9 +825,6 @@ impl Renderer {
         // The things that differ from frame to frame.
         self.write_globals(camera, prepared, selected, hovered);
         let grid = self.write_grid(camera, prepared.snapshot());
-
-        let bindings = &prepared.bindings;
-        let geometry = &prepared.meshes;
 
         let mut encoder = self
             .device
@@ -875,19 +894,7 @@ impl Renderer {
             }
 
             pass.set_pipeline(&self.pipeline);
-            // In the order the snapshot lists them. A renderer that sorted to
-            // save state changes would make two frames of one model differ.
-            for (index, item) in snapshot.draws().iter().enumerate() {
-                let mesh = &geometry[item.mesh];
-                if mesh.index_count == 0 {
-                    continue;
-                }
-                pass.set_bind_group(0, bindings, &[(index as u64 * self.draw_stride) as u32]);
-                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                pass.set_vertex_buffer(1, mesh.faces.slice(..));
-                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
-            }
+            Self::draw_model(&mut pass, prepared, visibility, self.draw_stride);
         }
 
         let colour_read = self.readback(&mut encoder, &colour, extent, readback);
@@ -1538,6 +1545,7 @@ mod tests {
                 &camera,
                 Marked::Nothing,
                 Marked::Nothing,
+                &Visibility::default(),
                 &view,
                 format,
                 width,
@@ -1567,6 +1575,166 @@ mod tests {
         assert!(
             pixels[centre + 1] > 0,
             "the one-target pass accepted its pipeline but drew no green quad"
+        );
+    }
+
+    /// Draws one frame through the window path and reads the colour back.
+    ///
+    /// The window path presents rather than reads back, so this is the only
+    /// way to compare what it draws with what the readback path draws. It is
+    /// exactly `draw_into` followed by a copy: nothing about which definitions
+    /// are drawn is decided here.
+    fn window_colour(
+        renderer: &mut Renderer,
+        prepared: &PreparedSnapshot,
+        camera: &Camera,
+        visibility: &Visibility,
+    ) -> Vec<u8> {
+        let (width, height) = (camera.width(), camera.height());
+        let format = COLOUR_FORMAT;
+        let target = renderer.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ferritecad window comparison"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        renderer
+            .draw_into(
+                prepared,
+                camera,
+                Marked::Nothing,
+                Marked::Nothing,
+                visibility,
+                &view,
+                format,
+                width,
+                height,
+            )
+            .expect("the window path draws");
+
+        let layout = renderer
+            .validate_frame(width, height)
+            .expect("the frame fits");
+        let mut encoder = renderer
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("ferritecad window comparison readback"),
+            });
+        let readback = renderer.readback(
+            &mut encoder,
+            &target,
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            layout,
+        );
+        renderer.queue.submit(Some(encoder.finish()));
+        renderer
+            .take(readback, height, layout)
+            .expect("reads the window target")
+    }
+
+    #[test]
+    fn the_window_pipeline_hides_exactly_what_the_readback_pipeline_hides() {
+        let mut renderer = match Renderer::new() {
+            Ok(renderer) => renderer,
+            Err(error) if error.kind() == ErrorKind::Unsupported => {
+                eprintln!("skipped: {error}");
+                return;
+            }
+            Err(error) => panic!("a renderer failed after adapter discovery: {error}"),
+        };
+
+        // Two quads, one behind the other, so hiding one changes the picture.
+        let shape = |id| ShapeHandle::new(SessionId::new(), id);
+        let plate = |half: f32, y: f32, id: u64| Mesh {
+            positions: vec![
+                -half, y, -half, half, y, -half, half, y, half, -half, y, half,
+            ],
+            normals: vec![
+                0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0,
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            faces: vec![MeshFaceRange {
+                face: SubShapeHandle::new(shape(id), SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 6,
+            }],
+        };
+        let mut builder = SnapshotBuilder::new();
+        let front = builder.add_mesh(&plate(20.0, 0.0, 1)).expect("packs");
+        let rear = builder.add_mesh(&plate(4.0, 9.0, 2)).expect("packs");
+        builder
+            .place(front, None, &Transform::IDENTITY, [0.8, 0.2, 0.2])
+            .expect("places");
+        builder
+            .place(rear, None, &Transform::IDENTITY, [0.2, 0.4, 0.9])
+            .expect("places");
+        let snapshot = Arc::new(builder.build());
+        let mut camera = Camera::new();
+        camera.resize(64, 64);
+        camera
+            .frame(snapshot.bounds().expect("an extent"))
+            .expect("frames");
+        let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+
+        let everything = Visibility::new(&snapshot);
+        let mut hiding = everything.clone();
+        assert!(hiding.hide(
+            Marked::Definition(snapshot.pick_of(0).expect("drawn")),
+            &snapshot
+        ));
+
+        // Both paths, both states. A filter applied in one and not the other
+        // would show a part in the window that a click cannot reach, or the
+        // reverse.
+        let offscreen_all = renderer
+            .render(
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Marked::Nothing,
+                &everything,
+            )
+            .expect("draws")
+            .colour()
+            .to_vec();
+        let offscreen_hiding = renderer
+            .render(
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Marked::Nothing,
+                &hiding,
+            )
+            .expect("draws")
+            .colour()
+            .to_vec();
+        assert_ne!(
+            offscreen_all, offscreen_hiding,
+            "the gate compared two identical pictures"
+        );
+
+        assert_eq!(
+            window_colour(&mut renderer, &prepared, &camera, &everything),
+            offscreen_all,
+            "the window and the readback disagree about what is drawn"
+        );
+        assert_eq!(
+            window_colour(&mut renderer, &prepared, &camera, &hiding),
+            offscreen_hiding,
+            "the window and the readback disagree about what is hidden"
         );
     }
 
