@@ -33,6 +33,8 @@ pub struct Chosen {
     pub frame_all: bool,
     /// The user wants to stop drawing what is chosen.
     pub hide: bool,
+    /// The user wants to stop drawing everything except what is chosen.
+    pub isolate: bool,
     /// The user wants everything drawn again.
     pub show_all: bool,
     /// A definition the user picked out of the list, by its place in it.
@@ -346,6 +348,9 @@ pub struct Activity<'a> {
     pub can_hide: bool,
     /// Whether anything is hidden and could be brought back.
     pub can_show_all: bool,
+    /// Whether there is a chosen definition still being drawn with something
+    /// else still drawn beside it. On its own it is isolated already.
+    pub can_isolate: bool,
 }
 
 /// The toolbar: a document to open, the directions a drawing would name, what
@@ -395,6 +400,15 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
             .add_enabled(
                 activity.can_hide,
                 egui::Button::new(format!("Hide selected ({HIDE_KEY})")),
+            )
+            .clicked();
+        // Between them, because it is the other way of saying "this one":
+        // Hide removes what is chosen, Isolate removes everything else, and
+        // Show all is the way back from either.
+        chosen.isolate = ui
+            .add_enabled(
+                activity.can_isolate,
+                egui::Button::new(format!("Isolate selected ({ISOLATE_KEY})")),
             )
             .clicked();
         chosen.show_all = ui
@@ -451,6 +465,12 @@ pub const FRAME_ALL_KEY: &str = "A";
 /// One place, read by the panel and by whatever binds the keys, for the same
 /// reason [`FRAME_KEY`] is one place.
 pub const HIDE_KEY: &str = "H";
+
+/// The key that leaves only what is chosen on screen, printed on its button.
+///
+/// One place, read by the panel and by whatever binds the keys, for the same
+/// reason [`FRAME_KEY`] is one place.
+pub const ISOLATE_KEY: &str = "I";
 
 /// The key that draws everything again, printed on its button.
 ///
@@ -651,6 +671,7 @@ mod tests {
             can_frame_scene: false,
             can_hide: false,
             can_show_all: false,
+            can_isolate: false,
         };
 
         // Where the Cancel button is: after the views, so the row up to it is
@@ -671,6 +692,10 @@ mod tests {
                 let _ = ui.add_enabled(
                     reading.can_hide,
                     egui::Button::new(format!("Hide selected ({HIDE_KEY})")),
+                );
+                let _ = ui.add_enabled(
+                    reading.can_isolate,
+                    egui::Button::new(format!("Isolate selected ({ISOLATE_KEY})")),
                 );
                 let _ = ui.add_enabled(
                     reading.can_show_all,
@@ -947,6 +972,7 @@ mod tests {
             can_frame_scene: false,
             can_hide,
             can_show_all,
+            can_isolate: false,
         };
 
         // Found by pressing along the real toolbar rather than by rebuilding
@@ -1071,6 +1097,96 @@ mod tests {
             .join(" ");
         output.textures_delta.clear();
         text
+    }
+
+    #[test]
+    fn isolating_is_offered_exactly_when_something_else_is_still_drawn() {
+        let context = egui::Context::default();
+        let state = |can_isolate| Activity {
+            line: "part.fcad",
+            progress: None,
+            can_frame_selection: false,
+            can_frame_scene: false,
+            can_hide: true,
+            can_show_all: true,
+            can_isolate,
+        };
+
+        // Found by pressing along the real toolbar rather than by rebuilding
+        // its layout here.
+        let mut isolate = None;
+        for step in 0..200 {
+            let at = egui::Pos2::new(step as f32 * 8.0, 12.0);
+            if click_on(&context, at, state(true)).isolate {
+                isolate = Some(at);
+                break;
+            }
+        }
+        let isolate = isolate.expect("the toolbar offers no way to isolate what is chosen");
+
+        // A frame with the pointer away before each press: egui decides a
+        // click from the frame before as well as this one.
+        let press = |activity| {
+            let _ = click_on(&context, egui::Pos2::new(2000.0, 2000.0), activity);
+            click_on(&context, isolate, activity)
+        };
+
+        let pressed = press(state(true));
+        assert!(pressed.isolate);
+        // One press, one request: the button beside it must not fire too.
+        assert!(!pressed.hide && !pressed.show_all);
+        assert!(pressed.view.is_none() && !pressed.open && !pressed.frame);
+
+        assert!(
+            !press(state(false)).isolate,
+            "a button with nothing to isolate reported a press"
+        );
+    }
+
+    #[test]
+    fn the_isolate_button_prints_the_key_that_reaches_it() {
+        // The panel prints `ISOLATE_KEY`, and whatever binds the keyboard
+        // reads the same constant. A shortcut that drifts from its label is a
+        // shortcut nobody can trust.
+        assert!(!ISOLATE_KEY.is_empty());
+        assert_ne!(ISOLATE_KEY, HIDE_KEY);
+        assert_ne!(ISOLATE_KEY, SHOW_ALL_KEY);
+        assert_ne!(ISOLATE_KEY, FRAME_KEY);
+        assert_ne!(ISOLATE_KEY, FRAME_ALL_KEY);
+        assert!(
+            VIEWS.iter().all(|(_, _, key)| *key != ISOLATE_KEY),
+            "the isolate key is also a view key"
+        );
+
+        let context = egui::Context::default();
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            let _ = toolbar(
+                ui,
+                Activity {
+                    line: "part.fcad",
+                    progress: None,
+                    can_frame_selection: false,
+                    can_frame_scene: false,
+                    can_hide: false,
+                    can_show_all: false,
+                    can_isolate: true,
+                },
+            );
+        });
+        let printed = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        output.textures_delta.clear();
+        assert!(
+            printed.contains(&format!("Isolate selected ({ISOLATE_KEY})")),
+            "the button does not print the key that reaches it: {printed}"
+        );
     }
 
     /// Runs the list once, with a click delivered at `at`.
@@ -1346,6 +1462,7 @@ mod tests {
             can_frame_scene: false,
             can_hide: false,
             can_show_all: false,
+            can_isolate: false,
         };
 
         // Where the button is, laid out exactly as the toolbar lays it out.
@@ -1397,6 +1514,7 @@ mod tests {
             can_frame_scene,
             can_hide: false,
             can_show_all: false,
+            can_isolate: false,
         };
 
         // Where the button is, laid out exactly as the toolbar lays it out.

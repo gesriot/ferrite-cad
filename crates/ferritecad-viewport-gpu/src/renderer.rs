@@ -1736,6 +1736,31 @@ mod tests {
             offscreen_hiding,
             "the window and the readback disagree about what is hidden"
         );
+
+        // And the same for the mask isolating leaves behind, which is the same
+        // mask reached a different way: one representation, one consumer.
+        let mut isolating = everything.clone();
+        assert!(isolating.isolate(
+            Marked::Definition(snapshot.pick_of(1).expect("drawn")),
+            &snapshot
+        ));
+        let offscreen_isolating = renderer
+            .render(
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Marked::Nothing,
+                &isolating,
+            )
+            .expect("draws")
+            .colour()
+            .to_vec();
+        assert_ne!(offscreen_isolating, offscreen_all);
+        assert_eq!(
+            window_colour(&mut renderer, &prepared, &camera, &isolating),
+            offscreen_isolating,
+            "the window and the readback disagree about what is isolated"
+        );
     }
 
     #[test]

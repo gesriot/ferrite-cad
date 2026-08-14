@@ -2050,3 +2050,263 @@ fn two_pictures_of_the_same_triangles_do_not_share_what_is_hidden() {
         "a pick of one picture hid a definition of another"
     );
 }
+
+/// Three definitions, each placed twice, each divided into faces.
+fn three_definitions_placed_twice() -> RenderSnapshot {
+    let mut builder = SnapshotBuilder::new();
+    let parts = [
+        builder.add_mesh(&divided(&[1, 1])).expect("packs"),
+        builder.add_mesh(&divided(&[2, 1])).expect("packs"),
+        builder.add_mesh(&divided(&[1, 2])).expect("packs"),
+    ];
+    for part in parts {
+        for x in [0.0, 200.0] {
+            builder
+                .place(
+                    part,
+                    None,
+                    &moved(x + part as f64 * 40.0, 0.0, 0.0),
+                    [1.0, 1.0, 1.0],
+                )
+                .expect("places");
+        }
+    }
+    builder.build()
+}
+
+#[test]
+fn isolating_one_definition_leaves_exactly_that_one_drawn() {
+    let snapshot = three_definitions_placed_twice();
+    let mut visibility = Visibility::new(&snapshot);
+    let keep = snapshot.pick_of(1).expect("drawn");
+
+    assert!(visibility.can_isolate(Marked::Definition(keep), &snapshot));
+    assert!(visibility.isolate(Marked::Definition(keep), &snapshot));
+
+    // The one chosen, and nothing else.
+    assert!(visibility.shows(1, &snapshot));
+    assert!(!visibility.shows(0, &snapshot));
+    assert!(!visibility.shows(2, &snapshot));
+
+    // Every placement of it, because what is kept is the definition and not
+    // the spot it was drawn in.
+    assert_eq!(
+        snapshot
+            .draws()
+            .iter()
+            .filter(|item| item.mesh == 1)
+            .count(),
+        2,
+        "the gate needs the kept definition to be drawn in two places"
+    );
+    assert_eq!(
+        visibility.bounds(&snapshot),
+        snapshot.bounds_of(keep),
+        "what is left is exactly the chosen definition, in both its places"
+    );
+
+    // And every face of both neighbours is gone with them: hiding is per
+    // definition, so there is no state in which one face of a removed part is
+    // still on screen.
+    for definition in [0, 2] {
+        for ordinal in 0..snapshot.meshes()[definition].face_count() {
+            let face = snapshot.face_of(definition, ordinal).expect("numbered");
+            assert_eq!(snapshot.definition_of_face(face), Some(definition));
+            assert!(!visibility.shows(definition, &snapshot));
+        }
+    }
+}
+
+#[test]
+fn isolating_a_face_keeps_the_part_it_is_on() {
+    let snapshot = three_definitions_placed_twice();
+    let mut visibility = Visibility::new(&snapshot);
+    let face = snapshot.face_of(2, 1).expect("numbered");
+
+    assert!(visibility.can_isolate(Marked::Face(face), &snapshot));
+    assert!(visibility.isolate(Marked::Face(face), &snapshot));
+
+    // The whole part the face is on, not the face alone: this operation deals
+    // in definitions, and a part reduced to one face would be a different part.
+    assert!(visibility.shows(2, &snapshot));
+    assert!(!visibility.shows(0, &snapshot));
+    assert!(!visibility.shows(1, &snapshot));
+    assert_eq!(
+        visibility.bounds(&snapshot),
+        snapshot.bounds_of(snapshot.pick_of(2).expect("drawn"))
+    );
+}
+
+#[test]
+fn isolating_reveals_nothing_that_was_already_hidden() {
+    let snapshot = three_definitions_placed_twice();
+    let mut visibility = Visibility::new(&snapshot);
+    assert!(visibility.hide(
+        Marked::Definition(snapshot.pick_of(0).expect("drawn")),
+        &snapshot
+    ));
+
+    // Two left, so there is still something to remove.
+    assert!(visibility.isolate(
+        Marked::Definition(snapshot.pick_of(1).expect("drawn")),
+        &snapshot
+    ));
+    assert!(visibility.shows(1, &snapshot));
+    assert!(
+        !visibility.shows(0, &snapshot),
+        "isolating put back something that had been hidden"
+    );
+    assert!(!visibility.shows(2, &snapshot));
+
+    // Show all is the way back, and it puts back everything.
+    assert!(visibility.show_all());
+    for definition in 0..snapshot.meshes().len() {
+        assert!(visibility.shows(definition, &snapshot));
+    }
+    assert_eq!(visibility.bounds(&snapshot), snapshot.bounds());
+}
+
+#[test]
+fn a_definition_already_on_its_own_is_isolated_already() {
+    let snapshot = three_definitions_placed_twice();
+    let mut visibility = Visibility::new(&snapshot);
+    let keep = snapshot.pick_of(1).expect("drawn");
+    assert!(visibility.isolate(Marked::Definition(keep), &snapshot));
+    let after = visibility.clone();
+
+    // Nothing else is drawn, so there is nothing to remove and the action is
+    // not offered. Asking again changes nothing at all.
+    assert!(!visibility.can_isolate(Marked::Definition(keep), &snapshot));
+    assert!(
+        !visibility.isolate(Marked::Definition(keep), &snapshot),
+        "isolating what is already alone claimed a change"
+    );
+    assert_eq!(visibility, after);
+
+    // Nor is it offered for something that is not drawn at all.
+    let hidden = snapshot.pick_of(0).expect("drawn");
+    assert!(!visibility.can_isolate(Marked::Definition(hidden), &snapshot));
+    assert!(!visibility.isolate(Marked::Definition(hidden), &snapshot));
+    assert_eq!(visibility, after);
+}
+
+#[test]
+fn geometry_that_is_already_nowhere_is_neither_isolated_nor_hidden_by_isolating() {
+    let mut builder = SnapshotBuilder::new();
+    let drawn = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+    // One with no triangles, and one with triangles that is never placed.
+    let empty = builder.add_mesh(&Mesh::default()).expect("packs");
+    let unplaced = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+    builder
+        .place(drawn, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+        .expect("places");
+    builder
+        .place(empty, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+        .expect("places");
+    let snapshot = builder.build();
+    let mut visibility = Visibility::new(&snapshot);
+
+    // The only definition putting anything on screen is alone already, so
+    // there is nothing to isolate away.
+    assert!(!visibility.can_isolate(
+        Marked::Definition(snapshot.pick_of(drawn).expect("has a row")),
+        &snapshot
+    ));
+    assert!(!visibility.isolate(
+        Marked::Definition(snapshot.pick_of(drawn).expect("has a row")),
+        &snapshot
+    ));
+
+    // And neither of the two that draw nothing can be isolated to, for the
+    // same reason neither can be hidden: they are already nowhere.
+    for definition in [empty, unplaced] {
+        let pick = snapshot.pick_of(definition).expect("has a row");
+        assert!(!visibility.can_isolate(Marked::Definition(pick), &snapshot));
+        assert!(!visibility.isolate(Marked::Definition(pick), &snapshot));
+        assert!(!visibility.can_hide(Marked::Definition(pick), &snapshot));
+    }
+
+    // Nothing was marked hidden by any of it: a row that draws nothing must
+    // not start reading as hidden.
+    assert!(
+        !visibility.anything_hidden(),
+        "something already nowhere was marked as hidden"
+    );
+}
+
+#[test]
+fn isolating_something_this_picture_did_not_issue_isolates_nothing() {
+    let snapshot = three_definitions_placed_twice();
+    let elsewhere = {
+        let mut builder = SnapshotBuilder::new();
+        let part = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+        builder
+            .place(part, None, &Transform::IDENTITY, [0.0, 0.0, 1.0])
+            .expect("places");
+        builder.build()
+    };
+    let mut visibility = Visibility::new(&snapshot);
+    let before = visibility.clone();
+
+    for mark in [
+        Marked::Nothing,
+        Marked::Definition(PickId::NOTHING),
+        Marked::Face(FacePickId::NOTHING),
+        Marked::Definition(elsewhere.pick_of(0).expect("drawn")),
+        Marked::Face(elsewhere.face_of(0, 0).expect("numbered")),
+    ] {
+        assert!(
+            !visibility.can_isolate(mark, &snapshot),
+            "{mark:?} was offered"
+        );
+        assert!(
+            !visibility.isolate(mark, &snapshot),
+            "{mark:?} isolated something"
+        );
+    }
+    assert_eq!(visibility, before);
+
+    // And a mask made for one picture reaches into no other.
+    let mut ours = Visibility::new(&snapshot);
+    assert!(ours.isolate(
+        Marked::Definition(snapshot.pick_of(0).expect("drawn")),
+        &snapshot
+    ));
+    assert!(ours.shows(0, &elsewhere));
+    assert_eq!(ours.bounds(&elsewhere), elsewhere.bounds());
+}
+
+#[test]
+fn two_pictures_of_the_same_triangles_do_not_share_what_is_isolated() {
+    // The same geometry meaning different things: one picture's faces carry a
+    // document's names and the other's do not.
+    let build = |context: [u8; 32]| {
+        let mut builder = SnapshotBuilder::new();
+        builder
+            .bind_identities_to(ContentHash::from_bytes(context))
+            .expect("binds once");
+        let first = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+        let second = builder.add_mesh(&divided(&[2, 1])).expect("packs");
+        for part in [first, second] {
+            builder
+                .place(part, None, &moved(part as f64 * 40.0, 0.0, 0.0), [1.0; 3])
+                .expect("places");
+        }
+        builder.build()
+    };
+    let one = build([7; 32]);
+    let other = build([9; 32]);
+
+    let mut visibility = Visibility::new(&one);
+    assert!(visibility.isolate(Marked::Definition(one.pick_of(0).expect("drawn")), &one));
+
+    assert!(!visibility.shows(1, &one));
+    assert!(
+        visibility.shows(1, &other),
+        "a picture with other meanings inherited what was isolated"
+    );
+    assert!(
+        !visibility.can_isolate(Marked::Definition(one.pick_of(0).expect("drawn")), &other),
+        "a mark of one picture was offered against another"
+    );
+}

@@ -2640,3 +2640,245 @@ fn hiding_and_showing_upload_nothing_and_repeat_exactly() {
         "hiding or showing uploaded geometry"
     );
 }
+
+/// Three plates side by side, each placed twice, none hiding another.
+///
+/// Separated so every definition contributes pixels of its own: what isolation
+/// removes has to be visible before it can be shown to be gone.
+fn three_plates(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
+    let mut builder = SnapshotBuilder::new();
+    let mut parts = Vec::new();
+    for shape in 1..=3u64 {
+        parts.push(
+            builder
+                .add_mesh(&two_faced_plate(4.0 + shape as f32))
+                .expect("packs"),
+        );
+    }
+    for (index, part) in parts.iter().enumerate() {
+        for z in [-30.0, 30.0] {
+            builder
+                .place(
+                    *part,
+                    None,
+                    &Transform::from_translation(
+                        ferritecad_types::Vec3::new(index as f64 * 40.0 - 40.0, 0.0, z)
+                            .expect("finite"),
+                    )
+                    .expect("finite"),
+                    [0.2 + index as f64 * 0.3, 0.5, 0.8],
+                )
+                .expect("places");
+        }
+    }
+    let snapshot = Arc::new(builder.build());
+
+    let mut camera = Camera::new();
+    camera.resize(width, height);
+    camera
+        .frame(snapshot.bounds().expect("the plates have an extent"))
+        .expect("frames");
+    (snapshot, camera)
+}
+
+#[test]
+fn isolating_one_definition_leaves_only_its_pixels_picks_and_faces() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = three_plates(160, 160);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let everything = Visibility::new(&snapshot);
+
+    let before = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &everything,
+        )
+        .expect("draws");
+    // All three are on screen to begin with, which is what makes their absence
+    // afterwards mean something.
+    for definition in 0..3 {
+        assert!(
+            pixels_of(&before, |frame, x, y| snapshot
+                .definition(frame.pick_at(x, y))
+                == Some(definition))
+            .len()
+                > 40,
+            "definition {definition} is not drawn before isolating"
+        );
+    }
+
+    let keep = snapshot.pick_of(1).expect("drawn");
+    let mut visibility = everything.clone();
+    assert!(visibility.isolate(Marked::Definition(keep), &snapshot));
+    let after = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+
+    // Every pixel of the model, every definition identity and every face
+    // identity belongs to the one that was kept.
+    let drawn = pixels_of(&after, |frame, x, y| frame.pick_at(x, y) != PickId::NOTHING);
+    assert!(!drawn.is_empty(), "isolating left nothing on screen");
+    let faces: Vec<_> = (0..snapshot.meshes()[1].face_count())
+        .map(|ordinal| snapshot.face_of(1, ordinal).expect("numbered"))
+        .collect();
+    for (x, y) in &drawn {
+        assert_eq!(after.pick_at(*x, *y), keep);
+        assert!(faces.contains(&after.hit_at(*x, *y).face()));
+    }
+
+    // Both placements of it are still there: two clusters, on either side of
+    // the middle of the frame.
+    let middle = after.height() / 2;
+    let near = drawn.iter().filter(|(_, y)| *y < middle).count();
+    let far = drawn.len() - near;
+    assert!(
+        near > 20 && far > 20,
+        "one placement of the isolated definition went missing"
+    );
+
+    // Where the neighbours were there is now backdrop, and no stale identity
+    // of anything.
+    let vacated = pixels_of(&before, |frame, x, y| {
+        snapshot.definition(frame.pick_at(x, y)) == Some(0)
+    });
+    assert!(!vacated.is_empty());
+    for (x, y) in &vacated {
+        assert_eq!(after.pick_at(*x, *y), PickId::NOTHING);
+        assert_eq!(after.hit_at(*x, *y).face(), FacePickId::NOTHING);
+        assert_eq!(after.hit_at(*x, *y).definition(), PickId::NOTHING);
+    }
+}
+
+#[test]
+fn an_isolated_definition_still_looks_chosen_and_its_neighbours_cannot_be_marked() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = three_plates(128, 128);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let keep = snapshot.pick_of(1).expect("drawn");
+    let face = snapshot.face_of(1, 0).expect("numbered");
+    let gone = snapshot.pick_of(0).expect("drawn");
+    let gone_face = snapshot.face_of(0, 0).expect("numbered");
+
+    let mut visibility = Visibility::new(&snapshot);
+    assert!(visibility.isolate(Marked::Definition(keep), &snapshot));
+
+    let plain = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+    // What is chosen still looks chosen after everything else has gone.
+    let as_definition = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Definition(keep),
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+    let as_face = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Face(face),
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+    assert_ne!(as_definition.colour(), plain.colour());
+    assert_ne!(as_face.colour(), plain.colour());
+    assert_ne!(as_face.colour(), as_definition.colour());
+
+    // And nothing that was removed can be marked, chosen or pointed at: it has
+    // no pixels to mark.
+    for (selected, hovered) in [
+        (Marked::Definition(gone), Marked::Nothing),
+        (Marked::Face(gone_face), Marked::Nothing),
+        (Marked::Nothing, Marked::Definition(gone)),
+        (Marked::Nothing, Marked::Face(gone_face)),
+    ] {
+        let marked = renderer
+            .render(&prepared, &camera, selected, hovered, &visibility)
+            .expect("draws");
+        assert_eq!(
+            marked.colour(),
+            plain.colour(),
+            "something isolated away was tinted by {selected:?}/{hovered:?}"
+        );
+    }
+}
+
+#[test]
+fn isolating_keeps_the_backdrop_and_costs_no_geometry() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, _camera) = model_over_the_plane(120, 120);
+    // Prepared so the count below starts from a picture that is resident.
+    let _ = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let uploaded = renderer.geometry_uploads();
+    let visibility = Visibility::new(&snapshot);
+
+    // One definition over the grid: it is alone, so there is nothing to
+    // isolate away and the grid is untouched either way.
+    assert!(!visibility.can_isolate(
+        Marked::Definition(snapshot.pick_of(0).expect("drawn")),
+        &snapshot
+    ));
+
+    let (three, three_camera) = three_plates(96, 96);
+    let prepared = renderer.prepare(Arc::clone(&three)).expect("uploads");
+    let uploaded_after_preparing = renderer.geometry_uploads();
+    assert!(
+        uploaded_after_preparing > uploaded,
+        "the gate uploaded nothing"
+    );
+    let mut visibility = Visibility::new(&three);
+    assert!(visibility.isolate(Marked::Definition(three.pick_of(1).expect("drawn")), &three));
+
+    let once = renderer
+        .render(
+            &prepared,
+            &three_camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+    let twice = renderer
+        .render(
+            &prepared,
+            &three_camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+    // The same visibility draws the same frame, down to the byte, and nothing
+    // was uploaded or repacked to achieve any of it.
+    assert_eq!(once.colour(), twice.colour());
+    assert_eq!(
+        renderer.geometry_uploads(),
+        uploaded_after_preparing,
+        "isolating uploaded geometry"
+    );
+
+    // The grid is still drawn where the model is not, and is still not
+    // something a click can reach.
+    let empty = pixels_of(&once, |frame, x, y| frame.pick_at(x, y) == PickId::NOTHING);
+    for (x, y) in empty.iter().take(200) {
+        assert_eq!(once.hit_at(*x, *y).face(), FacePickId::NOTHING);
+    }
+}

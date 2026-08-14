@@ -72,7 +72,12 @@ part standing behind another one: a hidden definition leaves no pixels, cannot
 be clicked or pointed at, and is not part of what `Frame all` shows. It is
 hidden in every place it appears, because what is hidden is the definition and
 not the spot it was drawn in, and choosing a face hides the part that face is
-on. `Show all` (or `U`) brings everything back without choosing anything. The
+on. `Isolate selected` (or `I`) does the opposite: it keeps what is chosen and
+stops drawing everything else, which is the way to look at one part without
+picking its neighbours off one at a time. What is chosen stays chosen, down to
+the face, and what was already hidden stays hidden: isolating removes
+distractions and never reveals anything. `Show all` (or `U`) brings everything
+back without choosing anything, and is the way back from either action. The
 list keeps a row for what is hidden, marked as hidden, which is where you look
 when you wonder where something went. None of this touches the document, and
 none of it survives opening one: a file always opens with all of it on screen.

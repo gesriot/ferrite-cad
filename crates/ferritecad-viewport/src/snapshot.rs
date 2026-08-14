@@ -419,6 +419,43 @@ impl Visibility {
         true
     }
 
+    /// Whether Isolate would remove any geometry from this picture.
+    ///
+    /// True only when this mark names something still drawn and there is
+    /// something else still drawn beside it. On its own, a definition is
+    /// already isolated, and offering the action would be offering a press
+    /// that changes no pixel.
+    pub fn can_isolate(&self, mark: Marked, snapshot: &RenderSnapshot) -> bool {
+        self.others_to_hide(mark, snapshot)
+            .is_some_and(|others| !others.is_empty())
+    }
+
+    /// Stops drawing everything except whatever this mark is on, and says
+    /// whether that changed anything.
+    ///
+    /// The same resolution as [`Self::hide`], applied the other way round: the
+    /// mark names a definition that is still drawn, and every *other*
+    /// definition still drawing geometry stops. A face isolates the part it is
+    /// on, for the same reason it hides the part it is on.
+    ///
+    /// One way only. What was already hidden stays hidden – isolating is a way
+    /// of removing distractions, not a way of revealing something – and
+    /// definitions that draw nothing are already nowhere, so they are not
+    /// newly marked as hidden. [`Self::show_all`] is how everything comes
+    /// back.
+    pub fn isolate(&mut self, mark: Marked, snapshot: &RenderSnapshot) -> bool {
+        let Some(others) = self.others_to_hide(mark, snapshot) else {
+            return false;
+        };
+        if others.is_empty() {
+            return false;
+        }
+        for definition in others {
+            self.hidden[definition] = true;
+        }
+        true
+    }
+
     /// Draws everything again, and says whether that changed anything.
     pub fn show_all(&mut self) -> bool {
         if !self.anything_hidden() {
@@ -455,12 +492,37 @@ impl Visibility {
             Marked::Definition(pick) => snapshot.definition(pick),
             Marked::Face(face) => snapshot.definition_of_face(face),
         }?;
+        self.draws(definition, snapshot).then_some(definition)
+    }
+
+    /// What Isolate would stop drawing, for a mark that names something drawn.
+    ///
+    /// `None` when the mark itself resolves to nothing still drawn, which is
+    /// the same refusal [`Self::hide`] makes and for the same reasons. An
+    /// empty list means the mark is the only thing on screen already.
+    fn others_to_hide(&self, mark: Marked, snapshot: &RenderSnapshot) -> Option<Vec<usize>> {
+        let keep = self.hideable_definition(mark, snapshot)?;
+        Some(
+            (0..self.hidden.len())
+                .filter(|definition| *definition != keep && self.draws(*definition, snapshot))
+                .collect(),
+        )
+    }
+
+    /// Whether this definition is currently putting anything on screen.
+    ///
+    /// Drawn, and with something to draw. A definition whose mesh has no
+    /// triangles, or which is placed nowhere, is already absent from every
+    /// pixel: hiding it would change a row label and nothing else, so no
+    /// operation here counts it as something that can be removed.
+    fn draws(&self, definition: usize, snapshot: &RenderSnapshot) -> bool {
         if self.hidden.get(definition).copied().unwrap_or(true) {
-            return None;
+            return false;
         }
-        let pick = snapshot.pick_of(definition)?;
-        snapshot.bounds_of(pick)?;
-        Some(definition)
+        snapshot
+            .pick_of(definition)
+            .and_then(|pick| snapshot.bounds_of(pick))
+            .is_some()
     }
 }
 

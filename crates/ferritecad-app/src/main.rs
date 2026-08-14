@@ -41,8 +41,8 @@ use ferritecad_scene::{
 };
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
-    Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, HIDE_KEY, Hover, PointerButton, SHOW_ALL_KEY,
-    Selected, VIEWS, ViewportEvent, ViewportInput,
+    Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, HIDE_KEY, Hover, ISOLATE_KEY, PointerButton,
+    SHOW_ALL_KEY, Selected, VIEWS, ViewportEvent, ViewportInput,
 };
 use ferritecad_viewport::{
     Camera, Marked, RenderSnapshot, SnapshotBuilder, StandardView, Visibility,
@@ -848,6 +848,41 @@ fn hide_selected(
     true
 }
 
+/// Whether Isolate selected would remove any geometry from this picture.
+///
+/// The same resolution Hide uses, asked the other way round: something chosen
+/// and still drawn, with something else still drawn beside it.
+fn can_isolate_selection<P>(scene: &LiveScene<P>, snapshot: &RenderSnapshot) -> bool {
+    scene
+        .visibility
+        .can_isolate(scene.selection.marked(), snapshot)
+}
+
+/// Stops drawing everything except what is chosen, and changes nothing else.
+///
+/// The choice is kept exactly as it was, which is the whole point: this is the
+/// operation for looking at the thing you have already chosen. It is given the
+/// selection immutably, so it cannot alter one however it is called.
+///
+/// What the pointer was over goes, along with any click or question still in
+/// flight: those are about the frame being replaced, and answering them
+/// afterwards would answer them against a picture with different parts in it.
+/// The camera is not an argument: isolating is not a way to move.
+fn isolate_selected(
+    visibility: &mut Visibility,
+    selection: &Selection,
+    hovered: &mut Marked,
+    snapshot: &RenderSnapshot,
+    input: &mut ViewportInput,
+) -> bool {
+    if !visibility.isolate(selection.marked(), snapshot) {
+        return false;
+    }
+    *hovered = Marked::Nothing;
+    input.forget_pending();
+    true
+}
+
 /// Draws every definition again, and changes nothing else.
 ///
 /// Deliberately not a way to choose anything: what was hidden was unchosen
@@ -1244,6 +1279,7 @@ impl ApplicationHandler<AppEvent> for App {
                     // the whole of the condition.
                     can_hide: can_hide_selection(&live.scene, live.scene.prepared.snapshot()),
                     can_show_all: live.scene.visibility.anything_hidden(),
+                    can_isolate: can_isolate_selection(&live.scene, live.scene.prepared.snapshot()),
                 };
                 match live.draw(&self.input, activity) {
                     // A button pressed during this frame reaches the camera
@@ -1286,6 +1322,9 @@ impl ApplicationHandler<AppEvent> for App {
                         if chosen.hide {
                             self.hide_chosen();
                         }
+                        if chosen.isolate {
+                            self.isolate_chosen();
+                        }
                         if chosen.show_all {
                             self.show_everything();
                         }
@@ -1312,30 +1351,19 @@ impl ApplicationHandler<AppEvent> for App {
             // reducer is handed the answer rather than asked to find it.
             WindowEvent::KeyboardInput { ref event, .. }
                 if event.state == ElementState::Pressed
-                    && wants(&event.logical_key, response.consumed, FRAME_KEY) =>
+                    && requested(&event.logical_key, response.consumed).is_some() =>
             {
-                self.frame_selection();
-            }
-
-            WindowEvent::KeyboardInput { ref event, .. }
-                if event.state == ElementState::Pressed
-                    && wants(&event.logical_key, response.consumed, FRAME_ALL_KEY) =>
-            {
-                self.frame_whole_scene();
-            }
-
-            WindowEvent::KeyboardInput { ref event, .. }
-                if event.state == ElementState::Pressed
-                    && wants(&event.logical_key, response.consumed, HIDE_KEY) =>
-            {
-                self.hide_chosen();
-            }
-
-            WindowEvent::KeyboardInput { ref event, .. }
-                if event.state == ElementState::Pressed
-                    && wants(&event.logical_key, response.consumed, SHOW_ALL_KEY) =>
-            {
-                self.show_everything();
+                // Which action a key asks for is decided by `requested`, where
+                // it can be exercised without a window; this arm only carries
+                // out the answer.
+                match requested(&event.logical_key, response.consumed) {
+                    Some(Requested::FrameSelection) => self.frame_selection(),
+                    Some(Requested::FrameScene) => self.frame_whole_scene(),
+                    Some(Requested::Hide) => self.hide_chosen(),
+                    Some(Requested::Isolate) => self.isolate_chosen(),
+                    Some(Requested::ShowAll) => self.show_everything(),
+                    None => {}
+                }
             }
 
             other => {
@@ -1544,6 +1572,21 @@ impl App {
         hide_selected(
             &mut scene.visibility,
             &mut scene.selection,
+            &mut scene.hovered,
+            scene.prepared.snapshot(),
+            &mut self.input,
+        );
+    }
+
+    /// Stops drawing everything except what is chosen.
+    fn isolate_chosen(&mut self) {
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+        let scene = &mut live.scene;
+        isolate_selected(
+            &mut scene.visibility,
+            &scene.selection,
             &mut scene.hovered,
             scene.prepared.snapshot(),
             &mut self.input,
@@ -1994,6 +2037,41 @@ fn button_of(button: MouseButton) -> Option<PointerButton> {
         MouseButton::Right => Some(PointerButton::Secondary),
         _ => None,
     }
+}
+
+/// What one keystroke asks the window to do.
+///
+/// Named rather than translated into a camera event: where to go depends on
+/// what the picture says is chosen, and the reducer is handed the answer
+/// rather than asked to find it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Requested {
+    FrameSelection,
+    FrameScene,
+    Hide,
+    Isolate,
+    ShowAll,
+}
+
+/// Which action an unclaimed key asks for, if any.
+///
+/// One place, so every one of these shortcuts obeys the same rule about what
+/// the interface has already claimed, and so that rule can be exercised
+/// without opening a window. Each key is read from the constant its button
+/// prints.
+fn requested(key: &Key, claimed_by_ui: bool) -> Option<Requested> {
+    for (shortcut, action) in [
+        (FRAME_KEY, Requested::FrameSelection),
+        (FRAME_ALL_KEY, Requested::FrameScene),
+        (HIDE_KEY, Requested::Hide),
+        (ISOLATE_KEY, Requested::Isolate),
+        (SHOW_ALL_KEY, Requested::ShowAll),
+    ] {
+        if wants(key, claimed_by_ui, shortcut) {
+            return Some(action);
+        }
+    }
+    None
 }
 
 /// Whether this unclaimed key is the one printed on a particular button.
@@ -3458,6 +3536,633 @@ mod tests {
             true,
             SHOW_ALL_KEY
         ));
+    }
+
+    /// Three plates side by side, the middle one boxed in by its neighbours.
+    ///
+    /// Each is placed twice, so "the selected definition stays" and "the
+    /// others go" are both claims about more than one placement.
+    fn three_definitions() -> RenderSnapshot {
+        let mut builder = SnapshotBuilder::new();
+        let mut picks = Vec::new();
+        for _ in 0..3 {
+            picks.push(builder.add_mesh(&distant_scene_mesh()).expect("packs"));
+        }
+        for definition in &picks {
+            for x in [0.0, 40.0] {
+                builder
+                    .place(
+                        *definition,
+                        None,
+                        &ferritecad_types::Transform::from_translation(
+                            ferritecad_types::Vec3::new(x + *definition as f64 * 100.0, 0.0, 0.0)
+                                .expect("finite"),
+                        )
+                        .expect("finite"),
+                        [0.5, 0.5, 0.5],
+                    )
+                    .expect("places");
+            }
+        }
+        builder.build()
+    }
+
+    /// The committed plate with a second, unnamed body beside it.
+    ///
+    /// The plate brings durable face names, so a face can really be chosen;
+    /// the second body is what makes isolating something that would change the
+    /// picture. Written into a copy, never into the checkout.
+    fn plate_and_a_second_body() -> (tempfile::TempDir, LoadedScene) {
+        use ferritecad_document::{
+            Body, Dependency, DependencyRole, EndCondition, Expression, Extrude, ObjectPayload,
+            Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
+        };
+        use ferritecad_kernel::mock::MockKernel;
+        use ferritecad_types::{ObjectId, StableEntityId};
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("plate.fcad");
+        std::fs::copy(ferritecad_fixtures::plate_source(), &path).expect("copies the fixture");
+
+        let mut document = ferritecad_document::Document::open(&path).expect("opens");
+        let plane = document
+            .objects()
+            .expect("reads objects")
+            .into_iter()
+            .find(|object| matches!(object.payload, ObjectPayload::DatumPlane(_)))
+            .expect("the plate is sketched on a plane")
+            .id;
+        let (sketch, extrude, body) = (ObjectId::new(), ObjectId::new(), ObjectId::new());
+        let corners = [(100.0, 0.0), (140.0, 0.0), (140.0, 30.0), (100.0, 30.0)];
+        document
+            .write(|w| {
+                let mut curves = Vec::new();
+                for index in 0..corners.len() {
+                    let (sx, sy) = corners[index];
+                    let (ex, ey) = corners[(index + 1) % corners.len()];
+                    curves.push(SketchCurve {
+                        id: StableEntityId::new(),
+                        construction: false,
+                        geometry: SketchGeometry::Line {
+                            start: Point2::new(sx, sy)?,
+                            end: Point2::new(ex, ey)?,
+                        },
+                    });
+                }
+                w.put_object(
+                    sketch,
+                    None,
+                    100,
+                    None,
+                    &ObjectPayload::Sketch(Sketch { plane, curves }),
+                )?;
+                w.add_dependency(Dependency {
+                    dependent: sketch,
+                    dependency: plane,
+                    role: DependencyRole::Plane,
+                })?;
+                w.put_object(
+                    extrude,
+                    None,
+                    101,
+                    None,
+                    &ObjectPayload::Extrude(Extrude {
+                        profile: sketch,
+                        end_condition: EndCondition::Blind {
+                            distance: Expression::constant(4.0)?,
+                        },
+                        reversed: false,
+                        operation: SolidOperation::NewBody,
+                        target_body: None,
+                    }),
+                )?;
+                w.add_dependency(Dependency {
+                    dependent: extrude,
+                    dependency: sketch,
+                    role: DependencyRole::Profile,
+                })?;
+                w.put_object(
+                    body,
+                    None,
+                    102,
+                    Some("Bracket"),
+                    &ObjectPayload::Body(Body {
+                        tip_feature: Some(extrude),
+                    }),
+                )?;
+                w.add_dependency(Dependency {
+                    dependent: body,
+                    dependency: extrude,
+                    role: DependencyRole::BodyTip,
+                })?;
+                Ok(())
+            })
+            .expect("writes the second body");
+        drop(document);
+
+        let scene = snapshot_of(
+            &path,
+            &mut MockKernel::new(),
+            |_: &mut MockKernel, _: &[u8]| {
+                Err(CadError::unsupported("this document holds no imports"))
+            },
+            &ferritecad_kernel::TessellationParams::default(),
+            &ferritecad_kernel::OperationContext::default(),
+        )
+        .expect("the document loads");
+        assert_eq!(scene.snapshot.meshes().len(), 2, "two bodies were written");
+        (directory, scene)
+    }
+
+    #[test]
+    fn isolating_keeps_a_chosen_face_exactly_as_that_face() {
+        let (_directory, scene) = plate_and_a_second_body();
+        let snapshot = &scene.snapshot;
+
+        // A face the document names, chosen as that face, with another body
+        // beside it so isolating would change the picture.
+        let face = snapshot.face_of(0, 0).expect("numbered");
+        let chosen = Selection::at(
+            snapshot.pick_of(0).expect("drawn"),
+            face,
+            snapshot,
+            &scene.faces,
+        );
+        let Selection::Face(before) = &chosen else {
+            panic!("the plate's face is not named: {chosen:?}");
+        };
+        let meanings = before.meanings().to_vec();
+
+        let mut visibility = Visibility::new(snapshot);
+        let mut hovered = Marked::Nothing;
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        assert!(visibility.can_isolate(chosen.marked(), snapshot));
+        assert!(isolate_selected(
+            &mut visibility,
+            &chosen,
+            &mut hovered,
+            snapshot,
+            &mut input
+        ));
+
+        // The part the face is on is what stays; the other body goes.
+        assert!(visibility.shows(0, snapshot));
+        assert!(!visibility.shows(1, snapshot));
+
+        // And the choice is still that face, with what the document calls it.
+        let Selection::Face(after) = &chosen else {
+            panic!("the choice stopped being a face");
+        };
+        assert_eq!(after.face(), face);
+        assert_eq!(after.meanings(), meanings.as_slice());
+        assert_eq!(chosen.marked(), Marked::Face(face));
+    }
+
+    #[test]
+    fn isolating_keeps_the_choice_exactly_and_forgets_everything_pointing_elsewhere() {
+        let picture = three_definitions();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+
+        // A face selection, which is the one that could most easily be
+        // downgraded by an operation that dealt only in definitions.
+        let face = picture.face_of(1, 0).expect("numbered");
+        scene.selection = Selection::at(
+            picture.pick_of(1).expect("drawn"),
+            face,
+            &picture,
+            &FaceNames::default(),
+        );
+        // With no durable names this falls back to the definition, so the face
+        // case is stated with the transient mark the renderer is given.
+        scene.hovered = Marked::Face(picture.face_of(0, 0).expect("numbered"));
+        let chosen = scene.selection.clone();
+        let camera = input.camera().view_projection();
+
+        // A click and a question already in flight, about the frame on screen.
+        input.handle(ViewportEvent::PointerMoved { x: 4.0, y: 4.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        input.handle(ViewportEvent::PointerMoved { x: 9.0, y: 9.0 }, false);
+
+        assert!(isolate_selected(
+            &mut scene.visibility,
+            &scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+
+        // The choice is exactly what it was: this is the operation for looking
+        // at what you have already chosen.
+        assert_eq!(scene.selection, chosen);
+        // What pointed elsewhere is gone, and nothing in flight can answer
+        // against the frame being replaced.
+        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(input.take_pick(), None);
+        assert_eq!(input.take_hover(), Hover::Cleared);
+        assert!(input.take_redraw(), "isolating owes a frame");
+        assert_eq!(input.camera().view_projection(), camera);
+    }
+
+    #[test]
+    fn isolating_a_chosen_face_keeps_it_chosen_as_that_face() {
+        let (_directory, scene, chosen) = plate_with_a_chosen_face();
+        let mut visibility = Visibility::new(&scene.snapshot);
+        let mut hovered = Marked::Nothing;
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        // Construction and resizing both owe a frame of their own; what this
+        // gate is about is whether the action adds one.
+        let _ = input.take_redraw();
+
+        // The plate is the only definition the fixture draws, so there is
+        // nothing to isolate away and the action is not offered.
+        assert!(!visibility.can_isolate(chosen.marked(), &scene.snapshot));
+        assert!(!isolate_selected(
+            &mut visibility,
+            &chosen,
+            &mut hovered,
+            &scene.snapshot,
+            &mut input
+        ));
+        assert!(
+            !input.take_redraw(),
+            "an unavailable action asked for a frame"
+        );
+
+        // The face selection survives the attempt untouched, including what
+        // the document calls it.
+        let Selection::Face(face) = &chosen else {
+            panic!("the fixture chose no face");
+        };
+        assert!(!face.meanings().is_empty());
+        assert_eq!(chosen.marked(), Marked::Face(face.face()));
+    }
+
+    #[test]
+    fn isolate_is_offered_exactly_when_something_else_is_still_drawn() {
+        let picture = three_definitions();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+
+        // Nothing chosen: nothing to isolate to.
+        assert!(!can_isolate_selection(&scene, &picture));
+
+        // Three drawn, one chosen: two others to remove.
+        scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
+        assert!(can_isolate_selection(&scene, &picture));
+
+        // Two drawn: one other to remove.
+        assert!(scene.visibility.hide(
+            Marked::Definition(picture.pick_of(0).expect("drawn")),
+            &picture
+        ));
+        assert!(can_isolate_selection(&scene, &picture));
+
+        // One drawn: the chosen one is alone already.
+        assert!(scene.visibility.hide(
+            Marked::Definition(picture.pick_of(2).expect("drawn")),
+            &picture
+        ));
+        assert!(!can_isolate_selection(&scene, &picture));
+
+        // And a choice that is not drawn at all offers neither action.
+        scene.selection = Selection::Definition(picture.pick_of(0).expect("drawn"));
+        assert!(!can_isolate_selection(&scene, &picture));
+        assert!(!can_hide_selection(&scene, &picture));
+    }
+
+    #[test]
+    fn a_definition_that_draws_nothing_does_not_make_isolate_available() {
+        let mut builder = SnapshotBuilder::new();
+        let drawn = builder.add_mesh(&distant_scene_mesh()).expect("packs");
+        let empty = builder
+            .add_mesh(&ferritecad_kernel::Mesh::default())
+            .expect("packs");
+        for definition in [drawn, empty] {
+            builder
+                .place(
+                    definition,
+                    None,
+                    &ferritecad_types::Transform::IDENTITY,
+                    [1.0, 1.0, 1.0],
+                )
+                .expect("places");
+        }
+        let picture = builder.build();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        scene.selection = Selection::Definition(picture.pick_of(drawn).expect("has a row"));
+        let mut input = ViewportInput::new();
+        let _ = input.take_redraw();
+
+        // The empty one is already nowhere, so the drawn one is alone on
+        // screen and there is nothing to isolate away.
+        assert!(!can_isolate_selection(&scene, &picture));
+        assert!(!isolate_selected(
+            &mut scene.visibility,
+            &scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+        assert!(
+            !scene.visibility.anything_hidden(),
+            "an empty definition was marked hidden by isolating"
+        );
+        assert!(!input.take_redraw());
+    }
+
+    #[test]
+    fn what_isolating_leaves_is_what_both_framings_find() {
+        let picture = three_definitions();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        assert!(isolate_selected(
+            &mut scene.visibility,
+            &scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+
+        // One thing left, so showing what is chosen and showing everything are
+        // the same journey.
+        assert_eq!(
+            selection_bounds(&scene, &picture),
+            scene.visibility.bounds(&picture)
+        );
+        let mut by_selection = input.clone();
+        let mut by_scene = input.clone();
+        assert!(frame_selection(&scene, &picture, &mut by_selection).expect("frames"));
+        assert!(frame_scene(&scene.visibility, &picture, &mut by_scene).expect("frames"));
+        assert_eq!(
+            by_selection.camera().view_projection(),
+            by_scene.camera().view_projection()
+        );
+    }
+
+    #[test]
+    fn showing_everything_after_isolating_keeps_the_choice_and_hiding_still_clears_it() {
+        let picture = three_definitions();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
+        let chosen = scene.selection.clone();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        assert!(isolate_selected(
+            &mut scene.visibility,
+            &scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+
+        // Show all is the way back, and it is not a way to unchoose.
+        assert!(show_all(&mut scene.visibility, &mut input));
+        for definition in 0..3 {
+            assert!(scene.visibility.shows(definition, &picture));
+        }
+        assert_eq!(scene.selection, chosen, "showing everything unchose it");
+
+        // And hiding what is chosen still removes it and unchooses it, exactly
+        // as it did before this operation existed.
+        assert!(isolate_selected(
+            &mut scene.visibility,
+            &scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+        assert!(hide_selected(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+        assert_eq!(scene.selection, Selection::Nothing);
+        assert_eq!(scene.visibility.bounds(&picture), None);
+    }
+
+    #[test]
+    fn a_successful_open_forgets_an_isolation_and_a_failed_one_keeps_it() {
+        let picture = three_definitions();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        assert!(isolate_selected(
+            &mut scene.visibility,
+            &scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+        let isolated = scene.visibility.clone();
+        let chosen = scene.selection.clone();
+
+        let mut camera = ViewportInput::new();
+        commit_scene(&mut scene, &mut camera, Err(CadError::input("no")))
+            .expect_err("a failed load commits nothing");
+        assert_eq!(scene.visibility, isolated);
+        assert_eq!(scene.selection, chosen);
+
+        let next = three_definitions();
+        let mut framed = ViewportInput::new();
+        framed.resize(640, 480);
+        commit_scene(
+            &mut scene,
+            &mut camera,
+            Ok((
+                framed,
+                (),
+                vec![a_body(), a_body(), a_body()],
+                FaceNames::default(),
+                Visibility::new(&next),
+            )),
+        )
+        .expect("a load that arrived commits");
+        assert!(!scene.visibility.anything_hidden());
+        assert_eq!(scene.selection, Selection::Nothing);
+        assert_eq!(scene.hovered, Marked::Nothing);
+    }
+
+    #[test]
+    fn every_shortcut_reaches_its_own_action_and_yields_to_the_interface() {
+        // Each key, the action it asks for, and nothing else.
+        for (shortcut, action) in [
+            (FRAME_KEY, Requested::FrameSelection),
+            (FRAME_ALL_KEY, Requested::FrameScene),
+            (HIDE_KEY, Requested::Hide),
+            (ISOLATE_KEY, Requested::Isolate),
+            (SHOW_ALL_KEY, Requested::ShowAll),
+        ] {
+            assert_eq!(
+                requested(&Key::Character(shortcut.into()), false),
+                Some(action),
+                "{shortcut} does not reach {action:?}"
+            );
+            assert_eq!(
+                requested(&Key::Character(shortcut.to_lowercase().into()), false),
+                Some(action),
+                "{shortcut} is case-sensitive"
+            );
+            // The interface has first refusal for every one of them: a focused
+            // text control that accepted the letter did not also ask to change
+            // what the model shows.
+            assert_eq!(
+                requested(&Key::Character(shortcut.into()), true),
+                None,
+                "{shortcut} fired although the interface had claimed it"
+            );
+        }
+
+        // And nothing else asks for any of them.
+        for (_, _, view) in VIEWS {
+            assert_eq!(requested(&Key::Character((*view).into()), false), None);
+        }
+        assert_eq!(requested(&Key::Named(NamedKey::Home), false), None);
+        assert_eq!(requested(&Key::Character("g".into()), false), None);
+    }
+
+    #[test]
+    fn the_key_that_isolates_is_the_one_the_panel_prints() {
+        assert!(wants(
+            &Key::Character(ISOLATE_KEY.into()),
+            false,
+            ISOLATE_KEY
+        ));
+        assert!(wants(
+            &Key::Character(ISOLATE_KEY.to_lowercase().into()),
+            false,
+            ISOLATE_KEY
+        ));
+
+        // Distinct from every other action bound here, and from every view.
+        let bound = [
+            FRAME_KEY,
+            FRAME_ALL_KEY,
+            HIDE_KEY,
+            SHOW_ALL_KEY,
+            ISOLATE_KEY,
+        ];
+        for (first, one) in bound.iter().enumerate() {
+            for other in bound.iter().skip(first + 1) {
+                assert_ne!(one, other, "two actions share one key");
+            }
+        }
+        assert!(VIEWS.iter().all(|(_, _, view)| *view != ISOLATE_KEY));
+        assert!(named_view(&Key::Character(ISOLATE_KEY.into())).is_none());
+        assert!(!wants(&Key::Named(NamedKey::Home), false, ISOLATE_KEY));
+
+        // And the interface has first refusal, as it does for the others.
+        assert!(!wants(
+            &Key::Character(ISOLATE_KEY.into()),
+            true,
+            ISOLATE_KEY
+        ));
+    }
+
+    #[test]
+    fn nothing_but_isolate_leaves_one_definition_chosen_and_alone() {
+        let picture = three_definitions();
+        let target = picture.pick_of(1).expect("the middle definition has a row");
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+
+        // Chosen the way a person chooses something they cannot see: from the
+        // list, because the middle definition is surrounded by its neighbours.
+        select_definition_row(&mut scene.selection, &picture, &mut input, 1);
+        assert_eq!(scene.selection, Selection::Definition(target));
+        let chosen = scene.selection.clone();
+        let camera = input.camera().view_projection();
+
+        // The defect. Hiding what is chosen removes the very thing that was
+        // to be looked at, and there is no other single operation that leaves
+        // it chosen and alone.
+        let mut by_hiding = scene.visibility.clone();
+        let mut selection = scene.selection.clone();
+        let mut hovered = scene.hovered;
+        assert!(hide_selected(
+            &mut by_hiding,
+            &mut selection,
+            &mut hovered,
+            &picture,
+            &mut input.clone()
+        ));
+        assert!(
+            !by_hiding.shows(1, &picture),
+            "Hide selected removes the target itself"
+        );
+        assert_eq!(
+            selection,
+            Selection::Nothing,
+            "and unchooses it, so the choice must be made again"
+        );
+
+        // One operation, and afterwards exactly the chosen definition is drawn
+        // and still chosen.
+        assert!(isolate_selected(
+            &mut scene.visibility,
+            &scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+
+        assert_eq!(scene.selection, chosen, "isolating changed what was chosen");
+        assert!(scene.visibility.shows(1, &picture));
+        assert!(!scene.visibility.shows(0, &picture));
+        assert!(!scene.visibility.shows(2, &picture));
+        assert_eq!(
+            scene.visibility.bounds(&picture),
+            picture.bounds_of(target),
+            "what is left is exactly the chosen definition, in both its places"
+        );
+        assert_eq!(input.camera().view_projection(), camera);
     }
 
     #[test]
