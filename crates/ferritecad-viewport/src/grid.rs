@@ -55,6 +55,33 @@ pub struct GridPlan {
     pub extent: f32,
 }
 
+/// The first readable decimal ladder step at or above `wanted`.
+///
+/// Kept separate from [`plan`] because this is the policy: the camera only
+/// supplies the scale to ask it about. Tests at the step boundaries must call
+/// this implementation rather than repeat it and prove only their own copy.
+fn ladder_step(wanted: f32) -> Option<f32> {
+    if !wanted.is_finite() || wanted <= 0.0 {
+        return None;
+    }
+
+    let decade = 10.0f32.powf(wanted.log10().floor());
+    if !decade.is_finite() || decade <= 0.0 {
+        return None;
+    }
+
+    let step = if wanted <= decade {
+        decade
+    } else if wanted <= 2.0 * decade {
+        2.0 * decade
+    } else if wanted <= 5.0 * decade {
+        5.0 * decade
+    } else {
+        10.0 * decade
+    };
+    step.is_finite().then_some(step)
+}
+
 /// Where a grid's lines should go for this camera, if a grid can be drawn.
 ///
 /// `None` for a viewport with no area and for a camera whose scale is not a
@@ -83,20 +110,7 @@ pub fn plan(camera: &Camera) -> Option<GridPlan> {
         return None;
     }
 
-    let decade = 10.0f32.powf(wanted.log10().floor());
-    if !decade.is_finite() || decade <= 0.0 {
-        return None;
-    }
-
-    let minor = if wanted <= decade {
-        decade
-    } else if wanted <= 2.0 * decade {
-        2.0 * decade
-    } else if wanted <= 5.0 * decade {
-        5.0 * decade
-    } else {
-        10.0 * decade
-    };
+    let minor = ladder_step(wanted)?;
 
     let major = minor * MAJOR_EVERY as f32;
     let extent = minor * HALF_LINES as f32;
@@ -161,8 +175,9 @@ mod tests {
 
     #[test]
     fn both_sides_of_a_decade_choose_the_step_they_should() {
-        // Worked from the rule rather than from the implementation: the
-        // smallest ladder step at least `MIN_PIXELS` across.
+        // These are the policy boundaries themselves. Calling the production
+        // helper matters: a second implementation here would stay green when
+        // the one `plan` uses drifted.
         let cases = [
             (0.9_f32, 1.0_f32),
             (1.0, 1.0),
@@ -173,22 +188,22 @@ mod tests {
             (5.1, 10.0),
             (9.9, 10.0),
         ];
-        for (wanted, expected) in cases {
-            let decade = 10.0f32.powf(wanted.log10().floor());
-            let chosen = if wanted <= decade {
-                decade
-            } else if wanted <= 2.0 * decade {
-                2.0 * decade
-            } else if wanted <= 5.0 * decade {
-                5.0 * decade
-            } else {
-                10.0 * decade
-            };
-            assert!(
-                (chosen - expected).abs() < 1e-6,
-                "a wanted spacing of {wanted} chose {chosen} rather than {expected}"
-            );
+        for exponent in -6..=6 {
+            let scale = 10.0f32.powi(exponent);
+            for (wanted, expected) in cases {
+                let wanted = wanted * scale;
+                let expected = expected * scale;
+                let chosen = ladder_step(wanted).expect("a positive finite spacing has a step");
+                assert!(
+                    (chosen / expected - 1.0).abs() < 1e-5,
+                    "a wanted spacing of {wanted} chose {chosen} rather than {expected}"
+                );
+            }
         }
+
+        assert_eq!(ladder_step(0.0), None);
+        assert_eq!(ladder_step(f32::NAN), None);
+        assert_eq!(ladder_step(f32::INFINITY), None);
     }
 
     #[test]

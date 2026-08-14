@@ -208,10 +208,41 @@ fn widest_gap(frame: &ferritecad_viewport_gpu::Frame) -> Option<u32> {
         .max()
 }
 
+/// How many pixels belonging to neither model changed between two backdrops.
+///
+/// Looking only where both frames say `NOTHING` removes model motion from the
+/// answer. Comparing whole frames would let a screen-space grid pass merely
+/// because pan or orbit moved the model drawn over it.
+fn changed_common_background(
+    before: &ferritecad_viewport_gpu::Frame,
+    after: &ferritecad_viewport_gpu::Frame,
+) -> (usize, usize) {
+    assert_eq!(
+        (before.width(), before.height()),
+        (after.width(), after.height())
+    );
+    let mut comparable = 0;
+    let mut changed = 0;
+    for y in 0..before.height() {
+        for x in 0..before.width() {
+            if before.pick_at(x, y) == PickId::NOTHING && after.pick_at(x, y) == PickId::NOTHING {
+                comparable += 1;
+                if before.colour_at(x, y) != after.colour_at(x, y) {
+                    changed += 1;
+                }
+            }
+        }
+    }
+    (comparable, changed)
+}
+
 #[test]
 fn a_model_is_drawn_over_a_grid_that_is_never_selectable() {
     let mut renderer = renderer_or_skip!();
-    let (snapshot, camera) = model_over_the_plane(128, 128);
+    // Wide enough to contain more than ten minor intervals, otherwise the
+    // axes can be visible while the next major line honestly lies outside the
+    // frame and there are not two grey weights to compare.
+    let (snapshot, camera) = model_over_the_plane(512, 512);
 
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let frame = renderer
@@ -220,6 +251,9 @@ fn a_model_is_drawn_over_a_grid_that_is_never_selectable() {
 
     let mut grid_pixels = 0;
     let mut model_pixels = 0;
+    let mut x_axis_pixels = 0;
+    let mut y_axis_pixels = 0;
+    let mut grey_levels = std::collections::BTreeSet::new();
     for y in 0..frame.height() {
         for x in 0..frame.width() {
             let pixel = frame.colour_at(x, y).expect("inside the frame");
@@ -239,6 +273,14 @@ fn a_model_is_drawn_over_a_grid_that_is_never_selectable() {
                 );
                 if is_grid(pixel) {
                     grid_pixels += 1;
+                    let [r, g, b, _] = pixel;
+                    if r > g.saturating_add(30) && r > b.saturating_add(30) {
+                        x_axis_pixels += 1;
+                    } else if g > r.saturating_add(30) && g > b.saturating_add(30) {
+                        y_axis_pixels += 1;
+                    } else if r.abs_diff(g) <= 2 && g.abs_diff(b) <= 10 {
+                        grey_levels.insert(r);
+                    }
                 }
             }
         }
@@ -248,6 +290,12 @@ fn a_model_is_drawn_over_a_grid_that_is_never_selectable() {
     assert!(
         grid_pixels > 100,
         "the grid drew {grid_pixels} pixels, so there is no reference to see"
+    );
+    assert!(x_axis_pixels > 0, "the X axis is not distinguishable");
+    assert!(y_axis_pixels > 0, "the Y axis is not distinguishable");
+    assert!(
+        grey_levels.len() >= 2,
+        "minor and major lines are not distinguishable: {grey_levels:?}"
     );
 
     // Clicking a grid line is clicking the background, which is what clears a
@@ -279,10 +327,14 @@ fn the_grid_belongs_to_the_world_and_not_to_the_screen() {
     let after_pan = renderer
         .render(&prepared, &panned, PickId::NOTHING)
         .expect("draws");
-    assert_ne!(
-        still.colour(),
-        after_pan.colour(),
-        "panning left the backdrop exactly where it was"
+    let (pan_background, pan_changed) = changed_common_background(&still, &after_pan);
+    assert!(
+        pan_background > 1_000,
+        "only {pan_background} common background pixels could be compared"
+    );
+    assert!(
+        pan_changed > 100,
+        "panning changed only {pan_changed} background pixels; the grid stayed on the screen"
     );
 
     // Orbiting turns the plane away, so the lines converge instead of staying
@@ -292,7 +344,15 @@ fn the_grid_belongs_to_the_world_and_not_to_the_screen() {
     let after_orbit = renderer
         .render(&prepared, &orbited, PickId::NOTHING)
         .expect("draws");
-    assert_ne!(still.colour(), after_orbit.colour());
+    let (orbit_background, orbit_changed) = changed_common_background(&still, &after_orbit);
+    assert!(
+        orbit_background > 1_000,
+        "only {orbit_background} common background pixels could be compared"
+    );
+    assert!(
+        orbit_changed > 100,
+        "orbiting changed only {orbit_changed} background pixels; the grid stayed on the screen"
+    );
 
     // Zooming a long way changes which spacing is drawn, but not how dense the
     // lines look: that is the ladder doing its work. A fixed spacing would
