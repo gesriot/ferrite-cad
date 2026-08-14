@@ -139,22 +139,23 @@ impl ViewportInput {
         Ok(())
     }
 
-    /// Frames what is chosen, if the picture could say where it is.
+    /// Frames whatever the caller wants seen, if there is anything to see.
     ///
     /// One decision for every way of asking. A button and a key are two ways
-    /// to say the same thing, and a second copy of "where should the camera
+    /// to say the same thing, and one part of a model and the whole of it are
+    /// two things to say it about; a second copy of "where should the camera
     /// go" is the copy that would drift.
     ///
-    /// `bounds` is `None` when nothing is chosen, when what is chosen draws no
-    /// triangles, or when the choice belongs to a picture that is no longer on
-    /// screen. All three mean the same here: there is nowhere to go, so the
-    /// camera does not move and no frame is owed. Returns whether anything
-    /// happened, which is what stops an unavailable action from asking for a
-    /// redraw that would show the same picture again.
+    /// `bounds` is `None` when there is nothing to show: nothing chosen, a
+    /// definition that draws no triangles, a choice belonging to a picture no
+    /// longer on screen, or a picture with nothing in it at all. They mean the
+    /// same here, so the camera does not move and no frame is owed. Returns
+    /// whether anything happened, which is what stops an unavailable action
+    /// from asking for a redraw that would show the same picture again.
     ///
     /// Direction is kept. Framing answers "let me see this", not "look at it
     /// from somewhere I did not choose".
-    pub fn frame_selected(&mut self, bounds: Option<([f32; 3], [f32; 3])>) -> Result<bool> {
+    pub fn frame_extent(&mut self, bounds: Option<([f32; 3], [f32; 3])>) -> Result<bool> {
         let Some(bounds) = bounds else {
             return Ok(false);
         };
@@ -761,7 +762,7 @@ mod tests {
         // Somewhere else entirely, which is the case this exists for: the
         // chosen definition is off screen.
         let happened = input
-            .frame_selected(Some(([900.0, 900.0, 900.0], [910.0, 910.0, 910.0])))
+            .frame_extent(Some(([900.0, 900.0, 900.0], [910.0, 910.0, 910.0])))
             .expect("a box with an extent can be framed");
         assert!(happened, "framing reported that nothing happened");
         assert!(
@@ -802,7 +803,7 @@ mod tests {
         for _ in 0..3 {
             assert!(
                 !input
-                    .frame_selected(None)
+                    .frame_extent(None)
                     .expect("having nowhere to go is not a failure")
             );
         }

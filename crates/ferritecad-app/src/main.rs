@@ -39,7 +39,8 @@ use ferritecad_occt::OcctKernel;
 use ferritecad_scene::{CatalogueEntry, LoadedScene, SceneItem, snapshot_of};
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
-    Activity, Chosen, FRAME_KEY, PointerButton, Selected, VIEWS, ViewportEvent, ViewportInput,
+    Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, PointerButton, Selected, VIEWS, ViewportEvent,
+    ViewportInput,
 };
 use ferritecad_viewport::{PickId, RenderSnapshot, SnapshotBuilder, StandardView};
 use ferritecad_viewport_gpu::{PreparedSnapshot, Renderer, WindowSurface};
@@ -788,7 +789,18 @@ fn frame_selection<P>(
     snapshot: &RenderSnapshot,
     camera: &mut ViewportInput,
 ) -> Result<bool> {
-    camera.frame_selected(selection_bounds(scene, snapshot))
+    camera.frame_extent(selection_bounds(scene, snapshot))
+}
+
+/// Shows the whole picture, and changes nothing else.
+///
+/// Takes the picture and nothing else: what is chosen is not an input to
+/// showing everything, and a function that cannot see a selection cannot
+/// disturb one. The extent is the snapshot's own, computed once when it was
+/// packed – recomputing it here from the catalogue, the picks or the order the
+/// definitions happen to be in would be a second answer to a settled question.
+fn frame_scene(snapshot: &RenderSnapshot, camera: &mut ViewportInput) -> Result<bool> {
+    camera.frame_extent(snapshot.bounds())
 }
 
 /// What the interface should say about a chosen definition.
@@ -956,6 +968,7 @@ impl ApplicationHandler<AppEvent> for App {
                         live.scene.prepared.snapshot(),
                     )
                     .is_some(),
+                    can_frame_scene: live.scene.prepared.snapshot().bounds().is_some(),
                 };
                 match live.draw(&self.input, activity) {
                     // A button pressed during this frame reaches the camera
@@ -990,6 +1003,9 @@ impl ApplicationHandler<AppEvent> for App {
                         if chosen.frame {
                             self.frame_selection();
                         }
+                        if chosen.frame_all {
+                            self.frame_whole_scene();
+                        }
                         // Asked after the frame that was clicked has been
                         // published, and only when somebody clicked: answering
                         // means drawing the model again offscreen to read one
@@ -1012,6 +1028,13 @@ impl ApplicationHandler<AppEvent> for App {
                     && wants_frame(&event.logical_key, response.consumed) =>
             {
                 self.frame_selection();
+            }
+
+            WindowEvent::KeyboardInput { ref event, .. }
+                if event.state == ElementState::Pressed
+                    && wants_frame_all(&event.logical_key, response.consumed) =>
+            {
+                self.frame_whole_scene();
             }
 
             other => {
@@ -1205,6 +1228,18 @@ impl App {
         if let Err(error) =
             frame_selection(&live.scene, live.scene.prepared.snapshot(), &mut self.input)
         {
+            eprintln!("ferritecad: {error}");
+        }
+    }
+
+    /// Shows the whole model, wherever the camera had wandered to.
+    ///
+    /// The one operation behind both the button and the key.
+    fn frame_whole_scene(&mut self) {
+        let Some(live) = self.live.as_ref() else {
+            return;
+        };
+        if let Err(error) = frame_scene(live.scene.prepared.snapshot(), &mut self.input) {
             eprintln!("ferritecad: {error}");
         }
     }
@@ -1511,6 +1546,20 @@ fn button_of(button: MouseButton) -> Option<PointerButton> {
         MouseButton::Right => Some(PointerButton::Secondary),
         _ => None,
     }
+}
+
+/// Whether this unclaimed key is the one printed on the whole-model button.
+///
+/// Read from the same constant the panel prints, and refused when the
+/// interface claimed it, for the same reasons as [`wants_frame`].
+fn wants_frame_all(key: &Key, claimed_by_ui: bool) -> bool {
+    if claimed_by_ui {
+        return false;
+    }
+    let Key::Character(text) = key else {
+        return false;
+    };
+    text.eq_ignore_ascii_case(FRAME_ALL_KEY)
 }
 
 /// Whether this unclaimed key is the one printed on the framing button.
@@ -2576,6 +2625,125 @@ mod tests {
     }
 
     #[test]
+    fn showing_everything_shows_the_neighbour_that_showing_a_choice_leaves_out() {
+        let mut builder = SnapshotBuilder::new();
+        let chosen = builder
+            .add_mesh(&distant_scene_mesh())
+            .expect("the mesh is valid");
+        let neighbour = builder
+            .add_mesh(&distant_scene_mesh())
+            .expect("the mesh is valid");
+        let at = |x: f64| {
+            ferritecad_types::Transform::from_translation(
+                ferritecad_types::Vec3::new(x, 0.0, 0.0).expect("finite"),
+            )
+            .expect("finite")
+        };
+        builder
+            .place(chosen, None, &at(0.0), [0.5, 0.5, 0.5])
+            .expect("places it");
+        builder
+            .place(neighbour, None, &at(900.0), [0.5, 0.5, 0.5])
+            .expect("places it");
+        let picture = builder.build();
+
+        let scene = LiveScene {
+            prepared: (),
+            catalogue: vec![a_body(), a_body()],
+            selection: picture.pick_of(chosen).expect("the picture has that row"),
+        };
+
+        let mut showing_choice = ViewportInput::new();
+        showing_choice.resize(800, 600);
+        assert!(
+            frame_selection(&scene, &picture, &mut showing_choice).expect("a box can be framed")
+        );
+
+        let mut showing_all = ViewportInput::new();
+        showing_all.resize(800, 600);
+        assert!(frame_scene(&picture, &mut showing_all).expect("a picture can be framed"));
+
+        // The two answer different questions. What is chosen sits at the
+        // origin, so showing it looks there; the neighbour is 900 away, so
+        // showing everything looks between them.
+        let choice = showing_choice.camera().target();
+        let everything = showing_all.camera().target();
+        assert!(choice[0] < 100.0, "showing a choice drifted: {choice:?}");
+        assert!(
+            everything[0] > 350.0,
+            "showing everything left the neighbour out: {everything:?}"
+        );
+
+        // And showing everything leaves the choice exactly as it was: it is a
+        // camera action, not a way of unchoosing.
+        assert_eq!(
+            scene.selection,
+            picture.pick_of(chosen).expect("the picture has that row")
+        );
+        assert_eq!(scene.chosen(&picture).map(|(row, _)| row), Some(chosen));
+    }
+
+    #[test]
+    fn showing_a_choice_and_showing_everything_share_their_arithmetic() {
+        // One definition, placed once: what is chosen covers exactly what the
+        // picture covers, so both actions are being asked the same question.
+        let mut builder = SnapshotBuilder::new();
+        let only = builder
+            .add_mesh(&distant_scene_mesh())
+            .expect("the mesh is valid");
+        builder
+            .place(
+                only,
+                None,
+                &ferritecad_types::Transform::IDENTITY,
+                [0.5, 0.5, 0.5],
+            )
+            .expect("places it");
+        let picture = builder.build();
+
+        let scene = LiveScene {
+            prepared: (),
+            catalogue: vec![a_body()],
+            selection: picture.pick_of(only).expect("the picture has that row"),
+        };
+        assert_eq!(selection_bounds(&scene, &picture), picture.bounds());
+
+        let mut by_choice = ViewportInput::new();
+        by_choice.resize(800, 600);
+        frame_selection(&scene, &picture, &mut by_choice).expect("frames");
+
+        let mut by_everything = ViewportInput::new();
+        by_everything.resize(800, 600);
+        frame_scene(&picture, &mut by_everything).expect("frames");
+
+        // The same answer, to the last float. Two implementations of where a
+        // camera goes would agree only by accident, and stop agreeing the
+        // first time either was touched.
+        assert_eq!(by_choice.camera(), by_everything.camera());
+    }
+
+    #[test]
+    fn an_empty_picture_is_nowhere_to_go_however_often_it_is_asked() {
+        let empty = SnapshotBuilder::new().build();
+        let mut camera = ViewportInput::new();
+        camera.resize(800, 600);
+        camera.take_redraw();
+        let before = *camera.camera();
+
+        for _ in 0..3 {
+            assert!(
+                !frame_scene(&empty, &mut camera).expect("having nowhere to go is not a failure"),
+                "an empty picture was framed"
+            );
+        }
+        assert_eq!(*camera.camera(), before);
+        assert!(
+            !camera.take_redraw(),
+            "an action that did nothing asked for a frame"
+        );
+    }
+
+    #[test]
     fn there_is_nowhere_to_go_for_a_choice_this_picture_does_not_know() {
         let picture = distant_scene();
         let elsewhere = scene_at(400.0);
@@ -3038,6 +3206,38 @@ mod tests {
         }
         assert!(!wants_frame(&Key::Named(NamedKey::Home), false));
         assert!(!wants_frame(&Key::Character("g".into()), false));
+    }
+
+    #[test]
+    fn the_whole_model_key_is_its_own_and_yields_to_the_interface() {
+        assert!(wants_frame_all(
+            &Key::Character(FRAME_ALL_KEY.into()),
+            false
+        ));
+        assert!(
+            wants_frame_all(&Key::Character(FRAME_ALL_KEY.to_lowercase().into()), false),
+            "the button prints one case and a keyboard reports the other"
+        );
+
+        // A key the interface took is not a camera command: a focused text
+        // control that accepted an `A` did not ask to reframe the model.
+        assert!(
+            !wants_frame_all(&Key::Character(FRAME_ALL_KEY.into()), true),
+            "a key the interface claimed still moved the model camera"
+        );
+
+        // Nothing else is that key, and it is not the other framing key.
+        assert!(!wants_frame_all(&Key::Character(FRAME_KEY.into()), false));
+        assert!(!wants_frame(&Key::Character(FRAME_ALL_KEY.into()), false));
+        for (_, _, key) in VIEWS {
+            assert!(!wants_frame_all(&Key::Character((*key).into()), false));
+        }
+        // Home still means the isometric view and nothing else.
+        assert!(!wants_frame_all(&Key::Named(NamedKey::Home), false));
+        assert_eq!(
+            named_view(&Key::Named(NamedKey::Home)),
+            Some(StandardView::Isometric)
+        );
     }
 
     #[test]

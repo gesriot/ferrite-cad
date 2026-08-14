@@ -29,6 +29,8 @@ pub struct Chosen {
     pub cancel: bool,
     /// The user wants to see what is chosen.
     pub frame: bool,
+    /// The user wants to see the whole model.
+    pub frame_all: bool,
     /// A definition the user picked out of the list, by its place in it.
     ///
     /// A position in this frame's list and nothing more: the caller turns it
@@ -231,6 +233,9 @@ pub struct Activity<'a> {
     pub progress: Option<f32>,
     /// Whether the picture can say where what is chosen actually is.
     pub can_frame_selection: bool,
+    /// Whether the picture has any extent at all. A document with nothing in
+    /// it has nowhere to point a camera, and says so by offering nothing.
+    pub can_frame_scene: bool,
 }
 
 /// The toolbar: a document to open, the directions a drawing would name, what
@@ -260,6 +265,16 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
             .add_enabled(
                 activity.can_frame_selection,
                 egui::Button::new(format!("Frame selected ({FRAME_KEY})")),
+            )
+            .clicked();
+        // Beside it, because the two answer the same question about different
+        // things: show me this, and show me everything. Available whenever the
+        // picture has an extent, which is what makes it the way back from a
+        // camera that has wandered off the model.
+        chosen.frame_all = ui
+            .add_enabled(
+                activity.can_frame_scene,
+                egui::Button::new(format!("Frame all ({FRAME_ALL_KEY})")),
             )
             .clicked();
         ui.separator();
@@ -297,6 +312,13 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
 /// reason [`VIEWS`] is one place: a shortcut printed on a button that does
 /// something else is worse than no shortcut at all.
 pub const FRAME_KEY: &str = "F";
+
+/// The key that shows the whole model, printed on its button.
+///
+/// Distinct from [`FRAME_KEY`] and from every view key, and checked to be: two
+/// actions on one key is a shortcut whose meaning depends on state nobody can
+/// see.
+pub const FRAME_ALL_KEY: &str = "A";
 
 pub const VIEWS: &[(StandardView, &str, &str)] = &[
     (StandardView::Front, "Front", "1"),
@@ -478,6 +500,7 @@ mod tests {
             line: "Opening part.fcad… 40%",
             progress: Some(0.4),
             can_frame_selection: false,
+            can_frame_scene: false,
         };
 
         // Where the Cancel button is: after the views, so the row up to it is
@@ -490,6 +513,10 @@ mod tests {
                 let _ = ui.add_enabled(
                     reading.can_frame_selection,
                     egui::Button::new(format!("Frame selected ({FRAME_KEY})")),
+                );
+                let _ = ui.add_enabled(
+                    reading.can_frame_scene,
+                    egui::Button::new(format!("Frame all ({FRAME_ALL_KEY})")),
                 );
                 ui.separator();
                 ui.label("View");
@@ -864,6 +891,7 @@ mod tests {
             line: "part.fcad",
             progress: None,
             can_frame_selection,
+            can_frame_scene: false,
         };
 
         // Where the button is, laid out exactly as the toolbar lays it out.
@@ -906,14 +934,79 @@ mod tests {
     }
 
     #[test]
+    fn showing_everything_is_offered_only_when_there_is_anything_to_show() {
+        let context = egui::Context::default();
+        let with = |can_frame_scene| Activity {
+            line: "part.fcad",
+            progress: None,
+            can_frame_selection: false,
+            can_frame_scene,
+        };
+
+        // Where the button is, laid out exactly as the toolbar lays it out.
+        let mut all = None;
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.horizontal(|ui| {
+                let _ = ui.button("Open…");
+                ui.separator();
+                let _ = ui.add_enabled(
+                    false,
+                    egui::Button::new(format!("Frame selected ({FRAME_KEY})")),
+                );
+                all = Some(
+                    ui.add_enabled(
+                        true,
+                        egui::Button::new(format!("Frame all ({FRAME_ALL_KEY})")),
+                    )
+                    .rect,
+                );
+            });
+        });
+        output.textures_delta.clear();
+        let centre = all.expect("the reference row was laid out").center();
+
+        assert!(
+            click_on(&context, centre, with(true)).frame_all,
+            "nothing there asks to see the whole model"
+        );
+
+        // A picture with nothing in it has nowhere to point a camera, and
+        // pressing where the button is must not pretend otherwise.
+        assert!(
+            !click_on(&context, centre, with(false)).frame_all,
+            "an empty picture offered somewhere to go"
+        );
+
+        // Showing everything is not showing what is chosen: one press is one
+        // request, and not both.
+        assert!(!click_on(&context, centre, with(true)).frame);
+
+        let mut quiet = Chosen::default();
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            quiet = toolbar(ui, with(true));
+        });
+        output.textures_delta.clear();
+        assert!(!quiet.frame_all, "an untouched toolbar asked to reframe");
+    }
+
+    #[test]
     fn the_key_printed_on_the_button_is_the_one_this_crate_names() {
         // The panel prints `FRAME_KEY` and whatever binds the keyboard reads
         // the same constant, so a shortcut cannot end up printed on a button
         // that does something else.
         assert!(!FRAME_KEY.is_empty());
+        assert!(!FRAME_ALL_KEY.is_empty());
         assert!(
             VIEWS.iter().all(|(_, _, key)| *key != FRAME_KEY),
             "the framing key is also printed on a view button"
+        );
+        assert!(
+            VIEWS.iter().all(|(_, _, key)| *key != FRAME_ALL_KEY),
+            "the whole-model key is also printed on a view button"
+        );
+        assert_ne!(
+            FRAME_KEY, FRAME_ALL_KEY,
+            "one key would mean two things depending on what is chosen"
         );
     }
 

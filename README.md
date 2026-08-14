@@ -52,8 +52,9 @@ because a click names the definition and never the placement it landed on. A
 list beside the model offers the same definitions by name and identity, which
 is how one that is hidden, tiny or out of shot can still be chosen, and
 `Frame selected` (or `F`) brings all of its placements into view without
-changing the direction you were looking from. Opening another document is the
-only editing operation there is.
+changing the direction you were looking from, and `Frame all` (or `A`) does
+the same for the whole model, which is the way back when panning has left it
+off screen. Opening another document is the only editing operation there is.
 
 ## How a document is put together
 

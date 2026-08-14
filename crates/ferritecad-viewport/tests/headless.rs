@@ -235,6 +235,114 @@ fn nothing_at_all() -> Mesh {
 }
 
 #[test]
+fn a_camera_driven_off_the_model_can_be_brought_back_to_all_of_it() {
+    let mut builder = SnapshotBuilder::new();
+    let near = builder.add_mesh(&triangle()).expect("packs");
+    let far = builder.add_mesh(&triangle()).expect("packs");
+
+    // Several definitions, and placements a long way apart: what must come
+    // back is the whole picture rather than whichever part is nearest.
+    builder
+        .place(near, None, &moved(0.0, 0.0, 0.0), [1.0, 1.0, 1.0])
+        .expect("places");
+    builder
+        .place(near, None, &moved(-300.0, 0.0, 0.0), [1.0, 1.0, 1.0])
+        .expect("places");
+    builder
+        .place(far, None, &moved(400.0, 250.0, -120.0), [1.0, 1.0, 1.0])
+        .expect("places");
+    let snapshot = builder.build();
+
+    let mut camera = Camera::new();
+    camera.resize(800, 600);
+    camera
+        .frame(snapshot.bounds().expect("the picture has extent"))
+        .expect("frames");
+    let before = camera;
+
+    // Pan and zoom until nothing is on screen. This is the state the action
+    // exists for: no definition is chosen, so there is nothing to frame, and
+    // the view directions do not bring a model back that is beside the camera
+    // rather than behind it.
+    // Zoom in until the model fills more than the window, then push it out of
+    // sight: the ordinary way a person loses a model is close up.
+    camera.zoom(3.0);
+    for _ in 0..20 {
+        camera.pan(-500.0, -300.0);
+    }
+    let (min, max) = snapshot.bounds().expect("the picture has extent");
+    let corners: Vec<[f32; 3]> = (0..8)
+        .map(|corner| {
+            [
+                if corner & 1 == 0 { min[0] } else { max[0] },
+                if corner & 2 == 0 { min[1] } else { max[1] },
+                if corner & 4 == 0 { min[2] } else { max[2] },
+            ]
+        })
+        .collect();
+    // A point behind the camera is lost as surely as one beside the window,
+    // and the shared helper refuses to project it, so ask for both here.
+    let on_screen = |camera: &Camera, point: [f32; 3]| {
+        let matrix = camera.view_projection();
+        let clip = [
+            matrix[0] * point[0] + matrix[4] * point[1] + matrix[8] * point[2] + matrix[12],
+            matrix[1] * point[0] + matrix[5] * point[1] + matrix[9] * point[2] + matrix[13],
+            matrix[3] * point[0] + matrix[7] * point[1] + matrix[11] * point[2] + matrix[15],
+        ];
+        clip[2] > 0.0
+            && (clip[0] / clip[2]).abs() <= 1.0 + 1e-3
+            && (clip[1] / clip[2]).abs() <= 1.0 + 1e-3
+    };
+
+    assert!(
+        corners.iter().any(|corner| !on_screen(&camera, *corner)),
+        "the model was still on screen, so nothing was recovered"
+    );
+
+    // Framing the whole picture brings every corner of it back inside the
+    // clip volume.
+    camera
+        .frame(snapshot.bounds().expect("the picture has extent"))
+        .expect("frames");
+    for corner in &corners {
+        assert!(
+            on_screen(&camera, *corner),
+            "a corner of the model at {corner:?} is still off screen"
+        );
+    }
+
+    // And it looks from where it was looking from: recovering a model is not
+    // an excuse to choose a viewpoint the user did not ask for.
+    let direction = |camera: &Camera| {
+        let (eye, target) = (camera.eye(), camera.target());
+        let away = [eye[0] - target[0], eye[1] - target[1], eye[2] - target[2]];
+        let length = (away[0] * away[0] + away[1] * away[1] + away[2] * away[2]).sqrt();
+        [away[0] / length, away[1] / length, away[2] / length]
+    };
+    let (was, now) = (direction(&before), direction(&camera));
+    for axis in 0..3 {
+        assert!(
+            (was[axis] - now[axis]).abs() < 1e-3,
+            "the viewing direction turned: {was:?} to {now:?}"
+        );
+    }
+}
+
+#[test]
+fn a_picture_with_nothing_in_it_is_nowhere_to_point_a_camera() {
+    let empty = SnapshotBuilder::new().build();
+    assert_eq!(empty.bounds(), None);
+
+    // A definition that is placed but draws nothing is still nothing to show.
+    let mut builder = SnapshotBuilder::new();
+    let nothing = builder.add_mesh(&Mesh::default()).expect("packs");
+    builder
+        .place(nothing, None, &moved(5.0, 5.0, 5.0), [1.0, 1.0, 1.0])
+        .expect("places");
+    assert_eq!(builder.build().bounds(), None);
+}
+
+#[test]
 fn what_a_selected_definition_covers_is_all_of_it_and_none_of_anything_else() {
     let mut builder = SnapshotBuilder::new();
     let bolt = builder.add_mesh(&triangle()).expect("packs");
