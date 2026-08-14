@@ -1846,6 +1846,28 @@ fn a_picture_begins_with_every_definition_drawn() {
 }
 
 #[test]
+fn a_definition_that_draws_nothing_cannot_be_hidden() {
+    let mut builder = SnapshotBuilder::new();
+    let empty = builder.add_mesh(&nothing_at_all()).expect("packs");
+    builder
+        .place(empty, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+        .expect("places");
+    let snapshot = builder.build();
+    let pick = snapshot.pick_of(empty).expect("the definition has a row");
+    let mut visibility = Visibility::new(&snapshot);
+
+    assert_eq!(snapshot.bounds_of(pick), None, "the gate needs no pixels");
+    assert!(
+        !visibility.hide(Marked::Definition(pick), &snapshot),
+        "Hide selected reported a change for a definition that draws nothing"
+    );
+    assert!(
+        !visibility.anything_hidden(),
+        "an empty definition made Show all available"
+    );
+}
+
+#[test]
 fn hiding_one_definition_hides_all_of_it_and_none_of_its_neighbour() {
     let snapshot = two_definitions_placed_twice();
     let mut visibility = Visibility::new(&snapshot);

@@ -389,6 +389,17 @@ impl Visibility {
         self.hidden.iter().any(|hidden| *hidden)
     }
 
+    /// Whether this mark names a definition that currently draws geometry and
+    /// can therefore be hidden.
+    ///
+    /// A definition may have a catalogue row and a transient pick while its
+    /// mesh has no triangles or it has no placements. Such a definition is
+    /// already nowhere in the picture. Calling that a successful Hide would
+    /// change only the row label and enable Show all while changing no pixel.
+    pub fn can_hide(&self, mark: Marked, snapshot: &RenderSnapshot) -> bool {
+        self.hideable_definition(mark, snapshot).is_some()
+    }
+
     /// Stops drawing whatever this mark is on, and says whether that changed
     /// anything.
     ///
@@ -398,26 +409,14 @@ impl Visibility {
     ///
     /// Resolved through the picture, so nothing, a mark from a replaced
     /// picture and a mark from another picture all hide nothing. Hiding what
-    /// is already hidden is not a change.
+    /// is already hidden, or a definition that draws no geometry, is not a
+    /// change.
     pub fn hide(&mut self, mark: Marked, snapshot: &RenderSnapshot) -> bool {
-        if self.snapshot != snapshot.identity {
-            return false;
-        }
-        let definition = match mark.known_to(snapshot) {
-            Marked::Nothing => return false,
-            Marked::Definition(pick) => snapshot.definition(pick),
-            Marked::Face(face) => snapshot.definition_of_face(face),
-        };
-        let Some(definition) = definition else {
+        let Some(definition) = self.hideable_definition(mark, snapshot) else {
             return false;
         };
-        match self.hidden.get_mut(definition) {
-            Some(hidden) if !*hidden => {
-                *hidden = true;
-                true
-            }
-            _ => false,
-        }
+        self.hidden[definition] = true;
+        true
     }
 
     /// Draws everything again, and says whether that changed anything.
@@ -444,6 +443,24 @@ impl Visibility {
             extent.include(&snapshot.meshes[item.mesh], item);
         }
         extent.bounds()
+    }
+
+    /// Resolves one hide request all the way to geometry that is still drawn.
+    fn hideable_definition(&self, mark: Marked, snapshot: &RenderSnapshot) -> Option<usize> {
+        if self.snapshot != snapshot.identity {
+            return None;
+        }
+        let definition = match mark.known_to(snapshot) {
+            Marked::Nothing => return None,
+            Marked::Definition(pick) => snapshot.definition(pick),
+            Marked::Face(face) => snapshot.definition_of_face(face),
+        }?;
+        if self.hidden.get(definition).copied().unwrap_or(true) {
+            return None;
+        }
+        let pick = snapshot.pick_of(definition)?;
+        snapshot.bounds_of(pick)?;
+        Some(definition)
     }
 }
 

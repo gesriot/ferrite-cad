@@ -807,6 +807,17 @@ fn selection_bounds<P>(
     scene.selection.bounds(snapshot)
 }
 
+/// Whether Hide selected would remove any geometry from this picture.
+///
+/// A definition with no triangles may still have a catalogue row and be
+/// chosen from it. It is already nowhere on screen, so hiding it must not
+/// enable Show all or claim a change that no frame can show.
+fn can_hide_selection<P>(scene: &LiveScene<P>, snapshot: &RenderSnapshot) -> bool {
+    scene
+        .visibility
+        .can_hide(scene.selection.marked(), snapshot)
+}
+
 /// Stops drawing what is chosen, and forgets everything that pointed at it.
 ///
 /// Hiding is per definition: a chosen face hides the part it is on, because
@@ -1231,11 +1242,7 @@ impl ApplicationHandler<AppEvent> for App {
                     // Exactly when there is something chosen that is still
                     // being drawn. Nothing hidden can be chosen, so this is
                     // the whole of the condition.
-                    can_hide: live
-                        .scene
-                        .selection
-                        .owning_definition(live.scene.prepared.snapshot())
-                        .is_some(),
+                    can_hide: can_hide_selection(&live.scene, live.scene.prepared.snapshot()),
                     can_show_all: live.scene.visibility.anything_hidden(),
                 };
                 match live.draw(&self.input, activity) {
@@ -3141,6 +3148,50 @@ mod tests {
         scene.selection =
             Selection::Definition(picture.pick_of(chosen).expect("the picture has that row"));
         scene
+    }
+
+    #[test]
+    fn a_chosen_definition_that_draws_nothing_cannot_offer_hide() {
+        let mut builder = SnapshotBuilder::new();
+        let empty = builder
+            .add_mesh(&ferritecad_kernel::Mesh::default())
+            .expect("packs");
+        builder
+            .place(
+                empty,
+                None,
+                &ferritecad_types::Transform::IDENTITY,
+                [1.0, 1.0, 1.0],
+            )
+            .expect("places");
+        let picture = builder.build();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        scene.selection =
+            Selection::Definition(picture.pick_of(empty).expect("the definition has a row"));
+        let before = scene.selection.clone();
+        let mut input = ViewportInput::new();
+        let _ = input.take_redraw();
+
+        assert_eq!(selection_bounds(&scene, &picture), None);
+        assert!(
+            !can_hide_selection(&scene, &picture),
+            "the toolbar offered Hide for a definition with no pixels"
+        );
+        assert!(!hide_selected(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input,
+        ));
+        assert_eq!(scene.selection, before, "an unavailable action unchose it");
+        assert!(!scene.visibility.anything_hidden());
+        assert!(!input.take_redraw());
     }
 
     #[test]
