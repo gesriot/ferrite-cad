@@ -57,23 +57,22 @@ fn source(primitive_index: bool, storage: bool, targets: usize) -> String {
 fn probe() {
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let mut report = String::new();
     let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
-        eprintln!("PROBE: no adapter");
-        return;
+        panic!("PROBE: no adapter");
     };
-    eprintln!(
-        "PROBE adapter {:?} {} primitive_index={}",
+    report.push_str(&format!(
+        "\nadapter {:?} {} primitive_index={}\n",
         adapter.get_info().backend,
         adapter.get_info().name,
         adapter.features().contains(wgpu::Features::PRIMITIVE_INDEX)
-    );
+    ));
     let Ok((device, _queue)) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("probe"),
         required_features: wgpu::Features::PRIMITIVE_INDEX,
         ..Default::default()
     })) else {
-        eprintln!("PROBE: no device with PRIMITIVE_INDEX");
-        return;
+        panic!("PROBE:{report}no device with PRIMITIVE_INDEX");
     };
     device.on_uncaptured_error(std::sync::Arc::new(|error| {
         eprintln!("PROBE uncaptured: {error}")
@@ -161,10 +160,14 @@ fn probe() {
                 let internal = pollster::block_on(internal_scope.pop());
                 let validation = pollster::block_on(validation_scope.pop());
                 match (internal, validation) {
-                    (None, None) => eprintln!("PROBE ok    {label}"),
-                    (a, b) => eprintln!("PROBE FAIL  {label}: {a:?} / {b:?}"),
+                    (None, None) => report.push_str(&format!("ok    {label}\n")),
+                    (a, b) => report.push_str(&format!("FAIL  {label}: {a:?} / {b:?}\n")),
                 }
             }
         }
     }
+
+    // Fails on purpose: a passing test's output is captured, and the report
+    // is the whole point of this branch.
+    panic!("PROBE:{report}");
 }
