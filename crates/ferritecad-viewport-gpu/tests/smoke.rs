@@ -145,6 +145,304 @@ fn two_definitions(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
     (snapshot, camera)
 }
 
+/// A small model near the origin, framed, with room around it.
+fn model_over_the_plane(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
+    let mut builder = SnapshotBuilder::new();
+    let mesh = builder.add_mesh(&quad(20.0)).expect("packs");
+    builder
+        .place(mesh, None, &Transform::IDENTITY, [0.1, 0.2, 0.9])
+        .expect("places");
+    let snapshot = Arc::new(builder.build());
+
+    let mut camera = Camera::new();
+    camera.resize(width, height);
+    camera
+        .frame(snapshot.bounds().expect("something is drawn"))
+        .expect("frames");
+    // Back off so the model occupies the middle and the plane fills the rest,
+    // and look down at it: from the front view the plane is edge on, which is
+    // what a floor looks like from the front and shows very little of it.
+    camera.zoom(-1.0);
+    camera.orbit(0.0, 0.7);
+    (snapshot, camera)
+}
+
+/// Whether this pixel is one the grid drew: not the background, and one of
+/// the greys or axis colours the grid shader can produce.
+fn is_grid(pixel: [u8; 4]) -> bool {
+    let [r, g, b, _] = pixel;
+    let lit = u32::from(r) + u32::from(g) + u32::from(b) > 30;
+    // The model in these tests is blue, and no grid colour is.
+    lit && !(b > r + 40 && b > g + 40)
+}
+
+/// Where a row meets grid lines, as the x of each run's first pixel.
+fn grid_lines_in_row(frame: &ferritecad_viewport_gpu::Frame, y: u32) -> Vec<u32> {
+    let mut starts = Vec::new();
+    let mut inside = false;
+    for x in 0..frame.width() {
+        let grid = frame
+            .colour_at(x, y)
+            .is_some_and(|pixel| is_grid(pixel) && frame.pick_at(x, y) == PickId::NOTHING);
+        if grid && !inside {
+            starts.push(x);
+        }
+        inside = grid;
+    }
+    starts
+}
+
+/// The widest gap between neighbouring grid lines anywhere in the frame.
+///
+/// Measured rather than counted, because a grid is a finite patch: how many
+/// lines a row meets depends on how much of the patch is on screen, while how
+/// far apart they are is what the ladder actually decides. Perspective
+/// compresses the far ones, so the widest gap is the one nearest the eye and
+/// the closest thing to the spacing that was chosen.
+fn widest_gap(frame: &ferritecad_viewport_gpu::Frame) -> Option<u32> {
+    (0..frame.height())
+        .filter_map(|y| {
+            let starts = grid_lines_in_row(frame, y);
+            starts.windows(2).map(|pair| pair[1] - pair[0]).max()
+        })
+        .max()
+}
+
+#[test]
+fn a_model_is_drawn_over_a_grid_that_is_never_selectable() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = model_over_the_plane(128, 128);
+
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let frame = renderer
+        .render(&prepared, &camera, PickId::NOTHING)
+        .expect("draws");
+
+    let mut grid_pixels = 0;
+    let mut model_pixels = 0;
+    for y in 0..frame.height() {
+        for x in 0..frame.width() {
+            let pixel = frame.colour_at(x, y).expect("inside the frame");
+            let pick = frame.pick_at(x, y);
+            if snapshot.definition(pick).is_some() {
+                model_pixels += 1;
+                // The model kept its own colour: the backdrop is behind it.
+                assert!(
+                    pixel[2] > pixel[0] && pixel[2] > pixel[1],
+                    "a model pixel at {x},{y} is not the model's colour: {pixel:?}"
+                );
+            } else {
+                assert_eq!(
+                    pick,
+                    PickId::NOTHING,
+                    "a pixel at {x},{y} that is not the model names a definition"
+                );
+                if is_grid(pixel) {
+                    grid_pixels += 1;
+                }
+            }
+        }
+    }
+
+    assert!(model_pixels > 100, "the model drew {model_pixels} pixels");
+    assert!(
+        grid_pixels > 100,
+        "the grid drew {grid_pixels} pixels, so there is no reference to see"
+    );
+
+    // Clicking a grid line is clicking the background, which is what clears a
+    // selection: a backdrop is a thing to look at, not a thing to choose.
+    let on_a_line = (0..frame.height())
+        .flat_map(|y| (0..frame.width()).map(move |x| (x, y)))
+        .find(|(x, y)| {
+            frame.colour_at(*x, *y).is_some_and(is_grid)
+                && snapshot.definition(frame.pick_at(*x, *y)).is_none()
+        })
+        .expect("some pixel is a grid line");
+    assert_eq!(frame.pick_at(on_a_line.0, on_a_line.1), PickId::NOTHING);
+}
+
+#[test]
+fn the_grid_belongs_to_the_world_and_not_to_the_screen() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = model_over_the_plane(128, 128);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+
+    let still = renderer
+        .render(&prepared, &camera, PickId::NOTHING)
+        .expect("draws");
+
+    // Panning by part of a spacing moves the lines across the screen. A sheet
+    // of graph paper drawn over the window would look identical.
+    let mut panned = camera;
+    panned.pan(17.0, 0.0);
+    let after_pan = renderer
+        .render(&prepared, &panned, PickId::NOTHING)
+        .expect("draws");
+    assert_ne!(
+        still.colour(),
+        after_pan.colour(),
+        "panning left the backdrop exactly where it was"
+    );
+
+    // Orbiting turns the plane away, so the lines converge instead of staying
+    // parallel to the window's edges.
+    let mut orbited = camera;
+    orbited.orbit(0.6, 0.4);
+    let after_orbit = renderer
+        .render(&prepared, &orbited, PickId::NOTHING)
+        .expect("draws");
+    assert_ne!(still.colour(), after_orbit.colour());
+
+    // Zooming a long way changes which spacing is drawn, but not how dense the
+    // lines look: that is the ladder doing its work. A fixed spacing would
+    // multiply the count by the zoom.
+    let near_gap = widest_gap(&still).expect("the grid is drawn at this zoom");
+    let mut far = camera;
+    far.zoom(-6.0);
+    let after_zoom = renderer
+        .render(&prepared, &far, PickId::NOTHING)
+        .expect("draws");
+    let far_gap = widest_gap(&after_zoom).expect("the grid is drawn at this zoom too");
+
+    // A ladder step is at most two and a half times the one before it, so the
+    // spacing on screen stays in the same range however far the camera moves.
+    // A fixed world spacing would divide by the whole zoom factor instead.
+    let ratio = f64::from(near_gap.max(far_gap)) / f64::from(near_gap.min(far_gap));
+    assert!(
+        ratio <= 3.0,
+        "zooming changed the spacing on screen by {ratio} ({near_gap} then {far_gap} pixels)"
+    );
+}
+
+#[test]
+fn a_backdrop_costs_no_geometry_and_repeats_exactly() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = model_over_the_plane(96, 96);
+    let prepared = renderer.prepare(snapshot).expect("uploads");
+    let uploaded = renderer.geometry_uploads();
+
+    let first = renderer
+        .render(&prepared, &camera, PickId::NOTHING)
+        .expect("draws");
+    let second = renderer
+        .render(&prepared, &camera, PickId::NOTHING)
+        .expect("draws");
+
+    // The grid has no vertex buffer to upload and the model's are already
+    // resident, so drawing a backdrop must not look like uploading geometry.
+    assert_eq!(
+        renderer.geometry_uploads(),
+        uploaded,
+        "drawing the grid uploaded geometry"
+    );
+
+    // And nothing in it depends on when it was drawn.
+    assert_eq!(first.colour(), second.colour());
+    let picks = |frame: &ferritecad_viewport_gpu::Frame| {
+        let mut all = Vec::new();
+        for y in 0..frame.height() {
+            for x in 0..frame.width() {
+                all.push(frame.pick_at(x, y));
+            }
+        }
+        all
+    };
+    assert_eq!(picks(&first), picks(&second));
+}
+
+#[test]
+fn a_part_below_the_plane_is_still_drawn_over_the_grid() {
+    let mut renderer = renderer_or_skip!();
+
+    // The same model, put under the world's floor.
+    let mut builder = SnapshotBuilder::new();
+    let mesh = builder.add_mesh(&quad(20.0)).expect("packs");
+    builder
+        .place(
+            mesh,
+            None,
+            &Transform::from_translation(Vec3::new(0.0, 0.0, -40.0).expect("finite"))
+                .expect("finite"),
+            [0.1, 0.2, 0.9],
+        )
+        .expect("places");
+    let snapshot = Arc::new(builder.build());
+
+    let mut camera = Camera::new();
+    camera.resize(128, 128);
+    // Framed to take in the plane as well as the part, so that looking down
+    // from above really does put the grid between the eye and the model
+    // rather than off to one side of it.
+    camera
+        .frame(([-25.0, -25.0, -45.0], [25.0, 25.0, 5.0]))
+        .expect("frames");
+    camera.orbit(0.0, 1.1);
+
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let frame = renderer
+        .render(&prepared, &camera, PickId::NOTHING)
+        .expect("draws");
+
+    // The grid is a backdrop, not a floor that hides things: a part below the
+    // plane is drawn over the lines and can still be clicked.
+    let model_pixels = (0..frame.height())
+        .flat_map(|y| (0..frame.width()).map(move |x| (x, y)))
+        .filter(|(x, y)| snapshot.definition(frame.pick_at(*x, *y)).is_some())
+        .count();
+    assert!(
+        model_pixels > 100,
+        "a part below the plane covered {model_pixels} pixels"
+    );
+
+    // And no holes in it. A grid that wrote depth would not make the part
+    // vanish – lines are thin – but every line crossing it would punch a row
+    // of grid-coloured pixels through a solid it is meant to be behind.
+    let mut holes = 0;
+    for y in 0..frame.height() {
+        let inside: Vec<u32> = (0..frame.width())
+            .filter(|x| snapshot.definition(frame.pick_at(*x, y)).is_some())
+            .collect();
+        let (Some(first), Some(last)) = (inside.first(), inside.last()) else {
+            continue;
+        };
+        holes += (*first..=*last)
+            .filter(|x| snapshot.definition(frame.pick_at(*x, y)).is_none())
+            .count();
+    }
+    assert_eq!(
+        holes, 0,
+        "the grid punched {holes} pixels through a part that is behind it"
+    );
+}
+
+#[test]
+fn a_picture_with_nothing_in_it_gets_no_backdrop() {
+    let mut renderer = renderer_or_skip!();
+    let empty = Arc::new(SnapshotBuilder::new().build());
+    let mut camera = Camera::new();
+    camera.resize(64, 64);
+
+    let prepared = renderer.prepare(Arc::clone(&empty)).expect("uploads");
+    let frame = renderer
+        .render(&prepared, &camera, PickId::NOTHING)
+        .expect("draws");
+
+    // An empty document is empty. Drawing a floor under nothing would invent
+    // content for a picture that has none, and would give a camera something
+    // to look at that the model does not contain.
+    for y in 0..frame.height() {
+        for x in 0..frame.width() {
+            assert_eq!(
+                frame.colour_at(x, y),
+                Some([0, 0, 0, 255]),
+                "an empty picture drew something at {x},{y}"
+            );
+            assert_eq!(frame.pick_at(x, y), PickId::NOTHING);
+        }
+    }
+}
+
 #[test]
 fn choosing_a_definition_changes_every_placement_of_it_and_nothing_else() {
     let mut renderer = renderer_or_skip!();

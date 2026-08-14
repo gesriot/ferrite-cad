@@ -52,6 +52,20 @@ struct GlobalsUniform {
     padding: [u32; 3],
 }
 
+/// What a grid pass needs to know, and all it is allowed to know.
+///
+/// No model, no selection and no identity: a backdrop that could see any of
+/// those could be made to depend on them.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GridUniform {
+    view_projection: [f32; 16],
+    minor: f32,
+    major: f32,
+    extent: f32,
+    half_lines: u32,
+}
+
 /// Distinguishes one renderer from another.
 ///
 /// The same idea as the kernel's `SessionId`, for the same reason: a buffer
@@ -100,6 +114,15 @@ pub struct Renderer {
     /// property of the device and not a constant anyone may assume.
     draw_stride: u64,
     geometry_uploads: u64,
+    /// The backdrop, kept beside the model's pipelines and built the same way
+    /// for both targets so the window and the offscreen path cannot draw
+    /// different grids.
+    grid_shader: wgpu::ShaderModule,
+    grid_pipeline_layout: wgpu::PipelineLayout,
+    grid_pipeline: wgpu::RenderPipeline,
+    grid_surface_pipelines: std::collections::HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    grid_globals: wgpu::Buffer,
+    grid_bindings: wgpu::BindGroup,
 }
 
 impl Renderer {
@@ -201,6 +224,50 @@ impl Renderer {
 
         let pipeline = build_pipeline(&device, &shader, &pipeline_layout, COLOUR_FORMAT, true);
 
+        let grid_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ferritecad grid shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("grid.wgsl").into()),
+        });
+        let grid_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ferritecad grid bindings"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let grid_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ferritecad grid pipeline layout"),
+            bind_group_layouts: &[Some(&grid_layout)],
+            immediate_size: 0,
+        });
+        let grid_globals = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ferritecad grid globals"),
+            size: std::mem::size_of::<GridUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let grid_bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ferritecad grid bind group"),
+            layout: &grid_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: grid_globals.as_entire_binding(),
+            }],
+        });
+        let grid_pipeline = build_grid_pipeline(
+            &device,
+            &grid_shader,
+            &grid_pipeline_layout,
+            COLOUR_FORMAT,
+            true,
+        );
+
         let draw_stride = align_to(
             std::mem::size_of::<DrawUniform>() as u64,
             u64::from(device.limits().min_uniform_buffer_offset_alignment),
@@ -226,6 +293,12 @@ impl Renderer {
             globals,
             draw_stride,
             geometry_uploads: 0,
+            grid_shader,
+            grid_pipeline_layout,
+            grid_pipeline,
+            grid_surface_pipelines: std::collections::HashMap::new(),
+            grid_globals,
+            grid_bindings,
         })
     }
 
@@ -247,6 +320,55 @@ impl Renderer {
 
     pub fn queue(&self) -> &wgpu::Queue {
         &self.queue
+    }
+
+    /// Prepares the backdrop, and says whether there is one to draw.
+    ///
+    /// A picture with nothing in it gets no grid: an empty document is empty,
+    /// and drawing a floor under nothing would be inventing content for it. A
+    /// camera with no screen gets none either, for want of a scale to choose
+    /// spacing against.
+    ///
+    /// The plan comes from `ferritecad-viewport`, so the offscreen path and
+    /// the window ask the same arithmetic the same question.
+    fn write_grid(&self, camera: &Camera, snapshot: &RenderSnapshot) -> bool {
+        if snapshot.bounds().is_none() {
+            return false;
+        }
+        let Some(plan) = ferritecad_viewport::grid_plan(camera) else {
+            return false;
+        };
+
+        self.queue.write_buffer(
+            &self.grid_globals,
+            0,
+            bytemuck::bytes_of(&GridUniform {
+                view_projection: camera.view_projection(),
+                minor: plan.minor,
+                major: plan.major,
+                extent: plan.extent,
+                half_lines: ferritecad_viewport::HALF_LINES,
+            }),
+        );
+        true
+    }
+
+    /// Draws the backdrop into a pass that has just cleared.
+    ///
+    /// Before the model and without writing depth, which is what makes the
+    /// model win wherever it draws: a part below the plane is drawn over the
+    /// lines rather than hidden by them.
+    fn draw_grid(
+        pass: &mut wgpu::RenderPass<'_>,
+        pipeline: &wgpu::RenderPipeline,
+        bindings: &wgpu::BindGroup,
+    ) {
+        let per_axis = 2 * ferritecad_viewport::HALF_LINES + 1;
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bindings, &[]);
+        // Two vertices per line, two axes' worth of lines, and no buffer: the
+        // shader derives every position from the vertex number.
+        pass.draw(0..(per_axis * 2 * 2), 0..1);
     }
 
     /// Writes what every draw in the coming frame is drawn against.
@@ -323,6 +445,7 @@ impl Renderer {
         let depth_view = depth.create_view(&Default::default());
 
         self.write_globals(camera, prepared, selected);
+        let grid = self.write_grid(camera, prepared.snapshot());
 
         let mut encoder = self
             .device
@@ -357,6 +480,14 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+
+            if grid {
+                let grid_pipeline = self
+                    .grid_surface_pipelines
+                    .get(&format)
+                    .expect("the grid pipeline for this format was just ensured");
+                Self::draw_grid(&mut pass, grid_pipeline, &self.grid_bindings);
+            }
 
             pass.set_pipeline(pipeline);
             for (index, item) in prepared.snapshot.draws().iter().enumerate() {
@@ -401,18 +532,27 @@ impl Renderer {
 
     /// Builds the pipeline for a window format, once per format met.
     fn ensure_surface_pipeline(&mut self, format: wgpu::TextureFormat) {
-        if self.surface_pipelines.contains_key(&format) {
-            return;
+        if !self.surface_pipelines.contains_key(&format) {
+            let pipeline = build_pipeline(
+                &self.device,
+                &self.shader,
+                &self.pipeline_layout,
+                format,
+                // No identity target: see `draw_into`.
+                false,
+            );
+            self.surface_pipelines.insert(format, pipeline);
         }
-        let pipeline = build_pipeline(
-            &self.device,
-            &self.shader,
-            &self.pipeline_layout,
-            format,
-            // No identity target: see `draw_into`.
-            false,
-        );
-        self.surface_pipelines.insert(format, pipeline);
+        if !self.grid_surface_pipelines.contains_key(&format) {
+            let pipeline = build_grid_pipeline(
+                &self.device,
+                &self.grid_shader,
+                &self.grid_pipeline_layout,
+                format,
+                false,
+            );
+            self.grid_surface_pipelines.insert(format, pipeline);
+        }
     }
 
     /// How many mesh buffers this renderer has uploaded.
@@ -568,8 +708,9 @@ impl Renderer {
             view_formats: &[],
         });
 
-        // The two things that differ from frame to frame.
+        // The things that differ from frame to frame.
         self.write_globals(camera, prepared, selected);
+        let grid = self.write_grid(camera, prepared.snapshot());
 
         let bindings = &prepared.bindings;
         let geometry = &prepared.meshes;
@@ -621,6 +762,12 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+
+            if grid {
+                // First, and without writing depth: what follows covers it
+                // wherever it draws, on either side of the plane.
+                Self::draw_grid(&mut pass, &self.grid_pipeline, &self.grid_bindings);
+            }
 
             pass.set_pipeline(&self.pipeline);
             // In the order the snapshot lists them. A renderer that sorted to
@@ -879,6 +1026,69 @@ impl PreparedSnapshot {
 /// there to be written. A second copy of this for the window path would be a
 /// second place for the vertex layout, the depth state and the culling rule to
 /// drift from each other.
+/// The grid's pipeline, for whichever target it is drawn into.
+///
+/// One function for both, exactly as the model has one: the offscreen path
+/// writes identities beside the colour and the window does not, and that is
+/// the only difference there is allowed to be between the two grids.
+///
+/// Depth is tested and not written. The grid is a backdrop, so anything drawn
+/// afterwards covers it wherever it appears, and a part below the plane is
+/// still a part rather than something the floor hides.
+fn build_grid_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    pipeline_layout: &wgpu::PipelineLayout,
+    colour_format: wgpu::TextureFormat,
+    with_identities: bool,
+) -> wgpu::RenderPipeline {
+    let mut targets = vec![Some(wgpu::ColorTargetState {
+        format: colour_format,
+        blend: None,
+        write_mask: wgpu::ColorWrites::ALL,
+    })];
+    if with_identities {
+        targets.push(Some(wgpu::ColorTargetState {
+            format: PICK_FORMAT,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        }));
+    }
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("ferritecad grid pipeline"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vertex_main"),
+            compilation_options: Default::default(),
+            // No buffers at all: every position comes from the vertex number,
+            // so a zoom changes a uniform rather than uploading geometry.
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fragment_main"),
+            compilation_options: Default::default(),
+            targets: &targets,
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::LineList,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Less),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
 fn build_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,

@@ -36,6 +36,7 @@
 //! document, never from this value.
 
 mod camera;
+mod grid;
 mod snapshot;
 
 // Interaction lives here, as arithmetic over a [`Camera`] and nothing else.
@@ -45,4 +46,5 @@ mod snapshot;
 // binds them to real events can then be thin enough to read.
 
 pub use camera::{Camera, StandardView};
+pub use grid::{GridPlan, HALF_LINES, MAJOR_EVERY, MAX_PIXELS, MIN_PIXELS, plan as grid_plan};
 pub use snapshot::{DrawItem, PackedMesh, PickId, RenderSnapshot, SnapshotBuilder, VERTEX_FLOATS};

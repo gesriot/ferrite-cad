@@ -2625,6 +2625,48 @@ mod tests {
     }
 
     #[test]
+    fn the_backdrop_is_not_part_of_the_document() {
+        // What a viewer draws behind a model is not in the model. The grid has
+        // no entry in the catalogue, adds no definition to choose from, and
+        // does not move where a camera goes: it is drawn from the camera, so
+        // it cannot be in the extent the camera is framing.
+        let mut builder = SnapshotBuilder::new();
+        let mesh = builder
+            .add_mesh(&distant_scene_mesh())
+            .expect("the mesh is valid");
+        builder
+            .place(
+                mesh,
+                None,
+                &ferritecad_types::Transform::IDENTITY,
+                [0.5, 0.5, 0.5],
+            )
+            .expect("places it");
+        let picture = builder.build();
+
+        let scene = LiveScene {
+            prepared: (),
+            catalogue: vec![a_body()],
+            selection: PickId::NOTHING,
+        };
+        let identities = scene.identities();
+        let (rows, marked) = scene.view(&identities, &picture);
+
+        // One row for the one body, and nothing else offered.
+        assert_eq!(rows.len(), 1);
+        assert_eq!(marked, None);
+        assert_eq!(picture.meshes().len(), 1, "something else was packed");
+        assert_eq!(picture.draws().len(), 1);
+
+        // The extent is the model's own triangle and nothing around it: a
+        // grid that reached into the bounds would make Frame all frame the
+        // backdrop instead of the model.
+        let (min, max) = picture.bounds().expect("the model has extent");
+        assert_eq!(min, [0.0, 0.0, 0.0]);
+        assert_eq!(max, [10.0, 10.0, 0.0]);
+    }
+
+    #[test]
     fn showing_everything_shows_the_neighbour_that_showing_a_choice_leaves_out() {
         let mut builder = SnapshotBuilder::new();
         let chosen = builder

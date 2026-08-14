@@ -54,7 +54,12 @@ is how one that is hidden, tiny or out of shot can still be chosen, and
 `Frame selected` (or `F`) brings all of its placements into view without
 changing the direction you were looking from, and `Frame all` (or `A`) does
 the same for the whole model, which is the way back when panning has left it
-off screen. Opening another document is the only editing operation there is.
+off screen. A reference grid on the world's XY plane gives the model a floor
+to sit on, with heavier lines every ten squares and coloured axes through the
+origin; its spacing steps through 1, 2 and 5 millimetres and their decades as
+you zoom. It is a viewing aid only: it is not in the document, not in the
+model's extent, and clicking it is clicking the background. Opening another
+document is the only editing operation there is.
 
 ## How a document is put together
 
