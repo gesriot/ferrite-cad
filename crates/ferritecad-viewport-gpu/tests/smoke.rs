@@ -98,10 +98,14 @@ fn moved(x: f64, y: f64, z: f64) -> Transform {
 
 /// One quad at the origin, framed by a camera of the given size.
 fn one_quad(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
+    one_coloured_quad(width, height, [0.0, 1.0, 0.0])
+}
+
+fn one_coloured_quad(width: u32, height: u32, colour: [f64; 3]) -> (Arc<RenderSnapshot>, Camera) {
     let mut builder = SnapshotBuilder::new();
     let mesh = builder.add_mesh(&quad(10.0)).expect("packs");
     builder
-        .place(mesh, None, &Transform::IDENTITY, [0.0, 1.0, 0.0])
+        .place(mesh, None, &Transform::IDENTITY, colour)
         .expect("places");
     let snapshot = Arc::new(builder.build());
 
@@ -658,6 +662,50 @@ fn a_choice_and_a_question_are_told_apart() {
     // Pointing at what is already chosen changes nothing: a decision outranks
     // a question about the same thing.
     assert_eq!(same.colour(), chosen_only.colour());
+}
+
+#[test]
+fn light_and_dark_parts_can_both_be_chosen_and_pointed_at() {
+    let mut renderer = renderer_or_skip!();
+
+    // White was the missing edge: mixing every mark towards white changes no
+    // pixel of a white part. Black holds the opposite half of the rule so a
+    // fix that merely reversed the same defect cannot pass.
+    for colour in [[1.0; 3], [0.0; 3]] {
+        let (snapshot, camera) = one_coloured_quad(64, 64, colour);
+        let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+        let plain = renderer
+            .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
+            .expect("draws");
+        let (x, y, pick) = (0..plain.height())
+            .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+            .map(|(x, y)| (x, y, plain.pick_at(x, y)))
+            .find(|(_, _, pick)| snapshot.definition(*pick).is_some())
+            .expect("the quad is drawn");
+
+        let chosen = renderer
+            .render(&prepared, &camera, pick, PickId::NOTHING)
+            .expect("draws selection");
+        let pointed = renderer
+            .render(&prepared, &camera, PickId::NOTHING, pick)
+            .expect("draws hover");
+
+        assert_ne!(
+            chosen.colour_at(x, y),
+            plain.colour_at(x, y),
+            "a {colour:?} part could not be seen as selected"
+        );
+        assert_ne!(
+            pointed.colour_at(x, y),
+            plain.colour_at(x, y),
+            "a {colour:?} part could not be seen as hovered"
+        );
+        assert_ne!(
+            chosen.colour_at(x, y),
+            pointed.colour_at(x, y),
+            "selection and hover of a {colour:?} part were indistinguishable"
+        );
+    }
 }
 
 #[test]

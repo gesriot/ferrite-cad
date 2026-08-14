@@ -71,6 +71,20 @@ struct FragmentOut {
     @location(1) pick: u32,
 };
 
+// Move away from the colour already on screen. Always lifting towards white
+// makes a white part impossible to mark; always darkening has the same defect
+// for black. The opposite half of the range preserves the material's hue while
+// guaranteeing contrast for every displayable RGB value.
+fn marked_colour(colour: vec3<f32>, strength: f32) -> vec3<f32> {
+    let shown = clamp(colour, vec3<f32>(0.0), vec3<f32>(1.0));
+    let luminance = dot(shown, vec3<f32>(0.2126, 0.7152, 0.0722));
+    var endpoint = vec3<f32>(1.0);
+    if (luminance > 0.5) {
+        endpoint = vec3<f32>(0.0);
+    }
+    return mix(shown, endpoint, strength);
+}
+
 @fragment
 fn fragment_main(in: VertexOut) -> FragmentOut {
     // A zero-length normal cannot be normalised, and normalize() of one is a
@@ -86,19 +100,19 @@ fn fragment_main(in: VertexOut) -> FragmentOut {
     // winding, and a black facing is harder to diagnose than a lit one.
     let lambert = abs(dot(normal, to_light)) * 0.8 + 0.2;
 
-    // Lifted towards white rather than replaced by a colour of its own: what
-    // is chosen must still look like the material it is, and a part that
+    // Shifted in brightness rather than replaced by a colour of its own: what
+    // is marked must still look like the material it is, and a part that
     // turned orange would hide whatever the file said about it.
     var tint = draw.colour.rgb;
     if (globals.selected != 0u && draw.pick == globals.selected) {
         // A choice already made. Kept as it was, and stronger than the
         // question below, so pointing at something never looks like having
         // chosen it.
-        tint = mix(tint, vec3<f32>(1.0, 1.0, 1.0), 0.55);
+        tint = marked_colour(tint, 0.55);
     } else if (globals.hovered != 0u && draw.pick == globals.hovered) {
-        // Merely under the pointer: lifted enough to find, far enough from
+        // Merely under the pointer: shifted enough to find, far enough from
         // the selection to be another thing.
-        tint = mix(tint, vec3<f32>(1.0, 1.0, 1.0), 0.22);
+        tint = marked_colour(tint, 0.22);
     }
 
     var out: FragmentOut;

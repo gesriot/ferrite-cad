@@ -803,6 +803,10 @@ fn frame_selection<P>(
 /// disturb one. The extent is the snapshot's own, computed once when it was
 /// packed – recomputing it here from the catalogue, the picks or the order the
 /// definitions happen to be in would be a second answer to a settled question.
+fn frame_scene(snapshot: &RenderSnapshot, camera: &mut ViewportInput) -> Result<bool> {
+    camera.frame_extent(snapshot.bounds())
+}
+
 /// Records what the pointer is over, and says whether anything changed.
 ///
 /// Answered through the picture that is on screen, so a question about a
@@ -824,8 +828,33 @@ fn hover_definition(hovered: &mut PickId, snapshot: &RenderSnapshot, pick: PickI
     true
 }
 
-fn frame_scene(snapshot: &RenderSnapshot, camera: &mut ViewportInput) -> Result<bool> {
-    camera.frame_extent(snapshot.bounds())
+/// What the app must do with one hover question after the interface was drawn.
+///
+/// `EventResponse::consumed` is not enough for pointer motion: egui reports an
+/// idle pointer over a panel as not consumed because no widget is actively
+/// using it. The completed egui pass knows whether the pointer is over an
+/// interface area, so that fact is an input here. A row is allowed to answer
+/// directly; every other interface area blocks the model behind it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum HoverRequest {
+    Unchanged,
+    Clear,
+    Row(usize),
+    Pixel(f32, f32),
+}
+
+fn hover_request(row: Option<usize>, interface_has_pointer: bool, question: Hover) -> HoverRequest {
+    if let Some(row) = row {
+        return HoverRequest::Row(row);
+    }
+    if interface_has_pointer {
+        return HoverRequest::Clear;
+    }
+    match question {
+        Hover::Unchanged => HoverRequest::Unchanged,
+        Hover::Cleared => HoverRequest::Clear,
+        Hover::At(x, y) => HoverRequest::Pixel(x, y),
+    }
 }
 
 /// What the interface should say about a chosen definition.
@@ -998,7 +1027,7 @@ impl ApplicationHandler<AppEvent> for App {
                 match live.draw(&self.input, activity) {
                     // A button pressed during this frame reaches the camera
                     // the same way a keystroke does, through the reducer.
-                    Ok((chosen, pointed_row)) => {
+                    Ok((chosen, pointed_row, interface_has_pointer)) => {
                         if let Some(view) = chosen.view {
                             self.input.handle(ViewportEvent::Look(view), false);
                         }
@@ -1041,7 +1070,7 @@ impl ApplicationHandler<AppEvent> for App {
                         // What the pointer is over. A row of the list answers
                         // for itself through the picture, and anywhere else it
                         // is the picture that is asked.
-                        self.point_at(pointed_row);
+                        self.point_at(pointed_row, interface_has_pointer);
                     }
                     Err(error) => {
                         eprintln!("ferritecad: {error}");
@@ -1072,7 +1101,7 @@ impl ApplicationHandler<AppEvent> for App {
                         ViewportEvent::Wheel { .. } => {
                             response.consumed || live.egui.egui_wants_pointer_input()
                         }
-                        ViewportEvent::PointerPressed(_) => {
+                        ViewportEvent::PointerPressed(_) | ViewportEvent::PointerMoved { .. } => {
                             response.consumed || live.egui.egui_wants_pointer_input()
                         }
                         // A move is claimed only while no gesture is running;
@@ -1280,16 +1309,16 @@ impl App {
     /// Nothing here touches the selection. Pointing at something is a question
     /// about it, and a viewer that chose whatever the pointer crossed would
     /// make the choice worthless.
-    fn point_at(&mut self, row: Option<usize>) {
+    fn point_at(&mut self, row: Option<usize>, interface_has_pointer: bool) {
         let question = self.input.take_hover();
         let Some(live) = self.live.as_mut() else {
             return;
         };
 
-        let pick = match (row, question) {
+        let pick = match hover_request(row, interface_has_pointer, question) {
             // The list said which one, which needs no pixel read at all.
-            (Some(row), _) => live.scene.prepared.snapshot().pick_of(row),
-            (None, Hover::At(x, y)) => {
+            HoverRequest::Row(row) => live.scene.prepared.snapshot().pick_of(row),
+            HoverRequest::Pixel(x, y) => {
                 // One offscreen frame, and only because the pointer moved.
                 match Self::pick_at(live, self.input.camera(), x, y) {
                     Ok(pick) => Some(pick),
@@ -1301,9 +1330,9 @@ impl App {
             }
             // Away from the model, over a panel, or in the middle of a
             // gesture: whatever was under the pointer is not any more.
-            (None, Hover::Cleared) => Some(PickId::NOTHING),
+            HoverRequest::Clear => Some(PickId::NOTHING),
             // Nothing moved, so nothing changed.
-            (None, Hover::Unchanged) => None,
+            HoverRequest::Unchanged => None,
         };
 
         let Some(pick) = pick else {
@@ -1493,7 +1522,7 @@ impl Live {
         &mut self,
         input: &ViewportInput,
         activity: Activity<'_>,
-    ) -> Result<(Chosen, Option<usize>)> {
+    ) -> Result<(Chosen, Option<usize>, bool)> {
         // Taken apart so the picture can be read while the surface is being
         // drawn into: these are different fields, and only the compiler needs
         // telling. It also means the list below describes the catalogue itself
@@ -1519,7 +1548,7 @@ impl Live {
         let Some(frame) = surface.begin(renderer)? else {
             // No area, nobody watching, or the compositor was busy. None of
             // those is an error.
-            return Ok((Chosen::default(), None));
+            return Ok((Chosen::default(), None, false));
         };
         let frame = frame.draw_scene(
             &scene.prepared,
@@ -1553,6 +1582,10 @@ impl Live {
                 chosen_row.and_then(|row| definitions.get(row)).copied(),
             );
         });
+        // Asked after the pass, when egui knows the areas it just laid out.
+        // `EventResponse::consumed` deliberately means something narrower for
+        // CursorMoved and is false for an idle pointer over a toolbar.
+        let interface_has_pointer = egui.egui_wants_pointer_input();
         egui_state.handle_platform_output(window, output.platform_output);
 
         let (width, height) = frame.size();
@@ -1604,7 +1637,7 @@ impl Live {
 
         free_textures(&mut textures, |id| egui_renderer.free_texture(id));
         frame.present();
-        Ok((chosen, pointed_row))
+        Ok((chosen, pointed_row, interface_has_pointer))
     }
 }
 
@@ -2553,6 +2586,31 @@ mod tests {
         // this one, however plausible its number looks.
         assert!(!hover_definition(&mut scene.hovered, &other, chosen));
         assert_eq!(scene.hovered, PickId::NOTHING);
+    }
+
+    #[test]
+    fn the_interface_blocks_the_model_beneath_it_after_layout() {
+        // This is the fact the completed egui pass reports. For an idle
+        // CursorMoved, egui-winit's EventResponse::consumed is false even over
+        // a toolbar, so using only that earlier answer would return Pixel and
+        // perform an offscreen pick through the panel.
+        assert_eq!(
+            hover_request(None, true, Hover::At(40.0, 50.0)),
+            HoverRequest::Clear
+        );
+
+        // A definition row is the one interface area that answers the
+        // question itself, without consulting the pixel under the panel.
+        assert_eq!(
+            hover_request(Some(3), true, Hover::At(40.0, 50.0)),
+            HoverRequest::Row(3)
+        );
+
+        // The same physical point over the viewport remains a pixel question.
+        assert_eq!(
+            hover_request(None, false, Hover::At(40.0, 50.0)),
+            HoverRequest::Pixel(40.0, 50.0)
+        );
     }
 
     #[test]
