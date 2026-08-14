@@ -1,0 +1,170 @@
+// SPDX-License-Identifier: MIT
+//
+// Temporary: isolates which part of the face target a backend refuses.
+
+#![allow(clippy::panic)]
+
+const HEAD: &str = r#"
+struct Globals { view_projection: mat4x4<f32>, a: u32, b: u32, c: u32, d: u32 };
+@group(0) @binding(0) var<uniform> globals: Globals;
+"#;
+
+const STORAGE: &str = "@group(0) @binding(1) var<storage, read> faces: array<u32>;\n";
+
+fn source(primitive_index: bool, storage: bool, targets: usize) -> String {
+    let mut s = String::new();
+    if primitive_index {
+        s.push_str("enable primitive_index;\n");
+    }
+    s.push_str(HEAD);
+    if storage {
+        s.push_str(STORAGE);
+    }
+    s.push_str(
+        "@vertex fn vertex_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {\n\
+         return globals.view_projection * vec4<f32>(f32(i), 0.0, 0.0, 1.0);\n}\n",
+    );
+    s.push_str("struct Out {\n@location(0) colour: vec4<f32>,\n");
+    if targets > 1 {
+        s.push_str("@location(1) pick: u32,\n");
+    }
+    if targets > 2 {
+        s.push_str("@location(2) face: u32,\n");
+    }
+    s.push_str("};\n@fragment fn fragment_main(");
+    if primitive_index {
+        s.push_str("@builtin(primitive_index) triangle: u32");
+    }
+    s.push_str(") -> Out {\nvar out: Out;\nout.colour = vec4<f32>(1.0);\n");
+    if targets > 1 {
+        s.push_str("out.pick = 1u;\n");
+    }
+    if targets > 2 {
+        let value = if storage && primitive_index {
+            "faces[triangle]"
+        } else if storage {
+            "faces[0]"
+        } else {
+            "2u"
+        };
+        s.push_str(&format!("out.face = {value};\n"));
+    }
+    s.push_str("return out;\n}\n");
+    s
+}
+
+#[test]
+fn probe() {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+        eprintln!("PROBE: no adapter");
+        return;
+    };
+    eprintln!(
+        "PROBE adapter {:?} {} primitive_index={}",
+        adapter.get_info().backend,
+        adapter.get_info().name,
+        adapter.features().contains(wgpu::Features::PRIMITIVE_INDEX)
+    );
+    let Ok((device, _queue)) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("probe"),
+        required_features: wgpu::Features::PRIMITIVE_INDEX,
+        ..Default::default()
+    })) else {
+        eprintln!("PROBE: no device with PRIMITIVE_INDEX");
+        return;
+    };
+    device.on_uncaptured_error(std::sync::Arc::new(|error| {
+        eprintln!("PROBE uncaptured: {error}")
+    }));
+
+    for primitive_index in [false, true] {
+        for storage in [false, true] {
+            for targets in [1usize, 2, 3] {
+                let label = format!(
+                    "primitive_index={primitive_index} storage={storage} targets={targets}"
+                );
+                let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+                let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+                let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("probe module"),
+                    source: wgpu::ShaderSource::Wgsl(
+                        source(primitive_index, storage, targets).into(),
+                    ),
+                });
+                let mut entries = vec![wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }];
+                if storage {
+                    entries.push(wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    });
+                }
+                let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: None,
+                    entries: &entries,
+                });
+                let pipeline_layout =
+                    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: None,
+                        bind_group_layouts: &[Some(&layout)],
+                        immediate_size: 0,
+                    });
+                let mut colour_targets = vec![Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })];
+                for _ in 1..targets {
+                    colour_targets.push(Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::R32Uint,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }));
+                }
+                let _pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("probe pipeline"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vertex_main"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fragment_main"),
+                        compilation_options: Default::default(),
+                        targets: &colour_targets,
+                    }),
+                    primitive: Default::default(),
+                    depth_stencil: None,
+                    multisample: Default::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+                let internal = pollster::block_on(internal_scope.pop());
+                let validation = pollster::block_on(validation_scope.pop());
+                match (internal, validation) {
+                    (None, None) => eprintln!("PROBE ok    {label}"),
+                    (a, b) => eprintln!("PROBE FAIL  {label}: {a:?} / {b:?}"),
+                }
+            }
+        }
+    }
+}
