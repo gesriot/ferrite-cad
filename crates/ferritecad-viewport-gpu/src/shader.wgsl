@@ -14,6 +14,9 @@ struct Globals {
     // definition light up together: they carry the same number, so this is one
     // comparison rather than a list the renderer would have to keep in step.
     selected: u32,
+    // Which face is chosen, or zero. Never set beside `selected`: choosing a
+    // face chooses that face and not the part it belongs to.
+    selected_face: u32,
     // Which face the pointer is over, or zero. A face of the picture rather
     // than of a placement, so the same face lights up wherever its definition
     // appears.
@@ -21,7 +24,6 @@ struct Globals {
     // Which definition the pointer is over, or zero. A question rather than a
     // decision, and drawn differently so the two can be told apart.
     hovered: u32,
-    padding_0: u32,
 };
 
 struct Draw {
@@ -118,7 +120,13 @@ fn shade(in: VertexOut, face: u32) -> vec4<f32> {
     // is marked must still look like the material it is, and a part that
     // turned orange would hide whatever the file said about it.
     var tint = draw.colour.rgb;
-    if (globals.selected != 0u && draw.pick == globals.selected) {
+    if (globals.selected_face != 0u && face == globals.selected_face) {
+        // One chosen face, in every placement of its definition and nowhere
+        // else. Further from the material than a chosen definition, because a
+        // person has to be able to tell "this face" from "this part" without
+        // consulting a panel.
+        tint = marked_colour(tint, 0.82);
+    } else if (globals.selected != 0u && draw.pick == globals.selected) {
         // A choice already made. Kept as it was, and stronger than the
         // questions below, so pointing at something never looks like having
         // chosen it.

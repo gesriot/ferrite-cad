@@ -46,13 +46,21 @@ cargo run -p ferritecad-app --bin ferritecad-viewer -- part.fcad
 ```
 
 The viewer opens the document read-only, rebuilds it, and draws it: orbit, pan
-and zoom, the standard views, and a click selects a definition and describes it
-in portable terms. Every placement of one definition is selected together,
-because a click names the definition and never the placement it landed on. A
+and zoom, the standard views, and a click selects what is under it and describes
+it in portable terms. Clicking a face of a native body the document has a
+durable name for selects that face, and the inspector says what the document
+calls it: which feature made it, what it is – the end cap of that extrusion, the
+side raised from that sketch segment – and how the reference selects it.
+Clicking anything else selects its definition, which is the honest answer:
+imported faces have no durable names, so a face of one is a face of nothing this
+document could store. Selecting a part selects every placement of it, and
+selecting a face marks that face in every placement, because a click names what
+a thing is and never the place it happened to land on. A
 list beside the model offers the same definitions by name and identity, which
 is how one that is hidden, tiny or out of shot can still be chosen, and
-`Frame selected` (or `F`) brings all of its placements into view without
-changing the direction you were looking from, and `Frame all` (or `A`) does
+`Frame selected` (or `F`) brings what is selected into view without changing
+the direction you were looking from – the chosen face in every placement of its
+part, or the whole part when a part is chosen – and `Frame all` (or `A`) does
 the same for the whole model, which is the way back when panning has left it
 off screen. A reference grid on the world's XY plane gives the model a floor
 to sit on, with heavier lines every ten squares and coloured axes through the

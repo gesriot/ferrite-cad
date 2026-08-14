@@ -175,11 +175,6 @@ impl Extent {
         if mesh.indices.is_empty() {
             return;
         }
-        if !self.holds_anything {
-            self.min = [f32::INFINITY; 3];
-            self.max = [f32::NEG_INFINITY; 3];
-            self.holds_anything = true;
-        }
 
         let (low, high) = mesh.bounds();
         // Every corner, not just the two: a rotated box's extent is not the
@@ -190,11 +185,42 @@ impl Extent {
                 if corner & 2 == 0 { low[1] } else { high[1] },
                 if corner & 4 == 0 { low[2] } else { high[2] },
             ];
-            let placed = apply(&item.transform, point);
-            for (axis, value) in placed.into_iter().enumerate() {
-                self.min[axis] = self.min[axis].min(value);
-                self.max[axis] = self.max[axis].max(value);
+            self.grow(apply(&item.transform, point));
+        }
+    }
+
+    /// Adds one placement of the part of a mesh belonging to one face.
+    ///
+    /// Its own vertices, every one of them, rather than the corners of a box
+    /// around the whole mesh. The same arithmetic as [`Self::include`] –
+    /// transform, then grow – because two ways of placing a point are two
+    /// answers to one question.
+    fn include_face(&mut self, mesh: &PackedMesh, item: &DrawItem, face: u32) {
+        for (vertex, owner) in mesh.face_of_vertex.iter().enumerate() {
+            if *owner != face {
+                continue;
             }
+            let at = vertex * VERTEX_FLOATS;
+            let Some(position) = mesh.vertices.get(at..at + 3) else {
+                continue;
+            };
+            self.grow(apply(
+                &item.transform,
+                [position[0], position[1], position[2]],
+            ));
+        }
+    }
+
+    /// Grows the box to hold one placed point.
+    fn grow(&mut self, placed: [f32; 3]) {
+        if !self.holds_anything {
+            self.min = [f32::INFINITY; 3];
+            self.max = [f32::NEG_INFINITY; 3];
+            self.holds_anything = true;
+        }
+        for (axis, value) in placed.into_iter().enumerate() {
+            self.min[axis] = self.min[axis].min(value);
+            self.max[axis] = self.max[axis].max(value);
         }
     }
 
@@ -245,22 +271,48 @@ impl FacePickId {
     }
 }
 
-/// What the pointer is over, which is a different question from what is
-/// chosen.
+/// What one mark on the picture is on, transiently.
 ///
 /// Three states rather than two identities, because "no face and definition
 /// three" and "face seven, whose definition is three" are different things to
 /// draw and would otherwise have to be told apart by which of two fields
 /// happened to be set. Nothing here is a row number or a face ordinal: both
 /// arms carry an identity bound to the picture that issued it.
+///
+/// One type for what is chosen and for what is under the pointer, because the
+/// question "which part of this picture" has one shape and one answer, and the
+/// rule that an identity of another picture marks nothing is the same rule
+/// twice. What differs is how each is drawn, which is the renderer's business.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Hovered {
+pub enum Marked {
     #[default]
     Nothing,
     /// A whole definition, as a list of definitions can say.
     Definition(PickId),
     /// One face, as only a pixel can say.
     Face(FacePickId),
+}
+
+impl Marked {
+    /// The same mark, resolved against the picture about to be drawn.
+    ///
+    /// An identity of another picture, of a picture that has been replaced, or
+    /// of nothing at all is [`Nothing`][Self::Nothing] here. One place, so a
+    /// renderer, a reducer and an inspector cannot each decide differently
+    /// what a stale identity means.
+    pub fn known_to(self, snapshot: &RenderSnapshot) -> Self {
+        match self {
+            Self::Nothing => Self::Nothing,
+            Self::Definition(pick) => match snapshot.definition(pick) {
+                Some(_) => self,
+                None => Self::Nothing,
+            },
+            Self::Face(face) => match snapshot.definition_of_face(face) {
+                Some(_) => self,
+                None => Self::Nothing,
+            },
+        }
+    }
 }
 
 /// One placement of one definition, ready to draw.
@@ -374,6 +426,51 @@ impl RenderSnapshot {
     /// How many faces this picture divides its definitions into.
     pub fn face_count(&self) -> usize {
         self.face_owner.len()
+    }
+
+    /// The identity this picture gave one face of one definition.
+    ///
+    /// The inverse of [`Self::definition_of_face`], and the only way to learn
+    /// this picture's numbering from outside. A loader that knows what the
+    /// kernel called each face of a mesh needs it to say the same thing about
+    /// the picture; computing the number itself would be a second account of
+    /// the numbering, and the one nobody exercised would drift.
+    pub fn face_of(&self, definition: usize, ordinal: usize) -> Option<FacePickId> {
+        let mesh = self.meshes.get(definition)?;
+        if ordinal >= mesh.face_count() {
+            return None;
+        }
+        // Faces are numbered in packing order, so a definition's own run
+        // begins after every face packed before it.
+        let before: usize = self.meshes[..definition]
+            .iter()
+            .map(PackedMesh::face_count)
+            .sum();
+        let raw = u32::try_from(before.checked_add(ordinal)?.checked_add(1)?).ok()?;
+        Some(FacePickId {
+            raw,
+            snapshot: self.identity,
+        })
+    }
+
+    /// Where one face of one definition is, in every placement of it.
+    ///
+    /// The face's own triangles rather than its definition's box: selecting a
+    /// face and being shown the whole part would be showing something else.
+    /// Every placement, for the same reason [`Self::bounds_of`] covers every
+    /// placement – a face belongs to a definition, so it is wherever that
+    /// definition appears.
+    ///
+    /// A face of another picture is nowhere, exactly as a pick from another
+    /// picture names nothing.
+    pub fn bounds_of_face(&self, face: FacePickId) -> Option<([f32; 3], [f32; 3])> {
+        let definition = self.definition_of_face(face)?;
+        let mesh = &self.meshes[definition];
+        let mut extent = Extent::default();
+        for item in self.items.iter().filter(|item| item.mesh == definition) {
+            extent.include_face(mesh, item, face.raw);
+        }
+        extent.bounds()
     }
 
     /// The definition a pick identifies, if it identifies one.

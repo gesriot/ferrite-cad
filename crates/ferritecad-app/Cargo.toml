@@ -50,5 +50,11 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "w
 wgpu = "=30.0.0"
 winit = { version = "0.30", default-features = false, features = ["x11", "wayland", "rwh_06"] }
 
+# Only the tests read a document from disk: the committed plate is what an
+# end-to-end gate needs to click a face the document actually names.
+[dev-dependencies]
+ferritecad-fixtures.workspace = true
+tempfile = "3"
+
 [lints]
 workspace = true

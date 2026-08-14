@@ -22,7 +22,7 @@ use ferritecad_kernel::{
     Mesh, MeshFaceRange, SessionId, ShapeHandle, SubShapeHandle, SubShapeKind,
 };
 use ferritecad_types::{ErrorKind, Transform, Vec3};
-use ferritecad_viewport::{Camera, FacePickId, Hovered, PickId, RenderSnapshot, SnapshotBuilder};
+use ferritecad_viewport::{Camera, FacePickId, Marked, PickId, RenderSnapshot, SnapshotBuilder};
 use ferritecad_viewport_gpu::{Frame, Renderer};
 
 /// A renderer, or a reason to stop.
@@ -325,7 +325,7 @@ fn a_model_is_drawn_over_a_grid_that_is_never_selectable() {
 
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     let mut grid_pixels = 0;
@@ -396,7 +396,7 @@ fn the_grid_belongs_to_the_world_and_not_to_the_screen() {
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
 
     let still = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     // Panning by part of a spacing moves the lines across the screen. A sheet
@@ -404,7 +404,7 @@ fn the_grid_belongs_to_the_world_and_not_to_the_screen() {
     let mut panned = camera;
     panned.pan(17.0, 0.0);
     let after_pan = renderer
-        .render(&prepared, &panned, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &panned, Marked::Nothing, Marked::Nothing)
         .expect("draws");
     let (pan_background, pan_changed) = changed_common_background(&still, &after_pan);
     assert!(
@@ -421,7 +421,7 @@ fn the_grid_belongs_to_the_world_and_not_to_the_screen() {
     let mut orbited = camera;
     orbited.orbit(0.6, 0.4);
     let after_orbit = renderer
-        .render(&prepared, &orbited, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &orbited, Marked::Nothing, Marked::Nothing)
         .expect("draws");
     let (orbit_background, orbit_changed) = changed_common_background(&still, &after_orbit);
     assert!(
@@ -440,7 +440,7 @@ fn the_grid_belongs_to_the_world_and_not_to_the_screen() {
     let mut far = camera;
     far.zoom(-6.0);
     let after_zoom = renderer
-        .render(&prepared, &far, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &far, Marked::Nothing, Marked::Nothing)
         .expect("draws");
     let far_gap = widest_gap(&after_zoom).expect("the grid is drawn at this zoom too");
 
@@ -462,10 +462,10 @@ fn a_backdrop_costs_no_geometry_and_repeats_exactly() {
     let uploaded = renderer.geometry_uploads();
 
     let first = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
     let second = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     // The grid has no vertex buffer to upload and the model's are already
@@ -520,7 +520,7 @@ fn a_part_below_the_plane_is_still_drawn_over_the_grid() {
 
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     // The grid is a backdrop, not a floor that hides things: a part below the
@@ -564,7 +564,7 @@ fn a_picture_with_nothing_in_it_gets_no_backdrop() {
 
     let prepared = renderer.prepare(Arc::clone(&empty)).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     // An empty document is empty. Drawing a floor under nothing would invent
@@ -589,7 +589,7 @@ fn choosing_a_definition_changes_every_placement_of_it_and_nothing_else() {
 
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let plain = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     // Find a pixel of each definition by asking the frame what is under it.
@@ -620,7 +620,12 @@ fn choosing_a_definition_changes_every_placement_of_it_and_nothing_else() {
 
     let chosen = plain.pick_at(first.0, first.1);
     let lit = renderer
-        .render(&prepared, &camera, chosen, Hovered::Nothing)
+        .render(
+            &prepared,
+            &camera,
+            Marked::Definition(chosen),
+            Marked::Nothing,
+        )
         .expect("draws");
 
     // Every pixel of the chosen definition changed, wherever it was drawn:
@@ -649,7 +654,7 @@ fn pointing_at_a_definition_marks_every_placement_of_it_and_no_other() {
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
 
     let plain = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     let places = |definition: usize| -> Vec<(u32, u32)> {
@@ -667,8 +672,8 @@ fn pointing_at_a_definition_marks_every_placement_of_it_and_no_other() {
         .render(
             &prepared,
             &camera,
-            PickId::NOTHING,
-            Hovered::Definition(hovered),
+            Marked::Nothing,
+            Marked::Definition(hovered),
         )
         .expect("draws");
 
@@ -703,7 +708,7 @@ fn a_choice_and_a_question_are_told_apart() {
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
 
     let plain = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
     let pixel_of = |definition: usize| {
         (0..plain.height())
@@ -717,16 +722,26 @@ fn a_choice_and_a_question_are_told_apart() {
     let b = plain.pick_at(bx, by);
 
     let chosen_only = renderer
-        .render(&prepared, &camera, a, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Definition(a), Marked::Nothing)
         .expect("draws");
     let pointed_only = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Definition(a))
+        .render(&prepared, &camera, Marked::Nothing, Marked::Definition(a))
         .expect("draws");
     let both = renderer
-        .render(&prepared, &camera, a, Hovered::Definition(b))
+        .render(
+            &prepared,
+            &camera,
+            Marked::Definition(a),
+            Marked::Definition(b),
+        )
         .expect("draws");
     let same = renderer
-        .render(&prepared, &camera, a, Hovered::Definition(a))
+        .render(
+            &prepared,
+            &camera,
+            Marked::Definition(a),
+            Marked::Definition(a),
+        )
         .expect("draws");
 
     // Choosing and pointing are different states, and a person has to be able
@@ -759,7 +774,7 @@ fn light_and_dark_parts_can_both_be_chosen_and_pointed_at() {
         let (snapshot, camera) = one_coloured_quad(64, 64, colour);
         let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
         let plain = renderer
-            .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+            .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
             .expect("draws");
         let (x, y, pick) = (0..plain.height())
             .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
@@ -768,14 +783,19 @@ fn light_and_dark_parts_can_both_be_chosen_and_pointed_at() {
             .expect("the quad is drawn");
 
         let chosen = renderer
-            .render(&prepared, &camera, pick, Hovered::Nothing)
+            .render(
+                &prepared,
+                &camera,
+                Marked::Definition(pick),
+                Marked::Nothing,
+            )
             .expect("draws selection");
         let pointed = renderer
             .render(
                 &prepared,
                 &camera,
-                PickId::NOTHING,
-                Hovered::Definition(pick),
+                Marked::Nothing,
+                Marked::Definition(pick),
             )
             .expect("draws hover");
 
@@ -805,14 +825,14 @@ fn nothing_worth_pointing_at_is_marked() {
     let prepared = renderer.prepare(Arc::clone(&mine)).expect("uploads");
 
     let plain = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     // A pick from another picture names a definition of that picture. Its
     // number would fit here, which is exactly why the picture is asked.
     let elsewhere = renderer.prepare(Arc::clone(&theirs)).expect("uploads");
     let other = renderer
-        .render(&elsewhere, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&elsewhere, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
     let foreign = (0..other.height())
         .flat_map(|y| (0..other.width()).map(move |x| (x, y)))
@@ -825,8 +845,8 @@ fn nothing_worth_pointing_at_is_marked() {
             .render(
                 &prepared,
                 &camera,
-                PickId::NOTHING,
-                Hovered::Definition(hovered),
+                Marked::Nothing,
+                Marked::Definition(hovered),
             )
             .expect("draws");
         assert_eq!(
@@ -845,7 +865,7 @@ fn pointing_costs_no_geometry_and_leaves_the_backdrop_alone() {
     let uploaded = renderer.geometry_uploads();
 
     let plain = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
     let hovered = (0..plain.height())
         .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
@@ -857,16 +877,16 @@ fn pointing_costs_no_geometry_and_leaves_the_backdrop_alone() {
         .render(
             &prepared,
             &camera,
-            PickId::NOTHING,
-            Hovered::Definition(hovered),
+            Marked::Nothing,
+            Marked::Definition(hovered),
         )
         .expect("draws");
     let again = renderer
         .render(
             &prepared,
             &camera,
-            PickId::NOTHING,
-            Hovered::Definition(hovered),
+            Marked::Nothing,
+            Marked::Definition(hovered),
         )
         .expect("draws");
 
@@ -905,7 +925,7 @@ fn a_selection_from_another_snapshot_selects_nothing() {
 
     let prepared = renderer.prepare(Arc::clone(&mine)).expect("uploads");
     let plain = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     // A pick taken from a different picture. Its number is in range here, so
@@ -921,7 +941,7 @@ fn a_selection_from_another_snapshot_selects_nothing() {
         camera
     };
     let other = renderer
-        .render(&elsewhere, &other_camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&elsewhere, &other_camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
     let foreign = (0..other.height())
         .flat_map(|y| (0..other.width()).map(move |x| (x, y)))
@@ -930,7 +950,12 @@ fn a_selection_from_another_snapshot_selects_nothing() {
         .expect("the other picture drew something");
 
     let after = renderer
-        .render(&prepared, &camera, foreign, Hovered::Nothing)
+        .render(
+            &prepared,
+            &camera,
+            Marked::Definition(foreign),
+            Marked::Nothing,
+        )
         .expect("draws");
     assert_eq!(
         after.colour(),
@@ -946,7 +971,7 @@ fn a_snapshot_reaches_the_colour_target() {
 
     let prepared = renderer.prepare(snapshot).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
     assert_eq!(frame.width(), 64);
     assert_eq!(frame.height(), 64);
@@ -977,7 +1002,7 @@ fn the_pick_target_comes_back_carrying_the_identities_that_went_in() {
 
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     let hit = frame.pick_at(32, 32);
@@ -1016,7 +1041,7 @@ fn every_placement_is_drawn_and_they_all_pick_their_definition() {
 
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     // Scanned rather than sampled at guessed coordinates: where the framing
@@ -1061,7 +1086,7 @@ fn a_frame_cannot_be_read_against_a_different_snapshot() {
     let (first, camera) = one_quad(32, 32);
     let prepared = renderer.prepare(Arc::clone(&first)).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     // A second snapshot describing something else. Its definition zero is a
@@ -1100,7 +1125,7 @@ fn a_viewport_of_no_size_draws_nothing_and_says_so() {
     camera.resize(0, 0);
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws nothing");
     assert_eq!(frame.width(), 0);
     assert!(frame.colour().is_empty());
@@ -1114,7 +1139,7 @@ fn a_viewport_of_no_size_draws_nothing_and_says_so() {
     camera.resize(16, 0);
     assert!(
         renderer
-            .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+            .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
             .expect("draws nothing")
             .colour()
             .is_empty()
@@ -1130,7 +1155,7 @@ fn a_viewport_larger_than_the_device_can_hold_is_refused_before_allocation() {
 
     let prepared = renderer.prepare(snapshot).expect("uploads");
     let error = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect_err("an impossible target must be refused");
     assert_eq!(error.kind(), ErrorKind::Input);
 }
@@ -1171,12 +1196,12 @@ fn a_normal_and_its_baked_equivalent_receive_the_same_light() {
         .render(
             &transformed_prepared,
             &camera,
-            PickId::NOTHING,
-            Hovered::Nothing,
+            Marked::Nothing,
+            Marked::Nothing,
         )
         .expect("draws");
     let baked = renderer
-        .render(&baked_prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&baked_prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
     assert_eq!(
         transformed.colour(),
@@ -1212,7 +1237,7 @@ fn an_empty_snapshot_draws_a_cleared_frame() {
     for snapshot in [empty, placed_empty] {
         let prepared = renderer.prepare(snapshot).expect("uploads");
         let frame = renderer
-            .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+            .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
             .expect("draws nothing");
         assert_eq!(frame.colour().len(), 16 * 16 * 4);
         assert!(
@@ -1233,10 +1258,10 @@ fn two_frames_of_one_snapshot_are_the_same_picture() {
 
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let first = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
     let second = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     // Not a claim about GPUs in general: it is a claim that nothing in this
@@ -1290,7 +1315,7 @@ fn geometry_is_uploaded_once_and_repeat_frames_only_move_the_camera() {
             .expect("moves the camera without resizing the target");
         matrices.push(camera.view_projection());
         let frame = renderer
-            .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+            .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
             .expect("draws");
         assert_eq!((frame.width(), frame.height()), (48, 48));
         pictures.push(frame.colour().to_vec());
@@ -1331,7 +1356,7 @@ fn a_snapshot_prepared_by_another_renderer_is_refused() {
     // lifetime mistake surfacing as a driver error far from its cause, so it
     // is refused by name instead.
     let error = mine
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect_err("another renderer's buffers must not be drawn");
     assert_eq!(error.kind(), ErrorKind::Rendering, "{error}");
     assert!(
@@ -1341,7 +1366,7 @@ fn a_snapshot_prepared_by_another_renderer_is_refused() {
 
     // The renderer that owns them still draws them.
     theirs
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("its own buffers");
 }
 
@@ -1354,7 +1379,7 @@ fn an_older_frame_keeps_resolving_against_the_snapshot_it_was_drawn_from() {
     let (first, camera) = one_quad(32, 32);
     let first_prepared = renderer.prepare(Arc::clone(&first)).expect("uploads");
     let old = renderer
-        .render(&first_prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&first_prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
     let old_hit = old.pick_at(16, 16);
     assert_ne!(old_hit, PickId::NOTHING);
@@ -1370,7 +1395,7 @@ fn an_older_frame_keeps_resolving_against_the_snapshot_it_was_drawn_from() {
     let second = Arc::new(builder.build());
     let second_prepared = renderer.prepare(Arc::clone(&second)).expect("uploads");
     let new = renderer
-        .render(&second_prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&second_prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
     let new_hit = new.pick_at(16, 16);
     assert_ne!(new_hit, PickId::NOTHING);
@@ -1395,7 +1420,7 @@ fn two_faces_of_one_plate_are_one_definition_and_two_faces() {
     let (snapshot, camera) = two_faced_scene(160, 160);
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     let mut faces = Vec::new();
@@ -1433,7 +1458,7 @@ fn pointing_at_a_face_marks_that_face_in_every_placement_and_nothing_else() {
     let (snapshot, camera) = two_faced_scene(160, 160);
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let plain = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     let drawn = pixels_of(&plain, |frame, x, y| frame.pick_at(x, y) != PickId::NOTHING);
@@ -1452,7 +1477,7 @@ fn pointing_at_a_face_marks_that_face_in_every_placement_and_nothing_else() {
     assert!(marked.len() > 100 && others.len() > 100);
 
     let pointed = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Face(face))
+        .render(&prepared, &camera, Marked::Nothing, Marked::Face(face))
         .expect("draws");
 
     // Both placements of the plate show it, because a face belongs to the
@@ -1485,7 +1510,7 @@ fn pointing_at_a_definition_still_marks_all_of_it() {
     let (snapshot, camera) = two_faced_scene(160, 160);
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let plain = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     let plate = pixels_of(&plain, |frame, x, y| {
@@ -1496,8 +1521,8 @@ fn pointing_at_a_definition_still_marks_all_of_it() {
         .render(
             &prepared,
             &camera,
-            PickId::NOTHING,
-            Hovered::Definition(pick),
+            Marked::Nothing,
+            Marked::Definition(pick),
         )
         .expect("draws");
 
@@ -1518,7 +1543,7 @@ fn a_chosen_definition_outranks_a_pointed_at_face() {
     let (snapshot, camera) = two_faced_scene(160, 160);
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let plain = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     let plate = pixels_of(&plain, |frame, x, y| {
@@ -1528,10 +1553,20 @@ fn a_chosen_definition_outranks_a_pointed_at_face() {
     let face = plain.hit_at(plate[0].0, plate[0].1).face();
 
     let only_chosen = renderer
-        .render(&prepared, &camera, chosen, Hovered::Nothing)
+        .render(
+            &prepared,
+            &camera,
+            Marked::Definition(chosen),
+            Marked::Nothing,
+        )
         .expect("draws");
     let both = renderer
-        .render(&prepared, &camera, chosen, Hovered::Face(face))
+        .render(
+            &prepared,
+            &camera,
+            Marked::Definition(chosen),
+            Marked::Face(face),
+        )
         .expect("draws");
 
     // A decision already made is not repainted by a question about part of it.
@@ -1550,7 +1585,7 @@ fn the_backdrop_and_the_grid_are_no_face_at_all() {
     let (snapshot, camera) = model_over_the_plane(120, 120);
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     let empty = pixels_of(&frame, |frame, x, y| frame.pick_at(x, y) == PickId::NOTHING);
@@ -1572,7 +1607,7 @@ fn a_face_of_another_picture_marks_nothing() {
     let (snapshot, camera) = two_faced_scene(120, 120);
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let plain = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
 
     // Another picture, whose faces are numbered from one exactly as this
@@ -1594,8 +1629,8 @@ fn a_face_of_another_picture_marks_nothing() {
         .render(
             &other_prepared,
             &other_camera,
-            PickId::NOTHING,
-            Hovered::Nothing,
+            Marked::Nothing,
+            Marked::Nothing,
         )
         .expect("draws");
     let drawn = pixels_of(&other_frame, |frame, x, y| {
@@ -1604,7 +1639,7 @@ fn a_face_of_another_picture_marks_nothing() {
     let foreign = other_frame.hit_at(drawn[0].0, drawn[0].1).face();
 
     let pointed = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Face(foreign))
+        .render(&prepared, &camera, Marked::Nothing, Marked::Face(foreign))
         .expect("draws");
     assert_eq!(
         pointed.colour(),
@@ -1619,7 +1654,7 @@ fn pointing_at_faces_uploads_no_geometry_and_draws_the_same_frame_twice() {
     let (snapshot, camera) = two_faced_scene(96, 96);
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let plain = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
         .expect("draws");
     let drawn = pixels_of(&plain, |frame, x, y| {
         frame.hit_at(x, y).face() != FacePickId::NOTHING
@@ -1628,10 +1663,10 @@ fn pointing_at_faces_uploads_no_geometry_and_draws_the_same_frame_twice() {
 
     let uploaded = renderer.geometry_uploads();
     let first = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Face(face))
+        .render(&prepared, &camera, Marked::Nothing, Marked::Face(face))
         .expect("draws");
     let second = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Face(face))
+        .render(&prepared, &camera, Marked::Nothing, Marked::Face(face))
         .expect("draws");
 
     assert_eq!(first.colour(), second.colour());
@@ -1646,4 +1681,256 @@ fn pointing_at_faces_uploads_no_geometry_and_draws_the_same_frame_twice() {
         uploaded,
         "pointing at a face uploaded geometry"
     );
+}
+
+#[test]
+fn choosing_a_face_marks_that_face_in_every_placement_and_nothing_else() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = two_faced_scene(160, 160);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let plain = renderer
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
+        .expect("draws");
+
+    let drawn = pixels_of(&plain, |frame, x, y| frame.pick_at(x, y) != PickId::NOTHING);
+    let (fx, fy) = drawn
+        .iter()
+        .copied()
+        .find(|(x, y)| snapshot.definition(plain.pick_at(*x, *y)) == Some(0))
+        .expect("the plate is drawn");
+    let face = plain.hit_at(fx, fy).face();
+    let chosen: Vec<_> = drawn
+        .iter()
+        .copied()
+        .filter(|(x, y)| plain.hit_at(*x, *y).face() == face)
+        .collect();
+    let others: Vec<_> = drawn
+        .iter()
+        .copied()
+        .filter(|(x, y)| plain.hit_at(*x, *y).face() != face)
+        .collect();
+    assert!(chosen.len() > 100 && others.len() > 100);
+
+    let selected = renderer
+        .render(&prepared, &camera, Marked::Face(face), Marked::Nothing)
+        .expect("draws");
+
+    // Both placements of the plate, because a face belongs to the definition
+    // and not to where it was put.
+    for (x, y) in &chosen {
+        assert_ne!(
+            selected.colour_at(*x, *y),
+            plain.colour_at(*x, *y),
+            "the chosen face was left alone at {x},{y}"
+        );
+    }
+    // The face beside it, and the definition beside that, are untouched: a
+    // chosen face is not a chosen part.
+    for (x, y) in &others {
+        assert_eq!(
+            selected.colour_at(*x, *y),
+            plain.colour_at(*x, *y),
+            "choosing one face changed something else at {x},{y}"
+        );
+    }
+
+    // What a click would say next is unchanged, in both answers.
+    for (x, y) in &drawn {
+        assert_eq!(selected.hit_at(*x, *y), plain.hit_at(*x, *y));
+    }
+}
+
+#[test]
+fn a_chosen_face_a_chosen_definition_and_a_pointed_at_face_all_look_different() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = two_faced_scene(120, 120);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let plain = renderer
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
+        .expect("draws");
+
+    let (x, y) = pixels_of(&plain, |frame, x, y| {
+        snapshot.definition(frame.pick_at(x, y)) == Some(0)
+    })[0];
+    let face = plain.hit_at(x, y).face();
+    let definition = plain.pick_at(x, y);
+
+    let as_face = renderer
+        .render(&prepared, &camera, Marked::Face(face), Marked::Nothing)
+        .expect("draws");
+    let as_definition = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Definition(definition),
+            Marked::Nothing,
+        )
+        .expect("draws");
+    let pointed = renderer
+        .render(&prepared, &camera, Marked::Nothing, Marked::Face(face))
+        .expect("draws");
+
+    // Three states a person has to be able to tell apart at the same pixel.
+    let colours = [
+        plain.colour_at(x, y),
+        as_face.colour_at(x, y),
+        as_definition.colour_at(x, y),
+        pointed.colour_at(x, y),
+    ];
+    for (first, one) in colours.iter().enumerate() {
+        for (second, other) in colours.iter().enumerate().skip(first + 1) {
+            assert_ne!(one, other, "states {first} and {second} look the same");
+        }
+    }
+}
+
+#[test]
+fn choosing_a_face_beats_pointing_at_anything() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = two_faced_scene(120, 120);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let plain = renderer
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
+        .expect("draws");
+
+    let plate = pixels_of(&plain, |frame, x, y| {
+        snapshot.definition(frame.pick_at(x, y)) == Some(0)
+    });
+    let (x, y) = plate[0];
+    let face = plain.hit_at(x, y).face();
+    let definition = plain.pick_at(x, y);
+    let neighbour = plate
+        .iter()
+        .copied()
+        .find(|(x, y)| plain.hit_at(*x, *y).face() != face)
+        .expect("the plate has a second face");
+    let other_face = plain.hit_at(neighbour.0, neighbour.1).face();
+
+    let alone = renderer
+        .render(&prepared, &camera, Marked::Face(face), Marked::Nothing)
+        .expect("draws");
+    for hovered in [
+        Marked::Face(face),
+        Marked::Face(other_face),
+        Marked::Definition(definition),
+    ] {
+        let with_pointer = renderer
+            .render(&prepared, &camera, Marked::Face(face), hovered)
+            .expect("draws");
+        // A decision already made is not repainted by a question about it.
+        for (x, y) in &pixels_of(&plain, |frame, x, y| frame.hit_at(x, y).face() == face) {
+            assert_eq!(
+                with_pointer.colour_at(*x, *y),
+                alone.colour_at(*x, *y),
+                "pointing at {hovered:?} repainted the chosen face at {x},{y}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_face_of_another_picture_chooses_nothing() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = two_faced_scene(120, 120);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let plain = renderer
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
+        .expect("draws");
+
+    let mut builder = SnapshotBuilder::new();
+    let plate = builder.add_mesh(&two_faced_plate(9.0)).expect("packs");
+    builder
+        .place(plate, None, &Transform::IDENTITY, [1.0, 0.0, 0.0])
+        .expect("places");
+    let other = Arc::new(builder.build());
+    let other_prepared = renderer.prepare(Arc::clone(&other)).expect("uploads");
+    let mut other_camera = Camera::new();
+    other_camera.resize(120, 120);
+    other_camera
+        .frame(other.bounds().expect("geometry"))
+        .expect("frames");
+    let other_frame = renderer
+        .render(
+            &other_prepared,
+            &other_camera,
+            Marked::Nothing,
+            Marked::Nothing,
+        )
+        .expect("draws");
+    let foreign = pixels_of(&other_frame, |frame, x, y| {
+        frame.hit_at(x, y).face() != FacePickId::NOTHING
+    })[0];
+    let foreign = other_frame.hit_at(foreign.0, foreign.1).face();
+
+    let selected = renderer
+        .render(&prepared, &camera, Marked::Face(foreign), Marked::Nothing)
+        .expect("draws");
+    assert_eq!(
+        selected.colour(),
+        plain.colour(),
+        "a face of another picture chose something in this one"
+    );
+}
+
+#[test]
+fn choosing_a_face_costs_no_geometry_and_draws_the_same_frame_twice() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = two_faced_scene(96, 96);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let plain = renderer
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
+        .expect("draws");
+    let drawn = pixels_of(&plain, |frame, x, y| {
+        frame.hit_at(x, y).face() != FacePickId::NOTHING
+    });
+    let face = plain.hit_at(drawn[0].0, drawn[0].1).face();
+
+    let uploaded = renderer.geometry_uploads();
+    let first = renderer
+        .render(&prepared, &camera, Marked::Face(face), Marked::Nothing)
+        .expect("draws");
+    let second = renderer
+        .render(&prepared, &camera, Marked::Face(face), Marked::Nothing)
+        .expect("draws");
+
+    assert_eq!(first.colour(), second.colour());
+    for (x, y) in &drawn {
+        assert_eq!(first.hit_at(*x, *y), second.hit_at(*x, *y));
+    }
+    assert_eq!(
+        renderer.geometry_uploads(),
+        uploaded,
+        "choosing a face uploaded geometry"
+    );
+}
+
+#[test]
+fn the_backdrop_and_the_grid_cannot_be_chosen_as_a_face() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = model_over_the_plane(120, 120);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let plain = renderer
+        .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
+        .expect("draws");
+
+    // Every pixel that is not the model: the grid, and the background behind
+    // it. Neither answers with a face, so neither can be chosen as one.
+    let empty = pixels_of(&plain, |frame, x, y| frame.pick_at(x, y) == PickId::NOTHING);
+    assert!(empty.len() > 100);
+    for (x, y) in &empty {
+        let hit = plain.hit_at(*x, *y);
+        assert_eq!(hit.face(), FacePickId::NOTHING);
+        assert_eq!(hit.definition(), PickId::NOTHING);
+    }
+
+    // And marking nothing leaves the backdrop exactly as it was.
+    let marked = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Face(FacePickId::NOTHING),
+            Marked::Nothing,
+        )
+        .expect("draws");
+    assert_eq!(marked.colour(), plain.colour());
 }

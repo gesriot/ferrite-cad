@@ -48,6 +48,6 @@ mod snapshot;
 pub use camera::{Camera, StandardView};
 pub use grid::{GridPlan, HALF_LINES, MAJOR_EVERY, MAX_PIXELS, MIN_PIXELS, plan as grid_plan};
 pub use snapshot::{
-    DrawItem, FacePickId, Hovered, PackedMesh, PickId, RenderSnapshot, SnapshotBuilder,
+    DrawItem, FacePickId, Marked, PackedMesh, PickId, RenderSnapshot, SnapshotBuilder,
     VERTEX_FLOATS,
 };

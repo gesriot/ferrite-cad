@@ -33,16 +33,18 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::{sync::Arc, time::Instant};
 
-use ferritecad_document::DOCUMENT_EXTENSION;
+use ferritecad_document::{CapSide, DOCUMENT_EXTENSION, SelectionRule, SemanticRole};
 use ferritecad_kernel::{CancelToken, OperationContext, ProgressSink, TessellationParams};
 use ferritecad_occt::OcctKernel;
-use ferritecad_scene::{CatalogueEntry, LoadedScene, SceneItem, snapshot_of};
+use ferritecad_scene::{
+    CatalogueEntry, FaceMeaning, FaceNames, LoadedScene, SceneItem, Selection, snapshot_of,
+};
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
     Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, Hover, PointerButton, Selected, VIEWS,
     ViewportEvent, ViewportInput,
 };
-use ferritecad_viewport::{Camera, Hovered, PickId, RenderSnapshot, SnapshotBuilder, StandardView};
+use ferritecad_viewport::{Camera, Marked, RenderSnapshot, SnapshotBuilder, StandardView};
 use ferritecad_viewport_gpu::{Hit, PreparedSnapshot, Renderer, WindowSurface};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, StartCause, WindowEvent};
@@ -520,18 +522,17 @@ fn finish_answer(
     }
 }
 
-/// What a pick means for what is chosen.
+/// What a click on one pixel chooses.
 ///
-/// A pick that names nothing in the picture it was read from chooses nothing:
-/// clicking the background is how a person unchooses, and a pick left over
-/// from a document that has since been replaced names a definition of a
-/// picture nobody is looking at. Both arrive here as the same answer, because
-/// both mean the same thing on screen.
-fn selection_from(pick: PickId, snapshot: &RenderSnapshot) -> PickId {
-    match snapshot.definition(pick) {
-        Some(_) => pick,
-        None => PickId::NOTHING,
-    }
+/// Both halves of the pixel are read from one frame and decided together, by
+/// the scene, which is the only place that knows what the document calls a
+/// face and is therefore the only place that can decide.
+///
+/// A pixel that names nothing chooses nothing: clicking the background is how
+/// a person unchooses, and a pick left over from a document that has since
+/// been replaced names a definition of a picture nobody is looking at.
+fn selection_at(hit: Hit, snapshot: &RenderSnapshot, faces: &FaceNames) -> Selection {
+    Selection::at(hit.definition(), hit.face(), snapshot, faces)
 }
 
 /// Chooses the definition named by a list row and draws that change once.
@@ -540,7 +541,7 @@ fn selection_from(pick: PickId, snapshot: &RenderSnapshot) -> PickId {
 /// list must turn it into one, and a row outside that snapshot changes
 /// nothing. Repeating the current choice is not a visible change either.
 fn select_definition_row(
-    selection: &mut PickId,
+    selection: &mut Selection,
     snapshot: &RenderSnapshot,
     input: &mut ViewportInput,
     row: usize,
@@ -548,8 +549,12 @@ fn select_definition_row(
     let Some(pick) = snapshot.pick_of(row) else {
         return;
     };
-    if pick != *selection {
-        *selection = pick;
+    // A row names a definition and can name nothing else. A list of
+    // definitions holds no faces, so pressing one cannot choose the face that
+    // happened to be under the pointer a moment ago.
+    let chosen = Selection::definition(pick, snapshot);
+    if chosen != *selection {
+        *selection = chosen;
         input.request_redraw();
     }
 }
@@ -577,12 +582,12 @@ fn prepare_load<P>(
     current_input: &ViewportInput,
     loaded: Result<LoadedScene>,
     prepare: impl FnOnce(Arc<RenderSnapshot>) -> Result<P>,
-) -> Result<(ViewportInput, P, Vec<CatalogueEntry>)> {
+) -> Result<(ViewportInput, P, Vec<CatalogueEntry>, FaceNames)> {
     let mut input = current_input.clone();
     let loaded = loaded?;
     let snapshot = input.accept_load(Ok(loaded.snapshot))?;
     let prepared = prepare(Arc::new(snapshot))?;
-    Ok((input, prepared, loaded.catalogue))
+    Ok((input, prepared, loaded.catalogue, loaded.faces))
 }
 
 /// Applies every texture upload and consumes it from egui's command set.
@@ -679,24 +684,30 @@ struct LiveScene<P> {
     /// What each mesh of `prepared` is: an identity a document could store,
     /// and the facts a person needs to recognise it.
     catalogue: Vec<CatalogueEntry>,
-    /// Transient identity issued by `prepared` and nothing else.
-    selection: PickId,
+    /// What the document durably calls each face of `prepared`, which is what
+    /// makes a face selectable as a face rather than as the part it is on.
+    faces: FaceNames,
+    /// What is chosen: nothing, a definition, or one face of one. One state
+    /// rather than a transient field beside a semantic one, so there is no
+    /// arrangement in which they describe different things.
+    selection: Selection,
     /// What the pointer is over, which is a question and not a decision. Also
     /// issued by `prepared`, also transient, and written down nowhere. Three
     /// states rather than one identity, because a list row can only name a
     /// definition and a pixel can name the face under it, and the two are
     /// different things to show.
-    hovered: Hovered,
+    hovered: Marked,
 }
 
 impl<P> LiveScene<P> {
     /// A replacement picture begins with no choice made in it.
-    fn new(prepared: P, catalogue: Vec<CatalogueEntry>) -> Self {
+    fn new(prepared: P, catalogue: Vec<CatalogueEntry>, faces: FaceNames) -> Self {
         Self {
             prepared,
             catalogue,
-            selection: PickId::NOTHING,
-            hovered: Hovered::Nothing,
+            faces,
+            selection: Selection::Nothing,
+            hovered: Marked::Nothing,
         }
     }
 
@@ -732,11 +743,6 @@ impl<P> LiveScene<P> {
             .collect()
     }
 
-    /// The identifiers its rows are described by.
-    fn identities(&self) -> Vec<String> {
-        self.catalogue.iter().map(identity_of).collect()
-    }
-
     /// What is chosen: where it sits in this picture, and what it is.
     ///
     /// Two lookups and no search: the pick names a definition of this snapshot
@@ -746,7 +752,7 @@ impl<P> LiveScene<P> {
     /// Both halves come from the same resolution, so the row a list shows as
     /// chosen and the facts an inspector shows about it cannot disagree.
     fn chosen<'a>(&'a self, snapshot: &RenderSnapshot) -> Option<(usize, &'a CatalogueEntry)> {
-        let definition = snapshot.definition(self.selection)?;
+        let definition = self.selection.owning_definition(snapshot)?;
         Some((definition, self.catalogue.get(definition)?))
     }
 }
@@ -764,10 +770,10 @@ impl<P> LiveScene<P> {
 fn commit_scene<P>(
     scene: &mut LiveScene<P>,
     camera: &mut ViewportInput,
-    next: Result<(ViewportInput, P, Vec<CatalogueEntry>)>,
+    next: Result<(ViewportInput, P, Vec<CatalogueEntry>, FaceNames)>,
 ) -> Result<()> {
-    let (framed, prepared, catalogue) = next?;
-    *scene = LiveScene::new(prepared, catalogue);
+    let (framed, prepared, catalogue, faces) = next?;
+    *scene = LiveScene::new(prepared, catalogue, faces);
     *camera = framed;
     Ok(())
 }
@@ -781,7 +787,7 @@ fn selection_bounds<P>(
     scene: &LiveScene<P>,
     snapshot: &RenderSnapshot,
 ) -> Option<([f32; 3], [f32; 3])> {
-    snapshot.bounds_of(scene.selection)
+    scene.selection.bounds(snapshot)
 }
 
 /// Shows what is chosen, and changes nothing else.
@@ -820,18 +826,8 @@ fn frame_scene(snapshot: &RenderSnapshot, camera: &mut ViewportInput) -> Result<
 ///
 /// Given the one field it may change and nothing else, so pointing at
 /// something cannot choose it however this is called.
-fn hover(hovered: &mut Hovered, snapshot: &RenderSnapshot, answer: Hovered) -> bool {
-    let answer = match answer {
-        Hovered::Nothing => Hovered::Nothing,
-        Hovered::Definition(pick) => match snapshot.definition(pick) {
-            Some(_) => Hovered::Definition(pick),
-            None => Hovered::Nothing,
-        },
-        Hovered::Face(face) => match snapshot.definition_of_face(face) {
-            Some(_) => Hovered::Face(face),
-            None => Hovered::Nothing,
-        },
-    };
+fn hover(hovered: &mut Marked, snapshot: &RenderSnapshot, answer: Marked) -> bool {
+    let answer = answer.known_to(snapshot);
     if answer == *hovered {
         return false;
     }
@@ -865,6 +861,136 @@ fn hover_request(row: Option<usize>, interface_has_pointer: bool, question: Hove
         Hover::Unchanged => HoverRequest::Unchanged,
         Hover::Cleared => HoverRequest::Clear,
         Hover::At(x, y) => HoverRequest::Pixel(x, y),
+    }
+}
+
+/// The text one frame of the interface borrows.
+///
+/// Owned here because a panel borrows what it shows and cannot outlive the
+/// frame, and built from the selection and the catalogue alone: every string
+/// in it is a durable identifier or a display fact the loader sanitised.
+struct Words {
+    identities: Vec<String>,
+    faces: Vec<FaceWords>,
+}
+
+/// One durable face name, in the words a person reads.
+///
+/// Portable terms only. There is no field here for a face ordinal, a mesh
+/// index, a handle or a session, because there is nothing true to put in one:
+/// what names a face is the reference the document stores.
+struct FaceWords {
+    reference: String,
+    owner: String,
+    producer_feature: String,
+    expected_kind: String,
+    role: String,
+    rule: String,
+}
+
+/// The identifier each row is described by.
+fn identities_of(catalogue: &[CatalogueEntry]) -> Vec<String> {
+    catalogue.iter().map(identity_of).collect()
+}
+
+/// What the interface borrows this frame.
+fn words_of(
+    selection: &Selection,
+    catalogue: &[CatalogueEntry],
+    snapshot: &RenderSnapshot,
+) -> Words {
+    let faces = match selection {
+        Selection::Face(face) if selection.owning_definition(snapshot).is_some() => {
+            face.meanings().iter().map(face_words).collect()
+        }
+        _ => Vec::new(),
+    };
+    Words {
+        identities: identities_of(catalogue),
+        faces,
+    }
+}
+
+/// One stored reference, said in the document's own terms.
+fn face_words(meaning: &FaceMeaning) -> FaceWords {
+    FaceWords {
+        reference: meaning.reference.to_string(),
+        owner: meaning.owner.to_string(),
+        producer_feature: meaning.producer_feature.to_string(),
+        expected_kind: meaning.expected_kind.as_str().to_owned(),
+        role: describe_role(&meaning.output_role),
+        rule: describe_rule(&meaning.selection),
+    }
+}
+
+fn face_name(words: &FaceWords) -> ferritecad_ui::FaceName<'_> {
+    ferritecad_ui::FaceName {
+        reference: &words.reference,
+        owner: &words.owner,
+        producer_feature: &words.producer_feature,
+        expected_kind: &words.expected_kind,
+        role: &words.role,
+        rule: &words.rule,
+    }
+}
+
+/// What a stored role says, as a sentence.
+///
+/// The document's own vocabulary, spelled out. A role names what a face *is* –
+/// the end cap of this extrusion, the side raised from that sketch segment –
+/// and every part of that sentence is durable.
+fn describe_role(role: &SemanticRole) -> String {
+    match role {
+        SemanticRole::ExtrudeCap { side } => match side {
+            CapSide::Start => "Extrusion cap, start".to_owned(),
+            CapSide::End => "Extrusion cap, end".to_owned(),
+            other => format!("Extrusion cap, {other:?}"),
+        },
+        SemanticRole::ExtrudeSide { profile_segment } => {
+            format!("Side raised from profile segment {profile_segment}")
+        }
+        SemanticRole::SketchSegment { segment } => format!("Sketch segment {segment}"),
+        SemanticRole::FilletFace { source_edge } => format!("Fillet of edge {source_edge}"),
+        other => format!("{other:?}"),
+    }
+}
+
+/// What a stored selection rule says.
+fn describe_rule(rule: &SelectionRule) -> String {
+    match rule {
+        SelectionRule::Exact => "Exactly this one".to_owned(),
+        SelectionRule::AllDerivedFrom { ancestor } => {
+            format!("Everything derived from {ancestor}")
+        }
+        other => format!("{other:?}"),
+    }
+}
+
+/// What the read-only inspector shows about what is chosen.
+///
+/// One resolution for both halves of the interface: the row a list marks and
+/// the facts shown beside it come from the same selection, so they cannot
+/// describe different things. A chosen face is described as a face; anything
+/// else is described as the definition it is.
+fn inspected<'a>(
+    selection: &Selection,
+    catalogue: &'a [CatalogueEntry],
+    identities: &'a [String],
+    faces: &'a [ferritecad_ui::FaceName<'a>],
+    snapshot: &RenderSnapshot,
+) -> Option<Selected<'a>> {
+    let definition = selection.owning_definition(snapshot)?;
+    let entry = catalogue.get(definition)?;
+    let described = describe(entry, identities.get(definition)?);
+    match (selection, described) {
+        (Selection::Face(_), Selected::Body { name, object }) => Some(Selected::Face {
+            name,
+            object,
+            names: faces,
+        }),
+        // An imported definition has no durable face names, so a face of one
+        // is never chosen as a face and never reaches here.
+        (_, described) => Some(described),
     }
 }
 
@@ -1265,9 +1391,9 @@ impl App {
             return;
         };
 
-        match Self::pick_at(live, self.input.camera(), x as f32, y as f32) {
-            Ok(pick) => {
-                let chosen = selection_from(pick, live.scene.prepared.snapshot());
+        match Self::hit_at(live, self.input.camera(), x as f32, y as f32) {
+            Ok(hit) => {
+                let chosen = selection_at(hit, live.scene.prepared.snapshot(), &live.scene.faces);
                 if chosen != live.scene.selection {
                     live.scene.selection = chosen;
                     self.input.request_redraw();
@@ -1335,12 +1461,12 @@ impl App {
                 .prepared
                 .snapshot()
                 .pick_of(row)
-                .map(Hovered::Definition),
+                .map(Marked::Definition),
             HoverRequest::Pixel(x, y) => {
                 // One offscreen frame, and only because the pointer moved. A
                 // pixel is the only thing that knows which face it came from.
                 match Self::hit_at(live, self.input.camera(), x, y) {
-                    Ok(hit) => Some(Hovered::Face(hit.face())),
+                    Ok(hit) => Some(Marked::Face(hit.face())),
                     Err(error) => {
                         eprintln!("ferritecad: {error}");
                         return;
@@ -1349,7 +1475,7 @@ impl App {
             }
             // Away from the model, over a panel, or in the middle of a
             // gesture: whatever was under the pointer is not any more.
-            HoverRequest::Clear => Some(Hovered::Nothing),
+            HoverRequest::Clear => Some(Marked::Nothing),
             // Nothing moved, so nothing changed.
             HoverRequest::Unchanged => None,
         };
@@ -1364,15 +1490,6 @@ impl App {
         ) {
             self.input.request_redraw();
         }
-    }
-
-    /// Reads one pixel of an offscreen frame drawn at the window's camera.
-    ///
-    /// One place, used by the click and by the pointer alike: identities are
-    /// not written on the path a window takes, so both questions are answered
-    /// the same way and neither pays for the other.
-    fn pick_at(live: &mut Live, camera: &Camera, x: f32, y: f32) -> Result<PickId> {
-        Ok(Self::hit_at(live, camera, x, y)?.definition())
     }
 
     /// Reads one pixel, and both answers about it.
@@ -1391,8 +1508,8 @@ impl App {
         let frame = live.renderer.render(
             &live.scene.prepared,
             camera,
-            PickId::NOTHING,
-            Hovered::Nothing,
+            Marked::Nothing,
+            Marked::Nothing,
         )?;
         Ok(frame.hit_at(x, y))
     }
@@ -1533,7 +1650,7 @@ impl App {
             window,
             renderer,
             surface: window_surface,
-            scene: LiveScene::new(prepared, Vec::new()),
+            scene: LiveScene::new(prepared, Vec::new(), FaceNames::default()),
             egui,
             egui_state,
             egui_renderer,
@@ -1566,13 +1683,26 @@ impl Live {
             egui_renderer,
         } = self;
 
-        // What each definition is, in the words a panel is allowed to use.
-        // The identities are owned because `Selected` borrows them, and they
-        // must outlive the frame they are drawn in.
-        let identities = scene.identities();
+        // What each definition is, and what the document calls the chosen
+        // face if one is chosen, in the words a panel is allowed to use. Owned
+        // because `Selected` borrows them and they must outlive the frame.
+        let words = words_of(
+            &scene.selection,
+            &scene.catalogue,
+            scene.prepared.snapshot(),
+        );
+        let face_names: Vec<ferritecad_ui::FaceName<'_>> =
+            words.faces.iter().map(face_name).collect();
         // One answer for both sides of the choice: the row a list marks and
         // the facts an inspector shows come from the same resolution.
-        let (definitions, chosen_row) = scene.view(&identities, scene.prepared.snapshot());
+        let (definitions, chosen_row) = scene.view(&words.identities, scene.prepared.snapshot());
+        let described = inspected(
+            &scene.selection,
+            &scene.catalogue,
+            &words.identities,
+            &face_names,
+            scene.prepared.snapshot(),
+        );
 
         let Some(frame) = surface.begin(renderer)? else {
             // No area, nobody watching, or the compositor was busy. None of
@@ -1582,7 +1712,7 @@ impl Live {
         let frame = frame.draw_scene(
             &scene.prepared,
             input.camera(),
-            scene.selection,
+            scene.selection.marked(),
             scene.hovered,
         )?;
 
@@ -1606,10 +1736,7 @@ impl Live {
             // Read-only, and the only place the choice is described. What it
             // is allowed to say is decided by `Selected`, which cannot name
             // anything that means something only to this frame.
-            ferritecad_ui::selection_inspector(
-                ui,
-                chosen_row.and_then(|row| definitions.get(row)).copied(),
-            );
+            ferritecad_ui::selection_inspector(ui, described);
         });
         // Asked after the pass, when egui knows the areas it just laid out.
         // `EventResponse::consumed` deliberately means something narrower for
@@ -1766,8 +1893,11 @@ fn named_view(key: &Key) -> Option<StandardView> {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, reason = "a gate that cannot fail is not a gate")]
 mod tests {
     use std::time::Duration;
+
+    use ferritecad_viewport::PickId;
 
     use super::*;
 
@@ -1785,6 +1915,7 @@ mod tests {
 
     fn loaded(snapshot: RenderSnapshot) -> LoadedScene {
         LoadedScene {
+            faces: FaceNames::default(),
             snapshot,
             catalogue: Vec::new(),
         }
@@ -1962,7 +2093,7 @@ mod tests {
         // call a document ready before the frame that put it there.
         let outcome = if loads.accepts(generation) {
             match prepare_load(input, result, |_| Ok(())) {
-                Ok((updated, (), _)) => {
+                Ok((updated, (), _, _)) => {
                     *input = updated;
                     Ok(())
                 }
@@ -2407,12 +2538,15 @@ mod tests {
             .first()
             .expect("the picture draws something")
             .pick;
-        assert_eq!(selection_from(something, &snapshot), something);
+        assert_eq!(
+            Selection::definition(something, &snapshot),
+            Selection::Definition(something)
+        );
 
         // The background is nothing, and that is how a person unchooses.
         assert_eq!(
-            selection_from(PickId::NOTHING, &snapshot),
-            PickId::NOTHING,
+            Selection::definition(PickId::NOTHING, &snapshot),
+            Selection::Nothing,
             "clicking away from the model kept the old choice"
         );
     }
@@ -2431,10 +2565,13 @@ mod tests {
             .first()
             .expect("the picture draws something")
             .pick;
-        assert_eq!(selection_from(chosen, &before), chosen);
         assert_eq!(
-            selection_from(chosen, &after),
-            PickId::NOTHING,
+            Selection::definition(chosen, &before),
+            Selection::Definition(chosen)
+        );
+        assert_eq!(
+            Selection::definition(chosen, &after),
+            Selection::Nothing,
             "a choice made in the previous document was applied to this one"
         );
     }
@@ -2450,17 +2587,22 @@ mod tests {
         let old = LiveScene {
             prepared: (),
             catalogue: vec![a_body()],
-            selection: chosen,
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Definition(chosen),
+            hovered: Marked::Nothing,
         };
-        assert_eq!(old.selection, chosen, "the gate began with no choice");
+        assert_eq!(
+            old.selection,
+            Selection::Definition(chosen),
+            "the gate began with no choice"
+        );
 
         // A second document can produce byte-identical geometry and therefore
         // the same deterministic snapshot identity while its catalogue names
         // another object. Replacing all three pieces through the constructor
         // is what prevents the old raw definition number from retargeting.
-        let replacement = LiveScene::new((), vec![a_body()]);
-        assert_eq!(replacement.selection, PickId::NOTHING);
+        let replacement = LiveScene::new((), vec![a_body()], FaceNames::default());
+        assert_eq!(replacement.selection, Selection::Nothing);
     }
 
     #[test]
@@ -2475,8 +2617,9 @@ mod tests {
         let mut scene = LiveScene {
             prepared: (),
             catalogue: vec![mine.clone()],
-            selection: chosen,
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Definition(chosen),
+            hovered: Marked::Nothing,
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -2492,7 +2635,7 @@ mod tests {
         )
         .expect_err("a failed load must not commit a picture");
         assert!(error.to_string().contains("not a document"));
-        assert_eq!(scene.selection, chosen);
+        assert_eq!(scene.selection, Selection::Definition(chosen));
         assert_eq!(scene.catalogue, vec![mine]);
         assert_eq!(*camera.camera(), framing);
     }
@@ -2508,8 +2651,9 @@ mod tests {
         let mut scene = LiveScene {
             prepared: (),
             catalogue: vec![a_body()],
-            selection: chosen,
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Definition(chosen),
+            hovered: Marked::Nothing,
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -2521,14 +2665,14 @@ mod tests {
         commit_scene(
             &mut scene,
             &mut camera,
-            Ok((framed, (), vec![arriving.clone()])),
+            Ok((framed, (), vec![arriving.clone()], FaceNames::default())),
         )
         .expect("a load that arrived commits");
 
         // All four together: the picture, what its parts are, the choice made
         // in the old one, and the camera that frames the new one.
         assert_eq!(scene.catalogue, vec![arriving]);
-        assert_eq!(scene.selection, PickId::NOTHING);
+        assert_eq!(scene.selection, Selection::Nothing);
         assert_eq!(camera.camera().width(), 640);
     }
 
@@ -2540,12 +2684,15 @@ mod tests {
         let scene = LiveScene {
             prepared: (),
             catalogue: vec![mine.clone()],
-            selection: picture
-                .draws()
-                .first()
-                .expect("the picture draws something")
-                .pick,
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Definition(
+                picture
+                    .draws()
+                    .first()
+                    .expect("the picture draws something")
+                    .pick,
+            ),
+            hovered: Marked::Nothing,
         };
 
         // Two lookups and no search: this snapshot names the definition, this
@@ -2566,8 +2713,9 @@ mod tests {
         let short = LiveScene {
             prepared: (),
             catalogue: Vec::new(),
+            faces: FaceNames::default(),
             selection: scene.selection,
-            hovered: Hovered::Nothing,
+            hovered: Marked::Nothing,
         };
         assert_eq!(short.chosen(&picture), None);
     }
@@ -2584,8 +2732,9 @@ mod tests {
         let mut scene = LiveScene {
             prepared: (),
             catalogue: vec![a_body()],
-            selection: chosen,
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Definition(chosen),
+            hovered: Marked::Nothing,
         };
 
         // Pointing at the definition that is already chosen: a question about
@@ -2593,32 +2742,36 @@ mod tests {
         assert!(hover(
             &mut scene.hovered,
             &picture,
-            Hovered::Definition(chosen)
+            Marked::Definition(chosen)
         ));
-        assert_eq!(scene.hovered, Hovered::Definition(chosen));
-        assert_eq!(scene.selection, chosen, "pointing at something chose it");
+        assert_eq!(scene.hovered, Marked::Definition(chosen));
+        assert_eq!(
+            scene.selection,
+            Selection::Definition(chosen),
+            "pointing at something chose it"
+        );
 
         // Asking the same thing again changes nothing, so nothing asks for a
         // frame that would draw the picture that is already on screen.
         assert!(
-            !hover(&mut scene.hovered, &picture, Hovered::Definition(chosen)),
+            !hover(&mut scene.hovered, &picture, Marked::Definition(chosen)),
             "the same question was treated as news"
         );
 
         // Away from the model: the question is answered with nothing, and the
         // choice survives it.
-        assert!(hover(&mut scene.hovered, &picture, Hovered::Nothing));
-        assert_eq!(scene.hovered, Hovered::Nothing);
-        assert_eq!(scene.selection, chosen);
+        assert!(hover(&mut scene.hovered, &picture, Marked::Nothing));
+        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(scene.selection, Selection::Definition(chosen));
 
         // A question about a picture that has been replaced marks nothing in
         // this one, however plausible its number looks.
         assert!(!hover(
             &mut scene.hovered,
             &other,
-            Hovered::Definition(chosen)
+            Marked::Definition(chosen)
         ));
-        assert_eq!(scene.hovered, Hovered::Nothing);
+        assert_eq!(scene.hovered, Marked::Nothing);
     }
 
     #[test]
@@ -2692,26 +2845,302 @@ mod tests {
         let mut scene = LiveScene {
             prepared: (),
             catalogue: entries.clone(),
-            selection: PickId::NOTHING,
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Nothing,
+            hovered: Marked::Nothing,
         };
         assert!(hover(
             &mut scene.hovered,
             &picture,
-            Hovered::Definition(picture.pick_of(first).expect("a row"))
+            Marked::Definition(picture.pick_of(first).expect("a row"))
         ));
         assert!(hover(
             &mut scene.hovered,
             &picture,
-            Hovered::Definition(by_row)
+            Marked::Definition(by_row)
         ));
-        assert_eq!(scene.hovered, Hovered::Definition(by_row));
-        assert_eq!(scene.selection, PickId::NOTHING);
+        assert_eq!(scene.hovered, Marked::Definition(by_row));
+        assert_eq!(scene.selection, Selection::Nothing);
         assert_eq!(
             scene.chosen(&picture),
             None,
             "a question filled the inspector"
         );
+    }
+
+    /// The committed plate, loaded exactly as the viewer loads a document.
+    fn plate_scene() -> (tempfile::TempDir, LoadedScene) {
+        use ferritecad_kernel::mock::MockKernel;
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("plate.fcad");
+        std::fs::copy(ferritecad_fixtures::plate_source(), &path).expect("copies the fixture");
+        let scene = snapshot_of(
+            &path,
+            &mut MockKernel::new(),
+            |_: &mut MockKernel, _: &[u8]| Err(CadError::unsupported("the plate holds no imports")),
+            &ferritecad_kernel::TessellationParams::default(),
+            &ferritecad_kernel::OperationContext::default(),
+        )
+        .expect("the committed plate loads");
+        (directory, scene)
+    }
+
+    /// A renderer, or a reason this machine cannot run a pixel gate.
+    macro_rules! renderer_or_skip {
+        () => {
+            match Renderer::new() {
+                Ok(renderer) => renderer,
+                Err(reason) if reason.kind() == ferritecad_types::ErrorKind::Unsupported => {
+                    eprintln!("skipped: {reason}");
+                    return;
+                }
+                Err(reason) => panic!("a renderer failed after adapter discovery: {reason}"),
+            }
+        };
+    }
+
+    #[test]
+    fn clicking_a_named_face_of_the_plate_selects_that_face_and_says_what_it_is() {
+        let mut renderer = renderer_or_skip!();
+        let (_directory, scene) = plate_scene();
+        let snapshot = std::sync::Arc::new(scene.snapshot.clone());
+        let prepared = renderer
+            .prepare(std::sync::Arc::clone(&snapshot))
+            .expect("uploads");
+
+        let mut camera = Camera::new();
+        camera.resize(160, 160);
+        camera
+            .frame(snapshot.bounds().expect("the plate has an extent"))
+            .expect("frames the plate");
+        // Looked at from a corner, so more than one face of the plate is on
+        // screen: a gate that saw only the face it clicked could not tell
+        // "this face" from "this body".
+        camera.orbit(0.7, 0.6);
+        let plain = renderer
+            .render(&prepared, &camera, Marked::Nothing, Marked::Nothing)
+            .expect("draws");
+
+        // A pixel of the plate, and what the frame says is under it.
+        let drawn: Vec<(u32, u32)> = (0..plain.height())
+            .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+            .filter(|(x, y)| plain.pick_at(*x, *y) != PickId::NOTHING)
+            .collect();
+        assert!(drawn.len() > 200, "the plate is drawn");
+        let hit = plain.hit_at(drawn[0].0, drawn[0].1);
+
+        // The defect: this face is named by the document, so clicking it must
+        // choose the face and not merely the body it is part of.
+        let chosen = selection_at(hit, &snapshot, &scene.faces);
+        let Selection::Face(face) = &chosen else {
+            panic!("clicking a named face of the plate chose {chosen:?}");
+        };
+        assert_eq!(face.face(), hit.face());
+        assert!(!face.meanings().is_empty());
+
+        // What is marked is that face, in the placements of its definition,
+        // and not the rest of the definition.
+        let selected = renderer
+            .render(&prepared, &camera, chosen.marked(), Marked::Nothing)
+            .expect("draws");
+        let mut same_face = 0usize;
+        let mut same_definition = 0usize;
+        for (x, y) in &drawn {
+            let changed = selected.colour_at(*x, *y) != plain.colour_at(*x, *y);
+            if plain.hit_at(*x, *y).face() == hit.face() {
+                assert!(changed, "the chosen face was left alone at {x},{y}");
+                same_face += 1;
+            } else {
+                assert!(!changed, "choosing one face changed another at {x},{y}");
+                same_definition += 1;
+            }
+        }
+        assert!(
+            same_face > 20 && same_definition > 20,
+            "the gate must see both the chosen face and the rest of the body"
+        );
+
+        // And what the inspector says about it is the document's own words.
+        let words = words_of(&chosen, &scene.catalogue, &snapshot);
+        let face_names: Vec<ferritecad_ui::FaceName<'_>> =
+            words.faces.iter().map(face_name).collect();
+        let inspected = inspected(
+            &chosen,
+            &scene.catalogue,
+            &words.identities,
+            &face_names,
+            &snapshot,
+        )
+        .expect("a chosen face is described");
+        let rows = inspected.rows();
+        let shown = format!("{rows:?}");
+        assert!(rows.iter().any(|(label, _)| *label == "Role"));
+        assert!(rows.iter().any(|(label, _)| *label == "Reference"));
+        for forbidden in ["pick", "session", "handle", "mesh", "ordinal", "index"] {
+            assert!(
+                !shown.to_lowercase().contains(forbidden),
+                "the inspector said {forbidden}: {shown}"
+            );
+        }
+    }
+
+    /// The plate, with one of its named faces chosen.
+    fn plate_with_a_chosen_face() -> (tempfile::TempDir, LoadedScene, Selection) {
+        let (directory, scene) = plate_scene();
+        let pick = scene.snapshot.pick_of(0).expect("the plate is drawn");
+        let face = scene.snapshot.face_of(0, 0).expect("numbered");
+        let chosen = Selection::at(pick, face, &scene.snapshot, &scene.faces);
+        assert!(
+            matches!(chosen, Selection::Face(_)),
+            "the fixture must begin with a face chosen"
+        );
+        (directory, scene, chosen)
+    }
+
+    #[test]
+    fn a_row_chooses_the_definition_and_never_the_face_under_the_pointer() {
+        let (_directory, scene, chosen) = plate_with_a_chosen_face();
+        let mut selection = chosen;
+        let mut input = ViewportInput::new();
+        let _ = input.take_redraw();
+
+        select_definition_row(&mut selection, &scene.snapshot, &mut input, 0);
+
+        // The same part, chosen as a part. A list of definitions holds no
+        // faces, so pressing a row cannot mean "that face".
+        assert_eq!(
+            selection,
+            Selection::Definition(scene.snapshot.pick_of(0).expect("drawn"))
+        );
+        assert!(input.take_redraw(), "the changed highlight was not drawn");
+    }
+
+    #[test]
+    fn framing_uses_the_face_when_a_face_is_chosen_and_the_part_when_it_is_not() {
+        let (_directory, scene, chosen) = plate_with_a_chosen_face();
+        let definition = Selection::Definition(scene.snapshot.pick_of(0).expect("drawn"));
+
+        let face_bounds = chosen.bounds(&scene.snapshot).expect("the face is drawn");
+        let part_bounds = definition
+            .bounds(&scene.snapshot)
+            .expect("the part is drawn");
+        assert_ne!(
+            face_bounds, part_bounds,
+            "a chosen face must not be framed as the whole part"
+        );
+
+        // And the camera actually goes to the smaller of the two.
+        let mut looking_at_the_face = ViewportInput::new();
+        looking_at_the_face.resize(800, 600);
+        let mut scene_with_face = LiveScene::new((), Vec::new(), FaceNames::default());
+        scene_with_face.selection = chosen;
+        assert!(
+            frame_selection(&scene_with_face, &scene.snapshot, &mut looking_at_the_face)
+                .expect("frames"),
+            "framing a chosen face did nothing"
+        );
+
+        let mut looking_at_the_part = ViewportInput::new();
+        looking_at_the_part.resize(800, 600);
+        let mut scene_with_part = LiveScene::new((), Vec::new(), FaceNames::default());
+        scene_with_part.selection = definition;
+        assert!(
+            frame_selection(&scene_with_part, &scene.snapshot, &mut looking_at_the_part)
+                .expect("frames")
+        );
+        assert_ne!(
+            looking_at_the_face.camera().view_projection(),
+            looking_at_the_part.camera().view_projection(),
+            "framing a face and framing its part put the camera in one place"
+        );
+    }
+
+    #[test]
+    fn a_chosen_face_survives_a_failed_open_and_not_a_successful_one() {
+        let (_directory, scene, chosen) = plate_with_a_chosen_face();
+        let mut live = LiveScene::new((), vec![a_body()], FaceNames::default());
+        live.selection = chosen.clone();
+        live.hovered = Marked::Face(scene.snapshot.face_of(0, 1).expect("numbered"));
+        let mut camera = ViewportInput::new();
+        camera.resize(800, 600);
+
+        // A load that failed changes nothing at all, including which face is
+        // chosen and what the pointer was over.
+        commit_scene(&mut live, &mut camera, Err(CadError::input("no")))
+            .expect_err("a failed load commits nothing");
+        assert_eq!(live.selection, chosen);
+        assert_eq!(
+            live.hovered,
+            Marked::Face(scene.snapshot.face_of(0, 1).expect("numbered"))
+        );
+
+        // A load that arrived replaces all of it at once.
+        let mut framed = ViewportInput::new();
+        framed.resize(640, 480);
+        commit_scene(
+            &mut live,
+            &mut camera,
+            Ok((framed, (), vec![a_body()], FaceNames::default())),
+        )
+        .expect("a load that arrived commits");
+        assert_eq!(live.selection, Selection::Nothing);
+        assert_eq!(live.hovered, Marked::Nothing);
+    }
+
+    #[test]
+    fn a_face_of_the_replaced_picture_chooses_nothing_in_the_next_one() {
+        let (_directory, scene, _) = plate_with_a_chosen_face();
+        let stale = scene.snapshot.face_of(0, 0).expect("numbered");
+
+        // Another picture entirely, with no durable face names at all.
+        let picture = distant_scene();
+        let pick = picture.pick_of(0).expect("drawn");
+        assert_eq!(
+            Selection::at(pick, stale, &picture, &FaceNames::default()),
+            Selection::Definition(pick),
+            "a face of the replaced picture attached itself to the new one"
+        );
+    }
+
+    #[test]
+    fn the_inspector_and_the_marked_pixels_describe_one_selection() {
+        let (_directory, scene, chosen) = plate_with_a_chosen_face();
+        let words = words_of(&chosen, &scene.catalogue, &scene.snapshot);
+        let face_names: Vec<ferritecad_ui::FaceName<'_>> =
+            words.faces.iter().map(face_name).collect();
+        let described = inspected(
+            &chosen,
+            &scene.catalogue,
+            &words.identities,
+            &face_names,
+            &scene.snapshot,
+        )
+        .expect("a chosen face is described");
+
+        // The inspector describes a face, and the renderer is told to mark a
+        // face: one selection, two views of it.
+        assert!(matches!(described, Selected::Face { .. }));
+        let Selection::Face(face) = &chosen else {
+            panic!("the fixture chose no face");
+        };
+        assert_eq!(chosen.marked(), Marked::Face(face.face()));
+
+        // Choosing the part instead moves both views together.
+        let definition = Selection::Definition(scene.snapshot.pick_of(0).expect("drawn"));
+        let words = words_of(&definition, &scene.catalogue, &scene.snapshot);
+        let face_names: Vec<ferritecad_ui::FaceName<'_>> =
+            words.faces.iter().map(face_name).collect();
+        let described = inspected(
+            &definition,
+            &scene.catalogue,
+            &words.identities,
+            &face_names,
+            &scene.snapshot,
+        )
+        .expect("a chosen definition is described");
+        assert!(matches!(described, Selected::Body { .. }));
+        assert!(matches!(definition.marked(), Marked::Definition(_)));
     }
 
     #[test]
@@ -2728,26 +3157,31 @@ mod tests {
         let mut scene = LiveScene {
             prepared: (),
             catalogue: vec![a_body()],
-            selection: chosen,
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Definition(chosen),
+            hovered: Marked::Nothing,
         };
 
         // The face a pixel of this picture would report.
         let face = FacePickId::from_raw(1, &picture);
         assert_eq!(picture.definition_of_face(face), Some(0));
 
-        assert!(hover(&mut scene.hovered, &picture, Hovered::Face(face)));
-        assert_eq!(scene.hovered, Hovered::Face(face));
-        assert_eq!(scene.selection, chosen, "pointing at a face chose it");
+        assert!(hover(&mut scene.hovered, &picture, Marked::Face(face)));
+        assert_eq!(scene.hovered, Marked::Face(face));
+        assert_eq!(
+            scene.selection,
+            Selection::Definition(chosen),
+            "pointing at a face chose it"
+        );
 
         // A face and the definition it belongs to are different answers, and
         // moving between them is news even though the part is the same.
         assert!(hover(
             &mut scene.hovered,
             &picture,
-            Hovered::Definition(chosen)
+            Marked::Definition(chosen)
         ));
-        assert_eq!(scene.hovered, Hovered::Definition(chosen));
+        assert_eq!(scene.hovered, Marked::Definition(chosen));
 
         // A face of a picture that has been replaced marks nothing here,
         // however plausible its number looks: the other picture numbers its
@@ -2755,10 +3189,10 @@ mod tests {
         assert!(hover(
             &mut scene.hovered,
             &other,
-            Hovered::Face(FacePickId::from_raw(1, &picture))
+            Marked::Face(FacePickId::from_raw(1, &picture))
         ));
-        assert_eq!(scene.hovered, Hovered::Nothing);
-        assert_eq!(scene.selection, chosen);
+        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(scene.selection, Selection::Definition(chosen));
     }
 
     #[test]
@@ -2772,8 +3206,9 @@ mod tests {
         let mut scene = LiveScene {
             prepared: (),
             catalogue: vec![a_body()],
-            selection: chosen,
-            hovered: Hovered::Definition(chosen),
+            faces: FaceNames::default(),
+            selection: Selection::Definition(chosen),
+            hovered: Marked::Definition(chosen),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -2782,17 +3217,21 @@ mod tests {
         // what the pointer was over.
         commit_scene(&mut scene, &mut camera, Err(CadError::input("no")))
             .expect_err("a failed load commits nothing");
-        assert_eq!(scene.hovered, Hovered::Definition(chosen));
-        assert_eq!(scene.selection, chosen);
+        assert_eq!(scene.hovered, Marked::Definition(chosen));
+        assert_eq!(scene.selection, Selection::Definition(chosen));
 
         // A load that arrived replaces all of it: the question belonged to the
         // previous picture as much as the answer did.
         let mut framed = ViewportInput::new();
         framed.resize(640, 480);
-        commit_scene(&mut scene, &mut camera, Ok((framed, (), vec![a_body()])))
-            .expect("a load that arrived commits");
-        assert_eq!(scene.hovered, Hovered::Nothing);
-        assert_eq!(scene.selection, PickId::NOTHING);
+        commit_scene(
+            &mut scene,
+            &mut camera,
+            Ok((framed, (), vec![a_body()], FaceNames::default())),
+        )
+        .expect("a load that arrived commits");
+        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(scene.selection, Selection::Nothing);
     }
 
     #[test]
@@ -2822,14 +3261,15 @@ mod tests {
         let mut scene = LiveScene {
             prepared: (),
             catalogue: entries.clone(),
-            selection: PickId::NOTHING,
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Nothing,
+            hovered: Marked::Nothing,
         };
 
         // Choosing from a list: the row becomes an identity by asking the
         // picture, and nothing constructs one out of a number.
         let pick = picture.pick_of(second).expect("the picture has that row");
-        scene.selection = pick;
+        scene.selection = Selection::Definition(pick);
         assert_eq!(scene.chosen(&picture), Some((second, &entries[second])));
 
         // Clicking the same definition in the viewport answers identically, so
@@ -2861,12 +3301,12 @@ mod tests {
                 .expect("places it");
         }
         let picture = builder.build();
-        let mut selection = PickId::NOTHING;
+        let mut selection = Selection::Nothing;
         let mut input = ViewportInput::new();
         let _ = input.take_redraw();
 
         select_definition_row(&mut selection, &picture, &mut input, 1);
-        assert_eq!(picture.definition(selection), Some(1));
+        assert_eq!(selection.owning_definition(&picture), Some(1));
         assert!(input.take_redraw(), "the changed highlight was not drawn");
         assert!(
             !input.take_redraw(),
@@ -2877,7 +3317,7 @@ mod tests {
         // are both no-ops, including at the redraw boundary.
         select_definition_row(&mut selection, &picture, &mut input, 1);
         select_definition_row(&mut selection, &picture, &mut input, 2);
-        assert_eq!(picture.definition(selection), Some(1));
+        assert_eq!(selection.owning_definition(&picture), Some(1));
         assert!(!input.take_redraw());
     }
 
@@ -2900,11 +3340,12 @@ mod tests {
         let scene = LiveScene {
             prepared: (),
             catalogue: vec![entry],
-            selection: PickId::NOTHING,
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Nothing,
+            hovered: Marked::Nothing,
         };
 
-        let identities = scene.identities();
+        let identities = identities_of(&scene.catalogue);
         let rows = scene.rows(&identities);
         assert_eq!(
             rows.len(),
@@ -2919,10 +3360,11 @@ mod tests {
         let twins = LiveScene {
             prepared: (),
             catalogue: vec![a_body(), a_body()],
-            selection: PickId::NOTHING,
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Nothing,
+            hovered: Marked::Nothing,
         };
-        let identities = twins.identities();
+        let identities = identities_of(&twins.catalogue);
         assert_eq!(twins.rows(&identities).len(), 2);
     }
 
@@ -2948,11 +3390,12 @@ mod tests {
         let mut scene = LiveScene {
             prepared: (),
             catalogue: entries.clone(),
-            selection: picture.pick_of(1).expect("the picture has that row"),
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Definition(picture.pick_of(1).expect("the picture has that row")),
+            hovered: Marked::Nothing,
         };
 
-        let identities = scene.identities();
+        let identities = identities_of(&scene.catalogue);
         let (rows, marked) = scene.view(&identities, &picture);
         assert_eq!(rows.len(), 2);
         assert_eq!(marked, Some(1), "the list marks no row for what is chosen");
@@ -2966,7 +3409,7 @@ mod tests {
         assert_eq!(rows[described.0], describe(&entries[1], &identities[1]));
 
         // And nothing chosen marks nothing, which is what the background does.
-        scene.selection = PickId::NOTHING;
+        scene.selection = Selection::Nothing;
         let (rows, marked) = scene.view(&identities, &picture);
         assert_eq!(marked, None, "an empty choice still marked a row");
         assert_eq!(rows.len(), 2, "the list emptied along with the choice");
@@ -2996,8 +3439,11 @@ mod tests {
         let scene = LiveScene {
             prepared: (),
             catalogue: vec![a_body()],
-            selection: picture.pick_of(mesh).expect("the picture has that row"),
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Definition(
+                picture.pick_of(mesh).expect("the picture has that row"),
+            ),
+            hovered: Marked::Nothing,
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -3025,7 +3471,7 @@ mod tests {
         // choosing it, and the borrow above is what makes that structural.
         assert_eq!(
             scene.selection,
-            picture.pick_of(mesh).expect("the picture has that row")
+            Selection::Definition(picture.pick_of(mesh).expect("the picture has that row"))
         );
     }
 
@@ -3052,10 +3498,11 @@ mod tests {
         let scene = LiveScene {
             prepared: (),
             catalogue: vec![a_body()],
-            selection: PickId::NOTHING,
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Nothing,
+            hovered: Marked::Nothing,
         };
-        let identities = scene.identities();
+        let identities = identities_of(&scene.catalogue);
         let (rows, marked) = scene.view(&identities, &picture);
 
         // One row for the one body, and nothing else offered.
@@ -3098,8 +3545,11 @@ mod tests {
         let scene = LiveScene {
             prepared: (),
             catalogue: vec![a_body(), a_body()],
-            selection: picture.pick_of(chosen).expect("the picture has that row"),
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Definition(
+                picture.pick_of(chosen).expect("the picture has that row"),
+            ),
+            hovered: Marked::Nothing,
         };
 
         let mut showing_choice = ViewportInput::new();
@@ -3127,7 +3577,7 @@ mod tests {
         // camera action, not a way of unchoosing.
         assert_eq!(
             scene.selection,
-            picture.pick_of(chosen).expect("the picture has that row")
+            Selection::Definition(picture.pick_of(chosen).expect("the picture has that row"))
         );
         assert_eq!(scene.chosen(&picture).map(|(row, _)| row), Some(chosen));
     }
@@ -3153,8 +3603,11 @@ mod tests {
         let scene = LiveScene {
             prepared: (),
             catalogue: vec![a_body()],
-            selection: picture.pick_of(only).expect("the picture has that row"),
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Definition(
+                picture.pick_of(only).expect("the picture has that row"),
+            ),
+            hovered: Marked::Nothing,
         };
         assert_eq!(selection_bounds(&scene, &picture), picture.bounds());
 
@@ -3200,8 +3653,9 @@ mod tests {
         let scene = LiveScene {
             prepared: (),
             catalogue: vec![a_body()],
-            selection: picture.pick_of(0).expect("the picture has that row"),
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Definition(picture.pick_of(0).expect("the picture has that row")),
+            hovered: Marked::Nothing,
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -3224,8 +3678,9 @@ mod tests {
         let empty = LiveScene {
             prepared: (),
             catalogue: vec![a_body()],
-            selection: PickId::NOTHING,
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Nothing,
+            hovered: Marked::Nothing,
         };
         for _ in 0..3 {
             assert!(!frame_selection(&empty, &picture, &mut camera).expect("no failure"));
@@ -3258,19 +3713,22 @@ mod tests {
         let mut scene = LiveScene {
             prepared: (),
             catalogue: vec![a_body()],
-            selection: picture
-                .draws()
-                .first()
-                .expect("the picture draws something")
-                .pick,
-            hovered: Hovered::Nothing,
+            faces: FaceNames::default(),
+            selection: Selection::Definition(
+                picture
+                    .draws()
+                    .first()
+                    .expect("the picture draws something")
+                    .pick,
+            ),
+            hovered: Marked::Nothing,
         };
         assert!(scene.chosen(&picture).is_some());
 
         // One value answers both halves, so the highlight and the inspector
         // cannot disagree about whether anything is chosen.
-        scene.selection = selection_from(PickId::NOTHING, &picture);
-        assert_eq!(scene.selection, PickId::NOTHING);
+        scene.selection = Selection::definition(PickId::NOTHING, &picture);
+        assert_eq!(scene.selection, Selection::Nothing);
         assert_eq!(scene.chosen(&picture), None);
     }
 
@@ -3316,8 +3774,9 @@ mod tests {
             let scene = LiveScene {
                 prepared: (),
                 catalogue: vec![entry.clone()],
-                selection: draw.pick,
-                hovered: Hovered::Nothing,
+                faces: FaceNames::default(),
+                selection: Selection::Definition(draw.pick),
+                hovered: Marked::Nothing,
             };
             assert_eq!(scene.chosen(&picture), Some((0, &entry)));
         }

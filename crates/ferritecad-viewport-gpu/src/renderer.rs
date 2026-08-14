@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use ferritecad_types::{CadError, Result};
-use ferritecad_viewport::{Camera, FacePickId, Hovered, PickId, RenderSnapshot, VERTEX_FLOATS};
+use ferritecad_viewport::{Camera, FacePickId, Marked, PickId, RenderSnapshot, VERTEX_FLOATS};
 use wgpu::util::DeviceExt as _;
 
 /// Linear, not sRGB. The snapshot's colours are linear because that is what the
@@ -55,6 +55,9 @@ struct GlobalsUniform {
     /// The identity to draw as selected, or zero for none. Zero is what the
     /// background reads as, and no definition is ever numbered zero.
     selected: u32,
+    /// The face to draw as selected, or zero. Never set beside `selected`:
+    /// choosing a face is choosing that face and not the part around it.
+    selected_face: u32,
     /// The face the pointer is over, or zero. A face of the picture, so the
     /// same face is marked in every placement of its definition.
     hovered_face: u32,
@@ -62,7 +65,6 @@ struct GlobalsUniform {
     /// selection because they are different states and a person must be able
     /// to tell which is which: one is a decision and the other is a question.
     hovered: u32,
-    padding: [u32; 1],
 }
 
 /// What a grid pass needs to know, and all it is allowed to know.
@@ -412,34 +414,29 @@ impl Renderer {
         &self,
         camera: &Camera,
         prepared: &PreparedSnapshot,
-        selected: PickId,
-        hovered: Hovered,
+        selected: Marked,
+        hovered: Marked,
     ) {
         // Every identity asked of the picture about to be drawn, and by the
         // same question. A number that named a definition of some other
         // picture would otherwise light up whichever one occupies it here.
         let snapshot = prepared.snapshot();
-        let known = |pick: PickId| match snapshot.definition(pick) {
-            Some(_) => pick.to_raw(),
-            None => PickId::NOTHING.to_raw(),
+        let raw = |mark: Marked| match mark.known_to(snapshot) {
+            Marked::Nothing => (PickId::NOTHING.to_raw(), FacePickId::NOTHING.to_raw()),
+            Marked::Definition(pick) => (pick.to_raw(), FacePickId::NOTHING.to_raw()),
+            Marked::Face(face) => (PickId::NOTHING.to_raw(), face.to_raw()),
         };
-        let (hovered_face, hovered) = match hovered {
-            Hovered::Nothing => (FacePickId::NOTHING.to_raw(), PickId::NOTHING.to_raw()),
-            Hovered::Definition(pick) => (FacePickId::NOTHING.to_raw(), known(pick)),
-            Hovered::Face(face) => match snapshot.definition_of_face(face) {
-                Some(_) => (face.to_raw(), PickId::NOTHING.to_raw()),
-                None => (FacePickId::NOTHING.to_raw(), PickId::NOTHING.to_raw()),
-            },
-        };
+        let (selected, selected_face) = raw(selected);
+        let (hovered, hovered_face) = raw(hovered);
         self.queue.write_buffer(
             &self.globals,
             0,
             bytemuck::bytes_of(&GlobalsUniform {
                 view_projection: camera.view_projection(),
-                selected: known(selected),
+                selected,
+                selected_face,
                 hovered_face,
                 hovered,
-                padding: [0; 1],
             }),
         );
     }
@@ -469,8 +466,8 @@ impl Renderer {
         &mut self,
         prepared: &PreparedSnapshot,
         camera: &Camera,
-        selected: PickId,
-        hovered: Hovered,
+        selected: Marked,
+        hovered: Marked,
         view: &wgpu::TextureView,
         format: wgpu::TextureFormat,
         width: u32,
@@ -761,8 +758,8 @@ impl Renderer {
         &mut self,
         prepared: &PreparedSnapshot,
         camera: &Camera,
-        selected: PickId,
-        hovered: Hovered,
+        selected: Marked,
+        hovered: Marked,
     ) -> Result<Frame> {
         self.require_own(prepared)?;
 
@@ -1539,8 +1536,8 @@ mod tests {
             .draw_into(
                 &prepared,
                 &camera,
-                PickId::NOTHING,
-                Hovered::Nothing,
+                Marked::Nothing,
+                Marked::Nothing,
                 &view,
                 format,
                 width,

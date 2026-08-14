@@ -37,15 +37,16 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use ferritecad_document::{
-    Document, ImportedDefinitionRef, ObjectPayload, ObjectRecord, StepImporter,
+    Document, EntityKind, ImportedDefinitionRef, ObjectPayload, ObjectRecord, SelectionRule,
+    SemanticRole, StepImporter, TopologyRef,
 };
 use ferritecad_eval::rebuild_cold;
 use ferritecad_exchange::{ColourSource, Import, Scene};
 use ferritecad_kernel::{
     GeometryKernel, KernelIdentity, OperationContext, ProgressSink, ShapeHandle, TessellationParams,
 };
-use ferritecad_types::{CadError, ImportedSourceId, ObjectId, Result, Transform};
-use ferritecad_viewport::{RenderSnapshot, SnapshotBuilder};
+use ferritecad_types::{CadError, ImportedSourceId, ObjectId, Result, StableEntityId, Transform};
+use ferritecad_viewport::{FacePickId, PickId, RenderSnapshot, SnapshotBuilder};
 use serde::{Deserialize, Serialize};
 
 /// A picture, and what each part of it is.
@@ -59,6 +60,188 @@ pub struct LoadedScene {
     pub snapshot: RenderSnapshot,
     /// What each packed mesh is, indexed the way the snapshot indexes them.
     pub catalogue: Vec<CatalogueEntry>,
+    /// What the document durably calls the faces of this picture, if
+    /// anything does.
+    pub faces: FaceNames,
+}
+
+/// What a document durably calls one face, in the document's own words.
+///
+/// Every field is a portable term the document already stores. There is no
+/// handle here, no session, no face ordinal and no traversal position: this
+/// is what a stored [`TopologyRef`] says, minus the geometric fallback, which
+/// is a hint for a person and never an identity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FaceMeaning {
+    /// The stored reference itself.
+    pub reference: StableEntityId,
+    /// The object holding the reference.
+    pub owner: ObjectId,
+    /// The feature whose output is named.
+    pub producer_feature: ObjectId,
+    /// What kind of entity the reference expects.
+    pub expected_kind: EntityKind,
+    /// What the named entity is, semantically.
+    pub output_role: SemanticRole,
+    /// How many entities the reference selects, and which.
+    pub selection: SelectionRule,
+}
+
+impl FaceMeaning {
+    fn of(reference: &TopologyRef) -> Self {
+        Self {
+            reference: reference.id,
+            owner: reference.owner,
+            producer_feature: reference.producer_feature,
+            expected_kind: reference.expected_kind,
+            output_role: reference.output_role.clone(),
+            selection: reference.selection.clone(),
+        }
+    }
+}
+
+/// Every durable name this document has for the faces of one picture.
+///
+/// Built while the rebuild's topology map and the tessellation's face handles
+/// are both in hand, which is the only moment they can be joined, and holding
+/// neither afterwards. A face nothing names has an empty list rather than an
+/// invented entry: a name that was not stored is not a name.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FaceNames {
+    /// Indexed by the picture's own face identity, minus one.
+    by_face: Vec<Vec<FaceMeaning>>,
+}
+
+impl FaceNames {
+    /// What the document calls this face, or nothing.
+    ///
+    /// Answered through the picture that issued the face, so a face of a
+    /// picture that has been replaced names nothing here however plausible
+    /// its number looks.
+    pub fn of(&self, face: FacePickId, snapshot: &RenderSnapshot) -> &[FaceMeaning] {
+        if snapshot.definition_of_face(face).is_none() {
+            return &[];
+        }
+        match (face.to_raw() as usize).checked_sub(1) {
+            Some(index) => self.by_face.get(index).map_or(&[], Vec::as_slice),
+            None => &[],
+        }
+    }
+}
+
+/// What is chosen in one picture, as one state.
+///
+/// Three states, not a pair of fields that can disagree. A face selection
+/// carries the face, the definition it belongs to and what the document calls
+/// it, all decided together by [`Selection::at`]; the fields are private, so a
+/// caller cannot assemble a face that belongs to one definition beside a
+/// definition it does not belong to.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum Selection {
+    #[default]
+    Nothing,
+    Definition(PickId),
+    Face(SelectedFace),
+}
+
+/// One chosen face: which face, of what, and what it is called.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectedFace {
+    face: FacePickId,
+    definition: PickId,
+    meanings: Vec<FaceMeaning>,
+}
+
+impl SelectedFace {
+    /// The transient identity of the face, for this picture only.
+    pub fn face(&self) -> FacePickId {
+        self.face
+    }
+
+    /// The definition it belongs to, in this picture.
+    pub fn definition(&self) -> PickId {
+        self.definition
+    }
+
+    /// Every stored reference that resolves exactly to this face, in the order
+    /// the document stores them. All of them: several references may name one
+    /// face, and choosing the first would be presenting storage order as a
+    /// decision about which name is right.
+    pub fn meanings(&self) -> &[FaceMeaning] {
+        &self.meanings
+    }
+}
+
+impl Selection {
+    /// What a click on one pixel chooses.
+    ///
+    /// A face only when the document has an exact durable name for it. A face
+    /// of an imported definition, a face of a native body nobody named, and a
+    /// face whose only references select families of several faces all fall
+    /// back to the definition, which is what this application could already
+    /// say honestly. Nothing that resolves in this picture chooses nothing.
+    pub fn at(
+        definition: PickId,
+        face: FacePickId,
+        snapshot: &RenderSnapshot,
+        names: &FaceNames,
+    ) -> Self {
+        let owner = snapshot.definition_of_face(face);
+        let meanings = names.of(face, snapshot);
+        // The pick and the face must be two statements about one pixel. They
+        // are read from one frame, so they already are; a disagreement means
+        // one of them is stale, and a selection built from the two would be
+        // about neither.
+        if !meanings.is_empty() && owner.is_some() && owner == snapshot.definition(definition) {
+            return Self::Face(SelectedFace {
+                face,
+                definition,
+                meanings: meanings.to_vec(),
+            });
+        }
+        Self::definition(definition, snapshot)
+    }
+
+    /// The definition a pick names, or nothing.
+    ///
+    /// What a list row chooses, and what a click on something with no durable
+    /// face name falls back to.
+    pub fn definition(pick: PickId, snapshot: &RenderSnapshot) -> Self {
+        match snapshot.definition(pick) {
+            Some(_) => Self::Definition(pick),
+            None => Self::Nothing,
+        }
+    }
+
+    /// Which definition is chosen, whichever way it was chosen.
+    pub fn owning_definition(&self, snapshot: &RenderSnapshot) -> Option<usize> {
+        match self {
+            Self::Nothing => None,
+            Self::Definition(pick) => snapshot.definition(*pick),
+            Self::Face(chosen) => snapshot.definition(chosen.definition),
+        }
+    }
+
+    /// What the renderer must mark, which is the transient half of this.
+    pub fn marked(&self) -> ferritecad_viewport::Marked {
+        match self {
+            Self::Nothing => ferritecad_viewport::Marked::Nothing,
+            Self::Definition(pick) => ferritecad_viewport::Marked::Definition(*pick),
+            Self::Face(chosen) => ferritecad_viewport::Marked::Face(chosen.face),
+        }
+    }
+
+    /// Where what is chosen is, in every placement of it.
+    ///
+    /// A face is its own triangles; a definition is all of it. One question,
+    /// answered by the picture that issued the choice.
+    pub fn bounds(&self, snapshot: &RenderSnapshot) -> Option<([f32; 3], [f32; 3])> {
+        match self {
+            Self::Nothing => None,
+            Self::Definition(pick) => snapshot.bounds_of(*pick),
+            Self::Face(chosen) => snapshot.bounds_of_face(chosen.face),
+        }
+    }
 }
 
 /// One drawn definition: what it is, and what to call it.
@@ -327,11 +510,39 @@ where
     // Everything that can fail happens in here, so that the shapes can be
     // handed back in one place whatever the outcome.
     let snapshot = (|| -> Result<LoadedScene> {
+        // Every stored reference that names exactly one face of this rebuild,
+        // paired with the handle it named. Resolved once, in the order the
+        // document stores its references, so what a face is called does not depend
+        // on the order faces happen to be tessellated in.
+        //
+        // A reference that resolves to several faces is not a name for whichever
+        // one was clicked, so it is not here; one that resolves to none, or that
+        // this build cannot resolve at all, names nothing and is not here either.
+        // No failure is reported: a lost reference is a document-level fact, and
+        // a viewer that refused to draw a model because one name no longer
+        // resolves would be useless exactly when it is needed.
+        let named: Vec<(ferritecad_kernel::SubShapeHandle, FaceMeaning)> = document
+            .topology_refs()?
+            .iter()
+            .filter_map(|reference| match built.resolve(reference) {
+                Ok(found) => match found.as_slice() {
+                    [face] => Some((*face, FaceMeaning::of(reference))),
+                    _ => None,
+                },
+                Err(_) => None,
+            })
+            .collect();
+
         let mut builder = SnapshotBuilder::new();
         // One catalogue for the whole document, not one per imported object:
         // two objects can store the same bytes, and what they then draw is the
         // same definition.
         let mut catalogue = Catalogue::default();
+        // What each face of each packed definition is called, by the ordinal
+        // the kernel listed it under while packing. Turned into the picture's
+        // own face identities once the picture exists, because the picture is
+        // what numbers them.
+        let mut names: HashMap<usize, Vec<Vec<FaceMeaning>>> = HashMap::new();
         let objects = document.objects()?;
 
         // Counted before anything is drawn, so each one can say what fraction
@@ -378,7 +589,26 @@ where
                         },
                         || {
                             let mesh = kernel.tessellate(shape, params, &scoped)?;
-                            builder.add_mesh(&mesh)
+                            // Joined by the handle the kernel gave the face,
+                            // which is the only thing that says the stored
+                            // name and this triangle range are the same face.
+                            // Not by ordinal, not by geometry, and not by
+                            // name: two faces of one body can be congruent,
+                            // and traversal order is the kernel's business.
+                            let named: Vec<Vec<FaceMeaning>> = mesh
+                                .faces
+                                .iter()
+                                .map(|range| {
+                                    named
+                                        .iter()
+                                        .filter(|(handle, _)| *handle == range.face)
+                                        .map(|(_, meaning)| meaning.clone())
+                                        .collect()
+                                })
+                                .collect();
+                            let definition = builder.add_mesh(&mesh)?;
+                            names.insert(definition, named);
+                            Ok(definition)
                         },
                     )?;
                     builder.place(definition, None, &Transform::IDENTITY, BODY_COLOUR)?;
@@ -417,8 +647,10 @@ where
                 _ => continue,
             }
         }
+        let snapshot = builder.build();
         Ok(LoadedScene {
-            snapshot: builder.build(),
+            faces: face_names(&snapshot, names)?,
+            snapshot,
             catalogue: catalogue.finish(),
         })
     })();
@@ -428,6 +660,33 @@ where
     }
     built.release_all(kernel);
     snapshot
+}
+
+/// Lays what each definition's faces are called out by the picture's own
+/// numbering.
+///
+/// The picture is asked where each face ended up rather than told: computing
+/// the identity here would be a second account of a numbering that already
+/// exists, and the two would drift the first time either changed.
+fn face_names(
+    snapshot: &RenderSnapshot,
+    named: HashMap<usize, Vec<Vec<FaceMeaning>>>,
+) -> Result<FaceNames> {
+    let mut by_face = vec![Vec::new(); snapshot.face_count()];
+    for (definition, per_ordinal) in named {
+        for (ordinal, meanings) in per_ordinal.into_iter().enumerate() {
+            let face = snapshot.face_of(definition, ordinal).ok_or_else(|| {
+                CadError::topology(format!(
+                    "definition {definition} was packed with more faces than the picture numbered"
+                ))
+            })?;
+            let at = (face.to_raw() as usize)
+                .checked_sub(1)
+                .ok_or_else(|| CadError::topology("a face of a picture is never numbered zero"))?;
+            by_face[at] = meanings;
+        }
+    }
+    Ok(FaceNames { by_face })
 }
 
 /// Where an imported scene came from: its identity, and what to call it.
@@ -642,6 +901,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, reason = "a gate that cannot fail is not a gate")]
 mod tests {
     use super::*;
 
@@ -2370,5 +2630,867 @@ mod tests {
         );
         assert_eq!(file_name_of(Some("  ")), None);
         assert_eq!(file_name_of(None), None);
+    }
+
+    /// What the plate's rebuild says each of its faces is called, and the mesh
+    /// those faces were named in.
+    ///
+    /// One kernel session for both halves, because a handle means nothing
+    /// outside the session that issued it: two sessions would agree about
+    /// nothing and the comparison would be vacuous.
+    fn plate_by_hand(
+        path: &Path,
+        kernel: &mut MockKernel,
+    ) -> (
+        Vec<(
+            ferritecad_kernel::SubShapeHandle,
+            ferritecad_types::StableEntityId,
+        )>,
+        Mesh,
+    ) {
+        let document = Document::open_read_only(path).expect("opens");
+        let built = ferritecad_eval::rebuild_cold(&document, kernel, &OperationContext::default())
+            .expect("rebuilds");
+        let named = document
+            .topology_refs()
+            .expect("reads references")
+            .iter()
+            .filter_map(|reference| match built.resolve(reference) {
+                Ok(found) => match found.as_slice() {
+                    [face] => Some((*face, reference.id)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        let body = document
+            .objects()
+            .expect("reads objects")
+            .into_iter()
+            .find(|object| matches!(object.payload, ObjectPayload::Body(_)))
+            .expect("the plate has a body");
+        let shape = built.shape(body.id).expect("the body was built");
+        let mesh = kernel
+            .tessellate(
+                shape,
+                &TessellationParams::default(),
+                &OperationContext::default(),
+            )
+            .expect("meshes");
+        built.release_all(kernel);
+        (named, mesh)
+    }
+
+    #[test]
+    fn every_named_face_of_the_plate_carries_the_reference_that_resolves_to_it() {
+        let (_directory, path) = plate();
+        let (by_hand, mesh) = plate_by_hand(&path, &mut MockKernel::new());
+        assert_eq!(by_hand.len(), 6, "the committed plate names six faces");
+
+        let scene = snapshot_of(
+            &path,
+            &mut MockKernel::new(),
+            no_imports,
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("loads");
+
+        let mut named = 0usize;
+        for ordinal in 0..scene.snapshot.meshes()[0].face_count() {
+            let face = scene
+                .snapshot
+                .face_of(0, ordinal)
+                .expect("the picture numbered that face");
+            let meanings = scene.faces.of(face, &scene.snapshot);
+            assert_eq!(meanings.len(), 1, "each face of the plate is named once");
+            named += 1;
+
+            // Compared against the handle the kernel gave the triangles at
+            // this ordinal, not against the ordinal: that is the whole claim.
+            let handle = mesh.faces[ordinal].face;
+            let expected: Vec<_> = by_hand
+                .iter()
+                .filter(|(named, _)| *named == handle)
+                .map(|(_, reference)| *reference)
+                .collect();
+            assert_eq!(
+                meanings.iter().map(|m| m.reference).collect::<Vec<_>>(),
+                expected,
+                "face {ordinal} of the plate is called something else"
+            );
+        }
+        assert_eq!(named, 6);
+    }
+
+    /// A kernel that hands its faces over in the opposite order.
+    ///
+    /// Conforming: the ranges stay contiguous and cover every triangle, they
+    /// are simply listed the other way round. A loader that joined names to
+    /// faces by ordinal would name every face of this mesh wrongly.
+    struct ReversesFaces {
+        inner: MockKernel,
+    }
+
+    impl GeometryKernel for ReversesFaces {
+        fn identity(&self) -> &KernelIdentity {
+            self.inner.identity()
+        }
+
+        fn extrude(
+            &mut self,
+            request: &ExtrudeRequest,
+            context: &OperationContext,
+        ) -> Result<ExtrudeResult> {
+            self.inner.extrude(request, context)
+        }
+
+        fn transform(
+            &mut self,
+            shape: ShapeHandle,
+            transform: &Transform,
+            context: &OperationContext,
+        ) -> Result<OperationResult> {
+            self.inner.transform(shape, transform, context)
+        }
+
+        fn tessellate(
+            &mut self,
+            shape: ShapeHandle,
+            params: &TessellationParams,
+            context: &OperationContext,
+        ) -> Result<Mesh> {
+            let mesh = self.inner.tessellate(shape, params, context)?;
+            let mut reversed = Mesh {
+                positions: mesh.positions.clone(),
+                normals: mesh.normals.clone(),
+                indices: Vec::with_capacity(mesh.indices.len()),
+                faces: Vec::with_capacity(mesh.faces.len()),
+            };
+            for range in mesh.faces.iter().rev() {
+                let first = range.first_index as usize;
+                let end = first + range.index_count as usize;
+                let at = reversed.indices.len() as u32;
+                reversed
+                    .indices
+                    .extend_from_slice(&mesh.indices[first..end]);
+                reversed.faces.push(ferritecad_kernel::MeshFaceRange {
+                    face: range.face,
+                    first_index: at,
+                    index_count: range.index_count,
+                });
+            }
+            reversed.validate()?;
+            Ok(reversed)
+        }
+
+        fn encode_shape_with(
+            &mut self,
+            shape: ShapeHandle,
+            sub_shapes: &[SubShapeHandle],
+        ) -> Result<(BrepBlob, Vec<ArchiveSlot>)> {
+            self.inner.encode_shape_with(shape, sub_shapes)
+        }
+
+        fn decode_shape_with(
+            &mut self,
+            blob: &BrepBlob,
+            slots: &[ArchiveSlot],
+        ) -> Result<(ShapeHandle, Vec<SubShapeHandle>)> {
+            self.inner.decode_shape_with(blob, slots)
+        }
+
+        fn encode_shape(&mut self, shape: ShapeHandle) -> Result<BrepBlob> {
+            self.inner.encode_shape(shape)
+        }
+
+        fn decode_shape(&mut self, blob: &BrepBlob) -> Result<ShapeHandle> {
+            self.inner.decode_shape(blob)
+        }
+
+        fn release(&mut self, shape: ShapeHandle) {
+            self.inner.release(shape);
+        }
+    }
+
+    #[test]
+    fn a_kernel_that_lists_its_faces_backwards_names_the_same_faces() {
+        let (_directory, path) = plate();
+        let forwards = snapshot_of(
+            &path,
+            &mut MockKernel::new(),
+            no_imports,
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("loads");
+        let backwards = snapshot_of(
+            &path,
+            &mut ReversesFaces {
+                inner: MockKernel::new(),
+            },
+            no_imports,
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("loads");
+
+        // Same faces, listed in the opposite order, so the face at ordinal n
+        // of one is the face at ordinal 5 - n of the other. What each is
+        // called must follow the face, not the position.
+        let count = forwards.snapshot.meshes()[0].face_count();
+        assert_eq!(count, backwards.snapshot.meshes()[0].face_count());
+        for ordinal in 0..count {
+            let one = forwards.snapshot.face_of(0, ordinal).expect("numbered");
+            let other = backwards
+                .snapshot
+                .face_of(0, count - 1 - ordinal)
+                .expect("numbered");
+            assert_eq!(
+                forwards
+                    .faces
+                    .of(one, &forwards.snapshot)
+                    .iter()
+                    .map(|m| m.reference)
+                    .collect::<Vec<_>>(),
+                backwards
+                    .faces
+                    .of(other, &backwards.snapshot)
+                    .iter()
+                    .map(|m| m.reference)
+                    .collect::<Vec<_>>(),
+                "reversing the kernel's face order retargeted a name"
+            );
+        }
+    }
+
+    /// One square body, and the pieces a topology reference is written from.
+    ///
+    /// Returned rather than looked up again, because a test that had to find
+    /// the extrusion by searching would be testing the search.
+    fn a_named_body(
+        path: &Path,
+        write: impl FnOnce(ObjectId, ObjectId, &[ferritecad_types::StableEntityId]) -> Vec<TopologyRef>,
+    ) -> (ObjectId, Vec<TopologyRef>) {
+        a_named_body_with(path, write)
+    }
+
+    fn a_named_body_with(
+        path: &Path,
+        write: impl FnOnce(ObjectId, ObjectId, &[ferritecad_types::StableEntityId]) -> Vec<TopologyRef>,
+    ) -> (ObjectId, Vec<TopologyRef>) {
+        use ferritecad_document::{
+            Body, DatumPlane, Dependency, DependencyRole, EndCondition, Expression, Extrude,
+            Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
+        };
+        use ferritecad_types::StableEntityId;
+
+        let (plane, sketch, extrude, body) = (
+            ObjectId::new(),
+            ObjectId::new(),
+            ObjectId::new(),
+            ObjectId::new(),
+        );
+        let corners = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let segments: Vec<StableEntityId> =
+            (0..corners.len()).map(|_| StableEntityId::new()).collect();
+        let written = write(extrude, body, &segments);
+
+        let mut document = Document::create(path).expect("creates a document");
+        let stored = written.clone();
+        document
+            .write(|w| {
+                w.put_object(
+                    plane,
+                    None,
+                    0,
+                    Some("XY"),
+                    &ObjectPayload::DatumPlane(DatumPlane {
+                        placement: Transform::IDENTITY,
+                    }),
+                )?;
+                let mut curves = Vec::new();
+                for (corner, id) in segments.iter().enumerate() {
+                    let (sx, sy) = corners[corner];
+                    let (ex, ey) = corners[(corner + 1) % corners.len()];
+                    curves.push(SketchCurve {
+                        id: *id,
+                        construction: false,
+                        geometry: SketchGeometry::Line {
+                            start: Point2::new(sx, sy)?,
+                            end: Point2::new(ex, ey)?,
+                        },
+                    });
+                }
+                w.put_object(
+                    sketch,
+                    None,
+                    1,
+                    None,
+                    &ObjectPayload::Sketch(Sketch { plane, curves }),
+                )?;
+                w.add_dependency(Dependency {
+                    dependent: sketch,
+                    dependency: plane,
+                    role: DependencyRole::Plane,
+                })?;
+                w.put_object(
+                    extrude,
+                    None,
+                    2,
+                    None,
+                    &ObjectPayload::Extrude(Extrude {
+                        profile: sketch,
+                        end_condition: EndCondition::Blind {
+                            distance: Expression::constant(2.0)?,
+                        },
+                        reversed: false,
+                        operation: SolidOperation::NewBody,
+                        target_body: None,
+                    }),
+                )?;
+                w.add_dependency(Dependency {
+                    dependent: extrude,
+                    dependency: sketch,
+                    role: DependencyRole::Profile,
+                })?;
+                w.put_object(
+                    body,
+                    None,
+                    3,
+                    Some("Plate"),
+                    &ObjectPayload::Body(Body {
+                        tip_feature: Some(extrude),
+                    }),
+                )?;
+                w.add_dependency(Dependency {
+                    dependent: body,
+                    dependency: extrude,
+                    role: DependencyRole::BodyTip,
+                })?;
+                for reference in &stored {
+                    w.put_topology_ref(reference)?;
+                    w.add_dependency(Dependency {
+                        dependent: reference.owner,
+                        dependency: reference.producer_feature,
+                        role: DependencyRole::TopologyReference,
+                    })?;
+                }
+                Ok(())
+            })
+            .expect("writes the document");
+        (body, written)
+    }
+
+    fn face_reference(
+        owner: ObjectId,
+        producer: ObjectId,
+        role: SemanticRole,
+        selection: SelectionRule,
+    ) -> TopologyRef {
+        TopologyRef {
+            id: ferritecad_types::StableEntityId::new(),
+            owner,
+            producer_feature: producer,
+            expected_kind: EntityKind::Face,
+            output_role: role,
+            selection,
+            fallback_signature: None,
+        }
+    }
+
+    /// A kernel whose extrusion raises two faces from the first segment.
+    ///
+    /// What a real kernel does when a face is split: the history says both
+    /// came from one input, so a family reference to that input names two
+    /// faces and an exact one names none.
+    struct RaisesTwoFaces {
+        inner: MockKernel,
+    }
+
+    impl RaisesTwoFaces {
+        fn new() -> Self {
+            Self {
+                inner: MockKernel::new(),
+            }
+        }
+    }
+
+    impl GeometryKernel for RaisesTwoFaces {
+        fn identity(&self) -> &KernelIdentity {
+            self.inner.identity()
+        }
+
+        fn extrude(
+            &mut self,
+            request: &ExtrudeRequest,
+            context: &OperationContext,
+        ) -> Result<ExtrudeResult> {
+            let mut result = self.inner.extrude(request, context)?;
+            let first = request
+                .profile()
+                .outer()
+                .segments()
+                .first()
+                .expect("a profile has segments")
+                .label;
+            // The start cap, recorded a second time as though it too had been
+            // raised from that segment.
+            if let Some(extra) = result.start_cap.first().copied() {
+                result
+                    .history
+                    .record_generated(ferritecad_kernel::HistoryInput::Segment(first), extra);
+            }
+            Ok(result)
+        }
+
+        fn transform(
+            &mut self,
+            shape: ShapeHandle,
+            transform: &Transform,
+            context: &OperationContext,
+        ) -> Result<OperationResult> {
+            self.inner.transform(shape, transform, context)
+        }
+
+        fn tessellate(
+            &mut self,
+            shape: ShapeHandle,
+            params: &TessellationParams,
+            context: &OperationContext,
+        ) -> Result<Mesh> {
+            self.inner.tessellate(shape, params, context)
+        }
+
+        fn encode_shape_with(
+            &mut self,
+            shape: ShapeHandle,
+            sub_shapes: &[SubShapeHandle],
+        ) -> Result<(BrepBlob, Vec<ArchiveSlot>)> {
+            self.inner.encode_shape_with(shape, sub_shapes)
+        }
+
+        fn decode_shape_with(
+            &mut self,
+            blob: &BrepBlob,
+            slots: &[ArchiveSlot],
+        ) -> Result<(ShapeHandle, Vec<SubShapeHandle>)> {
+            self.inner.decode_shape_with(blob, slots)
+        }
+
+        fn encode_shape(&mut self, shape: ShapeHandle) -> Result<BrepBlob> {
+            self.inner.encode_shape(shape)
+        }
+
+        fn decode_shape(&mut self, blob: &BrepBlob) -> Result<ShapeHandle> {
+            self.inner.decode_shape(blob)
+        }
+
+        fn release(&mut self, shape: ShapeHandle) {
+            self.inner.release(shape);
+        }
+    }
+
+    fn load_with<K: GeometryKernel + ?Sized>(path: &Path, kernel: &mut K) -> LoadedScene {
+        snapshot_of(
+            path,
+            kernel,
+            no_imports,
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("loads")
+    }
+
+    fn load(path: &Path) -> LoadedScene {
+        snapshot_of(
+            path,
+            &mut MockKernel::new(),
+            no_imports,
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("loads")
+    }
+
+    /// Every face of the one definition, and what the document calls it.
+    fn meanings(scene: &LoadedScene) -> Vec<Vec<ferritecad_types::StableEntityId>> {
+        (0..scene.snapshot.meshes()[0].face_count())
+            .map(|ordinal| {
+                let face = scene.snapshot.face_of(0, ordinal).expect("numbered");
+                scene
+                    .faces
+                    .of(face, &scene.snapshot)
+                    .iter()
+                    .map(|meaning| meaning.reference)
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_reference_naming_a_family_of_faces_names_none_of_them_in_particular() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("family.fcad");
+        // One segment id on two sides of the square, so everything raised from
+        // it is two faces. A family selection is the right way to say that,
+        // and it is not a name for whichever of the two was clicked: the two
+        // are indistinguishable through it, and choosing one would be choosing
+        // by traversal order.
+        let (_body, written) = a_named_body(&path, |extrude, body, segments| {
+            vec![face_reference(
+                body,
+                extrude,
+                SemanticRole::ExtrudeSide {
+                    profile_segment: segments[0],
+                },
+                SelectionRule::AllDerivedFrom {
+                    ancestor: segments[0],
+                },
+            )]
+        });
+        assert_eq!(written.len(), 1);
+
+        let scene = load_with(&path, &mut RaisesTwoFaces::new());
+        assert!(
+            meanings(&scene).iter().all(Vec::is_empty),
+            "a reference naming two faces was accepted as a name for one"
+        );
+    }
+
+    #[test]
+    fn a_shared_segment_still_names_the_face_an_exact_reference_reaches() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("shared.fcad");
+        // The same document, and beside the family reference an exact one to a
+        // cap. Refusing the ambiguous name must not refuse the unambiguous one
+        // in the same document.
+        let (_body, _written) = a_named_body(&path, |extrude, body, segments| {
+            vec![
+                face_reference(
+                    body,
+                    extrude,
+                    SemanticRole::ExtrudeSide {
+                        profile_segment: segments[0],
+                    },
+                    SelectionRule::AllDerivedFrom {
+                        ancestor: segments[0],
+                    },
+                ),
+                face_reference(
+                    body,
+                    extrude,
+                    SemanticRole::ExtrudeCap {
+                        side: ferritecad_document::CapSide::Start,
+                    },
+                    SelectionRule::Exact,
+                ),
+            ]
+        });
+
+        let scene = load_with(&path, &mut RaisesTwoFaces::new());
+        let named: usize = meanings(&scene).iter().filter(|m| !m.is_empty()).count();
+        assert_eq!(named, 1, "the exact name was lost with the ambiguous one");
+    }
+
+    #[test]
+    fn several_exact_references_to_one_face_are_all_kept_in_the_order_they_are_stored() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("twice.fcad");
+        let (_body, written) = a_named_body(&path, |extrude, body, _segments| {
+            // Two references, both naming the end cap exactly. Both are true
+            // of that face, and which of them is "the" name is not this
+            // loader's decision.
+            vec![
+                face_reference(
+                    body,
+                    extrude,
+                    SemanticRole::ExtrudeCap {
+                        side: ferritecad_document::CapSide::End,
+                    },
+                    SelectionRule::Exact,
+                ),
+                face_reference(
+                    body,
+                    extrude,
+                    SemanticRole::ExtrudeCap {
+                        side: ferritecad_document::CapSide::End,
+                    },
+                    SelectionRule::Exact,
+                ),
+            ]
+        });
+
+        let scene = load(&path);
+        let both: Vec<_> = meanings(&scene)
+            .into_iter()
+            .filter(|m| !m.is_empty())
+            .collect();
+        assert_eq!(both.len(), 1, "both references name the same one face");
+        let mut expected: Vec<_> = written.iter().map(|reference| reference.id).collect();
+        // The document hands its references back in a defined order, and that
+        // is the order they are kept in.
+        expected.sort();
+        assert_eq!(both[0], expected);
+
+        // Loading twice gives the same order, which is what "deterministic"
+        // has to mean for something a person will read.
+        assert_eq!(meanings(&load(&path)), meanings(&scene));
+    }
+
+    #[test]
+    fn a_body_nobody_named_has_no_face_meanings_at_all() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("unnamed.fcad");
+        a_named_body(&path, |_, _, _| Vec::new());
+
+        let scene = load(&path);
+        assert!(
+            meanings(&scene).iter().all(Vec::is_empty),
+            "a face nobody named was given a name"
+        );
+    }
+
+    #[test]
+    fn an_imported_definition_has_no_face_meanings_at_all() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("imported.fcad");
+        let mut kernel = MockKernel::new();
+        document_with_import(&path, &mut kernel);
+
+        let scene = snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel: &mut MockKernel, _: &[u8]| {
+                Ok(Import::Imported {
+                    scene: nested_assembly(kernel),
+                    diagnostics: Vec::new(),
+                })
+            },
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("loads");
+
+        assert!(scene.snapshot.face_count() > 0, "the import draws faces");
+        for definition in 0..scene.snapshot.meshes().len() {
+            for ordinal in 0..scene.snapshot.meshes()[definition].face_count() {
+                let face = scene
+                    .snapshot
+                    .face_of(definition, ordinal)
+                    .expect("numbered");
+                assert!(
+                    scene.faces.of(face, &scene.snapshot).is_empty(),
+                    "an imported face was given a durable name it does not have"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn what_a_face_is_called_holds_no_transient_identity() {
+        let (_directory, path) = plate();
+        let scene = load(&path);
+        let shown = format!("{:?}", scene.faces);
+        assert!(shown.contains("ExtrudeCap"), "the plate names its caps");
+
+        // What a face is called is what the document stores about it. A
+        // renderer's own number for the face is true of one picture and of
+        // nothing else, so it is not part of what the face *is* – and a
+        // meaning that carried one could be written down and found to mean
+        // nothing an hour later.
+        for word in [
+            "FacePickId",
+            "PickId",
+            "ShapeHandle",
+            "SubShapeHandle",
+            "SessionId",
+            "raw",
+        ] {
+            assert!(
+                !shown.contains(word),
+                "a durable face meaning carried a {word}: {shown}"
+            );
+        }
+    }
+
+    #[test]
+    fn what_is_handed_over_holds_no_kernel_handle_of_any_kind() {
+        let (_directory, path) = plate();
+        let scene = load(&path);
+        let shown = format!("{scene:?}");
+        for word in [
+            "ShapeHandle",
+            "SubShapeHandle",
+            "SessionId",
+            "SubShapeKind",
+            "TopologyMap",
+        ] {
+            assert!(
+                !shown.contains(word),
+                "the handed-over scene holds a {word}"
+            );
+        }
+    }
+
+    #[test]
+    fn clicking_a_named_face_chooses_the_face_and_everything_else_the_definition() {
+        let (_directory, path) = plate();
+        let scene = load(&path);
+        let snapshot = &scene.snapshot;
+        let pick = snapshot.pick_of(0).expect("the plate is drawn");
+        let named = snapshot.face_of(0, 0).expect("numbered");
+        assert!(!scene.faces.of(named, snapshot).is_empty());
+
+        // A face the document names is chosen as that face, and carries what
+        // the document calls it.
+        let chosen = Selection::at(pick, named, snapshot, &scene.faces);
+        let Selection::Face(face) = &chosen else {
+            panic!("a named face was not chosen as a face: {chosen:?}");
+        };
+        assert_eq!(face.face(), named);
+        assert_eq!(face.definition(), pick);
+        assert_eq!(face.meanings().len(), 1);
+        assert_eq!(chosen.owning_definition(snapshot), Some(0));
+        assert_eq!(chosen.marked(), ferritecad_viewport::Marked::Face(named));
+
+        // Nothing at all is nothing at all.
+        assert_eq!(
+            Selection::at(PickId::NOTHING, FacePickId::NOTHING, snapshot, &scene.faces),
+            Selection::Nothing
+        );
+    }
+
+    #[test]
+    fn a_face_the_document_does_not_name_chooses_the_definition_it_is_on() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("unnamed.fcad");
+        a_named_body(&path, |_, _, _| Vec::new());
+        let scene = load(&path);
+        let snapshot = &scene.snapshot;
+
+        let pick = snapshot.pick_of(0).expect("the body is drawn");
+        let face = snapshot.face_of(0, 0).expect("numbered");
+        assert!(scene.faces.of(face, snapshot).is_empty());
+
+        // The honest answer, and the one this application could already give:
+        // the part, not an invented name for one of its faces.
+        assert_eq!(
+            Selection::at(pick, face, snapshot, &scene.faces),
+            Selection::Definition(pick)
+        );
+    }
+
+    #[test]
+    fn a_face_of_an_imported_definition_chooses_the_definition() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("imported.fcad");
+        let mut kernel = MockKernel::new();
+        document_with_import(&path, &mut kernel);
+        let scene = snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel: &mut MockKernel, _: &[u8]| {
+                Ok(Import::Imported {
+                    scene: nested_assembly(kernel),
+                    diagnostics: Vec::new(),
+                })
+            },
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("loads");
+
+        let snapshot = &scene.snapshot;
+        let pick = snapshot.pick_of(0).expect("the import is drawn");
+        let face = snapshot.face_of(0, 0).expect("numbered");
+        assert_eq!(
+            Selection::at(pick, face, snapshot, &scene.faces),
+            Selection::Definition(pick),
+            "an imported face has no durable name and must not be chosen as one"
+        );
+    }
+
+    #[test]
+    fn a_face_and_a_definition_that_do_not_belong_together_are_not_a_selection() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("two.fcad");
+        // Two bodies, the second one named, so there is a face of one
+        // definition and a pick of another in the same picture.
+        let (first, _) = a_named_body(&path, |_, _, _| Vec::new());
+        let _ = first;
+        let scene = load(&path);
+        let snapshot = &scene.snapshot;
+        let pick = snapshot.pick_of(0).expect("drawn");
+
+        // A face of a picture that has been replaced, beside a live pick.
+        let (_other_directory, other_path) = plate();
+        let other = load(&other_path);
+        let stale = other.snapshot.face_of(0, 0).expect("numbered");
+
+        assert_eq!(
+            Selection::at(pick, stale, snapshot, &scene.faces),
+            Selection::Definition(pick),
+            "a face from another picture must not attach itself to this one"
+        );
+        assert_eq!(
+            Selection::at(PickId::NOTHING, stale, snapshot, &scene.faces),
+            Selection::Nothing
+        );
+    }
+
+    #[test]
+    fn a_stale_face_names_nothing_after_the_picture_is_replaced() {
+        let (_directory, path) = plate();
+        let before = load(&path);
+        let after = load(&path);
+        let face = before.snapshot.face_of(0, 0).expect("numbered");
+
+        // The same document, loaded twice. The two pictures are the same
+        // picture by content, so this is the strongest form of the question:
+        // what stops the old identity is the identity itself.
+        assert!(!before.faces.of(face, &before.snapshot).is_empty());
+        assert_eq!(
+            after.faces.of(face, &after.snapshot).len(),
+            before.faces.of(face, &before.snapshot).len(),
+            "the same picture names the same faces"
+        );
+
+        // And a face of a genuinely different picture names nothing here –
+        // in a picture that has names of its own, so an unchecked lookup by
+        // number would find one and hand it over as though it were this
+        // face's.
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let elsewhere = directory.path().join("other.fcad");
+        a_named_body(&elsewhere, |extrude, body, segments| {
+            // Named at the same position the stale identity would land on, so
+            // a lookup that trusted the number would find this and hand it
+            // over as though it were the plate's face.
+            vec![face_reference(
+                body,
+                extrude,
+                SemanticRole::ExtrudeSide {
+                    profile_segment: segments[0],
+                },
+                SelectionRule::Exact,
+            )]
+        });
+        let other = load(&elsewhere);
+        assert!(
+            !other
+                .faces
+                .of(
+                    other.snapshot.face_of(0, 0).expect("numbered"),
+                    &other.snapshot
+                )
+                .is_empty(),
+            "the second picture must name the face the stale number reaches"
+        );
+        assert_eq!(face.to_raw(), 1, "the stale identity is the first face");
+        assert_eq!(other.snapshot.definition_of_face(face), None);
+        assert!(
+            other.faces.of(face, &other.snapshot).is_empty(),
+            "a face of the replaced picture was answered with a name from this one"
+        );
     }
 }

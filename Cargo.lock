@@ -695,6 +695,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "ferritecad-document",
+ "ferritecad-fixtures",
  "ferritecad-kernel",
  "ferritecad-occt",
  "ferritecad-scene",
@@ -703,6 +704,7 @@ dependencies = [
  "ferritecad-viewport",
  "ferritecad-viewport-gpu",
  "rfd",
+ "tempfile",
  "wgpu",
  "winit",
 ]

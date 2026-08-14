@@ -1656,3 +1656,105 @@ fn a_refused_mesh_consumes_no_face_identities() {
         Some(definition)
     );
 }
+
+#[test]
+fn the_bounds_of_a_face_are_its_own_triangles_in_every_placement() {
+    let mut builder = SnapshotBuilder::new();
+    let part = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+    builder
+        .place(part, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+        .expect("places");
+    builder
+        .place(part, None, &moved(100.0, 0.0, 0.0), [1.0, 1.0, 1.0])
+        .expect("places");
+    let snapshot = builder.build();
+
+    let first = snapshot.face_of(0, 0).expect("numbered");
+    let second = snapshot.face_of(0, 1).expect("numbered");
+    let (low, high) = snapshot.bounds_of_face(first).expect("the face is drawn");
+    let whole = snapshot
+        .bounds_of(snapshot.draws()[0].pick)
+        .expect("the definition is drawn");
+
+    // `divided` lays its triangles along x, four units apart, so the first
+    // face ends where the second begins. The face's box is its own triangles:
+    // narrower than the definition's along x, and reaching the second
+    // placement a hundred units away.
+    assert!(low[0] < high[0]);
+    assert_eq!(
+        low[0], whole.0[0],
+        "the first face starts where the part does"
+    );
+    assert!(
+        high[0] < whole.1[0],
+        "the face's box reached past its own triangles: {high:?} against {:?}",
+        whole.1
+    );
+    assert!(
+        high[0] > 100.0,
+        "the second placement of the face was left out: {high:?}"
+    );
+
+    // The two faces are different places, which is what makes framing one of
+    // them different from framing the part.
+    let other = snapshot.bounds_of_face(second).expect("the face is drawn");
+    assert_ne!((low, high), other);
+    assert_eq!(
+        other.1[0], whole.1[0],
+        "the last face ends where the part does"
+    );
+
+    // A face of a picture that has been replaced is nowhere at all.
+    let elsewhere = {
+        let mut builder = SnapshotBuilder::new();
+        let part = builder.add_mesh(&divided(&[2, 1])).expect("packs");
+        builder
+            .place(part, None, &Transform::IDENTITY, [0.0, 0.0, 1.0])
+            .expect("places");
+        builder.build()
+    };
+    assert_eq!(elsewhere.bounds_of_face(first), None);
+    assert_eq!(snapshot.bounds_of_face(FacePickId::NOTHING), None);
+}
+
+#[test]
+fn a_picture_numbers_its_faces_where_it_says_it_does() {
+    let mut builder = SnapshotBuilder::new();
+    let first = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+    let second = builder.add_mesh(&divided(&[2, 1])).expect("packs");
+    for (part, x) in [(first, 0.0), (second, 50.0)] {
+        builder
+            .place(part, None, &moved(x, 0.0, 0.0), [1.0, 1.0, 1.0])
+            .expect("places");
+    }
+    let snapshot = builder.build();
+
+    // Every face of every definition, asked for by position and answered with
+    // an identity that resolves back to the same position.
+    let mut seen = Vec::new();
+    for definition in 0..snapshot.meshes().len() {
+        for ordinal in 0..snapshot.meshes()[definition].face_count() {
+            let face = snapshot.face_of(definition, ordinal).expect("numbered");
+            assert_eq!(snapshot.definition_of_face(face), Some(definition));
+            assert!(!seen.contains(&face), "two positions gave one identity");
+            seen.push(face);
+        }
+    }
+    assert_eq!(seen.len(), snapshot.face_count());
+
+    // Positions this picture does not have are not numbered at all.
+    assert_eq!(snapshot.face_of(0, 2), None);
+    assert_eq!(snapshot.face_of(2, 0), None);
+
+    // And a face of one picture is not a face of another, however alike the
+    // two pictures look.
+    let other = {
+        let mut builder = SnapshotBuilder::new();
+        let part = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+        builder
+            .place(part, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+            .expect("places");
+        builder.build()
+    };
+    assert_eq!(other.definition_of_face(seen[0]), None);
+}

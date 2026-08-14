@@ -62,6 +62,21 @@ pub enum Selected<'a> {
         /// The identifier the document stores for it.
         object: &'a str,
     },
+    /// One face of a body, named by what the document stores about it.
+    ///
+    /// Only durable terms reach here. A face the document does not name is not
+    /// selectable as a face at all, so there is no case for one.
+    Face {
+        /// What the body is called, if the document called it anything.
+        name: Option<&'a str>,
+        /// The identifier the document stores for the body.
+        object: &'a str,
+        /// Every stored reference that names exactly this face, in the order
+        /// the document stores them. More than one is normal and is shown as
+        /// more than one: which of them is "the" name is not this window's
+        /// decision to make.
+        names: &'a [FaceName<'a>],
+    },
     /// A definition inside a file this document imported.
     Imported {
         name: Option<&'a str>,
@@ -73,6 +88,27 @@ pub enum Selected<'a> {
         definition_key: &'a str,
         solids: Option<u32>,
     },
+}
+
+/// One durable name for a face, already turned into words by the caller.
+///
+/// Text rather than document types, for the same reason the rest of this
+/// module deals in text: a panel that could name a `SemanticRole` would be a
+/// panel that knows what a document is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FaceName<'a> {
+    /// The identifier the document stores for the reference itself.
+    pub reference: &'a str,
+    /// The object holding the reference.
+    pub owner: &'a str,
+    /// The feature whose output it names.
+    pub producer_feature: &'a str,
+    /// The kind of entity it expects.
+    pub expected_kind: &'a str,
+    /// What the named entity is, semantically.
+    pub role: &'a str,
+    /// How many entities it selects, and which.
+    pub rule: &'a str,
 }
 
 impl Selected<'_> {
@@ -90,6 +126,25 @@ impl Selected<'_> {
                     rows.push(("Name", (*name).to_owned()));
                 }
                 rows.push(("Object", (*object).to_owned()));
+            }
+            Self::Face {
+                name,
+                object,
+                names,
+            } => {
+                rows.push(("Kind", "Face".to_owned()));
+                if let Some(name) = name {
+                    rows.push(("Body", (*name).to_owned()));
+                }
+                rows.push(("Object", (*object).to_owned()));
+                for face in *names {
+                    rows.push(("Reference", face.reference.to_owned()));
+                    rows.push(("Owner", face.owner.to_owned()));
+                    rows.push(("Feature", face.producer_feature.to_owned()));
+                    rows.push(("Entity", face.expected_kind.to_owned()));
+                    rows.push(("Role", face.role.to_owned()));
+                    rows.push(("Rule", face.rule.to_owned()));
+                }
             }
             Self::Imported {
                 name,
@@ -126,6 +181,13 @@ impl Selected<'_> {
     pub fn summary(&self) -> String {
         match self {
             Self::Body { name, object } => match name {
+                Some(name) => format!("{name} · {object}"),
+                None => format!("Body · {object}"),
+            },
+            // A list of definitions holds no faces, so this is what a face
+            // would be called if one ever reached a row: the body it is part
+            // of, said the same way.
+            Self::Face { name, object, .. } => match name {
                 Some(name) => format!("{name} · {object}"),
                 None => format!("Body · {object}"),
             },
@@ -582,6 +644,96 @@ mod tests {
             name: Some("Plate"),
             object: "018f2b7c-0000-7000-8000-000000000001",
         }
+    }
+
+    fn a_face() -> Selected<'static> {
+        Selected::Face {
+            name: Some("Plate"),
+            object: "018f2b7c-0000-7000-8000-000000000001",
+            names: &[FaceName {
+                reference: "018f2b7c-0000-7000-8000-0000000000a1",
+                owner: "018f2b7c-0000-7000-8000-000000000001",
+                producer_feature: "018f2b7c-0000-7000-8000-000000000002",
+                expected_kind: "face",
+                role: "Extrusion cap, end",
+                rule: "Exactly this one",
+            }],
+        }
+    }
+
+    #[test]
+    fn the_inspector_says_what_a_face_is_in_the_document_s_own_terms() {
+        let rows = a_face().rows();
+        let value = |label: &str| {
+            rows.iter()
+                .find(|(name, _)| *name == label)
+                .map(|(_, value)| value.as_str())
+        };
+
+        assert_eq!(value("Kind"), Some("Face"));
+        assert_eq!(value("Body"), Some("Plate"));
+        assert_eq!(value("Role"), Some("Extrusion cap, end"));
+        assert_eq!(value("Rule"), Some("Exactly this one"));
+        assert_eq!(
+            value("Reference"),
+            Some("018f2b7c-0000-7000-8000-0000000000a1")
+        );
+        // Everything shown is something the document stores. Nothing here
+        // could be written down and found to mean nothing an hour later.
+        let shown = rows
+            .iter()
+            .map(|(label, value)| format!("{label} {value}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        for word in TRANSIENT {
+            if *word == "face" {
+                // The word names the kind of thing chosen, which is the one
+                // durable use of it: what is refused is a face *number*.
+                continue;
+            }
+            assert!(
+                !shown.contains(word),
+                "a face inspector said {word}: {shown}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_face_with_several_names_shows_all_of_them() {
+        let names = [
+            FaceName {
+                reference: "018f2b7c-0000-7000-8000-0000000000a1",
+                owner: "018f2b7c-0000-7000-8000-000000000001",
+                producer_feature: "018f2b7c-0000-7000-8000-000000000002",
+                expected_kind: "face",
+                role: "Extrusion cap, end",
+                rule: "Exactly this one",
+            },
+            FaceName {
+                reference: "018f2b7c-0000-7000-8000-0000000000a2",
+                owner: "018f2b7c-0000-7000-8000-000000000001",
+                producer_feature: "018f2b7c-0000-7000-8000-000000000002",
+                expected_kind: "face",
+                role: "Extrusion cap, end",
+                rule: "Everything derived from 018f2b7c-0000-7000-8000-000000000003",
+            },
+        ];
+        let rows = Selected::Face {
+            name: None,
+            object: "018f2b7c-0000-7000-8000-000000000001",
+            names: &names,
+        }
+        .rows();
+
+        // Both, in the order they were given. Showing one of two names would
+        // be presenting storage order as a decision about which is right.
+        let references: Vec<&str> = rows
+            .iter()
+            .filter(|(label, _)| *label == "Reference")
+            .map(|(_, value)| value.as_str())
+            .collect();
+        assert_eq!(references, vec![names[0].reference, names[1].reference]);
     }
 
     fn imported() -> Selected<'static> {
