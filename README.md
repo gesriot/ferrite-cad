@@ -78,18 +78,19 @@ picking its neighbours off one at a time. What is chosen stays chosen, down to
 the face, and what was already hidden stays hidden: isolating removes
 distractions and never reveals anything. `Show all` (or `U`) brings everything
 back without changing what is chosen, and is the way back from either action.
-Each row carries one control for whether its definition is drawn: `Hide` while
-it is on screen, `Show` once it is not, and never both. Either acts on that row
-alone, in every place its definition appears, leaving the rest of the view as
-you arranged it. Your selection survives untouched, so a neighbour can be taken
-out of the way without giving up what you were looking at; hiding the very
-thing that is chosen unchooses it, because geometry nobody can see cannot stay
-chosen. Any of these drops a click or pointer question recorded against the
-old picture, so geometry that has just arrived or just left cannot answer an
-interaction from a frame it was not in. The list keeps a row for what is hidden, marked as hidden. That is
-where you look when you wonder where something went. None of this touches the
-document, and none of it survives opening one: a file always opens with all of
-it on screen.
+Each row whose definition actually draws geometry carries one control for
+whether it is drawn: `Hide` while it is on screen, `Show` once it is not, and
+never both. Either acts on that row alone, in every place its definition appears,
+leaving the rest of the view as you arranged it. Your selection survives
+untouched, so a neighbour can be taken out of the way without giving up what
+you were looking at; hiding the very thing that is chosen unchooses it, because
+geometry nobody can see cannot stay chosen. Any of these drops a click or
+pointer question recorded against the old picture, so geometry that has just
+arrived or just left cannot answer an interaction from a frame it was not in.
+The list keeps a row for what is hidden, marked as hidden. That is where you
+look when you wonder where something went. None of this touches the document,
+and none of it survives opening one: a file always opens with all of it on
+screen.
 
 Moving the pointer
 over the model marks the face under it, and the same face wherever that
