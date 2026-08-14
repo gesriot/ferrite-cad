@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use ferritecad_types::{CadError, Result};
-use ferritecad_viewport::{Camera, FacePickId, Hovered, PickId, RenderSnapshot, VERTEX_FLOATS};
+use ferritecad_viewport::{Camera, PickId, RenderSnapshot, VERTEX_FLOATS};
 use wgpu::util::DeviceExt as _;
 
 /// Linear, not sRGB. The snapshot's colours are linear because that is what the
@@ -16,12 +16,6 @@ pub const COLOUR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// One unsigned integer per pixel: an identity is not a colour, and storing it
 /// in one would mean packing it into channels and hoping nothing filters it.
 pub const PICK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
-
-/// Where a face identity is written, offscreen and nowhere else.
-///
-/// The same format as the identities beside it, and drawn in the same pass so
-/// the two answers about one pixel are answers about the same triangle.
-pub const FACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -38,11 +32,7 @@ struct DrawUniform {
     transform: [f32; 16],
     colour: [f32; 4],
     pick: u32,
-    /// Where this draw's mesh begins in the picture's table of face
-    /// identities. A triangle knows its own number within the draw; this is
-    /// what turns that into a face of the whole picture.
-    first_triangle: u32,
-    padding: [u32; 2],
+    padding: [u32; 3],
 }
 
 /// What every draw in one frame is drawn against.
@@ -59,14 +49,11 @@ struct GlobalsUniform {
     /// The identity to draw as selected, or zero for none. Zero is what the
     /// background reads as, and no definition is ever numbered zero.
     selected: u32,
-    /// The face the pointer is over, or zero. A face of the picture, so the
-    /// same face is marked in every placement of its definition.
-    hovered_face: u32,
     /// The identity the pointer is over, or zero. Kept apart from the
     /// selection because they are different states and a person must be able
     /// to tell which is which: one is a decision and the other is a question.
     hovered: u32,
-    padding: [u32; 1],
+    padding: [u32; 2],
 }
 
 /// What a grid pass needs to know, and all it is allowed to know.
@@ -187,19 +174,8 @@ impl Renderer {
     }
 
     fn on(adapter: wgpu::Adapter) -> Result<Self> {
-        // Naming a face means knowing which triangle a pixel came from, and
-        // that is a capability rather than a technique: without it the choice
-        // is a draw call per face or a copy of every shared vertex. Refused
-        // here, once and by name, rather than producing a viewer whose hover
-        // silently marks whole parts on some machines.
-        if !adapter.features().contains(wgpu::Features::PRIMITIVE_INDEX) {
-            return Err(CadError::unsupported(
-                "this graphics adapter cannot tell which triangle a pixel came from, which is what naming a face needs",
-            ));
-        }
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("ferritecad viewport"),
-            required_features: wgpu::Features::PRIMITIVE_INDEX,
             ..Default::default()
         }))
         .map_err(|error| {
@@ -238,18 +214,6 @@ impl Renderer {
                         min_binding_size: wgpu::BufferSize::new(
                             std::mem::size_of::<DrawUniform>() as u64
                         ),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    // Read in the fragment stage alone: which face a triangle
-                    // belongs to is a question about the pixel being drawn.
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
                     },
                     count: None,
                 },
@@ -423,23 +387,14 @@ impl Renderer {
         camera: &Camera,
         prepared: &PreparedSnapshot,
         selected: PickId,
-        hovered: Hovered,
+        hovered: PickId,
     ) {
-        // Every identity asked of the picture about to be drawn, and by the
-        // same question. A number that named a definition of some other
-        // picture would otherwise light up whichever one occupies it here.
-        let snapshot = prepared.snapshot();
-        let known = |pick: PickId| match snapshot.definition(pick) {
+        // Both asked of the picture about to be drawn, and by the same
+        // question. A number that named a definition of some other picture
+        // would otherwise light up whichever one occupies it here.
+        let known = |pick: PickId| match prepared.snapshot().definition(pick) {
             Some(_) => pick.to_raw(),
             None => PickId::NOTHING.to_raw(),
-        };
-        let (hovered_face, hovered) = match hovered {
-            Hovered::Nothing => (FacePickId::NOTHING.to_raw(), PickId::NOTHING.to_raw()),
-            Hovered::Definition(pick) => (FacePickId::NOTHING.to_raw(), known(pick)),
-            Hovered::Face(face) => match snapshot.definition_of_face(face) {
-                Some(_) => (face.to_raw(), PickId::NOTHING.to_raw()),
-                None => (FacePickId::NOTHING.to_raw(), PickId::NOTHING.to_raw()),
-            },
         };
         self.queue.write_buffer(
             &self.globals,
@@ -447,9 +402,8 @@ impl Renderer {
             bytemuck::bytes_of(&GlobalsUniform {
                 view_projection: camera.view_projection(),
                 selected: known(selected),
-                hovered_face,
-                hovered,
-                padding: [0; 1],
+                hovered: known(hovered),
+                padding: [0; 2],
             }),
         );
     }
@@ -480,7 +434,7 @@ impl Renderer {
         prepared: &PreparedSnapshot,
         camera: &Camera,
         selected: PickId,
-        hovered: Hovered,
+        hovered: PickId,
         view: &wgpu::TextureView,
         format: wgpu::TextureFormat,
         width: u32,
@@ -637,32 +591,6 @@ impl Renderer {
     pub fn prepare(&mut self, snapshot: Arc<RenderSnapshot>) -> Result<PreparedSnapshot> {
         let draw_buffer_size = self.validate_snapshot(&snapshot)?;
 
-        // The whole picture's faces in one table, in mesh order, uploaded once
-        // with the geometry. A triangle's face is a lookup rather than a
-        // vertex attribute, so nothing is duplicated and no draw is split.
-        let mut face_table: Vec<u32> = Vec::new();
-        let mut first_triangle_of = Vec::with_capacity(snapshot.meshes().len());
-        for mesh in snapshot.meshes() {
-            first_triangle_of.push(face_table.len() as u32);
-            face_table.extend_from_slice(mesh.faces_of_triangles());
-        }
-        if face_table.is_empty() {
-            // A device will not bind an empty storage buffer, and a picture
-            // with no faces still has to draw.
-            face_table.push(0);
-        }
-        let faces = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("ferritecad viewport faces"),
-                contents: bytemuck::cast_slice(&face_table),
-                // Storage and nothing else: no COPY_DST, so this cannot be
-                // rewritten later. What a face is was decided when the picture
-                // was packed.
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-        self.geometry_uploads += 1;
-
         // Every draw's uniform data in one buffer, each at a device-aligned
         // offset. An empty snapshot still needs one stride of buffer, because a
         // zero-sized uniform buffer is not a thing a device will bind.
@@ -676,8 +604,7 @@ impl Renderer {
                 transform: item.transform,
                 colour: item.colour,
                 pick: item.pick.to_raw(),
-                first_triangle: first_triangle_of[item.mesh],
-                padding: [0; 2],
+                padding: [0; 3],
             };
             let at = index * self.draw_stride as usize;
             draw_bytes[at..at + std::mem::size_of::<DrawUniform>()]
@@ -706,10 +633,6 @@ impl Renderer {
                         offset: 0,
                         size: wgpu::BufferSize::new(std::mem::size_of::<DrawUniform>() as u64),
                     }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: faces.as_entire_binding(),
                 },
             ],
         });
@@ -762,7 +685,7 @@ impl Renderer {
         prepared: &PreparedSnapshot,
         camera: &Camera,
         selected: PickId,
-        hovered: Hovered,
+        hovered: PickId,
     ) -> Result<Frame> {
         self.require_own(prepared)?;
 
@@ -778,7 +701,6 @@ impl Renderer {
                 height,
                 colour: Vec::new(),
                 picks: Vec::new(),
-                faces: Vec::new(),
             });
         }
 
@@ -791,7 +713,6 @@ impl Renderer {
         };
         let colour = self.target("colour", extent, COLOUR_FORMAT);
         let pick = self.target("pick", extent, PICK_FORMAT);
-        let face = self.target("face", extent, FACE_FORMAT);
         let depth = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ferritecad viewport depth"),
             size: extent,
@@ -819,7 +740,6 @@ impl Renderer {
         {
             let colour_view = colour.create_view(&Default::default());
             let pick_view = pick.create_view(&Default::default());
-            let face_view = face.create_view(&Default::default());
             let depth_view = depth.create_view(&Default::default());
 
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -841,18 +761,6 @@ impl Renderer {
                         ops: wgpu::Operations {
                             // Zero is what nothing reads as, which is why a
                             // definition's identity is its index plus one.
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    }),
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: &face_view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            // Zero again, and for the same reason: a face's
-                            // identity is its number within the picture plus
-                            // one, so nowhere reads as some face.
                             load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                             store: wgpu::StoreOp::Store,
                         },
@@ -894,20 +802,20 @@ impl Renderer {
 
         let colour_read = self.readback(&mut encoder, &colour, extent, readback);
         let pick_read = self.readback(&mut encoder, &pick, extent, readback);
-        let face_read = self.readback(&mut encoder, &face, extent, readback);
         self.queue.submit(Some(encoder.finish()));
 
         let colour = self.take(colour_read, height, readback)?;
         let picks = self.take(pick_read, height, readback)?;
-        let faces = self.take(face_read, height, readback)?;
 
         Ok(Frame {
             snapshot,
             width,
             height,
             colour,
-            picks: unpack(&picks),
-            faces: unpack(&faces),
+            picks: picks
+                .chunks_exact(4)
+                .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+                .collect(),
         })
     }
 
@@ -1161,11 +1069,6 @@ fn build_grid_pipeline(
             blend: None,
             write_mask: wgpu::ColorWrites::ALL,
         }));
-        targets.push(Some(wgpu::ColorTargetState {
-            format: FACE_FORMAT,
-            blend: None,
-            write_mask: wgpu::ColorWrites::ALL,
-        }));
     }
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1181,7 +1084,7 @@ fn build_grid_pipeline(
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some(identities_entry_point(with_identities)),
+            entry_point: Some("fragment_main"),
             compilation_options: Default::default(),
             targets: &targets,
         }),
@@ -1200,19 +1103,6 @@ fn build_grid_pipeline(
         multiview_mask: None,
         cache: None,
     })
-}
-
-/// Which fragment entry point writes exactly the given targets.
-///
-/// A shader whose output signature is wider than its pipeline is not a
-/// harmless waste: Direct3D refuses to compile it. So the window and the
-/// readback have an entry point each, over one shading function.
-fn identities_entry_point(with_identities: bool) -> &'static str {
-    if with_identities {
-        "fragment_main"
-    } else {
-        "fragment_colour"
-    }
 }
 
 fn build_pipeline(
@@ -1235,15 +1125,6 @@ fn build_pipeline(
     if with_identities {
         targets.push(Some(wgpu::ColorTargetState {
             format: PICK_FORMAT,
-            blend: None,
-            write_mask: wgpu::ColorWrites::ALL,
-        }));
-        // Faces travel with the identities and only there. A window draws its
-        // model many times a second and asks what a pixel is when somebody
-        // points at one, so paying for either on every frame would be paying
-        // continuously for something wanted occasionally.
-        targets.push(Some(wgpu::ColorTargetState {
-            format: FACE_FORMAT,
             blend: None,
             write_mask: wgpu::ColorWrites::ALL,
         }));
@@ -1275,11 +1156,11 @@ fn build_pipeline(
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            // The entry point that writes exactly the targets this pipeline
-            // has. Both shade the model identically; they differ only in what
-            // they record about each pixel.
-            entry_point: Some(identities_entry_point(with_identities)),
+            entry_point: Some("fragment_main"),
             compilation_options: Default::default(),
+            // The fragment shader always writes an identity. A pipeline with
+            // no target for it discards the value rather than needing a second
+            // shader that does not compute it.
             targets: &targets,
         }),
         primitive: wgpu::PrimitiveState {
@@ -1310,36 +1191,6 @@ pub struct Frame {
     height: u32,
     colour: Vec<u8>,
     picks: Vec<u32>,
-    faces: Vec<u32>,
-}
-
-/// What one pixel turned out to be: a definition, and the face of it.
-///
-/// Both, together, because they were read from the same pixel of the same
-/// frame and are only true of each other there. Neither field is readable as a
-/// number and neither is stored anywhere.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Hit {
-    definition: PickId,
-    face: FacePickId,
-}
-
-impl Hit {
-    /// Nothing was drawn here.
-    pub const NOTHING: Self = Self {
-        definition: PickId::NOTHING,
-        face: FacePickId::NOTHING,
-    };
-
-    /// Which definition, exactly as [`Frame::pick_at`] would answer.
-    pub fn definition(self) -> PickId {
-        self.definition
-    }
-
-    /// Which face of it, for as long as this picture is on screen.
-    pub fn face(self) -> FacePickId {
-        self.face
-    }
 }
 
 impl Frame {
@@ -1387,39 +1238,9 @@ impl Frame {
         }
     }
 
-    /// What was drawn at one pixel, and which face of it.
-    ///
-    /// Beside [`Self::pick_at`] rather than instead of it: what a click means
-    /// is a settled question, and a hover asks a different one. Outside the
-    /// frame, over the grid and over the background this is
-    /// [`Hit::NOTHING`].
-    pub fn hit_at(&self, x: u32, y: u32) -> Hit {
-        let Some(at) = self.index(x, y) else {
-            return Hit::NOTHING;
-        };
-        Hit {
-            definition: match self.picks.get(at) {
-                Some(raw) => PickId::from_raw(*raw, &self.snapshot),
-                None => PickId::NOTHING,
-            },
-            face: match self.faces.get(at) {
-                Some(raw) => FacePickId::from_raw(*raw, &self.snapshot),
-                None => FacePickId::NOTHING,
-            },
-        }
-    }
-
     fn index(&self, x: u32, y: u32) -> Option<usize> {
         (x < self.width && y < self.height).then(|| (y * self.width + x) as usize)
     }
-}
-
-/// Little-endian `u32` per pixel, as an `R32Uint` target lands.
-fn unpack(bytes: &[u8]) -> Vec<u32> {
-    bytes
-        .chunks_exact(4)
-        .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        .collect()
 }
 
 fn align_to(value: u64, alignment: u64) -> u64 {
@@ -1515,7 +1336,7 @@ mod tests {
                 &prepared,
                 &camera,
                 PickId::NOTHING,
-                Hovered::Nothing,
+                PickId::NOTHING,
                 &view,
                 format,
                 width,
