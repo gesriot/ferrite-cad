@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use ferritecad_types::{CadError, Result};
-use ferritecad_viewport::{Camera, PickId, RenderSnapshot, VERTEX_FLOATS};
+use ferritecad_viewport::{Camera, FacePickId, Hovered, PickId, RenderSnapshot, VERTEX_FLOATS};
 use wgpu::util::DeviceExt as _;
 
 /// Linear, not sRGB. The snapshot's colours are linear because that is what the
@@ -16,6 +16,12 @@ pub const COLOUR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// One unsigned integer per pixel: an identity is not a colour, and storing it
 /// in one would mean packing it into channels and hoping nothing filters it.
 pub const PICK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
+
+/// Where a face identity is written, offscreen and nowhere else.
+///
+/// The same format as the identities beside it, and drawn in the same pass so
+/// the two answers about one pixel are answers about the same triangle.
+pub const FACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -49,11 +55,14 @@ struct GlobalsUniform {
     /// The identity to draw as selected, or zero for none. Zero is what the
     /// background reads as, and no definition is ever numbered zero.
     selected: u32,
+    /// The face the pointer is over, or zero. A face of the picture, so the
+    /// same face is marked in every placement of its definition.
+    hovered_face: u32,
     /// The identity the pointer is over, or zero. Kept apart from the
     /// selection because they are different states and a person must be able
     /// to tell which is which: one is a decision and the other is a question.
     hovered: u32,
-    padding: [u32; 2],
+    padding: [u32; 1],
 }
 
 /// What a grid pass needs to know, and all it is allowed to know.
@@ -226,6 +235,12 @@ impl Renderer {
             immediate_size: 0,
         });
 
+        // Watched, because a device that refuses a pipeline reports it through
+        // the uncaptured-error handler, which panics the process. A driver
+        // that will not build what this crate draws with is a machine that
+        // cannot draw, which is an answer a caller can act on and not a crash.
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
         let pipeline = build_pipeline(&device, &shader, &pipeline_layout, COLOUR_FORMAT, true);
 
         let grid_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -271,6 +286,14 @@ impl Renderer {
             COLOUR_FORMAT,
             true,
         );
+        if let Some(refusal) = pollster::block_on(internal.pop())
+            .map(|error| error.to_string())
+            .or_else(|| pollster::block_on(validation.pop()).map(|error| error.to_string()))
+        {
+            return Err(CadError::unsupported(format!(
+                "this graphics adapter refused the pipeline this crate draws with: {refusal}"
+            )));
+        }
 
         let draw_stride = align_to(
             std::mem::size_of::<DrawUniform>() as u64,
@@ -387,14 +410,23 @@ impl Renderer {
         camera: &Camera,
         prepared: &PreparedSnapshot,
         selected: PickId,
-        hovered: PickId,
+        hovered: Hovered,
     ) {
-        // Both asked of the picture about to be drawn, and by the same
-        // question. A number that named a definition of some other picture
-        // would otherwise light up whichever one occupies it here.
-        let known = |pick: PickId| match prepared.snapshot().definition(pick) {
+        // Every identity asked of the picture about to be drawn, and by the
+        // same question. A number that named a definition of some other
+        // picture would otherwise light up whichever one occupies it here.
+        let snapshot = prepared.snapshot();
+        let known = |pick: PickId| match snapshot.definition(pick) {
             Some(_) => pick.to_raw(),
             None => PickId::NOTHING.to_raw(),
+        };
+        let (hovered_face, hovered) = match hovered {
+            Hovered::Nothing => (FacePickId::NOTHING.to_raw(), PickId::NOTHING.to_raw()),
+            Hovered::Definition(pick) => (FacePickId::NOTHING.to_raw(), known(pick)),
+            Hovered::Face(face) => match snapshot.definition_of_face(face) {
+                Some(_) => (face.to_raw(), PickId::NOTHING.to_raw()),
+                None => (FacePickId::NOTHING.to_raw(), PickId::NOTHING.to_raw()),
+            },
         };
         self.queue.write_buffer(
             &self.globals,
@@ -402,8 +434,9 @@ impl Renderer {
             bytemuck::bytes_of(&GlobalsUniform {
                 view_projection: camera.view_projection(),
                 selected: known(selected),
-                hovered: known(hovered),
-                padding: [0; 2],
+                hovered_face,
+                hovered,
+                padding: [0; 1],
             }),
         );
     }
@@ -434,7 +467,7 @@ impl Renderer {
         prepared: &PreparedSnapshot,
         camera: &Camera,
         selected: PickId,
-        hovered: PickId,
+        hovered: Hovered,
         view: &wgpu::TextureView,
         format: wgpu::TextureFormat,
         width: u32,
@@ -516,6 +549,7 @@ impl Renderer {
                     &[(index as u64 * self.draw_stride) as u32],
                 );
                 pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_vertex_buffer(1, mesh.faces.slice(..));
                 pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.index_count, 0, 0..1);
             }
@@ -657,8 +691,20 @@ impl Renderer {
                     contents: bytemuck::cast_slice(mesh.indices()),
                     usage: wgpu::BufferUsages::INDEX,
                 });
+            // Which face each vertex belongs to, beside the vertices rather
+            // than woven into them: the positions and normals keep the layout
+            // every other part of this crate agrees on, and a face is one more
+            // buffer whose contents were decided when the picture was packed.
+            let faces = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("ferritecad viewport faces"),
+                    contents: bytemuck::cast_slice(mesh.faces_of_vertices()),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
             meshes.push(GpuMesh {
                 vertices,
+                faces,
                 indices,
                 index_count: mesh.indices().len() as u32,
             });
@@ -685,7 +731,7 @@ impl Renderer {
         prepared: &PreparedSnapshot,
         camera: &Camera,
         selected: PickId,
-        hovered: PickId,
+        hovered: Hovered,
     ) -> Result<Frame> {
         self.require_own(prepared)?;
 
@@ -701,6 +747,7 @@ impl Renderer {
                 height,
                 colour: Vec::new(),
                 picks: Vec::new(),
+                faces: Vec::new(),
             });
         }
 
@@ -713,6 +760,7 @@ impl Renderer {
         };
         let colour = self.target("colour", extent, COLOUR_FORMAT);
         let pick = self.target("pick", extent, PICK_FORMAT);
+        let face = self.target("face", extent, FACE_FORMAT);
         let depth = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ferritecad viewport depth"),
             size: extent,
@@ -740,6 +788,7 @@ impl Renderer {
         {
             let colour_view = colour.create_view(&Default::default());
             let pick_view = pick.create_view(&Default::default());
+            let face_view = face.create_view(&Default::default());
             let depth_view = depth.create_view(&Default::default());
 
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -761,6 +810,18 @@ impl Renderer {
                         ops: wgpu::Operations {
                             // Zero is what nothing reads as, which is why a
                             // definition's identity is its index plus one.
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &face_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            // Zero again, and for the same reason: a face's
+                            // identity is its number within the picture plus
+                            // one, so nowhere reads as some face.
                             load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                             store: wgpu::StoreOp::Store,
                         },
@@ -795,6 +856,7 @@ impl Renderer {
                 }
                 pass.set_bind_group(0, bindings, &[(index as u64 * self.draw_stride) as u32]);
                 pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_vertex_buffer(1, mesh.faces.slice(..));
                 pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..mesh.index_count, 0, 0..1);
             }
@@ -802,20 +864,20 @@ impl Renderer {
 
         let colour_read = self.readback(&mut encoder, &colour, extent, readback);
         let pick_read = self.readback(&mut encoder, &pick, extent, readback);
+        let face_read = self.readback(&mut encoder, &face, extent, readback);
         self.queue.submit(Some(encoder.finish()));
 
         let colour = self.take(colour_read, height, readback)?;
         let picks = self.take(pick_read, height, readback)?;
+        let faces = self.take(face_read, height, readback)?;
 
         Ok(Frame {
             snapshot,
             width,
             height,
             colour,
-            picks: picks
-                .chunks_exact(4)
-                .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-                .collect(),
+            picks: unpack(&picks),
+            faces: unpack(&faces),
         })
     }
 
@@ -1000,6 +1062,8 @@ struct ReadbackLayout {
 #[derive(Debug)]
 struct GpuMesh {
     vertices: wgpu::Buffer,
+    /// One face identity per vertex, parallel to `vertices`.
+    faces: wgpu::Buffer,
     indices: wgpu::Buffer,
     index_count: u32,
 }
@@ -1069,6 +1133,11 @@ fn build_grid_pipeline(
             blend: None,
             write_mask: wgpu::ColorWrites::ALL,
         }));
+        targets.push(Some(wgpu::ColorTargetState {
+            format: FACE_FORMAT,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        }));
     }
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1084,7 +1153,7 @@ fn build_grid_pipeline(
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("fragment_main"),
+            entry_point: Some(identities_entry_point(with_identities)),
             compilation_options: Default::default(),
             targets: &targets,
         }),
@@ -1103,6 +1172,19 @@ fn build_grid_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// Which fragment entry point writes exactly the given targets.
+///
+/// A shader whose output signature is wider than its pipeline is not a
+/// harmless waste: Direct3D refuses to compile it. So the window and the
+/// readback have an entry point each, over one shading function.
+fn identities_entry_point(with_identities: bool) -> &'static str {
+    if with_identities {
+        "fragment_main"
+    } else {
+        "fragment_colour"
+    }
 }
 
 fn build_pipeline(
@@ -1128,6 +1210,15 @@ fn build_pipeline(
             blend: None,
             write_mask: wgpu::ColorWrites::ALL,
         }));
+        // Faces travel with the identities and only there. A window draws its
+        // model many times a second and asks what a pixel is when somebody
+        // points at one, so paying for either on every frame would be paying
+        // continuously for something wanted occasionally.
+        targets.push(Some(wgpu::ColorTargetState {
+            format: FACE_FORMAT,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        }));
     }
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1137,30 +1228,45 @@ fn build_pipeline(
             module: shader,
             entry_point: Some("vertex_main"),
             compilation_options: Default::default(),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: (VERTEX_FLOATS * std::mem::size_of::<f32>()) as u64,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &[
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x3,
+            buffers: &[
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: (VERTEX_FLOATS * std::mem::size_of::<f32>()) as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: (3 * std::mem::size_of::<f32>()) as u64,
+                            shader_location: 1,
+                        },
+                    ],
+                }),
+                // The face identities, in their own buffer. A vertex belongs
+                // to exactly one face, which is checked when the picture is
+                // packed, so this says which face a fragment came from without
+                // asking the adapter for a capability.
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<u32>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Uint32,
                         offset: 0,
-                        shader_location: 0,
-                    },
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x3,
-                        offset: (3 * std::mem::size_of::<f32>()) as u64,
-                        shader_location: 1,
-                    },
-                ],
-            })],
+                        shader_location: 2,
+                    }],
+                }),
+            ],
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("fragment_main"),
+            // The entry point that writes exactly the targets this pipeline
+            // has. Both shade the model identically; they differ only in what
+            // they record about each pixel.
+            entry_point: Some(identities_entry_point(with_identities)),
             compilation_options: Default::default(),
-            // The fragment shader always writes an identity. A pipeline with
-            // no target for it discards the value rather than needing a second
-            // shader that does not compute it.
             targets: &targets,
         }),
         primitive: wgpu::PrimitiveState {
@@ -1191,6 +1297,36 @@ pub struct Frame {
     height: u32,
     colour: Vec<u8>,
     picks: Vec<u32>,
+    faces: Vec<u32>,
+}
+
+/// What one pixel turned out to be: a definition, and the face of it.
+///
+/// Both, together, because they were read from the same pixel of the same
+/// frame and are only true of each other there. Neither field is readable as a
+/// number and neither is stored anywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hit {
+    definition: PickId,
+    face: FacePickId,
+}
+
+impl Hit {
+    /// Nothing was drawn here.
+    pub const NOTHING: Self = Self {
+        definition: PickId::NOTHING,
+        face: FacePickId::NOTHING,
+    };
+
+    /// Which definition, exactly as [`Frame::pick_at`] would answer.
+    pub fn definition(self) -> PickId {
+        self.definition
+    }
+
+    /// Which face of it, for as long as this picture is on screen.
+    pub fn face(self) -> FacePickId {
+        self.face
+    }
 }
 
 impl Frame {
@@ -1238,9 +1374,39 @@ impl Frame {
         }
     }
 
+    /// What was drawn at one pixel, and which face of it.
+    ///
+    /// Beside [`Self::pick_at`] rather than instead of it: what a click means
+    /// is a settled question, and a hover asks a different one. Outside the
+    /// frame, over the grid and over the background this is
+    /// [`Hit::NOTHING`].
+    pub fn hit_at(&self, x: u32, y: u32) -> Hit {
+        let Some(at) = self.index(x, y) else {
+            return Hit::NOTHING;
+        };
+        Hit {
+            definition: match self.picks.get(at) {
+                Some(raw) => PickId::from_raw(*raw, &self.snapshot),
+                None => PickId::NOTHING,
+            },
+            face: match self.faces.get(at) {
+                Some(raw) => FacePickId::from_raw(*raw, &self.snapshot),
+                None => FacePickId::NOTHING,
+            },
+        }
+    }
+
     fn index(&self, x: u32, y: u32) -> Option<usize> {
         (x < self.width && y < self.height).then(|| (y * self.width + x) as usize)
     }
+}
+
+/// Little-endian `u32` per pixel, as an `R32Uint` target lands.
+fn unpack(bytes: &[u8]) -> Vec<u32> {
+    bytes
+        .chunks_exact(4)
+        .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .collect()
 }
 
 fn align_to(value: u64, alignment: u64) -> u64 {
@@ -1336,7 +1502,7 @@ mod tests {
                 &prepared,
                 &camera,
                 PickId::NOTHING,
-                PickId::NOTHING,
+                Hovered::Nothing,
                 &view,
                 format,
                 width,

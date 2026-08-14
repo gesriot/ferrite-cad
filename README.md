@@ -59,10 +59,13 @@ to sit on, with heavier lines every ten squares and coloured axes through the
 origin; its spacing steps through 1, 2 and 5 millimetres and their decades as
 you zoom. It is a viewing aid only: it is not in the document, not in the
 model's extent, and clicking it is clicking the background. Moving the pointer
-over the model, or over a row of the list, marks that definition everywhere it
-appears without choosing it, so a part can be found before anything is
-selected. Opening another
-document is the only editing operation there is.
+over the model marks the face under it, and the same face wherever that
+definition appears; moving it over a row of the list marks that whole
+definition everywhere. Neither chooses anything, so a part or a surface can be
+found before anything is selected, and what is already selected keeps its
+appearance while you look around it. Faces are marked, not selectable: a click
+still names a definition. Opening another document is the only editing
+operation there is.
 
 ## How a document is put together
 

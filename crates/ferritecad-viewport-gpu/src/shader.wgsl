@@ -2,10 +2,10 @@
 //
 // The smallest shader that draws a model and says what was clicked.
 //
-// Two colour attachments, written in one pass. Drawing the picture and drawing
-// the identities separately would mean two passes that could disagree about
-// which triangle won the depth test, and the pick would then be right about a
-// frame nobody saw.
+// Colour, definition and face, written in one pass. Drawing the picture and
+// drawing the identities separately would mean two passes that could disagree
+// about which triangle won the depth test, and the pick would then be right
+// about a frame nobody saw.
 
 struct Globals {
     view_projection: mat4x4<f32>,
@@ -14,11 +14,14 @@ struct Globals {
     // definition light up together: they carry the same number, so this is one
     // comparison rather than a list the renderer would have to keep in step.
     selected: u32,
+    // Which face the pointer is over, or zero. A face of the picture rather
+    // than of a placement, so the same face lights up wherever its definition
+    // appears.
+    hovered_face: u32,
     // Which definition the pointer is over, or zero. A question rather than a
     // decision, and drawn differently so the two can be told apart.
     hovered: u32,
     padding_0: u32,
-    padding_1: u32,
 };
 
 struct Draw {
@@ -43,14 +46,20 @@ struct Draw {
 struct VertexOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) normal: vec3<f32>,
+    // Flat, because a face is a fact about the surface and not a quantity
+    // that varies across it. Every vertex of a triangle carries the same
+    // value, which the packer checks, so no interpolation could be right.
+    @location(1) @interpolate(flat) face: u32,
 };
 
 @vertex
 fn vertex_main(
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
+    @location(2) face: u32,
 ) -> VertexOut {
     var out: VertexOut;
+    out.face = face;
     let world = draw.transform * vec4<f32>(position, 1.0);
     out.clip = globals.view_projection * world;
     // A normal follows the inverse transpose, not the transform itself. The
@@ -69,6 +78,7 @@ fn vertex_main(
 struct FragmentOut {
     @location(0) colour: vec4<f32>,
     @location(1) pick: u32,
+    @location(2) face: u32,
 };
 
 // Move away from the colour already on screen. Always lifting towards white
@@ -85,8 +95,12 @@ fn marked_colour(colour: vec3<f32>, strength: f32) -> vec3<f32> {
     return mix(shown, endpoint, strength);
 }
 
-@fragment
-fn fragment_main(in: VertexOut) -> FragmentOut {
+// What the model looks like at one pixel, given which face it came from.
+//
+// Shared by both entry points, because a window and a readback must agree
+// about the picture down to the byte: they differ in what they record about
+// it, never in what it looks like.
+fn shade(in: VertexOut, face: u32) -> vec4<f32> {
     // A zero-length normal cannot be normalised, and normalize() of one is a
     // NaN that propagates into the colour attachment. Face the viewer instead.
     let length = dot(in.normal, in.normal);
@@ -106,17 +120,41 @@ fn fragment_main(in: VertexOut) -> FragmentOut {
     var tint = draw.colour.rgb;
     if (globals.selected != 0u && draw.pick == globals.selected) {
         // A choice already made. Kept as it was, and stronger than the
-        // question below, so pointing at something never looks like having
+        // questions below, so pointing at something never looks like having
         // chosen it.
         tint = marked_colour(tint, 0.55);
+    } else if (globals.hovered_face != 0u && face == globals.hovered_face) {
+        // One face under the pointer. Marked by its own identity rather than
+        // its draw's, which is why the same face of a definition placed twice
+        // is marked in both places and its neighbour in neither.
+        tint = marked_colour(tint, 0.22);
     } else if (globals.hovered != 0u && draw.pick == globals.hovered) {
         // Merely under the pointer: shifted enough to find, far enough from
         // the selection to be another thing.
         tint = marked_colour(tint, 0.22);
     }
 
+    return vec4<f32>(tint * lambert, draw.colour.a);
+}
+
+// The offscreen path: the picture and both facts about each pixel of it.
+@fragment
+fn fragment_main(in: VertexOut) -> FragmentOut {
+    let face = in.face;
     var out: FragmentOut;
-    out.colour = vec4<f32>(tint * lambert, draw.colour.a);
+    out.colour = shade(in, face);
     out.pick = draw.pick;
+    out.face = face;
     return out;
+}
+
+// A window's path: colour and nothing else.
+//
+// A second entry point rather than one that writes identities into targets a
+// window does not have. Direct3D rejects that outright, and a shader whose
+// output signature is wider than the pipeline it is compiled for is wrong even
+// where a driver tolerates it.
+@fragment
+fn fragment_colour(in: VertexOut) -> @location(0) vec4<f32> {
+    return shade(in, in.face);
 }
