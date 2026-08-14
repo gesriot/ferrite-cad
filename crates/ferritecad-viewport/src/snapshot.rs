@@ -234,9 +234,9 @@ impl Extent {
 ///
 /// Like [`PickId`] and for the same reasons: it is bound to the snapshot that
 /// issued it, it carries no number anyone outside can read, and it is not
-/// serialisable. A face has no durable name in this project yet – what a
-/// document stores about geometry is a topology reference, and this is not
-/// one. It says only "the face the pointer is over, in the picture on screen".
+/// serialisable. This layer has no durable name for a face: a document-aware
+/// caller may resolve this value to a topology reference, but this is not one.
+/// It says only "the face the pointer is over, in the picture on screen".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FacePickId {
     raw: u32,
@@ -493,6 +493,10 @@ impl RenderSnapshot {
 pub struct SnapshotBuilder {
     meshes: Vec<PackedMesh>,
     items: Vec<DrawItem>,
+    /// Opaque, deterministic meaning supplied by the layer interpreting the
+    /// picture. It changes transient identities without putting that meaning
+    /// into the snapshot itself.
+    identity_context: Option<ContentHash>,
     /// The composed world transform of each placement, kept as `Transform` so
     /// composition stays in `f64` until the last moment.
     world: Vec<Transform>,
@@ -506,6 +510,23 @@ pub struct SnapshotBuilder {
 impl SnapshotBuilder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Binds this picture's transient identities to an interpreted context.
+    ///
+    /// Geometry alone is not always the whole meaning of a pixel. A document
+    /// may attach a durable name to one face while another document draws the
+    /// same triangles without that name. The layer that knows those names can
+    /// supply their deterministic digest here; the viewport retains only the
+    /// digest and can then refuse a pick decoded for the other interpretation.
+    pub fn bind_identities_to(&mut self, context: ContentHash) -> Result<()> {
+        if self.identity_context.is_some() {
+            return Err(CadError::input(
+                "a picture's transient identities cannot be bound twice",
+            ));
+        }
+        self.identity_context = Some(context);
+        Ok(())
     }
 
     /// Packs one definition's mesh and returns its index.
@@ -688,7 +709,7 @@ impl SnapshotBuilder {
             .unwrap_or(([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]));
         let has_geometry = extent.bounds().is_some();
 
-        let identity = snapshot_identity(&self.meshes, &self.items);
+        let identity = snapshot_identity(&self.meshes, &self.items, self.identity_context.as_ref());
         for item in &mut self.items {
             item.pick.snapshot = identity;
         }
@@ -711,12 +732,26 @@ impl SnapshotBuilder {
 /// stay a u32. A readback therefore retains the snapshot used for the draw,
 /// while a `PickId` already decoded on the CPU refuses to resolve against a
 /// different picture instead of silently keeping the same integer meaning.
-fn snapshot_identity(meshes: &[PackedMesh], items: &[DrawItem]) -> ContentHash {
+fn snapshot_identity(
+    meshes: &[PackedMesh],
+    items: &[DrawItem],
+    context: Option<&ContentHash>,
+) -> ContentHash {
     let mut hasher = CanonicalHasher::new("ferritecad.render-snapshot");
-    // Three: version two added faces but accidentally hashed runs in vertex
-    // storage order. Face ranges partition the index buffer, so version three
-    // hashes their exact index counts instead.
-    hasher.algorithm_version(3);
+    // Four: version two added faces but accidentally hashed runs in vertex
+    // storage order, version three fixed that, and version four binds the
+    // transient identities to any opaque interpretation supplied by the
+    // layer that knows what the picture means.
+    hasher.algorithm_version(4);
+    hasher.field("identity_context");
+    match context {
+        Some(context) => {
+            hasher.hash(context);
+        }
+        None => {
+            hasher.str("none");
+        }
+    }
     hasher.field("meshes").u64(meshes.len() as u64);
     for mesh in meshes {
         hasher.field("vertices").u64(mesh.vertices.len() as u64);

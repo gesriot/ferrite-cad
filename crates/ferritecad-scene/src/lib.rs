@@ -33,7 +33,8 @@
 //! adapter back at the document. Passing the kernel to the function instead of
 //! capturing it is what lets one `&mut` satisfy both.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt;
 use std::path::Path;
 
 use ferritecad_document::{
@@ -45,7 +46,10 @@ use ferritecad_exchange::{ColourSource, Import, Scene};
 use ferritecad_kernel::{
     GeometryKernel, KernelIdentity, OperationContext, ProgressSink, ShapeHandle, TessellationParams,
 };
-use ferritecad_types::{CadError, ImportedSourceId, ObjectId, Result, StableEntityId, Transform};
+use ferritecad_types::{
+    CadError, CanonicalHasher, ContentHash, ImportedSourceId, ObjectId, Result, StableEntityId,
+    Transform,
+};
 use ferritecad_viewport::{FacePickId, PickId, RenderSnapshot, SnapshotBuilder};
 use serde::{Deserialize, Serialize};
 
@@ -100,16 +104,46 @@ impl FaceMeaning {
     }
 }
 
+/// A portable meaning while it is still paired with the deterministic digest
+/// used to bind the picture's transient identities to it.
+#[derive(Clone)]
+struct BoundFaceMeaning {
+    meaning: FaceMeaning,
+    identity: ContentHash,
+}
+
 /// Every durable name this document has for the faces of one picture.
 ///
 /// Built while the rebuild's topology map and the tessellation's face handles
 /// are both in hand, which is the only moment they can be joined, and holding
 /// neither afterwards. A face nothing names has an empty list rather than an
 /// invented entry: a name that was not stored is not a name.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct FaceNames {
+    /// One pick from the snapshot whose semantic context produced `by_face`.
+    /// It is only a binding check and is deliberately absent from `Debug`:
+    /// transient identity is not part of what a face is called.
+    picture: PickId,
     /// Indexed by the picture's own face identity, minus one.
     by_face: Vec<Vec<FaceMeaning>>,
+}
+
+impl Default for FaceNames {
+    fn default() -> Self {
+        Self {
+            picture: PickId::NOTHING,
+            by_face: Vec::new(),
+        }
+    }
+}
+
+impl fmt::Debug for FaceNames {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FaceNames")
+            .field("by_face", &self.by_face)
+            .finish()
+    }
 }
 
 impl FaceNames {
@@ -119,7 +153,9 @@ impl FaceNames {
     /// picture that has been replaced names nothing here however plausible
     /// its number looks.
     pub fn of(&self, face: FacePickId, snapshot: &RenderSnapshot) -> &[FaceMeaning] {
-        if snapshot.definition_of_face(face).is_none() {
+        if snapshot.definition(self.picture).is_none()
+            || snapshot.definition_of_face(face).is_none()
+        {
             return &[];
         }
         match (face.to_raw() as usize).checked_sub(1) {
@@ -521,12 +557,18 @@ where
         // No failure is reported: a lost reference is a document-level fact, and
         // a viewer that refused to draw a model because one name no longer
         // resolves would be useless exactly when it is needed.
-        let named: Vec<(ferritecad_kernel::SubShapeHandle, FaceMeaning)> = document
+        let named: Vec<(ferritecad_kernel::SubShapeHandle, BoundFaceMeaning)> = document
             .topology_refs()?
             .iter()
             .filter_map(|reference| match built.resolve(reference) {
                 Ok(found) => match found.as_slice() {
-                    [face] => Some((*face, FaceMeaning::of(reference))),
+                    [face] => Some((
+                        *face,
+                        BoundFaceMeaning {
+                            meaning: FaceMeaning::of(reference),
+                            identity: reference.meaning_hash(),
+                        },
+                    )),
                     _ => None,
                 },
                 Err(_) => None,
@@ -542,7 +584,7 @@ where
         // the kernel listed it under while packing. Turned into the picture's
         // own face identities once the picture exists, because the picture is
         // what numbers them.
-        let mut names: HashMap<usize, Vec<Vec<FaceMeaning>>> = HashMap::new();
+        let mut names: BTreeMap<usize, Vec<Vec<BoundFaceMeaning>>> = BTreeMap::new();
         let objects = document.objects()?;
 
         // Counted before anything is drawn, so each one can say what fraction
@@ -595,7 +637,7 @@ where
                             // Not by ordinal, not by geometry, and not by
                             // name: two faces of one body can be congruent,
                             // and traversal order is the kernel's business.
-                            let named: Vec<Vec<FaceMeaning>> = mesh
+                            let named: Vec<Vec<BoundFaceMeaning>> = mesh
                                 .faces
                                 .iter()
                                 .map(|range| {
@@ -647,6 +689,7 @@ where
                 _ => continue,
             }
         }
+        builder.bind_identities_to(face_meaning_identity(&names))?;
         let snapshot = builder.build();
         Ok(LoadedScene {
             faces: face_names(&snapshot, names)?,
@@ -670,11 +713,11 @@ where
 /// exists, and the two would drift the first time either changed.
 fn face_names(
     snapshot: &RenderSnapshot,
-    named: HashMap<usize, Vec<Vec<FaceMeaning>>>,
+    named: BTreeMap<usize, Vec<Vec<BoundFaceMeaning>>>,
 ) -> Result<FaceNames> {
     let mut by_face = vec![Vec::new(); snapshot.face_count()];
     for (definition, per_ordinal) in named {
-        for (ordinal, meanings) in per_ordinal.into_iter().enumerate() {
+        for (ordinal, bound) in per_ordinal.into_iter().enumerate() {
             let face = snapshot.face_of(definition, ordinal).ok_or_else(|| {
                 CadError::topology(format!(
                     "definition {definition} was packed with more faces than the picture numbered"
@@ -683,10 +726,35 @@ fn face_names(
             let at = (face.to_raw() as usize)
                 .checked_sub(1)
                 .ok_or_else(|| CadError::topology("a face of a picture is never numbered zero"))?;
-            by_face[at] = meanings;
+            by_face[at] = bound.into_iter().map(|named| named.meaning).collect();
         }
     }
-    Ok(FaceNames { by_face })
+    Ok(FaceNames {
+        picture: snapshot.pick_of(0).unwrap_or(PickId::NOTHING),
+        by_face,
+    })
+}
+
+/// The exact portable meaning assigned to each packed face.
+///
+/// Definition and face positions are included because moving one stored name
+/// to another face must make every transient identity from the old
+/// interpretation stale. The viewport sees only the resulting digest.
+fn face_meaning_identity(named: &BTreeMap<usize, Vec<Vec<BoundFaceMeaning>>>) -> ContentHash {
+    let mut hasher = CanonicalHasher::new("ferritecad.scene.face-meanings");
+    hasher.algorithm_version(1);
+    hasher.field("definitions").u64(named.len() as u64);
+    for (definition, faces) in named {
+        hasher.field("definition").u64(*definition as u64);
+        hasher.field("faces").u64(faces.len() as u64);
+        for meanings in faces {
+            hasher.field("meanings").u64(meanings.len() as u64);
+            for meaning in meanings {
+                hasher.hash(&meaning.identity);
+            }
+        }
+    }
+    hasher.finish()
 }
 
 /// Where an imported scene came from: its identity, and what to call it.
@@ -3491,6 +3559,69 @@ mod tests {
         assert!(
             other.faces.of(face, &other.snapshot).is_empty(),
             "a face of the replaced picture was answered with a name from this one"
+        );
+    }
+
+    #[test]
+    fn face_names_cannot_be_borrowed_by_an_identical_picture_with_different_meaning() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let named_path = directory.path().join("named.fcad");
+        let unnamed_path = directory.path().join("unnamed.fcad");
+        a_named_body(&named_path, |extrude, body, _| {
+            vec![face_reference(
+                body,
+                extrude,
+                SemanticRole::ExtrudeCap {
+                    side: ferritecad_document::CapSide::Start,
+                },
+                SelectionRule::Exact,
+            )]
+        });
+        a_named_body(&unnamed_path, |_, _, _| Vec::new());
+
+        let named = load(&named_path);
+        let unnamed = load(&unnamed_path);
+        assert_eq!(
+            named.snapshot.meshes(),
+            unnamed.snapshot.meshes(),
+            "the gate needs byte-identical geometry and face partitions"
+        );
+        let drawn = |scene: &LoadedScene| {
+            scene
+                .snapshot
+                .draws()
+                .iter()
+                .map(|item| (item.mesh, item.transform, item.colour))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            drawn(&named),
+            drawn(&unnamed),
+            "the gate needs identical placements and appearance"
+        );
+        assert_ne!(
+            named.snapshot, unnamed.snapshot,
+            "different portable face meanings must make old picks stale"
+        );
+
+        let ordinal = meanings(&named)
+            .iter()
+            .position(|meanings| !meanings.is_empty())
+            .expect("the first document names one face");
+        let face = unnamed
+            .snapshot
+            .face_of(0, ordinal)
+            .expect("the identical picture has the same face position");
+        let pick = unnamed.snapshot.pick_of(0).expect("the body is drawn");
+
+        assert!(
+            named.faces.of(face, &unnamed.snapshot).is_empty(),
+            "a name stored only in the first document leaked into the second"
+        );
+        assert_eq!(
+            Selection::at(pick, face, &unnamed.snapshot, &named.faces),
+            Selection::Definition(pick),
+            "a face the current document does not name became selectable as a face"
         );
     }
 }

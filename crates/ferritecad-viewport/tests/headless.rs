@@ -12,7 +12,7 @@
 use ferritecad_kernel::{
     Mesh, MeshFaceRange, SessionId, ShapeHandle, SubShapeHandle, SubShapeKind,
 };
-use ferritecad_types::{ErrorKind, Transform, Vec3};
+use ferritecad_types::{ContentHash, ErrorKind, Transform, Vec3};
 use ferritecad_viewport::{
     Camera, FacePickId, PickId, RenderSnapshot, SnapshotBuilder, StandardView, VERTEX_FLOATS,
 };
@@ -217,6 +217,59 @@ fn the_draw_order_is_the_order_placements_were_given() {
 
     let order: Vec<usize> = first.draws().iter().map(|item| item.mesh).collect();
     assert_eq!(order, vec![0, 1, 0]);
+}
+
+#[test]
+fn identical_pixels_with_different_interpretations_issue_different_picks() {
+    let build = |context: &[u8]| {
+        let mut builder = SnapshotBuilder::new();
+        builder
+            .bind_identities_to(ContentHash::of_bytes(context))
+            .expect("binds once");
+        let mesh = builder.add_mesh(&triangle()).expect("packs");
+        builder
+            .place(mesh, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+            .expect("places");
+        builder.build()
+    };
+
+    let first = build(b"face zero is named");
+    let repeated = build(b"face zero is named");
+    let other = build(b"no face is named");
+    assert_eq!(first, repeated, "the binding must be deterministic");
+    assert_eq!(first.meshes(), other.meshes(), "only meaning differs");
+    assert_ne!(first, other, "meaning did not bind the transient ids");
+
+    let pick = first.pick_of(0).expect("drawn");
+    let face = first.face_of(0, 0).expect("numbered");
+    assert_eq!(other.definition(pick), None);
+    assert_eq!(other.definition_of_face(face), None);
+}
+
+#[test]
+fn refusing_a_second_identity_binding_keeps_the_first() {
+    let build = |try_twice: bool| {
+        let mut builder = SnapshotBuilder::new();
+        builder
+            .bind_identities_to(ContentHash::of_bytes(b"first"))
+            .expect("binds once");
+        if try_twice {
+            builder
+                .bind_identities_to(ContentHash::of_bytes(b"second"))
+                .expect_err("a second interpretation is contradictory");
+        }
+        let mesh = builder.add_mesh(&triangle()).expect("packs");
+        builder
+            .place(mesh, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+            .expect("places");
+        builder.build()
+    };
+
+    assert_eq!(
+        build(false),
+        build(true),
+        "refusing the second binding changed the picture anyway"
+    );
 }
 
 #[test]

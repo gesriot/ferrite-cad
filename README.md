@@ -71,9 +71,9 @@ over the model marks the face under it, and the same face wherever that
 definition appears; moving it over a row of the list marks that whole
 definition everywhere. Neither chooses anything, so a part or a surface can be
 found before anything is selected, and what is already selected keeps its
-appearance while you look around it. Faces are marked, not selectable: a click
-still names a definition. Opening another document is the only editing
-operation there is.
+appearance while you look around it. A click chooses a named native face as
+that face and otherwise chooses its definition. Opening another document is
+the only editing operation there is.
 
 ## How a document is put together
 

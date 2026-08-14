@@ -482,6 +482,57 @@ pub struct TopologyRef {
 }
 
 impl TopologyRef {
+    /// A deterministic identity for what this reference durably means.
+    ///
+    /// The geometric fallback is deliberately absent: it is a recovery hint,
+    /// never identity. This key lets a transient picture bind its pick values
+    /// to the portable face meanings interpreted beside it without retaining
+    /// any document object or kernel handle.
+    pub fn meaning_hash(&self) -> ContentHash {
+        let mut hasher = CanonicalHasher::new("topology-reference.meaning");
+        hasher.algorithm_version(1);
+        hasher.field("reference").bytes(&self.id.to_bytes());
+        hasher.field("owner").bytes(&self.owner.to_bytes());
+        hasher
+            .field("producer_feature")
+            .bytes(&self.producer_feature.to_bytes());
+        hasher
+            .field("expected_kind")
+            .str(self.expected_kind.as_str());
+
+        hasher.field("output_role");
+        match &self.output_role {
+            SemanticRole::SketchSegment { segment } => {
+                hasher.str("sketch_segment").bytes(&segment.to_bytes());
+            }
+            SemanticRole::ExtrudeCap { side } => {
+                hasher.str("extrude_cap").str(match side {
+                    CapSide::Start => "start",
+                    CapSide::End => "end",
+                });
+            }
+            SemanticRole::ExtrudeSide { profile_segment } => {
+                hasher
+                    .str("extrude_side")
+                    .bytes(&profile_segment.to_bytes());
+            }
+            SemanticRole::FilletFace { source_edge } => {
+                hasher.str("fillet_face").bytes(&source_edge.to_bytes());
+            }
+        }
+
+        hasher.field("selection");
+        match &self.selection {
+            SelectionRule::Exact => {
+                hasher.str("exact");
+            }
+            SelectionRule::AllDerivedFrom { ancestor } => {
+                hasher.str("all_derived_from").bytes(&ancestor.to_bytes());
+            }
+        }
+        hasher.finish()
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         if let Some(signature) = &self.fallback_signature {
             signature.validate()?;
@@ -1067,5 +1118,60 @@ mod tests {
         };
 
         assert_ne!(blind.cache_key(tolerance), symmetric.cache_key(tolerance));
+    }
+
+    #[test]
+    fn topology_meaning_hash_tracks_portable_meaning_and_not_the_fallback_hint() {
+        let reference = TopologyRef {
+            id: StableEntityId::new(),
+            owner: ObjectId::new(),
+            producer_feature: ObjectId::new(),
+            expected_kind: EntityKind::Face,
+            output_role: SemanticRole::ExtrudeCap {
+                side: CapSide::Start,
+            },
+            selection: SelectionRule::Exact,
+            fallback_signature: None,
+        };
+        let key = reference.meaning_hash();
+
+        let mut with_hint = reference.clone();
+        with_hint.fallback_signature = Some(GeomSignature {
+            kind: EntityKind::Face,
+            measure: 12.0,
+            centroid: Point3::ORIGIN,
+        });
+        assert_eq!(
+            with_hint.meaning_hash(),
+            key,
+            "a recovery hint became identity"
+        );
+
+        let mut changed = Vec::new();
+        let mut value = reference.clone();
+        value.id = StableEntityId::new();
+        changed.push(value.meaning_hash());
+        let mut value = reference.clone();
+        value.owner = ObjectId::new();
+        changed.push(value.meaning_hash());
+        let mut value = reference.clone();
+        value.producer_feature = ObjectId::new();
+        changed.push(value.meaning_hash());
+        let mut value = reference.clone();
+        value.expected_kind = EntityKind::Edge;
+        changed.push(value.meaning_hash());
+        let mut value = reference.clone();
+        value.output_role = SemanticRole::ExtrudeCap { side: CapSide::End };
+        changed.push(value.meaning_hash());
+        let mut value = reference;
+        value.selection = SelectionRule::AllDerivedFrom {
+            ancestor: StableEntityId::new(),
+        };
+        changed.push(value.meaning_hash());
+
+        assert!(
+            changed.into_iter().all(|changed| changed != key),
+            "a portable field was absent from the meaning hash"
+        );
     }
 }
