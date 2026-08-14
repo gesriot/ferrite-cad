@@ -4,15 +4,26 @@
 
 #![allow(clippy::panic)]
 
-/// The real renderer, opened five times, reported rather than panicked.
+/// The real renderer, opened one after another and all kept alive.
+///
+/// The smoke suite opens one device per test and runs them in parallel, so
+/// what matters is not whether one renderer can be built but whether the
+/// twentieth can while the first nineteen are still there.
 #[test]
-fn the_real_renderer_five_times() {
+fn many_renderers_at_once() {
     let mut report = String::new();
-    for attempt in 1..=5 {
+    let mut held = Vec::new();
+    for attempt in 1..=24 {
         match ferritecad_viewport_gpu::Renderer::new() {
-            Ok(_) => report.push_str(&format!("{attempt}: ok\n")),
-            Err(error) => report.push_str(&format!("{attempt}: {:?} {error}\n", error.kind())),
+            Ok(renderer) => {
+                held.push(renderer);
+                report.push_str(&format!("{attempt}: ok\n"));
+            }
+            Err(error) => {
+                report.push_str(&format!("{attempt}: {:?} {error}\n", error.kind()));
+                break;
+            }
         }
     }
-    panic!("FIVE:\n{report}");
+    panic!("HELD:\n{report}");
 }
