@@ -20,7 +20,7 @@
 //! first drag afterwards would jump the model by the width of it.
 
 use ferritecad_types::Result;
-use ferritecad_viewport::{Camera, RenderSnapshot, StandardView};
+use ferritecad_viewport::{Camera, Projection, RenderSnapshot, StandardView};
 
 /// How far a wheel notch moves the camera.
 ///
@@ -334,6 +334,10 @@ impl ViewportInput {
     /// document immediately after Open cleared the selection.
     pub fn accept_load(&mut self, loaded: Result<RenderSnapshot>) -> Result<RenderSnapshot> {
         let snapshot = loaded?;
+        // A document is opened to be understood before it is measured, so it
+        // arrives drawn the way an eye sees it, whatever the last one was left
+        // in. The same reason every other transient state starts afresh here.
+        self.camera.set_projection(Projection::default());
         if let Some(bounds) = snapshot.bounds() {
             self.camera.frame(bounds)?;
         }
@@ -359,6 +363,21 @@ impl ViewportInput {
         // A question about a picture nobody is looking at any more.
         self.hover = Hover::Cleared;
         self.redraw = true;
+    }
+
+    /// Draws through a different projection, and says whether that changed
+    /// anything.
+    ///
+    /// The camera owns what a projection is and what switching one preserves;
+    /// this only carries the request to it and reports what happened, so the
+    /// window and the tests reach the same rule.
+    pub fn set_projection(&mut self, projection: Projection) -> bool {
+        self.camera.set_projection(projection)
+    }
+
+    /// Which projection the model is drawn through.
+    pub fn projection(&self) -> Projection {
+        self.camera.projection_mode()
     }
 
     /// Asks for the next frame to be drawn.

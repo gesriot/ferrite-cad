@@ -14,7 +14,7 @@ use ferritecad_kernel::{
 };
 use ferritecad_types::{ContentHash, ErrorKind, Transform, Vec3};
 use ferritecad_viewport::{
-    Camera, FacePickId, Marked, PickId, RenderSnapshot, SnapshotBuilder, StandardView,
+    Camera, FacePickId, Marked, PickId, Projection, RenderSnapshot, SnapshotBuilder, StandardView,
     VERTEX_FLOATS, Visibility,
 };
 
@@ -2709,4 +2709,306 @@ fn history_belongs_to_the_picture_that_recorded_it() {
     assert!(visibility.can_undo(&one));
     assert!(visibility.undo(&one));
     assert!(visibility.shows(0, &one));
+}
+
+/// A camera looking at the origin from a fixed distance, framed on a box.
+fn a_framed_camera(width: u32, height: u32) -> Camera {
+    let mut camera = Camera::new();
+    camera.resize(width, height);
+    camera
+        .frame(([-10.0, -10.0, -10.0], [10.0, 10.0, 10.0]))
+        .expect("frames");
+    camera
+}
+
+#[test]
+fn a_camera_draws_as_an_eye_sees_until_it_is_asked_not_to() {
+    let camera = a_framed_camera(200, 200);
+    assert_eq!(
+        camera.projection_mode(),
+        Projection::Perspective,
+        "a new camera does not draw the way it always has"
+    );
+
+    // Asking for the projection already in use is not a change.
+    let mut same = camera;
+    assert!(!same.set_projection(Projection::Perspective));
+    assert_eq!(same, camera);
+}
+
+#[test]
+fn equal_lengths_at_different_depths_project_equally_only_in_a_drawing() {
+    let mut camera = Camera::new();
+    camera.resize(200, 200);
+    camera
+        .frame(([-20.0, -60.0, -20.0], [20.0, 60.0, 20.0]))
+        .expect("frames");
+
+    // Two segments of the same world length, at different distances along the
+    // direction the camera looks.
+    let near = ([-5.0, -20.0, 0.0], [5.0, -20.0, 0.0]);
+    let far = ([-5.0, 20.0, 0.0], [5.0, 20.0, 0.0]);
+    let width_of = |camera: &Camera, segment: ([f32; 3], [f32; 3])| {
+        (projected(&camera.view_projection(), segment.1)[0]
+            - projected(&camera.view_projection(), segment.0)[0])
+            .abs()
+    };
+
+    // As an eye sees: the further one is smaller.
+    let (near_seen, far_seen) = (width_of(&camera, near), width_of(&camera, far));
+    assert!(
+        near_seen > far_seen * 1.2,
+        "a perspective view drew equal lengths alike: {near_seen} against {far_seen}"
+    );
+
+    // As a drawing shows: equal is equal.
+    assert!(camera.set_projection(Projection::Orthographic));
+    let (near_drawn, far_drawn) = (width_of(&camera, near), width_of(&camera, far));
+    assert!(
+        (near_drawn - far_drawn).abs() < 1e-5,
+        "an orthographic view drew equal lengths differently: {near_drawn} against {far_drawn}"
+    );
+}
+
+#[test]
+fn changing_projection_keeps_what_is_looked_at_and_how_big_it_is() {
+    // Looking at something that is not at the origin, from a view with an up
+    // axis of its own: a camera already pointing where a reset would send it
+    // could not tell a reset from a change that kept everything.
+    let mut camera = Camera::new();
+    camera.resize(320, 200);
+    camera
+        .frame(([90.0, 40.0, 10.0], [110.0, 60.0, 30.0]))
+        .expect("frames");
+    camera.look_from(StandardView::Top);
+    let camera = camera;
+    assert_ne!(
+        camera.target(),
+        [0.0; 3],
+        "the gate needs an off-centre target"
+    );
+    let mut flat = camera;
+    assert!(flat.set_projection(Projection::Orthographic));
+
+    assert_eq!(flat.target(), camera.target(), "the target moved");
+    assert_eq!(flat.eye(), camera.eye(), "the eye moved");
+    // The up axis is what decides which way round the picture is, so it is
+    // checked by what it decides: two points keep their order on screen.
+    let target = camera.target();
+    for offset in [[7.0, 0.0, 0.0], [0.0, 7.0, 0.0], [0.0, 0.0, 7.0]] {
+        let point = [
+            target[0] + offset[0],
+            target[1] + offset[1],
+            target[2] + offset[2],
+        ];
+        let seen = projected(&camera.view_projection(), point);
+        let drawn = projected(&flat.view_projection(), point);
+        assert!(
+            seen[0].signum() == drawn[0].signum() && seen[1].signum() == drawn[1].signum(),
+            "a point at {offset:?} moved to another quadrant: {seen:?} became {drawn:?}"
+        );
+    }
+    assert_eq!(flat.width(), camera.width());
+    assert_eq!(flat.height(), camera.height());
+    let (before, after) = (camera.world_per_pixel(), flat.world_per_pixel());
+    assert!(
+        (before - after).abs() <= before * 1e-5,
+        "the model changed size on screen: {before} per pixel became {after}"
+    );
+
+    // And back again, with no camera operation in between, is the view that
+    // was there before, to the last few bits of the matrix.
+    let mut back = flat;
+    assert!(back.set_projection(Projection::Perspective));
+    for (index, (there, again)) in camera
+        .view_projection()
+        .iter()
+        .zip(back.view_projection().iter())
+        .enumerate()
+    {
+        assert!(
+            (there - again).abs() <= there.abs().max(1.0) * 1e-5,
+            "entry {index} of the matrix came back as {again} instead of {there}"
+        );
+    }
+}
+
+#[test]
+fn zooming_a_drawing_changes_its_scale_and_not_where_the_eye_is() {
+    let mut camera = a_framed_camera(200, 200);
+    assert!(camera.set_projection(Projection::Orthographic));
+    let (eye, target) = (camera.eye(), camera.target());
+    let before = camera.world_per_pixel();
+
+    camera.zoom(0.5);
+    let after = camera.world_per_pixel();
+    assert!(
+        after < before * 0.95,
+        "zooming an orthographic view showed the same amount of world: {before} then {after}"
+    );
+    assert_eq!(camera.eye(), eye, "zooming a drawing moved the eye");
+    assert_eq!(camera.target(), target);
+    assert!(
+        camera
+            .view_projection()
+            .iter()
+            .all(|value| value.is_finite())
+    );
+    assert_eq!(camera.projection_mode(), Projection::Orthographic);
+
+    // Going back to perspective respects the zoom that was made here rather
+    // than restoring the distance the eye happened to be at beforehand.
+    let mut back = camera;
+    assert!(back.set_projection(Projection::Perspective));
+    let restored = back.world_per_pixel();
+    assert!(
+        (restored - after).abs() <= after * 1e-5,
+        "the zoom made in the drawing was thrown away: {after} became {restored}"
+    );
+    assert!(
+        back.distance() < a_framed_camera(200, 200).distance(),
+        "the eye went back to where it was before the zoom"
+    );
+}
+
+#[test]
+fn panning_orbiting_and_resizing_work_in_both_projections() {
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        let mut camera = a_framed_camera(320, 200);
+        assert!(camera.set_projection(projection) || projection == Projection::Perspective);
+
+        // A pan moves the model by the pixels it was asked for, measured at
+        // the target plane.
+        let scale = camera.world_per_pixel();
+        let before = camera.target();
+        camera.pan(10.0, 0.0);
+        let moved = sub_points(camera.target(), before);
+        let travelled = moved[0].hypot(moved[1]).hypot(moved[2]);
+        assert!(
+            (travelled - 10.0 * scale).abs() <= scale,
+            "{projection:?}: a ten pixel pan moved {travelled} of world, not {}",
+            10.0 * scale
+        );
+        assert_eq!(camera.projection_mode(), projection);
+
+        // An orbit keeps the scale and the projection.
+        let scale = camera.world_per_pixel();
+        camera.orbit(0.4, 0.2);
+        assert!(
+            (camera.world_per_pixel() - scale).abs() <= scale * 1e-4,
+            "{projection:?}: orbiting changed how big the model is drawn"
+        );
+        assert_eq!(camera.projection_mode(), projection);
+
+        // Both shapes of viewport, and the aspect that goes with them.
+        for (width, height) in [(320u32, 200u32), (200, 320)] {
+            camera.resize(width, height);
+            let expected = width as f32 / height as f32;
+            assert!(
+                (camera.aspect() - expected).abs() < 1e-6,
+                "{projection:?}: a {width}x{height} viewport has aspect {}",
+                camera.aspect()
+            );
+            assert!(
+                camera
+                    .view_projection()
+                    .iter()
+                    .all(|value| value.is_finite())
+            );
+            assert_eq!(camera.projection_mode(), projection);
+        }
+    }
+}
+
+#[test]
+fn every_standard_view_and_every_framing_keeps_the_projection() {
+    let bounds = ([-30.0, -10.0, -5.0], [10.0, 20.0, 25.0]);
+    for (width, height) in [(320u32, 200u32), (200, 320)] {
+        let mut camera = Camera::new();
+        camera.resize(width, height);
+        camera.frame(bounds).expect("frames");
+        assert!(camera.set_projection(Projection::Orthographic));
+
+        for view in [
+            StandardView::Front,
+            StandardView::Back,
+            StandardView::Left,
+            StandardView::Right,
+            StandardView::Top,
+            StandardView::Bottom,
+            StandardView::Isometric,
+        ] {
+            camera.look_from(view);
+            assert_eq!(
+                camera.projection_mode(),
+                Projection::Orthographic,
+                "{view:?} put the model back into perspective"
+            );
+        }
+
+        // Framing keeps the projection and the direction, and every corner of
+        // the box lands inside the clip volume.
+        let direction_before = sub_points(camera.eye(), camera.target());
+        camera.frame(bounds).expect("frames");
+        assert_eq!(camera.projection_mode(), Projection::Orthographic);
+        let direction_after = sub_points(camera.eye(), camera.target());
+        for axis in 0..3 {
+            let before = direction_before[axis]
+                / direction_before[0]
+                    .hypot(direction_before[1])
+                    .hypot(direction_before[2]);
+            let after = direction_after[axis]
+                / direction_after[0]
+                    .hypot(direction_after[1])
+                    .hypot(direction_after[2]);
+            assert!((before - after).abs() < 1e-4, "framing turned the model");
+        }
+
+        let (min, max) = bounds;
+        for corner in 0..8 {
+            let point = [
+                if corner & 1 == 0 { min[0] } else { max[0] },
+                if corner & 2 == 0 { min[1] } else { max[1] },
+                if corner & 4 == 0 { min[2] } else { max[2] },
+            ];
+            assert!(
+                inside_clip_volume(&camera.view_projection(), point),
+                "corner {corner} fell outside a {width}x{height} view at {:?}",
+                projected(&camera.view_projection(), point)
+            );
+        }
+    }
+}
+
+#[test]
+fn a_viewport_of_no_size_or_an_extreme_one_still_has_a_finite_drawing() {
+    for (width, height) in [(0u32, 0u32), (1, 4096), (4096, 1)] {
+        let mut camera = Camera::new();
+        camera.resize(width, height);
+        camera
+            .frame(([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]))
+            .expect("frames");
+        assert!(camera.set_projection(Projection::Orthographic));
+        assert!(
+            camera
+                .view_projection()
+                .iter()
+                .all(|value| value.is_finite()),
+            "a {width}x{height} orthographic view has a matrix that is not a number"
+        );
+        camera.zoom(1.0);
+        camera.pan(3.0, -2.0);
+        camera.orbit(0.3, 0.1);
+        assert!(
+            camera
+                .view_projection()
+                .iter()
+                .all(|value| value.is_finite())
+        );
+    }
+}
+
+/// One point less another.
+fn sub_points(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+    [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
 }

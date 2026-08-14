@@ -41,11 +41,11 @@ use ferritecad_scene::{
 };
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
-    Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, HIDE_KEY, Hover, ISOLATE_KEY, PointerButton,
-    RowVisibility, SHOW_ALL_KEY, Selected, VIEWS, ViewportEvent, ViewportInput,
+    Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, HIDE_KEY, Hover, ISOLATE_KEY, PROJECTION_KEY,
+    PointerButton, RowVisibility, SHOW_ALL_KEY, Selected, VIEWS, ViewportEvent, ViewportInput,
 };
 use ferritecad_viewport::{
-    Camera, Marked, PickId, RenderSnapshot, SnapshotBuilder, StandardView, Visibility,
+    Camera, Marked, PickId, Projection, RenderSnapshot, SnapshotBuilder, StandardView, Visibility,
 };
 use ferritecad_viewport_gpu::{Hit, PreparedSnapshot, Renderer, WindowSurface};
 use winit::application::ApplicationHandler;
@@ -883,6 +883,33 @@ fn isolate_selected(
     true
 }
 
+/// Draws the model through the other projection, and forgets the old frame.
+///
+/// Neither what is chosen nor what is drawn is an argument: switching between
+/// what an eye sees and what a drawing shows is a change of view, and a view
+/// cannot decide what is selected or which parts are on screen. The camera
+/// keeps what it was looking at, from where and at what apparent size.
+///
+/// Every pixel means something different afterwards, so what the pointer was
+/// over, and any click, question or gesture in flight, are forgotten: they
+/// describe a frame that is being replaced.
+fn change_projection(input: &mut ViewportInput, hovered: &mut Marked, to: Projection) -> bool {
+    if !input.set_projection(to) {
+        return false;
+    }
+    *hovered = Marked::Nothing;
+    input.forget_pending();
+    true
+}
+
+/// The projection that is not the one in use.
+fn other_projection(current: Projection) -> Projection {
+    match current {
+        Projection::Perspective => Projection::Orthographic,
+        Projection::Orthographic => Projection::Perspective,
+    }
+}
+
 /// Takes back the last change to what is drawn, and forgets the old frame.
 ///
 /// Visibility only: it restores what was on screen, not what was chosen. A
@@ -1409,6 +1436,7 @@ impl ApplicationHandler<AppEvent> for App {
                         .scene
                         .visibility
                         .can_undo(live.scene.prepared.snapshot()),
+                    orthographic: self.input.projection() == Projection::Orthographic,
                 };
                 match live.draw(&self.input, activity) {
                     // A button pressed during this frame reaches the camera
@@ -1472,6 +1500,11 @@ impl ApplicationHandler<AppEvent> for App {
                         if chosen.undo_visibility {
                             self.undo_last_visibility();
                         }
+                        // The button and the key ask the same function, as
+                        // every other pair here does.
+                        if chosen.projection {
+                            self.swap_projection();
+                        }
                         // Asked after the frame that was clicked has been
                         // published, and only when somebody clicked: answering
                         // means drawing the model again offscreen to read one
@@ -1506,6 +1539,7 @@ impl ApplicationHandler<AppEvent> for App {
                     Some(Requested::Hide) => self.hide_chosen(),
                     Some(Requested::Isolate) => self.isolate_chosen(),
                     Some(Requested::ShowAll) => self.show_everything(),
+                    Some(Requested::Projection) => self.swap_projection(),
                     None => {}
                 }
             }
@@ -1766,6 +1800,15 @@ impl App {
             requested,
             &mut self.input,
         );
+    }
+
+    /// Draws the model through the other projection.
+    fn swap_projection(&mut self) {
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+        let to = other_projection(self.input.projection());
+        change_projection(&mut self.input, &mut live.scene.hovered, to);
     }
 
     /// Takes back the last change to what is drawn.
@@ -2247,6 +2290,7 @@ enum Requested {
     Hide,
     Isolate,
     ShowAll,
+    Projection,
 }
 
 /// Which action an unclaimed key asks for, if any.
@@ -2262,6 +2306,7 @@ fn requested(key: &Key, claimed_by_ui: bool) -> Option<Requested> {
         (HIDE_KEY, Requested::Hide),
         (ISOLATE_KEY, Requested::Isolate),
         (SHOW_ALL_KEY, Requested::ShowAll),
+        (PROJECTION_KEY, Requested::Projection),
     ] {
         if wants(key, claimed_by_ui, shortcut) {
             return Some(action);
@@ -5379,6 +5424,245 @@ mod tests {
             "a document opened with a change from the last one to take back"
         );
         assert_eq!(scene.selection, Selection::Nothing);
+    }
+
+    #[test]
+    fn swapping_projection_keeps_the_choice_the_parts_and_the_view() {
+        // The committed plate, so the choice is a face the document really
+        // names, beside a second body so there is a visibility mask worth
+        // preserving. Native bodies enter this loader once each; repeated
+        // placements are the GPU gates' business.
+        let (_directory, scene) = plate_and_a_second_body();
+        let snapshot = &scene.snapshot;
+        let face = snapshot.face_of(0, 0).expect("numbered");
+        let mut chosen = Selection::at(
+            snapshot.pick_of(0).expect("drawn"),
+            face,
+            snapshot,
+            &scene.faces,
+        );
+        let Selection::Face(before) = &chosen else {
+            panic!("the plate's face is not named: {chosen:?}");
+        };
+        let meanings = before.meanings().to_vec();
+
+        let mut visibility = Visibility::new(snapshot);
+        let mut hovered = Marked::Nothing;
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        input
+            .frame(snapshot.bounds().expect("an extent"))
+            .expect("frames");
+
+        // An arrangement with something hidden and something to take back.
+        assert!(hide_one(
+            &mut visibility,
+            &mut chosen,
+            &mut hovered,
+            snapshot,
+            snapshot.pick_of(1).expect("drawn"),
+            &mut input
+        ));
+        let mask = visibility.clone();
+        assert!(visibility.can_undo(snapshot));
+
+        // Real pointing state belonging to the frame about to be replaced.
+        hovered = Marked::Definition(snapshot.pick_of(0).expect("drawn"));
+        input.handle(ViewportEvent::PointerMoved { x: 4.0, y: 4.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        input.handle(ViewportEvent::PointerMoved { x: 9.0, y: 9.0 }, false);
+        let _ = input.take_redraw();
+        let (target, eye) = (input.camera().target(), input.camera().eye());
+
+        assert!(change_projection(
+            &mut input,
+            &mut hovered,
+            Projection::Orthographic
+        ));
+
+        // What is chosen is untouched, down to the face and what the document
+        // calls it.
+        let Selection::Face(after) = &chosen else {
+            panic!("changing projection unchose the face: {chosen:?}");
+        };
+        assert_eq!(after.face(), face);
+        assert_eq!(after.meanings(), meanings.as_slice());
+
+        // So is what is drawn, and what could be put back.
+        assert_eq!(visibility, mask, "changing projection disturbed the mask");
+        assert!(
+            visibility.can_undo(snapshot),
+            "changing projection threw away what could be taken back"
+        );
+
+        // What was being looked at, and from where, are kept; what was
+        // pointing at the old frame is not.
+        assert_eq!(input.camera().target(), target);
+        assert_eq!(input.camera().eye(), eye);
+        assert_eq!(input.projection(), Projection::Orthographic);
+        assert_eq!(hovered, Marked::Nothing);
+        assert_eq!(input.take_pick(), None, "a click survived the change");
+        assert_eq!(input.take_hover(), Hover::Cleared);
+        assert!(input.take_redraw(), "changing projection owes a frame");
+
+        // A gesture belongs to that frame too. A separate reducer, because
+        // beginning one clears a hover question.
+        let mut gesture = ViewportInput::new();
+        gesture.resize(800, 600);
+        gesture.handle(ViewportEvent::PointerMoved { x: 20.0, y: 20.0 }, false);
+        gesture.handle(
+            ViewportEvent::PointerPressed(PointerButton::Secondary),
+            false,
+        );
+        assert!(gesture.is_dragging());
+        assert!(change_projection(
+            &mut gesture,
+            &mut hovered,
+            Projection::Orthographic
+        ));
+        assert!(!gesture.is_dragging(), "a gesture survived the change");
+    }
+
+    #[test]
+    fn asking_for_the_projection_already_in_use_changes_nothing() {
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        input
+            .frame(([-10.0, -10.0, -10.0], [10.0, 10.0, 10.0]))
+            .expect("frames");
+        let mut hovered = Marked::Definition(distant_scene().pick_of(0).expect("drawn"));
+        let recorded = hovered;
+
+        // Real transient state belonging to this unchanged frame.
+        input.handle(ViewportEvent::PointerMoved { x: 4.0, y: 4.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        input.handle(ViewportEvent::PointerMoved { x: 9.0, y: 9.0 }, false);
+        let camera = input.camera().view_projection();
+        let _ = input.take_redraw();
+
+        assert!(!change_projection(
+            &mut input,
+            &mut hovered,
+            Projection::Perspective
+        ));
+
+        assert_eq!(hovered, recorded, "a no-op cleared the current hover");
+        assert_eq!(
+            input.take_pick(),
+            Some((4.0, 4.0)),
+            "a no-op cleared a pending click"
+        );
+        assert_eq!(
+            input.take_hover(),
+            Hover::At(9.0, 9.0),
+            "a no-op cleared a pending hover question"
+        );
+        assert_eq!(input.camera().view_projection(), camera);
+        assert!(!input.take_redraw(), "a no-op asked for a frame");
+    }
+
+    #[test]
+    fn a_document_opens_as_an_eye_sees_it_and_a_failed_open_keeps_the_drawing() {
+        let picture = three_definitions();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        input
+            .frame(picture.bounds().expect("an extent"))
+            .expect("frames");
+        assert!(change_projection(
+            &mut input,
+            &mut scene.hovered,
+            Projection::Orthographic
+        ));
+
+        // A load that failed leaves the projection where the user put it.
+        let mut camera = input.clone();
+        commit_scene(&mut scene, &mut camera, Err(CadError::input("no")))
+            .expect_err("a failed load commits nothing");
+        assert_eq!(
+            input.projection(),
+            Projection::Orthographic,
+            "a failed load changed how the model is drawn"
+        );
+
+        // A load that arrived starts the way a new camera starts, because a
+        // document is opened to be understood before it is measured.
+        let next = three_definitions();
+        let arriving = prepare_load(&input, Ok(loaded(next.clone())), |_| Ok(()))
+            .expect("the picture is accepted");
+        assert_eq!(
+            arriving.0.projection(),
+            Projection::Perspective,
+            "a document opened in the projection the last one was left in"
+        );
+    }
+
+    #[test]
+    fn the_key_that_changes_projection_is_the_one_the_panel_prints() {
+        assert!(wants(
+            &Key::Character(PROJECTION_KEY.into()),
+            false,
+            PROJECTION_KEY
+        ));
+        assert_eq!(
+            requested(&Key::Character(PROJECTION_KEY.into()), false),
+            Some(Requested::Projection),
+            "the printed key does not reach the projection"
+        );
+        assert_eq!(
+            requested(&Key::Character(PROJECTION_KEY.to_lowercase().into()), false),
+            Some(Requested::Projection)
+        );
+
+        // Distinct from every other action bound here, and from every view.
+        let bound = [
+            FRAME_KEY,
+            FRAME_ALL_KEY,
+            HIDE_KEY,
+            SHOW_ALL_KEY,
+            ISOLATE_KEY,
+            PROJECTION_KEY,
+        ];
+        for (first, one) in bound.iter().enumerate() {
+            for other in bound.iter().skip(first + 1) {
+                assert_ne!(one, other, "two actions share one key");
+            }
+        }
+        assert!(VIEWS.iter().all(|(_, _, view)| *view != PROJECTION_KEY));
+        assert!(named_view(&Key::Character(PROJECTION_KEY.into())).is_none());
+
+        // And the interface has first refusal, as it does for the others.
+        assert_eq!(
+            requested(&Key::Character(PROJECTION_KEY.into()), true),
+            None,
+            "the projection key fired although the interface had claimed it"
+        );
+    }
+
+    #[test]
+    fn the_other_projection_is_the_one_that_is_not_in_use() {
+        assert_eq!(
+            other_projection(Projection::Perspective),
+            Projection::Orthographic
+        );
+        assert_eq!(
+            other_projection(Projection::Orthographic),
+            Projection::Perspective
+        );
     }
 
     #[test]

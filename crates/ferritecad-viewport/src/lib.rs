@@ -45,7 +45,7 @@ mod snapshot;
 // is settled and tested before anything has to deliver one. The layer that
 // binds them to real events can then be thin enough to read.
 
-pub use camera::{Camera, StandardView};
+pub use camera::{Camera, Projection, StandardView};
 pub use grid::{GridPlan, HALF_LINES, MAJOR_EVERY, MAX_PIXELS, MIN_PIXELS, plan as grid_plan};
 pub use snapshot::{
     DrawItem, FacePickId, Marked, PackedMesh, PickId, RenderSnapshot, SnapshotBuilder,

@@ -72,6 +72,24 @@ fn depth_range(distance: f32, radius: f32) -> (f32, f32) {
     (near, far)
 }
 
+/// How the world is put on the screen.
+///
+/// Transient camera state, exactly like where the eye is: not a document fact,
+/// not renderer state, not serialised, and no part of what makes one picture
+/// the same picture as another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Projection {
+    /// What an eye sees: things further away are drawn smaller, and parallel
+    /// edges converge. The default, because it is how a model is understood
+    /// while it is being built.
+    #[default]
+    Perspective,
+    /// What a drawing shows: equal things are drawn equally wherever they are,
+    /// and parallel edges stay parallel. What a plan or an elevation has to be
+    /// to be measured off the screen.
+    Orthographic,
+}
+
 /// Looking at a model from somewhere.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Camera {
@@ -82,6 +100,17 @@ pub struct Camera {
     fov: f32,
     near: f32,
     far: f32,
+    /// How the world reaches the screen.
+    projection: Projection,
+    /// Half the world height the viewport covers at the target plane, used
+    /// only while the projection is orthographic.
+    ///
+    /// Scale rather than distance, because that is what an orthographic view
+    /// is: moving the eye along the direction it looks changes nothing about
+    /// how big anything is drawn. Switching back to perspective derives a
+    /// distance from this, so a zoom made here is respected rather than
+    /// discarded in favour of where the eye happened to be beforehand.
+    half_height: f32,
     /// How big the thing being looked at is, as [`Camera::frame`] measured it.
     ///
     /// Kept because the clipping range has to follow the distance: a camera
@@ -101,6 +130,8 @@ impl Default for Camera {
             fov: std::f32::consts::FRAC_PI_4,
             near: 0.1,
             far: 1000.0,
+            projection: Projection::Perspective,
+            half_height: 1.0,
             radius: 1.0,
             width: 0,
             height: 0,
@@ -127,6 +158,68 @@ impl Camera {
 
     pub fn target(&self) -> [f32; 3] {
         self.target
+    }
+
+    /// Draws through a different projection, and says whether that changed
+    /// anything.
+    ///
+    /// What is being looked at, from where, which way up and at what apparent
+    /// size are all kept: the same part stays the same size on screen, and
+    /// only the way depth is treated changes. Asking for the projection that
+    /// is already in use changes nothing.
+    ///
+    /// Going back to perspective derives the distance from the scale that is
+    /// on screen now, not from wherever the eye stood before. A zoom made in
+    /// an orthographic view is a real change to what is being looked at, and
+    /// restoring an obsolete distance would throw it away.
+    pub fn set_projection(&mut self, projection: Projection) -> bool {
+        if self.projection == projection {
+            return false;
+        }
+        let half_fov = (self.fov * 0.5).tan();
+        let mut candidate = *self;
+        candidate.projection = projection;
+        match projection {
+            Projection::Orthographic => {
+                // The world height the viewport already covers at the target.
+                let half_height = self.distance() * half_fov;
+                if !half_height.is_finite() || half_height <= f32::EPSILON {
+                    return false;
+                }
+                candidate.half_height = half_height;
+            }
+            Projection::Perspective => {
+                let distance = self.half_height / half_fov;
+                if !distance.is_finite() || distance <= f32::EPSILON {
+                    return false;
+                }
+                let direction = self.direction();
+                let eye = [
+                    self.target[0] + direction[0] * distance,
+                    self.target[1] + direction[1] * distance,
+                    self.target[2] + direction[2] * distance,
+                ];
+                if !usable_eye(eye, self.target) {
+                    return false;
+                }
+                candidate.eye = eye;
+            }
+        }
+        candidate.refresh_depth();
+        if candidate
+            .view_projection()
+            .iter()
+            .any(|value| !value.is_finite())
+        {
+            return false;
+        }
+        *self = candidate;
+        true
+    }
+
+    /// Which projection this camera draws through.
+    pub fn projection_mode(&self) -> Projection {
+        self.projection
     }
 
     /// Records a new surface size.
@@ -226,12 +319,24 @@ impl Camera {
             ));
         }
 
+        // What an orthographic view has to cover instead of a distance. The
+        // sphere contains every corner of the box however the box is turned,
+        // and the narrower axis is horizontal in a portrait viewport, so that
+        // is the one the height has to satisfy.
+        let half_height = radius * (1.0f32).max(1.0 / self.aspect()) * 1.05;
+        if !half_height.is_finite() || half_height <= f32::EPSILON {
+            return Err(CadError::input(
+                "a camera cannot represent a useful view of a box at this scale",
+            ));
+        }
+
         let mut candidate = *self;
         candidate.target = centre;
         candidate.eye = eye;
         candidate.radius = radius;
         candidate.near = near;
         candidate.far = far;
+        candidate.half_height = half_height;
         if candidate
             .view_projection()
             .iter()
@@ -268,7 +373,10 @@ impl Camera {
         if !self.is_drawable() {
             return 0.0;
         }
-        let visible_height = 2.0 * self.distance() * (self.fov * 0.5).tan();
+        let visible_height = match self.projection {
+            Projection::Perspective => 2.0 * self.distance() * (self.fov * 0.5).tan(),
+            Projection::Orthographic => 2.0 * self.half_height,
+        };
         let per_pixel = visible_height / self.height as f32;
         if per_pixel.is_finite() {
             per_pixel
@@ -360,6 +468,26 @@ impl Camera {
     /// what it is looking at and there would be no direction left to look in.
     pub fn zoom(&mut self, amount: f32) {
         if !amount.is_finite() {
+            return;
+        }
+        if self.projection == Projection::Orthographic {
+            // Scale, not distance. Moving the eye along the direction it looks
+            // changes nothing an orthographic view can show, so a zoom that
+            // did that would be a wheel that does nothing.
+            let scaled = self.half_height * (-amount).exp();
+            let bounded = scaled.clamp(self.radius * 1e-3, self.radius * 1e5);
+            if !bounded.is_finite() || bounded <= f32::EPSILON {
+                return;
+            }
+            let mut candidate = *self;
+            candidate.half_height = bounded;
+            if candidate
+                .view_projection()
+                .iter()
+                .all(|value| value.is_finite())
+            {
+                *self = candidate;
+            }
             return;
         }
         let distance = self.distance();
@@ -467,8 +595,65 @@ impl Camera {
         ]
     }
 
-    /// Perspective with depth in 0..1, which is what wgpu expects.
+    /// Depth in 0..1, which is what wgpu expects, through whichever
+    /// projection is in use.
+    ///
+    /// One place, so the window, the readback, the grid, picking and framing
+    /// all see the same view of the world however it is being drawn.
     fn projection(&self) -> [f32; 16] {
+        match self.projection {
+            Projection::Perspective => self.perspective(),
+            Projection::Orthographic => self.orthographic(),
+        }
+    }
+
+    /// Parallel, with depth in 0..1.
+    ///
+    /// No division by depth at all: a point's size on screen is its size in
+    /// the world, which is what makes an elevation measurable.
+    fn orthographic(&self) -> [f32; 16] {
+        let depth = self.far - self.near;
+        let (scale, offset) = if depth > f32::EPSILON {
+            // `view` is right-handed, so what is in front has negative z; the
+            // near plane maps to zero and the far plane to one.
+            (-1.0 / depth, -self.near / depth)
+        } else {
+            (-1.0, 0.0)
+        };
+        let half_height = if self.half_height > f32::EPSILON {
+            self.half_height
+        } else {
+            1.0
+        };
+        let half_width = half_height * self.aspect();
+        let horizontal = if half_width > f32::EPSILON {
+            1.0 / half_width
+        } else {
+            1.0
+        };
+
+        [
+            horizontal,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0 / half_height,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            scale,
+            0.0,
+            0.0,
+            0.0,
+            offset,
+            1.0,
+        ]
+    }
+
+    /// Perspective with depth in 0..1, which is what wgpu expects.
+    fn perspective(&self) -> [f32; 16] {
         let focal = 1.0 / (self.fov * 0.5).tan();
         let depth = self.far - self.near;
         // Guarded so a degenerate frustum cannot divide by zero. A camera whose

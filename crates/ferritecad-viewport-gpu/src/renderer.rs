@@ -1737,6 +1737,32 @@ mod tests {
             "the window and the readback disagree about what is hidden"
         );
 
+        // And the same through the other projection, which is one matrix and
+        // not a second path: what a window draws and what a click reads must
+        // agree about how the world reaches the screen.
+        let mut flat = camera;
+        assert!(flat.set_projection(ferritecad_viewport::Projection::Orthographic));
+        let offscreen_flat = renderer
+            .render(
+                &prepared,
+                &flat,
+                Marked::Nothing,
+                Marked::Nothing,
+                &everything,
+            )
+            .expect("draws")
+            .colour()
+            .to_vec();
+        assert_ne!(
+            offscreen_flat, offscreen_all,
+            "the projection changed nothing"
+        );
+        assert_eq!(
+            window_colour(&mut renderer, &prepared, &flat, &everything),
+            offscreen_flat,
+            "the window and the readback disagree about the projection"
+        );
+
         // And the same for the mask isolating leaves behind, which is the same
         // mask reached a different way: one representation, one consumer.
         let mut isolating = everything.clone();

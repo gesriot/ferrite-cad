@@ -96,6 +96,16 @@ hidden. That is where you look when you wonder where something went. None of
 this touches the document, and none of it survives opening one: a file always
 opens with all of it on screen.
 
+The button beside the views says which projection the model is drawn through
+and swaps it when pressed, or `O`. `Perspective` is what an eye sees and is
+where a document opens: things further away are drawn smaller, which is how a
+shape is understood while it is being built. `Orthographic` is what a drawing
+shows: equal things are drawn equally wherever they are and parallel edges stay
+parallel, so a plan or an elevation can be measured off the screen. Swapping
+keeps what you are looking at, from where, and how big it is; zooming in an
+orthographic view changes the scale rather than moving the eye, and swapping
+back respects that zoom.
+
 Moving the pointer
 over the model marks the face under it, and the same face wherever that
 definition appears; moving it over a row of the list marks that whole

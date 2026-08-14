@@ -37,6 +37,8 @@ pub struct Chosen {
     pub isolate: bool,
     /// The user wants the last change to what is drawn taken back.
     pub undo_visibility: bool,
+    /// The user wants the other projection.
+    pub projection: bool,
     /// The user wants everything drawn again.
     pub show_all: bool,
     /// A change to what is drawn, asked for from a row of the list and named
@@ -416,6 +418,8 @@ pub struct Activity<'a> {
     pub can_isolate: bool,
     /// Whether there is a change to what is drawn that could be taken back.
     pub can_undo_visibility: bool,
+    /// Whether the model is drawn as a drawing rather than as an eye sees it.
+    pub orthographic: bool,
 }
 
 /// The toolbar: a document to open, the directions a drawing would name, what
@@ -493,6 +497,19 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
             .clicked();
         ui.separator();
 
+        // Named rather than toggled: a control that only said "projection"
+        // would leave a person to work out which one they are looking at from
+        // the picture, which is exactly what is hard about the two.
+        let projection = if activity.orthographic {
+            "Orthographic"
+        } else {
+            "Perspective"
+        };
+        chosen.projection = ui
+            .button(format!("{projection} ({PROJECTION_KEY})"))
+            .clicked();
+        ui.separator();
+
         ui.label("View");
         for (view, name, key) in VIEWS {
             if ui.button(format!("{name} ({key})")).clicked() {
@@ -539,6 +556,12 @@ pub const FRAME_ALL_KEY: &str = "A";
 /// One place, read by the panel and by whatever binds the keys, for the same
 /// reason [`FRAME_KEY`] is one place.
 pub const HIDE_KEY: &str = "H";
+
+/// The key that swaps the projection, printed on the button that names it.
+///
+/// One place, read by the panel and by whatever binds the keys, for the same
+/// reason [`FRAME_KEY`] is one place.
+pub const PROJECTION_KEY: &str = "O";
 
 /// The key that leaves only what is chosen on screen, printed on its button.
 ///
@@ -747,6 +770,7 @@ mod tests {
             can_show_all: false,
             can_isolate: false,
             can_undo_visibility: false,
+            orthographic: false,
         };
 
         // Where the Cancel button is: after the views, so the row up to it is
@@ -780,6 +804,15 @@ mod tests {
                     reading.can_undo_visibility,
                     egui::Button::new("Undo visibility"),
                 );
+                ui.separator();
+                let _ = ui.button(format!(
+                    "{} ({PROJECTION_KEY})",
+                    if reading.orthographic {
+                        "Orthographic"
+                    } else {
+                        "Perspective"
+                    }
+                ));
                 ui.separator();
                 ui.label("View");
                 for (_, name, key) in VIEWS {
@@ -1053,6 +1086,7 @@ mod tests {
             can_show_all,
             can_isolate: false,
             can_undo_visibility: false,
+            orthographic: false,
         };
 
         // Found by pressing along the real toolbar rather than by rebuilding
@@ -1239,6 +1273,7 @@ mod tests {
             can_show_all: true,
             can_isolate,
             can_undo_visibility: false,
+            orthographic: false,
         };
 
         // Found by pressing along the real toolbar rather than by rebuilding
@@ -1300,6 +1335,7 @@ mod tests {
                     can_show_all: false,
                     can_isolate: true,
                     can_undo_visibility: false,
+                    orthographic: false,
                 },
             );
         });
@@ -1407,6 +1443,7 @@ mod tests {
             can_show_all: true,
             can_isolate: true,
             can_undo_visibility,
+            orthographic: false,
         };
 
         // Found by pressing along the real toolbar rather than by rebuilding
@@ -1438,6 +1475,80 @@ mod tests {
             !press(state(false)).undo_visibility,
             "a button with nothing to take back reported a press"
         );
+    }
+
+    #[test]
+    fn the_projection_control_says_which_one_is_in_use() {
+        let context = egui::Context::default();
+        let state = |orthographic| Activity {
+            line: "part.fcad",
+            progress: None,
+            can_frame_selection: false,
+            can_frame_scene: false,
+            can_hide: false,
+            can_show_all: false,
+            can_isolate: false,
+            can_undo_visibility: false,
+            orthographic,
+        };
+
+        // What the toolbar draws in each state. A control that only said
+        // "projection" would leave a person to work out which one they are
+        // looking at from the picture, which is the hard part.
+        let printed = |orthographic| {
+            let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+                let _ = toolbar(ui, state(orthographic));
+            });
+            let text = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            output.textures_delta.clear();
+            text
+        };
+
+        let seen = printed(false);
+        assert!(
+            seen.contains(&format!("Perspective ({PROJECTION_KEY})")),
+            "the toolbar does not say it is drawing as an eye sees: {seen}"
+        );
+        assert!(!seen.contains("Orthographic"));
+        let drawn = printed(true);
+        assert!(
+            drawn.contains(&format!("Orthographic ({PROJECTION_KEY})")),
+            "the toolbar does not say it is drawing as a drawing shows: {drawn}"
+        );
+        assert!(!drawn.contains("Perspective"));
+
+        // And the key it prints is not one another action already answers.
+        assert_ne!(PROJECTION_KEY, FRAME_KEY);
+        assert_ne!(PROJECTION_KEY, FRAME_ALL_KEY);
+        assert_ne!(PROJECTION_KEY, HIDE_KEY);
+        assert_ne!(PROJECTION_KEY, SHOW_ALL_KEY);
+        assert_ne!(PROJECTION_KEY, ISOLATE_KEY);
+        assert!(VIEWS.iter().all(|(_, _, key)| *key != PROJECTION_KEY));
+
+        // Pressing it asks for the projection and for nothing else.
+        let mut at = None;
+        for step in 0..200 {
+            let point = egui::Pos2::new(step as f32 * 8.0, 12.0);
+            if click_on(&context, point, state(false)).projection {
+                at = Some(point);
+                break;
+            }
+        }
+        let at = at.expect("the toolbar offers no way to change projection");
+        let _ = click_on(&context, egui::Pos2::new(2000.0, 2000.0), state(false));
+        let pressed = click_on(&context, at, state(false));
+        assert!(pressed.projection);
+        assert!(!pressed.hide && !pressed.show_all && !pressed.isolate);
+        assert!(!pressed.undo_visibility && !pressed.frame && !pressed.frame_all);
+        assert!(pressed.view.is_none() && !pressed.open);
     }
 
     /// Runs the list once, with a click delivered at `at`.
@@ -1722,6 +1833,7 @@ mod tests {
             can_show_all: false,
             can_isolate: false,
             can_undo_visibility: false,
+            orthographic: false,
         };
 
         // Where the button is, laid out exactly as the toolbar lays it out.
@@ -1775,6 +1887,7 @@ mod tests {
             can_show_all: false,
             can_isolate: false,
             can_undo_visibility: false,
+            orthographic: false,
         };
 
         // Where the button is, laid out exactly as the toolbar lays it out.

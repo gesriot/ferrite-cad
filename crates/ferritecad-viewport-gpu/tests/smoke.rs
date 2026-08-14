@@ -23,7 +23,7 @@ use ferritecad_kernel::{
 };
 use ferritecad_types::{ErrorKind, Transform, Vec3};
 use ferritecad_viewport::{
-    Camera, FacePickId, Marked, PickId, RenderSnapshot, SnapshotBuilder, Visibility,
+    Camera, FacePickId, Marked, PickId, Projection, RenderSnapshot, SnapshotBuilder, Visibility,
 };
 use ferritecad_viewport_gpu::{Frame, Renderer};
 
@@ -3216,4 +3216,295 @@ fn taking_a_change_back_draws_the_frame_that_was_there_before_it() {
         uploaded,
         "taking a change back uploaded geometry"
     );
+}
+
+/// Two equal plates, one behind the other and offset sideways so neither hides
+/// the other, seen down the Y axis.
+fn two_equal_plates_at_two_depths(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
+    let plate = |shape: u64| {
+        let handle = ShapeHandle::new(SessionId::new(), shape);
+        Mesh {
+            positions: vec![
+                -5.0, 0.0, -5.0, 5.0, 0.0, -5.0, 5.0, 0.0, 5.0, -5.0, 0.0, 5.0,
+            ],
+            normals: vec![
+                0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0,
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            faces: vec![MeshFaceRange {
+                face: SubShapeHandle::new(handle, SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 6,
+            }],
+        }
+    };
+
+    let mut builder = SnapshotBuilder::new();
+    let near = builder.add_mesh(&plate(1)).expect("packs");
+    let far = builder.add_mesh(&plate(2)).expect("packs");
+    // Same size, different distance from the eye, side by side so both are on
+    // screen at once and neither occludes the other.
+    for (definition, x, y) in [(near, -12.0, 0.0), (far, 12.0, 60.0)] {
+        builder
+            .place(
+                definition,
+                None,
+                &Transform::from_translation(
+                    ferritecad_types::Vec3::new(x, y, 0.0).expect("finite"),
+                )
+                .expect("finite"),
+                [0.7, 0.7, 0.7],
+            )
+            .expect("places");
+    }
+    let snapshot = Arc::new(builder.build());
+
+    let mut camera = Camera::new();
+    camera.resize(width, height);
+    camera
+        .frame(snapshot.bounds().expect("the plates have an extent"))
+        .expect("frames");
+    (snapshot, camera)
+}
+
+/// How many pixels wide one definition is, at its widest row.
+fn widest_row(frame: &ferritecad_viewport_gpu::Frame, pick: PickId) -> u32 {
+    (0..frame.height())
+        .map(|y| {
+            (0..frame.width())
+                .filter(|x| frame.pick_at(*x, y) == pick)
+                .count() as u32
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+#[test]
+fn equal_plates_at_two_depths_are_equal_only_in_an_orthographic_view() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = two_equal_plates_at_two_depths(200, 200);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let everything = Visibility::default();
+    let near = snapshot.pick_of(0).expect("drawn");
+    let far = snapshot.pick_of(1).expect("drawn");
+
+    // The defect, in pixels: the same plate further away is drawn smaller, so
+    // a plan or elevation cannot be measured off the screen.
+    let perspective = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &everything,
+        )
+        .expect("draws");
+    let (near_wide, far_wide) = (
+        widest_row(&perspective, near),
+        widest_row(&perspective, far),
+    );
+    assert!(
+        near_wide > 20 && far_wide > 10,
+        "the gate needs both plates on screen: {near_wide} and {far_wide}"
+    );
+    assert!(
+        near_wide > far_wide + 4,
+        "the perspective view already draws them the same size: {near_wide} against {far_wide}"
+    );
+
+    // Orthographic: equal things are equal wherever they are.
+    let mut square = camera;
+    square.set_projection(Projection::Orthographic);
+    let orthographic = renderer
+        .render(
+            &prepared,
+            &square,
+            Marked::Nothing,
+            Marked::Nothing,
+            &everything,
+        )
+        .expect("draws");
+    let (near_flat, far_flat) = (
+        widest_row(&orthographic, near),
+        widest_row(&orthographic, far),
+    );
+    assert!(near_flat > 20, "the near plate left the orthographic view");
+    assert_eq!(
+        near_flat, far_flat,
+        "equal plates are drawn at different widths in an orthographic view"
+    );
+
+    // And the width is the width the camera says it is. Comparing the two
+    // plates with each other cannot see a renderer that squeezed the whole
+    // picture equally; this can, because it ties pixels to the one place that
+    // decides how much world a pixel covers.
+    let expected = 10.0 / square.world_per_pixel();
+    assert!(
+        (near_flat as f32 - expected).abs() <= 2.0,
+        "a ten millimetre plate covers {near_flat} pixels where the camera says {expected}"
+    );
+
+    // And both are still there to be clicked, with their own identities.
+    for (definition, pick) in [(0usize, near), (1, far)] {
+        let mine = pixels_of(&orthographic, |frame, x, y| frame.pick_at(x, y) == pick);
+        assert!(!mine.is_empty(), "definition {definition} cannot be picked");
+        let face = snapshot.face_of(definition, 0).expect("numbered");
+        for (x, y) in &mine {
+            assert_eq!(orthographic.hit_at(*x, *y).face(), face);
+        }
+    }
+}
+
+#[test]
+fn a_drawing_still_hides_what_is_behind_something_and_repeats_exactly() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = occluding_pair(128, 128);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let everything = Visibility::default();
+    let uploaded = renderer.geometry_uploads();
+
+    let mut flat = camera;
+    assert!(flat.set_projection(Projection::Orthographic));
+    let front = snapshot.pick_of(0).expect("drawn");
+    let rear = snapshot.pick_of(1).expect("drawn");
+
+    let drawing = renderer
+        .render(
+            &prepared,
+            &flat,
+            Marked::Nothing,
+            Marked::Nothing,
+            &everything,
+        )
+        .expect("draws");
+
+    // Depth still decides: the plate in front covers the one behind it, which
+    // is a property of the depth test and not of the projection.
+    let model = pixels_of(&drawing, |frame, x, y| {
+        frame.pick_at(x, y) != PickId::NOTHING
+    });
+    assert!(model.len() > 400, "the pair is not drawn");
+    assert!(
+        model.iter().all(|(x, y)| drawing.pick_at(*x, *y) == front),
+        "the rear plate showed through the front one"
+    );
+    assert!(pixels_of(&drawing, |frame, x, y| frame.pick_at(x, y) == rear).is_empty());
+
+    // Hiding the front one reveals the rear one, in the same projection.
+    let mut visibility = Visibility::new(&snapshot);
+    assert!(visibility.hide(Marked::Definition(front), &snapshot));
+    let revealed = renderer
+        .render(
+            &prepared,
+            &flat,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+    assert!(!pixels_of(&revealed, |frame, x, y| frame.pick_at(x, y) == rear).is_empty());
+
+    // The same camera draws the same frame twice, and none of it uploaded
+    // anything: a projection is a matrix, not a different model.
+    let again = renderer
+        .render(
+            &prepared,
+            &flat,
+            Marked::Nothing,
+            Marked::Nothing,
+            &everything,
+        )
+        .expect("draws");
+    assert_eq!(again.colour(), drawing.colour());
+    for (x, y) in &model {
+        assert_eq!(again.hit_at(*x, *y), drawing.hit_at(*x, *y));
+    }
+    assert_eq!(
+        renderer.geometry_uploads(),
+        uploaded,
+        "changing projection uploaded geometry"
+    );
+}
+
+#[test]
+fn the_backdrop_belongs_to_the_world_in_a_drawing_too() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = model_over_the_plane(120, 120);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let everything = Visibility::default();
+
+    let mut flat = camera;
+    assert!(flat.set_projection(Projection::Orthographic));
+    let drawing = renderer
+        .render(
+            &prepared,
+            &flat,
+            Marked::Nothing,
+            Marked::Nothing,
+            &everything,
+        )
+        .expect("draws");
+
+    // The grid is still drawn, is still not something a click can reach, and
+    // still lies under the model rather than over it.
+    let lit = pixels_of(&drawing, |frame, x, y| {
+        frame
+            .colour_at(x, y)
+            .is_some_and(|colour| colour != [0, 0, 0, 255])
+    });
+    assert!(!lit.is_empty(), "the backdrop disappeared in a drawing");
+
+    // The backdrop is measured in the same world as the model: looking
+    // straight down at the plane, the gap between grid lines is the gap the
+    // camera says it is. This is what makes the grid one more thing drawn
+    // through the one projection rather than a picture of its own.
+    let mut overhead = flat;
+    overhead.look_from(ferritecad_viewport::StandardView::Top);
+    let plan = ferritecad_viewport::grid_plan(&overhead).expect("the grid has a spacing");
+    let straight_down = renderer
+        .render(
+            &prepared,
+            &overhead,
+            Marked::Nothing,
+            Marked::Nothing,
+            &everything,
+        )
+        .expect("draws");
+    let row = straight_down.height() / 2;
+    let mut line_columns: Vec<u32> = (0..straight_down.width())
+        .filter(|x| {
+            straight_down
+                .colour_at(*x, row)
+                .is_some_and(|colour| colour != [0, 0, 0, 255])
+                && straight_down.pick_at(*x, row) == PickId::NOTHING
+        })
+        .collect();
+    line_columns.dedup_by(|a, b| *a == *b + 1);
+    assert!(
+        line_columns.len() > 2,
+        "no grid lines were found to measure: {line_columns:?}"
+    );
+    let gaps: Vec<u32> = line_columns
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .collect();
+    let expected = plan.minor / overhead.world_per_pixel();
+    let measured = *gaps
+        .iter()
+        .max_by_key(|gap| gaps.iter().filter(|other| other == gap).count())
+        .expect("there is at least one gap") as f32;
+    assert!(
+        (measured - expected).abs() <= 2.0,
+        "grid lines sit {measured} pixels apart where the camera says {expected}"
+    );
+    let model = pixels_of(&drawing, |frame, x, y| {
+        frame.pick_at(x, y) != PickId::NOTHING
+    });
+    assert!(!model.is_empty(), "the model disappeared in a drawing");
+    for (x, y) in &pixels_of(&drawing, |frame, x, y| {
+        frame.pick_at(x, y) == PickId::NOTHING
+    }) {
+        assert_eq!(drawing.hit_at(*x, *y).face(), FacePickId::NOTHING);
+        assert_eq!(drawing.hit_at(*x, *y).definition(), PickId::NOTHING);
+    }
 }
