@@ -92,9 +92,9 @@ puts the exact arrangement that preceded it back on screen. One level and no
 redo: it is a way out of one accidental press, not a history of the session,
 and it is deliberately not bound to a general undo key because it takes back
 nothing but what is drawn. The list keeps a row for what is hidden, marked as
-hidden. That is where you look when you wonder where something went. None of this touches the document,
-and none of it survives opening one: a file always opens with all of it on
-screen.
+hidden. That is where you look when you wonder where something went. None of
+this touches the document, and none of it survives opening one: a file always
+opens with all of it on screen.
 
 Moving the pointer
 over the model marks the face under it, and the same face wherever that

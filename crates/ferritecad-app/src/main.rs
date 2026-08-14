@@ -5384,12 +5384,27 @@ mod tests {
     #[test]
     fn undo_restores_the_arrangement_one_accidental_hide_destroyed() {
         // Four definitions: the plate, whose faces the document names, and
-        // three others. Each is drawn twice, so every claim below is about
-        // more than one placement.
+        // three others. Native bodies currently enter this loader once each;
+        // repeated placements are exercised by the GPU gate built from
+        // `three_plates`, while this gate owns the real named face and panel.
         let (_directory, scene) = plate_and_more_bodies(3);
         let snapshot = &scene.snapshot;
         assert_eq!(snapshot.meshes().len(), 4);
+        assert_eq!(
+            snapshot.draws().len(),
+            4,
+            "the native loader unexpectedly made occurrences"
+        );
         for definition in 0..4 {
+            assert_eq!(
+                snapshot
+                    .draws()
+                    .iter()
+                    .filter(|item| item.mesh == definition)
+                    .count(),
+                1,
+                "native definition {definition} is not placed exactly once"
+            );
             assert!(
                 snapshot
                     .pick_of(definition)
