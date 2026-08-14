@@ -77,10 +77,13 @@ stops drawing everything else, which is the way to look at one part without
 picking its neighbours off one at a time. What is chosen stays chosen, down to
 the face, and what was already hidden stays hidden: isolating removes
 distractions and never reveals anything. `Show all` (or `U`) brings everything
-back without choosing anything, and is the way back from either action. The
-list keeps a row for what is hidden, marked as hidden, which is where you look
-when you wonder where something went. None of this touches the document, and
-none of it survives opening one: a file always opens with all of it on screen.
+back without changing what is chosen, and is the way back from either action.
+It drops any click or pointer question recorded against the old picture, so
+newly returned geometry cannot answer an interaction that happened while it
+was absent. The list keeps a row for what is hidden, marked as hidden. That is
+where you look when you wonder where something went. None of this touches the
+document, and none of it survives opening one: a file always opens with all of
+it on screen.
 
 Moving the pointer
 over the model marks the face under it, and the same face wherever that

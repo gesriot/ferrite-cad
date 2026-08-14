@@ -343,10 +343,11 @@ impl ViewportInput {
 
     /// Forgets every gesture and question in flight, and asks to draw again.
     ///
-    /// What both replacing the picture and hiding part of it need: a click
-    /// recorded against the frame on screen would be answered against the one
-    /// about to replace it, and a question about what the pointer was over
-    /// would be answered about something that is no longer there.
+    /// What both replacing the picture and changing its visibility need: a
+    /// click recorded against the frame on screen would be answered against
+    /// the one about to replace it, and a question about what the pointer was
+    /// over would be answered about something that is no longer there or has
+    /// only just returned.
     ///
     /// The camera is deliberately untouched. Forgetting a gesture is not a way
     /// to move, and the two callers differ in exactly that: one frames what

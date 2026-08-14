@@ -883,16 +883,20 @@ fn isolate_selected(
     true
 }
 
-/// Draws every definition again, and changes nothing else.
+/// Draws every definition again, keeps the choice and forgets the old frame.
 ///
 /// Deliberately not a way to choose anything: what was hidden was unchosen
 /// when it was hidden, and putting it back on screen is not the same as
-/// deciding it is what the user is working on.
-fn show_all(visibility: &mut Visibility, input: &mut ViewportInput) -> bool {
+/// deciding it is what the user is working on. Pointing and interaction in
+/// flight are different: they describe pixels of the frame before hidden
+/// geometry returned, so answering them afterwards could name something that
+/// was absent when the question was recorded.
+fn show_all(visibility: &mut Visibility, hovered: &mut Marked, input: &mut ViewportInput) -> bool {
     if !visibility.show_all() {
         return false;
     }
-    input.request_redraw();
+    *hovered = Marked::Nothing;
+    input.forget_pending();
     true
 }
 
@@ -1598,7 +1602,11 @@ impl App {
         let Some(live) = self.live.as_mut() else {
             return;
         };
-        show_all(&mut live.scene.visibility, &mut self.input);
+        show_all(
+            &mut live.scene.visibility,
+            &mut live.scene.hovered,
+            &mut self.input,
+        );
     }
 
     /// Shows the whole model, wherever the camera had wandered to.
@@ -3340,7 +3348,11 @@ mod tests {
         let camera = input.camera().view_projection();
         let _ = input.take_redraw();
 
-        assert!(show_all(&mut scene.visibility, &mut input));
+        assert!(show_all(
+            &mut scene.visibility,
+            &mut scene.hovered,
+            &mut input
+        ));
         assert!(scene.visibility.shows(0, &picture));
         assert!(!scene.visibility.anything_hidden());
         assert!(input.take_redraw(), "showing everything owes a frame");
@@ -3374,7 +3386,11 @@ mod tests {
             &picture,
             &mut input
         ));
-        assert!(!show_all(&mut scene.visibility, &mut input));
+        assert!(!show_all(
+            &mut scene.visibility,
+            &mut scene.hovered,
+            &mut input
+        ));
         assert!(
             !input.take_redraw(),
             "an action that did nothing asked for a frame"
@@ -3397,9 +3413,17 @@ mod tests {
             &picture,
             &mut input
         ));
-        assert!(show_all(&mut scene.visibility, &mut input));
+        assert!(show_all(
+            &mut scene.visibility,
+            &mut scene.hovered,
+            &mut input
+        ));
         let _ = input.take_redraw();
-        assert!(!show_all(&mut scene.visibility, &mut input));
+        assert!(!show_all(
+            &mut scene.visibility,
+            &mut scene.hovered,
+            &mut input
+        ));
         assert!(!input.take_redraw());
     }
 
@@ -3950,7 +3974,11 @@ mod tests {
         ));
 
         // Show all is the way back, and it is not a way to unchoose.
-        assert!(show_all(&mut scene.visibility, &mut input));
+        assert!(show_all(
+            &mut scene.visibility,
+            &mut scene.hovered,
+            &mut input
+        ));
         for definition in 0..3 {
             assert!(scene.visibility.shows(definition, &picture));
         }
@@ -3974,6 +4002,95 @@ mod tests {
         ));
         assert_eq!(scene.selection, Selection::Nothing);
         assert_eq!(scene.visibility.bounds(&picture), None);
+    }
+
+    #[test]
+    fn showing_everything_forgets_questions_about_the_isolated_frame() {
+        let picture = three_definitions();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
+        let chosen = scene.selection.clone();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        assert!(isolate_selected(
+            &mut scene.visibility,
+            &scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+        let _ = input.take_redraw();
+
+        // A mark, click and question all belong to the isolated frame. Show
+        // all will put geometry under pixels where none existed when these
+        // were recorded, so none may be answered against the next frame.
+        scene.hovered = Marked::Definition(picture.pick_of(1).expect("drawn"));
+        input.handle(ViewportEvent::PointerMoved { x: 4.0, y: 4.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        input.handle(ViewportEvent::PointerMoved { x: 9.0, y: 9.0 }, false);
+        let mut proof = input.clone();
+        assert!(
+            proof.take_pick().is_some(),
+            "the gate needs a pending click"
+        );
+        assert!(
+            matches!(proof.take_hover(), Hover::At { .. }),
+            "the gate needs a pending hover question"
+        );
+
+        assert!(show_all(
+            &mut scene.visibility,
+            &mut scene.hovered,
+            &mut input
+        ));
+        assert_eq!(scene.selection, chosen, "Show all changed the choice");
+        assert_eq!(
+            scene.hovered,
+            Marked::Nothing,
+            "a hover from the isolated frame survived Show all"
+        );
+        assert_eq!(
+            input.take_pick(),
+            None,
+            "a click from the isolated frame survived Show all"
+        );
+        assert_eq!(input.take_hover(), Hover::Cleared);
+        assert!(input.take_redraw(), "Show all owes the replacement frame");
+
+        // A gesture begun against the isolated frame ends too. If it
+        // survived, the next move would pan the newly complete picture even
+        // though the press began while that picture did not exist.
+        assert!(isolate_selected(
+            &mut scene.visibility,
+            &scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input
+        ));
+        let _ = input.take_redraw();
+        input.handle(ViewportEvent::PointerMoved { x: 20.0, y: 20.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Middle), false);
+        let camera = input.camera().view_projection();
+        assert!(show_all(
+            &mut scene.visibility,
+            &mut scene.hovered,
+            &mut input
+        ));
+        input.handle(ViewportEvent::PointerMoved { x: 80.0, y: 80.0 }, false);
+        assert_eq!(
+            input.camera().view_projection(),
+            camera,
+            "a gesture from the isolated frame survived Show all"
+        );
     }
 
     #[test]
