@@ -101,6 +101,13 @@ pub struct PackedMesh {
     /// gives each face its own vertices – checked when packing, not assumed –
     /// so the two are the same statement about the same partition.
     face_of_vertex: Vec<u32>,
+    /// Index counts of the kernel's face ranges, in range order.
+    ///
+    /// Kept separately from the vertex attribute because face ranges divide
+    /// the index buffer, not the order vertices happen to be stored in. It is
+    /// the exact partition hashed into the snapshot identity and the direct
+    /// answer to how many faces this mesh has.
+    face_index_counts: Vec<u32>,
     min: [f32; 3],
     max: [f32; 3],
 }
@@ -121,12 +128,7 @@ impl PackedMesh {
 
     /// How many faces the kernel divided this mesh into.
     pub fn face_count(&self) -> usize {
-        // The ids are of this snapshot and run in order within a mesh, so the
-        // count is what the last one is above the first.
-        match (self.face_of_vertex.first(), self.face_of_vertex.last()) {
-            (Some(first), Some(last)) => (last - first + 1) as usize,
-            _ => 0,
-        }
+        self.face_index_counts.len()
     }
 
     /// The identity of the face each vertex belongs to, in vertex order.
@@ -461,13 +463,18 @@ impl SnapshotBuilder {
         // and it is checked here rather than believed, because a mesh that
         // broke it would draw one face in another's colour and the cause
         // would be nowhere near the symptom.
+        let added_faces = u32::try_from(mesh.faces.len())
+            .map_err(|_| CadError::input("a picture cannot hold that many faces"))?;
+        let next_face = self
+            .next_face
+            .checked_add(added_faces)
+            .ok_or_else(|| CadError::input("a picture cannot hold that many faces"))?;
         let mut face_of_vertex = vec![0u32; vertex_count];
-        for range in &mesh.faces {
-            let id = self
-                .next_face
-                .checked_add(1)
-                .ok_or_else(|| CadError::input("a picture cannot hold that many faces"))?;
-            self.next_face = id;
+        for (ordinal, range) in mesh.faces.iter().enumerate() {
+            // The final value was checked above, so each value on the way to
+            // it is representable as well. Kept local until every vertex has
+            // been checked: a refused mesh changes no builder state.
+            let id = self.next_face + ordinal as u32 + 1;
             let first = range.first_index as usize;
             let end = first + range.index_count as usize;
             for index in &mesh.indices[first..end] {
@@ -481,15 +488,18 @@ impl SnapshotBuilder {
                 *claimed = id;
             }
         }
+        let face_index_counts = mesh.faces.iter().map(|range| range.index_count).collect();
         // Ordinals are per snapshot, so the same face of one definition is one
         // identity however many times the definition is placed.
         self.face_owner
-            .resize(self.next_face as usize, self.meshes.len());
+            .resize(next_face as usize, self.meshes.len());
+        self.next_face = next_face;
 
         self.meshes.push(PackedMesh {
             vertices,
             indices: mesh.indices.clone(),
             face_of_vertex,
+            face_index_counts,
             min,
             max,
         });
@@ -606,10 +616,10 @@ impl SnapshotBuilder {
 /// different picture instead of silently keeping the same integer meaning.
 fn snapshot_identity(meshes: &[PackedMesh], items: &[DrawItem]) -> ContentHash {
     let mut hasher = CanonicalHasher::new("ferritecad.render-snapshot");
-    // Two, because a picture now holds the division of its meshes into faces
-    // as well as their triangles, and two pictures that agree about every
-    // triangle but divide them differently are different pictures.
-    hasher.algorithm_version(2);
+    // Three: version two added faces but accidentally hashed runs in vertex
+    // storage order. Face ranges partition the index buffer, so version three
+    // hashes their exact index counts instead.
+    hasher.algorithm_version(3);
     hasher.field("meshes").u64(meshes.len() as u64);
     for mesh in meshes {
         hasher.field("vertices").u64(mesh.vertices.len() as u64);
@@ -620,22 +630,14 @@ fn snapshot_identity(meshes: &[PackedMesh], items: &[DrawItem]) -> ContentHash {
         for index in &mesh.indices {
             hasher.u64(u64::from(*index));
         }
-        // How many vertices each face owns, in order. That is the partition
+        // How many indices each face owns, in order. That is the partition
         // itself: where every boundary falls and how many there are. The
         // kernel's names for the faces are not hashed, because a handle
         // belongs to the session that issued it and two identical pictures
         // built twice would otherwise differ.
         hasher.field("faces").u64(mesh.face_count() as u64);
-        let mut run = 0u64;
-        for pair in mesh.face_of_vertex.windows(2) {
-            run += 1;
-            if pair[0] != pair[1] {
-                hasher.u64(run);
-                run = 0;
-            }
-        }
-        if !mesh.face_of_vertex.is_empty() {
-            hasher.u64(run + 1);
+        for index_count in &mesh.face_index_counts {
+            hasher.u64(u64::from(*index_count));
         }
     }
     hasher.field("items").u64(items.len() as u64);

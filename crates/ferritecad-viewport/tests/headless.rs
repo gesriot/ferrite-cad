@@ -1585,3 +1585,74 @@ fn a_mesh_whose_faces_share_a_vertex_is_refused_rather_than_guessed_at() {
         "the refusal must say what is wrong with the mesh: {refusal}"
     );
 }
+
+#[test]
+fn face_count_does_not_depend_on_vertex_storage_order() {
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let mut mesh = divided(&[1, 1]);
+    // Face ranges are ranges of indices, not ranges of the vertex array. This
+    // remains a valid Mesh when the first face indexes the later vertices and
+    // the second indexes the earlier ones.
+    mesh.indices.copy_from_slice(&[3, 4, 5, 0, 1, 2]);
+    for (ordinal, range) in mesh.faces.iter_mut().enumerate() {
+        range.face = SubShapeHandle::new(shape, SubShapeKind::Face, ordinal as u64);
+    }
+    mesh.validate()
+        .expect("the kernel contract accepts the mesh");
+
+    let mut builder = SnapshotBuilder::new();
+    let definition = builder.add_mesh(&mesh).expect("packs");
+    builder
+        .place(definition, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+        .expect("places");
+    let snapshot = builder.build();
+
+    assert_eq!(snapshot.meshes()[definition].face_count(), 2);
+    assert_eq!(snapshot.face_count(), 2);
+    for raw in [1, 2] {
+        assert_eq!(
+            snapshot.definition_of_face(FacePickId::from_raw(raw, &snapshot)),
+            Some(definition)
+        );
+    }
+}
+
+#[test]
+fn a_refused_mesh_consumes_no_face_identities() {
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let mut shared = Mesh::default();
+    shared
+        .positions
+        .extend_from_slice(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0]);
+    shared
+        .normals
+        .extend_from_slice(&[0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
+    shared.indices.extend_from_slice(&[0, 1, 2, 1, 2, 3]);
+    for (ordinal, first_index) in [(0u64, 0u32), (1, 3)] {
+        shared.faces.push(MeshFaceRange {
+            face: SubShapeHandle::new(shape, SubShapeKind::Face, ordinal),
+            first_index,
+            index_count: 3,
+        });
+    }
+
+    let mut builder = SnapshotBuilder::new();
+    builder
+        .add_mesh(&shared)
+        .expect_err("the shared-vertex mesh must be refused");
+    let definition = builder.add_mesh(&divided(&[1])).expect("packs afterwards");
+    builder
+        .place(definition, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+        .expect("places");
+    let snapshot = builder.build();
+
+    assert_eq!(snapshot.face_count(), 1, "the refusal consumed face ids");
+    assert_eq!(
+        snapshot.meshes()[definition].faces_of_vertices(),
+        &[1, 1, 1]
+    );
+    assert_eq!(
+        snapshot.definition_of_face(FacePickId::from_raw(1, &snapshot)),
+        Some(definition)
+    );
+}

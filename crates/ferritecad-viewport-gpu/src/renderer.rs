@@ -286,10 +286,13 @@ impl Renderer {
             COLOUR_FORMAT,
             true,
         );
-        if let Some(refusal) = pollster::block_on(internal.pop())
-            .map(|error| error.to_string())
-            .or_else(|| pollster::block_on(validation.pop()).map(|error| error.to_string()))
-        {
+        // Pop both even when the inner scope caught an error. Leaving the
+        // outer one installed would make a later, unrelated device error look
+        // as though it belonged to this build.
+        let internal_refusal = pollster::block_on(internal.pop()).map(|error| error.to_string());
+        let validation_refusal =
+            pollster::block_on(validation.pop()).map(|error| error.to_string());
+        if let Some(refusal) = internal_refusal.or(validation_refusal) {
             return Err(CadError::unsupported(format!(
                 "this graphics adapter refused the pipeline this crate draws with: {refusal}"
             )));
@@ -475,7 +478,7 @@ impl Renderer {
     ) -> Result<()> {
         self.require_own(prepared)?;
 
-        self.ensure_surface_pipeline(format);
+        self.ensure_surface_pipeline(format)?;
         let depth = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ferritecad viewport window depth"),
             size: wgpu::Extent3d {
@@ -580,28 +583,56 @@ impl Renderer {
     }
 
     /// Builds the pipeline for a window format, once per format met.
-    fn ensure_surface_pipeline(&mut self, format: wgpu::TextureFormat) {
-        if !self.surface_pipelines.contains_key(&format) {
-            let pipeline = build_pipeline(
+    fn ensure_surface_pipeline(&mut self, format: wgpu::TextureFormat) -> Result<()> {
+        let needs_model = !self.surface_pipelines.contains_key(&format);
+        let needs_grid = !self.grid_surface_pipelines.contains_key(&format);
+        if !needs_model && !needs_grid {
+            return Ok(());
+        }
+
+        // Surface formats are learned only after a window exists, so these
+        // pipelines are necessarily lazy. Watch them just like the offscreen
+        // pipelines: a driver refusal is an unsupported adapter, not a reason
+        // for wgpu's uncaptured-error handler to panic the process.
+        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let model = needs_model.then(|| {
+            build_pipeline(
                 &self.device,
                 &self.shader,
                 &self.pipeline_layout,
                 format,
                 // No identity target: see `draw_into`.
                 false,
-            );
-            self.surface_pipelines.insert(format, pipeline);
-        }
-        if !self.grid_surface_pipelines.contains_key(&format) {
-            let pipeline = build_grid_pipeline(
+            )
+        });
+        let grid = needs_grid.then(|| {
+            build_grid_pipeline(
                 &self.device,
                 &self.grid_shader,
                 &self.grid_pipeline_layout,
                 format,
                 false,
-            );
-            self.grid_surface_pipelines.insert(format, pipeline);
+            )
+        });
+        let internal_refusal = pollster::block_on(internal.pop()).map(|error| error.to_string());
+        let validation_refusal =
+            pollster::block_on(validation.pop()).map(|error| error.to_string());
+        if let Some(refusal) = internal_refusal.or(validation_refusal) {
+            return Err(CadError::unsupported(format!(
+                "this graphics adapter refused the pipeline this crate draws with: {refusal}"
+            )));
         }
+
+        // Publish neither until both requested pipelines were accepted. A
+        // retry after a refusal therefore starts from one coherent state.
+        if let Some(model) = model {
+            self.surface_pipelines.insert(format, model);
+        }
+        if let Some(grid) = grid {
+            self.grid_surface_pipelines.insert(format, grid);
+        }
+        Ok(())
     }
 
     /// How many mesh buffers this renderer has uploaded.
@@ -1384,16 +1415,23 @@ impl Frame {
         let Some(at) = self.index(x, y) else {
             return Hit::NOTHING;
         };
-        Hit {
-            definition: match self.picks.get(at) {
-                Some(raw) => PickId::from_raw(*raw, &self.snapshot),
-                None => PickId::NOTHING,
-            },
-            face: match self.faces.get(at) {
-                Some(raw) => FacePickId::from_raw(*raw, &self.snapshot),
-                None => FacePickId::NOTHING,
-            },
-        }
+        let definition = self.picks.get(at).map_or(PickId::NOTHING, |raw| {
+            PickId::from_raw(*raw, &self.snapshot)
+        });
+        let candidate = self.faces.get(at).map_or(FacePickId::NOTHING, |raw| {
+            FacePickId::from_raw(*raw, &self.snapshot)
+        });
+        // Both targets describe one fragment. If a readback ever contradicts
+        // itself, preserve the established definition-pick semantics and say
+        // no face rather than manufacture a face of a different definition.
+        let face = if self.snapshot.definition(definition)
+            == self.snapshot.definition_of_face(candidate)
+        {
+            candidate
+        } else {
+            FacePickId::NOTHING
+        };
+        Hit { definition, face }
     }
 
     fn index(&self, x: u32, y: u32) -> Option<usize> {
@@ -1533,5 +1571,37 @@ mod tests {
             pixels[centre + 1] > 0,
             "the one-target pass accepted its pipeline but drew no green quad"
         );
+    }
+
+    #[test]
+    fn contradictory_targets_never_make_a_face_of_another_definition() {
+        let shape = ShapeHandle::new(SessionId::new(), 1);
+        let mesh = |face| Mesh {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: vec![0, 1, 2],
+            faces: vec![MeshFaceRange {
+                face: SubShapeHandle::new(shape, SubShapeKind::Face, face),
+                first_index: 0,
+                index_count: 3,
+            }],
+        };
+        let mut builder = SnapshotBuilder::new();
+        builder.add_mesh(&mesh(0)).expect("packs first");
+        builder.add_mesh(&mesh(1)).expect("packs second");
+        let snapshot = Arc::new(builder.build());
+        let frame = Frame {
+            snapshot: Arc::clone(&snapshot),
+            width: 1,
+            height: 1,
+            colour: vec![0; 4],
+            picks: vec![1],
+            // Face two belongs to definition two, not the definition target.
+            faces: vec![2],
+        };
+
+        let hit = frame.hit_at(0, 0);
+        assert_eq!(hit.definition(), snapshot.pick_of(0).expect("first pick"));
+        assert_eq!(hit.face(), FacePickId::NOTHING);
     }
 }
