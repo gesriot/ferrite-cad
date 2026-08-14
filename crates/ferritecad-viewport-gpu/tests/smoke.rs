@@ -2882,3 +2882,185 @@ fn isolating_keeps_the_backdrop_and_costs_no_geometry() {
         assert_eq!(once.hit_at(*x, *y).face(), FacePickId::NOTHING);
     }
 }
+
+#[test]
+fn one_definition_returns_with_its_own_pixels_picks_and_faces() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = three_plates(160, 160);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let uploaded = renderer.geometry_uploads();
+
+    // Only the middle one on screen, which is where a person ends up after
+    // isolating and then wanting one of the others back.
+    let kept = snapshot.pick_of(1).expect("drawn");
+    let returning = snapshot.pick_of(0).expect("drawn");
+    let staying_hidden = snapshot.pick_of(2).expect("drawn");
+    let mut visibility = Visibility::new(&snapshot);
+    assert!(visibility.isolate(Marked::Definition(kept), &snapshot));
+
+    let alone = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+    let was_there = pixels_of(&alone, |frame, x, y| frame.pick_at(x, y) == returning);
+    assert!(
+        was_there.is_empty(),
+        "the definition to be shown is already on screen"
+    );
+
+    assert!(visibility.show(Marked::Definition(returning), &snapshot));
+    let back = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+
+    // It is back, in both of its placements, with its own identities.
+    let returned = pixels_of(&back, |frame, x, y| frame.pick_at(x, y) == returning);
+    assert!(returned.len() > 40, "the definition did not come back");
+    let faces: Vec<_> = (0..snapshot.meshes()[0].face_count())
+        .map(|ordinal| snapshot.face_of(0, ordinal).expect("numbered"))
+        .collect();
+    for (x, y) in &returned {
+        assert!(faces.contains(&back.hit_at(*x, *y).face()));
+    }
+    let middle = back.height() / 2;
+    let near = returned.iter().filter(|(_, y)| *y < middle).count();
+    assert!(
+        near > 10 && returned.len() - near > 10,
+        "one placement of the returned definition is missing"
+    );
+
+    // The other hidden one stayed away, and what was already drawn is
+    // untouched where it was drawn.
+    assert!(
+        pixels_of(&back, |frame, x, y| frame.pick_at(x, y) == staying_hidden).is_empty(),
+        "showing one definition brought back another"
+    );
+    for (x, y) in &pixels_of(&alone, |frame, x, y| frame.pick_at(x, y) == kept) {
+        assert_eq!(back.pick_at(*x, *y), kept);
+    }
+
+    // Where nothing came back there is still no stale identity of anything.
+    for (x, y) in &pixels_of(&back, |frame, x, y| frame.pick_at(x, y) == PickId::NOTHING) {
+        assert_eq!(back.hit_at(*x, *y).definition(), PickId::NOTHING);
+        assert_eq!(back.hit_at(*x, *y).face(), FacePickId::NOTHING);
+    }
+
+    // Nothing was uploaded for any of it, and the same mask draws the same
+    // frame twice.
+    let again = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+    assert_eq!(again.colour(), back.colour());
+    assert_eq!(
+        renderer.geometry_uploads(),
+        uploaded,
+        "showing one definition uploaded geometry"
+    );
+}
+
+#[test]
+fn a_definition_that_came_back_does_not_disturb_what_was_chosen() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = three_plates(128, 128);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let kept = snapshot.pick_of(1).expect("drawn");
+    let face = snapshot.face_of(1, 0).expect("numbered");
+    let returning = snapshot.pick_of(0).expect("drawn");
+    let staying_hidden = snapshot.pick_of(2).expect("drawn");
+
+    let mut visibility = Visibility::new(&snapshot);
+    assert!(visibility.isolate(Marked::Definition(kept), &snapshot));
+    let chosen_before = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Definition(kept),
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+    let face_before = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Face(face),
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+
+    assert!(visibility.show(Marked::Definition(returning), &snapshot));
+    let chosen_after = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Definition(kept),
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+    let face_after = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Face(face),
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+
+    // What was chosen looks exactly as it did, wherever it is drawn.
+    let plain = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+    for (x, y) in &pixels_of(&plain, |frame, x, y| frame.pick_at(x, y) == kept) {
+        assert_eq!(
+            chosen_after.colour_at(*x, *y),
+            chosen_before.colour_at(*x, *y)
+        );
+        assert_eq!(face_after.colour_at(*x, *y), face_before.colour_at(*x, *y));
+    }
+    assert_ne!(chosen_after.colour(), face_after.colour());
+
+    // And what is still hidden cannot be marked, chosen or pointed at.
+    for (selected, hovered) in [
+        (Marked::Definition(staying_hidden), Marked::Nothing),
+        (Marked::Nothing, Marked::Definition(staying_hidden)),
+        (
+            Marked::Nothing,
+            Marked::Face(snapshot.face_of(2, 0).expect("numbered")),
+        ),
+    ] {
+        let marked = renderer
+            .render(&prepared, &camera, selected, hovered, &visibility)
+            .expect("draws");
+        assert_eq!(
+            marked.colour(),
+            plain.colour(),
+            "something still hidden was tinted by {selected:?}/{hovered:?}"
+        );
+    }
+}

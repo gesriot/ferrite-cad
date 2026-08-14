@@ -1761,6 +1761,25 @@ mod tests {
             offscreen_isolating,
             "the window and the readback disagree about what is isolated"
         );
+
+        // And once one definition has been asked back, which is a third mask
+        // reached a third way through the one representation both paths read.
+        let mut shown = isolating.clone();
+        assert!(shown.show(
+            Marked::Definition(snapshot.pick_of(0).expect("drawn")),
+            &snapshot
+        ));
+        let offscreen_shown = renderer
+            .render(&prepared, &camera, Marked::Nothing, Marked::Nothing, &shown)
+            .expect("draws")
+            .colour()
+            .to_vec();
+        assert_ne!(offscreen_shown, offscreen_isolating);
+        assert_eq!(
+            window_colour(&mut renderer, &prepared, &camera, &shown),
+            offscreen_shown,
+            "the window and the readback disagree about what came back"
+        );
     }
 
     #[test]

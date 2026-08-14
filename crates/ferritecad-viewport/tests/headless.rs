@@ -2310,3 +2310,164 @@ fn two_pictures_of_the_same_triangles_do_not_share_what_is_isolated() {
         "a mark of one picture was offered against another"
     );
 }
+
+#[test]
+fn showing_one_hidden_definition_returns_that_one_and_no_other() {
+    let snapshot = three_definitions_placed_twice();
+    let mut visibility = Visibility::new(&snapshot);
+    let first = snapshot.pick_of(0).expect("drawn");
+    let third = snapshot.pick_of(2).expect("drawn");
+    assert!(visibility.isolate(
+        Marked::Definition(snapshot.pick_of(1).expect("drawn")),
+        &snapshot
+    ));
+
+    assert!(visibility.can_show(Marked::Definition(first), &snapshot));
+    assert!(visibility.show(Marked::Definition(first), &snapshot));
+
+    // The one asked for, and nothing else that was hidden.
+    assert!(visibility.shows(0, &snapshot));
+    assert!(
+        visibility.shows(1, &snapshot),
+        "what was drawn stopped being drawn"
+    );
+    assert!(
+        !visibility.shows(2, &snapshot),
+        "showing one definition brought back another"
+    );
+
+    // Every placement of it, and every face of it: what was hidden was the
+    // definition, so what returns is the definition.
+    assert_eq!(
+        snapshot
+            .draws()
+            .iter()
+            .filter(|item| item.mesh == 0)
+            .count(),
+        2,
+        "the gate needs the returned definition to be drawn in two places"
+    );
+    for ordinal in 0..snapshot.meshes()[0].face_count() {
+        let face = snapshot.face_of(0, ordinal).expect("numbered");
+        assert_eq!(snapshot.definition_of_face(face), Some(0));
+    }
+
+    // The extent grows by exactly what came back.
+    let mut without = Visibility::new(&snapshot);
+    assert!(without.isolate(
+        Marked::Definition(snapshot.pick_of(1).expect("drawn")),
+        &snapshot
+    ));
+    let mut both = Visibility::new(&snapshot);
+    assert!(both.hide(Marked::Definition(third), &snapshot));
+    assert_eq!(
+        visibility.bounds(&snapshot),
+        both.bounds(&snapshot),
+        "what is drawn is exactly the two definitions, and their extent says so"
+    );
+    assert_ne!(visibility.bounds(&snapshot), without.bounds(&snapshot));
+}
+
+#[test]
+fn showing_something_that_is_drawn_or_nowhere_or_foreign_changes_nothing() {
+    let mut builder = SnapshotBuilder::new();
+    let drawn = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+    let other = builder.add_mesh(&divided(&[2, 1])).expect("packs");
+    let empty = builder.add_mesh(&Mesh::default()).expect("packs");
+    let unplaced = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+    for part in [drawn, other, empty] {
+        builder
+            .place(part, None, &moved(part as f64 * 40.0, 0.0, 0.0), [1.0; 3])
+            .expect("places");
+    }
+    let snapshot = builder.build();
+    let elsewhere = {
+        let mut builder = SnapshotBuilder::new();
+        let part = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+        builder
+            .place(part, None, &Transform::IDENTITY, [0.0, 0.0, 1.0])
+            .expect("places");
+        builder.build()
+    };
+
+    let mut visibility = Visibility::new(&snapshot);
+    assert!(visibility.hide(
+        Marked::Definition(snapshot.pick_of(other).expect("drawn")),
+        &snapshot
+    ));
+    let before = visibility.clone();
+
+    // Already drawn, drawing nothing wherever it is, and belonging to another
+    // picture: none of these is a way to change what is on screen.
+    for mark in [
+        Marked::Definition(snapshot.pick_of(drawn).expect("has a row")),
+        Marked::Definition(snapshot.pick_of(empty).expect("has a row")),
+        Marked::Definition(snapshot.pick_of(unplaced).expect("has a row")),
+        Marked::Nothing,
+        Marked::Definition(PickId::NOTHING),
+        Marked::Face(FacePickId::NOTHING),
+        Marked::Definition(elsewhere.pick_of(0).expect("drawn")),
+        Marked::Face(elsewhere.face_of(0, 0).expect("numbered")),
+    ] {
+        assert!(
+            !visibility.can_show(mark, &snapshot),
+            "{mark:?} was offered"
+        );
+        assert!(
+            !visibility.show(mark, &snapshot),
+            "{mark:?} changed something"
+        );
+    }
+    assert_eq!(visibility, before);
+
+    // The one that really is hidden still comes back, so the refusals above
+    // are about those marks and not about the operation having stopped.
+    assert!(visibility.show(
+        Marked::Definition(snapshot.pick_of(other).expect("drawn")),
+        &snapshot
+    ));
+    assert!(visibility.shows(other, &snapshot));
+
+    // And asking again, now that it is drawn, is not a change.
+    assert!(!visibility.show(
+        Marked::Definition(snapshot.pick_of(other).expect("drawn")),
+        &snapshot
+    ));
+    assert!(!visibility.anything_hidden());
+}
+
+#[test]
+fn two_pictures_of_the_same_triangles_do_not_share_what_is_shown() {
+    let build = |context: [u8; 32]| {
+        let mut builder = SnapshotBuilder::new();
+        builder
+            .bind_identities_to(ContentHash::from_bytes(context))
+            .expect("binds once");
+        let first = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+        let second = builder.add_mesh(&divided(&[2, 1])).expect("packs");
+        for part in [first, second] {
+            builder
+                .place(part, None, &moved(part as f64 * 40.0, 0.0, 0.0), [1.0; 3])
+                .expect("places");
+        }
+        builder.build()
+    };
+    let one = build([7; 32]);
+    let other = build([9; 32]);
+
+    let mut visibility = Visibility::new(&one);
+    assert!(visibility.hide(Marked::Definition(one.pick_of(0).expect("drawn")), &one));
+
+    // A mark of one picture asks nothing of another, however alike the two
+    // look: what refuses it is the identity it carries, not its size.
+    assert!(!visibility.can_show(Marked::Definition(one.pick_of(0).expect("drawn")), &other));
+    assert!(!visibility.show(Marked::Definition(one.pick_of(0).expect("drawn")), &other));
+    assert!(
+        !visibility.shows(0, &one),
+        "the mask stopped applying to its own picture"
+    );
+    assert!(
+        visibility.shows(0, &other),
+        "a mask reached into another picture"
+    );
+}

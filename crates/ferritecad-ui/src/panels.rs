@@ -10,7 +10,7 @@
 //! That split is what keeps a panel from becoming a second place where the
 //! camera moves.
 
-use ferritecad_viewport::StandardView;
+use ferritecad_viewport::{PickId, StandardView};
 
 /// What the toolbar was asked for while it was on screen.
 ///
@@ -37,6 +37,8 @@ pub struct Chosen {
     pub isolate: bool,
     /// The user wants everything drawn again.
     pub show_all: bool,
+    /// A hidden definition the user asked to see again, named by the picture.
+    pub show_definition: Option<PickId>,
     /// A definition the user picked out of the list, by its place in it.
     ///
     /// A position in this frame's list and nothing more: the caller turns it
@@ -238,6 +240,7 @@ pub fn definitions_panel(
     definitions: &[Selected<'_>],
     chosen: Option<usize>,
     hidden: &[bool],
+    show: &[Option<PickId>],
 ) -> Rows {
     let mut rows = Rows::default();
     if definitions.is_empty() {
@@ -263,13 +266,27 @@ pub fn definitions_panel(
                 };
                 // `selectable_label` draws the chosen one differently, which
                 // is how a click in the viewport shows up here.
-                // The same widget a visible row draws, disabled: greyed rather
-                // than missing, so a person can see that the row is there and
-                // that pressing it is not the way back.
-                let response = ui.add_enabled(
-                    !is_hidden,
-                    egui::Button::selectable(chosen == Some(row), summary),
-                );
+                // A row that is not being drawn offers a way back to itself,
+                // beside its name. Whether it does is decided by the caller,
+                // which is the only thing that knows what the picture draws;
+                // this only draws what it was given.
+                let offered = show.get(row).copied().flatten();
+                let response = ui
+                    .horizontal(|ui| {
+                        if let Some(pick) = offered
+                            && ui.small_button("Show").clicked()
+                        {
+                            rows.shown = Some(pick);
+                        }
+                        // The same widget a visible row draws, disabled: greyed
+                        // rather than missing, so a person can see that the row
+                        // is there and that pressing it is not the way back.
+                        ui.add_enabled(
+                            !is_hidden,
+                            egui::Button::selectable(chosen == Some(row), summary),
+                        )
+                    })
+                    .inner;
                 // A hidden row reports neither, and the rule is written here
                 // rather than left to whether a disabled widget happens to
                 // report a click: pressing it would choose geometry nobody can
@@ -299,6 +316,14 @@ pub struct Rows {
     pub pressed: Option<usize>,
     /// A row the pointer is over, which is a question and not a choice.
     pub hovered: Option<usize>,
+    /// A hidden definition the user asked to see again, named by the picture
+    /// that drew the list rather than by where the row sits in it.
+    ///
+    /// An identity rather than a position because this one leaves the panel:
+    /// a row number would have to be turned back into a definition by
+    /// somebody, and the picture is the only thing that can say what sits
+    /// there.
+    pub shown: Option<PickId>,
 }
 
 /// Shows what is chosen, and nothing when nothing is.
@@ -1042,8 +1067,9 @@ mod tests {
                 &definitions,
                 None,
                 hidden,
+                &[],
             );
-            press_list(&context, at, &definitions, None, hidden)
+            press_list(&context, at, &definitions, None, hidden, &[])
         };
 
         // The same press, on the same row, in both states. The first half is
@@ -1084,7 +1110,7 @@ mod tests {
     /// Every glyph the list draws, as one string.
     fn list_text(context: &egui::Context, definitions: &[Selected<'_>], hidden: &[bool]) -> String {
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            let _ = definitions_panel(ui, definitions, None, hidden);
+            let _ = definitions_panel(ui, definitions, None, hidden, &[]);
         });
         let text = output
             .shapes
@@ -1189,6 +1215,112 @@ mod tests {
         );
     }
 
+    #[test]
+    fn only_a_row_given_a_way_back_offers_one() {
+        let context = egui::Context::default();
+        let definitions = [body(), imported()];
+        let pick = |raw: u32| {
+            let mut builder = ferritecad_viewport::SnapshotBuilder::new();
+            let mesh = ferritecad_kernel::Mesh {
+                positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+                indices: vec![0, 1, 2],
+                faces: vec![ferritecad_kernel::MeshFaceRange {
+                    face: ferritecad_kernel::SubShapeHandle::new(
+                        ferritecad_kernel::ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1),
+                        ferritecad_kernel::SubShapeKind::Face,
+                        0,
+                    ),
+                    first_index: 0,
+                    index_count: 3,
+                }],
+            };
+            for _ in 0..raw {
+                let definition = builder.add_mesh(&mesh).expect("packs");
+                builder
+                    .place(
+                        definition,
+                        None,
+                        &ferritecad_types::Transform::IDENTITY,
+                        [1.0, 1.0, 1.0],
+                    )
+                    .expect("places");
+            }
+            let snapshot = builder.build();
+            snapshot
+                .pick_of(raw as usize - 1)
+                .expect("the picture has that row")
+        };
+        let offered = pick(2);
+
+        // Pressed across the list: the only place that asks for anything back
+        // is the control on the row that was given one.
+        let mut asked = Vec::new();
+        for step_y in 0..30 {
+            for step_x in 0..40 {
+                let at = egui::Pos2::new(step_x as f32 * 8.0, step_y as f32 * 5.0);
+                let _ = press_list(
+                    &context,
+                    egui::Pos2::new(4000.0, 4000.0),
+                    &definitions,
+                    None,
+                    &[false, true],
+                    &[None, Some(offered)],
+                );
+                let rows = press_list(
+                    &context,
+                    at,
+                    &definitions,
+                    None,
+                    &[false, true],
+                    &[None, Some(offered)],
+                );
+                if let Some(shown) = rows.shown {
+                    asked.push((at, shown, rows.pressed, rows.hovered));
+                }
+            }
+        }
+        assert!(!asked.is_empty(), "the hidden row offers no way back");
+        for (at, shown, pressed, hovered) in &asked {
+            assert_eq!(
+                *shown, offered,
+                "the wrong definition was asked for at {at:?}"
+            );
+            // Pressing the way back is not pressing the row, and not pointing
+            // at it either: what is not drawn cannot be chosen.
+            assert_eq!(*pressed, None, "asking a row back also chose it");
+            assert_eq!(*hovered, None, "asking a row back also pointed at it");
+        }
+
+        // A list where nothing was given a way back offers none anywhere.
+        for step_y in 0..30 {
+            for step_x in 0..40 {
+                let at = egui::Pos2::new(step_x as f32 * 8.0, step_y as f32 * 5.0);
+                let _ = press_list(
+                    &context,
+                    egui::Pos2::new(4000.0, 4000.0),
+                    &definitions,
+                    None,
+                    &[false, false],
+                    &[None, None],
+                );
+                assert_eq!(
+                    press_list(
+                        &context,
+                        at,
+                        &definitions,
+                        None,
+                        &[false, false],
+                        &[None, None]
+                    )
+                    .shown,
+                    None,
+                    "a row with no way back offered one at {at:?}"
+                );
+            }
+        }
+    }
+
     /// Runs the list once, with a click delivered at `at`.
     fn press_list(
         context: &egui::Context,
@@ -1196,6 +1328,7 @@ mod tests {
         definitions: &[Selected<'_>],
         chosen: Option<usize>,
         hidden: &[bool],
+        show: &[Option<PickId>],
     ) -> Rows {
         let input = egui::RawInput {
             events: vec![
@@ -1218,7 +1351,7 @@ mod tests {
 
         let mut rows = Rows::default();
         let mut output = context.run_ui(input, |ui| {
-            rows = definitions_panel(ui, definitions, chosen, hidden);
+            rows = definitions_panel(ui, definitions, chosen, hidden, show);
         });
         output.textures_delta.clear();
         rows
@@ -1252,9 +1385,14 @@ mod tests {
                         } else {
                             definition.summary()
                         };
+                        // The same shape the panel lays out, so the places
+                        // measured here are the places pressed there.
                         rects.push(
-                            ui.add_enabled(!is_hidden, egui::Button::selectable(false, summary))
-                                .rect,
+                            ui.horizontal(|ui| {
+                                ui.add_enabled(!is_hidden, egui::Button::selectable(false, summary))
+                                    .rect
+                            })
+                            .inner,
                         );
                     }
                 });
@@ -1274,7 +1412,7 @@ mod tests {
         let rows = rows_of(&context, &definitions);
         assert_eq!(rows.len(), 2, "the list did not lay out one row each");
 
-        let pressed = press_list(&context, rows[1].center(), &definitions, None, &[]);
+        let pressed = press_list(&context, rows[1].center(), &definitions, None, &[], &[]);
         assert_eq!(
             pressed.pressed,
             Some(1),
@@ -1285,7 +1423,7 @@ mod tests {
         // every frame would reselect for as long as the window was open.
         let quiet = context.run_ui(egui::RawInput::default(), |ui| {
             assert_eq!(
-                definitions_panel(ui, &definitions, Some(1), &[]).pressed,
+                definitions_panel(ui, &definitions, Some(1), &[], &[]).pressed,
                 None
             );
         });
@@ -1308,7 +1446,7 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    asked = definitions_panel(ui, &definitions, None, &[]);
+                    asked = definitions_panel(ui, &definitions, None, &[], &[]);
                 },
             );
             output.textures_delta.clear();
@@ -1362,11 +1500,11 @@ mod tests {
 
         // Each is chosen on its own.
         assert_eq!(
-            press_list(&context, rows[0].center(), &definitions, None, &[]).pressed,
+            press_list(&context, rows[0].center(), &definitions, None, &[], &[]).pressed,
             Some(0)
         );
         assert_eq!(
-            press_list(&context, rows[1].center(), &definitions, None, &[]).pressed,
+            press_list(&context, rows[1].center(), &definitions, None, &[], &[]).pressed,
             Some(1)
         );
     }
@@ -1405,9 +1543,10 @@ mod tests {
         let mut rows = Rows {
             pressed: Some(7),
             hovered: Some(7),
+            shown: None,
         };
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            rows = definitions_panel(ui, &[], None, &[]);
+            rows = definitions_panel(ui, &[], None, &[], &[]);
         });
         output.textures_delta.clear();
         assert_eq!(rows, Rows::default(), "an empty list invented a choice");
@@ -1426,7 +1565,7 @@ mod tests {
                 .sum::<usize>()
         };
         let mut said = context.run_ui(egui::RawInput::default(), |ui| {
-            let _ = definitions_panel(ui, &[], None, &[]);
+            let _ = definitions_panel(ui, &[], None, &[], &[]);
         });
         assert!(vertices(&said) > vertices(&empty));
         said.textures_delta.clear();

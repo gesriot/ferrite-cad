@@ -456,6 +456,34 @@ impl Visibility {
         true
     }
 
+    /// Whether this mark names a definition that could come back on screen.
+    ///
+    /// True only for something hidden that has geometry to return: a
+    /// definition with no triangles or no placements is nowhere whatever this
+    /// mask says, so drawing it again would change a row label and no pixel.
+    pub fn can_show(&self, mark: Marked, snapshot: &RenderSnapshot) -> bool {
+        self.showable_definition(mark, snapshot).is_some()
+    }
+
+    /// Draws one hidden definition again, and says whether that changed
+    /// anything.
+    ///
+    /// Every placement of it and every face of it, because what was hidden was
+    /// the definition. Everything else that is hidden stays hidden: this is
+    /// the way back to one thing, and [`Self::show_all`] is the way back to
+    /// all of them.
+    ///
+    /// Resolved through the picture, exactly as [`Self::hide`] is, so nothing,
+    /// a mark from a replaced picture and a mark from another picture all show
+    /// nothing. Showing what is already drawn is not a change.
+    pub fn show(&mut self, mark: Marked, snapshot: &RenderSnapshot) -> bool {
+        let Some(definition) = self.showable_definition(mark, snapshot) else {
+            return false;
+        };
+        self.hidden[definition] = false;
+        true
+    }
+
     /// Draws everything again, and says whether that changed anything.
     pub fn show_all(&mut self) -> bool {
         if !self.anything_hidden() {
@@ -484,15 +512,37 @@ impl Visibility {
 
     /// Resolves one hide request all the way to geometry that is still drawn.
     fn hideable_definition(&self, mark: Marked, snapshot: &RenderSnapshot) -> Option<usize> {
+        let definition = self.definition_of(mark, snapshot)?;
+        self.draws(definition, snapshot).then_some(definition)
+    }
+
+    /// Resolves one show request all the way to geometry that would return.
+    ///
+    /// The mirror of [`Self::hideable_definition`], over the same resolution:
+    /// hidden rather than drawn, and with something to draw either way.
+    fn showable_definition(&self, mark: Marked, snapshot: &RenderSnapshot) -> Option<usize> {
+        let definition = self.definition_of(mark, snapshot)?;
+        if !self.hidden.get(definition).copied().unwrap_or(false) {
+            return None;
+        }
+        self.has_geometry(definition, snapshot)
+            .then_some(definition)
+    }
+
+    /// Which definition of this picture a mark names, if any.
+    ///
+    /// One place, so every operation here agrees about what a mark from
+    /// another picture, from a replaced picture, or from nothing at all means:
+    /// no definition, and therefore no change.
+    fn definition_of(&self, mark: Marked, snapshot: &RenderSnapshot) -> Option<usize> {
         if self.snapshot != snapshot.identity {
             return None;
         }
-        let definition = match mark.known_to(snapshot) {
-            Marked::Nothing => return None,
+        match mark.known_to(snapshot) {
+            Marked::Nothing => None,
             Marked::Definition(pick) => snapshot.definition(pick),
             Marked::Face(face) => snapshot.definition_of_face(face),
-        }?;
-        self.draws(definition, snapshot).then_some(definition)
+        }
     }
 
     /// What Isolate would stop drawing, for a mark that names something drawn.
@@ -519,6 +569,15 @@ impl Visibility {
         if self.hidden.get(definition).copied().unwrap_or(true) {
             return false;
         }
+        self.has_geometry(definition, snapshot)
+    }
+
+    /// Whether this definition has anything to put on screen at all.
+    ///
+    /// A property of the picture rather than of this mask: it is as true of a
+    /// hidden definition as of a drawn one, which is what lets one rule serve
+    /// both directions.
+    fn has_geometry(&self, definition: usize, snapshot: &RenderSnapshot) -> bool {
         snapshot
             .pick_of(definition)
             .and_then(|pick| snapshot.bounds_of(pick))
