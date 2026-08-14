@@ -50,8 +50,10 @@ and zoom, the standard views, and a click selects a definition and describes it
 in portable terms. Every placement of one definition is selected together,
 because a click names the definition and never the placement it landed on. A
 list beside the model offers the same definitions by name and identity, which
-is how one that is hidden, tiny or out of shot can still be chosen. Opening
-another document is the only editing operation there is.
+is how one that is hidden, tiny or out of shot can still be chosen, and
+`Frame selected` (or `F`) brings all of its placements into view without
+changing the direction you were looking from. Opening another document is the
+only editing operation there is.
 
 ## How a document is put together
 

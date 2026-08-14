@@ -27,6 +27,8 @@ pub struct Chosen {
     pub open: bool,
     /// The user has stopped waiting for the document being read.
     pub cancel: bool,
+    /// The user wants to see what is chosen.
+    pub frame: bool,
     /// A definition the user picked out of the list, by its place in it.
     ///
     /// A position in this frame's list and nothing more: the caller turns it
@@ -227,6 +229,8 @@ pub fn selection_inspector(ui: &mut egui::Ui, selected: Option<Selected<'_>>) {
 pub struct Activity<'a> {
     pub line: &'a str,
     pub progress: Option<f32>,
+    /// Whether the picture can say where what is chosen actually is.
+    pub can_frame_selection: bool,
 }
 
 /// The toolbar: a document to open, the directions a drawing would name, what
@@ -247,6 +251,17 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
         // First, and separated: opening replaces everything else on screen,
         // where the buttons after it only change where it is seen from.
         chosen.open = ui.button("Open…").clicked();
+        ui.separator();
+
+        // Offered only when there is something to show, and disabled rather
+        // than hidden: a control that comes and goes is harder to find than
+        // one that is plainly not available yet.
+        chosen.frame = ui
+            .add_enabled(
+                activity.can_frame_selection,
+                egui::Button::new(format!("Frame selected ({FRAME_KEY})")),
+            )
+            .clicked();
         ui.separator();
 
         ui.label("View");
@@ -276,6 +291,13 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
 ///
 /// One list, used by the panel here and available to whatever binds the keys,
 /// so a shortcut cannot end up printed on a button that does something else.
+/// The key that shows what is chosen, printed on its button.
+///
+/// One place, read by the panel and by whatever binds the keys, for the same
+/// reason [`VIEWS`] is one place: a shortcut printed on a button that does
+/// something else is worse than no shortcut at all.
+pub const FRAME_KEY: &str = "F";
+
 pub const VIEWS: &[(StandardView, &str, &str)] = &[
     (StandardView::Front, "Front", "1"),
     (StandardView::Back, "Back", "2"),
@@ -455,6 +477,7 @@ mod tests {
         let reading = Activity {
             line: "Opening part.fcad… 40%",
             progress: Some(0.4),
+            can_frame_selection: false,
         };
 
         // Where the Cancel button is: after the views, so the row up to it is
@@ -463,6 +486,11 @@ mod tests {
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.horizontal(|ui| {
                 let _ = ui.button("Open…");
+                ui.separator();
+                let _ = ui.add_enabled(
+                    reading.can_frame_selection,
+                    egui::Button::new(format!("Frame selected ({FRAME_KEY})")),
+                );
                 ui.separator();
                 ui.label("View");
                 for (_, name, key) in VIEWS {
@@ -827,6 +855,66 @@ mod tests {
                 definition.summary()
             );
         }
+    }
+
+    #[test]
+    fn showing_what_is_chosen_is_offered_only_when_there_is_somewhere_to_go() {
+        let context = egui::Context::default();
+        let can = |can_frame_selection| Activity {
+            line: "part.fcad",
+            progress: None,
+            can_frame_selection,
+        };
+
+        // Where the button is, laid out exactly as the toolbar lays it out.
+        let mut frame = None;
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.horizontal(|ui| {
+                let _ = ui.button("Open…");
+                ui.separator();
+                frame = Some(
+                    ui.add_enabled(
+                        true,
+                        egui::Button::new(format!("Frame selected ({FRAME_KEY})")),
+                    )
+                    .rect,
+                );
+            });
+        });
+        output.textures_delta.clear();
+        let centre = frame.expect("the reference row was laid out").center();
+
+        assert!(
+            click_on(&context, centre, can(true)).frame,
+            "nothing there asks to see what is chosen"
+        );
+
+        // With nothing to show, the same press asks for nothing: an action
+        // that cannot be carried out must not report that it was.
+        assert!(
+            !click_on(&context, centre, can(false)).frame,
+            "an unavailable action reported that it happened"
+        );
+
+        // And an untouched toolbar asks for nothing either way.
+        let mut quiet = Chosen::default();
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            quiet = toolbar(ui, can(true));
+        });
+        output.textures_delta.clear();
+        assert!(!quiet.frame);
+    }
+
+    #[test]
+    fn the_key_printed_on_the_button_is_the_one_this_crate_names() {
+        // The panel prints `FRAME_KEY` and whatever binds the keyboard reads
+        // the same constant, so a shortcut cannot end up printed on a button
+        // that does something else.
+        assert!(!FRAME_KEY.is_empty());
+        assert!(
+            VIEWS.iter().all(|(_, _, key)| *key != FRAME_KEY),
+            "the framing key is also printed on a view button"
+        );
     }
 
     #[test]

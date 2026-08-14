@@ -39,7 +39,7 @@ use ferritecad_occt::OcctKernel;
 use ferritecad_scene::{CatalogueEntry, LoadedScene, SceneItem, snapshot_of};
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
-    Activity, Chosen, PointerButton, Selected, VIEWS, ViewportEvent, ViewportInput,
+    Activity, Chosen, FRAME_KEY, PointerButton, Selected, VIEWS, ViewportEvent, ViewportInput,
 };
 use ferritecad_viewport::{PickId, RenderSnapshot, SnapshotBuilder, StandardView};
 use ferritecad_viewport_gpu::{PreparedSnapshot, Renderer, WindowSurface};
@@ -764,6 +764,33 @@ fn commit_scene<P>(
     Ok(())
 }
 
+/// Where everything drawn as the chosen definition is.
+///
+/// Asked of the picture that issued the choice, so a choice belonging to a
+/// replaced picture, a definition that draws nothing and nothing chosen at all
+/// are one answer: there is nowhere to go.
+fn selection_bounds<P>(
+    scene: &LiveScene<P>,
+    snapshot: &RenderSnapshot,
+) -> Option<([f32; 3], [f32; 3])> {
+    snapshot.bounds_of(scene.selection)
+}
+
+/// Shows what is chosen, and changes nothing else.
+///
+/// The scene is borrowed immutably, so this cannot move the camera *and*
+/// alter the choice: showing something is not choosing it, and a user who
+/// pressed this to see their selection would not expect to lose it. Returns
+/// whether anything happened, which is what an unavailable action must not
+/// claim.
+fn frame_selection<P>(
+    scene: &LiveScene<P>,
+    snapshot: &RenderSnapshot,
+    camera: &mut ViewportInput,
+) -> Result<bool> {
+    camera.frame_selected(selection_bounds(scene, snapshot))
+}
+
 /// What the interface should say about a chosen definition.
 ///
 /// The conversion lives here because this is where both halves are known: the
@@ -924,6 +951,11 @@ impl ApplicationHandler<AppEvent> for App {
                 let activity = Activity {
                     line: &line,
                     progress: self.loads.status().fraction(),
+                    can_frame_selection: selection_bounds(
+                        &live.scene,
+                        live.scene.prepared.snapshot(),
+                    )
+                    .is_some(),
                 };
                 match live.draw(&self.input, activity) {
                     // A button pressed during this frame reaches the camera
@@ -953,6 +985,11 @@ impl ApplicationHandler<AppEvent> for App {
                         if let Some(row) = chosen.definition {
                             self.choose_definition(row);
                         }
+                        // The button and the key are two ways of asking for
+                        // the same thing, and they ask the same function.
+                        if chosen.frame {
+                            self.frame_selection();
+                        }
                         // Asked after the frame that was clicked has been
                         // published, and only when somebody clicked: answering
                         // means drawing the model again offscreen to read one
@@ -967,6 +1004,15 @@ impl ApplicationHandler<AppEvent> for App {
                     }
                 }
             }
+            // Asked for by name rather than translated into a camera event:
+            // where to go depends on what the picture says is chosen, and the
+            // reducer is handed the answer rather than asked to find it.
+            WindowEvent::KeyboardInput { ref event, .. }
+                if event.state == ElementState::Pressed && wants_frame(&event.logical_key) =>
+            {
+                self.frame_selection();
+            }
+
             other => {
                 for event in translate(&other) {
                     let claimed = match event {
@@ -1141,6 +1187,24 @@ impl App {
             // still on screen and still correct; the click simply went
             // unanswered.
             Err(error) => eprintln!("ferritecad: {error}"),
+        }
+    }
+
+    /// Shows what is chosen, if the picture can say where it is.
+    ///
+    /// The one operation behind both the button and the key. Where the camera
+    /// should go is the reducer's decision and is made in one place; what is
+    /// on screen is the picture's business and is answered by the picture.
+    fn frame_selection(&mut self) {
+        let Some(live) = self.live.as_ref() else {
+            return;
+        };
+        // Nothing to show means nothing moved and no frame owed, which is not
+        // a failure and is not reported as one.
+        if let Err(error) =
+            frame_selection(&live.scene, live.scene.prepared.snapshot(), &mut self.input)
+        {
+            eprintln!("ferritecad: {error}");
         }
     }
 
@@ -1446,6 +1510,19 @@ fn button_of(button: MouseButton) -> Option<PointerButton> {
         MouseButton::Right => Some(PointerButton::Secondary),
         _ => None,
     }
+}
+
+/// Whether this key is the one printed on the framing button.
+///
+/// Read from the same constant the panel prints, for the same reason the view
+/// keys are: a shortcut that drifts from its label is a shortcut nobody can
+/// trust. Case is ignored because a keyboard reports what was typed and the
+/// button prints one of the two.
+fn wants_frame(key: &Key) -> bool {
+    let Key::Character(text) = key else {
+        return false;
+    };
+    text.eq_ignore_ascii_case(FRAME_KEY)
 }
 
 /// The number keys a drawing office would expect.
@@ -2437,6 +2514,101 @@ mod tests {
     }
 
     #[test]
+    fn showing_what_is_chosen_shows_all_of_it_and_keeps_it_chosen() {
+        let mut builder = SnapshotBuilder::new();
+        let mesh = builder
+            .add_mesh(&distant_scene_mesh())
+            .expect("the mesh is valid");
+        let at = |x: f64| {
+            ferritecad_types::Transform::from_translation(
+                ferritecad_types::Vec3::new(x, 0.0, 0.0).expect("finite"),
+            )
+            .expect("finite")
+        };
+        // Two placements, far apart, of the one definition.
+        builder
+            .place(mesh, None, &at(0.0), [0.5, 0.5, 0.5])
+            .expect("places it");
+        builder
+            .place(mesh, None, &at(600.0), [0.5, 0.5, 0.5])
+            .expect("places it");
+        let picture = builder.build();
+
+        let scene = LiveScene {
+            prepared: (),
+            catalogue: vec![a_body()],
+            selection: picture.pick_of(mesh).expect("the picture has that row"),
+        };
+        let mut camera = ViewportInput::new();
+        camera.resize(800, 600);
+        camera.take_redraw();
+
+        assert!(
+            frame_selection(&scene, &picture, &mut camera).expect("a box can be framed"),
+            "there was somewhere to go and nothing happened"
+        );
+        assert!(
+            camera.take_redraw(),
+            "the camera moved and no frame followed"
+        );
+        assert!(!camera.take_redraw(), "one framing asked for two frames");
+
+        // Both placements are in view: the camera looks at the middle of what
+        // is chosen, which is between them rather than at either.
+        let target = camera.camera().target();
+        assert!(
+            target[0] > 250.0 && target[0] < 350.0,
+            "only one placement was framed: {target:?}"
+        );
+
+        // And what was chosen is still chosen. Showing something is not
+        // choosing it, and the borrow above is what makes that structural.
+        assert_eq!(
+            scene.selection,
+            picture.pick_of(mesh).expect("the picture has that row")
+        );
+    }
+
+    #[test]
+    fn there_is_nowhere_to_go_for_a_choice_this_picture_does_not_know() {
+        let picture = distant_scene();
+        let elsewhere = scene_at(400.0);
+        let scene = LiveScene {
+            prepared: (),
+            catalogue: vec![a_body()],
+            selection: picture.pick_of(0).expect("the picture has that row"),
+        };
+        let mut camera = ViewportInput::new();
+        camera.resize(800, 600);
+        camera.take_redraw();
+        let before = *camera.camera();
+
+        // The choice was made in another picture. Framing it here would move
+        // the camera to the extent of whatever occupies that number now.
+        assert!(
+            !frame_selection(&scene, &elsewhere, &mut camera)
+                .expect("having nowhere to go is not a failure")
+        );
+        assert_eq!(*camera.camera(), before);
+        assert!(
+            !camera.take_redraw(),
+            "an action that did nothing asked for a frame"
+        );
+
+        // Nothing chosen is the same answer, however often it is asked.
+        let empty = LiveScene {
+            prepared: (),
+            catalogue: vec![a_body()],
+            selection: PickId::NOTHING,
+        };
+        for _ in 0..3 {
+            assert!(!frame_selection(&empty, &picture, &mut camera).expect("no failure"));
+        }
+        assert!(!camera.take_redraw());
+        assert_eq!(selection_bounds(&empty, &picture), None);
+    }
+
+    #[test]
     fn a_row_of_a_replaced_picture_chooses_nothing() {
         let picture = distant_scene();
         let replacement = scene_at(50.0);
@@ -2842,6 +3014,24 @@ mod tests {
             vec![ViewportEvent::GestureCancelled]
         );
         assert!(translate(&WindowEvent::Focused(true)).is_empty());
+    }
+
+    #[test]
+    fn the_key_and_the_button_ask_for_the_same_thing() {
+        // Both routes end in `App::frame_selection`, so what is left to check
+        // is that the key the window listens for is the key the panel prints.
+        assert!(wants_frame(&Key::Character(FRAME_KEY.into())));
+        assert!(
+            wants_frame(&Key::Character(FRAME_KEY.to_lowercase().into())),
+            "the button prints one case and a keyboard reports the other"
+        );
+
+        // And nothing else is that key, including the view shortcuts beside it.
+        for (_, _, key) in VIEWS {
+            assert!(!wants_frame(&Key::Character((*key).into())));
+        }
+        assert!(!wants_frame(&Key::Named(NamedKey::Home)));
+        assert!(!wants_frame(&Key::Character("g".into())));
     }
 
     #[test]

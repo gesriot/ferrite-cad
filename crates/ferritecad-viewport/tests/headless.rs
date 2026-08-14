@@ -229,6 +229,143 @@ fn signed_zero_does_not_create_a_different_snapshot_identity() {
     );
 }
 
+/// A mesh with no triangles at all, which is a definition that draws nothing.
+fn nothing_at_all() -> Mesh {
+    Mesh::default()
+}
+
+#[test]
+fn what_a_selected_definition_covers_is_all_of_it_and_none_of_anything_else() {
+    let mut builder = SnapshotBuilder::new();
+    let bolt = builder.add_mesh(&triangle()).expect("packs");
+    let plate = builder.add_mesh(&triangle()).expect("packs");
+
+    // Two placements of the bolt, a long way apart, and a plate beside them
+    // that has nothing to do with either.
+    builder
+        .place(bolt, None, &moved(0.0, 0.0, 0.0), [1.0, 1.0, 1.0])
+        .expect("places");
+    builder
+        .place(bolt, None, &moved(100.0, 0.0, 0.0), [1.0, 1.0, 1.0])
+        .expect("places");
+    builder
+        .place(plate, None, &moved(0.0, 500.0, 0.0), [1.0, 1.0, 1.0])
+        .expect("places");
+    let snapshot = builder.build();
+
+    let pick = snapshot
+        .pick_of(bolt)
+        .expect("the picture has that definition");
+    let (min, max) = snapshot.bounds_of(pick).expect("the bolt is somewhere");
+
+    // Both placements fit: the triangle spans x 0..2, so two of them 100 apart
+    // span 0..102. One placement of two would answer 0..2.
+    assert!((min[0] - 0.0).abs() < 1e-4, "{min:?}");
+    assert!((max[0] - 102.0).abs() < 1e-4, "{max:?}");
+
+    // And the plate is not in it, though the whole picture reaches y 503.
+    assert!(
+        (max[1] - 3.0).abs() < 1e-4,
+        "the neighbour was included: {max:?}"
+    );
+    let (_, whole) = snapshot.bounds().expect("the picture has extent");
+    assert!(whole[1] > 500.0, "the picture really does reach further");
+}
+
+#[test]
+fn a_turned_placement_is_measured_by_all_eight_of_its_corners() {
+    let mut builder = SnapshotBuilder::new();
+    let mesh = builder.add_mesh(&triangle()).expect("packs");
+
+    // A quarter turn about z, then moved. Rotating the two extreme corners
+    // alone gives a box that is right only by accident; rotating all eight is
+    // what makes this the extent of the thing rather than of its numbers.
+    let turn =
+        Transform::from_rotation(Vec3::new(0.0, 0.0, 1.0).expect("finite"), 0.5).expect("finite");
+    builder
+        .place(mesh, None, &turn, [1.0, 1.0, 1.0])
+        .expect("places");
+    let snapshot = builder.build();
+
+    let pick = snapshot
+        .pick_of(mesh)
+        .expect("the picture has that definition");
+    let (min, max) = snapshot.bounds_of(pick).expect("it is somewhere");
+
+    // Every corner of the turned box lies inside what came back.
+    let (low, high) = snapshot.meshes()[mesh].bounds();
+    for corner in 0..8 {
+        let point = [
+            if corner & 1 == 0 { low[0] } else { high[0] },
+            if corner & 2 == 0 { low[1] } else { high[1] },
+            if corner & 4 == 0 { low[2] } else { high[2] },
+        ];
+        let placed = snapshot
+            .draws()
+            .first()
+            .map(|draw| {
+                let m = &draw.transform;
+                [
+                    m[0] * point[0] + m[4] * point[1] + m[8] * point[2] + m[12],
+                    m[1] * point[0] + m[5] * point[1] + m[9] * point[2] + m[13],
+                    m[2] * point[0] + m[6] * point[1] + m[10] * point[2] + m[14],
+                ]
+            })
+            .expect("the definition is drawn");
+        for axis in 0..3 {
+            assert!(
+                placed[axis] >= min[axis] - 1e-4 && placed[axis] <= max[axis] + 1e-4,
+                "corner {corner} axis {axis} at {} is outside {min:?}..{max:?}",
+                placed[axis]
+            );
+        }
+    }
+}
+
+#[test]
+fn a_definition_that_is_nowhere_is_not_somewhere() {
+    let mut builder = SnapshotBuilder::new();
+    let drawn = builder.add_mesh(&triangle()).expect("packs");
+    let empty = builder.add_mesh(&nothing_at_all()).expect("packs");
+    builder
+        .place(drawn, None, &moved(0.0, 0.0, 0.0), [1.0, 1.0, 1.0])
+        .expect("places");
+    builder
+        .place(empty, None, &moved(50.0, 0.0, 0.0), [1.0, 1.0, 1.0])
+        .expect("places");
+    let snapshot = builder.build();
+
+    // A definition with no triangles is placed and draws nothing. Calling its
+    // empty bounds a point would send a camera to wherever it was placed and
+    // show nothing when it got there.
+    let empty_pick = snapshot.pick_of(empty).expect("the picture has that row");
+    assert_eq!(snapshot.bounds_of(empty_pick), None);
+
+    // Nothing chosen is not a place either, and neither is a pick from a
+    // picture that has been replaced.
+    assert_eq!(snapshot.bounds_of(PickId::NOTHING), None);
+
+    let mut other = SnapshotBuilder::new();
+    let only = other.add_mesh(&triangle()).expect("packs");
+    other
+        .place(only, None, &moved(7.0, 7.0, 7.0), [1.0, 1.0, 1.0])
+        .expect("places");
+    let other = other.build();
+    assert_eq!(
+        snapshot.bounds_of(other.pick_of(only).expect("a definition")),
+        None,
+        "a choice made in another picture was measured in this one"
+    );
+
+    // What is drawn is still somewhere, so the refusals above are refusals
+    // rather than a query that answers nothing at all.
+    assert!(
+        snapshot
+            .bounds_of(snapshot.pick_of(drawn).expect("a definition"))
+            .is_some()
+    );
+}
+
 #[test]
 fn a_definition_can_be_asked_for_by_position_and_only_in_its_own_picture() {
     let mut builder = SnapshotBuilder::new();

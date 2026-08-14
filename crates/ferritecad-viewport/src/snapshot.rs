@@ -118,6 +118,57 @@ impl PackedMesh {
     }
 }
 
+/// A box being grown to hold everything put into it.
+///
+/// One implementation of "where is this in the world", used for the whole
+/// picture and for any part of it. Two of these would be two answers to one
+/// question, and the one nobody exercised would be the wrong one.
+#[derive(Debug, Default)]
+struct Extent {
+    min: [f32; 3],
+    max: [f32; 3],
+    holds_anything: bool,
+}
+
+impl Extent {
+    /// Adds one placement of one mesh.
+    ///
+    /// A mesh with no triangles is not somewhere: it has no corners to place,
+    /// and treating its empty bounds as a point would put the middle of a
+    /// picture wherever an empty definition happened to sit.
+    fn include(&mut self, mesh: &PackedMesh, item: &DrawItem) {
+        if mesh.indices.is_empty() {
+            return;
+        }
+        if !self.holds_anything {
+            self.min = [f32::INFINITY; 3];
+            self.max = [f32::NEG_INFINITY; 3];
+            self.holds_anything = true;
+        }
+
+        let (low, high) = mesh.bounds();
+        // Every corner, not just the two: a rotated box's extent is not the
+        // transform of its extent.
+        for corner in 0..8 {
+            let point = [
+                if corner & 1 == 0 { low[0] } else { high[0] },
+                if corner & 2 == 0 { low[1] } else { high[1] },
+                if corner & 4 == 0 { low[2] } else { high[2] },
+            ];
+            let placed = apply(&item.transform, point);
+            for (axis, value) in placed.into_iter().enumerate() {
+                self.min[axis] = self.min[axis].min(value);
+                self.max[axis] = self.max[axis].max(value);
+            }
+        }
+    }
+
+    /// What was put in, or nothing if nothing was.
+    fn bounds(&self) -> Option<([f32; 3], [f32; 3])> {
+        self.holds_anything.then_some((self.min, self.max))
+    }
+}
+
 /// One placement of one definition, ready to draw.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DrawItem {
@@ -189,6 +240,26 @@ impl RenderSnapshot {
             raw,
             snapshot: self.identity,
         })
+    }
+
+    /// Where everything drawn as this definition is, taken together.
+    ///
+    /// Every placement of it and no other definition, which is what a
+    /// selection means: a pick names a definition, so what it covers is
+    /// wherever that definition appears. One placement of four is not the
+    /// answer, and neither is the whole picture.
+    ///
+    /// Resolved through this snapshot alone. Nothing, a pick from a picture
+    /// that has been replaced and a pick from another picture all name no
+    /// definition here, and none of them is a place. A definition with no
+    /// triangles is nowhere rather than at the origin.
+    pub fn bounds_of(&self, pick: PickId) -> Option<([f32; 3], [f32; 3])> {
+        let definition = self.definition(pick)?;
+        let mut extent = Extent::default();
+        for item in self.items.iter().filter(|item| item.mesh == definition) {
+            extent.include(&self.meshes[definition], item);
+        }
+        extent.bounds()
     }
 
     /// The definition a pick identifies, if it identifies one.
@@ -348,30 +419,14 @@ impl SnapshotBuilder {
 
     /// Freezes what has been collected.
     pub fn build(mut self) -> RenderSnapshot {
-        let mut min = [f32::INFINITY; 3];
-        let mut max = [f32::NEG_INFINITY; 3];
-        let mut has_geometry = false;
+        let mut extent = Extent::default();
         for item in &self.items {
-            if self.meshes[item.mesh].indices.is_empty() {
-                continue;
-            }
-            has_geometry = true;
-            let (low, high) = self.meshes[item.mesh].bounds();
-            // Every corner, not just the two: a rotated box's extent is not the
-            // transform of its extent.
-            for corner in 0..8 {
-                let point = [
-                    if corner & 1 == 0 { low[0] } else { high[0] },
-                    if corner & 2 == 0 { low[1] } else { high[1] },
-                    if corner & 4 == 0 { low[2] } else { high[2] },
-                ];
-                let placed = apply(&item.transform, point);
-                for axis in 0..3 {
-                    min[axis] = min[axis].min(placed[axis]);
-                    max[axis] = max[axis].max(placed[axis]);
-                }
-            }
+            extent.include(&self.meshes[item.mesh], item);
         }
+        let (min, max) = extent
+            .bounds()
+            .unwrap_or(([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]));
+        let has_geometry = extent.bounds().is_some();
 
         let identity = snapshot_identity(&self.meshes, &self.items);
         for item in &mut self.items {

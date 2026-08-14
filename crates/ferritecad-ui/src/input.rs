@@ -139,6 +139,29 @@ impl ViewportInput {
         Ok(())
     }
 
+    /// Frames what is chosen, if the picture could say where it is.
+    ///
+    /// One decision for every way of asking. A button and a key are two ways
+    /// to say the same thing, and a second copy of "where should the camera
+    /// go" is the copy that would drift.
+    ///
+    /// `bounds` is `None` when nothing is chosen, when what is chosen draws no
+    /// triangles, or when the choice belongs to a picture that is no longer on
+    /// screen. All three mean the same here: there is nowhere to go, so the
+    /// camera does not move and no frame is owed. Returns whether anything
+    /// happened, which is what stops an unavailable action from asking for a
+    /// redraw that would show the same picture again.
+    ///
+    /// Direction is kept. Framing answers "let me see this", not "look at it
+    /// from somewhere I did not choose".
+    pub fn frame_selected(&mut self, bounds: Option<([f32; 3], [f32; 3])>) -> Result<bool> {
+        let Some(bounds) = bounds else {
+            return Ok(false);
+        };
+        self.frame(bounds)?;
+        Ok(true)
+    }
+
     /// Applies one event.
     ///
     /// `claimed_by_ui` is what the interface said when asked whether it wanted
@@ -728,6 +751,66 @@ mod tests {
             false,
         );
         assert_eq!(input.take_pick(), None);
+    }
+
+    #[test]
+    fn showing_what_is_chosen_keeps_the_direction_and_asks_for_one_frame() {
+        let mut input = ready();
+        let before = *input.camera();
+
+        // Somewhere else entirely, which is the case this exists for: the
+        // chosen definition is off screen.
+        let happened = input
+            .frame_selected(Some(([900.0, 900.0, 900.0], [910.0, 910.0, 910.0])))
+            .expect("a box with an extent can be framed");
+        assert!(happened, "framing reported that nothing happened");
+        assert!(
+            input.take_redraw(),
+            "the camera moved and no frame followed"
+        );
+        assert!(
+            !input.take_redraw(),
+            "one framing asked for more than one frame"
+        );
+
+        // The camera went there and is still looking the way it was: framing
+        // answers "let me see this", not "look at it from somewhere else".
+        assert_ne!(input.camera().target(), before.target());
+        let direction = |camera: &ferritecad_viewport::Camera| {
+            let (eye, target) = (camera.eye(), camera.target());
+            let away = [eye[0] - target[0], eye[1] - target[1], eye[2] - target[2]];
+            let length = (away[0] * away[0] + away[1] * away[1] + away[2] * away[2]).sqrt();
+            [away[0] / length, away[1] / length, away[2] / length]
+        };
+        let (was, now) = (direction(&before), direction(input.camera()));
+        for axis in 0..3 {
+            assert!(
+                (was[axis] - now[axis]).abs() < 1e-3,
+                "the viewing direction turned: {was:?} to {now:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nowhere_to_go_is_not_a_reason_to_move() {
+        let mut input = ready();
+        let before = *input.camera();
+
+        // Nothing chosen, a definition that draws nothing, and a choice made
+        // in a picture that has been replaced all arrive here as the same
+        // answer: there is nowhere to go.
+        for _ in 0..3 {
+            assert!(
+                !input
+                    .frame_selected(None)
+                    .expect("having nowhere to go is not a failure")
+            );
+        }
+        assert_eq!(*input.camera(), before);
+        assert!(
+            !input.take_redraw(),
+            "an action that did nothing asked for a frame anyway"
+        );
     }
 
     #[test]
