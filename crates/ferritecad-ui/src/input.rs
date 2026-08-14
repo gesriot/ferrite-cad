@@ -46,6 +46,22 @@ pub enum PointerButton {
     Secondary,
 }
 
+/// What the pointer wants to know about what is under it.
+///
+/// Three answers rather than two. "Nothing new to ask" and "whatever was under
+/// the pointer no longer is" are different situations: the first leaves what a
+/// window already knows alone, and the second is the pointer leaving, a drag
+/// starting or a panel taking the movement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Hover {
+    /// No question, and nothing to forget.
+    Unchanged,
+    /// Whatever was under the pointer is not any more.
+    Cleared,
+    /// Ask the picture what is at this point.
+    At(f32, f32),
+}
+
 /// Something the user did.
 ///
 /// This project's own vocabulary rather than a windowing system's: the
@@ -62,6 +78,8 @@ pub enum ViewportEvent {
     PointerReleased(PointerButton),
     /// The window can no longer promise a matching release event.
     GestureCancelled,
+    /// The pointer is no longer over the model at all.
+    PointerLeft,
     /// Positive scrolls towards the model.
     Wheel {
         delta: f32,
@@ -88,6 +106,11 @@ pub struct ViewportInput {
     pressed_at: Option<(f32, f32)>,
     /// Where the user asked what something is, until somebody answers.
     pick: Option<(f32, f32)>,
+    /// What the pointer is asking about, until somebody answers. Overwritten
+    /// rather than queued: a hand crossing the window asks about where it
+    /// stopped, and answering every place it passed through would be a
+    /// readback for each one.
+    hover: Hover,
     redraw: bool,
 }
 
@@ -105,6 +128,7 @@ impl ViewportInput {
             dragging: None,
             pressed_at: None,
             pick: None,
+            hover: Hover::Unchanged,
             // The first frame has never been drawn, so it is owed.
             redraw: true,
         }
@@ -183,8 +207,21 @@ impl ViewportInput {
                 self.pointer = Some((x, y));
 
                 let Some(button) = self.dragging else {
+                    // Nothing is being dragged, so a movement is a question
+                    // about what it is over. A movement the interface wanted
+                    // is a question about the interface, and the model under
+                    // a panel was not being pointed at.
+                    self.hover = if claimed_by_ui {
+                        Hover::Cleared
+                    } else {
+                        Hover::At(x, y)
+                    };
                     return;
                 };
+
+                // A gesture is under way: the pointer is moving the camera,
+                // not asking about what it passes over.
+                self.hover = Hover::Cleared;
                 let Some((last_x, last_y)) = previous else {
                     return;
                 };
@@ -214,6 +251,9 @@ impl ViewportInput {
                     return;
                 }
                 self.dragging = Some(button);
+                // A press begins either a gesture or a click, and neither is a
+                // question about what is merely under the pointer.
+                self.hover = Hover::Cleared;
                 if button == PointerButton::Primary {
                     self.pressed_at = self.pointer;
                 }
@@ -241,6 +281,12 @@ impl ViewportInput {
                     self.redraw = true;
                 }
             }
+            ViewportEvent::PointerLeft => {
+                // Away from the model entirely: there is nothing under the
+                // pointer to say anything about.
+                self.pointer = None;
+                self.hover = Hover::Cleared;
+            }
             ViewportEvent::GestureCancelled => {
                 // Losing focus while a button is down need not be followed by
                 // a release event. Forget both halves of the gesture so the
@@ -249,6 +295,7 @@ impl ViewportInput {
                 self.dragging = None;
                 self.pointer = None;
                 self.pressed_at = None;
+                self.hover = Hover::Cleared;
             }
             ViewportEvent::Wheel { delta } => {
                 if claimed_by_ui {
@@ -293,6 +340,9 @@ impl ViewportInput {
         self.dragging = None;
         self.pressed_at = None;
         self.pick = None;
+        // A question about the previous document, whose answer would be about
+        // a picture nobody is looking at any more.
+        self.hover = Hover::Cleared;
         self.redraw = true;
         Ok(snapshot)
     }
@@ -312,6 +362,16 @@ impl ViewportInput {
     /// doing that for every frame after a click rather than once for the click.
     pub fn take_pick(&mut self) -> Option<(f32, f32)> {
         self.pick.take()
+    }
+
+    /// Takes what the pointer is asking about, if it is asking.
+    ///
+    /// Cleared by the taking, like the click question beside it. Answering
+    /// means drawing the model again offscreen to read one pixel, so a
+    /// question that stayed asked would mean doing that for every frame after
+    /// the pointer stopped moving.
+    pub fn take_hover(&mut self) -> Hover {
+        std::mem::replace(&mut self.hover, Hover::Unchanged)
     }
 
     /// Whether a frame is owed, clearing the request.
@@ -685,6 +745,96 @@ mod tests {
             ViewportEvent::PointerReleased(PointerButton::Primary),
             claimed,
         );
+    }
+
+    #[test]
+    fn moving_over_the_model_asks_what_is_under_the_pointer() {
+        let mut input = ready();
+
+        input.handle(ViewportEvent::PointerMoved { x: 40.0, y: 50.0 }, false);
+        assert_eq!(input.take_hover(), Hover::At(40.0, 50.0));
+
+        // Taken once. Answering means drawing the model again to read a pixel,
+        // and a question left standing would mean doing that for every frame
+        // after the pointer stopped.
+        assert_eq!(input.take_hover(), Hover::Unchanged);
+    }
+
+    #[test]
+    fn a_hand_crossing_the_window_asks_about_where_it_stopped() {
+        let mut input = ready();
+
+        // A pointer reports every place it passed through. Asking about each
+        // one would be a readback for each one, and every answer but the last
+        // would be about somewhere the pointer no longer is.
+        for step in 0..20u8 {
+            input.handle(
+                ViewportEvent::PointerMoved {
+                    x: 10.0 * f32::from(step),
+                    y: 30.0,
+                },
+                false,
+            );
+        }
+        assert_eq!(input.take_hover(), Hover::At(190.0, 30.0));
+        assert_eq!(input.take_hover(), Hover::Unchanged);
+    }
+
+    #[test]
+    fn nothing_under_the_pointer_is_asked_about_while_it_is_busy_elsewhere() {
+        let mut input = ready();
+
+        // The interface wanted this movement, so the question is about the
+        // interface. What is behind a panel was not being pointed at.
+        input.handle(ViewportEvent::PointerMoved { x: 20.0, y: 8.0 }, true);
+        assert_eq!(input.take_hover(), Hover::Cleared);
+
+        // A drag is moving the camera, not asking about what it passes over.
+        input.handle(ViewportEvent::PointerMoved { x: 60.0, y: 60.0 }, false);
+        assert_eq!(input.take_hover(), Hover::At(60.0, 60.0));
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        assert_eq!(input.take_hover(), Hover::Cleared);
+        for step in 0..5u8 {
+            input.handle(
+                ViewportEvent::PointerMoved {
+                    x: 60.0 + 10.0 * f32::from(step),
+                    y: 90.0,
+                },
+                false,
+            );
+            assert_eq!(
+                input.take_hover(),
+                Hover::Cleared,
+                "a drag asked what it was passing over"
+            );
+        }
+
+        // Losing the window, and leaving the model, both end it.
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        input.handle(ViewportEvent::PointerMoved { x: 70.0, y: 70.0 }, false);
+        input.handle(ViewportEvent::GestureCancelled, false);
+        assert_eq!(input.take_hover(), Hover::Cleared);
+
+        input.handle(ViewportEvent::PointerMoved { x: 70.0, y: 70.0 }, false);
+        input.handle(ViewportEvent::PointerLeft, false);
+        assert_eq!(input.take_hover(), Hover::Cleared);
+    }
+
+    #[test]
+    fn a_loaded_scene_forgets_what_was_under_the_pointer_too() {
+        let mut input = ready();
+        input.handle(ViewportEvent::PointerMoved { x: 30.0, y: 30.0 }, false);
+
+        input
+            .accept_load(Ok(distant_scene()))
+            .expect("a scene that loaded is a scene to show");
+
+        // The question was about the document that has just been replaced, and
+        // its answer would name a definition of a picture nobody is looking at.
+        assert_eq!(input.take_hover(), Hover::Cleared);
     }
 
     #[test]

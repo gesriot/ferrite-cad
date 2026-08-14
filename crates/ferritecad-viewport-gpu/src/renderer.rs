@@ -49,7 +49,11 @@ struct GlobalsUniform {
     /// The identity to draw as selected, or zero for none. Zero is what the
     /// background reads as, and no definition is ever numbered zero.
     selected: u32,
-    padding: [u32; 3],
+    /// The identity the pointer is over, or zero. Kept apart from the
+    /// selection because they are different states and a person must be able
+    /// to tell which is which: one is a decision and the other is a question.
+    hovered: u32,
+    padding: [u32; 2],
 }
 
 /// What a grid pass needs to know, and all it is allowed to know.
@@ -378,9 +382,18 @@ impl Renderer {
     /// same number in another one names a different definition – so the
     /// snapshot about to be drawn is asked, and an answer it does not
     /// recognise becomes no selection at all.
-    fn write_globals(&self, camera: &Camera, prepared: &PreparedSnapshot, selected: PickId) {
-        let selected = match prepared.snapshot().definition(selected) {
-            Some(_) => selected.to_raw(),
+    fn write_globals(
+        &self,
+        camera: &Camera,
+        prepared: &PreparedSnapshot,
+        selected: PickId,
+        hovered: PickId,
+    ) {
+        // Both asked of the picture about to be drawn, and by the same
+        // question. A number that named a definition of some other picture
+        // would otherwise light up whichever one occupies it here.
+        let known = |pick: PickId| match prepared.snapshot().definition(pick) {
+            Some(_) => pick.to_raw(),
             None => PickId::NOTHING.to_raw(),
         };
         self.queue.write_buffer(
@@ -388,8 +401,9 @@ impl Renderer {
             0,
             bytemuck::bytes_of(&GlobalsUniform {
                 view_projection: camera.view_projection(),
-                selected,
-                padding: [0; 3],
+                selected: known(selected),
+                hovered: known(hovered),
+                padding: [0; 2],
             }),
         );
     }
@@ -420,6 +434,7 @@ impl Renderer {
         prepared: &PreparedSnapshot,
         camera: &Camera,
         selected: PickId,
+        hovered: PickId,
         view: &wgpu::TextureView,
         format: wgpu::TextureFormat,
         width: u32,
@@ -444,7 +459,7 @@ impl Renderer {
         });
         let depth_view = depth.create_view(&Default::default());
 
-        self.write_globals(camera, prepared, selected);
+        self.write_globals(camera, prepared, selected, hovered);
         let grid = self.write_grid(camera, prepared.snapshot());
 
         let mut encoder = self
@@ -670,6 +685,7 @@ impl Renderer {
         prepared: &PreparedSnapshot,
         camera: &Camera,
         selected: PickId,
+        hovered: PickId,
     ) -> Result<Frame> {
         self.require_own(prepared)?;
 
@@ -709,7 +725,7 @@ impl Renderer {
         });
 
         // The things that differ from frame to frame.
-        self.write_globals(camera, prepared, selected);
+        self.write_globals(camera, prepared, selected, hovered);
         let grid = self.write_grid(camera, prepared.snapshot());
 
         let bindings = &prepared.bindings;
@@ -1319,6 +1335,7 @@ mod tests {
             .draw_into(
                 &prepared,
                 &camera,
+                PickId::NOTHING,
                 PickId::NOTHING,
                 &view,
                 format,

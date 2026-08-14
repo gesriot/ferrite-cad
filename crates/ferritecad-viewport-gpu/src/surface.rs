@@ -344,7 +344,7 @@ impl WindowSurface {
     ///     let Some(frame) = surface.begin(renderer)? else {
     ///         return Ok(()); // Nothing to draw into, and nothing wrong.
     ///     };
-    ///     let frame = frame.draw_scene(prepared, camera, PickId::NOTHING)?;
+    ///     let frame = frame.draw_scene(prepared, camera, PickId::NOTHING, PickId::NOTHING)?;
     ///     // An interface would draw into `frame.view()` here, on top of the
     ///     // model and before anything is published.
     ///     frame.present();
@@ -413,11 +413,12 @@ impl WindowSurface {
         prepared: &PreparedSnapshot,
         camera: &Camera,
         selected: PickId,
+        hovered: PickId,
     ) -> Result<Presented> {
         let Some(frame) = self.begin(renderer)? else {
             return Ok(Presented::Skipped);
         };
-        let frame = frame.draw_scene(prepared, camera, selected)?;
+        let frame = frame.draw_scene(prepared, camera, selected, hovered)?;
         frame.present();
         Ok(Presented::Drawn)
     }
@@ -457,18 +458,21 @@ impl<'a> SurfaceFrame<'a> {
     /// than a call-order convention: an overlay cannot see the view before the
     /// clearing pass, and there is no `draw_scene` on the composed result with
     /// which to erase it later.
-    /// `selected` is drawn as chosen, all of its placements at once. A pick
-    /// from another snapshot selects nothing: see `Renderer::write_globals`.
+    /// `selected` is drawn as chosen and `hovered` as merely pointed at, each
+    /// covering all of its placements. A pick from another snapshot is neither:
+    /// see `Renderer::write_globals`.
     pub fn draw_scene(
         self,
         prepared: &PreparedSnapshot,
         camera: &Camera,
         selected: PickId,
+        hovered: PickId,
     ) -> Result<ComposedSurfaceFrame<'a>> {
         self.renderer.draw_into(
             prepared,
             camera,
             selected,
+            hovered,
             &self.view,
             self.surface.format,
             self.width,

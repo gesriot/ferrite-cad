@@ -39,10 +39,10 @@ use ferritecad_occt::OcctKernel;
 use ferritecad_scene::{CatalogueEntry, LoadedScene, SceneItem, snapshot_of};
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
-    Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, PointerButton, Selected, VIEWS, ViewportEvent,
-    ViewportInput,
+    Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, Hover, PointerButton, Selected, VIEWS,
+    ViewportEvent, ViewportInput,
 };
-use ferritecad_viewport::{PickId, RenderSnapshot, SnapshotBuilder, StandardView};
+use ferritecad_viewport::{Camera, PickId, RenderSnapshot, SnapshotBuilder, StandardView};
 use ferritecad_viewport_gpu::{PreparedSnapshot, Renderer, WindowSurface};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, StartCause, WindowEvent};
@@ -681,6 +681,9 @@ struct LiveScene<P> {
     catalogue: Vec<CatalogueEntry>,
     /// Transient identity issued by `prepared` and nothing else.
     selection: PickId,
+    /// What the pointer is over, which is a question and not a decision. Also
+    /// issued by `prepared`, also transient, and written down nowhere.
+    hovered: PickId,
 }
 
 impl<P> LiveScene<P> {
@@ -690,6 +693,7 @@ impl<P> LiveScene<P> {
             prepared,
             catalogue,
             selection: PickId::NOTHING,
+            hovered: PickId::NOTHING,
         }
     }
 
@@ -799,6 +803,27 @@ fn frame_selection<P>(
 /// disturb one. The extent is the snapshot's own, computed once when it was
 /// packed – recomputing it here from the catalogue, the picks or the order the
 /// definitions happen to be in would be a second answer to a settled question.
+/// Records what the pointer is over, and says whether anything changed.
+///
+/// Answered through the picture that is on screen, so a question about a
+/// picture that has been replaced marks nothing. Returns whether the answer
+/// differs from the one already showing: pointing at the same definition
+/// again is not a reason to draw the same picture twice.
+///
+/// Given the one field it may change and nothing else, so pointing at
+/// something cannot choose it however this is called.
+fn hover_definition(hovered: &mut PickId, snapshot: &RenderSnapshot, pick: PickId) -> bool {
+    let answer = match snapshot.definition(pick) {
+        Some(_) => pick,
+        None => PickId::NOTHING,
+    };
+    if answer == *hovered {
+        return false;
+    }
+    *hovered = answer;
+    true
+}
+
 fn frame_scene(snapshot: &RenderSnapshot, camera: &mut ViewportInput) -> Result<bool> {
     camera.frame_extent(snapshot.bounds())
 }
@@ -973,7 +998,7 @@ impl ApplicationHandler<AppEvent> for App {
                 match live.draw(&self.input, activity) {
                     // A button pressed during this frame reaches the camera
                     // the same way a keystroke does, through the reducer.
-                    Ok(chosen) => {
+                    Ok((chosen, pointed_row)) => {
                         if let Some(view) = chosen.view {
                             self.input.handle(ViewportEvent::Look(view), false);
                         }
@@ -1013,6 +1038,10 @@ impl ApplicationHandler<AppEvent> for App {
                         if let Some((x, y)) = self.input.take_pick() {
                             self.choose_at(x, y);
                         }
+                        // What the pointer is over. A row of the list answers
+                        // for itself through the picture, and anywhere else it
+                        // is the picture that is asked.
+                        self.point_at(pointed_row);
                     }
                     Err(error) => {
                         eprintln!("ferritecad: {error}");
@@ -1196,12 +1225,9 @@ impl App {
             return;
         };
 
-        match live
-            .renderer
-            .render(&live.scene.prepared, self.input.camera(), PickId::NOTHING)
-        {
-            Ok(frame) => {
-                let chosen = selection_from(frame.pick_at(x, y), frame.snapshot());
+        match Self::pick_at(live, self.input.camera(), x as f32, y as f32) {
+            Ok(pick) => {
+                let chosen = selection_from(pick, live.scene.prepared.snapshot());
                 if chosen != live.scene.selection {
                     live.scene.selection = chosen;
                     self.input.request_redraw();
@@ -1242,6 +1268,75 @@ impl App {
         if let Err(error) = frame_scene(live.scene.prepared.snapshot(), &mut self.input) {
             eprintln!("ferritecad: {error}");
         }
+    }
+
+    /// Records what the pointer is over, from whichever side asked.
+    ///
+    /// A row of the list answers for itself: it knows which definition it
+    /// draws, and asks the picture for that definition's identity rather than
+    /// asking what pixel is under a panel. Anywhere else the picture is asked
+    /// where the pointer is, once, and only when the pointer moved.
+    ///
+    /// Nothing here touches the selection. Pointing at something is a question
+    /// about it, and a viewer that chose whatever the pointer crossed would
+    /// make the choice worthless.
+    fn point_at(&mut self, row: Option<usize>) {
+        let question = self.input.take_hover();
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+
+        let pick = match (row, question) {
+            // The list said which one, which needs no pixel read at all.
+            (Some(row), _) => live.scene.prepared.snapshot().pick_of(row),
+            (None, Hover::At(x, y)) => {
+                // One offscreen frame, and only because the pointer moved.
+                match Self::pick_at(live, self.input.camera(), x, y) {
+                    Ok(pick) => Some(pick),
+                    Err(error) => {
+                        eprintln!("ferritecad: {error}");
+                        return;
+                    }
+                }
+            }
+            // Away from the model, over a panel, or in the middle of a
+            // gesture: whatever was under the pointer is not any more.
+            (None, Hover::Cleared) => Some(PickId::NOTHING),
+            // Nothing moved, so nothing changed.
+            (None, Hover::Unchanged) => None,
+        };
+
+        let Some(pick) = pick else {
+            return;
+        };
+        if hover_definition(
+            &mut live.scene.hovered,
+            live.scene.prepared.snapshot(),
+            pick,
+        ) {
+            self.input.request_redraw();
+        }
+    }
+
+    /// Reads one pixel of an offscreen frame drawn at the window's camera.
+    ///
+    /// One place, used by the click and by the pointer alike: identities are
+    /// not written on the path a window takes, so both questions are answered
+    /// the same way and neither pays for the other.
+    fn pick_at(live: &mut Live, camera: &Camera, x: f32, y: f32) -> Result<PickId> {
+        let (Ok(x), Ok(y)) = (
+            u32::try_from(x.round() as i64),
+            u32::try_from(y.round() as i64),
+        ) else {
+            return Ok(PickId::NOTHING);
+        };
+        let frame = live.renderer.render(
+            &live.scene.prepared,
+            camera,
+            PickId::NOTHING,
+            PickId::NOTHING,
+        )?;
+        Ok(frame.pick_at(x, y))
     }
 
     /// Chooses the definition a list row names, if the picture has one there.
@@ -1394,7 +1489,11 @@ impl Live {
     /// One texture, acquired once. The order is not a convention here – the
     /// seam enforces it, because the model's pass is what clears the target
     /// and the type only offers a view to draw into afterwards.
-    fn draw(&mut self, input: &ViewportInput, activity: Activity<'_>) -> Result<Chosen> {
+    fn draw(
+        &mut self,
+        input: &ViewportInput,
+        activity: Activity<'_>,
+    ) -> Result<(Chosen, Option<usize>)> {
         // Taken apart so the picture can be read while the surface is being
         // drawn into: these are different fields, and only the compiler needs
         // telling. It also means the list below describes the catalogue itself
@@ -1420,12 +1519,18 @@ impl Live {
         let Some(frame) = surface.begin(renderer)? else {
             // No area, nobody watching, or the compositor was busy. None of
             // those is an error.
-            return Ok(Chosen::default());
+            return Ok((Chosen::default(), None));
         };
-        let frame = frame.draw_scene(&scene.prepared, input.camera(), scene.selection)?;
+        let frame = frame.draw_scene(
+            &scene.prepared,
+            input.camera(),
+            scene.selection,
+            scene.hovered,
+        )?;
 
         let raw_input = egui_state.take_egui_input(window);
         let mut chosen = Chosen::default();
+        let mut pointed_row = None;
         let mut output = egui.run_ui(raw_input, |ui| {
             // The panel returns what was asked for and applies nothing. What a
             // request means to the camera is the reducer's, and having one
@@ -1436,7 +1541,9 @@ impl Live {
             // Every definition in the picture, whether or not any of it is on
             // screen: a part hidden behind another, too small to hit or out of
             // shot is reachable here and nowhere else.
-            chosen.definition = ferritecad_ui::definitions_panel(ui, &definitions, chosen_row);
+            let rows = ferritecad_ui::definitions_panel(ui, &definitions, chosen_row);
+            chosen.definition = rows.pressed;
+            pointed_row = rows.hovered;
             ui.separator();
             // Read-only, and the only place the choice is described. What it
             // is allowed to say is decided by `Selected`, which cannot name
@@ -1497,7 +1604,7 @@ impl Live {
 
         free_textures(&mut textures, |id| egui_renderer.free_texture(id));
         frame.present();
-        Ok(chosen)
+        Ok((chosen, pointed_row))
     }
 }
 
@@ -1535,6 +1642,9 @@ fn translate(event: &WindowEvent) -> Vec<ViewportEvent> {
                 .unwrap_or_default()
         }
         WindowEvent::Focused(false) => vec![ViewportEvent::GestureCancelled],
+        // The pointer is somewhere else entirely, so nothing is under it. A
+        // highlight left behind would claim it still was.
+        WindowEvent::CursorLeft { .. } => vec![ViewportEvent::PointerLeft],
         _ => Vec::new(),
     }
 }
@@ -2279,6 +2389,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             selection: chosen,
+            hovered: PickId::NOTHING,
         };
         assert_eq!(old.selection, chosen, "the gate began with no choice");
 
@@ -2303,6 +2414,7 @@ mod tests {
             prepared: (),
             catalogue: vec![mine.clone()],
             selection: chosen,
+            hovered: PickId::NOTHING,
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -2335,6 +2447,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             selection: chosen,
+            hovered: PickId::NOTHING,
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -2370,6 +2483,7 @@ mod tests {
                 .first()
                 .expect("the picture draws something")
                 .pick,
+            hovered: PickId::NOTHING,
         };
 
         // Two lookups and no search: this snapshot names the definition, this
@@ -2391,8 +2505,152 @@ mod tests {
             prepared: (),
             catalogue: Vec::new(),
             selection: scene.selection,
+            hovered: PickId::NOTHING,
         };
         assert_eq!(short.chosen(&picture), None);
+    }
+
+    #[test]
+    fn pointing_at_something_asks_about_it_and_chooses_nothing() {
+        let picture = distant_scene();
+        let other = scene_at(400.0);
+        let chosen = picture
+            .draws()
+            .first()
+            .expect("the picture draws something")
+            .pick;
+        let mut scene = LiveScene {
+            prepared: (),
+            catalogue: vec![a_body()],
+            selection: chosen,
+            hovered: PickId::NOTHING,
+        };
+
+        // Pointing at the definition that is already chosen: a question about
+        // what is under the pointer, and the choice is untouched by it.
+        assert!(hover_definition(&mut scene.hovered, &picture, chosen));
+        assert_eq!(scene.hovered, chosen);
+        assert_eq!(scene.selection, chosen, "pointing at something chose it");
+
+        // Asking the same thing again changes nothing, so nothing asks for a
+        // frame that would draw the picture that is already on screen.
+        assert!(
+            !hover_definition(&mut scene.hovered, &picture, chosen),
+            "the same question was treated as news"
+        );
+
+        // Away from the model: the question is answered with nothing, and the
+        // choice survives it.
+        assert!(hover_definition(
+            &mut scene.hovered,
+            &picture,
+            PickId::NOTHING
+        ));
+        assert_eq!(scene.hovered, PickId::NOTHING);
+        assert_eq!(scene.selection, chosen);
+
+        // A question about a picture that has been replaced marks nothing in
+        // this one, however plausible its number looks.
+        assert!(!hover_definition(&mut scene.hovered, &other, chosen));
+        assert_eq!(scene.hovered, PickId::NOTHING);
+    }
+
+    #[test]
+    fn pointing_at_a_row_and_pointing_at_its_geometry_are_one_answer() {
+        let mut builder = SnapshotBuilder::new();
+        let first = builder
+            .add_mesh(&distant_scene_mesh())
+            .expect("the mesh is valid");
+        let second = builder
+            .add_mesh(&distant_scene_mesh())
+            .expect("the mesh is valid");
+        builder
+            .place(
+                first,
+                None,
+                &ferritecad_types::Transform::IDENTITY,
+                [0.5, 0.5, 0.5],
+            )
+            .expect("places it");
+        builder
+            .place(
+                second,
+                None,
+                &ferritecad_types::Transform::IDENTITY,
+                [0.5, 0.5, 0.5],
+            )
+            .expect("places it");
+        let picture = builder.build();
+
+        // What a row of the list says, and what a pixel of the model says,
+        // are the same identity: the list asks the picture rather than asking
+        // what is under a panel.
+        let by_row = picture.pick_of(second).expect("the picture has that row");
+        let by_pixel = picture
+            .draws()
+            .iter()
+            .find(|draw| picture.definition(draw.pick) == Some(second))
+            .expect("that definition is drawn")
+            .pick;
+        assert_eq!(by_row, by_pixel);
+
+        // Moving from one to the other is a change of question and nothing
+        // else: what is chosen, and what an inspector would describe, are
+        // decided elsewhere and stay where they were.
+        let entries = vec![a_body(), a_body()];
+        let mut scene = LiveScene {
+            prepared: (),
+            catalogue: entries.clone(),
+            selection: PickId::NOTHING,
+            hovered: PickId::NOTHING,
+        };
+        assert!(hover_definition(
+            &mut scene.hovered,
+            &picture,
+            picture.pick_of(first).expect("a row")
+        ));
+        assert!(hover_definition(&mut scene.hovered, &picture, by_row));
+        assert_eq!(scene.hovered, by_row);
+        assert_eq!(scene.selection, PickId::NOTHING);
+        assert_eq!(
+            scene.chosen(&picture),
+            None,
+            "a question filled the inspector"
+        );
+    }
+
+    #[test]
+    fn a_replacement_forgets_what_was_under_the_pointer() {
+        let picture = distant_scene();
+        let chosen = picture
+            .draws()
+            .first()
+            .expect("the picture draws something")
+            .pick;
+        let mut scene = LiveScene {
+            prepared: (),
+            catalogue: vec![a_body()],
+            selection: chosen,
+            hovered: chosen,
+        };
+        let mut camera = ViewportInput::new();
+        camera.resize(800, 600);
+
+        // A load that failed keeps the scene it could not replace, including
+        // what the pointer was over.
+        commit_scene(&mut scene, &mut camera, Err(CadError::input("no")))
+            .expect_err("a failed load commits nothing");
+        assert_eq!(scene.hovered, chosen);
+        assert_eq!(scene.selection, chosen);
+
+        // A load that arrived replaces all of it: the question belonged to the
+        // previous picture as much as the answer did.
+        let mut framed = ViewportInput::new();
+        framed.resize(640, 480);
+        commit_scene(&mut scene, &mut camera, Ok((framed, (), vec![a_body()])))
+            .expect("a load that arrived commits");
+        assert_eq!(scene.hovered, PickId::NOTHING);
+        assert_eq!(scene.selection, PickId::NOTHING);
     }
 
     #[test]
@@ -2423,6 +2681,7 @@ mod tests {
             prepared: (),
             catalogue: entries.clone(),
             selection: PickId::NOTHING,
+            hovered: PickId::NOTHING,
         };
 
         // Choosing from a list: the row becomes an identity by asking the
@@ -2500,6 +2759,7 @@ mod tests {
             prepared: (),
             catalogue: vec![entry],
             selection: PickId::NOTHING,
+            hovered: PickId::NOTHING,
         };
 
         let identities = scene.identities();
@@ -2518,6 +2778,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body(), a_body()],
             selection: PickId::NOTHING,
+            hovered: PickId::NOTHING,
         };
         let identities = twins.identities();
         assert_eq!(twins.rows(&identities).len(), 2);
@@ -2546,6 +2807,7 @@ mod tests {
             prepared: (),
             catalogue: entries.clone(),
             selection: picture.pick_of(1).expect("the picture has that row"),
+            hovered: PickId::NOTHING,
         };
 
         let identities = scene.identities();
@@ -2593,6 +2855,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             selection: picture.pick_of(mesh).expect("the picture has that row"),
+            hovered: PickId::NOTHING,
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -2648,6 +2911,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             selection: PickId::NOTHING,
+            hovered: PickId::NOTHING,
         };
         let identities = scene.identities();
         let (rows, marked) = scene.view(&identities, &picture);
@@ -2693,6 +2957,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body(), a_body()],
             selection: picture.pick_of(chosen).expect("the picture has that row"),
+            hovered: PickId::NOTHING,
         };
 
         let mut showing_choice = ViewportInput::new();
@@ -2747,6 +3012,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             selection: picture.pick_of(only).expect("the picture has that row"),
+            hovered: PickId::NOTHING,
         };
         assert_eq!(selection_bounds(&scene, &picture), picture.bounds());
 
@@ -2793,6 +3059,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             selection: picture.pick_of(0).expect("the picture has that row"),
+            hovered: PickId::NOTHING,
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -2816,6 +3083,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             selection: PickId::NOTHING,
+            hovered: PickId::NOTHING,
         };
         for _ in 0..3 {
             assert!(!frame_selection(&empty, &picture, &mut camera).expect("no failure"));
@@ -2853,6 +3121,7 @@ mod tests {
                 .first()
                 .expect("the picture draws something")
                 .pick,
+            hovered: PickId::NOTHING,
         };
         assert!(scene.chosen(&picture).is_some());
 
@@ -2906,6 +3175,7 @@ mod tests {
                 prepared: (),
                 catalogue: vec![entry.clone()],
                 selection: draw.pick,
+                hovered: PickId::NOTHING,
             };
             assert_eq!(scene.chosen(&picture), Some((0, &entry)));
         }
@@ -3220,6 +3490,16 @@ mod tests {
         assert!(
             textures.is_empty(),
             "applied texture commands remained marked as pending"
+        );
+    }
+
+    #[test]
+    fn the_pointer_leaving_the_window_is_the_pointer_being_over_nothing() {
+        assert_eq!(
+            translate(&WindowEvent::CursorLeft {
+                device_id: winit::event::DeviceId::dummy(),
+            }),
+            vec![ViewportEvent::PointerLeft]
         );
     }
 

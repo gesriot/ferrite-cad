@@ -19,8 +19,8 @@
 mod input;
 mod panels;
 
-pub use input::{PointerButton, ViewportEvent, ViewportInput};
+pub use input::{Hover, PointerButton, ViewportEvent, ViewportInput};
 pub use panels::{
-    Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, Selected, VIEWS, definitions_panel,
+    Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, Rows, Selected, VIEWS, definitions_panel,
     selection_inspector, toolbar,
 };

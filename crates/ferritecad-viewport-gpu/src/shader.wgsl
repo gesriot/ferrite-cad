@@ -14,9 +14,11 @@ struct Globals {
     // definition light up together: they carry the same number, so this is one
     // comparison rather than a list the renderer would have to keep in step.
     selected: u32,
+    // Which definition the pointer is over, or zero. A question rather than a
+    // decision, and drawn differently so the two can be told apart.
+    hovered: u32,
     padding_0: u32,
     padding_1: u32,
-    padding_2: u32,
 };
 
 struct Draw {
@@ -89,7 +91,14 @@ fn fragment_main(in: VertexOut) -> FragmentOut {
     // turned orange would hide whatever the file said about it.
     var tint = draw.colour.rgb;
     if (globals.selected != 0u && draw.pick == globals.selected) {
+        // A choice already made. Kept as it was, and stronger than the
+        // question below, so pointing at something never looks like having
+        // chosen it.
         tint = mix(tint, vec3<f32>(1.0, 1.0, 1.0), 0.55);
+    } else if (globals.hovered != 0u && draw.pick == globals.hovered) {
+        // Merely under the pointer: lifted enough to find, far enough from
+        // the selection to be another thing.
+        tint = mix(tint, vec3<f32>(1.0, 1.0, 1.0), 0.22);
     }
 
     var out: FragmentOut;

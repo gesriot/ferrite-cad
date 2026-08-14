@@ -169,30 +169,44 @@ pub fn definitions_panel(
     ui: &mut egui::Ui,
     definitions: &[Selected<'_>],
     chosen: Option<usize>,
-) -> Option<usize> {
+) -> Rows {
+    let mut rows = Rows::default();
     if definitions.is_empty() {
         // A document with nothing in it says so. Offering an empty list with
         // no explanation would look like a list that failed to load.
         ui.label("No definitions");
-        return None;
+        return rows;
     }
 
-    let mut pressed = None;
     egui::ScrollArea::vertical()
         .max_height(140.0)
         .show(ui, |ui| {
             for (row, definition) in definitions.iter().enumerate() {
                 // `selectable_label` draws the chosen one differently, which
                 // is how a click in the viewport shows up here.
-                if ui
-                    .selectable_label(chosen == Some(row), definition.summary())
-                    .clicked()
-                {
-                    pressed = Some(row);
+                let response = ui.selectable_label(chosen == Some(row), definition.summary());
+                if response.clicked() {
+                    rows.pressed = Some(row);
+                }
+                // Separate from pressing, and deliberately so: pointing at a
+                // row says which geometry it is, and choosing it is a decision
+                // the user has not made yet.
+                if response.hovered() {
+                    rows.hovered = Some(row);
                 }
             }
         });
-    pressed
+    rows
+}
+
+/// What the list of definitions was asked while it was on screen.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Rows {
+    /// A row that was pressed, which is a choice.
+    pub pressed: Option<usize>,
+    /// A row the pointer is over, which is a question and not a choice.
+    pub hovered: Option<usize>,
 }
 
 /// Shows what is chosen, and nothing when nothing is.
@@ -695,7 +709,7 @@ mod tests {
         at: egui::Pos2,
         definitions: &[Selected<'_>],
         chosen: Option<usize>,
-    ) -> Option<usize> {
+    ) -> Rows {
         let input = egui::RawInput {
             events: vec![
                 egui::Event::PointerMoved(at),
@@ -715,12 +729,12 @@ mod tests {
             ..Default::default()
         };
 
-        let mut pressed = None;
+        let mut rows = Rows::default();
         let mut output = context.run_ui(input, |ui| {
-            pressed = definitions_panel(ui, definitions, chosen);
+            rows = definitions_panel(ui, definitions, chosen);
         });
         output.textures_delta.clear();
-        pressed
+        rows
     }
 
     /// Where the panel lays each of its rows out.
@@ -757,7 +771,7 @@ mod tests {
 
         let pressed = press_list(&context, rows[1].center(), &definitions, None);
         assert_eq!(
-            pressed,
+            pressed.pressed,
             Some(1),
             "the second definition could not be chosen from the list"
         );
@@ -765,10 +779,53 @@ mod tests {
         // And pressing nothing chooses nothing: a list that reported a press
         // every frame would reselect for as long as the window was open.
         let quiet = context.run_ui(egui::RawInput::default(), |ui| {
-            assert_eq!(definitions_panel(ui, &definitions, Some(1)), None);
+            assert_eq!(definitions_panel(ui, &definitions, Some(1)).pressed, None);
         });
         let mut quiet = quiet;
         quiet.textures_delta.clear();
+    }
+
+    #[test]
+    fn pointing_at_a_row_asks_about_it_without_choosing_it() {
+        let context = egui::Context::default();
+        let definitions = [body(), imported()];
+        let rows = rows_of(&context, &definitions);
+
+        // Moving over a row, with no button involved.
+        let over = |at: egui::Pos2| {
+            let mut asked = Rows::default();
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    events: vec![egui::Event::PointerMoved(at)],
+                    ..Default::default()
+                },
+                |ui| {
+                    asked = definitions_panel(ui, &definitions, None);
+                },
+            );
+            output.textures_delta.clear();
+            asked
+        };
+
+        let asked = over(rows[1].center());
+        assert_eq!(asked.hovered, Some(1), "pointing at a row asked nothing");
+        assert_eq!(
+            asked.pressed, None,
+            "pointing at a row chose it, so nothing could be looked at without \
+             being selected"
+        );
+
+        // Somewhere else in the list is a different question, and off the list
+        // is no question at all.
+        assert_eq!(over(rows[0].center()).hovered, Some(0));
+        assert_eq!(
+            over(egui::Pos2::new(
+                rows[0].center().x,
+                rows[0].center().y + 400.0
+            ))
+            .hovered,
+            None
+        );
     }
 
     #[test]
@@ -797,11 +854,11 @@ mod tests {
 
         // Each is chosen on its own.
         assert_eq!(
-            press_list(&context, rows[0].center(), &definitions, None),
+            press_list(&context, rows[0].center(), &definitions, None).pressed,
             Some(0)
         );
         assert_eq!(
-            press_list(&context, rows[1].center(), &definitions, None),
+            press_list(&context, rows[1].center(), &definitions, None).pressed,
             Some(1)
         );
     }
@@ -837,12 +894,15 @@ mod tests {
     #[test]
     fn an_empty_picture_says_so_and_offers_nothing_to_choose() {
         let context = egui::Context::default();
-        let mut pressed = Some(7);
+        let mut rows = Rows {
+            pressed: Some(7),
+            hovered: Some(7),
+        };
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            pressed = definitions_panel(ui, &[], None);
+            rows = definitions_panel(ui, &[], None);
         });
         output.textures_delta.clear();
-        assert_eq!(pressed, None, "an empty list invented a choice");
+        assert_eq!(rows, Rows::default(), "an empty list invented a choice");
 
         // And it says something rather than drawing an empty strip.
         let mut empty = context.run_ui(egui::RawInput::default(), |_| {});

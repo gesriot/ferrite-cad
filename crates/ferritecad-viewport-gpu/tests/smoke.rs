@@ -246,7 +246,7 @@ fn a_model_is_drawn_over_a_grid_that_is_never_selectable() {
 
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
 
     let mut grid_pixels = 0;
@@ -317,7 +317,7 @@ fn the_grid_belongs_to_the_world_and_not_to_the_screen() {
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
 
     let still = renderer
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
 
     // Panning by part of a spacing moves the lines across the screen. A sheet
@@ -325,7 +325,7 @@ fn the_grid_belongs_to_the_world_and_not_to_the_screen() {
     let mut panned = camera;
     panned.pan(17.0, 0.0);
     let after_pan = renderer
-        .render(&prepared, &panned, PickId::NOTHING)
+        .render(&prepared, &panned, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
     let (pan_background, pan_changed) = changed_common_background(&still, &after_pan);
     assert!(
@@ -342,7 +342,7 @@ fn the_grid_belongs_to_the_world_and_not_to_the_screen() {
     let mut orbited = camera;
     orbited.orbit(0.6, 0.4);
     let after_orbit = renderer
-        .render(&prepared, &orbited, PickId::NOTHING)
+        .render(&prepared, &orbited, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
     let (orbit_background, orbit_changed) = changed_common_background(&still, &after_orbit);
     assert!(
@@ -361,7 +361,7 @@ fn the_grid_belongs_to_the_world_and_not_to_the_screen() {
     let mut far = camera;
     far.zoom(-6.0);
     let after_zoom = renderer
-        .render(&prepared, &far, PickId::NOTHING)
+        .render(&prepared, &far, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
     let far_gap = widest_gap(&after_zoom).expect("the grid is drawn at this zoom too");
 
@@ -383,10 +383,10 @@ fn a_backdrop_costs_no_geometry_and_repeats_exactly() {
     let uploaded = renderer.geometry_uploads();
 
     let first = renderer
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
     let second = renderer
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
 
     // The grid has no vertex buffer to upload and the model's are already
@@ -441,7 +441,7 @@ fn a_part_below_the_plane_is_still_drawn_over_the_grid() {
 
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
 
     // The grid is a backdrop, not a floor that hides things: a part below the
@@ -485,7 +485,7 @@ fn a_picture_with_nothing_in_it_gets_no_backdrop() {
 
     let prepared = renderer.prepare(Arc::clone(&empty)).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
 
     // An empty document is empty. Drawing a floor under nothing would invent
@@ -510,7 +510,7 @@ fn choosing_a_definition_changes_every_placement_of_it_and_nothing_else() {
 
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let plain = renderer
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
 
     // Find a pixel of each definition by asking the frame what is under it.
@@ -540,7 +540,9 @@ fn choosing_a_definition_changes_every_placement_of_it_and_nothing_else() {
     );
 
     let chosen = plain.pick_at(first.0, first.1);
-    let lit = renderer.render(&prepared, &camera, chosen).expect("draws");
+    let lit = renderer
+        .render(&prepared, &camera, chosen, PickId::NOTHING)
+        .expect("draws");
 
     // Every pixel of the chosen definition changed, wherever it was drawn:
     // the two placements share one identity, so choosing reaches both.
@@ -562,6 +564,188 @@ fn choosing_a_definition_changes_every_placement_of_it_and_nothing_else() {
 }
 
 #[test]
+fn pointing_at_a_definition_marks_every_placement_of_it_and_no_other() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = two_definitions(96, 96);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+
+    let plain = renderer
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
+        .expect("draws");
+
+    let places = |definition: usize| -> Vec<(u32, u32)> {
+        (0..plain.height())
+            .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+            .filter(|(x, y)| snapshot.definition(plain.pick_at(*x, *y)) == Some(definition))
+            .collect()
+    };
+    let first = places(0);
+    let second = places(1);
+    assert!(first.len() > 200 && !second.is_empty());
+
+    let hovered = plain.pick_at(first[0].0, first[0].1);
+    let pointed = renderer
+        .render(&prepared, &camera, PickId::NOTHING, hovered)
+        .expect("draws");
+
+    // Every placement of what is under the pointer, because a pick names a
+    // definition: pointing at one bolt tells you where all of them are.
+    for (x, y) in &first {
+        assert_ne!(
+            pointed.colour_at(*x, *y),
+            plain.colour_at(*x, *y),
+            "a placement of the pointed-at definition was left alone at {x},{y}"
+        );
+    }
+    for (x, y) in &second {
+        assert_eq!(
+            pointed.colour_at(*x, *y),
+            plain.colour_at(*x, *y),
+            "pointing at one definition changed another at {x},{y}"
+        );
+    }
+
+    // What a click would say is unchanged: a highlight is a colour, and the
+    // identities behind it are the same identities.
+    for (x, y) in first.iter().chain(second.iter()) {
+        assert_eq!(pointed.pick_at(*x, *y), plain.pick_at(*x, *y));
+    }
+}
+
+#[test]
+fn a_choice_and_a_question_are_told_apart() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = two_definitions(96, 96);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+
+    let plain = renderer
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
+        .expect("draws");
+    let pixel_of = |definition: usize| {
+        (0..plain.height())
+            .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+            .find(|(x, y)| snapshot.definition(plain.pick_at(*x, *y)) == Some(definition))
+            .expect("that definition is drawn")
+    };
+    let (ax, ay) = pixel_of(0);
+    let (bx, by) = pixel_of(1);
+    let a = plain.pick_at(ax, ay);
+    let b = plain.pick_at(bx, by);
+
+    let chosen_only = renderer
+        .render(&prepared, &camera, a, PickId::NOTHING)
+        .expect("draws");
+    let pointed_only = renderer
+        .render(&prepared, &camera, PickId::NOTHING, a)
+        .expect("draws");
+    let both = renderer.render(&prepared, &camera, a, b).expect("draws");
+    let same = renderer.render(&prepared, &camera, a, a).expect("draws");
+
+    // Choosing and pointing are different states, and a person has to be able
+    // to see which is which.
+    assert_ne!(
+        chosen_only.colour_at(ax, ay),
+        pointed_only.colour_at(ax, ay),
+        "what is chosen looks the same as what is merely under the pointer"
+    );
+
+    // Chosen A while pointing at B: both visible, and neither mistaken for
+    // the other.
+    assert_eq!(both.colour_at(ax, ay), chosen_only.colour_at(ax, ay));
+    assert_ne!(both.colour_at(bx, by), plain.colour_at(bx, by));
+    assert_ne!(both.colour_at(bx, by), chosen_only.colour_at(ax, ay));
+
+    // Pointing at what is already chosen changes nothing: a decision outranks
+    // a question about the same thing.
+    assert_eq!(same.colour(), chosen_only.colour());
+}
+
+#[test]
+fn nothing_worth_pointing_at_is_marked() {
+    let mut renderer = renderer_or_skip!();
+    let (mine, camera) = two_definitions(96, 96);
+    let (theirs, _) = one_quad(96, 96);
+    let prepared = renderer.prepare(Arc::clone(&mine)).expect("uploads");
+
+    let plain = renderer
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
+        .expect("draws");
+
+    // A pick from another picture names a definition of that picture. Its
+    // number would fit here, which is exactly why the picture is asked.
+    let elsewhere = renderer.prepare(Arc::clone(&theirs)).expect("uploads");
+    let other = renderer
+        .render(&elsewhere, &camera, PickId::NOTHING, PickId::NOTHING)
+        .expect("draws");
+    let foreign = (0..other.height())
+        .flat_map(|y| (0..other.width()).map(move |x| (x, y)))
+        .map(|(x, y)| other.pick_at(x, y))
+        .find(|pick| theirs.definition(*pick).is_some())
+        .expect("the other picture drew something");
+
+    for hovered in [PickId::NOTHING, foreign] {
+        let frame = renderer
+            .render(&prepared, &camera, PickId::NOTHING, hovered)
+            .expect("draws");
+        assert_eq!(
+            frame.colour(),
+            plain.colour(),
+            "something was marked for a pick this picture does not know"
+        );
+    }
+}
+
+#[test]
+fn pointing_costs_no_geometry_and_leaves_the_backdrop_alone() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = model_over_the_plane(96, 96);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let uploaded = renderer.geometry_uploads();
+
+    let plain = renderer
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
+        .expect("draws");
+    let hovered = (0..plain.height())
+        .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+        .map(|(x, y)| plain.pick_at(x, y))
+        .find(|pick| snapshot.definition(*pick).is_some())
+        .expect("the model is drawn");
+
+    let pointed = renderer
+        .render(&prepared, &camera, PickId::NOTHING, hovered)
+        .expect("draws");
+    let again = renderer
+        .render(&prepared, &camera, PickId::NOTHING, hovered)
+        .expect("draws");
+
+    assert_eq!(
+        renderer.geometry_uploads(),
+        uploaded,
+        "pointing at something uploaded geometry"
+    );
+    assert_eq!(
+        pointed.colour(),
+        again.colour(),
+        "one hover drew two pictures"
+    );
+
+    // The backdrop is not a thing to point at: every grid pixel is exactly
+    // what it was, and none of it names anything.
+    for y in 0..plain.height() {
+        for x in 0..plain.width() {
+            if snapshot.definition(plain.pick_at(x, y)).is_none() {
+                assert_eq!(
+                    pointed.colour_at(x, y),
+                    plain.colour_at(x, y),
+                    "the backdrop at {x},{y} responded to the pointer"
+                );
+                assert_eq!(pointed.pick_at(x, y), PickId::NOTHING);
+            }
+        }
+    }
+}
+
+#[test]
 fn a_selection_from_another_snapshot_selects_nothing() {
     let mut renderer = renderer_or_skip!();
     let (mine, camera) = two_definitions(64, 64);
@@ -569,7 +753,7 @@ fn a_selection_from_another_snapshot_selects_nothing() {
 
     let prepared = renderer.prepare(Arc::clone(&mine)).expect("uploads");
     let plain = renderer
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
 
     // A pick taken from a different picture. Its number is in range here, so
@@ -585,7 +769,7 @@ fn a_selection_from_another_snapshot_selects_nothing() {
         camera
     };
     let other = renderer
-        .render(&elsewhere, &other_camera, PickId::NOTHING)
+        .render(&elsewhere, &other_camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
     let foreign = (0..other.height())
         .flat_map(|y| (0..other.width()).map(move |x| (x, y)))
@@ -593,7 +777,9 @@ fn a_selection_from_another_snapshot_selects_nothing() {
         .find(|pick| theirs.definition(*pick).is_some())
         .expect("the other picture drew something");
 
-    let after = renderer.render(&prepared, &camera, foreign).expect("draws");
+    let after = renderer
+        .render(&prepared, &camera, foreign, PickId::NOTHING)
+        .expect("draws");
     assert_eq!(
         after.colour(),
         plain.colour(),
@@ -608,7 +794,7 @@ fn a_snapshot_reaches_the_colour_target() {
 
     let prepared = renderer.prepare(snapshot).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
     assert_eq!(frame.width(), 64);
     assert_eq!(frame.height(), 64);
@@ -639,7 +825,7 @@ fn the_pick_target_comes_back_carrying_the_identities_that_went_in() {
 
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
 
     let hit = frame.pick_at(32, 32);
@@ -678,7 +864,7 @@ fn every_placement_is_drawn_and_they_all_pick_their_definition() {
 
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
 
     // Scanned rather than sampled at guessed coordinates: where the framing
@@ -723,7 +909,7 @@ fn a_frame_cannot_be_read_against_a_different_snapshot() {
     let (first, camera) = one_quad(32, 32);
     let prepared = renderer.prepare(Arc::clone(&first)).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
 
     // A second snapshot describing something else. Its definition zero is a
@@ -762,7 +948,7 @@ fn a_viewport_of_no_size_draws_nothing_and_says_so() {
     camera.resize(0, 0);
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws nothing");
     assert_eq!(frame.width(), 0);
     assert!(frame.colour().is_empty());
@@ -776,7 +962,7 @@ fn a_viewport_of_no_size_draws_nothing_and_says_so() {
     camera.resize(16, 0);
     assert!(
         renderer
-            .render(&prepared, &camera, PickId::NOTHING)
+            .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
             .expect("draws nothing")
             .colour()
             .is_empty()
@@ -792,7 +978,7 @@ fn a_viewport_larger_than_the_device_can_hold_is_refused_before_allocation() {
 
     let prepared = renderer.prepare(snapshot).expect("uploads");
     let error = renderer
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect_err("an impossible target must be refused");
     assert_eq!(error.kind(), ErrorKind::Input);
 }
@@ -830,10 +1016,15 @@ fn a_normal_and_its_baked_equivalent_receive_the_same_light() {
     let transformed_prepared = renderer.prepare(transformed).expect("uploads");
     let baked_prepared = renderer.prepare(baked).expect("uploads");
     let transformed = renderer
-        .render(&transformed_prepared, &camera, PickId::NOTHING)
+        .render(
+            &transformed_prepared,
+            &camera,
+            PickId::NOTHING,
+            PickId::NOTHING,
+        )
         .expect("draws");
     let baked = renderer
-        .render(&baked_prepared, &camera, PickId::NOTHING)
+        .render(&baked_prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
     assert_eq!(
         transformed.colour(),
@@ -869,7 +1060,7 @@ fn an_empty_snapshot_draws_a_cleared_frame() {
     for snapshot in [empty, placed_empty] {
         let prepared = renderer.prepare(snapshot).expect("uploads");
         let frame = renderer
-            .render(&prepared, &camera, PickId::NOTHING)
+            .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
             .expect("draws nothing");
         assert_eq!(frame.colour().len(), 16 * 16 * 4);
         assert!(
@@ -890,10 +1081,10 @@ fn two_frames_of_one_snapshot_are_the_same_picture() {
 
     let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
     let first = renderer
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
     let second = renderer
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
 
     // Not a claim about GPUs in general: it is a claim that nothing in this
@@ -947,7 +1138,7 @@ fn geometry_is_uploaded_once_and_repeat_frames_only_move_the_camera() {
             .expect("moves the camera without resizing the target");
         matrices.push(camera.view_projection());
         let frame = renderer
-            .render(&prepared, &camera, PickId::NOTHING)
+            .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
             .expect("draws");
         assert_eq!((frame.width(), frame.height()), (48, 48));
         pictures.push(frame.colour().to_vec());
@@ -988,7 +1179,7 @@ fn a_snapshot_prepared_by_another_renderer_is_refused() {
     // lifetime mistake surfacing as a driver error far from its cause, so it
     // is refused by name instead.
     let error = mine
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect_err("another renderer's buffers must not be drawn");
     assert_eq!(error.kind(), ErrorKind::Rendering, "{error}");
     assert!(
@@ -998,7 +1189,7 @@ fn a_snapshot_prepared_by_another_renderer_is_refused() {
 
     // The renderer that owns them still draws them.
     theirs
-        .render(&prepared, &camera, PickId::NOTHING)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("its own buffers");
 }
 
@@ -1011,7 +1202,7 @@ fn an_older_frame_keeps_resolving_against_the_snapshot_it_was_drawn_from() {
     let (first, camera) = one_quad(32, 32);
     let first_prepared = renderer.prepare(Arc::clone(&first)).expect("uploads");
     let old = renderer
-        .render(&first_prepared, &camera, PickId::NOTHING)
+        .render(&first_prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
     let old_hit = old.pick_at(16, 16);
     assert_ne!(old_hit, PickId::NOTHING);
@@ -1027,7 +1218,7 @@ fn an_older_frame_keeps_resolving_against_the_snapshot_it_was_drawn_from() {
     let second = Arc::new(builder.build());
     let second_prepared = renderer.prepare(Arc::clone(&second)).expect("uploads");
     let new = renderer
-        .render(&second_prepared, &camera, PickId::NOTHING)
+        .render(&second_prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws");
     let new_hit = new.pick_at(16, 16);
     assert_ne!(new_hit, PickId::NOTHING);
