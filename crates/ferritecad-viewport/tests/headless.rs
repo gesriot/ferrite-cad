@@ -36,15 +36,30 @@ fn moved(x: f64, y: f64, z: f64) -> Transform {
     Transform::from_translation(Vec3::new(x, y, z).expect("finite")).expect("finite")
 }
 
-fn projected(matrix: &[f32; 16], point: [f32; 3]) -> [f32; 3] {
-    let clip = [
+fn clip_coordinates(matrix: &[f32; 16], point: [f32; 3]) -> [f32; 4] {
+    [
         matrix[0] * point[0] + matrix[4] * point[1] + matrix[8] * point[2] + matrix[12],
         matrix[1] * point[0] + matrix[5] * point[1] + matrix[9] * point[2] + matrix[13],
         matrix[2] * point[0] + matrix[6] * point[1] + matrix[10] * point[2] + matrix[14],
         matrix[3] * point[0] + matrix[7] * point[1] + matrix[11] * point[2] + matrix[15],
-    ];
+    ]
+}
+
+fn projected(matrix: &[f32; 16], point: [f32; 3]) -> [f32; 3] {
+    let clip = clip_coordinates(matrix, point);
     assert!(clip[3] > 0.0, "a point in front has clip.w {}", clip[3]);
     [clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]]
+}
+
+fn inside_clip_volume(matrix: &[f32; 16], point: [f32; 3]) -> bool {
+    let clip = clip_coordinates(matrix, point);
+    if clip[3] <= 0.0 {
+        return false;
+    }
+    let ndc = [clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]];
+    (-1.0..=1.0).contains(&ndc[0])
+        && (-1.0..=1.0).contains(&ndc[1])
+        && (0.0..=1.0).contains(&ndc[2])
 }
 
 #[test]
@@ -280,19 +295,11 @@ fn a_camera_driven_off_the_model_can_be_brought_back_to_all_of_it() {
             ]
         })
         .collect();
-    // A point behind the camera is lost as surely as one beside the window,
-    // and the shared helper refuses to project it, so ask for both here.
-    let on_screen = |camera: &Camera, point: [f32; 3]| {
-        let matrix = camera.view_projection();
-        let clip = [
-            matrix[0] * point[0] + matrix[4] * point[1] + matrix[8] * point[2] + matrix[12],
-            matrix[1] * point[0] + matrix[5] * point[1] + matrix[9] * point[2] + matrix[13],
-            matrix[3] * point[0] + matrix[7] * point[1] + matrix[11] * point[2] + matrix[15],
-        ];
-        clip[2] > 0.0
-            && (clip[0] / clip[2]).abs() <= 1.0 + 1e-3
-            && (clip[1] / clip[2]).abs() <= 1.0 + 1e-3
-    };
+    // A point behind the camera or outside either clipping plane is lost as
+    // surely as one beside the window. Ask the complete WGPU clip volume,
+    // including depth, rather than calling an x/y projection "inside" it.
+    let on_screen =
+        |camera: &Camera, point: [f32; 3]| inside_clip_volume(&camera.view_projection(), point);
 
     assert!(
         corners.iter().any(|corner| !on_screen(&camera, *corner)),
