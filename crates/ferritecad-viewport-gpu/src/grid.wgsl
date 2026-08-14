@@ -67,8 +67,8 @@ struct FragmentOut {
     @location(2) face: u32,
 };
 
-@fragment
-fn fragment_main(in: VertexOut) -> FragmentOut {
+// What a grid line looks like at one pixel, or the empty space between lines.
+fn shade(in: VertexOut) -> vec4<f32> {
     // A quarter of a minor step is comfortably inside the rounding of the
     // multiplication that produced the coordinate, and far from the next line.
     let tolerance = grid.minor * 0.25;
@@ -86,8 +86,14 @@ fn fragment_main(in: VertexOut) -> FragmentOut {
         colour = vec3<f32>(0.34, 0.34, 0.37);
     }
 
+    return vec4<f32>(colour, 1.0);
+}
+
+// The offscreen path, where the backdrop has to say what it is not.
+@fragment
+fn fragment_main(in: VertexOut) -> FragmentOut {
     var out: FragmentOut;
-    out.colour = vec4<f32>(colour, 1.0);
+    out.colour = shade(in);
     // Never a definition. A grid line is a thing to look at and not a thing to
     // choose, so clicking one is clicking the background, and this is where
     // that is true rather than somewhere that could forget it.
@@ -95,4 +101,10 @@ fn fragment_main(in: VertexOut) -> FragmentOut {
     // And never a face, for the same reason: there is no surface here to name.
     out.face = 0u;
     return out;
+}
+
+// A window's path: colour and nothing else, as in `shader.wgsl`.
+@fragment
+fn fragment_colour(in: VertexOut) -> @location(0) vec4<f32> {
+    return shade(in);
 }

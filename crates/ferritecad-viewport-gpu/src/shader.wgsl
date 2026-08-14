@@ -99,8 +99,12 @@ fn marked_colour(colour: vec3<f32>, strength: f32) -> vec3<f32> {
     return mix(shown, endpoint, strength);
 }
 
-@fragment
-fn fragment_main(in: VertexOut, @builtin(primitive_index) triangle: u32) -> FragmentOut {
+// What the model looks like at one pixel, given which face it came from.
+//
+// Shared by both entry points, because a window and a readback must agree
+// about the picture down to the byte: they differ in what they record about
+// it, never in what it looks like.
+fn shade(in: VertexOut, face: u32) -> vec4<f32> {
     // A zero-length normal cannot be normalised, and normalize() of one is a
     // NaN that propagates into the colour attachment. Face the viewer instead.
     let length = dot(in.normal, in.normal);
@@ -117,10 +121,6 @@ fn fragment_main(in: VertexOut, @builtin(primitive_index) triangle: u32) -> Frag
     // Shifted in brightness rather than replaced by a colour of its own: what
     // is marked must still look like the material it is, and a part that
     // turned orange would hide whatever the file said about it.
-    // Which face of the picture this pixel came from. The triangle number is
-    // counted within the draw, so the draw says where its mesh begins.
-    let face = faces[draw.first_triangle + triangle];
-
     var tint = draw.colour.rgb;
     if (globals.selected != 0u && draw.pick == globals.selected) {
         // A choice already made. Kept as it was, and stronger than the
@@ -138,9 +138,33 @@ fn fragment_main(in: VertexOut, @builtin(primitive_index) triangle: u32) -> Frag
         tint = marked_colour(tint, 0.22);
     }
 
+    return vec4<f32>(tint * lambert, draw.colour.a);
+}
+
+// Which face of the picture a pixel came from. The triangle number is counted
+// within the draw, so the draw says where its mesh begins.
+fn face_of(triangle: u32) -> u32 {
+    return faces[draw.first_triangle + triangle];
+}
+
+// The offscreen path: the picture and both facts about each pixel of it.
+@fragment
+fn fragment_main(in: VertexOut, @builtin(primitive_index) triangle: u32) -> FragmentOut {
+    let face = face_of(triangle);
     var out: FragmentOut;
-    out.colour = vec4<f32>(tint * lambert, draw.colour.a);
+    out.colour = shade(in, face);
     out.pick = draw.pick;
     out.face = face;
     return out;
+}
+
+// A window's path: colour and nothing else.
+//
+// A second entry point rather than one that writes identities into targets a
+// window does not have. Direct3D rejects that outright, and a shader whose
+// output signature is wider than the pipeline it is compiled for is wrong even
+// where a driver tolerates it.
+@fragment
+fn fragment_colour(in: VertexOut, @builtin(primitive_index) triangle: u32) -> @location(0) vec4<f32> {
+    return shade(in, face_of(triangle));
 }

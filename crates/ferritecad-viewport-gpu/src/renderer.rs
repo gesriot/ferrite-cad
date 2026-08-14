@@ -1181,7 +1181,7 @@ fn build_grid_pipeline(
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("fragment_main"),
+            entry_point: Some(identities_entry_point(with_identities)),
             compilation_options: Default::default(),
             targets: &targets,
         }),
@@ -1200,6 +1200,19 @@ fn build_grid_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// Which fragment entry point writes exactly the given targets.
+///
+/// A shader whose output signature is wider than its pipeline is not a
+/// harmless waste: Direct3D refuses to compile it. So the window and the
+/// readback have an entry point each, over one shading function.
+fn identities_entry_point(with_identities: bool) -> &'static str {
+    if with_identities {
+        "fragment_main"
+    } else {
+        "fragment_colour"
+    }
 }
 
 fn build_pipeline(
@@ -1262,11 +1275,11 @@ fn build_pipeline(
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("fragment_main"),
+            // The entry point that writes exactly the targets this pipeline
+            // has. Both shade the model identically; they differ only in what
+            // they record about each pixel.
+            entry_point: Some(identities_entry_point(with_identities)),
             compilation_options: Default::default(),
-            // The fragment shader always writes an identity. A pipeline with
-            // no target for it discards the value rather than needing a second
-            // shader that does not compute it.
             targets: &targets,
         }),
         primitive: wgpu::PrimitiveState {
