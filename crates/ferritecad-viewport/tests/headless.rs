@@ -2471,3 +2471,62 @@ fn two_pictures_of_the_same_triangles_do_not_share_what_is_shown() {
         "a mask reached into another picture"
     );
 }
+
+#[test]
+fn a_mask_made_for_one_picture_cannot_be_worked_on_through_another() {
+    // The mirror of the marks-from-elsewhere gates: here the mark is this
+    // picture's own and valid, and it is the *mask* that belongs somewhere
+    // else. Without a check of its own, every operation would resolve the mark
+    // happily and then set a bit belonging to a different picture.
+    let one = three_definitions_placed_twice();
+    let other = {
+        let mut builder = SnapshotBuilder::new();
+        let part = builder.add_mesh(&divided(&[1, 1])).expect("packs");
+        let second = builder.add_mesh(&divided(&[2, 2])).expect("packs");
+        for definition in [part, second] {
+            builder
+                .place(
+                    definition,
+                    None,
+                    &moved(definition as f64 * 30.0, 0.0, 0.0),
+                    [1.0, 1.0, 1.0],
+                )
+                .expect("places");
+        }
+        builder.build()
+    };
+    let foreign = Visibility::new(&one);
+    let own_pick = other.pick_of(0).expect("drawn");
+    let own_face = other.face_of(0, 0).expect("numbered");
+
+    // Every question refuses, and every operation refuses.
+    for mark in [Marked::Definition(own_pick), Marked::Face(own_face)] {
+        let mut mask = foreign.clone();
+        assert!(
+            !mask.can_hide(mark, &other),
+            "{mark:?} was offered a way out"
+        );
+        assert!(
+            !mask.can_isolate(mark, &other),
+            "{mark:?} was offered isolation"
+        );
+        assert!(
+            !mask.can_show(mark, &other),
+            "{mark:?} was offered a way back"
+        );
+        assert!(!mask.hide(mark, &other), "a foreign mask hid something");
+        assert!(
+            !mask.isolate(mark, &other),
+            "a foreign mask isolated something"
+        );
+        assert!(!mask.show(mark, &other), "a foreign mask showed something");
+        assert_eq!(mask, foreign, "a foreign mask was written through");
+    }
+
+    // And it still says the other picture is fully drawn, because a mask it
+    // does not belong to hides nothing there.
+    assert_eq!(foreign.bounds(&other), other.bounds());
+    for definition in 0..other.meshes().len() {
+        assert!(foreign.shows(definition, &other));
+    }
+}

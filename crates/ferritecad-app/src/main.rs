@@ -42,7 +42,7 @@ use ferritecad_scene::{
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
     Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, HIDE_KEY, Hover, ISOLATE_KEY, PointerButton,
-    SHOW_ALL_KEY, Selected, VIEWS, ViewportEvent, ViewportInput,
+    RowVisibility, SHOW_ALL_KEY, Selected, VIEWS, ViewportEvent, ViewportInput,
 };
 use ferritecad_viewport::{
     Camera, Marked, PickId, RenderSnapshot, SnapshotBuilder, StandardView, Visibility,
@@ -883,22 +883,67 @@ fn isolate_selected(
     true
 }
 
-/// Which definitions this list offers a way back to, by their own identity.
+/// What each row of this list can offer about whether it is drawn.
 ///
-/// One entry per row, in the order the picture packs them. A row that is being
-/// drawn, and a row that draws nothing wherever it is, offer nothing: the
-/// first has nothing to come back from and the second would change no pixel.
+/// One entry per row, in the order the picture packs them, and one offer per
+/// row: a definition is either drawn or it is not. A row that draws nothing
+/// wherever it is offers neither, because both would change no pixel.
+///
 /// The rule is here rather than in the panel because only this side knows what
-/// the picture draws.
-fn shows_of(visibility: &Visibility, snapshot: &RenderSnapshot) -> Vec<Option<PickId>> {
+/// the picture draws, and it is the same pair of questions the rest of the
+/// application asks – nothing here decides visibility a second time.
+fn rows_visibility(visibility: &Visibility, snapshot: &RenderSnapshot) -> Vec<RowVisibility> {
     (0..snapshot.meshes().len())
         .map(|definition| {
-            let pick = snapshot.pick_of(definition)?;
-            visibility
-                .can_show(Marked::Definition(pick), snapshot)
-                .then_some(pick)
+            let Some(pick) = snapshot.pick_of(definition) else {
+                return RowVisibility::Neither;
+            };
+            let mark = Marked::Definition(pick);
+            if visibility.can_hide(mark, snapshot) {
+                RowVisibility::Hide(pick)
+            } else if visibility.can_show(mark, snapshot) {
+                RowVisibility::Show(pick)
+            } else {
+                RowVisibility::Neither
+            }
         })
         .collect()
+}
+
+/// Stops drawing one definition, named by its row, and forgets the old frame.
+///
+/// The way to remove a distraction without giving up what is being looked at:
+/// everything else keeps its state, and a choice on another definition is
+/// untouched.
+///
+/// The choice does go when it is the thing being removed. Geometry nobody can
+/// see cannot remain chosen: an inspector would be describing something that
+/// is not on screen, and Frame selected would have nowhere to go.
+///
+/// Both the request and the choice are resolved through the picture, so a
+/// definition index never leaves this function and never becomes an identity
+/// anywhere.
+///
+/// What the pointer was over, and any click, question or gesture in flight,
+/// are forgotten: geometry leaving changes what some pixels mean.
+fn hide_one(
+    visibility: &mut Visibility,
+    selection: &mut Selection,
+    hovered: &mut Marked,
+    snapshot: &RenderSnapshot,
+    requested: PickId,
+    input: &mut ViewportInput,
+) -> bool {
+    let requested_definition = snapshot.definition(requested);
+    if !visibility.hide(Marked::Definition(requested), snapshot) {
+        return false;
+    }
+    if selection.owning_definition(snapshot) == requested_definition {
+        *selection = Selection::Nothing;
+    }
+    *hovered = Marked::Nothing;
+    input.forget_pending();
+    true
 }
 
 /// Draws one hidden definition again, and forgets the old frame.
@@ -1362,8 +1407,14 @@ impl ApplicationHandler<AppEvent> for App {
                         // A hidden definition asked back on screen, named by
                         // the picture that drew the list rather than by where
                         // its row happened to sit.
-                        if let Some(requested) = chosen.show_definition {
-                            self.show_one_definition(requested);
+                        match chosen.row_visibility {
+                            Some(RowVisibility::Show(requested)) => {
+                                self.show_one_definition(requested);
+                            }
+                            Some(RowVisibility::Hide(requested)) => {
+                                self.hide_one_definition(requested);
+                            }
+                            Some(RowVisibility::Neither) | None => {}
                         }
                         // The button and the key are two ways of asking for
                         // the same thing, and they ask the same function.
@@ -1657,6 +1708,22 @@ impl App {
         let scene = &mut live.scene;
         show_one(
             &mut scene.visibility,
+            &mut scene.hovered,
+            scene.prepared.snapshot(),
+            requested,
+            &mut self.input,
+        );
+    }
+
+    /// Stops drawing one definition, named by its row.
+    fn hide_one_definition(&mut self, requested: PickId) {
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+        let scene = &mut live.scene;
+        hide_one(
+            &mut scene.visibility,
+            &mut scene.selection,
             &mut scene.hovered,
             scene.prepared.snapshot(),
             requested,
@@ -1958,15 +2025,11 @@ impl Live {
         // One answer for both sides of the choice: the row a list marks and
         // the facts an inspector shows come from the same resolution.
         let (definitions, chosen_row) = scene.view(&words.identities, scene.prepared.snapshot());
-        // Which rows are not being drawn. The same mask the renderer reads, so
-        // a row marked hidden and a definition missing from the picture cannot
-        // be two different sets.
-        let hidden = scene.visibility.hidden_in(scene.prepared.snapshot());
-        // Which rows offer a way back to themselves. Built from the same
-        // visibility the renderer reads, so a row that offers Show and a
-        // definition that is missing from the picture cannot be two different
-        // sets.
-        let shows = shows_of(&scene.visibility, scene.prepared.snapshot());
+        // What each row can offer about whether it is drawn, and which rows
+        // are not being drawn: one answer, read from the same visibility the
+        // renderer reads, so a row marked hidden and a definition missing from
+        // the picture cannot be two different sets.
+        let offers = rows_visibility(&scene.visibility, scene.prepared.snapshot());
         let described = inspected(
             &scene.selection,
             &scene.catalogue,
@@ -2001,10 +2064,9 @@ impl Live {
             // Every definition in the picture, whether or not any of it is on
             // screen: a part hidden behind another, too small to hit or out of
             // shot is reachable here and nowhere else.
-            let rows =
-                ferritecad_ui::definitions_panel(ui, &definitions, chosen_row, hidden, &shows);
+            let rows = ferritecad_ui::definitions_panel(ui, &definitions, chosen_row, &offers);
             chosen.definition = rows.pressed;
-            chosen.show_definition = rows.shown;
+            chosen.row_visibility = rows.visibility;
             pointed_row = rows.hovered;
             ui.separator();
             // Read-only, and the only place the choice is described. What it
@@ -4513,18 +4575,29 @@ mod tests {
         let picture = builder.build();
         let mut visibility = Visibility::new(&picture);
 
-        // Nothing hidden: nothing to offer, including for the row that draws
-        // nothing wherever it is.
-        assert_eq!(shows_of(&visibility, &picture), vec![None, None, None]);
+        // Nothing hidden: every drawn row offers to go, and the row that
+        // draws nothing wherever it is offers neither.
+        assert_eq!(
+            rows_visibility(&visibility, &picture),
+            vec![
+                RowVisibility::Hide(picture.pick_of(drawn).expect("drawn")),
+                RowVisibility::Hide(picture.pick_of(other).expect("drawn")),
+                RowVisibility::Neither,
+            ]
+        );
 
         assert!(visibility.hide(
             Marked::Definition(picture.pick_of(other).expect("drawn")),
             &picture
         ));
         assert_eq!(
-            shows_of(&visibility, &picture),
-            vec![None, picture.pick_of(other), None],
-            "the way back is offered for the hidden row and for nothing else"
+            rows_visibility(&visibility, &picture),
+            vec![
+                RowVisibility::Hide(picture.pick_of(drawn).expect("drawn")),
+                RowVisibility::Show(picture.pick_of(other).expect("drawn")),
+                RowVisibility::Neither,
+            ],
+            "the way back is offered for the hidden row and the way out for the drawn one"
         );
     }
 
@@ -4584,6 +4657,476 @@ mod tests {
     }
 
     #[test]
+    fn hiding_a_row_keeps_a_chosen_face_on_another_definition_exactly() {
+        let (_directory, scene) = plate_and_a_second_body();
+        let snapshot = &scene.snapshot;
+        let face = snapshot.face_of(0, 0).expect("numbered");
+        let mut chosen = Selection::at(
+            snapshot.pick_of(0).expect("drawn"),
+            face,
+            snapshot,
+            &scene.faces,
+        );
+        let Selection::Face(before) = &chosen else {
+            panic!("the plate's face is not named: {chosen:?}");
+        };
+        let meanings = before.meanings().to_vec();
+
+        let mut visibility = Visibility::new(snapshot);
+        let mut hovered = Marked::Nothing;
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+
+        // The other body goes; the chosen face is on the plate.
+        assert!(hide_one(
+            &mut visibility,
+            &mut chosen,
+            &mut hovered,
+            snapshot,
+            snapshot.pick_of(1).expect("drawn"),
+            &mut input
+        ));
+        assert!(visibility.shows(0, snapshot) && !visibility.shows(1, snapshot));
+
+        let Selection::Face(after) = &chosen else {
+            panic!("the choice stopped being a face: {chosen:?}");
+        };
+        assert_eq!(after.face(), face);
+        assert_eq!(
+            after.meanings(),
+            meanings.as_slice(),
+            "what the document calls the face was lost"
+        );
+
+        // And hiding the plate itself, which the face is on, does unchoose it:
+        // a face nobody can see cannot stay chosen.
+        assert!(hide_one(
+            &mut visibility,
+            &mut chosen,
+            &mut hovered,
+            snapshot,
+            snapshot.pick_of(0).expect("drawn"),
+            &mut input
+        ));
+        assert_eq!(chosen, Selection::Nothing);
+    }
+
+    #[test]
+    fn hiding_a_row_forgets_the_frame_it_was_asked_from() {
+        let picture = three_definitions();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
+        let chosen = scene.selection.clone();
+        scene.hovered = Marked::Definition(picture.pick_of(2).expect("drawn"));
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let camera = input.camera().view_projection();
+
+        // A click and a question recorded against the frame that still had
+        // the definition about to go.
+        input.handle(ViewportEvent::PointerMoved { x: 4.0, y: 4.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        input.handle(ViewportEvent::PointerMoved { x: 9.0, y: 9.0 }, false);
+        let _ = input.take_redraw();
+
+        assert!(hide_one(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            picture.pick_of(0).expect("drawn"),
+            &mut input
+        ));
+
+        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(input.take_pick(), None, "a click survived the change");
+        assert_eq!(input.take_hover(), Hover::Cleared);
+        assert!(input.take_redraw(), "hiding a row owes a frame");
+        assert_eq!(
+            scene.selection, chosen,
+            "hiding a neighbour changed the choice"
+        );
+        assert_eq!(input.camera().view_projection(), camera);
+
+        // A gesture belongs to that frame too, and is cancelled with it. A
+        // separate reducer, because beginning a gesture clears a hover
+        // question and this proves the two independently.
+        let mut gesture = ViewportInput::new();
+        gesture.resize(800, 600);
+        gesture.handle(ViewportEvent::PointerMoved { x: 20.0, y: 20.0 }, false);
+        gesture.handle(
+            ViewportEvent::PointerPressed(PointerButton::Secondary),
+            false,
+        );
+        assert!(gesture.is_dragging());
+        assert!(hide_one(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            picture.pick_of(2).expect("drawn"),
+            &mut gesture
+        ));
+        assert!(!gesture.is_dragging(), "a gesture survived the change");
+    }
+
+    #[test]
+    fn a_row_hide_that_does_nothing_leaves_everything_as_it_was() {
+        let picture = three_definitions();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
+        let chosen = scene.selection.clone();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        assert!(hide_one(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            picture.pick_of(0).expect("drawn"),
+            &mut input
+        ));
+        let before = scene.visibility.clone();
+
+        // Real transient state belonging to this unchanged frame, not the
+        // absence of any.
+        scene.hovered = Marked::Definition(picture.pick_of(2).expect("drawn"));
+        let hovered = scene.hovered;
+        input.handle(ViewportEvent::PointerMoved { x: 4.0, y: 4.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        input.handle(ViewportEvent::PointerMoved { x: 9.0, y: 9.0 }, false);
+        let camera = input.camera().view_projection();
+        let _ = input.take_redraw();
+
+        // Already hidden, nothing at all, and a definition of a genuinely
+        // different picture: one with the same geometry would be the same
+        // picture by content, and its identities would rightly resolve here.
+        let elsewhere = two_definitions();
+        assert_ne!(
+            elsewhere.pick_of(1).expect("drawn"),
+            picture.pick_of(1).expect("drawn"),
+            "the gate needs a pick that really belongs to another picture"
+        );
+        for requested in [
+            picture.pick_of(0).expect("drawn"),
+            PickId::NOTHING,
+            elsewhere.pick_of(1).expect("drawn"),
+        ] {
+            assert!(
+                !hide_one(
+                    &mut scene.visibility,
+                    &mut scene.selection,
+                    &mut scene.hovered,
+                    &picture,
+                    requested,
+                    &mut input
+                ),
+                "{requested:?} claimed to change something"
+            );
+        }
+
+        assert_eq!(scene.visibility, before);
+        assert_eq!(scene.selection, chosen, "a no-op unchose something");
+        assert_eq!(scene.hovered, hovered, "a no-op cleared the current hover");
+        assert_eq!(
+            input.take_pick(),
+            Some((4.0, 4.0)),
+            "a no-op cleared a pending click"
+        );
+        assert_eq!(
+            input.take_hover(),
+            Hover::At(9.0, 9.0),
+            "a no-op cleared a pending hover question"
+        );
+        assert_eq!(
+            input.camera().view_projection(),
+            camera,
+            "a no-op moved the camera"
+        );
+        assert!(!input.take_redraw(), "a no-op asked for a frame");
+
+        // And a gesture survives a no-op too.
+        let mut gesture = ViewportInput::new();
+        gesture.resize(800, 600);
+        gesture.handle(ViewportEvent::PointerMoved { x: 20.0, y: 20.0 }, false);
+        gesture.handle(
+            ViewportEvent::PointerPressed(PointerButton::Secondary),
+            false,
+        );
+        let _ = gesture.take_redraw();
+        assert!(!hide_one(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            picture.pick_of(0).expect("drawn"),
+            &mut gesture
+        ));
+        assert!(gesture.is_dragging(), "a no-op cancelled an active gesture");
+        assert!(!gesture.take_redraw());
+    }
+
+    #[test]
+    fn a_row_hide_survives_a_failed_open_and_not_a_successful_one() {
+        let picture = three_definitions();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        assert!(hide_one(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            picture.pick_of(0).expect("drawn"),
+            &mut input
+        ));
+        let mask = scene.visibility.clone();
+        let chosen = scene.selection.clone();
+
+        let mut camera = ViewportInput::new();
+        commit_scene(&mut scene, &mut camera, Err(CadError::input("no")))
+            .expect_err("a failed load commits nothing");
+        assert_eq!(scene.visibility, mask);
+        assert_eq!(scene.selection, chosen);
+
+        let next = three_definitions();
+        let mut framed = ViewportInput::new();
+        framed.resize(640, 480);
+        commit_scene(
+            &mut scene,
+            &mut camera,
+            Ok((
+                framed,
+                (),
+                vec![a_body(), a_body(), a_body()],
+                FaceNames::default(),
+                Visibility::new(&next),
+            )),
+        )
+        .expect("a load that arrived commits");
+        assert!(!scene.visibility.anything_hidden());
+        assert_eq!(scene.selection, Selection::Nothing);
+    }
+
+    #[test]
+    fn one_visible_neighbour_goes_from_its_row_without_disturbing_the_choice() {
+        let picture = three_definitions();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+
+        // The middle one, chosen from the list.
+        select_definition_row(&mut scene.selection, &picture, &mut input, 1);
+        let chosen = scene.selection.clone();
+        assert_eq!(
+            chosen,
+            Selection::Definition(picture.pick_of(1).expect("drawn"))
+        );
+        let camera = input.camera().view_projection();
+
+        // The defect: the only way to remove a neighbour is to choose it
+        // first, and choosing it is exactly what destroys the choice.
+        let mut by_choosing = scene.selection.clone();
+        let mut elsewhere = ViewportInput::new();
+        select_definition_row(&mut by_choosing, &picture, &mut elsewhere, 0);
+        assert_ne!(
+            by_choosing, chosen,
+            "reaching a neighbour through the selection is what loses the choice"
+        );
+
+        // One row's Hide control, pressed through the panel that draws it.
+        let context = egui::Context::default();
+        let identities = identities_of(&scene.catalogue);
+        let (definitions, chosen_row) = scene.view(&identities, &picture);
+        let offers = rows_visibility(&scene.visibility, &picture);
+        assert_eq!(
+            offers,
+            vec![
+                RowVisibility::Hide(picture.pick_of(0).expect("drawn")),
+                RowVisibility::Hide(picture.pick_of(1).expect("drawn")),
+                RowVisibility::Hide(picture.pick_of(2).expect("drawn")),
+            ],
+            "every drawn row offers to be taken off screen"
+        );
+        let asked = press_row_control(&context, &definitions, chosen_row, &offers, 0);
+        let requested = match asked.visibility {
+            Some(RowVisibility::Hide(pick)) => pick,
+            other => panic!("the visible row offers no way to hide it: {other:?}"),
+        };
+        assert_eq!(requested, picture.pick_of(0).expect("drawn"));
+        assert_eq!(asked.pressed, None, "pressing Hide also chose the row");
+        assert_eq!(asked.hovered, None, "pressing Hide also pointed at the row");
+
+        assert!(hide_one(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            requested,
+            &mut input
+        ));
+
+        // The one asked for is gone, in every placement; the others are as
+        // they were; and what was chosen is still chosen.
+        assert!(!scene.visibility.shows(0, &picture));
+        assert!(scene.visibility.shows(1, &picture));
+        assert!(
+            scene.visibility.shows(2, &picture),
+            "hiding one row hid another"
+        );
+        assert_eq!(
+            scene.visibility.bounds(&picture),
+            {
+                let mut without = Visibility::new(&picture);
+                assert!(without.hide(
+                    Marked::Definition(picture.pick_of(0).expect("drawn")),
+                    &picture
+                ));
+                without.bounds(&picture)
+            },
+            "what is left is the two definitions still drawn"
+        );
+        assert_eq!(
+            scene.selection, chosen,
+            "hiding a neighbour changed the choice"
+        );
+        assert_eq!(input.camera().view_projection(), camera);
+    }
+
+    #[test]
+    fn hiding_the_row_that_is_chosen_unchooses_it() {
+        let picture = three_definitions();
+        let mut scene = LiveScene::new(
+            (),
+            vec![a_body(), a_body(), a_body()],
+            FaceNames::default(),
+            Visibility::new(&picture),
+        );
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
+
+        assert!(hide_one(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            picture.pick_of(1).expect("drawn"),
+            &mut input
+        ));
+
+        // Geometry nobody can see cannot remain chosen: an inspector would be
+        // describing something that is not on screen.
+        assert_eq!(scene.selection, Selection::Nothing);
+        assert!(!scene.visibility.shows(1, &picture));
+    }
+
+    /// Runs the list once, pressing the visibility control of one row.
+    fn press_row_control(
+        context: &egui::Context,
+        definitions: &[Selected<'_>],
+        chosen: Option<usize>,
+        offers: &[RowVisibility],
+        row: usize,
+    ) -> ferritecad_ui::Rows {
+        // Found by pressing across the list rather than by assuming where the
+        // control sits: a gate that guessed would pass while pressing empty
+        // space.
+        let wanted = offers[row];
+        let mut found = None;
+        'search: for step_y in 0..30 {
+            for step_x in 0..40 {
+                let at = egui::Pos2::new(step_x as f32 * 8.0, step_y as f32 * 5.0);
+                if press_rows_at(context, at, definitions, chosen, offers).visibility
+                    == Some(wanted)
+                {
+                    found = Some(at);
+                    break 'search;
+                }
+            }
+        }
+        let at = found.expect("no point in the list asks that of the row");
+        press_rows_at(context, at, definitions, chosen, offers)
+    }
+
+    /// One press of the list at one place, with a neutral frame before it.
+    fn press_rows_at(
+        context: &egui::Context,
+        at: egui::Pos2,
+        definitions: &[Selected<'_>],
+        chosen: Option<usize>,
+        offers: &[RowVisibility],
+    ) -> ferritecad_ui::Rows {
+        let away = egui::Pos2::new(4000.0, 4000.0);
+        let mut output = context.run_ui(
+            egui::RawInput {
+                events: vec![egui::Event::PointerMoved(away)],
+                ..Default::default()
+            },
+            |ui| {
+                let _ = ferritecad_ui::definitions_panel(ui, definitions, chosen, offers);
+            },
+        );
+        output.textures_delta.clear();
+
+        let mut rows = ferritecad_ui::Rows::default();
+        let mut output = context.run_ui(
+            egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::default(),
+                    },
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::default(),
+                    },
+                ],
+                ..Default::default()
+            },
+            |ui| {
+                rows = ferritecad_ui::definitions_panel(ui, definitions, chosen, offers);
+            },
+        );
+        output.textures_delta.clear();
+        rows
+    }
+
+    #[test]
     fn one_hidden_neighbour_comes_back_from_its_row_without_the_other() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
@@ -4622,15 +5165,21 @@ mod tests {
         let context = egui::Context::default();
         let identities = identities_of(&scene.catalogue);
         let (definitions, chosen_row) = scene.view(&identities, &picture);
-        let hidden = scene.visibility.hidden_in(&picture).to_vec();
-        let offered = shows_of(&scene.visibility, &picture);
+        let offered = rows_visibility(&scene.visibility, &picture);
         assert_eq!(
             offered,
-            vec![picture.pick_of(0), None, picture.pick_of(2)],
-            "Show is offered for the hidden rows and for nothing else"
+            vec![
+                RowVisibility::Show(picture.pick_of(0).expect("drawn")),
+                RowVisibility::Hide(picture.pick_of(1).expect("drawn")),
+                RowVisibility::Show(picture.pick_of(2).expect("drawn")),
+            ],
+            "the hidden rows offer a way back and the drawn one a way out"
         );
-        let asked = press_show(&context, &definitions, chosen_row, &hidden, &offered, 0);
-        let requested = asked.shown.expect("the hidden row offers no way back");
+        let asked = press_row_control(&context, &definitions, chosen_row, &offered, 0);
+        let requested = match asked.visibility {
+            Some(RowVisibility::Show(pick)) => pick,
+            other => panic!("the hidden row offers no way back: {other:?}"),
+        };
         assert_eq!(requested, picture.pick_of(0).expect("drawn"));
         assert_eq!(asked.pressed, None, "pressing Show also chose the row");
         assert_eq!(asked.hovered, None, "pressing Show also pointed at the row");
@@ -4656,89 +5205,6 @@ mod tests {
             "showing a row changed what is chosen"
         );
         assert_eq!(input.camera().view_projection(), camera);
-    }
-
-    /// Runs the list once, pressing the Show control of one row.
-    fn press_show(
-        context: &egui::Context,
-        definitions: &[Selected<'_>],
-        chosen: Option<usize>,
-        hidden: &[bool],
-        offered: &[Option<PickId>],
-        row: usize,
-    ) -> ferritecad_ui::Rows {
-        // Found by pressing across the list rather than by assuming where the
-        // control sits: a gate that guessed would pass while pressing empty
-        // space. The first press that reports this row's identity is it.
-        let wanted = offered[row].expect("that row offers no way back");
-        let mut found = None;
-        'search: for step_y in 0..30 {
-            for step_x in 0..40 {
-                let at = egui::Pos2::new(step_x as f32 * 8.0, step_y as f32 * 5.0);
-                if press_list_at(context, at, definitions, chosen, hidden, offered).shown
-                    == Some(wanted)
-                {
-                    found = Some(at);
-                    break 'search;
-                }
-            }
-        }
-        let at = found.expect("no point in the list asks for that row back");
-
-        press_list_at(context, at, definitions, chosen, hidden, offered)
-    }
-
-    /// One press of the list at one place, with a neutral frame before it.
-    ///
-    /// egui decides a click from the frame before as well as this one, so
-    /// consecutive probes at different places would otherwise report what the
-    /// previous probe left behind.
-    fn press_list_at(
-        context: &egui::Context,
-        at: egui::Pos2,
-        definitions: &[Selected<'_>],
-        chosen: Option<usize>,
-        hidden: &[bool],
-        offered: &[Option<PickId>],
-    ) -> ferritecad_ui::Rows {
-        let away = egui::Pos2::new(4000.0, 4000.0);
-        let mut output = context.run_ui(
-            egui::RawInput {
-                events: vec![egui::Event::PointerMoved(away)],
-                ..Default::default()
-            },
-            |ui| {
-                let _ = ferritecad_ui::definitions_panel(ui, definitions, chosen, hidden, offered);
-            },
-        );
-        output.textures_delta.clear();
-
-        let mut rows = ferritecad_ui::Rows::default();
-        let mut output = context.run_ui(
-            egui::RawInput {
-                events: vec![
-                    egui::Event::PointerMoved(at),
-                    egui::Event::PointerButton {
-                        pos: at,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: egui::Modifiers::default(),
-                    },
-                    egui::Event::PointerButton {
-                        pos: at,
-                        button: egui::PointerButton::Primary,
-                        pressed: false,
-                        modifiers: egui::Modifiers::default(),
-                    },
-                ],
-                ..Default::default()
-            },
-            |ui| {
-                rows = ferritecad_ui::definitions_panel(ui, definitions, chosen, hidden, offered);
-            },
-        );
-        output.textures_delta.clear();
-        rows
     }
 
     #[test]

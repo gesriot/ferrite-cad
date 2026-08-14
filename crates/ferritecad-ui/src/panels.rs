@@ -37,8 +37,9 @@ pub struct Chosen {
     pub isolate: bool,
     /// The user wants everything drawn again.
     pub show_all: bool,
-    /// A hidden definition the user asked to see again, named by the picture.
-    pub show_definition: Option<PickId>,
+    /// A change to what is drawn, asked for from a row of the list and named
+    /// by the picture that drew it.
+    pub row_visibility: Option<RowVisibility>,
     /// A definition the user picked out of the list, by its place in it.
     ///
     /// A position in this frame's list and nothing more: the caller turns it
@@ -239,8 +240,7 @@ pub fn definitions_panel(
     ui: &mut egui::Ui,
     definitions: &[Selected<'_>],
     chosen: Option<usize>,
-    hidden: &[bool],
-    show: &[Option<PickId>],
+    offers: &[RowVisibility],
 ) -> Rows {
     let mut rows = Rows::default();
     if definitions.is_empty() {
@@ -258,29 +258,29 @@ pub fn definitions_panel(
                 // that dropped what was hidden would be a list with no way
                 // back to it, and the hidden ones are exactly what a person
                 // is looking for when they wonder where something went.
-                let is_hidden = hidden.get(row).copied().unwrap_or(false);
+                let offer = offers.get(row).copied().unwrap_or(RowVisibility::Neither);
+                let is_hidden = offer.is_hidden();
                 let summary = if is_hidden {
                     format!("{} · hidden", definition.summary())
                 } else {
                     definition.summary()
                 };
-                // `selectable_label` draws the chosen one differently, which
-                // is how a click in the viewport shows up here.
-                // A row that is not being drawn offers a way back to itself,
-                // beside its name. Whether it does is decided by the caller,
-                // which is the only thing that knows what the picture draws;
-                // this only draws what it was given.
-                let offered = show.get(row).copied().flatten();
+                // Beside the name, a row says what can be done about whether
+                // it is drawn. Which of the two that is was decided by the
+                // caller, the only thing that knows what the picture draws;
+                // this draws what it was given and reports what was pressed.
                 let response = ui
                     .horizontal(|ui| {
-                        if let Some(pick) = offered
-                            && ui.small_button("Show").clicked()
+                        if let Some((label, _)) = offer.control()
+                            && ui.small_button(label).clicked()
                         {
-                            rows.shown = Some(pick);
+                            rows.visibility = Some(offer);
                         }
-                        // The same widget a visible row draws, disabled: greyed
-                        // rather than missing, so a person can see that the row
-                        // is there and that pressing it is not the way back.
+                        // `selectable_label` draws the chosen one differently,
+                        // which is how a click in the viewport shows up here.
+                        // A hidden row's is disabled: greyed rather than
+                        // missing, so a person can see that the row is there
+                        // and that pressing it is not the way back.
                         ui.add_enabled(
                             !is_hidden,
                             egui::Button::selectable(chosen == Some(row), summary),
@@ -316,14 +316,50 @@ pub struct Rows {
     pub pressed: Option<usize>,
     /// A row the pointer is over, which is a question and not a choice.
     pub hovered: Option<usize>,
-    /// A hidden definition the user asked to see again, named by the picture
+    /// A change to what is drawn that the user asked for, named by the picture
     /// that drew the list rather than by where the row sits in it.
     ///
     /// An identity rather than a position because this one leaves the panel:
     /// a row number would have to be turned back into a definition by
     /// somebody, and the picture is the only thing that can say what sits
     /// there.
-    pub shown: Option<PickId>,
+    pub visibility: Option<RowVisibility>,
+}
+
+/// What one row offers to do about whether its definition is drawn.
+///
+/// One value per row rather than a pair of optional controls: a row cannot
+/// offer to hide something that is already hidden and to show something that
+/// is already drawn, and saying so as one enum means no arrangement of the
+/// interface can present both at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowVisibility {
+    /// Nothing to offer: this definition draws nothing wherever it is, so
+    /// taking it off screen and putting it back are the same picture.
+    Neither,
+    /// Drawn, and this is what asks for it to be taken off screen.
+    Hide(PickId),
+    /// Not drawn, and this is what asks for it back.
+    Show(PickId),
+}
+
+impl RowVisibility {
+    /// Whether this row's definition is currently off screen.
+    ///
+    /// The mark a row carries and the control it offers are two readings of
+    /// one fact, so they cannot disagree about which rows are missing.
+    fn is_hidden(self) -> bool {
+        matches!(self, Self::Show(_))
+    }
+
+    /// What the control on this row says, and what pressing it asks for.
+    fn control(self) -> Option<(&'static str, PickId)> {
+        match self {
+            Self::Neither => None,
+            Self::Hide(pick) => Some(("Hide", pick)),
+            Self::Show(pick) => Some(("Show", pick)),
+        }
+    }
 }
 
 /// Shows what is chosen, and nothing when nothing is.
@@ -1052,65 +1088,112 @@ mod tests {
     fn a_hidden_row_is_shown_as_hidden_and_answers_nothing() {
         let context = egui::Context::default();
         let definitions = [body(), imported()];
-        let rows = rows_of_with(&context, &definitions, &[false, false]);
-        assert_eq!(rows.len(), 2);
+        let one = a_pick(1);
+        let two = a_pick(2);
+        let drawn = [RowVisibility::Hide(one), RowVisibility::Hide(two)];
+        let missing = [RowVisibility::Hide(one), RowVisibility::Show(two)];
 
-        // Just inside the second row, in a place that is inside it whether or
-        // not it is hidden: the mark a hidden row carries makes it wider, and
-        // a gate that pressed the far end would be pressing empty space in one
-        // of the two cases and proving nothing in the other.
-        let at = egui::Pos2::new(rows[1].left() + 4.0, rows[1].center().y);
-        let press = |hidden: &[bool]| {
-            let _ = press_list(
-                &context,
-                egui::Pos2::new(2000.0, 2000.0),
-                &definitions,
-                None,
-                hidden,
-                &[],
-            );
-            press_list(&context, at, &definitions, None, hidden, &[])
+        // Everywhere in the list, in both states. Pressing anywhere rather
+        // than at a computed point: what a hidden row must not do, it must not
+        // do at any pixel of itself, and a gate that pressed one place could
+        // pass by pressing the wrong one.
+        let reaches = |offers: &[RowVisibility], row: usize| {
+            let mut pressed = false;
+            let mut hovered = false;
+            for step_y in 0..30 {
+                for step_x in 0..40 {
+                    let at = egui::Pos2::new(step_x as f32 * 8.0, step_y as f32 * 5.0);
+                    let _ = press_list(
+                        &context,
+                        egui::Pos2::new(4000.0, 4000.0),
+                        &definitions,
+                        None,
+                        offers,
+                    );
+                    let rows = press_list(&context, at, &definitions, None, offers);
+                    pressed |= rows.pressed == Some(row);
+                    hovered |= rows.hovered == Some(row);
+                }
+            }
+            (pressed, hovered)
         };
 
-        // The same press, on the same row, in both states. The first half is
-        // what makes the second half mean anything.
-        let visible = press(&[false, false]);
+        // Drawn, the row answers; hidden, it answers nothing anywhere. The
+        // first half is what makes the second half mean anything.
         assert_eq!(
-            visible.pressed,
-            Some(1),
-            "the gate pressed something that is not the row"
-        );
-        assert_eq!(visible.hovered, Some(1));
-
-        let hidden = press(&[false, true]);
-        assert_eq!(
-            hidden.pressed, None,
-            "a hidden row chose invisible geometry"
+            reaches(&drawn, 1),
+            (true, true),
+            "a drawn row cannot be chosen or pointed at"
         );
         assert_eq!(
-            hidden.hovered, None,
-            "a hidden row asked about invisible geometry"
+            reaches(&missing, 1),
+            (false, false),
+            "a hidden row chose or pointed at invisible geometry"
         );
+        // And the row beside it still works while it is hidden, so this is
+        // about being hidden and not about the list having stopped.
+        assert_eq!(reaches(&missing, 0), (true, true));
 
         // Still in the list: a row that vanished when it was hidden would be a
         // row with no way back to it.
         assert_eq!(
-            rows_of_with(&context, &definitions, &[false, true]).len(),
+            rows_of_with(&context, &definitions, &missing).len(),
             2,
             "a hidden definition left the list"
         );
 
         // And it says so: the same row reads differently when it is hidden.
-        let plain = list_text(&context, &definitions, &[false, false]);
-        let marked = list_text(&context, &definitions, &[false, true]);
+        let plain = list_text(&context, &definitions, &drawn);
+        let marked = list_text(&context, &definitions, &missing);
         assert_ne!(plain, marked, "nothing on screen says the row is hidden");
         assert!(marked.contains("hidden"));
     }
 
+    /// A pick of a picture with `count` definitions, naming the last of them.
+    ///
+    /// The panel never reads one; it carries them. What matters here is that
+    /// two rows carry two different ones.
+    fn a_pick(count: usize) -> PickId {
+        let mut builder = ferritecad_viewport::SnapshotBuilder::new();
+        let mesh = ferritecad_kernel::Mesh {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: vec![0, 1, 2],
+            faces: vec![ferritecad_kernel::MeshFaceRange {
+                face: ferritecad_kernel::SubShapeHandle::new(
+                    ferritecad_kernel::ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1),
+                    ferritecad_kernel::SubShapeKind::Face,
+                    0,
+                ),
+                first_index: 0,
+                index_count: 3,
+            }],
+        };
+        for _ in 0..count {
+            let definition = builder.add_mesh(&mesh).expect("packs");
+            builder
+                .place(
+                    definition,
+                    None,
+                    &ferritecad_types::Transform::IDENTITY,
+                    [1.0, 1.0, 1.0],
+                )
+                .expect("places");
+        }
+        builder
+            .build()
+            .pick_of(count - 1)
+            .expect("the picture has that row")
+    }
+
     /// Every glyph the list draws, as one string.
-    fn list_text(context: &egui::Context, definitions: &[Selected<'_>], hidden: &[bool]) -> String {
+    fn list_text(
+        context: &egui::Context,
+        definitions: &[Selected<'_>],
+        offers: &[RowVisibility],
+    ) -> String {
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            let _ = definitions_panel(ui, definitions, None, hidden, &[]);
+            let _ = definitions_panel(ui, definitions, None, offers);
         });
         let text = output
             .shapes
@@ -1216,46 +1299,16 @@ mod tests {
     }
 
     #[test]
-    fn only_a_row_given_a_way_back_offers_one() {
+    fn a_row_offers_exactly_one_way_to_change_what_is_drawn() {
         let context = egui::Context::default();
         let definitions = [body(), imported()];
-        let pick = |raw: u32| {
-            let mut builder = ferritecad_viewport::SnapshotBuilder::new();
-            let mesh = ferritecad_kernel::Mesh {
-                positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-                normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
-                indices: vec![0, 1, 2],
-                faces: vec![ferritecad_kernel::MeshFaceRange {
-                    face: ferritecad_kernel::SubShapeHandle::new(
-                        ferritecad_kernel::ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1),
-                        ferritecad_kernel::SubShapeKind::Face,
-                        0,
-                    ),
-                    first_index: 0,
-                    index_count: 3,
-                }],
-            };
-            for _ in 0..raw {
-                let definition = builder.add_mesh(&mesh).expect("packs");
-                builder
-                    .place(
-                        definition,
-                        None,
-                        &ferritecad_types::Transform::IDENTITY,
-                        [1.0, 1.0, 1.0],
-                    )
-                    .expect("places");
-            }
-            let snapshot = builder.build();
-            snapshot
-                .pick_of(raw as usize - 1)
-                .expect("the picture has that row")
-        };
-        let offered = pick(2);
+        let one = a_pick(1);
+        let two = a_pick(2);
 
-        // Pressed across the list: the only place that asks for anything back
-        // is the control on the row that was given one.
-        let mut asked = Vec::new();
+        // One row drawn and one hidden, so both controls are on screen at
+        // once and each can be shown to ask for its own row.
+        let offers = [RowVisibility::Hide(one), RowVisibility::Show(two)];
+        let mut asked: Vec<(egui::Pos2, RowVisibility)> = Vec::new();
         for step_y in 0..30 {
             for step_x in 0..40 {
                 let at = egui::Pos2::new(step_x as f32 * 8.0, step_y as f32 * 5.0);
@@ -1264,35 +1317,44 @@ mod tests {
                     egui::Pos2::new(4000.0, 4000.0),
                     &definitions,
                     None,
-                    &[false, true],
-                    &[None, Some(offered)],
+                    &offers,
                 );
-                let rows = press_list(
-                    &context,
-                    at,
-                    &definitions,
-                    None,
-                    &[false, true],
-                    &[None, Some(offered)],
-                );
-                if let Some(shown) = rows.shown {
-                    asked.push((at, shown, rows.pressed, rows.hovered));
+                let rows = press_list(&context, at, &definitions, None, &offers);
+                if let Some(asked_for) = rows.visibility {
+                    // Pressing a control is not pressing the row, and not
+                    // pointing at it either.
+                    assert_eq!(rows.pressed, None, "a control also chose its row");
+                    assert_eq!(rows.hovered, None, "a control also pointed at its row");
+                    asked.push((at, asked_for));
                 }
             }
         }
-        assert!(!asked.is_empty(), "the hidden row offers no way back");
-        for (at, shown, pressed, hovered) in &asked {
-            assert_eq!(
-                *shown, offered,
-                "the wrong definition was asked for at {at:?}"
+
+        // Both controls are reachable, each asks for its own definition, and
+        // no press asks for both.
+        assert!(
+            asked
+                .iter()
+                .any(|(_, what)| *what == RowVisibility::Hide(one)),
+            "the drawn row offers no way to take it off screen"
+        );
+        assert!(
+            asked
+                .iter()
+                .any(|(_, what)| *what == RowVisibility::Show(two)),
+            "the hidden row offers no way back"
+        );
+        for (at, what) in &asked {
+            assert!(
+                matches!(what, RowVisibility::Hide(pick) if *pick == one)
+                    || matches!(what, RowVisibility::Show(pick) if *pick == two),
+                "the control at {at:?} asked for the wrong definition: {what:?}"
             );
-            // Pressing the way back is not pressing the row, and not pointing
-            // at it either: what is not drawn cannot be chosen.
-            assert_eq!(*pressed, None, "asking a row back also chose it");
-            assert_eq!(*hovered, None, "asking a row back also pointed at it");
         }
 
-        // A list where nothing was given a way back offers none anywhere.
+        // A row with nothing to offer offers nothing anywhere: a definition
+        // that draws nothing wherever it is has no way in or out.
+        let neither = [RowVisibility::Neither, RowVisibility::Neither];
         for step_y in 0..30 {
             for step_x in 0..40 {
                 let at = egui::Pos2::new(step_x as f32 * 8.0, step_y as f32 * 5.0);
@@ -1301,21 +1363,12 @@ mod tests {
                     egui::Pos2::new(4000.0, 4000.0),
                     &definitions,
                     None,
-                    &[false, false],
-                    &[None, None],
+                    &neither,
                 );
                 assert_eq!(
-                    press_list(
-                        &context,
-                        at,
-                        &definitions,
-                        None,
-                        &[false, false],
-                        &[None, None]
-                    )
-                    .shown,
+                    press_list(&context, at, &definitions, None, &neither).visibility,
                     None,
-                    "a row with no way back offered one at {at:?}"
+                    "a row with nothing to offer offered something at {at:?}"
                 );
             }
         }
@@ -1327,8 +1380,7 @@ mod tests {
         at: egui::Pos2,
         definitions: &[Selected<'_>],
         chosen: Option<usize>,
-        hidden: &[bool],
-        show: &[Option<PickId>],
+        offers: &[RowVisibility],
     ) -> Rows {
         let input = egui::RawInput {
             events: vec![
@@ -1351,7 +1403,7 @@ mod tests {
 
         let mut rows = Rows::default();
         let mut output = context.run_ui(input, |ui| {
-            rows = definitions_panel(ui, definitions, chosen, hidden, show);
+            rows = definitions_panel(ui, definitions, chosen, offers);
         });
         output.textures_delta.clear();
         rows
@@ -1371,7 +1423,7 @@ mod tests {
     fn rows_of_with(
         context: &egui::Context,
         definitions: &[Selected<'_>],
-        hidden: &[bool],
+        offers: &[RowVisibility],
     ) -> Vec<egui::Rect> {
         let mut rects = Vec::new();
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
@@ -1379,7 +1431,8 @@ mod tests {
                 .max_height(140.0)
                 .show(ui, |ui| {
                     for (row, definition) in definitions.iter().enumerate() {
-                        let is_hidden = hidden.get(row).copied().unwrap_or(false);
+                        let offer = offers.get(row).copied().unwrap_or(RowVisibility::Neither);
+                        let is_hidden = offer.is_hidden();
                         let summary = if is_hidden {
                             format!("{} · hidden", definition.summary())
                         } else {
@@ -1412,7 +1465,7 @@ mod tests {
         let rows = rows_of(&context, &definitions);
         assert_eq!(rows.len(), 2, "the list did not lay out one row each");
 
-        let pressed = press_list(&context, rows[1].center(), &definitions, None, &[], &[]);
+        let pressed = press_list(&context, rows[1].center(), &definitions, None, &[]);
         assert_eq!(
             pressed.pressed,
             Some(1),
@@ -1423,7 +1476,7 @@ mod tests {
         // every frame would reselect for as long as the window was open.
         let quiet = context.run_ui(egui::RawInput::default(), |ui| {
             assert_eq!(
-                definitions_panel(ui, &definitions, Some(1), &[], &[]).pressed,
+                definitions_panel(ui, &definitions, Some(1), &[]).pressed,
                 None
             );
         });
@@ -1446,7 +1499,7 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    asked = definitions_panel(ui, &definitions, None, &[], &[]);
+                    asked = definitions_panel(ui, &definitions, None, &[]);
                 },
             );
             output.textures_delta.clear();
@@ -1500,11 +1553,11 @@ mod tests {
 
         // Each is chosen on its own.
         assert_eq!(
-            press_list(&context, rows[0].center(), &definitions, None, &[], &[]).pressed,
+            press_list(&context, rows[0].center(), &definitions, None, &[]).pressed,
             Some(0)
         );
         assert_eq!(
-            press_list(&context, rows[1].center(), &definitions, None, &[], &[]).pressed,
+            press_list(&context, rows[1].center(), &definitions, None, &[]).pressed,
             Some(1)
         );
     }
@@ -1543,10 +1596,10 @@ mod tests {
         let mut rows = Rows {
             pressed: Some(7),
             hovered: Some(7),
-            shown: None,
+            visibility: None,
         };
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            rows = definitions_panel(ui, &[], None, &[], &[]);
+            rows = definitions_panel(ui, &[], None, &[]);
         });
         output.textures_delta.clear();
         assert_eq!(rows, Rows::default(), "an empty list invented a choice");
@@ -1565,7 +1618,7 @@ mod tests {
                 .sum::<usize>()
         };
         let mut said = context.run_ui(egui::RawInput::default(), |ui| {
-            let _ = definitions_panel(ui, &[], None, &[], &[]);
+            let _ = definitions_panel(ui, &[], None, &[]);
         });
         assert!(vertices(&said) > vertices(&empty));
         said.textures_delta.clear();

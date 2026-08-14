@@ -3064,3 +3064,77 @@ fn a_definition_that_came_back_does_not_disturb_what_was_chosen() {
         );
     }
 }
+
+#[test]
+fn one_definition_taken_off_screen_leaves_no_trace_of_itself() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = three_plates(160, 160);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let uploaded = renderer.geometry_uploads();
+    let everything = Visibility::new(&snapshot);
+
+    let before = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &everything,
+        )
+        .expect("draws");
+    let going = snapshot.pick_of(0).expect("drawn");
+    let staying = [
+        snapshot.pick_of(1).expect("drawn"),
+        snapshot.pick_of(2).expect("drawn"),
+    ];
+    let was_there = pixels_of(&before, |frame, x, y| frame.pick_at(x, y) == going);
+    assert!(
+        was_there.len() > 40,
+        "the definition to be hidden is not drawn"
+    );
+
+    // The same mask the row action produces: hiding one definition by its own
+    // identity.
+    let mut visibility = everything.clone();
+    assert!(visibility.hide(Marked::Definition(going), &snapshot));
+    let after = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+
+    // Nothing of it remains: no pixels, no definition identity, no face.
+    for (x, y) in &was_there {
+        assert_ne!(after.pick_at(*x, *y), going);
+        let hit = after.hit_at(*x, *y);
+        if hit.definition() == PickId::NOTHING {
+            assert_eq!(hit.face(), FacePickId::NOTHING);
+        }
+    }
+    assert!(
+        pixels_of(&after, |frame, x, y| frame.pick_at(x, y) == going).is_empty(),
+        "the hidden definition still answers somewhere"
+    );
+
+    // Everything else is exactly as it was, in every placement.
+    for pick in staying {
+        let mine = pixels_of(&before, |frame, x, y| frame.pick_at(x, y) == pick);
+        assert!(!mine.is_empty());
+        for (x, y) in &mine {
+            assert_eq!(after.pick_at(*x, *y), pick);
+            assert_eq!(after.hit_at(*x, *y).face(), before.hit_at(*x, *y).face());
+            assert_eq!(after.colour_at(*x, *y), before.colour_at(*x, *y));
+        }
+    }
+
+    // And nothing was uploaded to achieve it.
+    assert_eq!(
+        renderer.geometry_uploads(),
+        uploaded,
+        "hiding one definition uploaded geometry"
+    );
+}
