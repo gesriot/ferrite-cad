@@ -20,10 +20,10 @@ fn many_renderers_each_drawing() {
                 let renderer = match ferritecad_viewport_gpu::Renderer::new() {
                     Ok(renderer) => renderer,
                     Err(error) => {
-                        report.lock().expect("no panic held the lock").push(format!(
-                            "{label}: new refused: {:?} {error}",
-                            error.kind()
-                        ));
+                        report
+                            .lock()
+                            .expect("no panic held the lock")
+                            .push(format!("{label}: new refused: {:?} {error}", error.kind()));
                         return;
                     }
                 };
@@ -58,7 +58,9 @@ fn many_renderers_each_drawing() {
                 let snapshot = std::sync::Arc::new(builder.build());
                 let mut camera = ferritecad_viewport::Camera::new();
                 camera.resize(96, 96);
-                camera.frame(snapshot.bounds().expect("geometry")).expect("frames");
+                camera
+                    .frame(snapshot.bounds().expect("geometry"))
+                    .expect("frames");
                 let prepared = match renderer.prepare(snapshot) {
                     Ok(prepared) => prepared,
                     Err(error) => {
@@ -89,5 +91,12 @@ fn many_renderers_each_drawing() {
     }
 
     let report = report.lock().expect("no panic held the lock").join("\n");
-    panic!("PARALLEL:\n{}", if report.is_empty() { "all 32 drew".to_string() } else { report });
+    panic!(
+        "PARALLEL:\n{}",
+        if report.is_empty() {
+            "all 32 drew".to_string()
+        } else {
+            report
+        }
+    );
 }

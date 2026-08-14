@@ -7,6 +7,16 @@ use ferritecad_types::{CadError, Result};
 use ferritecad_viewport::{Camera, FacePickId, Hovered, PickId, RenderSnapshot, VERTEX_FLOATS};
 use wgpu::util::DeviceExt as _;
 
+/// Built one at a time, whoever asks.
+///
+/// A backend's shader compiler is not obliged to be thread-safe, and at least
+/// one is not: Direct3D's software adapter refuses these pipelines
+/// intermittently when several threads build them at once, with an internal
+/// error that names the shader and looks exactly like a shader that is wrong.
+/// A renderer is opened once, so the cost of taking a lock here is nothing,
+/// and the failure it removes costs a day.
+static COMPILING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Linear, not sRGB. The snapshot's colours are linear because that is what the
 /// importer read out of the file, and a target that encoded on write would make
 /// the bytes read back a statement about a transfer function rather than about
@@ -268,6 +278,9 @@ impl Renderer {
         // cannot draw, which is an answer a caller can act on and not a crash.
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let compiling = COMPILING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let pipeline = build_pipeline(&device, &shader, &pipeline_layout, COLOUR_FORMAT, true);
 
         let grid_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -313,6 +326,7 @@ impl Renderer {
             COLOUR_FORMAT,
             true,
         );
+        drop(compiling);
         if let Some(refusal) = pollster::block_on(internal.pop())
             .map(|error| error.to_string())
             .or_else(|| pollster::block_on(validation.pop()).map(|error| error.to_string()))
@@ -607,6 +621,9 @@ impl Renderer {
 
     /// Builds the pipeline for a window format, once per format met.
     fn ensure_surface_pipeline(&mut self, format: wgpu::TextureFormat) {
+        let _compiling = COMPILING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !self.surface_pipelines.contains_key(&format) {
             let pipeline = build_pipeline(
                 &self.device,
