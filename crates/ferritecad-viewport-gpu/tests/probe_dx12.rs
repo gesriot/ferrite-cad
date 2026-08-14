@@ -171,3 +171,165 @@ fn probe() {
     // is the whole point of this branch.
     panic!("PROBE:{report}");
 }
+
+/// The real shader, built with the real layout, then reduced one element at a
+/// time. The synthetic matrix above passes everywhere, so what fails is
+/// something the real pipeline has and it does not.
+#[test]
+fn replica() {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let mut report = String::new();
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+        panic!("REPLICA: no adapter");
+    };
+    report.push_str(&format!(
+        "\nadapter {:?} {}\n",
+        adapter.get_info().backend,
+        adapter.get_info().name
+    ));
+    let Ok((device, _queue)) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("replica"),
+        required_features: wgpu::Features::PRIMITIVE_INDEX,
+        ..Default::default()
+    })) else {
+        panic!("REPLICA:{report}no device with PRIMITIVE_INDEX");
+    };
+
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("real shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../src/shader.wgsl").into()),
+    });
+
+    for identities in [true, false] {
+        for depth in [true, false] {
+            for vertices in [true, false] {
+                for dynamic in [true, false] {
+                    let label = format!(
+                        "identities={identities} depth={depth} vertices={vertices} dynamic={dynamic}"
+                    );
+                    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+                    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+
+                    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: None,
+                        entries: &[
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::VERTEX
+                                    | wgpu::ShaderStages::FRAGMENT,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Uniform,
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: wgpu::ShaderStages::VERTEX
+                                    | wgpu::ShaderStages::FRAGMENT,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Uniform,
+                                    has_dynamic_offset: dynamic,
+                                    min_binding_size: wgpu::BufferSize::new(96),
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 2,
+                                visibility: wgpu::ShaderStages::FRAGMENT,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                        ],
+                    });
+                    let pipeline_layout =
+                        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                            label: None,
+                            bind_group_layouts: &[Some(&layout)],
+                            immediate_size: 0,
+                        });
+
+                    let mut targets = vec![Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })];
+                    if identities {
+                        for _ in 0..2 {
+                            targets.push(Some(wgpu::ColorTargetState {
+                                format: wgpu::TextureFormat::R32Uint,
+                                blend: None,
+                                write_mask: wgpu::ColorWrites::ALL,
+                            }));
+                        }
+                    }
+                    let buffers = [Some(wgpu::VertexBufferLayout {
+                        array_stride: 24,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 0,
+                                shader_location: 0,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 12,
+                                shader_location: 1,
+                            },
+                        ],
+                    })];
+                    let _pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                        label: Some("replica pipeline"),
+                        layout: Some(&pipeline_layout),
+                        vertex: wgpu::VertexState {
+                            module: &module,
+                            entry_point: Some("vertex_main"),
+                            compilation_options: Default::default(),
+                            buffers: if vertices { &buffers } else { &[] },
+                        },
+                        fragment: Some(wgpu::FragmentState {
+                            module: &module,
+                            entry_point: Some(if identities {
+                                "fragment_main"
+                            } else {
+                                "fragment_colour"
+                            }),
+                            compilation_options: Default::default(),
+                            targets: &targets,
+                        }),
+                        primitive: wgpu::PrimitiveState {
+                            cull_mode: None,
+                            ..Default::default()
+                        },
+                        depth_stencil: depth.then(|| wgpu::DepthStencilState {
+                            format: wgpu::TextureFormat::Depth32Float,
+                            depth_write_enabled: Some(true),
+                            depth_compare: Some(wgpu::CompareFunction::Less),
+                            stencil: Default::default(),
+                            bias: Default::default(),
+                        }),
+                        multisample: Default::default(),
+                        multiview_mask: None,
+                        cache: None,
+                    });
+
+                    let internal = pollster::block_on(internal.pop());
+                    let validation = pollster::block_on(validation.pop());
+                    match (internal, validation) {
+                        (None, None) => report.push_str(&format!("ok    {label}\n")),
+                        (a, b) => report.push_str(&format!("FAIL  {label}: {a:?} / {b:?}\n")),
+                    }
+                }
+            }
+        }
+    }
+
+    panic!("REPLICA:{report}");
+}
