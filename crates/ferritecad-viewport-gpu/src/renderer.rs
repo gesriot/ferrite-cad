@@ -262,6 +262,12 @@ impl Renderer {
             immediate_size: 0,
         });
 
+        // Watched, because a device that refuses a pipeline reports it through
+        // the uncaptured-error handler, which panics the process. A driver
+        // that will not build what this crate draws with is a machine that
+        // cannot draw, which is an answer a caller can act on and not a crash.
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
         let pipeline = build_pipeline(&device, &shader, &pipeline_layout, COLOUR_FORMAT, true);
 
         let grid_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -307,6 +313,14 @@ impl Renderer {
             COLOUR_FORMAT,
             true,
         );
+        if let Some(refusal) = pollster::block_on(internal.pop())
+            .map(|error| error.to_string())
+            .or_else(|| pollster::block_on(validation.pop()).map(|error| error.to_string()))
+        {
+            return Err(CadError::unsupported(format!(
+                "this graphics adapter refused the pipeline this crate draws with: {refusal}"
+            )));
+        }
 
         let draw_stride = align_to(
             std::mem::size_of::<DrawUniform>() as u64,
