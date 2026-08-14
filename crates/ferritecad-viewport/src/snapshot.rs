@@ -87,14 +87,6 @@ impl PickId {
 pub struct PackedMesh {
     vertices: Vec<f32>,
     indices: Vec<u32>,
-    /// Which face each triangle belongs to, as an identity of this snapshot.
-    ///
-    /// The kernel says which triangles make up which face, and that is the
-    /// only place that knowledge exists: once a shape is released, the handles
-    /// it named are gone, and a picture that had kept them would be holding
-    /// numbers belonging to a session nobody can ask any more. What is kept is
-    /// the partition itself, renumbered for this snapshot alone.
-    face_of_triangle: Vec<u32>,
     min: [f32; 3],
     max: [f32; 3],
 }
@@ -111,25 +103,6 @@ impl PackedMesh {
 
     pub fn vertex_count(&self) -> usize {
         self.vertices.len() / VERTEX_FLOATS
-    }
-
-    /// How many faces the kernel divided this mesh into.
-    pub fn face_count(&self) -> usize {
-        // The ids are of this snapshot and run in order within a mesh, so the
-        // count is what the last one is above the first.
-        match (self.face_of_triangle.first(), self.face_of_triangle.last()) {
-            (Some(first), Some(last)) => (last - first + 1) as usize,
-            _ => 0,
-        }
-    }
-
-    /// The identity of the face each triangle belongs to, in triangle order.
-    ///
-    /// For a renderer to hand to a shader. The values mean nothing outside the
-    /// snapshot that issued them, which is why nothing here hands out a raw
-    /// number without one.
-    pub fn faces_of_triangles(&self) -> &[u32] {
-        &self.face_of_triangle
     }
 
     pub fn triangle_count(&self) -> usize {
@@ -196,65 +169,6 @@ impl Extent {
     }
 }
 
-/// One face of one definition, for as long as this picture is on screen.
-///
-/// Like [`PickId`] and for the same reasons: it is bound to the snapshot that
-/// issued it, it carries no number anyone outside can read, and it is not
-/// serialisable. A face has no durable name in this project yet – what a
-/// document stores about geometry is a topology reference, and this is not
-/// one. It says only "the face the pointer is over, in the picture on screen".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FacePickId {
-    raw: u32,
-    snapshot: ContentHash,
-}
-
-impl FacePickId {
-    /// What the background and every unfaced pixel read as.
-    pub const NOTHING: Self = Self {
-        raw: 0,
-        snapshot: ContentHash::from_bytes([0; 32]),
-    };
-
-    /// The value a face buffer stores.
-    pub fn to_raw(self) -> u32 {
-        self.raw
-    }
-
-    /// Reads a value back out of a face buffer.
-    ///
-    /// A number naming no face of `snapshot` reads as
-    /// [`NOTHING`][Self::NOTHING]. The caller must decode against the exact
-    /// snapshot that rendered it: an in-range integer carries no generation.
-    pub fn from_raw(raw: u32, snapshot: &RenderSnapshot) -> Self {
-        match (raw as usize).checked_sub(1) {
-            Some(face) if face < snapshot.face_owner.len() => Self {
-                raw,
-                snapshot: snapshot.identity,
-            },
-            _ => Self::NOTHING,
-        }
-    }
-}
-
-/// What the pointer is over, which is a different question from what is
-/// chosen.
-///
-/// Three states rather than two identities, because "no face and definition
-/// three" and "face seven, whose definition is three" are different things to
-/// draw and would otherwise have to be told apart by which of two fields
-/// happened to be set. Nothing here is a row number or a face ordinal: both
-/// arms carry an identity bound to the picture that issued it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Hovered {
-    #[default]
-    Nothing,
-    /// A whole definition, as a list of definitions can say.
-    Definition(PickId),
-    /// One face, as only a pixel can say.
-    Face(FacePickId),
-}
-
 /// One placement of one definition, ready to draw.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DrawItem {
@@ -274,8 +188,6 @@ pub struct DrawItem {
 pub struct RenderSnapshot {
     meshes: Vec<PackedMesh>,
     items: Vec<DrawItem>,
-    /// Which definition each face belongs to, indexed by identity minus one.
-    face_owner: Vec<usize>,
     min: [f32; 3],
     max: [f32; 3],
     has_geometry: bool,
@@ -350,24 +262,6 @@ impl RenderSnapshot {
         extent.bounds()
     }
 
-    /// The definition a face belongs to, if this picture issued that face.
-    ///
-    /// Resolved here and nowhere else, for the same reason a definition is: a
-    /// number that named a face of another picture would land on whichever
-    /// face occupies it in this one.
-    pub fn definition_of_face(&self, face: FacePickId) -> Option<usize> {
-        if face.snapshot != self.identity {
-            return None;
-        }
-        let index = (face.raw as usize).checked_sub(1)?;
-        self.face_owner.get(index).copied()
-    }
-
-    /// How many faces this picture divides its definitions into.
-    pub fn face_count(&self) -> usize {
-        self.face_owner.len()
-    }
-
     /// The definition a pick identifies, if it identifies one.
     pub fn definition(&self, pick: PickId) -> Option<usize> {
         (pick.snapshot == self.identity)
@@ -391,11 +285,6 @@ pub struct SnapshotBuilder {
     /// The composed world transform of each placement, kept as `Transform` so
     /// composition stays in `f64` until the last moment.
     world: Vec<Transform>,
-    /// The last face identity handed out. Numbered across the whole picture,
-    /// so one face of one definition is one identity wherever it is placed.
-    next_face: u32,
-    /// Which definition each face belongs to, indexed by identity minus one.
-    face_owner: Vec<usize>,
 }
 
 impl SnapshotBuilder {
@@ -445,31 +334,9 @@ impl SnapshotBuilder {
             max = [0.0; 3];
         }
 
-        // The kernel guarantees the ranges are contiguous, non-overlapping and
-        // cover every triangle, and refuses the mesh otherwise. What is
-        // recorded is that partition and nothing about the session that
-        // computed it.
-        let mut face_of_triangle = Vec::with_capacity(mesh.indices.len() / 3);
-        for range in &mesh.faces {
-            let triangles = range.index_count / 3;
-            let id = self
-                .next_face
-                .checked_add(1)
-                .ok_or_else(|| CadError::input("a picture cannot hold that many faces"))?;
-            self.next_face = id;
-            for _ in 0..triangles {
-                face_of_triangle.push(id);
-            }
-        }
-        // Ordinals are per snapshot, so the same face of one definition is one
-        // identity however many times the definition is placed.
-        self.face_owner
-            .resize(self.next_face as usize, self.meshes.len());
-
         self.meshes.push(PackedMesh {
             vertices,
             indices: mesh.indices.clone(),
-            face_of_triangle,
             min,
             max,
         });
@@ -569,7 +436,6 @@ impl SnapshotBuilder {
         RenderSnapshot {
             meshes: self.meshes,
             items: self.items,
-            face_owner: self.face_owner,
             min,
             max,
             has_geometry,
@@ -586,10 +452,7 @@ impl SnapshotBuilder {
 /// different picture instead of silently keeping the same integer meaning.
 fn snapshot_identity(meshes: &[PackedMesh], items: &[DrawItem]) -> ContentHash {
     let mut hasher = CanonicalHasher::new("ferritecad.render-snapshot");
-    // Two, because a picture now holds the division of its meshes into faces
-    // as well as their triangles, and two pictures that agree about every
-    // triangle but divide them differently are different pictures.
-    hasher.algorithm_version(2);
+    hasher.algorithm_version(1);
     hasher.field("meshes").u64(meshes.len() as u64);
     for mesh in meshes {
         hasher.field("vertices").u64(mesh.vertices.len() as u64);
@@ -599,23 +462,6 @@ fn snapshot_identity(meshes: &[PackedMesh], items: &[DrawItem]) -> ContentHash {
         hasher.field("indices").u64(mesh.indices.len() as u64);
         for index in &mesh.indices {
             hasher.u64(u64::from(*index));
-        }
-        // How many triangles each face owns, in order. That is the partition
-        // itself: where every boundary falls and how many there are. The
-        // kernel's names for the faces are not hashed, because a handle
-        // belongs to the session that issued it and two identical pictures
-        // built twice would otherwise differ.
-        hasher.field("faces").u64(mesh.face_count() as u64);
-        let mut run = 0u64;
-        for pair in mesh.face_of_triangle.windows(2) {
-            run += 1;
-            if pair[0] != pair[1] {
-                hasher.u64(run);
-                run = 0;
-            }
-        }
-        if !mesh.face_of_triangle.is_empty() {
-            hasher.u64(run + 1);
         }
     }
     hasher.field("items").u64(items.len() as u64);

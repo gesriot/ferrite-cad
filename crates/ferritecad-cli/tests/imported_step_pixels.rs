@@ -23,7 +23,7 @@ use ferritecad_kernel::{OperationContext, TessellationParams};
 use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_scene::snapshot_of;
 use ferritecad_types::ErrorKind;
-use ferritecad_viewport::{Camera, Hovered, PickId};
+use ferritecad_viewport::{Camera, PickId};
 use ferritecad_viewport_gpu::Renderer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,7 +195,7 @@ fn a_nested_assembly_goes_from_step_to_pixels() {
         .prepare(std::sync::Arc::new(snapshot))
         .expect("uploads the assembly");
     let frame = renderer
-        .render(&prepared, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&prepared, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws a frame");
 
     // Pixels, not a promise. A snapshot that reached the GPU and drew nothing
@@ -216,7 +216,7 @@ fn a_nested_assembly_goes_from_step_to_pixels() {
         ))
         .expect("uploads an empty scene");
     let blank = renderer
-        .render(&nothing, &camera, PickId::NOTHING, Hovered::Nothing)
+        .render(&nothing, &camera, PickId::NOTHING, PickId::NOTHING)
         .expect("draws an empty frame");
     assert_eq!(drawn_pixels(&blank), 0, "the background counts as drawn");
 
