@@ -4410,6 +4410,20 @@ mod tests {
         let mut input = ViewportInput::new();
         input.resize(800, 600);
         let before = scene.visibility.clone();
+
+        // A no-op must preserve real transient state, not merely turn one
+        // empty state into another. Record a mark, click and hover question
+        // that still belong to this unchanged frame.
+        scene.hovered = Marked::Definition(picture.pick_of(1).expect("drawn"));
+        let hovered = scene.hovered;
+        input.handle(ViewportEvent::PointerMoved { x: 4.0, y: 4.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        input.handle(ViewportEvent::PointerMoved { x: 9.0, y: 9.0 }, false);
+        let camera = input.camera().view_projection();
         let _ = input.take_redraw();
 
         // Already drawn, and from another picture entirely: neither is a
@@ -4429,11 +4443,49 @@ mod tests {
             ));
         }
         assert_eq!(scene.visibility, before);
-        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(scene.hovered, hovered, "a no-op cleared the current hover");
+        assert_eq!(
+            input.take_pick(),
+            Some((4.0, 4.0)),
+            "a no-op cleared a pending click"
+        );
+        assert_eq!(
+            input.take_hover(),
+            Hover::At(9.0, 9.0),
+            "a no-op cleared a pending hover question"
+        );
+        assert_eq!(
+            input.camera().view_projection(),
+            camera,
+            "a no-op moved the camera"
+        );
         assert!(
             !input.take_redraw(),
             "an action that did nothing asked for a frame"
         );
+
+        // A gesture belongs to the same unchanged frame too. Use a separate
+        // reducer because beginning a gesture deliberately clears a hover
+        // question, and this gate needs to prove both states independently.
+        let mut gesture = ViewportInput::new();
+        gesture.resize(800, 600);
+        gesture.handle(ViewportEvent::PointerMoved { x: 20.0, y: 20.0 }, false);
+        gesture.handle(
+            ViewportEvent::PointerPressed(PointerButton::Secondary),
+            false,
+        );
+        let gesture_camera = gesture.camera().view_projection();
+        let _ = gesture.take_redraw();
+        assert!(!show_one(
+            &mut scene.visibility,
+            &mut scene.hovered,
+            &picture,
+            picture.pick_of(0).expect("drawn"),
+            &mut gesture
+        ));
+        assert!(gesture.is_dragging(), "a no-op cancelled an active gesture");
+        assert_eq!(gesture.camera().view_projection(), gesture_camera);
+        assert!(!gesture.take_redraw(), "a no-op asked for a frame");
     }
 
     #[test]
