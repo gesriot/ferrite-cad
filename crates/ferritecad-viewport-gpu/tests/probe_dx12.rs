@@ -100,3 +100,61 @@ fn many_renderers_each_drawing() {
         }
     );
 }
+
+/// The window pipeline, whose colour format no other probe has used.
+///
+/// The first failing run was the lib gate, where one renderer exists and
+/// nothing runs beside it. What that gate does and no probe has done is build
+/// a pipeline for a surface format: `Bgra8UnormSrgb`.
+#[test]
+fn the_window_pipeline_three_times() {
+    let mut report = String::new();
+    for attempt in 1..=3 {
+        let mut renderer = match ferritecad_viewport_gpu::Renderer::new() {
+            Ok(renderer) => renderer,
+            Err(error) => {
+                report.push_str(&format!("{attempt}: new refused: {error}\n"));
+                continue;
+            }
+        };
+        let mut builder = ferritecad_viewport::SnapshotBuilder::new();
+        let mesh = ferritecad_kernel::Mesh {
+            positions: vec![-5.0, 0.0, -5.0, 5.0, 0.0, -5.0, 5.0, 0.0, 5.0],
+            normals: vec![0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0],
+            indices: vec![0, 1, 2],
+            faces: vec![ferritecad_kernel::MeshFaceRange {
+                face: ferritecad_kernel::SubShapeHandle::new(
+                    ferritecad_kernel::ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1),
+                    ferritecad_kernel::SubShapeKind::Face,
+                    0,
+                ),
+                first_index: 0,
+                index_count: 3,
+            }],
+        };
+        let definition = builder.add_mesh(&mesh).expect("packs");
+        builder
+            .place(
+                definition,
+                None,
+                &ferritecad_types::Transform::IDENTITY,
+                [0.0, 1.0, 0.0],
+            )
+            .expect("places");
+        let snapshot = std::sync::Arc::new(builder.build());
+        let mut camera = ferritecad_viewport::Camera::new();
+        camera.resize(64, 64);
+        camera
+            .frame(snapshot.bounds().expect("geometry"))
+            .expect("frames");
+        let prepared = renderer.prepare(snapshot).expect("uploads");
+
+        // Exactly what the failing gate does, including its colour format.
+        match renderer.draw_into_for_probe(&prepared, &camera, wgpu::TextureFormat::Bgra8UnormSrgb)
+        {
+            Ok(()) => report.push_str(&format!("{attempt}: ok\n")),
+            Err(error) => report.push_str(&format!("{attempt}: {error}\n")),
+        }
+    }
+    panic!("WINDOW:\n{report}");
+}

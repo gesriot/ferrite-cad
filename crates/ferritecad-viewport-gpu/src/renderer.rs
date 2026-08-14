@@ -482,6 +482,49 @@ impl Renderer {
         );
     }
 
+    /// Probe branch only: the window path without a window.
+    pub fn draw_into_for_probe(
+        &mut self,
+        prepared: &PreparedSnapshot,
+        camera: &Camera,
+        format: wgpu::TextureFormat,
+    ) -> Result<()> {
+        let target = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("probe window target"),
+            size: wgpu::Extent3d {
+                width: camera.width(),
+                height: camera.height(),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
+        self.draw_into(
+            prepared,
+            camera,
+            PickId::NOTHING,
+            Hovered::Nothing,
+            &view,
+            format,
+            camera.width(),
+            camera.height(),
+        )?;
+        if let Some(refusal) = pollster::block_on(internal.pop())
+            .map(|error| error.to_string())
+            .or_else(|| pollster::block_on(validation.pop()).map(|error| error.to_string()))
+        {
+            return Err(CadError::unsupported(refusal));
+        }
+        Ok(())
+    }
+
     /// The largest texture this device will make, which is also the largest
     /// window it can be asked to fill.
     pub fn max_texture_dimension(&self) -> u32 {
