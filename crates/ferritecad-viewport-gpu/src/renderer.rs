@@ -1763,6 +1763,35 @@ mod tests {
             "the window and the readback disagree about the projection"
         );
 
+        // And the same after a wheel aimed away from the middle, in both
+        // projections. An anchored zoom is camera state and nothing else, so a
+        // window that read it differently from a readback would put the pointer
+        // over one part and a click on another.
+        for mut aimed in [camera, flat] {
+            let projection = aimed.projection_mode();
+            aimed.zoom_at(0.45, 22.0, -17.0);
+            let offscreen_aimed = renderer
+                .render(
+                    &prepared,
+                    &aimed,
+                    Marked::Nothing,
+                    Marked::Nothing,
+                    &everything,
+                )
+                .expect("draws")
+                .colour()
+                .to_vec();
+            assert_ne!(
+                offscreen_aimed, offscreen_all,
+                "{projection:?}: the wheel changed nothing"
+            );
+            assert_eq!(
+                window_colour(&mut renderer, &prepared, &aimed, &everything),
+                offscreen_aimed,
+                "{projection:?}: the window and the readback disagree about an aimed zoom"
+            );
+        }
+
         // And the same for the mask isolating leaves behind, which is the same
         // mask reached a different way: one representation, one consumer.
         let mut isolating = everything.clone();

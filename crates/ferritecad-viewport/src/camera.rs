@@ -441,9 +441,7 @@ impl Camera {
             return;
         }
 
-        let forward = normalise(sub(self.target, self.eye)).unwrap_or([0.0, 1.0, 0.0]);
-        let side = normalise(cross(forward, self.up)).unwrap_or([1.0, 0.0, 0.0]);
-        let screen_up = cross(side, forward);
+        let (side, screen_up) = self.screen_axes();
 
         let shift = [
             (side[0] * right + screen_up[0] * up) * scale,
@@ -470,47 +468,101 @@ impl Camera {
     /// it is used, and the distance is clamped: at zero the eye would be inside
     /// what it is looking at and there would be no direction left to look in.
     pub fn zoom(&mut self, amount: f32) {
-        if !amount.is_finite() {
+        // The centre of the viewport is the one point a centred zoom holds
+        // still, so this is the anchored zoom asked to hold it.
+        self.zoom_at(amount, 0.0, 0.0);
+    }
+
+    /// Zooms while keeping one point of the viewport over what is under it.
+    ///
+    /// `right` and `up` are pixels from the centre of the viewport, positive
+    /// right and positive up, the same camera axes [`Camera::pan`] takes. Which
+    /// way a windowing system's `y` grows stays outside this crate.
+    ///
+    /// What is held is the point where the ray through that pixel meets the
+    /// plane through the target, square to the viewing direction. That is the
+    /// plane every other operation here already measures against, and it needs
+    /// nothing read back from a depth buffer. A surface nearer or further than
+    /// the target is therefore held approximately rather than exactly, which is
+    /// what a wheel over a model feels like anyway; exact anchoring to an
+    /// arbitrary surface is a different, more expensive rule.
+    ///
+    /// The scale changes exactly as a centred zoom would, and the target slides
+    /// within the view plane by the amount that puts the anchor back under the
+    /// same pixel. In perspective that is a change of distance and a slide; in
+    /// an orthographic view the distance and direction are untouched, because
+    /// moving the eye along the direction it looks changes nothing a parallel
+    /// projection can show.
+    pub fn zoom_at(&mut self, amount: f32, right: f32, up: f32) {
+        if !amount.is_finite() || !right.is_finite() || !up.is_finite() {
             return;
         }
-        if self.projection == Projection::Orthographic {
-            // Scale, not distance. Moving the eye along the direction it looks
-            // changes nothing an orthographic view can show, so a zoom that
-            // did that would be a wheel that does nothing.
-            let scaled = self.half_height * (-amount).exp();
-            let bounded = scaled.clamp(self.radius * 1e-3, self.radius * 1e5);
-            if !bounded.is_finite() || bounded <= f32::EPSILON {
+        let Some(mut candidate) = self.zoomed(amount) else {
+            return;
+        };
+
+        // How much less world a pixel covers now. The anchor is at the same
+        // multiple of the old scale as it must end up of the new one, so the
+        // target slides by the pixel offset times the difference between them.
+        // Both scales are needed: either alone is a fixed slide that anchors
+        // nothing.
+        let travel = self.world_per_pixel() - candidate.world_per_pixel();
+        if !travel.is_finite() {
+            return;
+        }
+        let (side, screen_up) = self.screen_axes();
+        let mut eye = candidate.eye;
+        let mut target = candidate.target;
+        for axis in 0..3 {
+            let shift = (side[axis] * right + screen_up[axis] * up) * travel;
+            if !shift.is_finite() {
                 return;
             }
-            let mut candidate = *self;
-            candidate.half_height = bounded;
-            if candidate
-                .view_projection()
-                .iter()
-                .all(|value| value.is_finite())
-            {
-                *self = candidate;
+            eye[axis] += shift;
+            target[axis] += shift;
+        }
+
+        if candidate.accept_pose(eye, target, self.up) {
+            *self = candidate;
+        }
+    }
+
+    /// This camera with the zoom applied about its centre, or `None` when the
+    /// step cannot be represented.
+    ///
+    /// One place for what a wheel notch means and how far it may go, so an
+    /// anchored zoom cannot drift away from a centred one.
+    fn zoomed(&self, amount: f32) -> Option<Self> {
+        let mut candidate = *self;
+        match self.projection {
+            Projection::Orthographic => {
+                // Scale, not distance. Moving the eye along the direction it
+                // looks changes nothing an orthographic view can show, so a
+                // zoom that did that would be a wheel that does nothing.
+                candidate.half_height = self.bounded_scale(self.half_height * (-amount).exp())?;
             }
-            return;
+            Projection::Perspective => {
+                let distance = self.distance();
+                if !distance.is_finite() || distance <= f32::EPSILON {
+                    return None;
+                }
+                let bounded = self.bounded_scale(distance * (-amount).exp())?;
+                let direction = self.direction();
+                candidate.eye = [
+                    self.target[0] + direction[0] * bounded,
+                    self.target[1] + direction[1] * bounded,
+                    self.target[2] + direction[2] * bounded,
+                ];
+            }
         }
-        let distance = self.distance();
-        if !distance.is_finite() || distance <= f32::EPSILON {
-            return;
-        }
+        Some(candidate)
+    }
 
-        let scaled = distance * (-amount).exp();
+    /// How far in or out a zoom is allowed to reach, measured against the size
+    /// of what is being looked at.
+    fn bounded_scale(&self, scaled: f32) -> Option<f32> {
         let bounded = scaled.clamp(self.radius * 1e-3, self.radius * 1e5);
-        if !bounded.is_finite() || bounded <= f32::EPSILON {
-            return;
-        }
-
-        let direction = self.direction();
-        let eye = [
-            self.target[0] + direction[0] * bounded,
-            self.target[1] + direction[1] * bounded,
-            self.target[2] + direction[2] * bounded,
-        ];
-        self.accept_pose(eye, self.target, self.up);
+        (bounded.is_finite() && bounded > f32::EPSILON).then_some(bounded)
     }
 
     /// Looks from one of the directions a drawing would name.
@@ -536,11 +588,25 @@ impl Camera {
         self.accept_pose(eye, self.target, up);
     }
 
+    /// The camera's own right and up, as unit vectors in world space.
+    ///
+    /// One definition, so panning and an anchored zoom cannot disagree about
+    /// which way the screen lies in the world.
+    fn screen_axes(&self) -> ([f32; 3], [f32; 3]) {
+        let forward = normalise(sub(self.target, self.eye)).unwrap_or([0.0, 1.0, 0.0]);
+        let side = normalise(cross(forward, self.up)).unwrap_or([1.0, 0.0, 0.0]);
+        (side, cross(side, forward))
+    }
+
     /// Commits a complete pose, or none of it when the GPU matrix would cease
     /// to be a finite value. Interactive operations return no partial camera.
-    fn accept_pose(&mut self, eye: [f32; 3], target: [f32; 3], up: [f32; 3]) {
+    ///
+    /// Says whether the pose was taken, so an operation that also changes the
+    /// scale can discard its whole candidate rather than keep the half of it a
+    /// refused pose left behind.
+    fn accept_pose(&mut self, eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> bool {
         if !usable_eye(eye, target) {
-            return;
+            return false;
         }
         let mut candidate = *self;
         candidate.eye = eye;
@@ -553,7 +619,9 @@ impl Camera {
             .all(|value| value.is_finite())
         {
             *self = candidate;
+            return true;
         }
+        false
     }
 
     /// Puts the clipping range back where the current distance wants it.

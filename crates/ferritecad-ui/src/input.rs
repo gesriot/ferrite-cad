@@ -301,7 +301,39 @@ impl ViewportInput {
                 if claimed_by_ui {
                     return;
                 }
-                self.camera.zoom(delta * WHEEL_ZOOM);
+                let before = self.camera;
+                match self.pointer {
+                    // A wheel is aimed. What the user is pointing at is what
+                    // they are zooming towards, and a view that came closer to
+                    // the middle of the window instead would have to be dragged
+                    // back after every notch.
+                    Some((x, y)) => {
+                        // Pixels from the middle, positive right and up. This
+                        // is where the window's idea of which way `y` grows
+                        // meets the camera's, the same as it does for a drag.
+                        let right = x - self.camera.width() as f32 * 0.5;
+                        let up = self.camera.height() as f32 * 0.5 - y;
+                        self.camera.zoom_at(delta * WHEEL_ZOOM, right, up);
+                    }
+                    // Nothing to aim at: the pointer has left, or a gesture was
+                    // cancelled, and the middle of the view is the only place
+                    // left to zoom about.
+                    None => self.camera.zoom(delta * WHEEL_ZOOM),
+                }
+                if self.camera == before {
+                    // A wheel wound past its limit moves nothing, and nothing
+                    // that was asked about has been answered differently.
+                    return;
+                }
+                // Every pixel now shows something else, so a question about
+                // what was under the pointer, a click waiting to be answered,
+                // and a press that might still become one all belonged to a
+                // picture that is no longer on screen. The gesture itself is
+                // not one of them: a wheel during a drag is a zoom during a
+                // drag, and the button is still down.
+                self.hover = Hover::Cleared;
+                self.pick = None;
+                self.pressed_at = None;
                 self.redraw = true;
             }
             ViewportEvent::Look(view) => {
@@ -477,6 +509,195 @@ mod tests {
             "scrolling towards the model did not come closer"
         );
         assert!(input.take_redraw());
+    }
+
+    #[test]
+    fn a_wheel_zooms_towards_where_the_pointer_last_was() {
+        let mut input = ready();
+        input.handle(ViewportEvent::PointerMoved { x: 650.0, y: 120.0 }, false);
+        // A later position is the one that counts: a hand that crossed the
+        // window is zooming from where it stopped.
+        input.handle(ViewportEvent::PointerMoved { x: 700.0, y: 90.0 }, false);
+        let before = *input.camera();
+        let anchor = target_plane_point(&before, 700.0, 90.0);
+
+        input.handle(ViewportEvent::Wheel { delta: 3.0 }, false);
+
+        let after = *input.camera();
+        assert!(
+            after.distance() < before.distance(),
+            "scrolling towards the model did not come closer"
+        );
+        let (was, now) = (pixel_of(&before, anchor), pixel_of(&after, anchor));
+        assert!(
+            (was.0 - now.0).abs() <= 0.2 && (was.1 - now.1).abs() <= 0.2,
+            "what was under the pointer at {was:?} moved to {now:?}"
+        );
+        assert!(
+            (was.0 - 700.0).abs() < 0.2 && (was.1 - 90.0).abs() < 0.2,
+            "the gate measured the wrong place: {was:?} is not where the pointer was"
+        );
+        assert!(input.take_redraw(), "a zoom did not ask to be drawn");
+    }
+
+    #[test]
+    fn a_wheel_with_no_pointer_to_aim_zooms_about_the_middle() {
+        for leaving in [ViewportEvent::PointerLeft, ViewportEvent::GestureCancelled] {
+            let mut input = ready();
+            input.handle(ViewportEvent::PointerMoved { x: 700.0, y: 90.0 }, false);
+            input.handle(leaving, false);
+            let before = *input.camera();
+
+            input.handle(ViewportEvent::Wheel { delta: 3.0 }, false);
+
+            let mut centred = before;
+            centred.zoom(3.0 * WHEEL_ZOOM);
+            assert_eq!(
+                *input.camera(),
+                centred,
+                "after {leaving:?} the wheel aimed at something"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wheel_the_interface_claimed_changes_neither_the_camera_nor_what_is_waiting() {
+        let mut input = ready();
+        input.handle(ViewportEvent::PointerMoved { x: 300.0, y: 200.0 }, false);
+        click(&mut input, (120.0, 80.0), false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        let before = *input.camera();
+        let _ = input.take_redraw();
+
+        input.handle(ViewportEvent::Wheel { delta: 5.0 }, true);
+
+        assert_eq!(*input.camera(), before, "a claimed wheel moved the camera");
+        assert_eq!(
+            input.take_pick(),
+            Some((120.0, 80.0)),
+            "a claimed wheel forgot a click nobody had answered"
+        );
+        assert!(!input.take_redraw(), "a claimed wheel asked for a frame");
+    }
+
+    #[test]
+    fn a_zoom_forgets_what_was_asked_about_the_picture_it_replaced() {
+        let mut input = ready();
+        click(&mut input, (120.0, 80.0), false);
+        input.handle(ViewportEvent::PointerMoved { x: 240.0, y: 160.0 }, false);
+        // A press that has not yet decided whether it is a click or a drag.
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(ViewportEvent::PointerMoved { x: 244.0, y: 162.0 }, false);
+        assert!(matches!(input.take_hover(), Hover::Cleared | Hover::At(..)));
+        let _ = input.take_redraw();
+
+        input.handle(ViewportEvent::Wheel { delta: 2.0 }, false);
+
+        assert_eq!(input.take_hover(), Hover::Cleared, "a stale hover survived");
+        assert_eq!(input.take_pick(), None, "a stale click survived");
+        assert!(
+            input.is_dragging(),
+            "a wheel during a drag ended the drag the button is still holding"
+        );
+        assert!(input.take_redraw(), "a zoom did not ask to be drawn");
+
+        // The press half is gone, so the release that follows answers nothing.
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        assert_eq!(
+            input.take_pick(),
+            None,
+            "a press from before the zoom still chose something after it"
+        );
+    }
+
+    #[test]
+    fn several_wheels_before_a_frame_owe_one_frame() {
+        let mut input = ready();
+        input.handle(ViewportEvent::PointerMoved { x: 500.0, y: 400.0 }, false);
+        for _ in 0..5 {
+            input.handle(ViewportEvent::Wheel { delta: 1.0 }, false);
+        }
+        assert!(input.take_redraw(), "five notches owed no frame");
+        assert!(!input.take_redraw(), "a flag counted instead of latching");
+    }
+
+    #[test]
+    fn a_wheel_changes_neither_the_projection_nor_what_is_being_dragged() {
+        let mut input = ready();
+        assert!(input.set_projection(Projection::Orthographic));
+        input.handle(ViewportEvent::PointerMoved { x: 620.0, y: 140.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Middle), false);
+        let before = *input.camera();
+        let anchor = target_plane_point(&before, 620.0, 140.0);
+
+        input.handle(ViewportEvent::Wheel { delta: 2.0 }, false);
+
+        assert_eq!(
+            input.projection(),
+            Projection::Orthographic,
+            "a wheel changed how the model is drawn"
+        );
+        assert!(input.is_dragging(), "a wheel ended a pan in progress");
+        let after = *input.camera();
+        assert!(
+            after.world_per_pixel() < before.world_per_pixel(),
+            "the drawing did not change scale"
+        );
+        assert!(
+            (after.distance() - before.distance()).abs() <= before.distance() * 1e-5,
+            "a drawing's wheel moved the eye instead of changing the scale"
+        );
+        let (was, now) = (pixel_of(&before, anchor), pixel_of(&after, anchor));
+        assert!(
+            (was.0 - now.0).abs() <= 0.2 && (was.1 - now.1).abs() <= 0.2,
+            "the drawing let {was:?} slide to {now:?}"
+        );
+    }
+
+    /// Where a world point lands, in window pixels from the top left.
+    fn pixel_of(camera: &Camera, point: [f32; 3]) -> (f32, f32) {
+        let matrix = camera.view_projection();
+        let clip = [
+            matrix[0] * point[0] + matrix[4] * point[1] + matrix[8] * point[2] + matrix[12],
+            matrix[1] * point[0] + matrix[5] * point[1] + matrix[9] * point[2] + matrix[13],
+            matrix[3] * point[0] + matrix[7] * point[1] + matrix[11] * point[2] + matrix[15],
+        ];
+        assert!(clip[2] > 0.0, "a point behind the eye has no pixel");
+        let (width, height) = (camera.width() as f32, camera.height() as f32);
+        (
+            (clip[0] / clip[2] + 1.0) * 0.5 * width,
+            (1.0 - clip[1] / clip[2]) * 0.5 * height,
+        )
+    }
+
+    /// The point on the target plane under a window pixel, found by the
+    /// pixel-to-world scale rather than by the anchoring arithmetic.
+    fn target_plane_point(camera: &Camera, x: f32, y: f32) -> [f32; 3] {
+        let scale = camera.world_per_pixel();
+        let (eye, target) = (camera.eye(), camera.target());
+        let away = [eye[0] - target[0], eye[1] - target[1], eye[2] - target[2]];
+        let length = away[0].hypot(away[1]).hypot(away[2]);
+        let away = [away[0] / length, away[1] / length, away[2] / length];
+        // The camera's up is the world's, which is what every gesture here
+        // leaves it as.
+        let side = [-away[1], away[0], 0.0];
+        let length = side[0].hypot(side[1]).hypot(side[2]);
+        let side = [side[0] / length, side[1] / length, side[2] / length];
+        let up = [
+            away[1] * side[2] - away[2] * side[1],
+            away[2] * side[0] - away[0] * side[2],
+            away[0] * side[1] - away[1] * side[0],
+        ];
+        let right = (x - camera.width() as f32 * 0.5) * scale;
+        let above = (camera.height() as f32 * 0.5 - y) * scale;
+        [
+            target[0] + side[0] * right + up[0] * above,
+            target[1] + side[1] * right + up[1] * above,
+            target[2] + side[2] * right + up[2] * above,
+        ]
     }
 
     #[test]

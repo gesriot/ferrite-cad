@@ -23,7 +23,8 @@ use ferritecad_kernel::{
 };
 use ferritecad_types::{ErrorKind, Transform, Vec3};
 use ferritecad_viewport::{
-    Camera, FacePickId, Marked, PickId, Projection, RenderSnapshot, SnapshotBuilder, Visibility,
+    Camera, FacePickId, Marked, PickId, Projection, RenderSnapshot, SnapshotBuilder, StandardView,
+    Visibility,
 };
 use ferritecad_viewport_gpu::{Frame, Renderer};
 
@@ -271,6 +272,30 @@ fn grid_lines_in_row(frame: &ferritecad_viewport_gpu::Frame, y: u32) -> Vec<u32>
         inside = grid;
     }
     starts
+}
+
+/// How far apart the grid lines crossing one row are, in pixels.
+///
+/// The gap that occurs most often rather than the widest one: the model
+/// covers whole stretches of the backdrop, and the gap across a part would
+/// otherwise be mistaken for a spacing the grid chose.
+fn modal_line_gap(frame: &ferritecad_viewport_gpu::Frame, row: u32) -> Option<f32> {
+    let mut columns: Vec<u32> = (0..frame.width())
+        .filter(|x| {
+            frame
+                .colour_at(*x, row)
+                .is_some_and(|colour| colour != [0, 0, 0, 255])
+                && frame.pick_at(*x, row) == PickId::NOTHING
+        })
+        .collect();
+    columns.dedup_by(|a, b| *a == *b + 1);
+    if columns.len() < 3 {
+        return None;
+    }
+    let gaps: Vec<u32> = columns.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    gaps.iter()
+        .max_by_key(|gap| gaps.iter().filter(|other| other == gap).count())
+        .map(|gap| *gap as f32)
 }
 
 /// The widest gap between neighbouring grid lines anywhere in the frame.
@@ -3470,29 +3495,9 @@ fn the_backdrop_belongs_to_the_world_in_a_drawing_too() {
             &everything,
         )
         .expect("draws");
-    let row = straight_down.height() / 2;
-    let mut line_columns: Vec<u32> = (0..straight_down.width())
-        .filter(|x| {
-            straight_down
-                .colour_at(*x, row)
-                .is_some_and(|colour| colour != [0, 0, 0, 255])
-                && straight_down.pick_at(*x, row) == PickId::NOTHING
-        })
-        .collect();
-    line_columns.dedup_by(|a, b| *a == *b + 1);
-    assert!(
-        line_columns.len() > 2,
-        "no grid lines were found to measure: {line_columns:?}"
-    );
-    let gaps: Vec<u32> = line_columns
-        .windows(2)
-        .map(|pair| pair[1] - pair[0])
-        .collect();
     let expected = plan.minor / overhead.world_per_pixel();
-    let measured = *gaps
-        .iter()
-        .max_by_key(|gap| gaps.iter().filter(|other| other == gap).count())
-        .expect("there is at least one gap") as f32;
+    let measured = modal_line_gap(&straight_down, straight_down.height() / 2)
+        .expect("no grid lines were found to measure");
     assert!(
         (measured - expected).abs() <= 2.0,
         "grid lines sit {measured} pixels apart where the camera says {expected}"
@@ -3506,5 +3511,275 @@ fn the_backdrop_belongs_to_the_world_in_a_drawing_too() {
     }) {
         assert_eq!(drawing.hit_at(*x, *y).face(), FacePickId::NOTHING);
         assert_eq!(drawing.hit_at(*x, *y).definition(), PickId::NOTHING);
+    }
+}
+
+/// Three plates lying in one plane: a small marker away from the middle, a
+/// larger neighbour to show the scale really changed, and one under the
+/// centre. All at `y = 0`, which is the plane a front view targets, so the
+/// pixels of the marker are pixels of the plane a wheel anchors on.
+fn plates_in_the_target_plane(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
+    let plate = |shape: u64, half: f32| {
+        let handle = ShapeHandle::new(SessionId::new(), shape);
+        Mesh {
+            positions: vec![
+                -half, 0.0, -half, half, 0.0, -half, half, 0.0, half, -half, 0.0, half,
+            ],
+            normals: vec![
+                0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0,
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            faces: vec![MeshFaceRange {
+                face: SubShapeHandle::new(handle, SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 6,
+            }],
+        }
+    };
+
+    let mut builder = SnapshotBuilder::new();
+    let nearer = builder.add_mesh(&plate(0, 3.0)).expect("packs");
+    let marker = builder.add_mesh(&plate(1, 3.0)).expect("packs");
+    let neighbour = builder.add_mesh(&plate(2, 8.0)).expect("packs");
+    let middle = builder.add_mesh(&plate(3, 5.0)).expect("packs");
+    // The nearer plate is drawn first and lies in front of the larger one it
+    // sits inside, so a renderer that stopped sorting by depth would paint it
+    // over and leave nothing of it to find. The furthest plate balances it, so
+    // that the middle of the whole extent is `y = 0` and the marker really
+    // does lie on the plane a front view targets.
+    for (definition, x, y, z, colour) in [
+        (nearer, 0.0, -20.0, 0.0, [0.9, 0.9, 0.2]),
+        (marker, 26.0, 0.0, 17.0, [0.9, 0.2, 0.2]),
+        (neighbour, -24.0, 20.0, -14.0, [0.2, 0.9, 0.2]),
+        (middle, 0.0, 0.0, 0.0, [0.2, 0.2, 0.9]),
+    ] {
+        builder
+            .place(
+                definition,
+                None,
+                &Transform::from_translation(ferritecad_types::Vec3::new(x, y, z).expect("finite"))
+                    .expect("finite"),
+                colour,
+            )
+            .expect("places");
+    }
+    let snapshot = Arc::new(builder.build());
+
+    let mut camera = Camera::new();
+    camera.resize(width, height);
+    camera
+        .frame(snapshot.bounds().expect("the plates have an extent"))
+        .expect("frames");
+    (snapshot, camera)
+}
+
+/// The middle of everything one definition drew, in pixels.
+fn centre_of(frame: &ferritecad_viewport_gpu::Frame, pick: PickId) -> Option<(f32, f32)> {
+    let mine = pixels_of(frame, |frame, x, y| frame.pick_at(x, y) == pick);
+    if mine.is_empty() {
+        return None;
+    }
+    let count = mine.len() as f32;
+    let sum = mine.iter().fold((0.0f32, 0.0f32), |(x, y), (px, py)| {
+        // A pixel covers a unit square, so its middle is half a pixel on.
+        (x + *px as f32 + 0.5, y + *py as f32 + 0.5)
+    });
+    Some((sum.0 / count, sum.1 / count))
+}
+
+fn covered_by(frame: &ferritecad_viewport_gpu::Frame, pick: PickId) -> usize {
+    pixels_of(frame, |frame, x, y| frame.pick_at(x, y) == pick).len()
+}
+
+#[test]
+fn a_wheel_keeps_the_part_it_was_pointed_at_under_the_same_pixel() {
+    let mut renderer = renderer_or_skip!();
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        let (snapshot, mut camera) = plates_in_the_target_plane(320, 240);
+        assert!(
+            projection == Projection::Perspective || camera.set_projection(projection),
+            "the camera refused a projection to zoom in"
+        );
+        let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+        let uploaded = renderer.geometry_uploads();
+        let everything = Visibility::default();
+        let nearer = snapshot.pick_of(0).expect("drawn");
+        let marker = snapshot.pick_of(1).expect("drawn");
+        let neighbour = snapshot.pick_of(2).expect("drawn");
+        let marker_face = snapshot.face_of(1, 0).expect("numbered");
+
+        let draw = |renderer: &mut Renderer, camera: &Camera| {
+            renderer
+                .render(
+                    &prepared,
+                    camera,
+                    Marked::Nothing,
+                    Marked::Nothing,
+                    &everything,
+                )
+                .expect("draws")
+        };
+
+        let before = draw(&mut renderer, &camera);
+        let (x, y) = centre_of(&before, marker).expect("the marker is on screen");
+        assert!(
+            (x - 160.0).abs() > 30.0 && (y - 120.0).abs() > 20.0,
+            "{projection:?}: the marker is not off centre, it is at ({x}, {y})"
+        );
+        let was = covered_by(&before, neighbour);
+
+        // Point at the middle of the marker and wind the wheel in.
+        camera.zoom_at(0.5, x - 160.0, 120.0 - y);
+        let after = draw(&mut renderer, &camera);
+
+        let (moved_x, moved_y) = centre_of(&after, marker).expect("the marker is still on screen");
+        assert!(
+            (moved_x - x).abs() <= 1.5 && (moved_y - y).abs() <= 1.5,
+            "{projection:?}: the marker was at ({x}, {y}) and is now at ({moved_x}, {moved_y})"
+        );
+
+        // The pixel that was pointed at still belongs to the same part, and to
+        // the same face of it.
+        let (px, py) = (x as u32, y as u32);
+        assert_eq!(
+            after.pick_at(px, py),
+            marker,
+            "{projection:?}: the pointed-at pixel changed hands"
+        );
+        assert_eq!(
+            after.hit_at(px, py).face(),
+            marker_face,
+            "{projection:?}: the pointed-at pixel changed which face it shows"
+        );
+        assert_eq!(
+            before.pick_at(px, py),
+            marker,
+            "{projection:?}: the gate measured a pixel the marker never covered"
+        );
+
+        // The picture really changed scale, by the amount a notch means. The
+        // anchor is measured rather than a corner of the view: what a wheel
+        // holds still is a point, not a size, and the marker grows about it
+        // without leaving the screen for the count to be clipped.
+        let (was_wide, now_wide) = (widest_row(&before, marker), widest_row(&after, marker));
+        let grew = now_wide as f32 / was_wide as f32;
+        assert!(
+            (grew - 0.5f32.exp()).abs() < 0.15,
+            "{projection:?}: a plate {was_wide} pixels wide became {now_wide}, \
+             a factor of {grew} where a notch of 0.5 means {}",
+            0.5f32.exp()
+        );
+        // And it is the width the camera says it is. Comparing the picture
+        // with itself cannot see a renderer that squeezed the whole frame
+        // equally; measuring a known plate against the one place that decides
+        // how much world a pixel covers can.
+        let expected = 6.0 / camera.world_per_pixel();
+        assert!(
+            (now_wide as f32 - expected).abs() <= 2.0,
+            "{projection:?}: a six millimetre plate covers {now_wide} pixels \
+             where the camera says {expected}"
+        );
+
+        // And something that is not the anchor changed too, so a picture that
+        // merely grew one part could not pass.
+        let now = covered_by(&after, neighbour);
+        assert!(
+            now > was,
+            "{projection:?}: nothing but the anchor changed: {was} pixels became {now}"
+        );
+
+        // What is in front is still in front. The nearer plate is drawn first
+        // and lies inside the larger one, so it survives only while depth
+        // decides which pixel wins.
+        assert!(
+            covered_by(&after, nearer) > 0,
+            "{projection:?}: the nearer plate vanished behind the one it is in front of"
+        );
+
+        // Nothing about a wheel is a change to the model.
+        assert_eq!(
+            renderer.geometry_uploads(),
+            uploaded,
+            "{projection:?}: zooming uploaded geometry"
+        );
+
+        // The nearer plate still covers the further one where they overlap,
+        // and the backdrop is still the world's rather than the screen's.
+        let repeat = draw(&mut renderer, &camera);
+        assert_eq!(
+            after.colour(),
+            repeat.colour(),
+            "{projection:?}: the same camera drew two different pictures"
+        );
+        for (x, y) in pixels_of(&after, |frame, x, y| frame.pick_at(x, y) != PickId::NOTHING) {
+            assert_eq!(
+                after.pick_at(x, y),
+                repeat.pick_at(x, y),
+                "{projection:?}: what a pixel belongs to depends on when it was drawn"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_backdrop_follows_an_anchored_wheel_and_is_still_nobody_to_click() {
+    let mut renderer = renderer_or_skip!();
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        let (snapshot, mut overhead) = plates_in_the_target_plane(200, 200);
+        overhead.look_from(StandardView::Top);
+        assert!(
+            projection == Projection::Perspective || overhead.set_projection(projection),
+            "the camera refused a projection to zoom in"
+        );
+        let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+        let everything = Visibility::default();
+
+        overhead.zoom_at(0.4, 70.0, -55.0);
+        let frame = renderer
+            .render(
+                &prepared,
+                &overhead,
+                Marked::Nothing,
+                Marked::Nothing,
+                &everything,
+            )
+            .expect("draws");
+
+        // The grid is drawn through the same camera as the model, so its
+        // spacing on screen is what that camera says a millimetre is.
+        let plan = ferritecad_viewport::grid_plan(&overhead).expect("the grid has a spacing");
+        let expected = plan.minor / overhead.world_per_pixel();
+        let gap = modal_line_gap(&frame, frame.height() / 2).expect("the grid drew lines");
+        assert!(
+            (gap - expected).abs() <= 2.0,
+            "{projection:?}: grid lines are {gap} pixels apart where the camera says {expected}"
+        );
+
+        // And it is still scenery. Which lit pixels are the grid's cannot be
+        // told from colour in a picture whose parts are coloured freely, so
+        // the rule is stated the other way round: everything that is not a
+        // part is nobody, with no definition and no face to reach.
+        let backdrop = pixels_of(&frame, |frame, x, y| {
+            frame.pick_at(x, y) == PickId::NOTHING
+                && frame
+                    .colour_at(x, y)
+                    .is_some_and(|colour| colour != [0, 0, 0, 255])
+        });
+        assert!(
+            !backdrop.is_empty(),
+            "{projection:?}: the backdrop disappeared after a wheel"
+        );
+        for (x, y) in &backdrop {
+            assert_eq!(
+                frame.hit_at(*x, *y).definition(),
+                PickId::NOTHING,
+                "{projection:?}: the grid became something to click at ({x}, {y})"
+            );
+            assert_eq!(
+                frame.hit_at(*x, *y).face(),
+                FacePickId::NOTHING,
+                "{projection:?}: the grid became a face at ({x}, {y})"
+            );
+        }
     }
 }

@@ -107,6 +107,17 @@ big it is. Zooming in an orthographic view changes the scale rather than moving
 the eye; swapping back respects that zoom, so it may move the eye to the
 distance that gives the new scale in perspective.
 
+The wheel zooms towards the pointer rather than towards the middle of the
+window. Put the pointer on the feature you want a closer look at and wind: that
+feature stays where it is while everything else spreads out around it, so
+getting from a whole model to one corner of it takes no compensating drag. What
+is held exactly is the place where the pointer meets the plane through what you
+are looking at; a surface much nearer or further than that plane drifts a
+little, which is the honest cost of not reading the depth of every pixel back
+from the graphics card. With the pointer outside the model area the wheel falls
+back to the middle of the view, and in an orthographic view it changes the
+scale without moving the eye, exactly as swapping projections describes.
+
 Moving the pointer
 over the model marks the face under it, and the same face wherever that
 definition appears; moving it over a row of the list marks that whole

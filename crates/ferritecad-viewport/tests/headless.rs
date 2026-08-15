@@ -3037,3 +3037,349 @@ fn a_viewport_of_no_size_or_an_extreme_one_still_has_a_finite_drawing() {
 fn sub_points(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
     [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
 }
+
+/// Where a world point lands, in pixels from the centre of the viewport,
+/// positive right and positive up. The same convention the camera takes.
+fn pixel_offset(camera: &Camera, point: [f32; 3]) -> (f32, f32) {
+    let ndc = projected(&camera.view_projection(), point);
+    (
+        ndc[0] * camera.width() as f32 * 0.5,
+        ndc[1] * camera.height() as f32 * 0.5,
+    )
+}
+
+/// A point on the plane through the target, square to the viewing direction.
+///
+/// Built from two vectors perpendicular to the direction rather than from the
+/// camera's own screen axes, so a gate about anchoring cannot be satisfied by
+/// the anchoring arithmetic agreeing with itself.
+fn on_target_plane(camera: &Camera, first: f32, second: f32) -> [f32; 3] {
+    let away = offset(camera);
+    let scale = length(away);
+    assert!(
+        scale > 0.0,
+        "a camera with no direction has no target plane"
+    );
+    let away = [away[0] / scale, away[1] / scale, away[2] / scale];
+    let mut across = cross_product(away, [0.0, 0.0, 1.0]);
+    if length(across) < 1e-3 {
+        across = cross_product(away, [0.0, 1.0, 0.0]);
+    }
+    let scale = length(across);
+    let across = [across[0] / scale, across[1] / scale, across[2] / scale];
+    let other = cross_product(away, across);
+    let target = camera.target();
+    [
+        target[0] + across[0] * first + other[0] * second,
+        target[1] + across[1] * first + other[1] * second,
+        target[2] + across[2] * first + other[2] * second,
+    ]
+}
+
+fn cross_product(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+
+/// Zooms about the pixel a point is under, and says where it ended up.
+fn zoom_holding(camera: &mut Camera, amount: f32, point: [f32; 3]) -> ((f32, f32), (f32, f32)) {
+    let before = pixel_offset(camera, point);
+    camera.zoom_at(amount, before.0, before.1);
+    (before, pixel_offset(camera, point))
+}
+
+#[test]
+fn a_wheel_keeps_the_place_it_was_pointed_at_under_the_pointer() {
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        for amount in [0.36f32, -0.36] {
+            let mut camera = framed();
+            assert!(
+                projection == Projection::Perspective || camera.set_projection(projection),
+                "the camera refused a projection to zoom in"
+            );
+            // Well away from the centre, and not on either axis of the screen.
+            let anchor = on_target_plane(&camera, 3.1, -2.4);
+            let scale = camera.world_per_pixel();
+
+            let (before, after) = zoom_holding(&mut camera, amount, anchor);
+
+            assert!(
+                before.0.abs() > 50.0 && before.1.abs() > 50.0,
+                "{projection:?}: the anchor was not off centre, it was at {before:?}"
+            );
+            assert!(
+                (after.0 - before.0).abs() <= 0.1 && (after.1 - before.1).abs() <= 0.1,
+                "{projection:?} zoom of {amount}: what was under the pointer at {before:?} \
+                 moved to {after:?}"
+            );
+            // A camera that did nothing would hold every point exactly.
+            let now = camera.world_per_pixel();
+            assert!(
+                (now / scale - (-amount).exp()).abs() < 1e-3,
+                "{projection:?} zoom of {amount}: the scale went from {scale} to {now}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_wheel_at_the_middle_of_the_viewport_is_the_zoom_that_has_no_pointer() {
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        let mut anchored = framed();
+        assert!(
+            projection == Projection::Perspective || anchored.set_projection(projection),
+            "the camera refused a projection to zoom in"
+        );
+        // Somewhere with no symmetry to hide a mistake in.
+        anchored.orbit(0.6, -0.35);
+        anchored.pan(37.0, -19.0);
+        let mut centred = anchored;
+
+        anchored.zoom_at(0.4, 0.0, 0.0);
+        centred.zoom(0.4);
+
+        assert_eq!(
+            anchored, centred,
+            "{projection:?}: zooming about the middle differed from zooming about nothing"
+        );
+    }
+}
+
+#[test]
+fn a_wheel_holds_its_place_after_turning_the_model_and_sliding_it() {
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        let mut camera = framed();
+        assert!(
+            projection == Projection::Perspective || camera.set_projection(projection),
+            "the camera refused a projection to zoom in"
+        );
+        camera.orbit(-0.9, 0.4);
+        camera.pan(-64.0, 45.0);
+
+        let anchor = on_target_plane(&camera, -2.2, 1.7);
+        let (before, after) = zoom_holding(&mut camera, 0.5, anchor);
+
+        assert!(
+            (after.0 - before.0).abs() <= 0.1 && (after.1 - before.1).abs() <= 0.1,
+            "{projection:?}: after turning and sliding, {before:?} moved to {after:?}"
+        );
+    }
+}
+
+#[test]
+fn a_wheel_holds_its_place_in_a_tall_viewport_as_well_as_a_wide_one() {
+    for (width, height) in [(1600u32, 500u32), (500, 1600)] {
+        for projection in [Projection::Perspective, Projection::Orthographic] {
+            let mut camera = Camera::new();
+            camera.resize(width, height);
+            camera
+                .frame(([-3.0, -3.0, -3.0], [4.0, 5.0, 6.0]))
+                .expect("frames");
+            assert!(
+                projection == Projection::Perspective || camera.set_projection(projection),
+                "the camera refused a projection to zoom in"
+            );
+
+            let anchor = on_target_plane(&camera, 1.9, -1.3);
+            let (before, after) = zoom_holding(&mut camera, -0.45, anchor);
+
+            assert!(
+                (after.0 - before.0).abs() <= 0.1 && (after.1 - before.1).abs() <= 0.1,
+                "{width}x{height} {projection:?}: {before:?} moved to {after:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn zooming_in_and_out_again_about_the_same_pixel_comes_back() {
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        let mut camera = framed();
+        assert!(
+            projection == Projection::Perspective || camera.set_projection(projection),
+            "the camera refused a projection to zoom in"
+        );
+        camera.orbit(0.3, 0.2);
+        let before = camera;
+        let anchor = on_target_plane(&camera, 2.6, 2.1);
+        let (pixel, _) = zoom_holding(&mut camera, 0.24, anchor);
+
+        camera.zoom_at(-0.24, pixel.0, pixel.1);
+
+        // Two exponentials and two slides of an f32 target, over a model ten
+        // units across seen from about thirty.
+        for axis in 0..3 {
+            assert!(
+                (camera.eye()[axis] - before.eye()[axis]).abs() <= 1e-3,
+                "{projection:?}: the eye came back to {:?} rather than {:?}",
+                camera.eye(),
+                before.eye()
+            );
+            assert!(
+                (camera.target()[axis] - before.target()[axis]).abs() <= 1e-3,
+                "{projection:?}: what is looked at came back to {:?} rather than {:?}",
+                camera.target(),
+                before.target()
+            );
+        }
+        assert!(
+            (camera.world_per_pixel() - before.world_per_pixel()).abs()
+                <= before.world_per_pixel() * 1e-4,
+            "{projection:?}: the scale came back to {} rather than {}",
+            camera.world_per_pixel(),
+            before.world_per_pixel()
+        );
+    }
+}
+
+#[test]
+fn an_anchored_wheel_in_a_drawing_does_not_move_the_eye_along_its_own_direction() {
+    let mut camera = framed();
+    assert!(camera.set_projection(Projection::Orthographic));
+    camera.orbit(0.5, 0.25);
+    let before = camera;
+
+    let anchor = on_target_plane(&camera, 3.4, -1.8);
+    let (pixel, after) = zoom_holding(&mut camera, 0.5, anchor);
+
+    assert!(
+        (pixel.0 - after.0).abs() <= 0.1 && (pixel.1 - after.1).abs() <= 0.1,
+        "the drawing did not hold {pixel:?}, it moved to {after:?}"
+    );
+    assert!(
+        (camera.distance() - before.distance()).abs() <= before.distance() * 1e-5,
+        "an orthographic zoom changed the distance from {} to {}",
+        before.distance(),
+        camera.distance()
+    );
+    let (was, now) = (offset(&before), offset(&camera));
+    let (was_length, now_length) = (length(was), length(now));
+    for axis in 0..3 {
+        assert!(
+            (was[axis] / was_length - now[axis] / now_length).abs() <= 1e-5,
+            "an orthographic zoom turned the view from {was:?} to {now:?}"
+        );
+    }
+    assert!(
+        camera.eye() != before.eye(),
+        "the eye did not follow what is being looked at"
+    );
+}
+
+#[test]
+fn a_wheel_with_nothing_usable_in_it_leaves_the_camera_exactly_as_it_was() {
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        let mut camera = framed();
+        assert!(
+            projection == Projection::Perspective || camera.set_projection(projection),
+            "the camera refused a projection to zoom in"
+        );
+        let before = camera;
+
+        for (amount, right, up) in [
+            (f32::NAN, 10.0, 10.0),
+            (f32::INFINITY, 10.0, 10.0),
+            (0.3, f32::NAN, 10.0),
+            (0.3, 10.0, f32::INFINITY),
+        ] {
+            camera.zoom_at(amount, right, up);
+            assert_eq!(
+                camera, before,
+                "{projection:?}: zooming by {amount} about ({right}, {up}) changed the camera"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_pointer_far_outside_the_window_leaves_a_camera_that_is_still_a_camera() {
+    // A finite position is a finite request, however far off the window it is:
+    // a trackpad that reports a wild coordinate should not be able to produce
+    // a camera made of infinities.
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        let mut camera = framed();
+        assert!(
+            projection == Projection::Perspective || camera.set_projection(projection),
+            "the camera refused a projection to zoom in"
+        );
+
+        for (right, up) in [(f32::MAX, f32::MAX), (-f32::MAX, 1e30), (1e20, -1e20)] {
+            camera.zoom_at(0.3, right, up);
+            assert!(
+                camera.eye().iter().all(|value| value.is_finite())
+                    && camera.target().iter().all(|value| value.is_finite())
+                    && camera
+                        .view_projection()
+                        .iter()
+                        .all(|value| value.is_finite()),
+                "{projection:?}: a pointer at ({right}, {up}) left {camera:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_wheel_over_a_window_of_no_size_still_leaves_a_camera_that_can_be_drawn() {
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        let mut camera = framed();
+        assert!(
+            projection == Projection::Perspective || camera.set_projection(projection),
+            "the camera refused a projection to zoom in"
+        );
+        camera.resize(0, 0);
+
+        camera.zoom_at(0.6, 220.0, -140.0);
+
+        assert!(
+            camera
+                .view_projection()
+                .iter()
+                .all(|value| value.is_finite()),
+            "{projection:?}: a wheel over a window of no size produced {:?}",
+            camera.view_projection()
+        );
+        assert!(
+            camera.eye().iter().all(|value| value.is_finite())
+                && camera.target().iter().all(|value| value.is_finite()),
+            "{projection:?}: the camera left the world"
+        );
+    }
+}
+
+#[test]
+fn a_wheel_cannot_be_wound_past_what_the_numbers_can_hold() {
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        let mut camera = framed();
+        assert!(
+            projection == Projection::Perspective || camera.set_projection(projection),
+            "the camera refused a projection to zoom in"
+        );
+
+        for _ in 0..400 {
+            camera.zoom_at(1.0, 399.0, -299.0);
+        }
+        assert!(
+            camera.world_per_pixel() > 0.0 && camera.world_per_pixel().is_finite(),
+            "{projection:?}: winding in left a scale of {}",
+            camera.world_per_pixel()
+        );
+        for _ in 0..800 {
+            camera.zoom_at(-1.0, -399.0, 299.0);
+        }
+        assert!(
+            camera.world_per_pixel().is_finite() && camera.world_per_pixel() > 0.0,
+            "{projection:?}: winding out left a scale of {}",
+            camera.world_per_pixel()
+        );
+        assert!(
+            camera
+                .view_projection()
+                .iter()
+                .all(|value| value.is_finite()),
+            "{projection:?}: the matrix stopped being a number"
+        );
+    }
+}
