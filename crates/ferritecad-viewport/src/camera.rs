@@ -406,7 +406,7 @@ impl Camera {
     /// the camera's up. A view that had been rolled – [`StandardView::Top`]
     /// tilts it so that north is up – is levelled by the first orbit.
     pub fn orbit(&mut self, yaw: f32, pitch: f32) {
-        if !yaw.is_finite() || !pitch.is_finite() {
+        if !yaw.is_finite() || !pitch.is_finite() || (yaw == 0.0 && pitch == 0.0) {
             return;
         }
         let distance = self.distance();
@@ -439,7 +439,7 @@ impl Camera {
     /// this takes camera axes so no windowing system's idea of which way `y`
     /// grows has to be baked in here.
     pub fn pan(&mut self, right: f32, up: f32) {
-        if !right.is_finite() || !up.is_finite() {
+        if !right.is_finite() || !up.is_finite() || (right == 0.0 && up == 0.0) {
             return;
         }
         let scale = self.world_per_pixel();

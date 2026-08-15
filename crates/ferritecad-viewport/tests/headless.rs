@@ -1529,6 +1529,33 @@ fn nothing_that_is_not_a_number_moves_the_camera() {
 }
 
 #[test]
+fn orbiting_and_panning_by_no_pixels_leave_the_camera_exactly_alone() {
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        let mut camera = framed();
+        assert!(
+            projection == Projection::Perspective || camera.set_projection(projection),
+            "the camera refused a projection to exercise"
+        );
+        // A rolled, off-axis pose makes a zero orbit observably harmful: the
+        // old implementation levelled the horizon and rebuilt the eye even
+        // though the pointer had not moved.
+        camera.orbit(0.31, -0.24);
+        camera.roll(0.27);
+        camera.pan(17.0, -11.0);
+        let before = camera;
+
+        for zero in [0.0, -0.0] {
+            camera.orbit(zero, zero);
+            camera.pan(zero, zero);
+            assert_eq!(
+                camera, before,
+                "{projection:?}: a zero camera gesture changed the view"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_face_value_from_outside_lands_on_no_face() {
     let mut builder = SnapshotBuilder::new();
     let mesh = builder.add_mesh(&two_faced(1, 1)).expect("packs");

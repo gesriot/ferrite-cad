@@ -250,6 +250,13 @@ impl ViewportInput {
                     return;
                 };
                 let (dx, dy) = (x - last_x, y - last_y);
+                // Some window backends can repeat the same pointer position.
+                // That is not a camera operation: in particular, asking the
+                // camera to orbit by zero would still orthogonalise its stored
+                // basis and make an unchanged view look numerically different.
+                if dx == 0.0 && dy == 0.0 {
+                    return;
+                }
 
                 match button {
                     PointerButton::Primary => {
@@ -1504,24 +1511,71 @@ mod tests {
     #[test]
     fn magnifying_forgets_the_questions_the_old_pixels_were_asked() {
         for going_back in [false, true] {
+            // A completed click can be waiting for its answer while the idle
+            // pointer is asking a newer hover question. Both belong to the
+            // pixels the camera is about to replace.
             let mut input = ready();
             if going_back {
                 assert!(input.magnify(Some(AWKWARD)).expect("frames"));
             }
             click(&mut input, (120.0, 80.0), false);
             input.handle(ViewportEvent::PointerMoved { x: 240.0, y: 160.0 }, false);
-            input.handle(ViewportEvent::PointerPressed(PointerButton::Middle), false);
             let _ = input.take_redraw();
 
             assert!(input.magnify(Some(AWKWARD)).expect("frames or goes back"));
 
             assert_eq!(input.take_hover(), Hover::Cleared, "a stale hover survived");
             assert_eq!(input.take_pick(), None, "a stale click survived");
+            assert!(input.take_redraw(), "magnifying did not ask to be drawn");
+
+            // A middle drag cannot coexist with hover in a reachable reducer
+            // state because its press clears hover. Exercise the promise that
+            // the camera jump does not end a held gesture separately.
+            let mut dragging = ready();
+            if going_back {
+                assert!(dragging.magnify(Some(AWKWARD)).expect("frames"));
+            }
+            dragging.handle(ViewportEvent::PointerMoved { x: 240.0, y: 160.0 }, false);
+            dragging.handle(ViewportEvent::PointerPressed(PointerButton::Middle), false);
+
             assert!(
-                input.is_dragging(),
+                dragging
+                    .magnify(Some(AWKWARD))
+                    .expect("frames or goes back")
+            );
+
+            assert!(
+                dragging.is_dragging(),
                 "magnifying ended a drag whose button is still down"
             );
-            assert!(input.take_redraw(), "magnifying did not ask to be drawn");
+
+            // A primary press is both a gesture and half a possible click. Its
+            // gesture stays live, but the half-click names the old frame and
+            // must not choose a pixel after either direction of the toggle.
+            let mut pressed = ready();
+            if going_back {
+                assert!(pressed.magnify(Some(AWKWARD)).expect("frames"));
+            }
+            pressed.handle(ViewportEvent::PointerMoved { x: 310.0, y: 210.0 }, false);
+            pressed.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+            assert_eq!(pressed.pressed_at, Some((310.0, 210.0)));
+
+            assert!(pressed.magnify(Some(AWKWARD)).expect("frames or goes back"));
+
+            assert_eq!(pressed.pressed_at, None, "a stale primary press survived");
+            assert!(
+                pressed.is_dragging(),
+                "magnifying ended the primary gesture"
+            );
+            pressed.handle(
+                ViewportEvent::PointerReleased(PointerButton::Primary),
+                false,
+            );
+            assert_eq!(
+                pressed.take_pick(),
+                None,
+                "a press from before magnifying chose a pixel in the new frame"
+            );
         }
     }
 
@@ -1623,6 +1677,22 @@ mod tests {
         // And the same requests that move nothing forget nothing.
         let refused: Vec<(&str, Move)> = vec![
             (
+                "an orbit of no pixels",
+                Box::new(|input: &mut ViewportInput| {
+                    input.handle(ViewportEvent::PointerMoved { x: 80.0, y: 90.0 }, false);
+                    input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+                    input.handle(ViewportEvent::PointerMoved { x: 80.0, y: 90.0 }, false);
+                }),
+            ),
+            (
+                "a pan of no pixels",
+                Box::new(|input: &mut ViewportInput| {
+                    input.handle(ViewportEvent::PointerMoved { x: 80.0, y: 90.0 }, false);
+                    input.handle(ViewportEvent::PointerPressed(PointerButton::Middle), false);
+                    input.handle(ViewportEvent::PointerMoved { x: 80.0, y: 90.0 }, false);
+                }),
+            ),
+            (
                 "a wheel of nothing",
                 Box::new(|input: &mut ViewportInput| {
                     input.handle(ViewportEvent::Wheel { delta: 0.0 }, false);
@@ -1653,6 +1723,18 @@ mod tests {
                 }),
             ),
             (
+                "the named view already in use",
+                Box::new(|input: &mut ViewportInput| {
+                    input.handle(ViewportEvent::Look(StandardView::Front), false);
+                }),
+            ),
+            (
+                "the extent already framed",
+                Box::new(|input: &mut ViewportInput| {
+                    input.frame(AWKWARD).expect("already framed");
+                }),
+            ),
+            (
                 "a resize to the same size",
                 Box::new(|input: &mut ViewportInput| {
                     input.resize(800, 600);
@@ -1670,10 +1752,15 @@ mod tests {
             let mut input = ready();
             let away = *input.camera();
             assert!(input.magnify(Some(AWKWARD)).expect("frames"));
+            let magnified = *input.camera();
 
             quiet(&mut input);
 
-            assert!(input.magnify(Some(AWKWARD)).expect("goes back"));
+            assert_eq!(*input.camera(), magnified, "{name} was not a camera no-op");
+            assert!(
+                input.magnify(Some(AWKWARD)).expect("goes back"),
+                "{name} moved the camera or discarded its checkpoint"
+            );
             assert_eq!(
                 *input.camera(),
                 away,
