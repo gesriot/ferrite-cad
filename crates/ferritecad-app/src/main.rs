@@ -1546,17 +1546,11 @@ impl ApplicationHandler<AppEvent> for App {
 
             other => {
                 for event in translate(&other) {
-                    let claimed = match event {
-                        ViewportEvent::Wheel { .. } => {
-                            response.consumed || live.egui.egui_wants_pointer_input()
-                        }
-                        ViewportEvent::PointerPressed(_) | ViewportEvent::PointerMoved { .. } => {
-                            response.consumed || live.egui.egui_wants_pointer_input()
-                        }
-                        // A move is claimed only while no gesture is running;
-                        // the reducer keeps a drag that began in the viewport.
-                        _ => response.consumed,
-                    };
+                    let claimed = claimed_by_interface(
+                        &event,
+                        response.consumed,
+                        live.egui.egui_wants_pointer_input(),
+                    );
                     self.input.handle(event, claimed);
                 }
             }
@@ -2256,6 +2250,16 @@ fn translate(event: &WindowEvent) -> Vec<ViewportEvent> {
             };
             vec![ViewportEvent::Wheel { delta: amount }]
         }
+        // Two fingers on a trackpad, which macOS reports as a proportion to
+        // magnify by rather than as a number of notches. The phase is
+        // deliberately not translated: the start and end of a pinch carry no
+        // magnification, and calling either a cancelled gesture would drop the
+        // pointer and end a mouse drag that has nothing to do with it.
+        WindowEvent::PinchGesture { delta, .. } => {
+            vec![ViewportEvent::Pinch {
+                delta: *delta as f32,
+            }]
+        }
         WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
             named_view(&event.logical_key)
                 .map(|view| vec![ViewportEvent::Look(view)])
@@ -2266,6 +2270,28 @@ fn translate(event: &WindowEvent) -> Vec<ViewportEvent> {
         // highlight left behind would claim it still was.
         WindowEvent::CursorLeft { .. } => vec![ViewportEvent::PointerLeft],
         _ => Vec::new(),
+    }
+}
+
+/// Whether the interface, rather than the model, is what an event was for.
+///
+/// A free function so the rule can be stated as a test: a window is needed to
+/// produce the two answers, but not to decide what they mean together.
+///
+/// Anything the interface actually consumed belongs to it. Beyond that, the
+/// events that point at something - a press, a move, a wheel, a pinch - also
+/// belong to it whenever it wants the pointer at all, because they would
+/// otherwise reach the model through the panel drawn over it. A pinch is one
+/// of those: two fingers over a list are a gesture about the list.
+fn claimed_by_interface(event: &ViewportEvent, consumed: bool, wants_pointer: bool) -> bool {
+    match event {
+        ViewportEvent::Wheel { .. }
+        | ViewportEvent::Pinch { .. }
+        | ViewportEvent::PointerPressed(_)
+        | ViewportEvent::PointerMoved { .. } => consumed || wants_pointer,
+        // A move is claimed only while no gesture is running; the reducer
+        // keeps a drag that began in the viewport.
+        _ => consumed,
     }
 }
 
@@ -7494,6 +7520,112 @@ mod tests {
             }),
             vec![ViewportEvent::PointerLeft]
         );
+    }
+
+    fn pinch(delta: f64, phase: winit::event::TouchPhase) -> WindowEvent {
+        WindowEvent::PinchGesture {
+            device_id: winit::event::DeviceId::dummy(),
+            delta,
+            phase,
+        }
+    }
+
+    #[test]
+    fn a_trackpad_pinch_reaches_the_reducer_as_a_zoom() {
+        use winit::event::TouchPhase;
+
+        // winit reports magnification as positive, which is the direction a
+        // zoom towards the model is asked for in, and the proportion is
+        // carried across unchanged.
+        assert_eq!(
+            translate(&pinch(0.25, TouchPhase::Moved)),
+            vec![ViewportEvent::Pinch { delta: 0.25 }]
+        );
+        assert_eq!(
+            translate(&pinch(-0.25, TouchPhase::Moved)),
+            vec![ViewportEvent::Pinch { delta: -0.25 }]
+        );
+    }
+
+    #[test]
+    fn the_beginning_and_end_of_a_pinch_are_not_a_cancelled_gesture() {
+        use winit::event::TouchPhase;
+
+        // A phase is not a camera operation and, more importantly, is not
+        // focus loss: translating either end of a pinch into a cancellation
+        // would drop the pointer and end a mouse drag that was in progress.
+        for phase in [
+            TouchPhase::Started,
+            TouchPhase::Ended,
+            TouchPhase::Cancelled,
+        ] {
+            assert_eq!(
+                translate(&pinch(0.0, phase)),
+                vec![ViewportEvent::Pinch { delta: 0.0 }],
+                "{phase:?} did not translate as a pinch of nothing"
+            );
+        }
+
+        // And the reducer treats that as nothing happening, with a drag and a
+        // pointer that belong to a different device left alone.
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        input
+            .frame(([-5.0, -5.0, -5.0], [5.0, 5.0, 5.0]))
+            .expect("frames");
+        input.handle(ViewportEvent::PointerMoved { x: 300.0, y: 200.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        let before = *input.camera();
+        let _ = input.take_redraw();
+
+        for phase in [TouchPhase::Started, TouchPhase::Ended] {
+            for event in translate(&pinch(0.0, phase)) {
+                input.handle(event, false);
+            }
+        }
+
+        assert_eq!(*input.camera(), before, "a pinch phase moved the camera");
+        assert!(input.is_dragging(), "a pinch phase ended a mouse drag");
+        assert!(!input.take_redraw(), "a pinch phase asked for a frame");
+
+        // The drag still works afterwards, which is what "the pointer was not
+        // discarded" actually means.
+        input.handle(ViewportEvent::PointerMoved { x: 360.0, y: 240.0 }, false);
+        assert_ne!(
+            input.camera().eye(),
+            before.eye(),
+            "the drag stopped turning the model after a pinch phase"
+        );
+    }
+
+    #[test]
+    fn two_fingers_over_a_panel_belong_to_the_panel() {
+        let moved = ViewportEvent::PointerMoved { x: 1.0, y: 2.0 };
+        for event in [
+            ViewportEvent::Pinch { delta: 0.3 },
+            ViewportEvent::Wheel { delta: 1.0 },
+        ] {
+            assert!(
+                claimed_by_interface(&event, true, false),
+                "{event:?} was consumed by the interface and reached the model"
+            );
+            assert!(
+                claimed_by_interface(&event, false, true),
+                "{event:?} happened while the interface wanted the pointer"
+            );
+            assert!(
+                !claimed_by_interface(&event, false, false),
+                "{event:?} never reached the model"
+            );
+        }
+        // And the rule is not "everything is the interface's": a release ends
+        // a gesture the viewport started, wherever the pointer has got to.
+        assert!(!claimed_by_interface(
+            &ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+            true
+        ));
+        assert!(claimed_by_interface(&moved, false, true));
     }
 
     #[test]

@@ -120,6 +120,18 @@ of the view. A wheel over an interface panel belongs to that panel and does not
 move the camera. In an orthographic view the wheel changes the scale without
 moving the eye, exactly as swapping projections describes.
 
+A two-finger pinch on a trackpad does the same thing, towards the same place,
+and is the same operation underneath rather than a second kind of zoom: spread
+to come closer, close to go away. It is anchored on the pointer exactly as the
+wheel is, holds the same target-plane point with the same limitation about
+surfaces nearer or further than it, obeys the same limits, and belongs to a
+panel when it happens over one. The one difference is the unit: a pinch already
+says what proportion to change the view by, where a wheel counts notches. The
+beginning and the end of a gesture carry no magnification and do nothing at all,
+including to a mouse drag that happens to be in progress. Pinch is delivered by
+macOS; on Windows and Linux a trackpad's two-finger gesture arrives as scrolling
+and is zoomed by the wheel path instead.
+
 Moving the pointer
 over the model marks the face under it, and the same face wherever that
 definition appears; moving it over a row of the list marks that whole

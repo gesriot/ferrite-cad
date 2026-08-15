@@ -84,6 +84,12 @@ pub enum ViewportEvent {
     Wheel {
         delta: f32,
     },
+    /// Two fingers spreading or closing on a trackpad. Positive comes towards
+    /// the model, and the number is already the proportion the view changes
+    /// by, unlike a wheel's notches.
+    Pinch {
+        delta: f32,
+    },
     /// A named direction, from a key or a panel.
     Look(StandardView),
 }
@@ -301,40 +307,15 @@ impl ViewportInput {
                 if claimed_by_ui {
                     return;
                 }
-                let before = self.camera;
-                match self.pointer {
-                    // A wheel is aimed. What the user is pointing at is what
-                    // they are zooming towards, and a view that came closer to
-                    // the middle of the window instead would have to be dragged
-                    // back after every notch.
-                    Some((x, y)) => {
-                        // Pixels from the middle, positive right and up. This
-                        // is where the window's idea of which way `y` grows
-                        // meets the camera's, the same as it does for a drag.
-                        let right = x - self.camera.width() as f32 * 0.5;
-                        let up = self.camera.height() as f32 * 0.5 - y;
-                        self.camera.zoom_at(delta * WHEEL_ZOOM, right, up);
-                    }
-                    // Nothing to aim at: the pointer has left, or a gesture was
-                    // cancelled, and the middle of the view is the only place
-                    // left to zoom about.
-                    None => self.camera.zoom(delta * WHEEL_ZOOM),
-                }
-                if self.camera == before {
-                    // A wheel wound past its limit moves nothing, and nothing
-                    // that was asked about has been answered differently.
+                // A notch is a step, not a proportion, so it is scaled into
+                // one. A pinch already arrives as a proportion.
+                self.zoom_by(delta * WHEEL_ZOOM);
+            }
+            ViewportEvent::Pinch { delta } => {
+                if claimed_by_ui {
                     return;
                 }
-                // Every pixel now shows something else, so a question about
-                // what was under the pointer, a click waiting to be answered,
-                // and a press that might still become one all belonged to a
-                // picture that is no longer on screen. The gesture itself is
-                // not one of them: a wheel during a drag is a zoom during a
-                // drag, and the button is still down.
-                self.hover = Hover::Cleared;
-                self.pick = None;
-                self.pressed_at = None;
-                self.redraw = true;
+                self.zoom_by(delta);
             }
             ViewportEvent::Look(view) => {
                 if claimed_by_ui {
@@ -344,6 +325,53 @@ impl ViewportInput {
                 self.redraw = true;
             }
         }
+    }
+
+    /// Zooms by a proportion, however the user asked for it.
+    ///
+    /// One rule for a wheel and for two fingers on a trackpad: where the zoom
+    /// is anchored, what the camera will refuse, and what a change of view
+    /// invalidates are properties of zooming and not of the device that asked
+    /// for it. The devices differ only in what a unit of theirs is worth, and
+    /// that conversion is made before this is called.
+    ///
+    /// `amount` is what the camera scale is multiplied by the exponential of,
+    /// negated: positive comes towards the model.
+    fn zoom_by(&mut self, amount: f32) {
+        let before = self.camera;
+        match self.pointer {
+            // A zoom is aimed. What the user is pointing at is what they are
+            // zooming towards, and a view that came closer to the middle of
+            // the window instead would have to be dragged back afterwards.
+            Some((x, y)) => {
+                // Pixels from the middle, positive right and up. This is where
+                // the window's idea of which way `y` grows meets the camera's,
+                // the same as it does for a drag.
+                let right = x - self.camera.width() as f32 * 0.5;
+                let up = self.camera.height() as f32 * 0.5 - y;
+                self.camera.zoom_at(amount, right, up);
+            }
+            // Nowhere to aim: the pointer has left, or a gesture was
+            // cancelled, and the middle of the view is the only place left to
+            // zoom about. A pointer over a panel is not this case; that event
+            // belongs to the panel and never reaches here.
+            None => self.camera.zoom(amount),
+        }
+        if self.camera == before {
+            // Wound past its limit, or a step too small for the camera to
+            // represent: nothing moved, so nothing that was asked about has
+            // been answered differently and no frame is owed.
+            return;
+        }
+        // Every pixel now shows something else, so a question about what was
+        // under the pointer, a click waiting to be answered, and a press that
+        // might still become one all belonged to a picture that is no longer
+        // on screen. The gesture itself is not one of them: a zoom during a
+        // drag is a zoom during a drag, and the button is still down.
+        self.hover = Hover::Cleared;
+        self.pick = None;
+        self.pressed_at = None;
+        self.redraw = true;
     }
 
     /// Takes what a finished load produced, and says what to do about it.
@@ -739,6 +767,247 @@ mod tests {
             target[1] + side[1] * right + up[1] * above,
             target[2] + side[2] * right + up[2] * above,
         ]
+    }
+
+    #[test]
+    fn two_fingers_spreading_come_closer_and_closing_go_away_by_exactly_that_much() {
+        for delta in [0.3f32, -0.3, 0.05, -1.2] {
+            let mut input = ready();
+            let before = input.camera().world_per_pixel();
+
+            input.handle(ViewportEvent::Pinch { delta }, false);
+
+            let after = input.camera().world_per_pixel();
+            // A pinch is already a proportion. Nothing scales it on the way in.
+            assert!(
+                (after / before - (-delta).exp()).abs() < 1e-4,
+                "a pinch of {delta} changed the scale by {} where it means {}",
+                after / before,
+                (-delta).exp()
+            );
+            assert_eq!(
+                delta > 0.0,
+                after < before,
+                "a pinch of {delta} went the wrong way"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pinch_and_a_wheel_ask_the_camera_for_the_same_thing() {
+        let mut input = ready();
+        input.handle(ViewportEvent::PointerMoved { x: 610.0, y: 130.0 }, false);
+        let mut directly = *input.camera();
+
+        input.handle(ViewportEvent::Pinch { delta: 0.37 }, false);
+
+        // The one operation, asked for by hand at the one place a pointer
+        // becomes camera axes.
+        directly.zoom_at(0.37, 610.0 - 400.0, 300.0 - 130.0);
+        assert_eq!(
+            *input.camera(),
+            directly,
+            "a pinch reached the camera differently from a zoom"
+        );
+    }
+
+    #[test]
+    fn a_pinch_keeps_what_it_was_pointed_at_under_the_pointer() {
+        for projection in [Projection::Perspective, Projection::Orthographic] {
+            for delta in [0.4f32, -0.4] {
+                let mut input = ready();
+                assert!(
+                    projection == Projection::Perspective || input.set_projection(projection),
+                    "the camera refused a projection to zoom in"
+                );
+                // Somewhere with no symmetry to hide a mistake in.
+                input.handle(ViewportEvent::PointerMoved { x: 660.0, y: 110.0 }, false);
+                let before = *input.camera();
+                let anchor = target_plane_point(&before, 660.0, 110.0);
+
+                input.handle(ViewportEvent::Pinch { delta }, false);
+
+                let after = *input.camera();
+                let (was, now) = (pixel_of(&before, anchor), pixel_of(&after, anchor));
+                assert!(
+                    (was.0 - now.0).abs() <= 0.2 && (was.1 - now.1).abs() <= 0.2,
+                    "{projection:?} pinch of {delta}: {was:?} slid to {now:?}"
+                );
+                assert!(
+                    (was.0 - 660.0).abs() < 0.2 && (was.1 - 110.0).abs() < 0.2,
+                    "the gate measured the wrong place: {was:?}"
+                );
+                // The picture really changed, so holding everything still
+                // could not pass.
+                assert!(
+                    (after.world_per_pixel() - before.world_per_pixel()).abs()
+                        > before.world_per_pixel() * 0.1,
+                    "{projection:?}: the scale did not change"
+                );
+                if projection == Projection::Orthographic {
+                    assert!(
+                        (after.distance() - before.distance()).abs() <= before.distance() * 1e-5,
+                        "a pinch in a drawing moved the eye instead of changing the scale"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_pinch_aims_at_the_latest_pointer_and_at_the_middle_when_there_is_none() {
+        let mut input = ready();
+        input.handle(ViewportEvent::PointerMoved { x: 120.0, y: 500.0 }, false);
+        input.handle(ViewportEvent::PointerMoved { x: 700.0, y: 90.0 }, false);
+        let mut aimed = *input.camera();
+        aimed.zoom_at(0.3, 700.0 - 400.0, 300.0 - 90.0);
+
+        input.handle(ViewportEvent::Pinch { delta: 0.3 }, false);
+        assert_eq!(
+            *input.camera(),
+            aimed,
+            "a pinch aimed at somewhere the pointer had already left"
+        );
+
+        for leaving in [ViewportEvent::PointerLeft, ViewportEvent::GestureCancelled] {
+            let mut input = ready();
+            input.handle(ViewportEvent::PointerMoved { x: 700.0, y: 90.0 }, false);
+            input.handle(leaving, false);
+            let mut centred = *input.camera();
+            centred.zoom(0.3);
+
+            input.handle(ViewportEvent::Pinch { delta: 0.3 }, false);
+            assert_eq!(
+                *input.camera(),
+                centred,
+                "after {leaving:?} a pinch aimed at something"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pinch_the_interface_claimed_changes_nothing_at_all() {
+        let mut input = ready();
+        input.handle(ViewportEvent::PointerMoved { x: 300.0, y: 200.0 }, false);
+        click(&mut input, (120.0, 80.0), false);
+        let before = *input.camera();
+        let _ = input.take_redraw();
+
+        input.handle(ViewportEvent::Pinch { delta: 0.6 }, true);
+
+        assert_eq!(*input.camera(), before, "a claimed pinch moved the camera");
+        assert_eq!(
+            input.take_pick(),
+            Some((120.0, 80.0)),
+            "a claimed pinch forgot a click nobody had answered"
+        );
+        assert!(!input.take_redraw(), "a claimed pinch asked for a frame");
+    }
+
+    #[test]
+    fn a_pinch_that_moved_the_view_forgets_the_questions_but_not_the_gesture() {
+        let mut input = ready();
+        assert!(input.set_projection(Projection::Orthographic));
+        click(&mut input, (120.0, 80.0), false);
+        input.handle(ViewportEvent::PointerMoved { x: 240.0, y: 160.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Middle), false);
+        input.handle(ViewportEvent::PointerMoved { x: 244.0, y: 162.0 }, false);
+        let _ = input.take_redraw();
+
+        input.handle(ViewportEvent::Pinch { delta: 0.35 }, false);
+
+        assert_eq!(input.take_hover(), Hover::Cleared, "a stale hover survived");
+        assert_eq!(input.take_pick(), None, "a stale click survived");
+        assert!(
+            input.is_dragging(),
+            "a pinch ended a drag whose button is still down"
+        );
+        assert_eq!(
+            input.projection(),
+            Projection::Orthographic,
+            "a pinch changed how the model is drawn"
+        );
+        assert!(input.take_redraw(), "a pinch did not ask to be drawn");
+
+        // And the press half is gone, so the release answers nothing.
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        let _ = input.take_redraw();
+        input.handle(ViewportEvent::Pinch { delta: 0.35 }, false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        assert_eq!(
+            input.take_pick(),
+            None,
+            "a press from before the pinch still chose something after it"
+        );
+    }
+
+    #[test]
+    fn a_pinch_that_cannot_move_the_view_leaves_everything_exactly_as_it_was() {
+        // The phases a trackpad reports around a real gesture carry no
+        // magnification at all, and neither does a device that reports
+        // nonsense. None of them is a camera operation.
+        for delta in [0.0f32, f32::NAN, f32::INFINITY, 1e-30, -1e-30] {
+            let mut input = ready();
+            // A camera at a pose whose direction cannot be normalised and
+            // rebuilt bit for bit, which is where an accidental movement of
+            // one ULP would show.
+            input.camera.orbit(0.0137, -0.0089);
+            input.camera.pan(0.17, -0.11);
+            input.camera.zoom_at(0.031, 173.0, -91.0);
+            click(&mut input, (120.0, 80.0), false);
+            input.handle(ViewportEvent::PointerMoved { x: 240.0, y: 160.0 }, false);
+            let before = *input.camera();
+            let _ = input.take_redraw();
+
+            input.handle(ViewportEvent::Pinch { delta }, false);
+
+            assert_eq!(
+                *input.camera(),
+                before,
+                "a pinch of {delta} moved the camera"
+            );
+            assert_eq!(
+                input.take_hover(),
+                Hover::At(240.0, 160.0),
+                "a pinch of {delta} forgot the pending hover"
+            );
+            assert_eq!(
+                input.take_pick(),
+                Some((120.0, 80.0)),
+                "a pinch of {delta} forgot the pending click"
+            );
+            assert!(!input.take_redraw(), "a pinch of {delta} asked for a frame");
+        }
+    }
+
+    #[test]
+    fn several_pinch_updates_before_a_frame_owe_one_frame() {
+        let mut input = ready();
+        input.handle(ViewportEvent::PointerMoved { x: 500.0, y: 400.0 }, false);
+        for _ in 0..6 {
+            input.handle(ViewportEvent::Pinch { delta: 0.05 }, false);
+        }
+        assert!(input.take_redraw(), "six pinch updates owed no frame");
+        assert!(!input.take_redraw(), "a flag counted instead of latching");
+    }
+
+    #[test]
+    fn a_pinch_wound_past_the_limit_stops_asking_for_frames() {
+        let mut input = ready();
+        input.handle(ViewportEvent::PointerMoved { x: 500.0, y: 400.0 }, false);
+        for _ in 0..200 {
+            input.handle(ViewportEvent::Pinch { delta: 1.0 }, false);
+        }
+        let before = *input.camera();
+        let _ = input.take_redraw();
+
+        input.handle(ViewportEvent::Pinch { delta: 1.0 }, false);
+
+        assert_eq!(*input.camera(), before, "a clamped pinch moved the camera");
+        assert!(!input.take_redraw(), "a clamped pinch asked for a frame");
     }
 
     #[test]
