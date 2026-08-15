@@ -581,6 +581,47 @@ mod tests {
     }
 
     #[test]
+    fn a_wheel_with_no_vertical_step_changes_nothing_that_is_waiting() {
+        let mut input = ready();
+        // A horizontal-only trackpad gesture reaches the reducer with a zero
+        // vertical delta. Put the perspective eye at a pose whose direction
+        // cannot be normalised and rebuilt bit-for-bit, which reproduced the
+        // old one-ULP movement.
+        for step in 1..=2 {
+            input
+                .camera
+                .orbit(step as f32 * 0.0137, step as f32 * -0.0089);
+            input.camera.pan(step as f32 * 0.17, step as f32 * -0.11);
+            input
+                .camera
+                .zoom_at((step % 7) as f32 * 0.031 - 0.08, 173.0, -91.0);
+        }
+        click(&mut input, (120.0, 80.0), false);
+        input.handle(ViewportEvent::PointerMoved { x: 240.0, y: 160.0 }, false);
+        let before = *input.camera();
+        let _ = input.take_redraw();
+
+        input.handle(ViewportEvent::Wheel { delta: 0.0 }, false);
+
+        assert_eq!(
+            *input.camera(),
+            before,
+            "a zero wheel step moved the camera"
+        );
+        assert_eq!(
+            input.take_hover(),
+            Hover::At(240.0, 160.0),
+            "a zero wheel step forgot the pending hover"
+        );
+        assert_eq!(
+            input.take_pick(),
+            Some((120.0, 80.0)),
+            "a zero wheel step forgot the pending click"
+        );
+        assert!(!input.take_redraw(), "a zero wheel step asked for a frame");
+    }
+
+    #[test]
     fn a_zoom_forgets_what_was_asked_about_the_picture_it_replaced() {
         let mut input = ready();
         click(&mut input, (120.0, 80.0), false);

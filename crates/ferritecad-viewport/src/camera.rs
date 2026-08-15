@@ -500,6 +500,14 @@ impl Camera {
         let Some(mut candidate) = self.zoomed(amount) else {
             return;
         };
+        if candidate == *self {
+            // A zero vertical wheel delta, or one too small to change the
+            // bounded f32 scale, is no camera operation. In particular, do
+            // not rebuild a perspective eye from its normalised direction:
+            // that can change one component by an ULP and make a reducer
+            // discard questions about a picture that did not move.
+            return;
+        }
 
         // How much less world a pixel covers now. The anchor is at the same
         // multiple of the old scale as it must end up of the new one, so the
@@ -539,7 +547,11 @@ impl Camera {
                 // Scale, not distance. Moving the eye along the direction it
                 // looks changes nothing an orthographic view can show, so a
                 // zoom that did that would be a wheel that does nothing.
-                candidate.half_height = self.bounded_scale(self.half_height * (-amount).exp())?;
+                let bounded = self.bounded_scale(self.half_height * (-amount).exp())?;
+                if bounded == self.half_height {
+                    return Some(candidate);
+                }
+                candidate.half_height = bounded;
             }
             Projection::Perspective => {
                 let distance = self.distance();
@@ -547,6 +559,9 @@ impl Camera {
                     return None;
                 }
                 let bounded = self.bounded_scale(distance * (-amount).exp())?;
+                if bounded == distance {
+                    return Some(candidate);
+                }
                 let direction = self.direction();
                 candidate.eye = [
                     self.target[0] + direction[0] * bounded,

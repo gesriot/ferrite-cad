@@ -114,9 +114,11 @@ getting from a whole model to one corner of it takes no compensating drag. What
 is held exactly is the place where the pointer meets the plane through what you
 are looking at; a surface much nearer or further than that plane drifts a
 little, which is the honest cost of not reading the depth of every pixel back
-from the graphics card. With the pointer outside the model area the wheel falls
-back to the middle of the view, and in an orthographic view it changes the
-scale without moving the eye, exactly as swapping projections describes.
+from the graphics card. When the window has no current pointer position because
+the pointer left or a gesture was cancelled, the wheel falls back to the middle
+of the view. A wheel over an interface panel belongs to that panel and does not
+move the camera. In an orthographic view the wheel changes the scale without
+moving the eye, exactly as swapping projections describes.
 
 Moving the pointer
 over the model marks the face under it, and the same face wherever that

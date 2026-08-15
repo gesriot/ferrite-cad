@@ -3383,3 +3383,31 @@ fn a_wheel_cannot_be_wound_past_what_the_numbers_can_hold() {
         );
     }
 }
+
+#[test]
+fn a_wheel_step_too_small_to_change_scale_changes_no_pose() {
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        let mut camera = framed();
+        assert!(
+            projection == Projection::Perspective || camera.set_projection(projection),
+            "the camera refused a projection to test"
+        );
+        // Leave the perspective eye at coordinates that cannot all be
+        // reconstructed bit-for-bit from a normalised direction and distance.
+        // Before the no-op rule, the second iteration exposed a one-ULP move.
+        for step in 1..=2 {
+            camera.orbit(step as f32 * 0.0137, step as f32 * -0.0089);
+            camera.pan(step as f32 * 0.17, step as f32 * -0.11);
+            camera.zoom_at((step % 7) as f32 * 0.031 - 0.08, 173.0, -91.0);
+        }
+
+        for amount in [0.0, f32::MIN_POSITIVE, -f32::MIN_POSITIVE] {
+            let before = camera;
+            camera.zoom_at(amount, 173.0, -91.0);
+            assert_eq!(
+                camera, before,
+                "{projection:?}: a step of {amount} changed the camera"
+            );
+        }
+    }
+}
