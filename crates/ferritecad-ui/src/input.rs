@@ -85,8 +85,8 @@ pub enum ViewportEvent {
         delta: f32,
     },
     /// Two fingers spreading or closing on a trackpad. Positive comes towards
-    /// the model, and the number is already the proportion the view changes
-    /// by, unlike a wheel's notches.
+    /// the model, and the number is already a magnification delta rather than
+    /// a wheel's notches.
     Pinch {
         delta: f32,
     },
@@ -307,8 +307,8 @@ impl ViewportInput {
                 if claimed_by_ui {
                     return;
                 }
-                // A notch is a step, not a proportion, so it is scaled into
-                // one. A pinch already arrives as a proportion.
+                // A notch is a step, not a camera amount, so it is scaled into
+                // one. A pinch already arrives as a magnification delta.
                 self.zoom_by(delta * WHEEL_ZOOM);
             }
             ViewportEvent::Pinch { delta } => {
@@ -327,7 +327,7 @@ impl ViewportInput {
         }
     }
 
-    /// Zooms by a proportion, however the user asked for it.
+    /// Zooms by an exponential amount, however the user asked for it.
     ///
     /// One rule for a wheel and for two fingers on a trackpad: where the zoom
     /// is anchored, what the camera will refuse, and what a change of view
@@ -778,7 +778,8 @@ mod tests {
             input.handle(ViewportEvent::Pinch { delta }, false);
 
             let after = input.camera().world_per_pixel();
-            // A pinch is already a proportion. Nothing scales it on the way in.
+            // A pinch is already a magnification delta. Nothing scales it on
+            // the way in.
             assert!(
                 (after / before - (-delta).exp()).abs() < 1e-4,
                 "a pinch of {delta} changed the scale by {} where it means {}",
@@ -890,7 +891,11 @@ mod tests {
         let mut input = ready();
         input.handle(ViewportEvent::PointerMoved { x: 300.0, y: 200.0 }, false);
         click(&mut input, (120.0, 80.0), false);
+        // A second press has not yet become either a click or a drag. A pinch
+        // the interface owns must not decide that model interaction for it.
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
         let before = *input.camera();
+        let pressed_before = input.pressed_at;
         let _ = input.take_redraw();
 
         input.handle(ViewportEvent::Pinch { delta: 0.6 }, true);
@@ -900,6 +905,14 @@ mod tests {
             input.take_pick(),
             Some((120.0, 80.0)),
             "a claimed pinch forgot a click nobody had answered"
+        );
+        assert_eq!(
+            input.pressed_at, pressed_before,
+            "a claimed pinch forgot a press that belonged to the model"
+        );
+        assert!(
+            input.is_dragging(),
+            "a claimed pinch ended the model's press"
         );
         assert!(!input.take_redraw(), "a claimed pinch asked for a frame");
     }
@@ -980,6 +993,33 @@ mod tests {
                 "a pinch of {delta} forgot the pending click"
             );
             assert!(!input.take_redraw(), "a pinch of {delta} asked for a frame");
+
+            // The other half of a click cannot coexist with a pending hover
+            // in a real reducer state: pressing clears hover. Exercise it on
+            // its own reducer rather than manufacturing an impossible state.
+            let mut pressed = ready();
+            pressed.handle(ViewportEvent::PointerMoved { x: 310.0, y: 210.0 }, false);
+            pressed.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+            let camera_before = *pressed.camera();
+            let pressed_before = pressed.pressed_at;
+            let _ = pressed.take_redraw();
+
+            pressed.handle(ViewportEvent::Pinch { delta }, false);
+
+            assert_eq!(
+                *pressed.camera(),
+                camera_before,
+                "a pinch of {delta} moved the camera during a pending press"
+            );
+            assert_eq!(
+                pressed.pressed_at, pressed_before,
+                "a pinch of {delta} forgot a pending press"
+            );
+            assert!(pressed.is_dragging(), "a pinch of {delta} ended a press");
+            assert!(
+                !pressed.take_redraw(),
+                "a pinch of {delta} redrew a pending press"
+            );
         }
     }
 
@@ -1001,12 +1041,24 @@ mod tests {
         for _ in 0..200 {
             input.handle(ViewportEvent::Pinch { delta: 1.0 }, false);
         }
+        click(&mut input, (120.0, 80.0), false);
+        input.handle(ViewportEvent::PointerMoved { x: 500.0, y: 400.0 }, false);
         let before = *input.camera();
         let _ = input.take_redraw();
 
         input.handle(ViewportEvent::Pinch { delta: 1.0 }, false);
 
         assert_eq!(*input.camera(), before, "a clamped pinch moved the camera");
+        assert_eq!(
+            input.take_hover(),
+            Hover::At(500.0, 400.0),
+            "a clamped pinch forgot the pending hover"
+        );
+        assert_eq!(
+            input.take_pick(),
+            Some((120.0, 80.0)),
+            "a clamped pinch forgot the pending click"
+        );
         assert!(!input.take_redraw(), "a clamped pinch asked for a frame");
     }
 

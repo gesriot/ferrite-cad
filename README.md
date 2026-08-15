@@ -125,12 +125,12 @@ and is the same operation underneath rather than a second kind of zoom: spread
 to come closer, close to go away. It is anchored on the pointer exactly as the
 wheel is, holds the same target-plane point with the same limitation about
 surfaces nearer or further than it, obeys the same limits, and belongs to a
-panel when it happens over one. The one difference is the unit: a pinch already
-says what proportion to change the view by, where a wheel counts notches. The
-beginning and the end of a gesture carry no magnification and do nothing at all,
-including to a mouse drag that happens to be in progress. Pinch is delivered by
-macOS; on Windows and Linux a trackpad's two-finger gesture arrives as scrolling
-and is zoomed by the wheel path instead.
+panel when it happens over one. The one difference is the unit: a pinch carries
+a magnification delta, where a wheel counts notches. A phase event carrying no
+magnification does nothing at all, including to a mouse drag that happens to be
+in progress. Winit documents its dedicated pinch event on macOS and iOS;
+FerriteCAD claims the desktop behaviour only on macOS. No particular mapping of
+pinch gestures is claimed for Windows or Linux input stacks.
 
 Moving the pointer
 over the model marks the face under it, and the same face wherever that

@@ -2250,11 +2250,12 @@ fn translate(event: &WindowEvent) -> Vec<ViewportEvent> {
             };
             vec![ViewportEvent::Wheel { delta: amount }]
         }
-        // Two fingers on a trackpad, which macOS reports as a proportion to
-        // magnify by rather than as a number of notches. The phase is
-        // deliberately not translated: the start and end of a pinch carry no
-        // magnification, and calling either a cancelled gesture would drop the
-        // pointer and end a mouse drag that has nothing to do with it.
+        // Two fingers on a trackpad, which macOS reports as a magnification
+        // delta rather than as a number of notches. The phase is deliberately
+        // not translated into a semantic event of its own: it describes this
+        // gesture's lifetime, not focus loss. In particular, a zero-delta
+        // start, end or cancellation must not drop the pointer or end an
+        // unrelated mouse drag.
         WindowEvent::PinchGesture { delta, .. } => {
             vec![ViewportEvent::Pinch {
                 delta: *delta as f32,
@@ -7535,8 +7536,8 @@ mod tests {
         use winit::event::TouchPhase;
 
         // winit reports magnification as positive, which is the direction a
-        // zoom towards the model is asked for in, and the proportion is
-        // carried across unchanged.
+        // zoom towards the model is asked for in, and the magnification delta
+        // is carried across unchanged.
         assert_eq!(
             translate(&pinch(0.25, TouchPhase::Moved)),
             vec![ViewportEvent::Pinch { delta: 0.25 }]
@@ -7548,12 +7549,13 @@ mod tests {
     }
 
     #[test]
-    fn the_beginning_and_end_of_a_pinch_are_not_a_cancelled_gesture() {
+    fn a_non_moving_pinch_phase_is_not_a_cancelled_mouse_gesture() {
         use winit::event::TouchPhase;
 
-        // A phase is not a camera operation and, more importantly, is not
-        // focus loss: translating either end of a pinch into a cancellation
-        // would drop the pointer and end a mouse drag that was in progress.
+        // A phase with no magnification is not a camera operation and, more
+        // importantly, is not focus loss: translating the lifetime of a pinch
+        // into a cancellation would drop the pointer and end a mouse drag that
+        // was in progress.
         for phase in [
             TouchPhase::Started,
             TouchPhase::Ended,
@@ -7578,7 +7580,11 @@ mod tests {
         let before = *input.camera();
         let _ = input.take_redraw();
 
-        for phase in [TouchPhase::Started, TouchPhase::Ended] {
+        for phase in [
+            TouchPhase::Started,
+            TouchPhase::Ended,
+            TouchPhase::Cancelled,
+        ] {
             for event in translate(&pinch(0.0, phase)) {
                 input.handle(event, false);
             }
