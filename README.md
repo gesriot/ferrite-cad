@@ -143,6 +143,26 @@ Framing keeps whatever tilt you have set. To put the horizon back, ask for a
 named view or simply orbit. Like the pinch, this is a gesture winit documents
 for macOS and iOS, and the desktop behaviour is claimed only on macOS.
 
+A two-finger double tap magnifies, and a second one puts the view back exactly
+where it was. What it magnifies is stated rather than guessed at: whatever is
+selected, if anything selected is drawn, and otherwise everything currently
+visible in the picture, which is not the same as everything in the file because
+hidden parts are not on screen to be looked at. It is deliberately not the thing
+under the pointer: the gesture carries no position and no geometry, and nothing
+here reads the depth of a pixel to find out what is behind it. With nothing
+selected and nothing visible there is nothing to look at, and the gesture does
+nothing at all.
+
+One level and no more. The tap that goes back uses up the way back, so the next
+one magnifies afresh. Moving the view yourself in between, by any means at all,
+gives up the way back rather than surprising you with it later: an orbit, a
+drag, a wheel, a pinch, a turn, a named view, a change of projection, either
+kind of framing and resizing the window all count. Opening a document gives it
+up too, because a view of the document you just closed is not a view of this
+one. There is no button and no shortcut, and nothing about it is remembered
+after the application closes. Like the other trackpad gestures, this one is
+delivered by macOS.
+
 Moving the pointer
 over the model marks the face under it, and the same face wherever that
 definition appears; moving it over a row of the list marks that whole

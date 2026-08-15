@@ -1545,6 +1545,20 @@ impl ApplicationHandler<AppEvent> for App {
             }
 
             other => {
+                // A double tap is the one gesture that has to know what is on
+                // screen before it can say where to look, so it takes the
+                // route that can read the picture. Every other gesture is
+                // camera state alone and takes the route that cannot.
+                if let Err(error) = magnify_gesture(
+                    &live.scene,
+                    live.scene.prepared.snapshot(),
+                    &mut self.input,
+                    &other,
+                    response.consumed,
+                    live.egui.egui_wants_pointer_input(),
+                ) {
+                    eprintln!("ferritecad: {error}");
+                }
                 apply_viewport_input(
                     &mut self.input,
                     &other,
@@ -2298,7 +2312,7 @@ fn claimed_by_interface(event: &ViewportEvent, consumed: bool, wants_pointer: bo
         | ViewportEvent::Pinch { .. }
         | ViewportEvent::Roll { .. }
         | ViewportEvent::PointerPressed(_)
-        | ViewportEvent::PointerMoved { .. } => consumed || wants_pointer,
+        | ViewportEvent::PointerMoved { .. } => pointer_gesture_claimed(consumed, wants_pointer),
         // A move is claimed only while no gesture is running; the reducer
         // keeps a drag that began in the viewport.
         _ => consumed,
@@ -2320,6 +2334,59 @@ fn apply_viewport_input(
         let claimed = claimed_by_interface(&event, consumed, wants_pointer);
         input.handle(event, claimed);
     }
+}
+
+/// What a double tap on a trackpad asks to be looked at.
+///
+/// What is chosen, if anything chosen is drawn; otherwise everything that is
+/// still on screen. A double tap carries no position and no geometry, so it
+/// cannot mean "this part here": it means "the thing I am working on", and
+/// what the user is working on is what they chose. With nothing chosen it can
+/// only mean the picture, and the picture is what is visible in it rather
+/// than everything the file happens to contain.
+///
+/// Both answers are the extents the rest of the application already frames
+/// with. Neither is recomputed here.
+fn magnified_bounds<P>(
+    scene: &LiveScene<P>,
+    snapshot: &RenderSnapshot,
+) -> Option<([f32; 3], [f32; 3])> {
+    selection_bounds(scene, snapshot).or_else(|| scene.visibility.bounds(snapshot))
+}
+
+/// One level of smart magnification, and the way back from it.
+///
+/// The semantic route a window takes for a double tap, callable without one.
+/// The picture and what is chosen in it arrive by shared reference: this
+/// route reads them to decide where to look and cannot change either.
+///
+/// A gesture the interface wanted is inert, exactly as a wheel, a pinch or a
+/// turn over a panel is. Any other event is not this gesture and is left to
+/// the camera route beside this one.
+fn magnify_gesture<P>(
+    scene: &LiveScene<P>,
+    snapshot: &RenderSnapshot,
+    camera: &mut ViewportInput,
+    event: &WindowEvent,
+    consumed: bool,
+    wants_pointer: bool,
+) -> Result<bool> {
+    if !matches!(event, WindowEvent::DoubleTapGesture { .. })
+        || pointer_gesture_claimed(consumed, wants_pointer)
+    {
+        return Ok(false);
+    }
+    camera.magnify(magnified_bounds(scene, snapshot))
+}
+
+/// Whether a gesture aimed at whatever is under the pointer belongs to the
+/// interface rather than to the model.
+///
+/// One statement, so the double tap cannot drift from the wheel, the pinch and
+/// the turn: a panel drawn over the viewport wants the pointer, and a gesture
+/// made over it is about the panel.
+fn pointer_gesture_claimed(consumed: bool, wants_pointer: bool) -> bool {
+    consumed || wants_pointer
 }
 
 fn button_of(button: MouseButton) -> Option<PointerButton> {
@@ -6542,6 +6609,405 @@ mod tests {
             "the fixture must begin with a face chosen"
         );
         (directory, scene, chosen)
+    }
+
+    fn double_tap() -> WindowEvent {
+        WindowEvent::DoubleTapGesture {
+            device_id: winit::event::DeviceId::dummy(),
+        }
+    }
+
+    #[test]
+    fn a_double_tap_magnifies_what_is_chosen_and_taps_back_to_where_it_was() {
+        let (_directory, scene, chosen) = plate_with_a_chosen_face();
+        let mut live = LiveScene::new(
+            (),
+            vec![a_body()],
+            FaceNames::default(),
+            Visibility::new(&scene.snapshot),
+        );
+        live.selection = chosen.clone();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        // Looking at the whole picture from a long way off, which is what a
+        // smart magnification has to improve on.
+        input
+            .frame(scene.snapshot.bounds().expect("an extent"))
+            .expect("frames");
+        input.handle(ViewportEvent::Wheel { delta: -6.0 }, false);
+        let away = *input.camera();
+        let _ = input.take_redraw();
+
+        magnify_gesture(
+            &live,
+            &scene.snapshot,
+            &mut input,
+            &double_tap(),
+            false,
+            false,
+        )
+        .expect("a double tap over a chosen face frames it");
+
+        assert_ne!(
+            *input.camera(),
+            away,
+            "a double tap did not magnify anything"
+        );
+        let closer = *input.camera();
+        assert!(
+            closer.world_per_pixel() < away.world_per_pixel(),
+            "a double tap did not come closer: {} against {}",
+            closer.world_per_pixel(),
+            away.world_per_pixel()
+        );
+
+        // And the way back is the same gesture again, exactly.
+        magnify_gesture(
+            &live,
+            &scene.snapshot,
+            &mut input,
+            &double_tap(),
+            false,
+            false,
+        )
+        .expect("a second double tap goes back");
+        assert_eq!(
+            *input.camera(),
+            away,
+            "a second double tap did not restore the view"
+        );
+    }
+
+    #[test]
+    fn magnifying_and_going_back_draw_the_very_same_pixels_again() {
+        let mut renderer = renderer_or_skip!();
+        let (snapshot, camera) = marker_beside_a_middle(200, 200);
+        let prepared = renderer
+            .prepare(std::sync::Arc::clone(&snapshot))
+            .expect("uploads");
+        let uploaded = renderer.geometry_uploads();
+        let marker = snapshot.pick_of(0).expect("drawn");
+        let marker_face = snapshot.face_of(0, 0).expect("numbered");
+
+        let mut live = LiveScene::new(
+            (),
+            Vec::new(),
+            FaceNames::default(),
+            Visibility::new(&snapshot),
+        );
+        live.selection = Selection::Definition(marker);
+
+        let mut input = ViewportInput::new();
+        input.resize(200, 200);
+        input
+            .frame(snapshot.bounds().expect("an extent"))
+            .expect("frames");
+        assert_eq!(
+            *input.camera(),
+            camera,
+            "the gate framed two different views"
+        );
+
+        let draw = |renderer: &mut Renderer, camera: &Camera| {
+            renderer
+                .render(
+                    &prepared,
+                    camera,
+                    Marked::Nothing,
+                    Marked::Nothing,
+                    &live.visibility,
+                )
+                .expect("draws")
+        };
+
+        let away = draw(&mut renderer, input.camera());
+        let marker_pixels: Vec<(u32, u32)> = (0..away.height())
+            .flat_map(|y| (0..away.width()).map(move |x| (x, y)))
+            .filter(|(x, y)| away.pick_at(*x, *y) == marker)
+            .collect();
+        assert!(!marker_pixels.is_empty(), "the marker was never drawn");
+
+        // The first tap: the chosen part fills the view.
+        assert!(
+            magnify_gesture(&live, &snapshot, &mut input, &double_tap(), false, false)
+                .expect("frames"),
+            "a double tap on a chosen part did nothing"
+        );
+        let closer = draw(&mut renderer, input.camera());
+        assert_ne!(
+            away.colour(),
+            closer.colour(),
+            "magnifying drew the same picture"
+        );
+        let now: Vec<(u32, u32)> = (0..closer.height())
+            .flat_map(|y| (0..closer.width()).map(move |x| (x, y)))
+            .filter(|(x, y)| closer.pick_at(*x, *y) == marker)
+            .collect();
+        assert!(
+            now.len() > marker_pixels.len() * 3,
+            "the chosen part did not fill the view: {} pixels became {}",
+            marker_pixels.len(),
+            now.len()
+        );
+
+        // It is the same part and the same face, and everything that is not a
+        // part is still nobody.
+        for (x, y) in &now {
+            assert_eq!(closer.pick_at(*x, *y), marker);
+            assert_eq!(closer.hit_at(*x, *y).face(), marker_face);
+        }
+        for (x, y) in (0..closer.height())
+            .flat_map(|y| (0..closer.width()).map(move |x| (x, y)))
+            .filter(|(x, y)| closer.pick_at(*x, *y) == PickId::NOTHING)
+        {
+            assert_eq!(
+                closer.hit_at(x, y).definition(),
+                PickId::NOTHING,
+                "the backdrop became something to click at ({x}, {y})"
+            );
+            assert_eq!(
+                closer.hit_at(x, y).face(),
+                ferritecad_viewport::FacePickId::NOTHING
+            );
+        }
+
+        // Drawing it again changes nothing about it.
+        let again = draw(&mut renderer, input.camera());
+        assert_eq!(
+            closer.colour(),
+            again.colour(),
+            "the same camera drew two different pictures"
+        );
+
+        // The second tap: exactly the picture that was there before, to the
+        // byte, which is the strongest thing "restored exactly" can mean.
+        assert!(
+            magnify_gesture(&live, &snapshot, &mut input, &double_tap(), false, false)
+                .expect("goes back"),
+            "a second double tap did nothing"
+        );
+        let back = draw(&mut renderer, input.camera());
+        assert_eq!(
+            away.colour(),
+            back.colour(),
+            "going back did not draw the picture it left"
+        );
+        for (x, y) in (0..back.height()).flat_map(|y| (0..back.width()).map(move |x| (x, y))) {
+            assert_eq!(
+                away.pick_at(x, y),
+                back.pick_at(x, y),
+                "going back changed what ({x}, {y}) belongs to"
+            );
+            assert_eq!(away.hit_at(x, y).face(), back.hit_at(x, y).face());
+        }
+
+        // None of it was a change to the model.
+        assert_eq!(
+            renderer.geometry_uploads(),
+            uploaded,
+            "magnifying uploaded geometry"
+        );
+    }
+
+    #[test]
+    fn a_double_tap_is_never_a_camera_event_as_well() {
+        // The two routes below the window arm are siblings, and only one of
+        // them may act on a double tap.
+        assert!(translate(&double_tap()).is_empty());
+    }
+
+    #[test]
+    fn a_double_tap_the_interface_wanted_changes_nothing_at_all() {
+        let (_directory, scene, chosen) = plate_with_a_chosen_face();
+        let mut live = LiveScene::new(
+            (),
+            vec![a_body()],
+            FaceNames::default(),
+            Visibility::new(&scene.snapshot),
+        );
+        live.selection = chosen;
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        input
+            .frame(scene.snapshot.bounds().expect("an extent"))
+            .expect("frames");
+        input.handle(ViewportEvent::PointerMoved { x: 120.0, y: 80.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        let before = *input.camera();
+        let _ = input.take_redraw();
+
+        for (consumed, wants_pointer) in [(true, false), (false, true), (true, true)] {
+            assert!(
+                !magnify_gesture(
+                    &live,
+                    &scene.snapshot,
+                    &mut input,
+                    &double_tap(),
+                    consumed,
+                    wants_pointer,
+                )
+                .expect("a claimed gesture is not a failure"),
+                "consumed {consumed}, wanted {wants_pointer}: the interface's gesture reached \
+                 the model"
+            );
+            assert_eq!(
+                *input.camera(),
+                before,
+                "consumed {consumed}, wanted {wants_pointer}: the camera moved"
+            );
+            assert!(
+                !input.take_redraw(),
+                "consumed {consumed}, wanted {wants_pointer}: a frame was owed"
+            );
+        }
+
+        // Including the way back: a gesture the panel took cannot have started
+        // a magnification to undo.
+        assert_eq!(
+            input.take_pick(),
+            Some((120.0, 80.0)),
+            "a claimed double tap forgot a waiting click"
+        );
+        assert!(
+            magnify_gesture(
+                &live,
+                &scene.snapshot,
+                &mut input,
+                &double_tap(),
+                false,
+                false,
+            )
+            .expect("frames"),
+            "the unclaimed gesture had nothing left to do"
+        );
+        assert_ne!(
+            *input.camera(),
+            before,
+            "the first real double tap went back rather than magnifying"
+        );
+    }
+
+    #[test]
+    fn a_double_tap_looks_at_what_is_chosen_and_otherwise_at_what_is_on_screen() {
+        let (_directory, scene, chosen) = plate_with_a_chosen_face();
+        let snapshot = &scene.snapshot;
+        let mut live = LiveScene::new(
+            (),
+            vec![a_body()],
+            FaceNames::default(),
+            Visibility::new(snapshot),
+        );
+
+        // Nothing chosen: everything still on screen.
+        assert_eq!(live.selection, Selection::Nothing);
+        assert_eq!(
+            magnified_bounds(&live, snapshot),
+            live.visibility.bounds(snapshot),
+            "with nothing chosen a double tap did not look at the visible picture"
+        );
+
+        // A chosen face is the face, not the part it is on and not the scene.
+        live.selection = chosen.clone();
+        let face_extent = magnified_bounds(&live, snapshot).expect("the face has an extent");
+        assert_eq!(
+            Some(face_extent),
+            chosen.bounds(snapshot),
+            "a chosen face was not what the double tap looked at"
+        );
+        assert_ne!(
+            Some(face_extent),
+            live.visibility.bounds(snapshot),
+            "the gate cannot tell a chosen face from the whole picture"
+        );
+
+        // A chosen definition is the part.
+        let pick = snapshot.pick_of(0).expect("the plate is drawn");
+        live.selection = Selection::Definition(pick);
+        assert_eq!(
+            magnified_bounds(&live, snapshot),
+            snapshot.bounds_of(pick),
+            "a chosen part was not what the double tap looked at"
+        );
+
+        // What is hidden is not part of the picture to look at. Hiding the
+        // only part leaves nothing at all, which is a complete no-op rather
+        // than a view of the origin.
+        live.selection = Selection::Nothing;
+        assert!(live.visibility.hide(Marked::Definition(pick), snapshot));
+        assert_eq!(
+            magnified_bounds(&live, snapshot),
+            None,
+            "a hidden part was still counted as something to look at"
+        );
+
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        input
+            .frame(snapshot.bounds().expect("an extent"))
+            .expect("frames");
+        let before = *input.camera();
+        let _ = input.take_redraw();
+        assert!(
+            !magnify_gesture(&live, snapshot, &mut input, &double_tap(), false, false)
+                .expect("nothing to look at is not a failure"),
+            "a double tap with nothing on screen did something"
+        );
+        assert_eq!(*input.camera(), before, "the camera moved towards nothing");
+        assert!(!input.take_redraw(), "nothing to draw asked to be drawn");
+    }
+
+    #[test]
+    fn magnifying_and_going_back_leave_the_chosen_face_and_the_hidden_parts_alone() {
+        let (_directory, scene, chosen) = plate_with_a_chosen_face();
+        let snapshot = &scene.snapshot;
+        let mut live = LiveScene::new(
+            (),
+            vec![a_body()],
+            FaceNames::default(),
+            Visibility::new(snapshot),
+        );
+        live.selection = chosen.clone();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        input
+            .frame(snapshot.bounds().expect("an extent"))
+            .expect("frames");
+        input.handle(ViewportEvent::Wheel { delta: -5.0 }, false);
+        let away = *input.camera();
+        let mask = live.visibility.clone();
+
+        let Selection::Face(ref face) = live.selection else {
+            panic!("the gate must begin with a face chosen");
+        };
+        let (was_face, was_meanings) = (face.face(), face.meanings().to_vec());
+
+        for direction in ["magnifying", "going back"] {
+            assert!(
+                magnify_gesture(&live, snapshot, &mut input, &double_tap(), false, false)
+                    .expect("frames or goes back"),
+                "{direction} did nothing"
+            );
+            let Selection::Face(ref face) = live.selection else {
+                panic!("{direction} stopped a face being chosen");
+            };
+            assert_eq!(face.face(), was_face, "{direction} changed which face");
+            assert_eq!(
+                face.meanings(),
+                was_meanings.as_slice(),
+                "{direction} changed the durable names the face resolves to"
+            );
+            assert_eq!(live.selection, chosen, "{direction} changed the selection");
+            assert_eq!(live.visibility, mask, "{direction} changed what is drawn");
+        }
+        assert_eq!(
+            *input.camera(),
+            away,
+            "going back did not restore the view exactly"
+        );
     }
 
     #[test]

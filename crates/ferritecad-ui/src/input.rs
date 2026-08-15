@@ -123,6 +123,13 @@ pub struct ViewportInput {
     /// stopped, and answering every place it passed through would be a
     /// readback for each one.
     hover: Hover,
+    /// Where the view was before a smart magnification, while one is in
+    /// effect and the view has not been moved by hand since.
+    ///
+    /// Transient camera state and nothing else: not a fact about the
+    /// document, the picture, what is chosen or what is drawn, and never
+    /// written anywhere.
+    magnified: Option<Camera>,
     redraw: bool,
 }
 
@@ -141,6 +148,7 @@ impl ViewportInput {
             pressed_at: None,
             pick: None,
             hover: Hover::Unchanged,
+            magnified: None,
             // The first frame has never been drawn, so it is owed.
             redraw: true,
         }
@@ -163,14 +171,18 @@ impl ViewportInput {
     /// to be sure they do is for there to be only one place the number comes
     /// from.
     pub fn resize(&mut self, width: u32, height: u32) -> (u32, u32) {
-        self.camera.resize(width, height);
+        // A window of a different size shows a different picture, so a view
+        // remembered for the old one is not the view to go back to.
+        self.by_hand(|camera| camera.resize(width, height));
         self.redraw = true;
         (self.camera.width(), self.camera.height())
     }
 
     /// Points the camera at a box.
     pub fn frame(&mut self, bounds: ([f32; 3], [f32; 3])) -> Result<()> {
-        self.camera.frame(bounds)?;
+        let mut framed = Ok(());
+        self.by_hand(|camera| framed = camera.frame(bounds));
+        framed?;
         self.redraw = true;
         Ok(())
     }
@@ -243,14 +255,15 @@ impl ViewportInput {
                     PointerButton::Primary => {
                         // Dragging right turns the model to the right, which
                         // means swinging the camera the other way.
-                        self.camera
-                            .orbit(-dx * ORBIT_PER_PIXEL, dy * ORBIT_PER_PIXEL);
+                        self.by_hand(|camera| {
+                            camera.orbit(-dx * ORBIT_PER_PIXEL, dy * ORBIT_PER_PIXEL)
+                        });
                     }
                     PointerButton::Middle | PointerButton::Secondary => {
                         // Screen coordinates grow downwards and the camera's up
                         // axis does not, so the vertical delta is negated once,
                         // here, where the two conventions meet.
-                        self.camera.pan(-dx, dy);
+                        self.by_hand(|camera| camera.pan(-dx, dy));
                     }
                 }
                 self.redraw = true;
@@ -328,14 +341,14 @@ impl ViewportInput {
                     return;
                 }
                 let before = self.camera;
-                self.camera.roll(radians);
+                self.by_hand(|camera| camera.roll(radians));
                 self.settle_view(before);
             }
             ViewportEvent::Look(view) => {
                 if claimed_by_ui {
                     return;
                 }
-                self.camera.look_from(view);
+                self.by_hand(|camera| camera.look_from(view));
                 self.redraw = true;
             }
         }
@@ -363,15 +376,79 @@ impl ViewportInput {
                 // the same as it does for a drag.
                 let right = x - self.camera.width() as f32 * 0.5;
                 let up = self.camera.height() as f32 * 0.5 - y;
-                self.camera.zoom_at(amount, right, up);
+                self.by_hand(|camera| camera.zoom_at(amount, right, up));
             }
             // Nowhere to aim: the pointer has left, or a gesture was
             // cancelled, and the middle of the view is the only place left to
             // zoom about. A pointer over a panel is not this case; that event
             // belongs to the panel and never reaches here.
-            None => self.camera.zoom(amount),
+            None => {
+                self.by_hand(|camera| camera.zoom(amount));
+            }
         }
         self.settle_view(before);
+    }
+
+    /// Runs a camera operation and notices whether it moved the view.
+    ///
+    /// Every way of moving the camera by hand goes through here, so that the
+    /// way back from a smart magnification is forgotten exactly when the view
+    /// stops being the one that magnification produced. An operation the
+    /// camera refused, or one too small for it to represent, moved nothing and
+    /// forgets nothing.
+    ///
+    /// Returns whether anything moved.
+    fn by_hand(&mut self, operation: impl FnOnce(&mut Camera)) -> bool {
+        let before = self.camera;
+        operation(&mut self.camera);
+        if self.camera == before {
+            return false;
+        }
+        self.magnified = None;
+        true
+    }
+
+    /// Magnifies what matters, or goes back to where that was asked from.
+    ///
+    /// One level and no more. The first tap frames `bounds` and remembers the
+    /// view it came from; the next puts that view back exactly and forgets it,
+    /// so the tap after that magnifies afresh. Anything else that moves the
+    /// camera in between forgets the way back, because it no longer leads to
+    /// where the user actually was.
+    ///
+    /// `bounds` is what the caller decided is worth looking at, and `None`
+    /// means there is nothing to look at: no camera change, nothing
+    /// remembered, nothing forgotten and no frame owed. Deciding *what* is
+    /// worth looking at needs the picture and what is chosen in it, which is
+    /// why it is decided by the caller and handed here as an extent.
+    ///
+    /// Returns whether anything happened.
+    pub fn magnify(&mut self, bounds: Option<([f32; 3], [f32; 3])>) -> Result<bool> {
+        if let Some(back) = self.magnified {
+            let before = self.camera;
+            self.camera = back;
+            self.magnified = None;
+            self.settle_view(before);
+            return Ok(true);
+        }
+        let Some(bounds) = bounds else {
+            return Ok(false);
+        };
+
+        // Framed by the one thing that knows how to frame, through a copy, so
+        // a camera that cannot represent the fit leaves this one alone.
+        let before = self.camera;
+        let mut candidate = self.camera;
+        candidate.frame(bounds)?;
+        if candidate == before {
+            // Already looking at exactly that. Nothing moved, so there is no
+            // way back to remember and no frame to owe.
+            return Ok(false);
+        }
+        self.camera = candidate;
+        self.magnified = Some(before);
+        self.settle_view(before);
+        Ok(true)
     }
 
     /// What a change of view invalidates, once it is known to have happened.
@@ -439,6 +516,9 @@ impl ViewportInput {
             ));
         }
         candidate.forget_pending();
+        // A view remembered in the document that has just been replaced is
+        // not a view of this one.
+        candidate.magnified = None;
         *self = candidate;
         Ok(snapshot)
     }
@@ -470,7 +550,9 @@ impl ViewportInput {
     /// this only carries the request to it and reports what happened, so the
     /// window and the tests reach the same rule.
     pub fn set_projection(&mut self, projection: Projection) -> bool {
-        self.camera.set_projection(projection)
+        let mut changed = false;
+        self.by_hand(|camera| changed = camera.set_projection(projection));
+        changed
     }
 
     /// Which projection the model is drawn through.
@@ -1241,6 +1323,423 @@ mod tests {
         }
         assert!(input.take_redraw(), "seven turns owed no frame");
         assert!(!input.take_redraw(), "a flag counted instead of latching");
+    }
+
+    /// A box turned off every axis, so that fitting it is a real fit.
+    const AWKWARD: ([f32; 3], [f32; 3]) = ([-1.5, 2.0, -4.5], [3.5, 9.0, -0.5]);
+
+    /// Whether a world point is inside what the camera will draw.
+    fn inside_clip(camera: &Camera, point: [f32; 3]) -> bool {
+        let m = camera.view_projection();
+        let clip = [
+            m[0] * point[0] + m[4] * point[1] + m[8] * point[2] + m[12],
+            m[1] * point[0] + m[5] * point[1] + m[9] * point[2] + m[13],
+            m[2] * point[0] + m[6] * point[1] + m[10] * point[2] + m[14],
+            m[3] * point[0] + m[7] * point[1] + m[11] * point[2] + m[15],
+        ];
+        if clip[3] <= 0.0 {
+            return false;
+        }
+        let ndc = [clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]];
+        (-1.0..=1.0).contains(&ndc[0])
+            && (-1.0..=1.0).contains(&ndc[1])
+            && (0.0..=1.0).contains(&ndc[2])
+    }
+
+    fn corners(bounds: ([f32; 3], [f32; 3])) -> Vec<[f32; 3]> {
+        let (min, max) = bounds;
+        (0..8)
+            .map(|corner| {
+                [
+                    if corner & 1 == 0 { min[0] } else { max[0] },
+                    if corner & 2 == 0 { min[1] } else { max[1] },
+                    if corner & 4 == 0 { min[2] } else { max[2] },
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn magnifying_fits_all_of_it_and_keeps_the_way_it_is_being_looked_at() {
+        for (width, height) in [(800u32, 600u32), (420, 980)] {
+            for projection in [Projection::Perspective, Projection::Orthographic] {
+                let mut input = ViewportInput::new();
+                input.resize(width, height);
+                input
+                    .frame(([-40.0, -40.0, -40.0], [40.0, 40.0, 40.0]))
+                    .expect("frames");
+                assert!(
+                    projection == Projection::Perspective || input.set_projection(projection),
+                    "the camera refused a projection to magnify in"
+                );
+                input.handle(ViewportEvent::PointerMoved { x: 100.0, y: 100.0 }, false);
+                input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+                input.handle(ViewportEvent::PointerMoved { x: 190.0, y: 60.0 }, false);
+                input.handle(
+                    ViewportEvent::PointerReleased(PointerButton::Primary),
+                    false,
+                );
+                let before = *input.camera();
+                let scale = before.world_per_pixel();
+
+                assert!(
+                    input
+                        .magnify(Some(AWKWARD))
+                        .expect("an awkward box is framable"),
+                    "{width}x{height} {projection:?}: magnifying did nothing"
+                );
+
+                let after = *input.camera();
+                for corner in corners(AWKWARD) {
+                    assert!(
+                        inside_clip(&after, corner),
+                        "{width}x{height} {projection:?}: {corner:?} is not in the picture"
+                    );
+                }
+                assert!(
+                    after.world_per_pixel() < scale,
+                    "{width}x{height} {projection:?}: magnifying did not come closer"
+                );
+                assert_eq!(
+                    after.projection_mode(),
+                    projection,
+                    "{width}x{height} {projection:?}: magnifying changed the projection"
+                );
+                // The direction and the horizon are the user's; magnifying
+                // answers "let me see this", not "from somewhere I did not
+                // choose".
+                let (was, now) = (direction_of(&before), direction_of(&after));
+                for axis in 0..3 {
+                    assert!(
+                        (was[axis] - now[axis]).abs() <= 1e-5,
+                        "{width}x{height} {projection:?}: the direction went from {was:?} to {now:?}"
+                    );
+                    assert!(
+                        (before.up()[axis] - after.up()[axis]).abs() <= 1e-5,
+                        "{width}x{height} {projection:?}: the horizon tilted"
+                    );
+                }
+            }
+        }
+    }
+
+    fn direction_of(camera: &Camera) -> [f32; 3] {
+        let (eye, target) = (camera.eye(), camera.target());
+        let away = [eye[0] - target[0], eye[1] - target[1], eye[2] - target[2]];
+        let length = away[0].hypot(away[1]).hypot(away[2]);
+        [away[0] / length, away[1] / length, away[2] / length]
+    }
+
+    #[test]
+    fn a_second_magnification_goes_back_exactly_and_a_third_starts_again() {
+        for projection in [Projection::Perspective, Projection::Orthographic] {
+            let mut input = ready();
+            assert!(
+                projection == Projection::Perspective || input.set_projection(projection),
+                "the camera refused a projection to magnify in"
+            );
+            input.handle(ViewportEvent::PointerMoved { x: 500.0, y: 200.0 }, false);
+            input.handle(ViewportEvent::Roll { radians: 0.31 }, false);
+            input.handle(ViewportEvent::Wheel { delta: -3.0 }, false);
+            let away = *input.camera();
+
+            assert!(input.magnify(Some(AWKWARD)).expect("frames"));
+            let closer = *input.camera();
+            assert_ne!(closer, away, "{projection:?}: magnifying did nothing");
+
+            assert!(input.magnify(Some(AWKWARD)).expect("goes back"));
+            assert_eq!(
+                *input.camera(),
+                away,
+                "{projection:?}: going back did not restore the view exactly"
+            );
+
+            // The way back is used up, so the next tap magnifies afresh.
+            assert!(input.magnify(Some(AWKWARD)).expect("frames again"));
+            assert_eq!(
+                *input.camera(),
+                closer,
+                "{projection:?}: a third tap did not magnify again"
+            );
+        }
+    }
+
+    #[test]
+    fn magnifying_nothing_and_magnifying_what_is_already_framed_record_nothing() {
+        let mut input = ready();
+        input.handle(ViewportEvent::PointerMoved { x: 240.0, y: 160.0 }, false);
+        click(&mut input, (120.0, 80.0), false);
+        let _ = input.take_redraw();
+        let before = *input.camera();
+
+        // Nothing to look at.
+        assert!(!input.magnify(None).expect("nothing is not a failure"));
+        assert_eq!(*input.camera(), before, "magnifying nothing moved the view");
+        assert!(!input.take_redraw(), "magnifying nothing asked for a frame");
+        assert_eq!(
+            input.take_pick(),
+            Some((120.0, 80.0)),
+            "magnifying nothing forgot a waiting click"
+        );
+
+        // Already looking at exactly that: nothing moves, so there is no way
+        // back to remember, and the next tap must magnify rather than undo.
+        input.frame(AWKWARD).expect("frames");
+        let framed = *input.camera();
+        let _ = input.take_redraw();
+        assert!(!input.magnify(Some(AWKWARD)).expect("already there"));
+        assert_eq!(*input.camera(), framed, "an unchanged fit moved the view");
+        assert!(!input.take_redraw(), "an unchanged fit asked for a frame");
+
+        input.handle(ViewportEvent::Wheel { delta: -4.0 }, false);
+        let away = *input.camera();
+        assert!(input.magnify(Some(AWKWARD)).expect("frames"));
+        assert_ne!(
+            *input.camera(),
+            away,
+            "the unchanged fit had left a way back behind it"
+        );
+    }
+
+    #[test]
+    fn magnifying_forgets_the_questions_the_old_pixels_were_asked() {
+        for going_back in [false, true] {
+            let mut input = ready();
+            if going_back {
+                assert!(input.magnify(Some(AWKWARD)).expect("frames"));
+            }
+            click(&mut input, (120.0, 80.0), false);
+            input.handle(ViewportEvent::PointerMoved { x: 240.0, y: 160.0 }, false);
+            input.handle(ViewportEvent::PointerPressed(PointerButton::Middle), false);
+            let _ = input.take_redraw();
+
+            assert!(input.magnify(Some(AWKWARD)).expect("frames or goes back"));
+
+            assert_eq!(input.take_hover(), Hover::Cleared, "a stale hover survived");
+            assert_eq!(input.take_pick(), None, "a stale click survived");
+            assert!(
+                input.is_dragging(),
+                "magnifying ended a drag whose button is still down"
+            );
+            assert!(input.take_redraw(), "magnifying did not ask to be drawn");
+        }
+    }
+
+    /// One way of asking the reducer to move the camera.
+    type Move = Box<dyn Fn(&mut ViewportInput)>;
+
+    #[test]
+    fn moving_the_view_by_hand_forgets_the_way_back_and_a_no_op_keeps_it() {
+        // Everything that moves a camera, and the same thing asked for in a
+        // way the camera refuses.
+        let moves: Vec<(&str, Move)> = vec![
+            (
+                "orbit",
+                Box::new(|input: &mut ViewportInput| {
+                    input.handle(ViewportEvent::PointerMoved { x: 400.0, y: 300.0 }, false);
+                    input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+                    input.handle(ViewportEvent::PointerMoved { x: 470.0, y: 350.0 }, false);
+                }),
+            ),
+            (
+                "pan",
+                Box::new(|input: &mut ViewportInput| {
+                    input.handle(ViewportEvent::PointerMoved { x: 400.0, y: 300.0 }, false);
+                    input.handle(ViewportEvent::PointerPressed(PointerButton::Middle), false);
+                    input.handle(ViewportEvent::PointerMoved { x: 470.0, y: 350.0 }, false);
+                }),
+            ),
+            (
+                "wheel",
+                Box::new(|input: &mut ViewportInput| {
+                    input.handle(ViewportEvent::Wheel { delta: 2.0 }, false);
+                }),
+            ),
+            (
+                "pinch",
+                Box::new(|input: &mut ViewportInput| {
+                    input.handle(ViewportEvent::Pinch { delta: 0.4 }, false);
+                }),
+            ),
+            (
+                "roll",
+                Box::new(|input: &mut ViewportInput| {
+                    input.handle(ViewportEvent::Roll { radians: 0.4 }, false);
+                }),
+            ),
+            (
+                "named view",
+                Box::new(|input: &mut ViewportInput| {
+                    input.handle(ViewportEvent::Look(StandardView::Top), false);
+                }),
+            ),
+            (
+                "projection",
+                Box::new(|input: &mut ViewportInput| {
+                    assert!(input.set_projection(Projection::Orthographic));
+                }),
+            ),
+            (
+                "frame",
+                Box::new(|input: &mut ViewportInput| {
+                    input
+                        .frame(([-30.0, -30.0, -30.0], [30.0, 30.0, 30.0]))
+                        .expect("frames");
+                }),
+            ),
+            (
+                "resize",
+                Box::new(|input: &mut ViewportInput| {
+                    // Portrait, where the narrow axis is the horizontal one, so
+                    // the fit itself changes and not only the numbers recorded.
+                    input.resize(400, 1024);
+                }),
+            ),
+        ];
+
+        for (name, moved) in &moves {
+            let mut input = ready();
+            let away = *input.camera();
+            assert!(input.magnify(Some(AWKWARD)).expect("frames"));
+            let magnified = *input.camera();
+
+            moved(&mut input);
+            assert_ne!(*input.camera(), magnified, "{name} moved nothing");
+
+            // The way back led to where the user was before magnifying, and
+            // they are not there any more. Whether magnifying afresh moves
+            // anything depends on the box and the window: what must not happen
+            // is arriving back at a view the user has since left. Reframing
+            // the same box can legitimately be a no-op, so this asserts on
+            // where the camera ends rather than on whether it moved.
+            let _ = input.magnify(Some(AWKWARD)).expect("frames or does not");
+            assert_ne!(
+                *input.camera(),
+                away,
+                "{name} left a way back that undid it"
+            );
+        }
+
+        // And the same requests that move nothing forget nothing.
+        let refused: Vec<(&str, Move)> = vec![
+            (
+                "a wheel of nothing",
+                Box::new(|input: &mut ViewportInput| {
+                    input.handle(ViewportEvent::Wheel { delta: 0.0 }, false);
+                }),
+            ),
+            (
+                "a pinch of nothing",
+                Box::new(|input: &mut ViewportInput| {
+                    input.handle(ViewportEvent::Pinch { delta: 0.0 }, false);
+                }),
+            ),
+            (
+                "a turn of nothing",
+                Box::new(|input: &mut ViewportInput| {
+                    input.handle(ViewportEvent::Roll { radians: 0.0 }, false);
+                }),
+            ),
+            (
+                "a claimed wheel",
+                Box::new(|input: &mut ViewportInput| {
+                    input.handle(ViewportEvent::Wheel { delta: 3.0 }, true);
+                }),
+            ),
+            (
+                "the projection already in use",
+                Box::new(|input: &mut ViewportInput| {
+                    assert!(!input.set_projection(Projection::Perspective));
+                }),
+            ),
+            (
+                "a resize to the same size",
+                Box::new(|input: &mut ViewportInput| {
+                    input.resize(800, 600);
+                }),
+            ),
+            (
+                "the pointer moving",
+                Box::new(|input: &mut ViewportInput| {
+                    input.handle(ViewportEvent::PointerMoved { x: 33.0, y: 44.0 }, false);
+                }),
+            ),
+        ];
+
+        for (name, quiet) in &refused {
+            let mut input = ready();
+            let away = *input.camera();
+            assert!(input.magnify(Some(AWKWARD)).expect("frames"));
+
+            quiet(&mut input);
+
+            assert!(input.magnify(Some(AWKWARD)).expect("goes back"));
+            assert_eq!(
+                *input.camera(),
+                away,
+                "{name} threw away a way back it did not move"
+            );
+        }
+    }
+
+    #[test]
+    fn a_resize_forgets_the_way_back_rather_than_restoring_the_old_window() {
+        let mut input = ready();
+        assert!(input.magnify(Some(AWKWARD)).expect("frames"));
+
+        input.resize(400, 1200);
+        assert!(input.magnify(Some(AWKWARD)).expect("frames afresh"));
+        // Whatever this pair of taps does, it cannot end at a window size the
+        // window no longer has.
+        let _ = input.magnify(Some(AWKWARD)).expect("frames or goes back");
+
+        assert_eq!(
+            (input.camera().width(), input.camera().height()),
+            (400, 1200),
+            "a magnification put the old window size back"
+        );
+    }
+
+    #[test]
+    fn a_document_that_arrived_has_no_view_to_go_back_to_and_a_failed_one_keeps_it() {
+        let mut input = ready();
+        let away = *input.camera();
+        assert!(input.magnify(Some(AWKWARD)).expect("frames"));
+        let magnified = *input.camera();
+
+        // A load that failed changes nothing, including the way back.
+        input
+            .accept_load(Err(CadError::input("no")))
+            .expect_err("a failed load commits nothing");
+        assert_eq!(*input.camera(), magnified, "a failed load moved the view");
+        assert!(input.magnify(Some(AWKWARD)).expect("goes back"));
+        assert_eq!(
+            *input.camera(),
+            away,
+            "a failed load threw away the way back"
+        );
+
+        // A load that arrived replaces the picture, and a view of the old one
+        // is not a view of this one. Named exactly: what must not come back is
+        // the view the old document was being looked at from, and a gate that
+        // only asked whether the camera had moved could not tell that apart
+        // from framing afresh.
+        let in_the_old_document = *input.camera();
+        assert!(input.magnify(Some(AWKWARD)).expect("frames"));
+        input
+            .accept_load(Ok(distant_scene()))
+            .expect("a scene arrives");
+        let opened = *input.camera();
+        let _ = input.magnify(Some(AWKWARD)).expect("frames afresh");
+        assert_ne!(
+            *input.camera(),
+            in_the_old_document,
+            "opening a document left a way back into the one before it"
+        );
+        assert_ne!(
+            opened, in_the_old_document,
+            "the gate cannot tell the two documents apart"
+        );
     }
 
     #[test]

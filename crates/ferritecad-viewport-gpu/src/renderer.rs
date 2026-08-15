@@ -1821,6 +1821,37 @@ mod tests {
             );
         }
 
+        // And the same for a camera that a smart magnification framed tight
+        // on part of the picture, and for the one it would go back to. A
+        // camera is a camera whatever moved it, so this is the window and the
+        // readback agreeing about a fit rather than about a gesture.
+        for mut fitted in [camera, flat] {
+            let projection = fitted.projection_mode();
+            fitted
+                .frame(([-4.0, 8.0, -4.0], [4.0, 10.0, 4.0]))
+                .expect("a part of the picture is framable");
+            let offscreen_fitted = renderer
+                .render(
+                    &prepared,
+                    &fitted,
+                    Marked::Nothing,
+                    Marked::Nothing,
+                    &everything,
+                )
+                .expect("draws")
+                .colour()
+                .to_vec();
+            assert_ne!(
+                offscreen_fitted, offscreen_all,
+                "{projection:?}: framing tight changed nothing"
+            );
+            assert_eq!(
+                window_colour(&mut renderer, &prepared, &fitted, &everything),
+                offscreen_fitted,
+                "{projection:?}: the window and the readback disagree about a magnified view"
+            );
+        }
+
         // And the same for the mask isolating leaves behind, which is the same
         // mask reached a different way: one representation, one consumer.
         let mut isolating = everything.clone();
