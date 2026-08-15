@@ -2261,6 +2261,16 @@ fn translate(event: &WindowEvent) -> Vec<ViewportEvent> {
                 delta: *delta as f32,
             }]
         }
+        // Two fingers turning, which macOS reports in degrees and counts
+        // positive counterclockwise. The camera works in radians, so the one
+        // place the two units meet is here. Like a pinch, the phase describes
+        // this gesture's lifetime and is not translated into anything of its
+        // own: a turn of nothing must not drop the pointer or end a mouse drag.
+        WindowEvent::RotationGesture { delta, .. } => {
+            vec![ViewportEvent::Roll {
+                radians: delta.to_radians(),
+            }]
+        }
         WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
             named_view(&event.logical_key)
                 .map(|view| vec![ViewportEvent::Look(view)])
@@ -2288,6 +2298,7 @@ fn claimed_by_interface(event: &ViewportEvent, consumed: bool, wants_pointer: bo
     match event {
         ViewportEvent::Wheel { .. }
         | ViewportEvent::Pinch { .. }
+        | ViewportEvent::Roll { .. }
         | ViewportEvent::PointerPressed(_)
         | ViewportEvent::PointerMoved { .. } => consumed || wants_pointer,
         // A move is claimed only while no gesture is running; the reducer
@@ -3457,6 +3468,141 @@ mod tests {
             .frame(snapshot.bounds().expect("the pair has an extent"))
             .expect("frames");
         (snapshot, camera)
+    }
+
+    /// A marker plate well to the right of a plate at the middle.
+    ///
+    /// Asymmetric on purpose: a picture that is the same after a quarter turn
+    /// cannot say which way it turned. Both lie in the plane a front view
+    /// targets, so where they are on screen is decided by the camera alone.
+    fn marker_beside_a_middle(width: u32, height: u32) -> (std::sync::Arc<RenderSnapshot>, Camera) {
+        use ferritecad_kernel::{Mesh, MeshFaceRange, SessionId, ShapeHandle, SubShapeKind};
+
+        let plate = |half: f32, shape: u64| {
+            let handle = ShapeHandle::new(SessionId::new(), shape);
+            Mesh {
+                positions: vec![
+                    -half, 0.0, -half, half, 0.0, -half, half, 0.0, half, -half, 0.0, half,
+                ],
+                normals: vec![
+                    0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0,
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                faces: vec![MeshFaceRange {
+                    face: ferritecad_kernel::SubShapeHandle::new(handle, SubShapeKind::Face, 0),
+                    first_index: 0,
+                    index_count: 6,
+                }],
+            }
+        };
+
+        let mut builder = SnapshotBuilder::new();
+        let marker = builder.add_mesh(&plate(3.0, 1)).expect("packs");
+        let middle = builder.add_mesh(&plate(6.0, 2)).expect("packs");
+        for (definition, x, colour) in [
+            (marker, 24.0, [0.9, 0.2, 0.2]),
+            (middle, 0.0, [0.2, 0.4, 0.9]),
+        ] {
+            builder
+                .place(
+                    definition,
+                    None,
+                    &ferritecad_types::Transform::from_translation(
+                        ferritecad_types::Vec3::new(x, 0.0, 0.0).expect("finite"),
+                    )
+                    .expect("finite"),
+                    colour,
+                )
+                .expect("places");
+        }
+        let snapshot = std::sync::Arc::new(builder.build());
+
+        let mut camera = Camera::new();
+        camera.resize(width, height);
+        camera
+            .frame(snapshot.bounds().expect("the plates have an extent"))
+            .expect("frames");
+        (snapshot, camera)
+    }
+
+    /// The middle of everything one definition drew, in pixels.
+    fn centre_of_pick(
+        frame: &ferritecad_viewport_gpu::Frame,
+        pick: ferritecad_viewport::PickId,
+    ) -> Option<(f32, f32)> {
+        let mut count = 0.0f32;
+        let (mut x, mut y) = (0.0f32, 0.0f32);
+        for py in 0..frame.height() {
+            for px in 0..frame.width() {
+                if frame.pick_at(px, py) == pick {
+                    // A pixel covers a unit square, so its middle is half on.
+                    x += px as f32 + 0.5;
+                    y += py as f32 + 0.5;
+                    count += 1.0;
+                }
+            }
+        }
+        (count > 0.0).then(|| (x / count, y / count))
+    }
+
+    #[test]
+    fn two_fingers_turning_counterclockwise_turn_the_model_counterclockwise() {
+        let mut renderer = renderer_or_skip!();
+        let (snapshot, camera) = marker_beside_a_middle(256, 256);
+        let prepared = renderer
+            .prepare(std::sync::Arc::clone(&snapshot))
+            .expect("uploads");
+        let everything = ferritecad_viewport::Visibility::default();
+        let marker = snapshot.pick_of(0).expect("drawn");
+
+        let mut input = ViewportInput::new();
+        input.resize(256, 256);
+        input
+            .frame(snapshot.bounds().expect("an extent"))
+            .expect("frames");
+        assert_eq!(
+            *input.camera(),
+            camera,
+            "the gate framed two different views"
+        );
+
+        let draw = |renderer: &mut Renderer, camera: &Camera| {
+            renderer
+                .render(
+                    &prepared,
+                    camera,
+                    Marked::Nothing,
+                    Marked::Nothing,
+                    &everything,
+                )
+                .expect("draws")
+        };
+
+        let before = draw(&mut renderer, input.camera());
+        let (was_x, was_y) = centre_of_pick(&before, marker).expect("the marker is on screen");
+        assert!(
+            was_x - 128.0 > 30.0 && (was_y - 128.0).abs() < 10.0,
+            "the marker did not start to the right of the middle: ({was_x}, {was_y})"
+        );
+
+        // A quarter turn counterclockwise, as a trackpad reports it: degrees,
+        // positive for counterclockwise.
+        for event in translate(&WindowEvent::RotationGesture {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: 90.0,
+            phase: winit::event::TouchPhase::Moved,
+        }) {
+            input.handle(event, false);
+        }
+
+        let after = draw(&mut renderer, input.camera());
+        let (now_x, now_y) = centre_of_pick(&after, marker).expect("the marker left the view");
+        // Counterclockwise on screen: what was to the right is now above, and
+        // screen rows grow downwards.
+        assert!(
+            (now_x - 128.0).abs() < 10.0 && 128.0 - now_y > 30.0,
+            "a counterclockwise turn moved the marker from ({was_x}, {was_y}) to ({now_x}, {now_y})"
+        );
     }
 
     /// A picture of two definitions, each placed twice.
@@ -6381,6 +6527,181 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_of_the_view_leaves_the_chosen_face_and_the_hidden_parts_alone() {
+        let (_directory, scene, chosen) = plate_with_a_chosen_face();
+        let mut live = LiveScene::new(
+            (),
+            vec![a_body()],
+            FaceNames::default(),
+            Visibility::new(&scene.snapshot),
+        );
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        input
+            .frame(scene.snapshot.bounds().expect("an extent"))
+            .expect("frames");
+
+        let turn = |input: &mut ViewportInput| {
+            let before = *input.camera();
+            for event in translate(&WindowEvent::RotationGesture {
+                device_id: winit::event::DeviceId::dummy(),
+                delta: 30.0,
+                phase: winit::event::TouchPhase::Moved,
+            }) {
+                input.handle(event, false);
+            }
+            assert_ne!(*input.camera(), before, "the gate turned nothing");
+            assert_eq!(input.camera().target(), before.target(), "the view moved");
+            assert_eq!(
+                input.camera().distance(),
+                before.distance(),
+                "the view came closer"
+            );
+        };
+
+        // A real face of a real definition, chosen the way a click chooses it.
+        live.selection = chosen.clone();
+        assert!(
+            matches!(live.selection, Selection::Face(_)),
+            "the gate must begin with a face chosen"
+        );
+        turn(&mut input);
+        assert_eq!(
+            live.selection, chosen,
+            "a turn changed which face is chosen"
+        );
+
+        // The committed plate is one definition, so a mask that hides
+        // something and a face chosen on something still visible cannot both
+        // exist in this scene: hiding the chosen thing unchooses it. The two
+        // are therefore gated in the two states the application can actually
+        // reach, rather than in one it cannot.
+        assert!(hide_selected(
+            &mut live.visibility,
+            &mut live.selection,
+            &mut live.hovered,
+            &scene.snapshot,
+            &mut input,
+        ));
+        assert!(
+            !live.visibility.shows(0, &scene.snapshot),
+            "the gate must go on with something actually hidden"
+        );
+        let mask = live.visibility.clone();
+        let _ = input.take_redraw();
+
+        turn(&mut input);
+
+        assert_eq!(live.visibility, mask, "a turn changed what is drawn");
+        assert_eq!(
+            live.selection,
+            Selection::Nothing,
+            "a turn chose something nobody clicked"
+        );
+
+        // And what undoing would put back is still there to be put back,
+        // which is the half of a mask that comparing masks cannot see.
+        let mut undone = live.visibility.clone();
+        assert!(
+            undone.undo(&scene.snapshot),
+            "a turn discarded the checkpoint an undo needs"
+        );
+        assert_ne!(undone, mask, "the checkpoint put nothing back");
+    }
+
+    #[test]
+    fn two_fingers_turning_are_measured_in_degrees_and_the_camera_in_radians() {
+        use winit::event::TouchPhase;
+
+        let turn = |delta: f32, phase| {
+            translate(&WindowEvent::RotationGesture {
+                device_id: winit::event::DeviceId::dummy(),
+                delta,
+                phase,
+            })
+        };
+
+        // winit counts counterclockwise as positive and reports degrees; the
+        // camera turns the same way and works in radians, so the conversion
+        // happens exactly here and exactly once.
+        assert_eq!(
+            turn(90.0, TouchPhase::Moved),
+            vec![ViewportEvent::Roll {
+                radians: std::f32::consts::FRAC_PI_2
+            }]
+        );
+        assert_eq!(
+            turn(-45.0, TouchPhase::Moved),
+            vec![ViewportEvent::Roll {
+                radians: -std::f32::consts::FRAC_PI_4
+            }]
+        );
+
+        // Every phase carries its own delta and none of them is focus loss.
+        for phase in [
+            TouchPhase::Started,
+            TouchPhase::Moved,
+            TouchPhase::Ended,
+            TouchPhase::Cancelled,
+        ] {
+            assert_eq!(
+                turn(12.0, phase),
+                vec![ViewportEvent::Roll {
+                    radians: 12.0f32.to_radians()
+                }],
+                "{phase:?} lost its delta"
+            );
+            assert_eq!(
+                turn(0.0, phase),
+                vec![ViewportEvent::Roll { radians: 0.0 }],
+                "{phase:?} did not translate as a turn of nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_moving_rotation_phase_is_not_a_cancelled_mouse_gesture() {
+        use winit::event::TouchPhase;
+
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        input
+            .frame(([-5.0, -5.0, -5.0], [5.0, 5.0, 5.0]))
+            .expect("frames");
+        input.handle(ViewportEvent::PointerMoved { x: 300.0, y: 200.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        let before = *input.camera();
+        let _ = input.take_redraw();
+
+        for phase in [
+            TouchPhase::Started,
+            TouchPhase::Ended,
+            TouchPhase::Cancelled,
+        ] {
+            for event in translate(&WindowEvent::RotationGesture {
+                device_id: winit::event::DeviceId::dummy(),
+                delta: 0.0,
+                phase,
+            }) {
+                input.handle(event, false);
+            }
+        }
+
+        assert_eq!(*input.camera(), before, "a rotation phase moved the camera");
+        assert!(input.is_dragging(), "a rotation phase ended a mouse drag");
+        assert!(!input.take_redraw(), "a rotation phase asked for a frame");
+
+        // And the drag still turns the model, which is what "the pointer was
+        // not discarded" actually means.
+        input.handle(ViewportEvent::PointerMoved { x: 360.0, y: 240.0 }, false);
+        assert_ne!(
+            input.camera().eye(),
+            before.eye(),
+            "the drag stopped turning the model after a rotation phase"
+        );
+    }
+
+    #[test]
     fn a_row_chooses_the_definition_and_never_the_face_under_the_pointer() {
         let (_directory, scene, chosen) = plate_with_a_chosen_face();
         let mut selection = chosen;
@@ -7610,6 +7931,7 @@ mod tests {
         for event in [
             ViewportEvent::Pinch { delta: 0.3 },
             ViewportEvent::Wheel { delta: 1.0 },
+            ViewportEvent::Roll { radians: 0.3 },
         ] {
             assert!(
                 claimed_by_interface(&event, true, false),

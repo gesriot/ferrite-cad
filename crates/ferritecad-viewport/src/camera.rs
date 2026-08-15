@@ -160,6 +160,12 @@ impl Camera {
         self.target
     }
 
+    /// Which way is up for this camera, as the matrix uses it.
+    pub fn up(&self) -> [f32; 3] {
+        let (_, screen_up) = self.screen_axes();
+        screen_up
+    }
+
     /// Draws through a different projection, and says whether that changed
     /// anything.
     ///
@@ -578,6 +584,69 @@ impl Camera {
     fn bounded_scale(&self, scaled: f32) -> Option<f32> {
         let bounded = scaled.clamp(self.radius * 1e-3, self.radius * 1e5);
         (bounded.is_finite() && bounded > f32::EPSILON).then_some(bounded)
+    }
+
+    /// Turns the view around the direction it is already looking in.
+    ///
+    /// Positive `radians` turns the world counterclockwise on screen, which is
+    /// the way the fingers went: what was to the right of the target ends up
+    /// above it. Only the camera's idea of which way is up changes, so the
+    /// eye, what is being looked at, the distance between them, the
+    /// projection, the apparent scale and the clipping range are all exactly
+    /// as they were.
+    ///
+    /// This is not an orbit. Orbiting turns the eye around the model about the
+    /// world's up axis and deliberately levels a rolled view; this leaves the
+    /// eye where it is and tilts the horizon.
+    ///
+    /// A rotation too small to move the basis at all does nothing, rather than
+    /// replacing the stored up vector with an equal-but-differently-written
+    /// one and making a reducer believe the view moved.
+    pub fn roll(&mut self, radians: f32) {
+        if !radians.is_finite() {
+            return;
+        }
+        let (sin, cos) = radians.sin_cos();
+        if !sin.is_finite() || !cos.is_finite() {
+            return;
+        }
+
+        // The basis the matrix is actually built from, rotated about the
+        // direction of view. `side` is `forward x up`, so turning the up
+        // vector towards `side` is what carries a point on the right upwards.
+        let (side, screen_up) = self.screen_axes();
+        let turned = [
+            screen_up[0] * cos + side[0] * sin,
+            screen_up[1] * cos + side[1] * sin,
+            screen_up[2] * cos + side[2] * sin,
+        ];
+        let (Some(up), Some(current)) = (normalise(turned), normalise(screen_up)) else {
+            return;
+        };
+        if up == current {
+            // Nothing the matrix can see has moved. Compared after
+            // normalising both, because the basis a view matrix is built from
+            // is a cross product and need not already be exactly unit: an
+            // angle of nothing must not be an excuse to rewrite the stored up
+            // as an equal-but-differently-written vector.
+            return;
+        }
+
+        let mut candidate = *self;
+        candidate.up = up;
+        // A basis needs three directions. Were the turned up to land on the
+        // viewing direction there would be no sideways left, and the view
+        // would flip about an axis nobody asked about.
+        if normalise(cross(sub(self.target, self.eye), up)).is_none() {
+            return;
+        }
+        if candidate
+            .view_projection()
+            .iter()
+            .all(|value| value.is_finite())
+        {
+            *self = candidate;
+        }
     }
 
     /// Looks from one of the directions a drawing would name.

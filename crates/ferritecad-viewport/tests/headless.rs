@@ -3411,3 +3411,252 @@ fn a_wheel_step_too_small_to_change_scale_changes_no_pose() {
         }
     }
 }
+
+/// A camera rolled by a quarter turn each way, and what that must do.
+#[test]
+fn turning_two_fingers_turns_the_world_the_way_they_went() {
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        for (radians, name) in [
+            (std::f32::consts::FRAC_PI_2, "counterclockwise"),
+            (-std::f32::consts::FRAC_PI_2, "clockwise"),
+        ] {
+            let mut camera = framed();
+            assert!(
+                projection == Projection::Perspective || camera.set_projection(projection),
+                "the camera refused a projection to turn in"
+            );
+            // A point the camera draws to the right of what it is looking at.
+            // Which way round the plane's own axes lie is not the camera's
+            // business, so the one that measurably renders on the right is
+            // the one the gate uses.
+            let right = [4.0f32, -4.0]
+                .into_iter()
+                .map(|along| on_target_plane(&camera, along, 0.0))
+                .find(|point| pixel_offset(&camera, *point).0 > 20.0)
+                .expect("one side of the target plane is drawn on the right");
+            let before = pixel_offset(&camera, right);
+            assert!(
+                before.0 > 20.0 && before.1.abs() < 1.0,
+                "{projection:?}: the gate did not start on the right, it started at {before:?}"
+            );
+
+            camera.roll(radians);
+
+            let after = pixel_offset(&camera, right);
+            // A quarter turn counterclockwise puts the right above.
+            let expected = if radians > 0.0 { before.0 } else { -before.0 };
+            assert!(
+                after.0.abs() < 1.0 && (after.1 - expected).abs() < 0.5,
+                "{projection:?}: a {name} quarter turn moved {before:?} to {after:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_turn_changes_where_up_is_and_nothing_else_whatever_the_view() {
+    for (width, height) in [(800u32, 600u32), (480, 1024)] {
+        for projection in [Projection::Perspective, Projection::Orthographic] {
+            let mut camera = Camera::new();
+            camera.resize(width, height);
+            camera
+                .frame(([-4.0, -3.0, -6.0], [5.0, 7.0, 2.0]))
+                .expect("frames");
+            assert!(
+                projection == Projection::Perspective || camera.set_projection(projection),
+                "the camera refused a projection to turn in"
+            );
+            // Somewhere with no symmetry left to hide a mistake in.
+            camera.orbit(0.8, -0.35);
+            camera.pan(41.0, -27.0);
+            let before = camera;
+            let depths: Vec<f32> = [[0.0, 0.0, 0.0], [3.0, -2.0, 1.0], [-1.5, 4.0, -2.5]]
+                .iter()
+                .map(|point| projected(&before.view_projection(), *point)[2])
+                .collect();
+
+            camera.roll(0.7);
+
+            assert_eq!(camera.eye(), before.eye(), "{projection:?}: the eye moved");
+            assert_eq!(
+                camera.target(),
+                before.target(),
+                "{projection:?}: what is looked at moved"
+            );
+            assert_eq!(
+                camera.distance(),
+                before.distance(),
+                "{projection:?}: the distance changed"
+            );
+            assert_eq!(
+                camera.projection_mode(),
+                before.projection_mode(),
+                "{projection:?}: the projection changed"
+            );
+            assert_eq!(
+                camera.world_per_pixel(),
+                before.world_per_pixel(),
+                "{projection:?}: the apparent scale changed"
+            );
+            // Turning about the direction of view cannot move anything nearer
+            // or further, so every depth is exactly the depth it was, which
+            // is only true while the clipping range is untouched.
+            for (point, was) in [[0.0, 0.0, 0.0], [3.0, -2.0, 1.0], [-1.5, 4.0, -2.5]]
+                .iter()
+                .zip(&depths)
+            {
+                let now = projected(&camera.view_projection(), *point)[2];
+                assert_eq!(now, *was, "{projection:?}: {point:?} changed depth");
+            }
+            assert_ne!(camera.up(), before.up(), "{projection:?}: nothing turned");
+        }
+    }
+}
+
+#[test]
+fn turning_back_returns_and_turning_all_the_way_round_returns() {
+    let mut camera = framed();
+    camera.orbit(0.55, 0.2);
+    let before = camera;
+    let point = on_target_plane(&camera, 3.3, -1.9);
+    let started = pixel_offset(&camera, point);
+
+    camera.roll(std::f32::consts::FRAC_PI_2);
+    camera.roll(-std::f32::consts::FRAC_PI_2);
+    for axis in 0..3 {
+        assert!(
+            (camera.up()[axis] - before.up()[axis]).abs() <= 1e-6,
+            "a quarter turn and back left up at {:?} rather than {:?}",
+            camera.up(),
+            before.up()
+        );
+    }
+
+    // And all the way round is the same view again, which two sines and two
+    // cosines of an f32 angle reach to within a fraction of a pixel.
+    let mut whole = before;
+    for _ in 0..4 {
+        whole.roll(std::f32::consts::FRAC_PI_2);
+    }
+    let ended = pixel_offset(&whole, point);
+    assert!(
+        (ended.0 - started.0).abs() <= 0.05 && (ended.1 - started.1).abs() <= 0.05,
+        "a whole turn moved {started:?} to {ended:?}"
+    );
+}
+
+#[test]
+fn many_small_turns_leave_a_basis_that_is_still_a_basis() {
+    let mut camera = framed();
+    camera.orbit(0.3, 0.4);
+    let before = camera;
+
+    for _ in 0..2000 {
+        camera.roll(0.01);
+    }
+
+    let up = camera.up();
+    let length = up[0].hypot(up[1]).hypot(up[2]);
+    assert!(
+        (length - 1.0).abs() <= 1e-4,
+        "up drifted to a length of {length}"
+    );
+    let away = offset(&camera);
+    let scale = length_of(away);
+    let along = (up[0] * away[0] + up[1] * away[1] + up[2] * away[2]) / scale;
+    assert!(
+        along.abs() <= 1e-4,
+        "up leaned {along} towards the direction of view"
+    );
+    assert!(
+        camera
+            .view_projection()
+            .iter()
+            .all(|value| value.is_finite()),
+        "the matrix stopped being a number"
+    );
+    assert_eq!(camera.eye(), before.eye(), "the eye drifted while turning");
+    assert_eq!(
+        camera.distance(),
+        before.distance(),
+        "the distance drifted while turning"
+    );
+}
+
+#[test]
+fn a_turn_that_cannot_move_the_basis_leaves_the_camera_exactly_as_it_was() {
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        let mut camera = framed();
+        assert!(
+            projection == Projection::Perspective || camera.set_projection(projection),
+            "the camera refused a projection to turn in"
+        );
+        // A pose whose stored up is not already the orthogonalised one, which
+        // is where an accidental rewrite of the basis would show.
+        camera.orbit(0.0137, -0.0089);
+        camera.pan(0.17, -0.11);
+        let before = camera;
+
+        for radians in [0.0f32, -0.0, f32::NAN, f32::INFINITY, -f32::INFINITY, 1e-30] {
+            camera.roll(radians);
+            assert_eq!(
+                camera, before,
+                "{projection:?}: a turn of {radians} changed the camera"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_turn_on_a_window_of_no_size_leaves_a_camera_that_can_be_drawn() {
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        let mut camera = framed();
+        assert!(
+            projection == Projection::Perspective || camera.set_projection(projection),
+            "the camera refused a projection to turn in"
+        );
+        camera.resize(0, 0);
+
+        camera.roll(0.9);
+
+        assert!(
+            camera
+                .view_projection()
+                .iter()
+                .all(|value| value.is_finite()),
+            "{projection:?}: a turn on a window of no size produced {:?}",
+            camera.view_projection()
+        );
+    }
+}
+
+#[test]
+fn framing_keeps_a_turned_horizon_and_a_named_view_levels_it() {
+    let mut camera = framed();
+    camera.roll(0.6);
+    let turned = camera.up();
+
+    camera
+        .frame(([-2.0, -2.0, -2.0], [8.0, 6.0, 4.0]))
+        .expect("frames");
+    for axis in 0..3 {
+        assert!(
+            (camera.up()[axis] - turned[axis]).abs() <= 1e-6,
+            "framing levelled a turned view: {:?} rather than {turned:?}",
+            camera.up()
+        );
+    }
+
+    // The documented way back: a named view carries its own up, and the first
+    // ordinary orbit restores the world's.
+    camera.look_from(StandardView::Front);
+    assert!(
+        (camera.up()[2] - 1.0).abs() <= 1e-6,
+        "a named view did not level the horizon: {:?}",
+        camera.up()
+    );
+}
+
+fn length_of(vector: [f32; 3]) -> f32 {
+    vector[0].hypot(vector[1]).hypot(vector[2])
+}

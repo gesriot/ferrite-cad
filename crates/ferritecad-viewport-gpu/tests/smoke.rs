@@ -3783,3 +3783,172 @@ fn the_backdrop_follows_an_anchored_wheel_and_is_still_nobody_to_click() {
         }
     }
 }
+
+/// Where the camera says a world point lands, in pixels from the top left.
+///
+/// A rotation gate that only compared the picture with itself would be blind
+/// to a constant extra turn applied somewhere else, because turns in a plane
+/// commute. Measuring against the one matrix is what closes that.
+fn where_the_camera_puts(camera: &Camera, point: [f32; 3]) -> (f32, f32) {
+    let m = camera.view_projection();
+    let clip = [
+        m[0] * point[0] + m[4] * point[1] + m[8] * point[2] + m[12],
+        m[1] * point[0] + m[5] * point[1] + m[9] * point[2] + m[13],
+        m[3] * point[0] + m[7] * point[1] + m[11] * point[2] + m[15],
+    ];
+    assert!(clip[2] > 0.0, "a point behind the eye has no pixel");
+    (
+        (clip[0] / clip[2] + 1.0) * 0.5 * camera.width() as f32,
+        (1.0 - clip[1] / clip[2]) * 0.5 * camera.height() as f32,
+    )
+}
+
+#[test]
+fn turning_the_view_turns_the_model_around_what_it_is_looking_at() {
+    let mut renderer = renderer_or_skip!();
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        let (snapshot, mut camera) = plates_in_the_target_plane(256, 256);
+        assert!(
+            projection == Projection::Perspective || camera.set_projection(projection),
+            "the camera refused a projection to turn in"
+        );
+        let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+        let uploaded = renderer.geometry_uploads();
+        let everything = Visibility::default();
+        let marker = snapshot.pick_of(1).expect("drawn");
+        let marker_face = snapshot.face_of(1, 0).expect("numbered");
+        let nearer = snapshot.pick_of(0).expect("drawn");
+
+        let draw = |renderer: &mut Renderer, camera: &Camera| {
+            renderer
+                .render(
+                    &prepared,
+                    camera,
+                    Marked::Nothing,
+                    Marked::Nothing,
+                    &everything,
+                )
+                .expect("draws")
+        };
+
+        let before = draw(&mut renderer, &camera);
+        let (was_x, was_y) = centre_of(&before, marker).expect("the marker is on screen");
+        // The marker's own middle, as this fixture places it.
+        let marker_centre = [26.0, 0.0, 17.0];
+        let said = where_the_camera_puts(&camera, marker_centre);
+        assert!(
+            (was_x - said.0).abs() <= 1.5 && (was_y - said.1).abs() <= 1.5,
+            "{projection:?}: the marker is drawn at ({was_x}, {was_y}) where the camera \
+             says {said:?}"
+        );
+        let colour = before
+            .colour_at(was_x as u32, was_y as u32)
+            .expect("the marker has a colour");
+        let covered = covered_by(&before, marker);
+        // The marker is up and to the right of the middle in this fixture.
+        assert!(
+            was_x - 128.0 > 20.0 && 128.0 - was_y > 10.0,
+            "{projection:?}: the marker did not start where the gate expects: ({was_x}, {was_y})"
+        );
+
+        // A quarter turn counterclockwise: what was to the right goes up, and
+        // what was above goes to the left.
+        camera.roll(std::f32::consts::FRAC_PI_2);
+        let after = draw(&mut renderer, &camera);
+
+        let (now_x, now_y) = centre_of(&after, marker).expect("the marker left the view");
+        let (dx, dy) = (was_x - 128.0, 128.0 - was_y);
+        let (expected_x, expected_y) = (128.0 - dy, 128.0 - dx);
+        assert!(
+            (now_x - expected_x).abs() <= 2.0 && (now_y - expected_y).abs() <= 2.0,
+            "{projection:?}: a quarter turn moved the marker from ({was_x}, {was_y}) to \
+             ({now_x}, {now_y}) where it belongs at ({expected_x}, {expected_y})"
+        );
+
+        let said = where_the_camera_puts(&camera, marker_centre);
+        assert!(
+            (now_x - said.0).abs() <= 1.5 && (now_y - said.1).abs() <= 1.5,
+            "{projection:?}: after turning, the marker is drawn at ({now_x}, {now_y}) \
+             where the camera says {said:?}"
+        );
+
+        // It is the same part, the same face and the same colour: turning the
+        // view is not a change to the model.
+        assert_eq!(
+            after.pick_at(now_x as u32, now_y as u32),
+            marker,
+            "{projection:?}: the marker changed hands"
+        );
+        assert_eq!(
+            after.hit_at(now_x as u32, now_y as u32).face(),
+            marker_face,
+            "{projection:?}: the marker changed which face it shows"
+        );
+        assert_eq!(
+            after.colour_at(now_x as u32, now_y as u32),
+            Some(colour),
+            "{projection:?}: turning the view repainted the model"
+        );
+        let now_covered = covered_by(&after, marker);
+        assert!(
+            now_covered.abs_diff(covered) * 20 < covered,
+            "{projection:?}: the marker changed size from {covered} to {now_covered}"
+        );
+
+        // What is in front is still in front.
+        assert!(
+            covered_by(&after, nearer) > 0,
+            "{projection:?}: the nearer plate vanished behind the one it is in front of"
+        );
+
+        // The backdrop turned with the world rather than staying with the
+        // screen, and is still nobody to click.
+        let backdrop = pixels_of(&after, |frame, x, y| {
+            frame.pick_at(x, y) == PickId::NOTHING
+                && frame
+                    .colour_at(x, y)
+                    .is_some_and(|colour| colour != [0, 0, 0, 255])
+        });
+        assert!(
+            !backdrop.is_empty(),
+            "{projection:?}: the backdrop disappeared after a turn"
+        );
+        for (x, y) in &backdrop {
+            assert_eq!(
+                after.hit_at(*x, *y).definition(),
+                PickId::NOTHING,
+                "{projection:?}: the grid became something to click at ({x}, {y})"
+            );
+            assert_eq!(
+                after.hit_at(*x, *y).face(),
+                FacePickId::NOTHING,
+                "{projection:?}: the grid became a face at ({x}, {y})"
+            );
+        }
+        let (changed, common) = changed_common_background(&before, &after);
+        assert!(
+            changed * 5 > common,
+            "{projection:?}: the backdrop stayed with the screen: {changed} of {common} moved"
+        );
+
+        // Turning the view is a camera change and nothing else.
+        assert_eq!(
+            renderer.geometry_uploads(),
+            uploaded,
+            "{projection:?}: turning uploaded geometry"
+        );
+        let repeat = draw(&mut renderer, &camera);
+        assert_eq!(
+            after.colour(),
+            repeat.colour(),
+            "{projection:?}: the same camera drew two different pictures"
+        );
+        for (x, y) in pixels_of(&after, |frame, x, y| frame.pick_at(x, y) != PickId::NOTHING) {
+            assert_eq!(
+                after.pick_at(x, y),
+                repeat.pick_at(x, y),
+                "{projection:?}: what a pixel belongs to depends on when it was drawn"
+            );
+        }
+    }
+}

@@ -1792,6 +1792,35 @@ mod tests {
             );
         }
 
+        // And the same with the horizon turned, in both projections. A roll
+        // is camera state like any other, so a window that read it differently
+        // from a readback would draw the model at one angle and answer clicks
+        // at another.
+        for mut turned in [camera, flat] {
+            let projection = turned.projection_mode();
+            turned.roll(0.6);
+            let offscreen_turned = renderer
+                .render(
+                    &prepared,
+                    &turned,
+                    Marked::Nothing,
+                    Marked::Nothing,
+                    &everything,
+                )
+                .expect("draws")
+                .colour()
+                .to_vec();
+            assert_ne!(
+                offscreen_turned, offscreen_all,
+                "{projection:?}: the turn changed nothing"
+            );
+            assert_eq!(
+                window_colour(&mut renderer, &prepared, &turned, &everything),
+                offscreen_turned,
+                "{projection:?}: the window and the readback disagree about a turned view"
+            );
+        }
+
         // And the same for the mask isolating leaves behind, which is the same
         // mask reached a different way: one representation, one consumer.
         let mut isolating = everything.clone();

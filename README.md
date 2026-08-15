@@ -132,6 +132,17 @@ in progress. Winit documents its dedicated pinch event on macOS and iOS;
 FerriteCAD claims the desktop behaviour only on macOS. No particular mapping of
 pinch gestures is claimed for Windows or Linux input stacks.
 
+Two fingers turning against each other tilt the horizon: the view rolls about
+the direction it is already looking in, the way the fingers went, so a part can
+be brought square with the screen before it is read off. Nothing changes except
+which way is up. The eye stays where it is, so does what you are looking at, and
+so do the distance between them, the apparent scale and the projection. That is
+what makes this different from dragging to orbit, which swings the eye around
+the model about the world's up axis and deliberately levels the horizon again.
+Framing keeps whatever tilt you have set. To put the horizon back, ask for a
+named view or simply orbit. Like the pinch, this is a gesture winit documents
+for macOS and iOS, and the desktop behaviour is claimed only on macOS.
+
 Moving the pointer
 over the model marks the face under it, and the same face wherever that
 definition appears; moving it over a row of the list marks that whole

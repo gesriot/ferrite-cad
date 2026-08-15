@@ -90,6 +90,12 @@ pub enum ViewportEvent {
     Pinch {
         delta: f32,
     },
+    /// Two fingers turning on a trackpad. Positive turns the world
+    /// counterclockwise on screen, and the angle is in radians: whatever units
+    /// a windowing system reports are converted before they reach here.
+    Roll {
+        radians: f32,
+    },
     /// A named direction, from a key or a panel.
     Look(StandardView),
 }
@@ -317,6 +323,14 @@ impl ViewportInput {
                 }
                 self.zoom_by(delta);
             }
+            ViewportEvent::Roll { radians } => {
+                if claimed_by_ui {
+                    return;
+                }
+                let before = self.camera;
+                self.camera.roll(radians);
+                self.settle_view(before);
+            }
             ViewportEvent::Look(view) => {
                 if claimed_by_ui {
                     return;
@@ -357,17 +371,25 @@ impl ViewportInput {
             // belongs to the panel and never reaches here.
             None => self.camera.zoom(amount),
         }
+        self.settle_view(before);
+    }
+
+    /// What a change of view invalidates, once it is known to have happened.
+    ///
+    /// One rule for every way of moving the camera without moving the mouse.
+    /// A camera that did not move invalidates nothing: wound past its limit,
+    /// or asked for a step too small to represent, nothing that was asked
+    /// about has been answered differently and no frame is owed.
+    ///
+    /// When it did move, every pixel now shows something else, so a question
+    /// about what was under the pointer, a click waiting to be answered, and a
+    /// press that might still become one all belonged to a picture that is no
+    /// longer on screen. The gesture itself is not one of them: a zoom or a
+    /// turn during a drag is exactly that, and the button is still down.
+    fn settle_view(&mut self, before: Camera) {
         if self.camera == before {
-            // Wound past its limit, or a step too small for the camera to
-            // represent: nothing moved, so nothing that was asked about has
-            // been answered differently and no frame is owed.
             return;
         }
-        // Every pixel now shows something else, so a question about what was
-        // under the pointer, a click waiting to be answered, and a press that
-        // might still become one all belonged to a picture that is no longer
-        // on screen. The gesture itself is not one of them: a zoom during a
-        // drag is a zoom during a drag, and the button is still down.
         self.hover = Hover::Cleared;
         self.pick = None;
         self.pressed_at = None;
@@ -1060,6 +1082,129 @@ mod tests {
             "a clamped pinch forgot the pending click"
         );
         assert!(!input.take_redraw(), "a clamped pinch asked for a frame");
+    }
+
+    #[test]
+    fn a_turn_reaches_the_camera_as_the_camera_turns() {
+        let mut input = ready();
+        let mut directly = *input.camera();
+
+        input.handle(ViewportEvent::Roll { radians: 0.43 }, false);
+
+        directly.roll(0.43);
+        assert_eq!(
+            *input.camera(),
+            directly,
+            "a turn reached the camera differently from a roll"
+        );
+        assert!(input.take_redraw(), "a turn did not ask to be drawn");
+    }
+
+    #[test]
+    fn a_turn_that_moved_the_view_forgets_the_questions_but_not_the_gesture() {
+        let mut input = ready();
+        assert!(input.set_projection(Projection::Orthographic));
+        click(&mut input, (120.0, 80.0), false);
+        input.handle(ViewportEvent::PointerMoved { x: 240.0, y: 160.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Middle), false);
+        input.handle(ViewportEvent::PointerMoved { x: 244.0, y: 162.0 }, false);
+        let target = input.camera().target();
+        let _ = input.take_redraw();
+
+        input.handle(ViewportEvent::Roll { radians: 0.5 }, false);
+
+        assert_eq!(input.take_hover(), Hover::Cleared, "a stale hover survived");
+        assert_eq!(input.take_pick(), None, "a stale click survived");
+        assert!(
+            input.is_dragging(),
+            "a turn ended a drag whose button is still down"
+        );
+        assert_eq!(
+            input.projection(),
+            Projection::Orthographic,
+            "a turn changed how the model is drawn"
+        );
+        assert_eq!(
+            input.camera().target(),
+            target,
+            "a turn moved what is being looked at"
+        );
+        assert!(input.take_redraw(), "a turn did not ask to be drawn");
+    }
+
+    #[test]
+    fn a_turn_that_changes_nothing_leaves_every_waiting_thing_alone() {
+        // Claimed by the interface, and the angles that cannot move a basis.
+        let cases: [(f32, bool); 6] = [
+            (0.6, true),
+            (0.0, false),
+            (f32::NAN, false),
+            (f32::INFINITY, false),
+            (-f32::INFINITY, false),
+            (1e-30, false),
+        ];
+        for (radians, claimed) in cases {
+            let mut input = ready();
+            input.camera.orbit(0.0137, -0.0089);
+            input.camera.pan(0.17, -0.11);
+            click(&mut input, (120.0, 80.0), false);
+            input.handle(ViewportEvent::PointerMoved { x: 240.0, y: 160.0 }, false);
+            // A press that has not yet decided what it is.
+            input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+            input.handle(ViewportEvent::PointerMoved { x: 242.0, y: 161.0 }, false);
+            let before = *input.camera();
+            let dragging = input.is_dragging();
+            let _ = input.take_redraw();
+            let _ = input.take_hover();
+
+            input.handle(ViewportEvent::Roll { radians }, claimed);
+
+            assert_eq!(
+                *input.camera(),
+                before,
+                "a turn of {radians} (claimed {claimed}) moved the camera"
+            );
+            assert_eq!(
+                input.take_pick(),
+                Some((120.0, 80.0)),
+                "a turn of {radians} forgot the pending click"
+            );
+            assert_eq!(
+                input.take_hover(),
+                Hover::Unchanged,
+                "a turn of {radians} answered a question nobody asked"
+            );
+            assert_eq!(
+                input.is_dragging(),
+                dragging,
+                "a turn of {radians} ended the gesture"
+            );
+            assert!(
+                !input.take_redraw(),
+                "a turn of {radians} asked for a frame"
+            );
+
+            // The press half is still there, so a release still chooses.
+            input.handle(
+                ViewportEvent::PointerReleased(PointerButton::Primary),
+                false,
+            );
+            assert_eq!(
+                input.take_pick(),
+                Some((240.0, 160.0)),
+                "a turn of {radians} forgot a press that was still waiting"
+            );
+        }
+    }
+
+    #[test]
+    fn several_turns_before_a_frame_owe_one_frame() {
+        let mut input = ready();
+        for _ in 0..7 {
+            input.handle(ViewportEvent::Roll { radians: 0.02 }, false);
+        }
+        assert!(input.take_redraw(), "seven turns owed no frame");
+        assert!(!input.take_redraw(), "a flag counted instead of latching");
     }
 
     #[test]
