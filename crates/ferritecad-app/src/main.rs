@@ -1545,14 +1545,12 @@ impl ApplicationHandler<AppEvent> for App {
             }
 
             other => {
-                for event in translate(&other) {
-                    let claimed = claimed_by_interface(
-                        &event,
-                        response.consumed,
-                        live.egui.egui_wants_pointer_input(),
-                    );
-                    self.input.handle(event, claimed);
-                }
+                apply_viewport_input(
+                    &mut self.input,
+                    &other,
+                    response.consumed,
+                    live.egui.egui_wants_pointer_input(),
+                );
             }
         }
 
@@ -2304,6 +2302,23 @@ fn claimed_by_interface(event: &ViewportEvent, consumed: bool, wants_pointer: bo
         // A move is claimed only while no gesture is running; the reducer
         // keeps a drag that began in the viewport.
         _ => consumed,
+    }
+}
+
+/// Translates one window event and gives only viewport state to its answers.
+///
+/// Selection and visibility are deliberately absent: camera gestures cannot
+/// change either through this semantic route. Keeping the small piece of
+/// window wiring free also lets tests drive the same path without a window.
+fn apply_viewport_input(
+    input: &mut ViewportInput,
+    event: &WindowEvent,
+    consumed: bool,
+    wants_pointer: bool,
+) {
+    for event in translate(event) {
+        let claimed = claimed_by_interface(&event, consumed, wants_pointer);
+        input.handle(event, claimed);
     }
 }
 
@@ -3587,13 +3602,16 @@ mod tests {
 
         // A quarter turn counterclockwise, as a trackpad reports it: degrees,
         // positive for counterclockwise.
-        for event in translate(&WindowEvent::RotationGesture {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: 90.0,
-            phase: winit::event::TouchPhase::Moved,
-        }) {
-            input.handle(event, false);
-        }
+        apply_viewport_input(
+            &mut input,
+            &WindowEvent::RotationGesture {
+                device_id: winit::event::DeviceId::dummy(),
+                delta: 90.0,
+                phase: winit::event::TouchPhase::Moved,
+            },
+            false,
+            false,
+        );
 
         let after = draw(&mut renderer, input.camera());
         let (now_x, now_y) = centre_of_pick(&after, marker).expect("the marker left the view");
@@ -6527,7 +6545,7 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_of_the_view_leaves_the_chosen_face_and_the_hidden_parts_alone() {
+    fn the_rotation_input_path_receives_neither_selection_nor_visibility() {
         let (_directory, scene, chosen) = plate_with_a_chosen_face();
         let mut live = LiveScene::new(
             (),
@@ -6541,15 +6559,21 @@ mod tests {
             .frame(scene.snapshot.bounds().expect("an extent"))
             .expect("frames");
 
+        // This is the semantic path the window calls, whose signature has no
+        // scene state. It proves the ownership boundary below the window arm;
+        // the arm itself cannot be exercised without opening a window.
         let turn = |input: &mut ViewportInput| {
             let before = *input.camera();
-            for event in translate(&WindowEvent::RotationGesture {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: 30.0,
-                phase: winit::event::TouchPhase::Moved,
-            }) {
-                input.handle(event, false);
-            }
+            apply_viewport_input(
+                input,
+                &WindowEvent::RotationGesture {
+                    device_id: winit::event::DeviceId::dummy(),
+                    delta: 30.0,
+                    phase: winit::event::TouchPhase::Moved,
+                },
+                false,
+                false,
+            );
             assert_ne!(*input.camera(), before, "the gate turned nothing");
             assert_eq!(input.camera().target(), before.target(), "the view moved");
             assert_eq!(

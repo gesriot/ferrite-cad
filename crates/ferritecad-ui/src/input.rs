@@ -376,10 +376,10 @@ impl ViewportInput {
 
     /// What a change of view invalidates, once it is known to have happened.
     ///
-    /// One rule for every way of moving the camera without moving the mouse.
-    /// A camera that did not move invalidates nothing: wound past its limit,
-    /// or asked for a step too small to represent, nothing that was asked
-    /// about has been answered differently and no frame is owed.
+    /// One rule for the zoom and roll gestures. A camera that did not move
+    /// invalidates nothing: wound past its limit, or asked for a step too small
+    /// to represent, nothing that was asked about has been answered differently
+    /// and no frame is owed.
     ///
     /// When it did move, every pixel now shows something else, so a question
     /// about what was under the pointer, a click waiting to be answered, and a
@@ -1106,8 +1106,6 @@ mod tests {
         assert!(input.set_projection(Projection::Orthographic));
         click(&mut input, (120.0, 80.0), false);
         input.handle(ViewportEvent::PointerMoved { x: 240.0, y: 160.0 }, false);
-        input.handle(ViewportEvent::PointerPressed(PointerButton::Middle), false);
-        input.handle(ViewportEvent::PointerMoved { x: 244.0, y: 162.0 }, false);
         let target = input.camera().target();
         let _ = input.take_redraw();
 
@@ -1115,10 +1113,6 @@ mod tests {
 
         assert_eq!(input.take_hover(), Hover::Cleared, "a stale hover survived");
         assert_eq!(input.take_pick(), None, "a stale click survived");
-        assert!(
-            input.is_dragging(),
-            "a turn ended a drag whose button is still down"
-        );
         assert_eq!(
             input.projection(),
             Projection::Orthographic,
@@ -1130,6 +1124,48 @@ mod tests {
             "a turn moved what is being looked at"
         );
         assert!(input.take_redraw(), "a turn did not ask to be drawn");
+
+        // Hover and a gesture cannot coexist in a real reducer state: a press
+        // clears hover. Exercise the promise about the gesture separately.
+        let mut dragging = ready();
+        dragging.handle(ViewportEvent::PointerMoved { x: 240.0, y: 160.0 }, false);
+        dragging.handle(ViewportEvent::PointerPressed(PointerButton::Middle), false);
+        dragging.handle(ViewportEvent::PointerMoved { x: 244.0, y: 162.0 }, false);
+        let before = *dragging.camera();
+
+        dragging.handle(ViewportEvent::Roll { radians: 0.5 }, false);
+
+        assert_ne!(
+            *dragging.camera(),
+            before,
+            "the gesture gate turned nothing"
+        );
+        assert!(
+            dragging.is_dragging(),
+            "a turn ended a drag whose button is still down"
+        );
+
+        // A primary press is both a gesture and half of a possible click. The
+        // gesture remains while the half-click belongs to the old frame and
+        // must not choose something after the turn.
+        let mut pressed = ready();
+        pressed.handle(ViewportEvent::PointerMoved { x: 310.0, y: 210.0 }, false);
+        pressed.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        assert_eq!(pressed.pressed_at, Some((310.0, 210.0)));
+
+        pressed.handle(ViewportEvent::Roll { radians: 0.5 }, false);
+
+        assert_eq!(pressed.pressed_at, None, "a stale primary press survived");
+        assert!(pressed.is_dragging(), "a turn ended the primary gesture");
+        pressed.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        assert_eq!(
+            pressed.take_pick(),
+            None,
+            "a press from before the turn still chose something afterwards"
+        );
     }
 
     #[test]
