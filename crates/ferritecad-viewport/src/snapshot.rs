@@ -22,6 +22,8 @@
 //! result. Not filtered out at the end – never carried, so no later change can
 //! start leaking it by accident.
 
+use std::collections::HashMap;
+
 use ferritecad_kernel::Mesh;
 use ferritecad_types::{CadError, CanonicalHasher, ContentHash, Result, Transform};
 
@@ -108,6 +110,20 @@ pub struct PackedMesh {
     /// the exact partition hashed into the snapshot identity and the direct
     /// answer to how many faces this mesh has.
     face_index_counts: Vec<u32>,
+    /// The visible boundary of every face, as pairs of vertex indices into
+    /// the same vertices the triangles use.
+    ///
+    /// Derived once, while packing, from the partition the kernel already
+    /// supplied. Within one face an undirected edge shared by two of its
+    /// triangles is inside that face and is not drawn; one used by a single
+    /// triangle is where the face stops. Counting within each face rather
+    /// than across the mesh is what keeps the boundary between two faces:
+    /// each of them owns its own copy of that edge, and both are boundaries.
+    ///
+    /// This is the boundary of a tessellation, not a B-Rep edge. The snapshot
+    /// carries no edge identity, so nothing here pretends to one: there is no
+    /// pick value, no hover and no selection for a line.
+    line_indices: Vec<u32>,
     min: [f32; 3],
     max: [f32; 3],
 }
@@ -144,6 +160,16 @@ impl PackedMesh {
         self.indices.len() / 3
     }
 
+    /// Pairs of vertex indices, two per boundary segment.
+    pub fn line_indices(&self) -> &[u32] {
+        &self.line_indices
+    }
+
+    /// How many boundary segments this mesh draws.
+    pub fn line_count(&self) -> usize {
+        self.line_indices.len() / 2
+    }
+
     /// The corners of this mesh's own bounding box, before any placement.
     ///
     /// Both are zero for an empty mesh, which is the only answer that is not a
@@ -151,6 +177,69 @@ impl PackedMesh {
     pub fn bounds(&self) -> ([f32; 3], [f32; 3]) {
         (self.min, self.max)
     }
+}
+
+/// Where each face of a tessellation stops, as pairs of vertex indices.
+///
+/// One pass per face range. An undirected edge used by two triangles of the
+/// same face is a seam of the triangulation and is not a boundary of anything
+/// a person can see; one used by a single triangle is where that face ends,
+/// whether at the silhouette of the solid or against a neighbouring face.
+/// Counted face by face rather than over the whole mesh, which is the entire
+/// difference between drawing where faces meet and drawing only the outline of
+/// the body.
+///
+/// Refuses an edge used by more than two triangles of one face: such a
+/// tessellation is not a surface, and there is no boundary to choose. Skips an
+/// edge whose ends name the same vertex, which is a segment of no index length
+/// and nothing anybody could see. Distinct coincident vertices remain distinct
+/// here: welding them would invent a geometric tolerance this layer does not
+/// own.
+///
+/// Emitted with the smaller index first and in the order the edges are first
+/// met, so that the same mesh always packs to the same lines and the winding
+/// of a triangle cannot change them.
+fn face_boundaries(mesh: &Mesh) -> Result<Vec<u32>> {
+    let mut lines = Vec::new();
+    // Reused across faces: an edge belongs to the face being counted, and
+    // clearing is cheaper than allocating one map per face.
+    let mut seen: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut order: Vec<(u32, u32)> = Vec::new();
+
+    for range in &mesh.faces {
+        seen.clear();
+        order.clear();
+        let first = range.first_index as usize;
+        let end = first + range.index_count as usize;
+        for triangle in mesh.indices[first..end].chunks_exact(3) {
+            for corner in 0..3 {
+                let (a, b) = (triangle[corner], triangle[(corner + 1) % 3]);
+                if a == b {
+                    continue;
+                }
+                let edge = (a.min(b), a.max(b));
+                let count = seen.entry(edge).or_insert_with(|| {
+                    order.push(edge);
+                    0
+                });
+                *count += 1;
+                if *count > 2 {
+                    return Err(CadError::input(format!(
+                        "face {} has an edge between vertices {} and {} shared by more than \
+                         two of its triangles, which is not a surface and has no boundary",
+                        range.face, edge.0, edge.1
+                    )));
+                }
+            }
+        }
+        for edge in &order {
+            if seen.get(edge).copied() == Some(1) {
+                lines.push(edge.0);
+                lines.push(edge.1);
+            }
+        }
+    }
+    Ok(lines)
 }
 
 /// A box being grown to hold everything put into it.
@@ -932,6 +1021,7 @@ impl SnapshotBuilder {
             }
         }
         let face_index_counts = mesh.faces.iter().map(|range| range.index_count).collect();
+        let line_indices = face_boundaries(mesh)?;
         // Ordinals are per snapshot, so the same face of one definition is one
         // identity however many times the definition is placed.
         self.face_owner
@@ -943,6 +1033,7 @@ impl SnapshotBuilder {
             indices: mesh.indices.clone(),
             face_of_vertex,
             face_index_counts,
+            line_indices,
             min,
             max,
         });

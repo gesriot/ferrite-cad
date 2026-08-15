@@ -6529,10 +6529,20 @@ mod tests {
             )
             .expect("draws");
 
-        // A pixel of the plate, and what the frame says is under it.
+        // A pixel of the plate's surface, and what the frame says is under it.
+        // Where the plate draws the boundary of a face, the pixel is ink taken
+        // to the end of the range rather than the shaded material, and a
+        // boundary belongs to the face on either side of it: which face a
+        // pixel of ink is marked for is a question about linework, gated where
+        // linework is gated, and not about which face a click chose.
         let drawn: Vec<(u32, u32)> = (0..plain.height())
             .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
-            .filter(|(x, y)| plain.pick_at(*x, *y) != PickId::NOTHING)
+            .filter(|(x, y)| {
+                plain.pick_at(*x, *y) != PickId::NOTHING
+                    && plain
+                        .colour_at(*x, *y)
+                        .is_some_and(|pixel| pixel[0..3] != [0, 0, 0] && pixel[0..3] != [255; 3])
+            })
             .collect();
         assert!(drawn.len() > 200, "the plate is drawn");
         let hit = plain.hit_at(drawn[0].0, drawn[0].1);
@@ -6807,6 +6817,141 @@ mod tests {
             uploaded,
             "magnifying uploaded geometry"
         );
+    }
+
+    /// Every pixel where the picture changes from one face to another.
+    ///
+    /// Read from the face target rather than from the colour, so the gate
+    /// knows where a boundary is without having to recognise one by eye.
+    fn face_boundary_pixels(frame: &ferritecad_viewport_gpu::Frame) -> Vec<(u32, u32)> {
+        let face = |x: u32, y: u32| frame.hit_at(x, y).face();
+        let mut boundary = Vec::new();
+        for y in 1..frame.height() - 1 {
+            for x in 1..frame.width() - 1 {
+                let mine = face(x, y);
+                if mine == ferritecad_viewport::FacePickId::NOTHING {
+                    continue;
+                }
+                let neighbours = [
+                    face(x - 1, y),
+                    face(x + 1, y),
+                    face(x, y - 1),
+                    face(x, y + 1),
+                ];
+                if neighbours.iter().any(|other| {
+                    *other != mine && *other != ferritecad_viewport::FacePickId::NOTHING
+                }) {
+                    boundary.push((x, y));
+                }
+            }
+        }
+        boundary
+    }
+
+    fn luminance(colour: [u8; 4]) -> f32 {
+        0.2126 * f32::from(colour[0])
+            + 0.7152 * f32::from(colour[1])
+            + 0.0722 * f32::from(colour[2])
+    }
+
+    #[test]
+    fn where_one_face_of_the_plate_ends_and_the_next_begins_is_drawn() {
+        let mut renderer = renderer_or_skip!();
+        let (_directory, scene) = plate_scene();
+        let snapshot = std::sync::Arc::new(scene.snapshot);
+        let prepared = renderer
+            .prepare(std::sync::Arc::clone(&snapshot))
+            .expect("uploads");
+        let mut camera = Camera::new();
+        camera.resize(240, 240);
+        camera
+            .frame(snapshot.bounds().expect("the plate has an extent"))
+            .expect("frames");
+        // A corner view, so several faces of the solid are on screen at once.
+        camera.orbit(0.7, 0.55);
+        let frame = renderer
+            .render(
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Marked::Nothing,
+                &Visibility::default(),
+            )
+            .expect("draws");
+
+        let boundary = face_boundary_pixels(&frame);
+        assert!(
+            boundary.len() > 20,
+            "the gate found no face boundary to look at: {} pixels",
+            boundary.len()
+        );
+
+        // What the model is drawn in, away from any boundary.
+        let fill: Vec<f32> = (0..frame.height())
+            .flat_map(|y| (0..frame.width()).map(move |x| (x, y)))
+            .filter(|(x, y)| {
+                frame.hit_at(*x, *y).face() != ferritecad_viewport::FacePickId::NOTHING
+                    && !boundary.contains(&(*x, *y))
+            })
+            .filter_map(|(x, y)| frame.colour_at(x, y).map(luminance))
+            .collect();
+        assert!(!fill.is_empty(), "the plate drew nothing");
+        let dimmest_fill = fill.iter().copied().fold(f32::INFINITY, f32::min);
+
+        // A boundary that is drawn is drawn in ink: darker than anything the
+        // shaded surface produces, rather than merely a change of shade
+        // between two lit faces.
+        let inked = boundary
+            .iter()
+            .filter_map(|(x, y)| frame.colour_at(*x, *y).map(luminance))
+            .filter(|value| *value + 12.0 < dimmest_fill)
+            .count();
+        assert!(
+            inked * 4 > boundary.len(),
+            "only {inked} of {} boundary pixels are drawn as a line; the dimmest fill is \
+             {dimmest_fill}",
+            boundary.len()
+        );
+    }
+
+    #[test]
+    fn linework_is_not_a_part_and_appears_in_nothing_that_lists_parts() {
+        let (_directory, scene) = plate_scene();
+        let snapshot = &scene.snapshot;
+
+        // The plate has boundaries to draw, so this gate is about a picture
+        // that actually has linework in it.
+        assert!(
+            snapshot.meshes().iter().any(|mesh| mesh.line_count() > 0),
+            "the committed plate packs no linework"
+        );
+
+        // What a picture is measured as, and what a list of parts holds, are
+        // both about the model. Lines have no extent of their own and no row.
+        let from_the_model = snapshot
+            .meshes()
+            .iter()
+            .zip(snapshot.draws())
+            .filter(|(mesh, _)| mesh.triangle_count() > 0)
+            .count();
+        assert!(from_the_model > 0, "the plate draws no triangles");
+        assert_eq!(
+            scene.catalogue.len(),
+            snapshot.meshes().len(),
+            "the list of parts counted something other than the definitions"
+        );
+        // The extent is the model's, and the model's alone: a line indexes the
+        // same vertices the triangles do, so no line can reach outside what
+        // the fill already covers and none can enlarge what framing sees.
+        for mesh in snapshot.meshes() {
+            let vertices = mesh.vertex_count() as u32;
+            for index in mesh.line_indices() {
+                assert!(
+                    *index < vertices,
+                    "a line names vertex {index} of {vertices}, so it is not the model's"
+                );
+            }
+        }
     }
 
     #[test]

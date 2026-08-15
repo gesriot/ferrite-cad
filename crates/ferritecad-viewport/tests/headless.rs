@@ -3687,3 +3687,290 @@ fn framing_keeps_a_turned_horizon_and_a_named_view_levels_it() {
 fn length_of(vector: [f32; 3]) -> f32 {
     vector[0].hypot(vector[1]).hypot(vector[2])
 }
+
+/// A square face made of two triangles sharing a diagonal.
+fn square_face(shape: u64, first_index: u32) -> (Vec<f32>, Vec<f32>, Vec<u32>, MeshFaceRange) {
+    let positions = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0];
+    let normals = vec![
+        0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0,
+    ];
+    let indices = vec![0, 1, 2, 0, 2, 3];
+    let range = MeshFaceRange {
+        face: SubShapeHandle::new(
+            ShapeHandle::new(SessionId::new(), shape),
+            SubShapeKind::Face,
+            0u64,
+        ),
+        first_index,
+        index_count: 6,
+    };
+    (positions, normals, indices, range)
+}
+
+/// The undirected segments a packed mesh draws, as a set.
+fn boundary_set(mesh: &ferritecad_viewport::PackedMesh) -> std::collections::BTreeSet<(u32, u32)> {
+    mesh.line_indices()
+        .chunks_exact(2)
+        .map(|pair| (pair[0].min(pair[1]), pair[0].max(pair[1])))
+        .collect()
+}
+
+fn packed(mesh: &Mesh) -> ferritecad_viewport::PackedMesh {
+    let mut builder = SnapshotBuilder::new();
+    let index = builder.add_mesh(mesh).expect("packs");
+    builder
+        .place(index, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+        .expect("places");
+    let snapshot = builder.build();
+    snapshot.meshes()[0].clone()
+}
+
+#[test]
+fn a_square_face_is_bounded_by_its_four_sides_and_not_by_its_diagonal() {
+    let (positions, normals, indices, range) = square_face(1, 0);
+    let mesh = Mesh {
+        positions,
+        normals,
+        indices,
+        faces: vec![range],
+    };
+
+    let packed = packed(&mesh);
+
+    assert_eq!(packed.line_count(), 4, "a square has four sides");
+    assert_eq!(
+        boundary_set(&packed),
+        [(0, 1), (1, 2), (2, 3), (0, 3)].into_iter().collect(),
+        "the boundary is not the four sides of the square"
+    );
+    // The diagonal is shared by both triangles, so it is inside the face.
+    assert!(
+        !boundary_set(&packed).contains(&(0, 2)),
+        "the triangulation's own diagonal was drawn"
+    );
+}
+
+#[test]
+fn two_faces_lying_in_one_plane_each_keep_their_own_boundary() {
+    // Two squares side by side in the same plane, tessellated separately.
+    // Cancelling edges across the whole mesh rather than within each face
+    // would erase where they meet, which is exactly what makes a coplanar
+    // join impossible to see.
+    let shape = ShapeHandle::new(SessionId::new(), 7);
+    let face = |ordinal: u32, first_index: u32| MeshFaceRange {
+        face: SubShapeHandle::new(shape, SubShapeKind::Face, u64::from(ordinal)),
+        first_index,
+        index_count: 6,
+    };
+    let mesh = Mesh {
+        positions: vec![
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 2.0, 0.0,
+            0.0, 2.0, 0.0, 1.0, 1.0, 0.0, 1.0,
+        ],
+        normals: [0.0, -1.0, 0.0].repeat(8),
+        indices: vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7],
+        faces: vec![face(0, 0), face(1, 6)],
+    };
+
+    let packed = packed(&mesh);
+
+    assert_eq!(
+        packed.line_count(),
+        8,
+        "two squares have eight sides between them"
+    );
+    let lines = boundary_set(&packed);
+    // The seam, drawn twice because each face stops there: vertices 1 and 2
+    // belong to the left square, 4 and 7 to the right, at the same place.
+    assert!(
+        lines.contains(&(1, 2)) && lines.contains(&(4, 7)),
+        "the join between two coplanar faces was cancelled away: {lines:?}"
+    );
+}
+
+#[test]
+fn several_faces_and_separate_pieces_pack_the_same_lines_every_time() {
+    let shape = ShapeHandle::new(SessionId::new(), 11);
+    let face = |ordinal: u32, first_index: u32| MeshFaceRange {
+        face: SubShapeHandle::new(shape, SubShapeKind::Face, u64::from(ordinal)),
+        first_index,
+        index_count: 6,
+    };
+    // Three squares, the third nowhere near the other two.
+    let mut positions = Vec::new();
+    let mut indices = Vec::new();
+    for (piece, offset) in [0.0f32, 1.0, 40.0].into_iter().enumerate() {
+        positions.extend_from_slice(&[
+            offset,
+            0.0,
+            0.0,
+            offset + 1.0,
+            0.0,
+            0.0,
+            offset + 1.0,
+            0.0,
+            1.0,
+            offset,
+            0.0,
+            1.0,
+        ]);
+        let base = piece as u32 * 4;
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    let mesh = Mesh {
+        positions,
+        normals: [0.0, -1.0, 0.0].repeat(12),
+        indices,
+        faces: vec![face(0, 0), face(1, 6), face(2, 12)],
+    };
+
+    let once = packed(&mesh);
+    let twice = packed(&mesh);
+
+    assert_eq!(once.line_count(), 12, "three squares have twelve sides");
+    assert_eq!(
+        once.line_indices(),
+        twice.line_indices(),
+        "packing the same mesh twice produced different lines"
+    );
+}
+
+#[test]
+fn the_order_and_the_winding_of_triangles_do_not_change_the_boundary() {
+    let (positions, normals, _, range) = square_face(3, 0);
+    let straightforward = Mesh {
+        positions: positions.clone(),
+        normals: normals.clone(),
+        indices: vec![0, 1, 2, 0, 2, 3],
+        faces: vec![range],
+    };
+    // The same square: the other triangle first, and both wound the other way.
+    let rearranged = Mesh {
+        positions,
+        normals,
+        indices: vec![3, 2, 0, 2, 1, 0],
+        faces: vec![range],
+    };
+
+    assert_eq!(
+        boundary_set(&packed(&straightforward)),
+        boundary_set(&packed(&rearranged)),
+        "the boundary depends on how the triangles happen to be written"
+    );
+}
+
+#[test]
+fn a_tessellation_that_is_not_a_surface_is_refused_rather_than_guessed_at() {
+    let shape = ShapeHandle::new(SessionId::new(), 5);
+    // Three triangles sharing one edge: no surface has that, and there is no
+    // boundary to choose.
+    let mesh = Mesh {
+        positions: vec![
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.5, 0.0, 1.0, 0.5, 1.0, -1.0, 0.5, -1.0, -1.0,
+        ],
+        normals: [0.0, -1.0, 0.0].repeat(5),
+        indices: vec![0, 1, 2, 0, 1, 3, 0, 1, 4],
+        faces: vec![MeshFaceRange {
+            face: SubShapeHandle::new(shape, SubShapeKind::Face, 0),
+            first_index: 0,
+            index_count: 9,
+        }],
+    };
+
+    let mut builder = SnapshotBuilder::new();
+    let error = builder
+        .add_mesh(&mesh)
+        .expect_err("an edge in three triangles of one face is not a surface");
+    assert!(
+        error.to_string().contains("more than"),
+        "the refusal does not say what is wrong: {error}"
+    );
+    assert_eq!(error.kind(), ErrorKind::Input);
+
+    // And a malformed partition or an index outside the mesh is refused
+    // before any of this, by the kernel's own validation.
+    let (positions, normals, indices, mut range) = square_face(6, 0);
+    range.index_count = 4;
+    let ragged = Mesh {
+        positions: positions.clone(),
+        normals: normals.clone(),
+        indices: indices.clone(),
+        faces: vec![range],
+    };
+    assert!(SnapshotBuilder::new().add_mesh(&ragged).is_err());
+
+    let (_, _, _, range) = square_face(6, 0);
+    let out_of_range = Mesh {
+        positions,
+        normals,
+        indices: vec![0, 1, 9, 0, 2, 3],
+        faces: vec![range],
+    };
+    assert!(SnapshotBuilder::new().add_mesh(&out_of_range).is_err());
+}
+
+#[test]
+fn a_picture_with_no_triangles_invents_no_lines() {
+    let mesh = Mesh {
+        positions: Vec::new(),
+        normals: Vec::new(),
+        indices: Vec::new(),
+        faces: Vec::new(),
+    };
+
+    let packed = packed(&mesh);
+
+    assert_eq!(packed.line_count(), 0, "an empty mesh drew a line");
+    assert!(packed.line_indices().is_empty());
+}
+
+#[test]
+fn drawing_where_faces_stop_does_not_change_what_a_picture_is() {
+    // The lines are a function of the indices and the partition, both of which
+    // the identity already covers, so nothing new is hashed and no algorithm
+    // version is bumped. What must hold is that identity still tells the same
+    // pictures apart and still calls the same picture the same.
+    let (positions, normals, indices, range) = square_face(9, 0);
+    let square = Mesh {
+        positions: positions.clone(),
+        normals: normals.clone(),
+        indices,
+        faces: vec![range],
+    };
+    // The same four vertices, cut the other way: different triangles, and so
+    // a different picture, even though the boundary is the same square.
+    let other_cut = Mesh {
+        positions,
+        normals,
+        indices: vec![1, 2, 3, 1, 3, 0],
+        faces: vec![range],
+    };
+
+    // A snapshot's identity is what its picks carry, which is how every other
+    // gate here compares two pictures.
+    let identity = |mesh: &Mesh| {
+        let mut builder = SnapshotBuilder::new();
+        let index = builder.add_mesh(mesh).expect("packs");
+        builder
+            .place(index, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+            .expect("places");
+        let snapshot = builder.build();
+        snapshot.pick_of(0).expect("the square is drawn")
+    };
+
+    assert_eq!(
+        identity(&square),
+        identity(&square),
+        "the same picture stopped being the same picture"
+    );
+    assert_ne!(
+        identity(&square),
+        identity(&other_cut),
+        "two different tessellations became one picture"
+    );
+    assert_eq!(
+        boundary_set(&packed(&square)),
+        boundary_set(&packed(&other_cut)),
+        "the gate no longer proves the boundary is the same for both"
+    );
+}

@@ -116,9 +116,20 @@ fn shade(in: VertexOut, face: u32) -> vec4<f32> {
     // winding, and a black facing is harder to diagnose than a lit one.
     let lambert = abs(dot(normal, to_light)) * 0.8 + 0.2;
 
-    // Shifted in brightness rather than replaced by a colour of its own: what
-    // is marked must still look like the material it is, and a part that
-    // turned orange would hide whatever the file said about it.
+    let tint = tint_of(face);
+
+    return vec4<f32>(tint * lambert, draw.colour.a);
+}
+
+// The colour this draw shows for a face, before any light falls on it.
+//
+// Shifted in brightness rather than replaced by a colour of its own: what is
+// marked must still look like the material it is, and a part that turned
+// orange would hide whatever the file said about it.
+//
+// Shared with the linework, so a chosen part is chosen at its edges too and
+// there is one statement of what marking means.
+fn tint_of(face: u32) -> vec3<f32> {
     var tint = draw.colour.rgb;
     if (globals.selected_face != 0u && face == globals.selected_face) {
         // One chosen face, in every placement of its definition and nowhere
@@ -141,8 +152,7 @@ fn shade(in: VertexOut, face: u32) -> vec4<f32> {
         // the selection to be another thing.
         tint = marked_colour(tint, 0.22);
     }
-
-    return vec4<f32>(tint * lambert, draw.colour.a);
+    return tint;
 }
 
 // The offscreen path: the picture and both facts about each pixel of it.
@@ -165,4 +175,46 @@ fn fragment_main(in: VertexOut) -> FragmentOut {
 @fragment
 fn fragment_colour(in: VertexOut) -> @location(0) vec4<f32> {
     return shade(in, in.face);
+}
+
+// The ink a boundary is drawn in, for whatever the surface beside it shows.
+//
+// Taken from the shaded colour at this very pixel and carried most of the way
+// to the opposite end of the range. Three things follow, and all three are
+// wanted. Linework on a black part is visible, because the ink goes towards
+// white there and towards black on a light one. It stays visible on a face
+// turned away from the light, because it is measured against that face's own
+// shading rather than against the material. And it moves whenever the fill
+// moves, so choosing or pointing at a part changes it everywhere the part is
+// drawn, edges included, rather than leaving a few pixels behind looking
+// exactly as they did.
+//
+// All the way rather than most of it: a boundary is a line, and a line that
+// shaded itself would be a soft edge. What follows from that is stated where
+// it matters: the ink of a chosen part looks like the ink of an unchosen one
+// wherever both fills fall on the same side of the range, so it is the
+// surface, not the boundary, that shows a part has been chosen.
+fn ink(in: VertexOut, face: u32) -> vec4<f32> {
+    let lit = shade(in, face);
+    return vec4<f32>(marked_colour(lit.rgb, 1.0), lit.a);
+}
+
+// Where a face stops, on the offscreen path.
+//
+// The identities are returned but the pipeline writes neither: a line is
+// something to look at and not something to click, and the pixel underneath
+// must still answer with the face it belongs to.
+@fragment
+fn fragment_line(in: VertexOut) -> FragmentOut {
+    var out: FragmentOut;
+    out.colour = ink(in, in.face);
+    out.pick = 0u;
+    out.face = 0u;
+    return out;
+}
+
+// The same line on a window, which has only a colour to write.
+@fragment
+fn fragment_line_colour(in: VertexOut) -> @location(0) vec4<f32> {
+    return ink(in, in.face);
 }

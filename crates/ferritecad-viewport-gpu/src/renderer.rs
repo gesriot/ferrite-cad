@@ -116,10 +116,16 @@ pub struct Renderer {
     queue: wgpu::Queue,
     /// The offscreen pipeline, which writes colour and identities together.
     pipeline: wgpu::RenderPipeline,
+    /// The offscreen pipeline that draws where faces stop. Built beside the
+    /// fill, from the same shader and layout, so the two cannot disagree
+    /// about where the model is.
+    line_pipeline: wgpu::RenderPipeline,
     /// One pipeline per surface format met so far. A window chooses its own
     /// format and a pipeline is built for the format it is drawn into, not for
     /// the one this crate would have preferred.
     surface_pipelines: std::collections::HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    /// The same linework for a window format, learned when a window is.
+    line_surface_pipelines: std::collections::HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
     layout: wgpu::BindGroupLayout,
@@ -240,9 +246,9 @@ impl Renderer {
         });
 
         // Watched, because a device that refuses a pipeline reports it through
-        // the uncaptured-error handler, which panics the process. A driver
-        // that will not build what this crate draws with is a machine that
-        // cannot draw, which is an answer a caller can act on and not a crash.
+        // the uncaptured-error handler, which panics the process. Validation
+        // is our rendering defect and an internal failure is an unsupported
+        // driver; both are answers a caller can act on rather than a crash.
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
         let pipeline = build_pipeline(&device, &shader, &pipeline_layout, COLOUR_FORMAT, true);
@@ -290,17 +296,15 @@ impl Renderer {
             COLOUR_FORMAT,
             true,
         );
+        let line_pipeline =
+            build_line_pipeline(&device, &shader, &pipeline_layout, COLOUR_FORMAT, true);
         // Pop both even when the inner scope caught an error. Leaving the
         // outer one installed would make a later, unrelated device error look
         // as though it belonged to this build.
         let internal_refusal = pollster::block_on(internal.pop()).map(|error| error.to_string());
         let validation_refusal =
             pollster::block_on(validation.pop()).map(|error| error.to_string());
-        if let Some(refusal) = internal_refusal.or(validation_refusal) {
-            return Err(CadError::unsupported(format!(
-                "this graphics adapter refused the pipeline this crate draws with: {refusal}"
-            )));
-        }
+        pipeline_refusal(validation_refusal, internal_refusal)?;
 
         let draw_stride = align_to(
             std::mem::size_of::<DrawUniform>() as u64,
@@ -320,7 +324,9 @@ impl Renderer {
             device,
             queue,
             pipeline,
+            line_pipeline,
             surface_pipelines: std::collections::HashMap::new(),
+            line_surface_pipelines: std::collections::HashMap::new(),
             shader,
             pipeline_layout,
             layout,
@@ -542,6 +548,14 @@ impl Renderer {
 
             pass.set_pipeline(pipeline);
             Self::draw_model(&mut pass, prepared, visibility, self.draw_stride);
+
+            // Last, over the surfaces they bound and behind anything nearer.
+            let line_pipeline = self
+                .line_surface_pipelines
+                .get(&format)
+                .expect("the line pipeline for this format was just ensured");
+            pass.set_pipeline(line_pipeline);
+            Self::draw_lines(&mut pass, prepared, visibility, self.draw_stride);
         }
         self.queue.submit(Some(encoder.finish()));
         Ok(())
@@ -596,6 +610,36 @@ impl Renderer {
         }
     }
 
+    /// Draws where every visible definition's faces stop, in the same order.
+    ///
+    /// The same visibility, the same placements and the same vertices as the
+    /// fill: a definition that is not drawn has no boundary drawn either, and
+    /// a definition placed twice has its boundary drawn twice. Called after
+    /// the fill so that a line is over the surface it belongs to and behind
+    /// anything nearer.
+    fn draw_lines(
+        pass: &mut wgpu::RenderPass<'_>,
+        prepared: &PreparedSnapshot,
+        visibility: &Visibility,
+        stride: u64,
+    ) {
+        let hidden = visibility.hidden_in(prepared.snapshot());
+        for (index, item) in prepared.snapshot.draws().iter().enumerate() {
+            if hidden.get(item.mesh).copied().unwrap_or(false) {
+                continue;
+            }
+            let mesh = &prepared.meshes[item.mesh];
+            if mesh.line_index_count == 0 {
+                continue;
+            }
+            pass.set_bind_group(0, &prepared.bindings, &[(index as u64 * stride) as u32]);
+            pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+            pass.set_vertex_buffer(1, mesh.faces.slice(..));
+            pass.set_index_buffer(mesh.lines.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..mesh.line_index_count, 0, 0..1);
+        }
+    }
+
     pub(crate) fn present(&self, texture: wgpu::SurfaceTexture) {
         self.queue.present(texture);
     }
@@ -604,14 +648,16 @@ impl Renderer {
     fn ensure_surface_pipeline(&mut self, format: wgpu::TextureFormat) -> Result<()> {
         let needs_model = !self.surface_pipelines.contains_key(&format);
         let needs_grid = !self.grid_surface_pipelines.contains_key(&format);
-        if !needs_model && !needs_grid {
+        let needs_lines = !self.line_surface_pipelines.contains_key(&format);
+        if !needs_model && !needs_grid && !needs_lines {
             return Ok(());
         }
 
         // Surface formats are learned only after a window exists, so these
         // pipelines are necessarily lazy. Watch them just like the offscreen
-        // pipelines: a driver refusal is an unsupported adapter, not a reason
-        // for wgpu's uncaptured-error handler to panic the process.
+        // pipelines: a validation failure is our rendering defect, while an
+        // internal driver refusal is an unsupported adapter. Neither belongs
+        // in wgpu's uncaptured-error handler, which would panic the process.
         let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
         let model = needs_model.then(|| {
@@ -633,14 +679,19 @@ impl Renderer {
                 false,
             )
         });
+        let lines = needs_lines.then(|| {
+            build_line_pipeline(
+                &self.device,
+                &self.shader,
+                &self.pipeline_layout,
+                format,
+                false,
+            )
+        });
         let internal_refusal = pollster::block_on(internal.pop()).map(|error| error.to_string());
         let validation_refusal =
             pollster::block_on(validation.pop()).map(|error| error.to_string());
-        if let Some(refusal) = internal_refusal.or(validation_refusal) {
-            return Err(CadError::unsupported(format!(
-                "this graphics adapter refused the pipeline this crate draws with: {refusal}"
-            )));
-        }
+        pipeline_refusal(validation_refusal, internal_refusal)?;
 
         // Publish neither until both requested pipelines were accepted. A
         // retry after a refusal therefore starts from one coherent state.
@@ -649,6 +700,9 @@ impl Renderer {
         }
         if let Some(grid) = grid {
             self.grid_surface_pipelines.insert(format, grid);
+        }
+        if let Some(lines) = lines {
+            self.line_surface_pipelines.insert(format, lines);
         }
         Ok(())
     }
@@ -751,11 +805,27 @@ impl Renderer {
                     contents: bytemuck::cast_slice(mesh.faces_of_vertices()),
                     usage: wgpu::BufferUsages::VERTEX,
                 });
+            // Where the faces stop, decided when the picture was packed and
+            // uploaded here once with everything else. An empty buffer is not
+            // a buffer, so a mesh with no boundary carries none.
+            let lines = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("ferritecad viewport face boundaries"),
+                    contents: bytemuck::cast_slice(if mesh.line_indices().is_empty() {
+                        &[0u32]
+                    } else {
+                        mesh.line_indices()
+                    }),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
             meshes.push(GpuMesh {
                 vertices,
                 faces,
                 indices,
                 index_count: mesh.indices().len() as u32,
+                lines,
+                line_index_count: mesh.line_indices().len() as u32,
             });
             self.geometry_uploads += 1;
         }
@@ -895,6 +965,10 @@ impl Renderer {
 
             pass.set_pipeline(&self.pipeline);
             Self::draw_model(&mut pass, prepared, visibility, self.draw_stride);
+
+            // Last, over the surfaces they bound and behind anything nearer.
+            pass.set_pipeline(&self.line_pipeline);
+            Self::draw_lines(&mut pass, prepared, visibility, self.draw_stride);
         }
 
         let colour_read = self.readback(&mut encoder, &colour, extent, readback);
@@ -1101,6 +1175,13 @@ struct GpuMesh {
     faces: wgpu::Buffer,
     indices: wgpu::Buffer,
     index_count: u32,
+    /// Where each face of this mesh stops, as pairs into the same vertices.
+    ///
+    /// Uploaded once beside the triangles and never rebuilt: a boundary is a
+    /// fact about the tessellation, and neither the camera, the pointer, the
+    /// selection nor what is hidden can change one.
+    lines: wgpu::Buffer,
+    line_index_count: u32,
 }
 
 /// A snapshot whose geometry is on a device and stays there.
@@ -1222,6 +1303,141 @@ fn identities_entry_point(with_identities: bool) -> &'static str {
     }
 }
 
+/// Turns watched pipeline failures into the class callers can act on.
+///
+/// Validation means the renderer asked wgpu to build an invalid pipeline. It
+/// is a rendering defect and must never look like a missing adapter to a pixel
+/// test that is allowed to skip. An internal failure comes from the driver
+/// after adapter discovery and remains an unsupported device. Validation wins
+/// if a batch of pipeline builds reported both: hiding our own invalid request
+/// behind a simultaneous driver problem would make the gate green by skipping.
+fn pipeline_refusal(validation: Option<String>, internal: Option<String>) -> Result<()> {
+    if let Some(refusal) = validation {
+        return Err(CadError::rendering(format!(
+            "the graphics pipeline this crate asked for is invalid: {refusal}"
+        )));
+    }
+    if let Some(refusal) = internal {
+        return Err(CadError::unsupported(format!(
+            "this graphics adapter failed internally while building the pipeline: {refusal}"
+        )));
+    }
+    Ok(())
+}
+
+/// The pipeline that draws where each face of a model stops.
+///
+/// The same shader, the same layout and the same vertices as the fill: only
+/// the primitive is different, and the indices it is given. Nothing about the
+/// camera is recomputed here, and nothing about identity is written: the pick
+/// and face targets keep whatever the fill beneath the line put there, so a
+/// line is drawn over a pixel without changing what that pixel is.
+fn build_line_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    pipeline_layout: &wgpu::PipelineLayout,
+    colour_format: wgpu::TextureFormat,
+    with_identities: bool,
+) -> wgpu::RenderPipeline {
+    let mut targets = vec![Some(wgpu::ColorTargetState {
+        format: colour_format,
+        blend: None,
+        write_mask: wgpu::ColorWrites::ALL,
+    })];
+    if with_identities {
+        for format in [PICK_FORMAT, FACE_FORMAT] {
+            targets.push(Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                // Written by nothing. A line is a thing to look at, not a
+                // thing to click, and the picture must still answer for the
+                // face underneath it.
+                write_mask: wgpu::ColorWrites::empty(),
+            }));
+        }
+    }
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("ferritecad viewport line pipeline"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            // The model's own vertex stage. A line drawn through different
+            // arithmetic from the surface it belongs to would part company
+            // with it as soon as the camera moved.
+            entry_point: Some("vertex_main"),
+            compilation_options: Default::default(),
+            buffers: &vertex_buffer_layouts(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some(if with_identities {
+                "fragment_line"
+            } else {
+                "fragment_line_colour"
+            }),
+            compilation_options: Default::default(),
+            targets: &targets,
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::LineList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            // Lines lie exactly on the surface they bound, so they must not
+            // lose to it, and they leave the depth buffer as the fill left it.
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: Default::default(),
+            // No bias: wgpu rejects one on a line topology outright. A line
+            // and the triangle edge it came from are drawn from the same two
+            // vertices through the same matrix, so the comparison above is
+            // what lets the line win its own ties.
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// What a vertex of the model is, for whichever pipeline draws it.
+fn vertex_buffer_layouts() -> [Option<wgpu::VertexBufferLayout<'static>>; 2] {
+    [
+        Some(wgpu::VertexBufferLayout {
+            array_stride: (VERTEX_FLOATS * std::mem::size_of::<f32>()) as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
+                    offset: (3 * std::mem::size_of::<f32>()) as u64,
+                    shader_location: 1,
+                },
+            ],
+        }),
+        // The face identities, in their own buffer. A vertex belongs to
+        // exactly one face, which is checked when the picture is packed, so
+        // this says which face a fragment came from without asking the adapter
+        // for a capability.
+        Some(wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<u32>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Uint32,
+                offset: 0,
+                shader_location: 2,
+            }],
+        }),
+    ]
+}
+
 fn build_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
@@ -1263,37 +1479,7 @@ fn build_pipeline(
             module: shader,
             entry_point: Some("vertex_main"),
             compilation_options: Default::default(),
-            buffers: &[
-                Some(wgpu::VertexBufferLayout {
-                    array_stride: (VERTEX_FLOATS * std::mem::size_of::<f32>()) as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x3,
-                            offset: 0,
-                            shader_location: 0,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x3,
-                            offset: (3 * std::mem::size_of::<f32>()) as u64,
-                            shader_location: 1,
-                        },
-                    ],
-                }),
-                // The face identities, in their own buffer. A vertex belongs
-                // to exactly one face, which is checked when the picture is
-                // packed, so this says which face a fragment came from without
-                // asking the adapter for a capability.
-                Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<u32>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Uint32,
-                        offset: 0,
-                        shader_location: 2,
-                    }],
-                }),
-            ],
+            buffers: &vertex_buffer_layouts(),
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
@@ -1468,6 +1654,33 @@ mod tests {
     use ferritecad_types::ErrorKind;
     use ferritecad_types::Transform;
     use ferritecad_viewport::SnapshotBuilder;
+
+    #[test]
+    fn an_invalid_pipeline_is_a_rendering_failure_and_never_a_skippable_adapter() {
+        let validation = pipeline_refusal(Some("bad line state".to_owned()), None)
+            .expect_err("an invalid pipeline was accepted");
+        assert_eq!(validation.kind(), ErrorKind::Rendering, "{validation}");
+        assert!(
+            validation.to_string().contains("bad line state"),
+            "the driver words were lost: {validation}"
+        );
+
+        let internal = pipeline_refusal(None, Some("driver stopped".to_owned()))
+            .expect_err("an internal driver refusal was accepted");
+        assert_eq!(internal.kind(), ErrorKind::Unsupported, "{internal}");
+
+        let both = pipeline_refusal(
+            Some("invalid request".to_owned()),
+            Some("driver stopped too".to_owned()),
+        )
+        .expect_err("two failures were accepted");
+        assert_eq!(
+            both.kind(),
+            ErrorKind::Rendering,
+            "validation did not take priority: {both}"
+        );
+        pipeline_refusal(None, None).expect("no pipeline failure was reported");
+    }
 
     fn one_quad(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
         let shape = ShapeHandle::new(SessionId::new(), 1);
@@ -1724,6 +1937,23 @@ mod tests {
         assert_ne!(
             offscreen_all, offscreen_hiding,
             "the gate compared two identical pictures"
+        );
+
+        // The picture being compared contains linework, so the comparisons
+        // below are comparisons of a picture with lines in it rather than of
+        // one that happens to have none.
+        let ink = offscreen_all
+            .chunks_exact(4)
+            .filter(|pixel| {
+                let luminance = 0.2126 * f32::from(pixel[0])
+                    + 0.7152 * f32::from(pixel[1])
+                    + 0.0722 * f32::from(pixel[2]);
+                luminance < 30.0 && pixel[3] > 0
+            })
+            .count();
+        assert!(
+            ink > 20,
+            "the gate compared a picture with no linework: {ink}"
         );
 
         assert_eq!(

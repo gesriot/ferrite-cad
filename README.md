@@ -163,6 +163,23 @@ one. There is no button and no shortcut, and nothing about it is remembered
 after the application closes. Like the other trackpad gestures, this one is
 delivered by macOS.
 
+The model is drawn with the boundary of every face on it: a one-pixel line
+wherever a face stops, whether against the empty background or against the next
+face along. Without them a shaded body is a silhouette with shading inside it,
+and two faces that meet at a shallow angle, or that lie in the same plane and
+share a colour, are impossible to tell apart. The lines are drawn in whatever
+contrasts with the surface beside them, so they are visible on a black part and
+on a white one, they are hidden by anything nearer, and they follow the model
+through every camera and both projections because they are drawn from the same
+vertices through the same matrix as the surface itself.
+
+What is drawn is the boundary of the tessellation, and that is worth stating
+plainly: it is where the triangles of one face end, not a curve read from the
+original geometry. The seams inside a face, where one triangle meets the next,
+are deliberately not drawn. Nothing here is selectable: a line has no identity,
+a click still chooses the face or the part beneath it, and hiding a part takes
+its linework with it exactly as it takes its surface.
+
 Moving the pointer
 over the model marks the face under it, and the same face wherever that
 definition appears; moving it over a row of the list marks that whole

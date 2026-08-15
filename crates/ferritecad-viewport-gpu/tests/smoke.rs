@@ -253,9 +253,37 @@ fn model_over_the_plane(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera
 /// the greys or axis colours the grid shader can produce.
 fn is_grid(pixel: [u8; 4]) -> bool {
     let [r, g, b, _] = pixel;
-    let lit = u32::from(r) + u32::from(g) + u32::from(b) > 30;
+    let (r, g, b) = (u32::from(r), u32::from(g), u32::from(b));
+    let lit = r + g + b > 30;
+    // Widened before comparing: a boundary drawn in white would overflow the
+    // eight-bit addition this used to do.
     // The model in these tests is blue, and no grid colour is.
     lit && !(b > r + 40 && b > g + 40)
+}
+
+/// Whether the picture shows a surface here, rather than a boundary drawn
+/// over one.
+///
+/// A gate about what a part looks like when it is chosen, pointed at or left
+/// alone is a gate about its surface. Its boundary is drawn in ink taken to
+/// the end of the range, so two fills on the same side of that range are
+/// inked the same and the boundary says nothing about marking. That is a
+/// property of linework, gated where linework is gated, and excluded here.
+fn shows_surface(frame: &ferritecad_viewport_gpu::Frame, x: u32, y: u32) -> bool {
+    frame
+        .colour_at(x, y)
+        .is_some_and(|pixel| !is_boundary_ink(pixel))
+}
+
+/// Whether this pixel is the ink a face boundary is drawn in.
+///
+/// The shader takes it to whichever end of the range is further from what the
+/// surface shows, so it is pure black or pure white and no shaded surface in
+/// these fixtures is either. Gates about what a surface looks like exclude
+/// these: a boundary is a different statement about the picture, drawn over
+/// the surface rather than by it.
+fn is_boundary_ink(pixel: [u8; 4]) -> bool {
+    pixel[0..3] == [0, 0, 0] || pixel[0..3] == [255, 255, 255]
 }
 
 /// Where a row meets grid lines, as the x of each run's first pixel.
@@ -373,8 +401,11 @@ fn a_model_is_drawn_over_a_grid_that_is_never_selectable() {
             if snapshot.definition(pick).is_some() {
                 model_pixels += 1;
                 // The model kept its own colour: the backdrop is behind it.
+                // Where the model draws its own boundary it is ink rather than
+                // material, which is a statement about the model and not about
+                // the grid.
                 assert!(
-                    pixel[2] > pixel[0] && pixel[2] > pixel[1],
+                    is_boundary_ink(pixel) || (pixel[2] > pixel[0] && pixel[2] > pixel[1]),
                     "a model pixel at {x},{y} is not the model's colour: {pixel:?}"
                 );
             } else {
@@ -697,7 +728,9 @@ fn choosing_a_definition_changes_every_placement_of_it_and_nothing_else() {
     // Both placements of the first definition, found the same way.
     let placements: Vec<(u32, u32)> = (0..plain.height())
         .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
-        .filter(|(x, y)| snapshot.definition(plain.pick_at(*x, *y)) == Some(0))
+        .filter(|(x, y)| {
+            snapshot.definition(plain.pick_at(*x, *y)) == Some(0) && shows_surface(&plain, *x, *y)
+        })
         .collect();
     assert!(
         placements.len() > 200,
@@ -754,7 +787,10 @@ fn pointing_at_a_definition_marks_every_placement_of_it_and_no_other() {
     let places = |definition: usize| -> Vec<(u32, u32)> {
         (0..plain.height())
             .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
-            .filter(|(x, y)| snapshot.definition(plain.pick_at(*x, *y)) == Some(definition))
+            .filter(|(x, y)| {
+                snapshot.definition(plain.pick_at(*x, *y)) == Some(definition)
+                    && shows_surface(&plain, *x, *y)
+            })
             .collect()
     };
     let first = places(0);
@@ -814,7 +850,10 @@ fn a_choice_and_a_question_are_told_apart() {
     let pixel_of = |definition: usize| {
         (0..plain.height())
             .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
-            .find(|(x, y)| snapshot.definition(plain.pick_at(*x, *y)) == Some(definition))
+            .find(|(x, y)| {
+                snapshot.definition(plain.pick_at(*x, *y)) == Some(definition)
+                    && shows_surface(&plain, *x, *y)
+            })
             .expect("that definition is drawn")
     };
     let (ax, ay) = pixel_of(0);
@@ -897,10 +936,20 @@ fn light_and_dark_parts_can_both_be_chosen_and_pointed_at() {
                 &Visibility::default(),
             )
             .expect("draws");
+        // Well inside the quad. A white part's surface is the same colour as
+        // the ink of a black one, so which pixels are boundary cannot be told
+        // from colour here; where the boundary is can be, because it is the
+        // rim.
         let (x, y, pick) = (0..plain.height())
             .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
             .map(|(x, y)| (x, y, plain.pick_at(x, y)))
-            .find(|(_, _, pick)| snapshot.definition(*pick).is_some())
+            .find(|(x, y, pick)| {
+                snapshot.definition(*pick).is_some()
+                    && (x.saturating_sub(3)..=(x + 3).min(plain.width() - 1)).all(|nx| {
+                        (y.saturating_sub(3)..=(y + 3).min(plain.height() - 1))
+                            .all(|ny| plain.pick_at(nx, ny) == *pick)
+                    })
+            })
             .expect("the quad is drawn");
 
         let chosen = renderer
@@ -1727,14 +1776,18 @@ fn pointing_at_a_face_marks_that_face_in_every_placement_and_nothing_else() {
         )
         .expect("draws");
 
-    let drawn = pixels_of(&plain, |frame, x, y| frame.pick_at(x, y) != PickId::NOTHING);
+    let drawn = pixels_of(&plain, |frame, x, y| {
+        frame.pick_at(x, y) != PickId::NOTHING && shows_surface(frame, x, y)
+    });
     let (fx, fy) = drawn
         .iter()
         .copied()
         .find(|(x, y)| snapshot.definition(plain.pick_at(*x, *y)) == Some(0))
         .expect("the plate is drawn");
     let face = plain.hit_at(fx, fy).face();
-    let marked = pixels_of(&plain, |frame, x, y| frame.hit_at(x, y).face() == face);
+    let marked = pixels_of(&plain, |frame, x, y| {
+        frame.hit_at(x, y).face() == face && shows_surface(frame, x, y)
+    });
     let others: Vec<_> = drawn
         .iter()
         .copied()
@@ -1792,7 +1845,7 @@ fn pointing_at_a_definition_still_marks_all_of_it() {
         .expect("draws");
 
     let plate = pixels_of(&plain, |frame, x, y| {
-        snapshot.definition(frame.pick_at(x, y)) == Some(0)
+        snapshot.definition(frame.pick_at(x, y)) == Some(0) && shows_surface(frame, x, y)
     });
     let pick = plain.pick_at(plate[0].0, plate[0].1);
     let pointed = renderer
@@ -2022,7 +2075,9 @@ fn choosing_a_face_marks_that_face_in_every_placement_and_nothing_else() {
         )
         .expect("draws");
 
-    let drawn = pixels_of(&plain, |frame, x, y| frame.pick_at(x, y) != PickId::NOTHING);
+    let drawn = pixels_of(&plain, |frame, x, y| {
+        frame.pick_at(x, y) != PickId::NOTHING && shows_surface(frame, x, y)
+    });
     let (fx, fy) = drawn
         .iter()
         .copied()
@@ -2092,7 +2147,7 @@ fn a_chosen_face_a_chosen_definition_and_a_pointed_at_face_all_look_different() 
         .expect("draws");
 
     let (x, y) = pixels_of(&plain, |frame, x, y| {
-        snapshot.definition(frame.pick_at(x, y)) == Some(0)
+        snapshot.definition(frame.pick_at(x, y)) == Some(0) && shows_surface(frame, x, y)
     })[0];
     let face = plain.hit_at(x, y).face();
     let definition = plain.pick_at(x, y);
@@ -3951,4 +4006,518 @@ fn turning_the_view_turns_the_model_around_what_it_is_looking_at() {
             );
         }
     }
+}
+
+/// Light plates, so that the ink a boundary is drawn in is black and nothing
+/// else in the picture is.
+///
+/// One definition placed twice, and a smaller one tucked entirely behind the
+/// left placement of it. That covers what linework has to answer for: it is
+/// drawn for every placement, it stops where a face stops rather than along a
+/// triangulation seam, and a boundary behind something is not drawn through
+/// it.
+fn light_plates(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
+    plates_coloured(width, height, [0.75, 0.75, 0.75])
+}
+
+/// The same plates in a chosen material.
+///
+/// A dark one inks in white, which is the only way to see linework drawn for a
+/// part that is not: black ink on the cleared background is black on black.
+fn plates_coloured(width: u32, height: u32, colour: [f64; 3]) -> (Arc<RenderSnapshot>, Camera) {
+    let plate = |shape: u64, half: f32, y: f32| {
+        let handle = ShapeHandle::new(SessionId::new(), shape);
+        Mesh {
+            positions: vec![
+                -half, y, -half, half, y, -half, half, y, half, -half, y, half,
+            ],
+            normals: vec![
+                0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0,
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            faces: vec![MeshFaceRange {
+                face: SubShapeHandle::new(handle, SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 6,
+            }],
+        }
+    };
+
+    let mut builder = SnapshotBuilder::new();
+    let front = builder.add_mesh(&plate(1, 8.0, 0.0)).expect("packs");
+    // Behind the left placement, and smaller than it in every direction.
+    let behind = builder.add_mesh(&plate(2, 3.0, 12.0)).expect("packs");
+    let at = |x: f32| {
+        Transform::from_translation(
+            ferritecad_types::Vec3::new(x as f64, 0.0, 0.0).expect("finite"),
+        )
+        .expect("finite")
+    };
+    for x in [-20.0, 20.0] {
+        builder.place(front, None, &at(x), colour).expect("places");
+    }
+    builder
+        .place(behind, None, &at(-20.0), colour)
+        .expect("places");
+    let snapshot = Arc::new(builder.build());
+
+    let mut camera = Camera::new();
+    camera.resize(width, height);
+    camera
+        .frame(snapshot.bounds().expect("the plates have an extent"))
+        .expect("frames");
+    (snapshot, camera)
+}
+
+/// Whether this pixel is drawn in the ink a light material's boundary uses.
+///
+/// The shader takes the ink to the far end of the range from what the face is
+/// showing, so on an unmarked light plate it is black and no shaded surface of
+/// one comes near it.
+fn is_ink(pixel: [u8; 4]) -> bool {
+    let luminance =
+        0.2126 * f32::from(pixel[0]) + 0.7152 * f32::from(pixel[1]) + 0.0722 * f32::from(pixel[2]);
+    luminance < 60.0 && pixel[3] > 0
+}
+
+/// Every pixel the model drew in boundary ink.
+///
+/// The cleared background is black as well, so being black is not enough, and
+/// neither is being black beside the model: the background just outside a
+/// plate's silhouette is both, and counting it would let a placement with no
+/// linework at all look as though it had some. What counts is ink over a pixel
+/// the model owns.
+fn ink_pixels(frame: &ferritecad_viewport_gpu::Frame) -> Vec<(u32, u32)> {
+    pixels_of(frame, |frame, x, y| {
+        frame.pick_at(x, y) != PickId::NOTHING && frame.colour_at(x, y).is_some_and(is_ink)
+    })
+}
+
+#[test]
+fn a_face_is_drawn_with_the_edges_it_stops_at_and_not_its_own_seams() {
+    let mut renderer = renderer_or_skip!();
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        let (snapshot, mut camera) = light_plates(300, 300);
+        assert!(
+            projection == Projection::Perspective || camera.set_projection(projection),
+            "the camera refused a projection to draw in"
+        );
+        let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+        let uploaded = renderer.geometry_uploads();
+        let everything = Visibility::default();
+        let front = snapshot.pick_of(0).expect("drawn");
+
+        let frame = renderer
+            .render(
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Marked::Nothing,
+                &everything,
+            )
+            .expect("draws");
+
+        let ink = ink_pixels(&frame);
+        assert!(
+            ink.len() > 60,
+            "{projection:?}: the plates have no boundary drawn: {} pixels",
+            ink.len()
+        );
+
+        // Each square plate is bounded on four sides and crossed by one
+        // diagonal seam. Take the left placement alone and require its ink to
+        // lie at its rim, which is where a boundary is and where a drawn
+        // diagonal would not be.
+        let mine = pixels_of(&frame, |frame, x, y| {
+            frame.pick_at(x, y) == front && x < 150
+        });
+        assert!(
+            !mine.is_empty(),
+            "{projection:?}: the left plate is missing"
+        );
+        let (min_x, max_x) = (
+            mine.iter().map(|(x, _)| *x).min().expect("drawn"),
+            mine.iter().map(|(x, _)| *x).max().expect("drawn"),
+        );
+        let (min_y, max_y) = (
+            mine.iter().map(|(_, y)| *y).min().expect("drawn"),
+            mine.iter().map(|(_, y)| *y).max().expect("drawn"),
+        );
+        let inside: Vec<(u32, u32)> = ink
+            .iter()
+            .copied()
+            .filter(|(x, y)| *x > min_x + 4 && *x < max_x - 4 && *y > min_y + 4 && *y < max_y - 4)
+            .collect();
+        assert!(
+            inside.is_empty(),
+            "{projection:?}: {} ink pixels are inside the face rather than at its edge, \
+             for example {:?}; the plate covers x {min_x}..{max_x} and y {min_y}..{max_y}",
+            inside.len(),
+            inside.first()
+        );
+
+        // A line says nothing about what a pixel is: the face beneath it still
+        // answers for itself.
+        for (x, y) in ink.iter().filter(|(x, _)| *x < 150) {
+            let hit = frame.hit_at(*x, *y);
+            if hit.definition() == front {
+                assert_eq!(
+                    hit.face(),
+                    snapshot.face_of(0, 0).expect("numbered"),
+                    "{projection:?}: a line changed which face ({x}, {y}) belongs to"
+                );
+            }
+        }
+
+        // Drawing lines is not a change to the model, and the same camera
+        // draws the same picture.
+        assert_eq!(
+            renderer.geometry_uploads(),
+            uploaded,
+            "{projection:?}: drawing boundaries uploaded geometry"
+        );
+        let again = renderer
+            .render(
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Marked::Nothing,
+                &everything,
+            )
+            .expect("draws");
+        assert_eq!(
+            frame.colour(),
+            again.colour(),
+            "{projection:?}: the same camera drew two different pictures"
+        );
+
+        // And the lines follow the one camera.
+        camera.roll(std::f32::consts::FRAC_PI_2);
+        let turned = renderer
+            .render(
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Marked::Nothing,
+                &everything,
+            )
+            .expect("draws");
+        let moved = ink_pixels(&turned);
+        assert!(
+            moved.len() > 60,
+            "{projection:?}: the boundary vanished when the view turned"
+        );
+        assert_ne!(ink, moved, "{projection:?}: the boundary stayed on screen");
+    }
+}
+
+#[test]
+fn every_placement_of_a_definition_is_drawn_with_its_own_lines() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = light_plates(300, 300);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let frame = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &Visibility::default(),
+        )
+        .expect("draws");
+
+    let ink = ink_pixels(&frame);
+    let left = ink.iter().filter(|(x, _)| *x < 150).count();
+    let right = ink.iter().filter(|(x, _)| *x >= 150).count();
+    assert!(
+        left > 30 && right > 30,
+        "one placement of a definition was drawn without its boundary: {left} and {right}"
+    );
+    // The same definition, so the same boundary: within a few pixels of
+    // rasterisation, the two placements are drawn with as much line as each
+    // other.
+    assert!(
+        left.abs_diff(right) * 5 < left,
+        "two placements of one definition were drawn with different linework: \
+         {left} and {right}"
+    );
+}
+
+#[test]
+fn a_boundary_behind_another_part_is_not_drawn_through_it() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = light_plates(300, 300);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let everything = Visibility::new(&snapshot);
+    let front = snapshot.pick_of(0).expect("drawn");
+    let behind = snapshot.pick_of(1).expect("drawn");
+
+    let frame = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &everything,
+        )
+        .expect("draws");
+
+    // Nothing of the smaller plate is visible at all: it is entirely behind
+    // the left placement of the larger one.
+    assert!(
+        pixels_of(&frame, |frame, x, y| frame.pick_at(x, y) == behind).is_empty(),
+        "the fixture no longer hides the smaller plate"
+    );
+    // So no ink of it may appear either. Every ink pixel over the left plate
+    // is at that plate's own rim.
+    let over_the_front = pixels_of(&frame, |frame, x, y| {
+        frame.pick_at(x, y) == front && frame.colour_at(x, y).is_some_and(is_ink)
+    });
+    let mine = pixels_of(&frame, |frame, x, y| {
+        frame.pick_at(x, y) == front && x < 150
+    });
+    let (min_x, max_x) = (
+        mine.iter().map(|(x, _)| *x).min().expect("drawn"),
+        mine.iter().map(|(x, _)| *x).max().expect("drawn"),
+    );
+    let (min_y, max_y) = (
+        mine.iter().map(|(_, y)| *y).min().expect("drawn"),
+        mine.iter().map(|(_, y)| *y).max().expect("drawn"),
+    );
+    let through = over_the_front
+        .iter()
+        .filter(|(x, y)| {
+            *x < 150 && *x > min_x + 4 && *x < max_x - 4 && *y > min_y + 4 && *y < max_y - 4
+        })
+        .count();
+    assert_eq!(
+        through, 0,
+        "a boundary behind the left plate was drawn through it at {through} pixels"
+    );
+
+    // And it is there to be drawn once what covered it is out of the way.
+    let mut hiding = everything.clone();
+    assert!(hiding.hide(Marked::Definition(front), &snapshot));
+    let revealed = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &hiding,
+        )
+        .expect("draws");
+    assert!(
+        !pixels_of(&revealed, |frame, x, y| {
+            frame.pick_at(x, y) == behind && frame.colour_at(x, y).is_some_and(is_ink)
+        })
+        .is_empty(),
+        "the plate behind has no boundary of its own"
+    );
+}
+
+#[test]
+fn hiding_a_part_takes_its_lines_with_it_and_taking_it_back_restores_them() {
+    let mut renderer = renderer_or_skip!();
+    // Dark, so its linework is white and shows against the cleared background:
+    // a light part's ink is black, and lines drawn for a part that is not on
+    // screen would be black on black and impossible to see.
+    let (snapshot, camera) = plates_coloured(300, 300, [0.08, 0.08, 0.08]);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let front = snapshot.pick_of(0).expect("drawn");
+    let draw = |renderer: &mut Renderer, visibility: &Visibility| {
+        renderer
+            .render(
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Marked::Nothing,
+                visibility,
+            )
+            .expect("draws")
+    };
+
+    let everything = Visibility::new(&snapshot);
+    let shown = draw(&mut renderer, &everything);
+    // Where the two placements of the front definition were drawn, and how
+    // much of that was its own linework.
+    let was_drawn = pixels_of(&shown, |frame, x, y| frame.pick_at(x, y) == front);
+    assert!(
+        !ink_pixels(&shown).is_empty(),
+        "the picture had no lines to lose"
+    );
+
+    let mut hiding = everything.clone();
+    assert!(hiding.hide(Marked::Definition(front), &snapshot));
+    let hidden = draw(&mut renderer, &hiding);
+    assert!(
+        pixels_of(&hidden, |frame, x, y| frame.pick_at(x, y) == front).is_empty(),
+        "a hidden part kept its fill"
+    );
+    // And nothing of it is drawn where it used to be. The backdrop shows
+    // through there, and the grid draws greys, so what must not appear is the
+    // one thing only this part could have drawn: the white its dark material
+    // inks in.
+    assert!(
+        !ink_pixels(&shown).is_empty() && shown.colour_at(was_drawn[0].0, was_drawn[0].1).is_some(),
+        "the gate lost track of where the part was"
+    );
+    // Away from the plate that has just been revealed there, whose own
+    // boundary is drawn in the same white and belongs on screen.
+    let left_behind = was_drawn
+        .iter()
+        .filter(|(x, y)| {
+            hidden.colour_at(*x, *y) == Some([255, 255, 255, 255])
+                && !(x.saturating_sub(3)..=(x + 3).min(hidden.width() - 1)).any(|nx| {
+                    (y.saturating_sub(3)..=(y + 3).min(hidden.height() - 1))
+                        .any(|ny| hidden.pick_at(nx, ny) != PickId::NOTHING)
+                })
+        })
+        .count();
+    assert_eq!(
+        left_behind, 0,
+        "a hidden part kept its lines at {left_behind} pixels it used to cover"
+    );
+
+    // Isolating is the same rule reached another way.
+    let mut isolating = everything.clone();
+    assert!(isolating.isolate(Marked::Definition(front), &snapshot));
+    let isolated = draw(&mut renderer, &isolating);
+    assert!(
+        !ink_pixels(&isolated).is_empty(),
+        "isolating a part lost its lines"
+    );
+
+    // And taking the change back draws the picture it left, to the byte.
+    let mut undone = hiding.clone();
+    assert!(undone.undo(&snapshot));
+    let restored = draw(&mut renderer, &undone);
+    assert_eq!(
+        shown.colour(),
+        restored.colour(),
+        "taking a hide back did not draw the picture it left"
+    );
+}
+
+#[test]
+fn an_empty_picture_still_draws_nothing_at_all() {
+    let mut renderer = renderer_or_skip!();
+    let snapshot = Arc::new(SnapshotBuilder::new().build());
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let mut camera = Camera::new();
+    camera.resize(64, 64);
+
+    let frame = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &Visibility::default(),
+        )
+        .expect("draws");
+
+    for y in 0..frame.height() {
+        for x in 0..frame.width() {
+            assert_eq!(frame.pick_at(x, y), PickId::NOTHING);
+            assert_eq!(frame.hit_at(x, y).face(), FacePickId::NOTHING);
+        }
+    }
+}
+
+#[test]
+fn the_backdrop_draws_no_linework_of_its_own() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = model_over_the_plane(200, 200);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let draw = |renderer: &mut Renderer, prepared: &_, visibility: &Visibility| {
+        renderer
+            .render(
+                prepared,
+                &camera,
+                Marked::Nothing,
+                Marked::Nothing,
+                visibility,
+            )
+            .expect("draws")
+    };
+
+    // A dim grid line and a dark boundary are both dark, so which pixels are
+    // ink cannot be told from colour alone here, and an empty picture draws no
+    // grid at all to compare against. What is stated instead is the thing this
+    // gate is for: with everything hidden, the picture is the picture of a
+    // model that is not drawn, and drawing lines added nothing to it.
+    let mut hiding = Visibility::new(&snapshot);
+    for definition in 0..snapshot.meshes().len() {
+        if let Some(pick) = snapshot.pick_of(definition) {
+            hiding.hide(Marked::Definition(pick), &snapshot);
+        }
+    }
+    let backdrop = draw(&mut renderer, &prepared, &hiding);
+    assert!(
+        pixels_of(&backdrop, |frame, x, y| frame.pick_at(x, y)
+            != PickId::NOTHING)
+        .is_empty(),
+        "hiding everything left something drawn"
+    );
+    // And with the model there, the backdrop is still nobody to click.
+    let shown = draw(&mut renderer, &prepared, &Visibility::default());
+    assert_ne!(
+        shown.colour(),
+        backdrop.colour(),
+        "the gate compared two identical pictures"
+    );
+    for (x, y) in pixels_of(&shown, |frame, x, y| frame.pick_at(x, y) == PickId::NOTHING) {
+        assert_eq!(shown.hit_at(x, y).definition(), PickId::NOTHING);
+        assert_eq!(shown.hit_at(x, y).face(), FacePickId::NOTHING);
+    }
+}
+
+#[test]
+fn linework_leaves_a_choice_and_a_question_telling_themselves_apart() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = two_faced_scene(200, 200);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+    let everything = Visibility::default();
+    let face = snapshot.face_of(0, 0).expect("numbered");
+
+    let draw = |renderer: &mut Renderer, selected: Marked, hovered: Marked| {
+        renderer
+            .render(&prepared, &camera, selected, hovered, &everything)
+            .expect("draws")
+    };
+
+    let plain = draw(&mut renderer, Marked::Nothing, Marked::Nothing);
+    let chosen = draw(&mut renderer, Marked::Face(face), Marked::Nothing);
+    let asked = draw(&mut renderer, Marked::Nothing, Marked::Face(face));
+
+    // A pixel of that face, away from any line, in all three pictures.
+    let plain_face = pixels_of(&plain, |frame, x, y| {
+        frame.hit_at(x, y).face() == face && shows_surface(frame, x, y)
+    });
+    let (x, y) = *plain_face.first().expect("the face is on screen");
+    let colours = [
+        plain.colour_at(x, y).expect("drawn"),
+        chosen.colour_at(x, y).expect("drawn"),
+        asked.colour_at(x, y).expect("drawn"),
+    ];
+    assert_ne!(colours[0], colours[1], "a chosen face looks unchosen");
+    assert_ne!(
+        colours[0], colours[2],
+        "a face nobody asked about is marked"
+    );
+    assert_ne!(
+        colours[1], colours[2],
+        "a choice and a question look the same"
+    );
+
+    // And the lines are still there when a face is chosen: linework and
+    // marking are two different statements about the same face.
+    assert!(
+        !pixels_of(&chosen, |frame, x, y| {
+            frame.hit_at(x, y).face() == face && frame.colour_at(x, y).is_some_and(is_ink)
+        })
+        .is_empty(),
+        "choosing a face erased its boundary"
+    );
 }
