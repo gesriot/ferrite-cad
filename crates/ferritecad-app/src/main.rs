@@ -888,7 +888,7 @@ fn isolate_selected(
 /// Neither what is chosen nor what is drawn is an argument: switching between
 /// what an eye sees and what a drawing shows is a change of view, and a view
 /// cannot decide what is selected or which parts are on screen. The camera
-/// keeps what it was looking at, from where and at what apparent size.
+/// keeps what it was looking at, the viewing direction and apparent size.
 ///
 /// Every pixel means something different afterwards, so what the pointer was
 /// over, and any click, question or gesture in flight, are forgotten: they
@@ -5594,7 +5594,7 @@ mod tests {
         commit_scene(&mut scene, &mut camera, Err(CadError::input("no")))
             .expect_err("a failed load commits nothing");
         assert_eq!(
-            input.projection(),
+            camera.projection(),
             Projection::Orthographic,
             "a failed load changed how the model is drawn"
         );

@@ -19,7 +19,7 @@
 //! would leave the last known position at the far side of a panel, and the
 //! first drag afterwards would jump the model by the width of it.
 
-use ferritecad_types::Result;
+use ferritecad_types::{CadError, Result};
 use ferritecad_viewport::{Camera, Projection, RenderSnapshot, StandardView};
 
 /// How far a wheel notch moves the camera.
@@ -334,14 +334,30 @@ impl ViewportInput {
     /// document immediately after Open cleared the selection.
     pub fn accept_load(&mut self, loaded: Result<RenderSnapshot>) -> Result<RenderSnapshot> {
         let snapshot = loaded?;
+        // Stage the whole reducer, not only Camera::frame. Resetting the
+        // projection is itself a camera change, and framing can still refuse
+        // a finite picture whose combined extent exceeds f32. Such a refusal
+        // leaves the old picture current, so its projection and pending
+        // interactions have to remain current with it.
+        let mut candidate = self.clone();
+        // Frame first. Camera::frame establishes both the perspective distance
+        // and its matching orthographic scale, so changing projection after it
+        // cannot inherit an extreme scale from the previous document.
+        if let Some(bounds) = snapshot.bounds() {
+            candidate.camera.frame(bounds)?;
+        }
         // A document is opened to be understood before it is measured, so it
         // arrives drawn the way an eye sees it, whatever the last one was left
         // in. The same reason every other transient state starts afresh here.
-        self.camera.set_projection(Projection::default());
-        if let Some(bounds) = snapshot.bounds() {
-            self.camera.frame(bounds)?;
+        if candidate.camera.projection_mode() != Projection::default()
+            && !candidate.camera.set_projection(Projection::default())
+        {
+            return Err(CadError::input(
+                "the camera cannot represent the default projection for this document",
+            ));
         }
-        self.forget_pending();
+        candidate.forget_pending();
+        *self = candidate;
         Ok(snapshot)
     }
 
@@ -663,6 +679,33 @@ mod tests {
         builder.build()
     }
 
+    /// A picture whose vertices are finite and placeable, but whose combined
+    /// extent is wider than the camera's number format can represent.
+    fn unframeable_scene() -> RenderSnapshot {
+        use ferritecad_kernel::{
+            Mesh, MeshFaceRange, SessionId, ShapeHandle, SubShapeHandle, SubShapeKind,
+        };
+        use ferritecad_types::Transform;
+
+        let shape = ShapeHandle::new(SessionId::new(), 2);
+        let mesh = Mesh {
+            positions: vec![-f32::MAX, 0.0, 0.0, f32::MAX, 0.0, 0.0, 0.0, 1.0, 0.0],
+            normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: vec![0, 1, 2],
+            faces: vec![MeshFaceRange {
+                face: SubShapeHandle::new(shape, SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 3,
+            }],
+        };
+        let mut builder = ferritecad_viewport::SnapshotBuilder::new();
+        let definition = builder.add_mesh(&mesh).expect("finite mesh packs");
+        builder
+            .place(definition, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+            .expect("finite vertices are placeable");
+        builder.build()
+    }
+
     #[test]
     fn a_loaded_scene_is_pointed_at_and_asks_for_a_frame() {
         let mut input = ready();
@@ -750,6 +793,32 @@ mod tests {
         assert!(
             !input.take_redraw(),
             "a failed load asked for a frame that would draw the same picture"
+        );
+    }
+
+    #[test]
+    fn a_scene_the_camera_cannot_frame_changes_none_of_the_old_view() {
+        let mut input = ready();
+        assert!(input.set_projection(Projection::Orthographic));
+        let _ = input.take_redraw();
+
+        // A click and a hover question belonging to the picture that remains
+        // current if accepting its replacement fails.
+        click(&mut input, (120.0, 80.0), false);
+        input.handle(ViewportEvent::PointerMoved { x: 40.0, y: 50.0 }, false);
+        let before = *input.camera();
+
+        let error = input
+            .accept_load(Ok(unframeable_scene()))
+            .expect_err("an extent wider than f32 cannot be framed");
+        assert!(error.to_string().contains("extent exceeds"));
+
+        assert_eq!(*input.camera(), before, "a failed frame changed the camera");
+        assert_eq!(input.take_pick(), Some((120.0, 80.0)));
+        assert_eq!(input.take_hover(), Hover::At(40.0, 50.0));
+        assert!(
+            input.take_redraw(),
+            "the old picture's pending redraw was discarded"
         );
     }
 

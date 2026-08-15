@@ -102,9 +102,10 @@ where a document opens: things further away are drawn smaller, which is how a
 shape is understood while it is being built. `Orthographic` is what a drawing
 shows: equal things are drawn equally wherever they are and parallel edges stay
 parallel, so a plan or an elevation can be measured off the screen. Swapping
-keeps what you are looking at, from where, and how big it is; zooming in an
-orthographic view changes the scale rather than moving the eye, and swapping
-back respects that zoom.
+keeps what you are looking at, the viewing direction, which way is up and how
+big it is. Zooming in an orthographic view changes the scale rather than moving
+the eye; swapping back respects that zoom, so it may move the eye to the
+distance that gives the new scale in perspective.
 
 Moving the pointer
 over the model marks the face under it, and the same face wherever that

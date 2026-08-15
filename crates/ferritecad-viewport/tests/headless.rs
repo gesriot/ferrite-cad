@@ -2981,6 +2981,31 @@ fn every_standard_view_and_every_framing_keeps_the_projection() {
 }
 
 #[test]
+fn a_box_framed_as_a_drawing_stays_framed_when_seen_in_perspective() {
+    let bounds = ([-10.0, -10.0, -10.0], [10.0, 10.0, 10.0]);
+    let mut camera = Camera::new();
+    camera.resize(200, 200);
+    camera.look_from(StandardView::Isometric);
+    assert!(camera.set_projection(Projection::Orthographic));
+    camera.frame(bounds).expect("frames as a drawing");
+    assert!(camera.set_projection(Projection::Perspective));
+
+    let (min, max) = bounds;
+    for corner in 0..8 {
+        let point = [
+            if corner & 1 == 0 { min[0] } else { max[0] },
+            if corner & 2 == 0 { min[1] } else { max[1] },
+            if corner & 4 == 0 { min[2] } else { max[2] },
+        ];
+        assert!(
+            inside_clip_volume(&camera.view_projection(), point),
+            "corner {corner} left the view when the framed drawing became perspective: {:?}",
+            projected(&camera.view_projection(), point)
+        );
+    }
+}
+
+#[test]
 fn a_viewport_of_no_size_or_an_extreme_one_still_has_a_finite_drawing() {
     for (width, height) in [(0u32, 0u32), (1, 4096), (4096, 1)] {
         let mut camera = Camera::new();

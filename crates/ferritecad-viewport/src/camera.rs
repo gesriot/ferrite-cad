@@ -163,10 +163,11 @@ impl Camera {
     /// Draws through a different projection, and says whether that changed
     /// anything.
     ///
-    /// What is being looked at, from where, which way up and at what apparent
-    /// size are all kept: the same part stays the same size on screen, and
-    /// only the way depth is treated changes. Asking for the projection that
-    /// is already in use changes nothing.
+    /// What is being looked at, the viewing direction, which way is up and the
+    /// apparent size are all kept: the same part stays the same size on
+    /// screen, and only the way depth is treated changes. Switching into
+    /// orthographic also keeps the eye. Asking for the projection that is
+    /// already in use changes nothing.
     ///
     /// Going back to perspective derives the distance from the scale that is
     /// on screen now, not from wherever the eye stood before. A zoom made in
@@ -319,11 +320,13 @@ impl Camera {
             ));
         }
 
-        // What an orthographic view has to cover instead of a distance. The
-        // sphere contains every corner of the box however the box is turned,
-        // and the narrower axis is horizontal in a portrait viewport, so that
-        // is the one the height has to satisfy.
-        let half_height = radius * (1.0f32).max(1.0 / self.aspect()) * 1.05;
+        // What the perspective fit covers at the target plane is also the
+        // orthographic scale. It is slightly more generous than the smallest
+        // parallel fit, but keeps framing stable across a later projection
+        // change: deriving a perspective distance from this half-height gives
+        // back `distance`, so a turned corner cannot leave the view merely
+        // because the framed drawing was switched to perspective.
+        let half_height = distance * vertical_half_fov.tan();
         if !half_height.is_finite() || half_height <= f32::EPSILON {
             return Err(CadError::input(
                 "a camera cannot represent a useful view of a box at this scale",
