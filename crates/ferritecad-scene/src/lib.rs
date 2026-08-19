@@ -2834,6 +2834,7 @@ mod tests {
                 normals: mesh.normals.clone(),
                 indices: Vec::with_capacity(mesh.indices.len()),
                 faces: Vec::with_capacity(mesh.faces.len()),
+                edges: None,
             };
             for range in mesh.faces.iter().rev() {
                 let first = range.first_index as usize;

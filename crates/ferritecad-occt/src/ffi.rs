@@ -216,6 +216,7 @@ unsafe extern "C" {
         out_face_first: *mut u32,
         out_face_index_count: *mut u32,
         face_capacity: usize,
+        out_edges: *mut RawEdgeBuffers,
         out_vertex_count: *mut usize,
         out_index_count: *mut usize,
         out_face_count: *mut usize,
@@ -308,6 +309,43 @@ pub(crate) struct RawMesh {
     pub(crate) face_shapes: Vec<u64>,
     pub(crate) face_first: Vec<u32>,
     pub(crate) face_index_count: Vec<u32>,
+    /// Two vertex indices per segment, into the same vertices as `indices`.
+    pub(crate) edge_segments: Vec<u32>,
+    pub(crate) edge_shapes: Vec<u64>,
+    pub(crate) edge_first_segment: Vec<u32>,
+    pub(crate) edge_segment_count: Vec<u32>,
+}
+
+/// The buffers `fc_occt_tessellate` writes the edge association into.
+///
+/// Mirrors `FcOcctEdgeBuffers`; the field order is the ABI and must not be
+/// rearranged.
+#[repr(C)]
+struct RawEdgeBuffers {
+    segments: *mut u32,
+    segment_capacity: usize,
+    edge_shapes: *mut u64,
+    edge_first_segment: *mut u32,
+    edge_segment_count: *mut u32,
+    edge_capacity: usize,
+    out_segment_count: usize,
+    out_edge_count: usize,
+}
+
+impl RawEdgeBuffers {
+    /// Buffers that ask for the counts and receive no data.
+    fn measuring() -> Self {
+        Self {
+            segments: std::ptr::null_mut(),
+            segment_capacity: 0,
+            edge_shapes: std::ptr::null_mut(),
+            edge_first_segment: std::ptr::null_mut(),
+            edge_segment_count: std::ptr::null_mut(),
+            edge_capacity: 0,
+            out_segment_count: 0,
+            out_edge_count: 0,
+        }
+    }
 }
 
 impl Session {
@@ -595,6 +633,7 @@ impl Session {
         let context = cancel as *const CancelToken as *mut c_void;
         let mut error = RawError::empty();
         let (mut vertices, mut indices, mut faces) = (0usize, 0usize, 0usize);
+        let mut measured = RawEdgeBuffers::measuring();
 
         // SAFETY: every out-parameter is valid; passing no buffers with zero
         // capacity is the size query the bridge documents.
@@ -616,6 +655,7 @@ impl Session {
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 0,
+                &mut measured,
                 &mut vertices,
                 &mut indices,
                 &mut faces,
@@ -623,10 +663,15 @@ impl Session {
             )
         };
         interpret(status, &error, "measuring a tessellation")?;
+        let segments = measured.out_segment_count;
+        let edges = measured.out_edge_count;
 
         let coordinates = vertices
             .checked_mul(3)
             .ok_or_else(|| CadError::kernel("the tessellation vertex count overflows usize"))?;
+        let segment_indices = segments
+            .checked_mul(2)
+            .ok_or_else(|| CadError::kernel("the tessellation segment count overflows usize"))?;
         let mut mesh = RawMesh {
             positions: vec![0.0; coordinates],
             normals: vec![0.0; coordinates],
@@ -634,12 +679,26 @@ impl Session {
             face_shapes: vec![0; faces],
             face_first: vec![0; faces],
             face_index_count: vec![0; faces],
+            edge_segments: vec![0; segment_indices],
+            edge_shapes: vec![0; edges],
+            edge_first_segment: vec![0; edges],
+            edge_segment_count: vec![0; edges],
         };
-        if vertices == 0 && indices == 0 && faces == 0 {
+        if vertices == 0 && indices == 0 && faces == 0 && segments == 0 && edges == 0 {
             return Ok(mesh);
         }
 
         let (mut got_vertices, mut got_indices, mut got_faces) = (0usize, 0usize, 0usize);
+        let mut filled = RawEdgeBuffers {
+            segments: mesh.edge_segments.as_mut_ptr(),
+            segment_capacity: segments,
+            edge_shapes: mesh.edge_shapes.as_mut_ptr(),
+            edge_first_segment: mesh.edge_first_segment.as_mut_ptr(),
+            edge_segment_count: mesh.edge_segment_count.as_mut_ptr(),
+            edge_capacity: edges,
+            out_segment_count: 0,
+            out_edge_count: 0,
+        };
         // SAFETY: each buffer was allocated at the size the call above
         // reported, and the capacities passed match those allocations.
         let status = unsafe {
@@ -660,6 +719,7 @@ impl Session {
                 mesh.face_first.as_mut_ptr(),
                 mesh.face_index_count.as_mut_ptr(),
                 faces,
+                &mut filled,
                 &mut got_vertices,
                 &mut got_indices,
                 &mut got_faces,
@@ -671,9 +731,14 @@ impl Session {
         // A second mesher pass that produced different counts would mean the
         // triangulation is not stable, and the buffers above would be part
         // filled with no way to tell which part.
-        if (got_vertices, got_indices, got_faces) != (vertices, indices, faces) {
+        if (got_vertices, got_indices, got_faces) != (vertices, indices, faces)
+            || (filled.out_segment_count, filled.out_edge_count) != (segments, edges)
+        {
             return Err(CadError::kernel(format!(
-                "tessellating the same shape twice gave {vertices}/{indices}/{faces} then                  {got_vertices}/{got_indices}/{got_faces}; the mesh is not reproducible"
+                "tessellating the same shape twice gave \
+                 {vertices}/{indices}/{faces}/{segments}/{edges} then \
+                 {got_vertices}/{got_indices}/{got_faces}/{}/{}; the mesh is not reproducible",
+                filled.out_segment_count, filled.out_edge_count
             )));
         }
         Ok(mesh)
@@ -877,6 +942,7 @@ mod tests {
         let mut vertices = 0usize;
         let mut indices = 0usize;
         let mut faces = 0usize;
+        let mut edges = RawEdgeBuffers::measuring();
         let mut error = RawError::empty();
 
         // The bridge checks once before and once after OCCT. Cancelling only
@@ -901,6 +967,7 @@ mod tests {
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 0,
+                &mut edges,
                 &mut vertices,
                 &mut indices,
                 &mut faces,

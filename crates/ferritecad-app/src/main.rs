@@ -3520,6 +3520,7 @@ mod tests {
                     first_index: 0,
                     index_count: 6,
                 }],
+                edges: None,
             }
         };
 
@@ -3575,6 +3576,7 @@ mod tests {
                     first_index: 0,
                     index_count: 6,
                 }],
+                edges: None,
             }
         };
 

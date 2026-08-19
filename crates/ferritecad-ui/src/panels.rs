@@ -1221,6 +1221,7 @@ mod tests {
                 first_index: 0,
                 index_count: 3,
             }],
+            edges: None,
         };
         for _ in 0..count {
             let definition = builder.add_mesh(&mesh).expect("packs");

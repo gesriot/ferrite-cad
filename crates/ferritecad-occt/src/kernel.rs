@@ -2,8 +2,9 @@
 use ferritecad_exchange::Import;
 use ferritecad_kernel::{
     ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, ExtrudeResult, GeometryKernel, History,
-    HistoryInput, KernelIdentity, Mesh, MeshFaceRange, OperationContext, SegmentGeometry,
-    SessionId, ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind, TessellationParams,
+    HistoryInput, KernelIdentity, Mesh, MeshEdgeRange, MeshEdges, MeshFaceRange, OperationContext,
+    SegmentGeometry, SessionId, ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind,
+    TessellationParams,
 };
 use ferritecad_types::{CadError, ContentHash, Result, Transform};
 
@@ -396,11 +397,35 @@ impl GeometryKernel for OcctKernel {
             })
             .collect();
 
+        // Read from the same meshing pass the triangles came from, so the
+        // segments index the vertices that are actually here. Which segment
+        // belongs to which edge is Open CASCADE's own answer, taken from the
+        // polyline it records for each edge of each face; nothing here joins
+        // vertices by where they happen to be.
+        let ranges = mesh
+            .edge_shapes
+            .iter()
+            .zip(
+                mesh.edge_first_segment
+                    .iter()
+                    .zip(mesh.edge_segment_count.iter()),
+            )
+            .map(|(id, (first, count))| MeshEdgeRange {
+                edge: SubShapeHandle::new(shape, SubShapeKind::Edge, *id),
+                first_segment: *first,
+                segment_count: *count,
+            })
+            .collect();
+
         let mesh = Mesh {
             positions: mesh.positions,
             normals: mesh.normals,
             indices: mesh.indices,
             faces,
+            edges: Some(MeshEdges {
+                segments: mesh.edge_segments,
+                ranges,
+            }),
         };
 
         // Checked here rather than trusted: a mesh that fails this renders as

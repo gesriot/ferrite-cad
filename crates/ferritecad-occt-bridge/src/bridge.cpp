@@ -17,6 +17,7 @@
 #include <cstring>
 #include <exception>
 #include <limits>
+#include <set>
 #include <sstream>
 #include <string>
 #include <type_traits>
@@ -75,6 +76,7 @@
 #include <Standard_Failure.hxx>
 #include <Standard_Type.hxx>
 #include <Standard_Version.hxx>
+#include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <NCollection_List.hxx>
 #include <TopoDS.hxx>
@@ -85,7 +87,10 @@
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Iterator.hxx>
 #include <TopoDS_Wire.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
 #include <TopTools_ListOfShape.hxx>
+#include <Poly_PolygonOnTriangulation.hxx>
 #include <Poly_Triangulation.hxx>
 #include <TopLoc_Location.hxx>
 #include <gp_Ax3.hxx>
@@ -1321,11 +1326,13 @@ FcOcctStatus fc_occt_tessellate(
     size_t vertex_capacity, uint32_t *out_indices, size_t index_capacity,
     uint64_t *out_face_shapes, uint32_t *out_face_first,
     uint32_t *out_face_index_count, size_t face_capacity,
-    size_t *out_vertex_count, size_t *out_index_count, size_t *out_face_count,
+    FcOcctEdgeBuffers *out_edges, size_t *out_vertex_count,
+    size_t *out_index_count, size_t *out_face_count,
     FcOcctError *out_error) noexcept {
   return guarded(out_error, [&]() -> FcOcctStatus {
     if (session == nullptr || out_vertex_count == nullptr ||
-        out_index_count == nullptr || out_face_count == nullptr) {
+        out_index_count == nullptr || out_face_count == nullptr ||
+        out_edges == nullptr) {
       write_error(out_error, "fc_occt_tessellate was given a null argument");
       return FC_OCCT_INVALID_INPUT;
     }
@@ -1396,6 +1403,19 @@ FcOcctStatus fc_occt_tessellate(
     std::vector<uint64_t> face_shapes;
     std::vector<uint32_t> face_first;
     std::vector<uint32_t> face_index_count;
+
+    // What each face contributed to the packed vertices, kept so an edge's
+    // polyline of face-local nodes can be resolved to the same vertices the
+    // triangles use. The triangulation and location are held rather than
+    // looked up again: BRep_Tool::PolygonOnTriangulation selects a polygon by
+    // exactly this pair, and asking a second time risks asking differently.
+    struct MeshedFace {
+      TopoDS_Face face;
+      uint32_t base;
+      Handle(Poly_Triangulation) triangulation;
+      TopLoc_Location location;
+    };
+    std::vector<MeshedFace> meshed;
 
     for (TopExp_Explorer it(record.shape, TopAbs_FACE); it.More(); it.Next()) {
       const TopoDS_Face face = TopoDS::Face(it.Current());
@@ -1505,6 +1525,121 @@ FcOcctStatus fc_occt_tessellate(
       face_first.push_back(first_index);
       face_index_count.push_back(static_cast<uint32_t>(indices.size()) -
                                  first_index);
+      meshed.push_back(MeshedFace{face, base, triangulation, location});
+    }
+
+    // Which topological edge draws which segments.
+    //
+    // The keys of this map are consolidated by IsSame, so the two faces that
+    // meet at an edge name one key and not two, and an edge that appears
+    // FORWARD in one face and REVERSED in the other is still one edge. That is
+    // the same rule ShapeRecord::remember applies, which is what keeps the
+    // identifier handed to the caller single as well.
+    std::vector<uint32_t> edge_segments;
+    std::vector<uint64_t> edge_shapes;
+    std::vector<uint32_t> edge_first;
+    std::vector<uint32_t> edge_segment_count;
+
+    TopTools_IndexedMapOfShape meshed_index;
+    for (const MeshedFace &entry : meshed) {
+      meshed_index.Add(entry.face);
+    }
+
+    TopTools_IndexedDataMapOfShapeListOfShape edge_faces;
+    TopExp::MapShapesAndAncestors(record.shape, TopAbs_EDGE, TopAbs_FACE,
+                                  edge_faces);
+
+    for (int e = 1; e <= edge_faces.Extent(); ++e) {
+      if ((e & 255) == 0 && cancelled(cancel, cancel_context)) {
+        BRepTools::Clean(record.shape);
+        return FC_OCCT_CANCELLED;
+      }
+      const TopoDS_Edge edge = TopoDS::Edge(edge_faces.FindKey(e));
+
+      // The faces this edge lies on, as positions in the packed order. A seam
+      // edge names its face twice, once per parametric side, so the sides are
+      // collected into a set: one polyline per face, drawn once.
+      std::set<size_t> sides;
+      const TopTools_ListOfShape &adjacent = edge_faces.FindFromIndex(e);
+      for (TopTools_ListOfShape::Iterator fit(adjacent); fit.More();
+           fit.Next()) {
+        const int found = meshed_index.FindIndex(fit.Value());
+        if (found > 0) {
+          sides.insert(static_cast<size_t>(found - 1));
+        }
+      }
+      if (sides.empty()) {
+        // An edge belonging to no meshed face draws no part of any surface —
+        // a free wire in a compound, say. There is nothing to associate.
+        continue;
+      }
+
+      const size_t first_segment = edge_segments.size() / 2;
+      for (const size_t side : sides) {
+        const MeshedFace &owner = meshed[side];
+        const Handle(Poly_PolygonOnTriangulation) &polyline =
+            BRep_Tool::PolygonOnTriangulation(edge, owner.triangulation,
+                                              owner.location);
+        if (polyline.IsNull()) {
+          // Measured to happen on none of the shapes this bridge is built
+          // for. If it ever does, the honest answer is that this mesh cannot
+          // say where its edges are, not a wireframe with a piece missing.
+          BRepTools::Clean(record.shape);
+          write_error(out_error,
+                      "Open CASCADE meshed a face without recording where one "
+                      "of its edges runs across the triangulation");
+          return FC_OCCT_KERNEL;
+        }
+
+        const int nodes = polyline->NbNodes();
+        const int node_total = owner.triangulation->NbNodes();
+        uint32_t previous = 0;
+        for (int n = 1; n <= nodes; ++n) {
+          const int node = polyline->Nodes().Value(polyline->Nodes().Lower() +
+                                                   n - 1);
+          if (node < 1 || node > node_total) {
+            BRepTools::Clean(record.shape);
+            write_error(out_error,
+                        "an edge polyline names a node outside the "
+                        "triangulation of the face it lies on");
+            return FC_OCCT_KERNEL;
+          }
+          const uint32_t vertex = owner.base + static_cast<uint32_t>(node - 1);
+          if (n > 1) {
+            if (edge_segments.size() > std::numeric_limits<size_t>::max() - 2) {
+              BRepTools::Clean(record.shape);
+              write_error(out_error, "the tessellation has more edge segments "
+                                     "than can be addressed");
+              return FC_OCCT_KERNEL;
+            }
+            edge_segments.push_back(previous);
+            edge_segments.push_back(vertex);
+          }
+          previous = vertex;
+        }
+      }
+
+      const size_t count = edge_segments.size() / 2 - first_segment;
+      if (count == 0) {
+        BRepTools::Clean(record.shape);
+        write_error(out_error,
+                    "Open CASCADE recorded an edge polyline with no segment in "
+                    "it, so that edge is named but nowhere");
+        return FC_OCCT_KERNEL;
+      }
+      const size_t max_u32 =
+          static_cast<size_t>(std::numeric_limits<uint32_t>::max());
+      if (first_segment > max_u32 || count > max_u32) {
+        BRepTools::Clean(record.shape);
+        write_error(out_error,
+                    "the tessellation has more edge segments than uint32 can "
+                    "count");
+        return FC_OCCT_KERNEL;
+      }
+
+      edge_shapes.push_back(record.remember(edge));
+      edge_first.push_back(static_cast<uint32_t>(first_segment));
+      edge_segment_count.push_back(static_cast<uint32_t>(count));
     }
 
     // Do not let drawing change later serialisation or the next tessellation.
@@ -1514,22 +1649,34 @@ FcOcctStatus fc_occt_tessellate(
     *out_vertex_count = positions.size() / 3;
     *out_index_count = indices.size();
     *out_face_count = face_shapes.size();
+    out_edges->out_segment_count = edge_segments.size() / 2;
+    out_edges->out_edge_count = edge_shapes.size();
 
-    if (vertex_capacity == 0 && index_capacity == 0 && face_capacity == 0) {
+    if (vertex_capacity == 0 && index_capacity == 0 && face_capacity == 0 &&
+        out_edges->segment_capacity == 0 && out_edges->edge_capacity == 0) {
       return FC_OCCT_OK;
     }
     if (vertex_capacity < positions.size() / 3 ||
-        index_capacity < indices.size() || face_capacity < face_shapes.size()) {
+        index_capacity < indices.size() || face_capacity < face_shapes.size() ||
+        out_edges->segment_capacity < edge_segments.size() / 2 ||
+        out_edges->edge_capacity < edge_shapes.size()) {
       write_error(out_error, "the mesh buffers are too small: " +
                                  std::to_string(positions.size() / 3) +
                                  " vertices, " + std::to_string(indices.size()) +
                                  " indices, " + std::to_string(face_shapes.size()) +
-                                 " faces are needed");
+                                 " faces, " +
+                                 std::to_string(edge_segments.size() / 2) +
+                                 " edge segments and " +
+                                 std::to_string(edge_shapes.size()) +
+                                 " edges are needed");
       return FC_OCCT_INVALID_INPUT;
     }
     if (out_positions == nullptr || out_normals == nullptr ||
         out_indices == nullptr || out_face_shapes == nullptr ||
-        out_face_first == nullptr || out_face_index_count == nullptr) {
+        out_face_first == nullptr || out_face_index_count == nullptr ||
+        out_edges->segments == nullptr || out_edges->edge_shapes == nullptr ||
+        out_edges->edge_first_segment == nullptr ||
+        out_edges->edge_segment_count == nullptr) {
       write_error(out_error,
                   "fc_occt_tessellate was given capacity but no buffer");
       return FC_OCCT_INVALID_INPUT;
@@ -1544,6 +1691,14 @@ FcOcctStatus fc_occt_tessellate(
                 face_first.size() * sizeof(uint32_t));
     std::memcpy(out_face_index_count, face_index_count.data(),
                 face_index_count.size() * sizeof(uint32_t));
+    std::memcpy(out_edges->segments, edge_segments.data(),
+                edge_segments.size() * sizeof(uint32_t));
+    std::memcpy(out_edges->edge_shapes, edge_shapes.data(),
+                edge_shapes.size() * sizeof(uint64_t));
+    std::memcpy(out_edges->edge_first_segment, edge_first.data(),
+                edge_first.size() * sizeof(uint32_t));
+    std::memcpy(out_edges->edge_segment_count, edge_segment_count.data(),
+                edge_segment_count.size() * sizeof(uint32_t));
     return FC_OCCT_OK;
   });
 }

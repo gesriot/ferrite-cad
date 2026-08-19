@@ -69,6 +69,7 @@ fn tilted_quad(baked_scale: bool) -> Mesh {
             first_index: 0,
             index_count: 6,
         }],
+        edges: None,
     }
 }
 
@@ -92,6 +93,7 @@ fn quad(half: f32) -> Mesh {
             first_index: 0,
             index_count: 6,
         }],
+        edges: None,
     }
 }
 
@@ -188,6 +190,7 @@ fn two_faced_plate(half: f32) -> Mesh {
                 index_count: 6,
             })
             .collect(),
+        edges: None,
     }
 }
 
@@ -1475,6 +1478,7 @@ fn an_empty_snapshot_draws_a_cleared_frame() {
             normals: Vec::new(),
             indices: Vec::new(),
             faces: Vec::new(),
+            edges: None,
         };
         let mut builder = SnapshotBuilder::new();
         let mesh = builder.add_mesh(&mesh).expect("packs an empty mesh");
@@ -2421,6 +2425,7 @@ fn occluding_pair(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
                 first_index: 0,
                 index_count: 6,
             }],
+            edges: None,
         }
     };
 
@@ -3316,6 +3321,7 @@ fn two_equal_plates_at_two_depths(width: u32, height: u32) -> (Arc<RenderSnapsho
                 first_index: 0,
                 index_count: 6,
             }],
+            edges: None,
         }
     };
 
@@ -3589,6 +3595,7 @@ fn plates_in_the_target_plane(width: u32, height: u32) -> (Arc<RenderSnapshot>, 
                 first_index: 0,
                 index_count: 6,
             }],
+            edges: None,
         }
     };
 
@@ -4040,6 +4047,7 @@ fn plates_coloured(width: u32, height: u32, colour: [f64; 3]) -> (Arc<RenderSnap
                 first_index: 0,
                 index_count: 6,
             }],
+            edges: None,
         }
     };
 

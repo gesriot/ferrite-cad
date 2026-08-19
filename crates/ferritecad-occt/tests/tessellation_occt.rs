@@ -10,7 +10,10 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
-use std::{collections::BTreeMap, f64::consts::PI};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    f64::consts::PI,
+};
 
 use ferritecad_document::CapSide;
 use ferritecad_kernel::{
@@ -603,4 +606,224 @@ fn a_restored_solid_draws_the_same_as_the_one_that_was_built() {
     let mut reader = restored_built.kernel;
     reader.release(shape);
     assert_eq!(reader.live_shape_count(), 0);
+}
+
+/// The distinct positions the segments of one edge touch, and how many
+/// segments there are.
+///
+/// Nothing here associates anything: the association arrives from the kernel,
+/// and this only measures what arrived. Positions are compared exactly,
+/// because two vertices of one tessellation that name one corner of a box
+/// carry the same floats; a tolerance here would hide the very smearing the
+/// association exists to avoid.
+fn corners_of(mesh: &Mesh, range: &ferritecad_kernel::MeshEdgeRange) -> Vec<[f32; 3]> {
+    let edges = mesh.edges.as_ref().expect("the mesh associates its edges");
+    let first = range.first_segment as usize * 2;
+    let end = first + range.segment_count as usize * 2;
+    let mut seen: Vec<[f32; 3]> = Vec::new();
+    for index in &edges.segments[first..end] {
+        let at = *index as usize * 3;
+        let point = [
+            mesh.positions[at],
+            mesh.positions[at + 1],
+            mesh.positions[at + 2],
+        ];
+        if !seen.contains(&point) {
+            seen.push(point);
+        }
+    }
+    seen
+}
+
+#[test]
+fn every_edge_of_the_plate_is_named_and_drawn_from_both_of_its_faces() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+
+    let mut built = build();
+    let mesh = built
+        .kernel
+        .tessellate(
+            built.shape,
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("meshes");
+
+    let edges = mesh
+        .edges
+        .as_ref()
+        .expect("Open CASCADE knows which topological edge each segment draws");
+
+    // A box has twelve edges, and every one of them must be here. An
+    // association that covered only the edges it found a polygon for would
+    // draw part of the wireframe and silently omit the rest.
+    assert_eq!(
+        edges.ranges.len(),
+        12,
+        "a 60 x 40 x 10 plate has twelve topological edges"
+    );
+
+    // Which face each vertex belongs to. The tessellation gives each face its
+    // own nodes, so this is exact.
+    let mut face_of: BTreeMap<u32, SubShapeHandle> = BTreeMap::new();
+    for range in &mesh.faces {
+        let first = range.first_index as usize;
+        for index in &mesh.indices[first..first + range.index_count as usize] {
+            face_of.insert(*index, range.face);
+        }
+    }
+
+    let mut lengths: Vec<i64> = Vec::new();
+    for range in &edges.ranges {
+        assert_eq!(
+            range.edge.shape(),
+            built.shape,
+            "an edge of the mesh belongs to the shape that was tessellated"
+        );
+
+        // One topological edge of a box is shared by two faces, and each of
+        // them draws it from its own triangulation. Two representations, one
+        // identity: the handles must not have been split by orientation.
+        let first = range.first_segment as usize * 2;
+        let end = first + range.segment_count as usize * 2;
+        let faces: BTreeSet<SubShapeHandle> = edges.segments[first..end]
+            .iter()
+            .map(|index| *face_of.get(index).expect("a segment vertex is a face's"))
+            .collect();
+        assert_eq!(
+            faces.len(),
+            2,
+            "edge {} of a box is drawn from both of the faces that meet at it",
+            range.edge
+        );
+
+        // The plate's edges are straight, so each of them is one segment per
+        // side and touches exactly the two corners it runs between.
+        let corners = corners_of(&mesh, range);
+        assert_eq!(
+            corners.len(),
+            2,
+            "a straight edge of the plate runs between two corners, found {corners:?}"
+        );
+        let length = ((f64::from(corners[0][0]) - f64::from(corners[1][0])).powi(2)
+            + (f64::from(corners[0][1]) - f64::from(corners[1][1])).powi(2)
+            + (f64::from(corners[0][2]) - f64::from(corners[1][2])).powi(2))
+        .sqrt();
+        lengths.push(length.round() as i64);
+    }
+
+    // Four edges of each dimension, and no edge of any other length. A
+    // wireframe assembled by proximity would fail here the moment two corners
+    // were joined that the topology does not join.
+    lengths.sort_unstable();
+    assert_eq!(
+        lengths,
+        vec![10, 10, 10, 10, 40, 40, 40, 40, 60, 60, 60, 60],
+        "the twelve edges are the twelve sides of a 60 x 40 x 10 box"
+    );
+
+    built.kernel.release(built.shape);
+}
+
+#[test]
+fn a_curved_edge_is_many_segments_and_still_one_edge() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+
+    let mut kernel = OcctKernel::new().expect("opens");
+    let request = curved().expect("a valid half cylinder");
+    let result = kernel
+        .extrude(&request, &OperationContext::default())
+        .expect("builds");
+    let shape = result.shape;
+    let mesh = kernel
+        .tessellate(
+            shape,
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("meshes");
+
+    let edges = mesh.edges.as_ref().expect("the association is there");
+
+    // A half disc swept once: two arcs, two straight sides of the caps, and
+    // two vertical edges where the flat side meets the curved one.
+    assert_eq!(edges.ranges.len(), 6, "six topological edges");
+
+    // The arc is drawn by many segments and is one edge. Split by orientation
+    // it would be two edges of half the segments each; welded by proximity it
+    // would be one edge whose segments came from a single face.
+    let longest = edges
+        .ranges
+        .iter()
+        .max_by_key(|range| range.segment_count)
+        .expect("there is an edge");
+    assert!(
+        longest.segment_count > 8,
+        "an arc at the default deflection is many segments, got {}",
+        longest.segment_count
+    );
+
+    let mut face_of: BTreeMap<u32, SubShapeHandle> = BTreeMap::new();
+    for range in &mesh.faces {
+        let first = range.first_index as usize;
+        for index in &mesh.indices[first..first + range.index_count as usize] {
+            face_of.insert(*index, range.face);
+        }
+    }
+    for range in &edges.ranges {
+        let first = range.first_segment as usize * 2;
+        let end = first + range.segment_count as usize * 2;
+        let faces: BTreeSet<SubShapeHandle> = edges.segments[first..end]
+            .iter()
+            .map(|index| *face_of.get(index).expect("a segment vertex is a face's"))
+            .collect();
+        assert_eq!(
+            faces.len(),
+            2,
+            "edge {} is drawn from both of the faces that meet at it",
+            range.edge
+        );
+        assert_eq!(range.edge.shape(), shape);
+    }
+
+    kernel.release(shape);
+}
+
+#[test]
+fn the_same_shape_names_the_same_edges_twice() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+
+    let mut built = build();
+    let once = built
+        .kernel
+        .tessellate(
+            built.shape,
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("meshes");
+    let again = built
+        .kernel
+        .tessellate(
+            built.shape,
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("meshes again");
+
+    // Identity included: the same topological edge keeps the same handle
+    // across two tessellations of one shape, which is what lets a caller ask
+    // about an edge it learned of during an earlier draw.
+    assert_eq!(once.edges, again.edges);
+
+    built.kernel.release(built.shape);
 }

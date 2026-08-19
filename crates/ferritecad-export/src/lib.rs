@@ -184,6 +184,7 @@ mod tests {
                 first_index: 0,
                 index_count: 3,
             }],
+            edges: None,
         }
     }
 

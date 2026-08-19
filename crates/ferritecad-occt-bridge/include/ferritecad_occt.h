@@ -91,6 +91,37 @@ typedef int32_t (*FcOcctCancelFn)(void *context);
 /* An opaque kernel session. Shapes belong to the session that made them. */
 typedef struct FcOcctSession FcOcctSession;
 
+/*
+ * Where fc_occt_tessellate writes which topological edge draws which segments.
+ *
+ * A struct rather than six more positional parameters. fc_occt_tessellate had
+ * already reached the length at which an argument list stops being checkable
+ * by eye, and a caller that transposed two same-typed pointers would get a
+ * silently wrong wireframe rather than a compiler error.
+ *
+ * Caller-owned throughout, like every other buffer here, and read with the
+ * same two-call protocol: zero capacities fill in the counts and write no
+ * data, then a second call with buffers that size fills them.
+ *
+ * `segments` holds two vertex indices per segment, into the same vertices the
+ * triangles use, and `segment_capacity` counts segments rather than indices.
+ * `edge_shapes` receives one session-local sub-shape identifier per
+ * topological edge, and `edge_first_segment` / `edge_segment_count` say which
+ * run of segments that edge owns. The runs are contiguous, in edge order, and
+ * cover every segment exactly once.
+ */
+typedef struct FcOcctEdgeBuffers {
+  uint32_t *segments;
+  size_t segment_capacity;
+  uint64_t *edge_shapes;
+  uint32_t *edge_first_segment;
+  uint32_t *edge_segment_count;
+  size_t edge_capacity;
+  /* Always written, on both calls. */
+  size_t out_segment_count;
+  size_t out_edge_count;
+} FcOcctEdgeBuffers;
+
 #ifdef __cplusplus
 #define FC_OCCT_NOEXCEPT noexcept
 #else
@@ -356,6 +387,32 @@ FcOcctStatus fc_occt_shape_is_valid(FcOcctSession *session, uint64_t shape,
  * Cancellation: unlike a prism, the mesher does poll the progress indicator —
  * 32 times for a six-faced box on 7.9.3 — so `cancel` can stop this operation
  * partway rather than only between operations.
+ *
+ * `edges` reports which topological edge draws which segments, and must not be
+ * null: an adapter that could not be told would have to fall back on joining
+ * vertices that happen to be close, which is how a wireframe comes to claim
+ * edges the model does not have.
+ *
+ * That association comes from BRep_Tool::PolygonOnTriangulation, which stores
+ * a polyline of triangulation nodes for each edge of each face. Measured on
+ * 7.9.3 across a prism, a half cylinder, a cylinder, a sphere, a torus, a
+ * filleted plate, a shelled plate and five STEP fixtures: of 205 topological
+ * edges and 403 edge-face sides, every side had a polygon, and no polygon
+ * named a node outside its triangulation. So the association is read, never
+ * inferred, and a missing polygon is reported as a failure rather than
+ * patched over.
+ *
+ * TopLoc_Location is part of the query and not an optimisation. On the two
+ * STEP assemblies, every one of the 125 sides loses its polygon if the face's
+ * location is dropped and the identity location is passed instead; even the
+ * plate loses 4 of 24.
+ *
+ * One topological edge is one identity. The two faces that meet at an edge
+ * each carry their own polyline for it, and a seam edge carries two polylines
+ * on the single face it lies on; all of them are reported under one
+ * identifier, consolidated by TopoDS_Shape::IsSame, so orientation never
+ * splits an edge into two. Each edge's segments are ordered as the polylines
+ * are, face by face in the order the faces were packed.
  */
 FcOcctStatus fc_occt_tessellate(
     FcOcctSession *session, uint64_t shape, double linear_deflection,
@@ -364,7 +421,8 @@ FcOcctStatus fc_occt_tessellate(
     size_t vertex_capacity, uint32_t *out_indices, size_t index_capacity,
     uint64_t *out_face_shapes, uint32_t *out_face_first,
     uint32_t *out_face_index_count, size_t face_capacity,
-    size_t *out_vertex_count, size_t *out_index_count, size_t *out_face_count,
+    FcOcctEdgeBuffers *edges, size_t *out_vertex_count,
+    size_t *out_index_count, size_t *out_face_count,
     FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 FcOcctStatus fc_occt_encode_shape_named(

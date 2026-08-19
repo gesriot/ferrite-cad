@@ -206,6 +206,37 @@ pub struct MeshFaceRange {
     pub index_count: u32,
 }
 
+/// One topological edge of a shape, and the rendered segments that draw it.
+///
+/// The edge is a sub-shape of the session that tessellated it, exactly as a
+/// face range's face is. What makes this an edge rather than a boundary is
+/// that the kernel says so: several segments of one curved edge carry one
+/// handle, and the two face-side representations of an edge shared by two
+/// faces carry the same handle, because they are the same edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeshEdgeRange {
+    pub edge: SubShapeHandle,
+    /// First segment, counted in segments rather than indices.
+    pub first_segment: u32,
+    pub segment_count: u32,
+}
+
+/// Which rendered segments belong to which topological edge.
+///
+/// One value rather than two parallel fields on [`Mesh`], so that "segments
+/// with no edges owning them" and "edges owning nothing" are not states a
+/// caller can build and a validator has to catch afterwards. A mesh either has
+/// this association or does not have it; see [`Mesh::edges`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MeshEdges {
+    /// Pairs of vertex indices, two per segment, into the same vertices the
+    /// triangles use.
+    pub segments: Vec<u32>,
+    /// Which topological edge owns which segments: ordered, contiguous, and
+    /// covering `segments` exactly.
+    pub ranges: Vec<MeshEdgeRange>,
+}
+
 /// Triangles ready for upload, in millimetres.
 ///
 /// `f32` on purpose: this is the form the GPU consumes, and carrying `f64` to
@@ -222,6 +253,15 @@ pub struct Mesh {
     pub indices: Vec<u32>,
     /// Index ranges per face, ordered and non-overlapping.
     pub faces: Vec<MeshFaceRange>,
+    /// The topological edges of this shape, when the producer can name them.
+    ///
+    /// `None` and `Some` of an empty [`MeshEdges`] are different answers and
+    /// are kept apart. `None` says the producer did not associate segments
+    /// with edges at all; an empty `MeshEdges` says it looked and this shape
+    /// has no topological edge to draw. Collapsing the two would give a mesh
+    /// whose association is merely unknown the same standing as one proven to
+    /// have no edges, which is the invention this contract exists to refuse.
+    pub edges: Option<MeshEdges>,
 }
 
 impl Mesh {
@@ -334,8 +374,96 @@ impl Mesh {
             )));
         }
 
+        if let Some(edges) = &self.edges {
+            validate_edges(edges, vertices, shape)?;
+        }
+
         Ok(())
     }
+}
+
+/// Checks an edge association against the mesh that carries it.
+///
+/// `vertices` is the mesh's vertex count, and `face_shape` the shape its faces
+/// name when it has faces. A mesh whose ranges do not cover its segments
+/// exactly, whose segments address vertices that are not there, or which names
+/// one edge twice cannot say which edge a rendered line belongs to; refusing
+/// beats choosing.
+fn validate_edges(edges: &MeshEdges, vertices: u32, face_shape: Option<ShapeHandle>) -> Result<()> {
+    if !edges.segments.len().is_multiple_of(2) {
+        return Err(CadError::kernel(format!(
+            "mesh has {} edge segment indices, which is not a whole number of segments",
+            edges.segments.len()
+        )));
+    }
+    if let Some(out_of_range) = edges.segments.iter().find(|i| **i >= vertices) {
+        return Err(CadError::kernel(format!(
+            "mesh edge segment addresses vertex {out_of_range} of {vertices}"
+        )));
+    }
+
+    let segments = u32::try_from(edges.segments.len() / 2)
+        .map_err(|_| CadError::kernel("mesh has more edge segments than uint32 can count"))?;
+    let mut covered = 0u32;
+    let mut seen = BTreeSet::new();
+    // The shape every edge must belong to: the faces', when there are faces,
+    // and otherwise whichever shape the first edge names. Carried through the
+    // whole loop rather than checked once, so a stranger cannot enter behind a
+    // correct first edge.
+    let mut expected = face_shape;
+    for range in &edges.ranges {
+        match expected {
+            Some(shape) if range.edge.shape() != shape => {
+                return Err(CadError::kernel(format!(
+                    "mesh mixes edges from {} and {shape}",
+                    range.edge.shape()
+                )));
+            }
+            Some(_) => {}
+            None => expected = Some(range.edge.shape()),
+        }
+        if range.edge.kind() != SubShapeKind::Edge {
+            return Err(CadError::kernel(format!(
+                "mesh edge range names {}, which is not an edge",
+                range.edge
+            )));
+        }
+        if range.segment_count == 0 {
+            return Err(CadError::kernel(format!(
+                "mesh edge {} owns no segments",
+                range.edge
+            )));
+        }
+        if !seen.insert(range.edge) {
+            return Err(CadError::kernel(format!(
+                "mesh contains more than one range for edge {}",
+                range.edge
+            )));
+        }
+        if range.first_segment != covered {
+            return Err(CadError::kernel(format!(
+                "mesh edge ranges are not contiguous: expected to continue at {covered}, \
+                 found a range starting at {}",
+                range.first_segment
+            )));
+        }
+        covered = covered
+            .checked_add(range.segment_count)
+            .ok_or_else(|| CadError::kernel("mesh edge ranges overflow the segment space"))?;
+        if covered > segments {
+            return Err(CadError::kernel(format!(
+                "mesh edge {} claims segments beyond the {segments} the mesh has",
+                range.edge
+            )));
+        }
+    }
+    if covered != segments {
+        return Err(CadError::kernel(format!(
+            "mesh edge ranges cover {covered} of {segments} segments"
+        )));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -462,6 +590,7 @@ mod tests {
                 first_index: 0,
                 index_count: 3,
             }],
+            edges: None,
         };
         assert!(mesh.validate().is_err());
     }
@@ -477,6 +606,7 @@ mod tests {
                 first_index: 0,
                 index_count: 3,
             }],
+            edges: None,
         };
         assert!(mesh.validate().is_err());
     }
@@ -492,6 +622,7 @@ mod tests {
                 first_index: 1,
                 index_count: 2,
             }],
+            edges: None,
         };
         assert!(mesh.validate().is_err());
     }
@@ -515,6 +646,7 @@ mod tests {
                     index_count: 2,
                 },
             ],
+            edges: None,
         };
         assert!(mesh.validate().is_err());
     }
@@ -531,6 +663,7 @@ mod tests {
                 first_index: 0,
                 index_count: 3,
             }],
+            edges: None,
         };
         assert!(mesh.validate().is_err());
     }
@@ -546,7 +679,241 @@ mod tests {
                 first_index: 0,
                 index_count: 3,
             }],
+            edges: None,
         };
+        assert!(mesh.validate().is_err());
+    }
+
+    /// A triangle of one face, with whatever edge association is being tried.
+    fn triangle_with(shape: ShapeHandle, edges: Option<MeshEdges>) -> Mesh {
+        Mesh {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: vec![0, 1, 2],
+            faces: vec![MeshFaceRange {
+                face: SubShapeHandle::new(shape, SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 3,
+            }],
+            edges,
+        }
+    }
+
+    /// One side of that triangle, owning `segment_count` segments from
+    /// `first_segment`.
+    fn side(
+        shape: ShapeHandle,
+        index: u64,
+        first_segment: u32,
+        segment_count: u32,
+    ) -> MeshEdgeRange {
+        MeshEdgeRange {
+            edge: SubShapeHandle::new(shape, SubShapeKind::Edge, index),
+            first_segment,
+            segment_count,
+        }
+    }
+
+    #[test]
+    fn a_foreign_edge_cannot_hide_behind_a_correct_first_one() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let stranger = ShapeHandle::new(SessionId::new(), 0);
+        let mesh = triangle_with(
+            shape,
+            Some(MeshEdges {
+                segments: vec![0, 1, 1, 2, 2, 0],
+                // The first edge is this shape's, so a check that looks only
+                // at the first one is satisfied. The third belongs to another
+                // session entirely.
+                ranges: vec![
+                    side(shape, 0, 0, 1),
+                    side(shape, 1, 1, 1),
+                    side(stranger, 2, 2, 1),
+                ],
+            }),
+        );
+
+        let refusal = mesh
+            .validate()
+            .expect_err("an edge of another shape is not part of this mesh");
+        assert!(
+            refusal.to_string().contains("mixes edges"),
+            "the refusal should name the mixing, got: {refusal}"
+        );
+    }
+
+    #[test]
+    fn the_three_sides_of_a_triangle_are_a_valid_association() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let mesh = triangle_with(
+            shape,
+            Some(MeshEdges {
+                segments: vec![0, 1, 1, 2, 2, 0],
+                ranges: vec![
+                    side(shape, 0, 0, 1),
+                    side(shape, 1, 1, 1),
+                    side(shape, 2, 2, 1),
+                ],
+            }),
+        );
+        assert!(mesh.validate().is_ok());
+    }
+
+    #[test]
+    fn a_shape_proven_to_have_no_edges_is_not_a_missing_association() {
+        // Both are valid meshes, and they are different meshes: one producer
+        // looked and found nothing to draw, the other never said.
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let known_empty = triangle_with(shape, Some(MeshEdges::default()));
+        let unavailable = triangle_with(shape, None);
+        assert!(known_empty.validate().is_ok());
+        assert!(unavailable.validate().is_ok());
+        assert_ne!(known_empty, unavailable);
+    }
+
+    #[test]
+    fn an_odd_number_of_segment_indices_is_refused() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let mesh = triangle_with(
+            shape,
+            Some(MeshEdges {
+                segments: vec![0, 1, 2],
+                ranges: vec![side(shape, 0, 0, 1)],
+            }),
+        );
+        assert!(mesh.validate().is_err());
+    }
+
+    #[test]
+    fn a_segment_addressing_a_vertex_that_is_not_there_is_refused() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let mesh = triangle_with(
+            shape,
+            Some(MeshEdges {
+                segments: vec![0, 9],
+                ranges: vec![side(shape, 0, 0, 1)],
+            }),
+        );
+        assert!(mesh.validate().is_err());
+    }
+
+    #[test]
+    fn an_edge_that_owns_no_segments_is_refused() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let mesh = triangle_with(
+            shape,
+            Some(MeshEdges {
+                segments: vec![0, 1, 1, 2],
+                ranges: vec![
+                    side(shape, 0, 0, 1),
+                    side(shape, 1, 1, 0),
+                    side(shape, 2, 1, 1),
+                ],
+            }),
+        );
+        assert!(mesh.validate().is_err());
+    }
+
+    #[test]
+    fn edge_ranges_that_leave_a_gap_are_refused() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let mesh = triangle_with(
+            shape,
+            Some(MeshEdges {
+                segments: vec![0, 1, 1, 2, 2, 0],
+                ranges: vec![side(shape, 0, 0, 1), side(shape, 1, 2, 1)],
+            }),
+        );
+        assert!(mesh.validate().is_err());
+    }
+
+    #[test]
+    fn edge_ranges_that_overlap_are_refused() {
+        // Three segments, and three claimed: the totals agree exactly, so
+        // nothing about coverage is wrong here. What is wrong is that the
+        // second edge starts inside the first, which means segment 1 is drawn
+        // as part of two different edges. Only the contiguity rule can say so,
+        // which is what makes this gate about that rule and not another.
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let mesh = triangle_with(
+            shape,
+            Some(MeshEdges {
+                segments: vec![0, 1, 1, 2, 2, 0],
+                ranges: vec![side(shape, 0, 0, 2), side(shape, 1, 1, 1)],
+            }),
+        );
+        assert!(mesh.validate().is_err());
+    }
+
+    #[test]
+    fn edge_ranges_that_leave_a_segment_unclaimed_are_refused() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let mesh = triangle_with(
+            shape,
+            Some(MeshEdges {
+                segments: vec![0, 1, 1, 2, 2, 0],
+                ranges: vec![side(shape, 0, 0, 1), side(shape, 1, 1, 1)],
+            }),
+        );
+        assert!(mesh.validate().is_err());
+    }
+
+    #[test]
+    fn edge_ranges_that_claim_more_than_is_drawn_are_refused() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let mesh = triangle_with(
+            shape,
+            Some(MeshEdges {
+                segments: vec![0, 1],
+                ranges: vec![side(shape, 0, 0, 4)],
+            }),
+        );
+        assert!(mesh.validate().is_err());
+    }
+
+    #[test]
+    fn an_edge_range_must_name_an_edge() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let mesh = triangle_with(
+            shape,
+            Some(MeshEdges {
+                segments: vec![0, 1],
+                ranges: vec![MeshEdgeRange {
+                    edge: SubShapeHandle::new(shape, SubShapeKind::Face, 0),
+                    first_segment: 0,
+                    segment_count: 1,
+                }],
+            }),
+        );
+        assert!(mesh.validate().is_err());
+    }
+
+    #[test]
+    fn one_edge_cannot_own_two_ranges() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let mesh = triangle_with(
+            shape,
+            Some(MeshEdges {
+                segments: vec![0, 1, 1, 2],
+                ranges: vec![side(shape, 0, 0, 1), side(shape, 0, 1, 1)],
+            }),
+        );
+        assert!(mesh.validate().is_err());
+    }
+
+    #[test]
+    fn edges_and_faces_of_one_mesh_belong_to_one_shape() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let stranger = ShapeHandle::new(SessionId::new(), 0);
+        // Every edge is the stranger's, so a rule comparing edges only with
+        // each other would accept this. It is the faces they must match.
+        let mesh = triangle_with(
+            shape,
+            Some(MeshEdges {
+                segments: vec![0, 1, 1, 2],
+                ranges: vec![side(stranger, 0, 0, 1), side(stranger, 1, 1, 1)],
+            }),
+        );
         assert!(mesh.validate().is_err());
     }
 }

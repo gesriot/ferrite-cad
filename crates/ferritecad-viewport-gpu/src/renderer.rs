@@ -1698,6 +1698,7 @@ mod tests {
                 first_index: 0,
                 index_count: 6,
             }],
+            edges: None,
         };
         let mut builder = SnapshotBuilder::new();
         let definition = builder.add_mesh(&mesh).expect("packs the quad");
@@ -1884,6 +1885,7 @@ mod tests {
                 first_index: 0,
                 index_count: 6,
             }],
+            edges: None,
         };
         let mut builder = SnapshotBuilder::new();
         let front = builder.add_mesh(&plate(20.0, 0.0, 1)).expect("packs");
@@ -2139,6 +2141,7 @@ mod tests {
                 first_index: 0,
                 index_count: 3,
             }],
+            edges: None,
         };
         let mut builder = SnapshotBuilder::new();
         builder.add_mesh(&mesh(0)).expect("packs first");

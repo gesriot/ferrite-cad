@@ -120,12 +120,37 @@ pub struct PackedMesh {
     /// than across the mesh is what keeps the boundary between two faces:
     /// each of them owns its own copy of that edge, and both are boundaries.
     ///
-    /// This is the boundary of a tessellation, not a B-Rep edge. The snapshot
-    /// carries no edge identity, so nothing here pretends to one: there is no
-    /// pick value, no hover and no selection for a line.
+    /// This is the boundary of a tessellation, not a B-Rep edge. It is drawn,
+    /// and it is not what [`PackedMesh::edges`] identifies; the two answer
+    /// different questions about the same picture and are kept apart.
     line_indices: Vec<u32>,
+    /// The topological edges of this definition, when the kernel named them.
+    ///
+    /// `None` when the mesh arrived without an association. That is not the
+    /// same as a definition proven to have no edges, which is `Some` of an
+    /// association owning nothing, and the difference is kept because only one
+    /// of the two entitles a later renderer to say "no edge here" rather than
+    /// "no edge information here".
+    edges: Option<PackedEdges>,
     min: [f32; 3],
     max: [f32; 3],
+}
+
+/// One definition's topological edges, renumbered for this snapshot alone.
+///
+/// The kernel's handles do not survive: a `SubShapeHandle` belongs to the
+/// session that issued it, and a picture holding one would be holding a number
+/// nobody can ask about once the shape is released. What is kept is the
+/// partition — which segments belong together, and in what order — exactly as
+/// [`PackedMesh::face_index_counts`] keeps the face partition.
+#[derive(Debug, Clone, PartialEq)]
+struct PackedEdges {
+    /// Pairs of vertex indices, two per segment, into this mesh's vertices.
+    segments: Vec<u32>,
+    /// How many segments each edge owns, in edge order. The runs are
+    /// contiguous and cover `segments` exactly, which the kernel checked and
+    /// this preserves.
+    segment_counts: Vec<u32>,
 }
 
 impl PackedMesh {
@@ -168,6 +193,33 @@ impl PackedMesh {
     /// How many boundary segments this mesh draws.
     pub fn line_count(&self) -> usize {
         self.line_indices.len() / 2
+    }
+
+    /// How many topological edges this definition has, or `None` when the
+    /// kernel that produced it did not say.
+    ///
+    /// The two answers are different and a caller must be able to tell them
+    /// apart: `Some(0)` is a definition with nothing to identify, and `None`
+    /// is a definition nothing is known about.
+    pub fn edge_count(&self) -> Option<usize> {
+        self.edges.as_ref().map(|edges| edges.segment_counts.len())
+    }
+
+    /// The segments one topological edge of this definition draws, as pairs of
+    /// vertex indices into the same vertices the triangles use.
+    ///
+    /// `None` when this definition has no association, or when `ordinal` names
+    /// no edge of it.
+    pub fn segments_of_edge(&self, ordinal: usize) -> Option<&[u32]> {
+        let edges = self.edges.as_ref()?;
+        let count = *edges.segment_counts.get(ordinal)? as usize;
+        // Contiguous and in order, so an edge's own run begins after every
+        // edge packed before it. Checked by the kernel before packing.
+        let first: usize = edges.segment_counts[..ordinal]
+            .iter()
+            .map(|count| *count as usize)
+            .sum();
+        edges.segments.get(first * 2..(first + count) * 2)
     }
 
     /// The corners of this mesh's own bounding box, before any placement.
@@ -352,6 +404,57 @@ impl FacePickId {
     pub fn from_raw(raw: u32, snapshot: &RenderSnapshot) -> Self {
         match (raw as usize).checked_sub(1) {
             Some(face) if face < snapshot.face_owner.len() => Self {
+                raw,
+                snapshot: snapshot.identity,
+            },
+            _ => Self::NOTHING,
+        }
+    }
+}
+
+/// One topological edge of one definition, for as long as this picture is on
+/// screen.
+///
+/// The same kind of value as [`FacePickId`], for an edge of the model rather
+/// than a face of it: bound to the picture that issued it, carrying no number
+/// anyone outside can read, and not serialisable. It says "the edge the kernel
+/// named, as this picture numbers it", and nothing that outlives the picture.
+///
+/// What it is *not* is a boundary of a tessellation. [`PackedMesh::line_indices`]
+/// draws where faces stop, which is a property of the triangles; this
+/// identifies an edge of the B-Rep, which the kernel had to say. A picture
+/// whose kernel did not say has no edge identity at all, and every value here
+/// resolves to nothing against it.
+///
+/// Numbered per definition, never per placement. A definition drawn four times
+/// has one identity per edge, for the same reason a pick names a definition
+/// rather than an occurrence — see the module documentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EdgePickId {
+    raw: u32,
+    snapshot: ContentHash,
+}
+
+impl EdgePickId {
+    /// What every pixel on no edge reads as.
+    pub const NOTHING: Self = Self {
+        raw: 0,
+        snapshot: ContentHash::from_bytes([0; 32]),
+    };
+
+    /// The value an edge buffer stores.
+    pub fn to_raw(self) -> u32 {
+        self.raw
+    }
+
+    /// Reads a value back out of an edge buffer.
+    ///
+    /// A number naming no edge of `snapshot` reads as
+    /// [`NOTHING`][Self::NOTHING]. The caller must decode against the exact
+    /// snapshot that rendered it: an in-range integer carries no generation.
+    pub fn from_raw(raw: u32, snapshot: &RenderSnapshot) -> Self {
+        match (raw as usize).checked_sub(1) {
+            Some(edge) if edge < snapshot.edge_owner.len() => Self {
                 raw,
                 snapshot: snapshot.identity,
             },
@@ -750,6 +853,13 @@ pub struct RenderSnapshot {
     items: Vec<DrawItem>,
     /// Which definition each face belongs to, indexed by identity minus one.
     face_owner: Vec<usize>,
+    /// Which definition each topological edge belongs to, indexed by identity
+    /// minus one.
+    ///
+    /// One vector, so an edge identity and the definition it belongs to cannot
+    /// disagree: the definition is looked up from the identity rather than
+    /// carried beside it.
+    edge_owner: Vec<usize>,
     min: [f32; 3],
     max: [f32; 3],
     has_geometry: bool,
@@ -887,6 +997,64 @@ impl RenderSnapshot {
         extent.bounds()
     }
 
+    /// The definition a topological edge belongs to, if this picture issued
+    /// that edge.
+    ///
+    /// Resolved here and nowhere else, exactly as a face is: an identity from
+    /// another picture, or from one that has been replaced, names no edge here
+    /// rather than whichever edge occupies its number.
+    pub fn definition_of_edge(&self, edge: EdgePickId) -> Option<usize> {
+        if edge.snapshot != self.identity {
+            return None;
+        }
+        let index = (edge.raw as usize).checked_sub(1)?;
+        self.edge_owner.get(index).copied()
+    }
+
+    /// How many topological edges this picture has identities for.
+    pub fn edge_count(&self) -> usize {
+        self.edge_owner.len()
+    }
+
+    /// The identity this picture gave one topological edge of one definition.
+    ///
+    /// The inverse of [`Self::definition_of_edge`], and the only way to learn
+    /// this picture's edge numbering from outside. `None` for a definition
+    /// whose mesh carried no edge association, which is the answer that keeps
+    /// "nothing is known here" distinct from "there is no edge here".
+    pub fn edge_of(&self, definition: usize, ordinal: usize) -> Option<EdgePickId> {
+        let mesh = self.meshes.get(definition)?;
+        if ordinal >= mesh.edge_count()? {
+            return None;
+        }
+        // Edges are numbered in packing order, so a definition's own run
+        // begins after every edge packed before it.
+        let before: usize = self.meshes[..definition]
+            .iter()
+            .map(|mesh| mesh.edge_count().unwrap_or(0))
+            .sum();
+        let raw = u32::try_from(before.checked_add(ordinal)?.checked_add(1)?).ok()?;
+        Some(EdgePickId {
+            raw,
+            snapshot: self.identity,
+        })
+    }
+
+    /// The segments one identified edge draws, as pairs of vertex indices into
+    /// its definition's packed vertices.
+    ///
+    /// The whole of what this layer knows about an edge, resolved from an
+    /// identity alone. An edge of another picture draws nothing here.
+    pub fn segments_of_edge(&self, edge: EdgePickId) -> Option<&[u32]> {
+        let definition = self.definition_of_edge(edge)?;
+        let before: usize = self.meshes[..definition]
+            .iter()
+            .map(|mesh| mesh.edge_count().unwrap_or(0))
+            .sum();
+        let ordinal = (edge.raw as usize).checked_sub(1)?.checked_sub(before)?;
+        self.meshes[definition].segments_of_edge(ordinal)
+    }
+
     /// The definition a pick identifies, if it identifies one.
     pub fn definition(&self, pick: PickId) -> Option<usize> {
         (pick.snapshot == self.identity)
@@ -919,6 +1087,12 @@ pub struct SnapshotBuilder {
     next_face: u32,
     /// Which definition each face belongs to, indexed by identity minus one.
     face_owner: Vec<usize>,
+    /// The last topological edge identity handed out, numbered the same way
+    /// and for the same reason.
+    next_edge: u32,
+    /// Which definition each topological edge belongs to, indexed by identity
+    /// minus one.
+    edge_owner: Vec<usize>,
 }
 
 impl SnapshotBuilder {
@@ -1022,11 +1196,39 @@ impl SnapshotBuilder {
         }
         let face_index_counts = mesh.faces.iter().map(|range| range.index_count).collect();
         let line_indices = face_boundaries(mesh)?;
+
+        // The kernel's edge partition, renumbered for this picture and
+        // stripped of everything that named a session. The ranges were
+        // checked to be contiguous, in order and complete before this, so the
+        // counts alone say the same thing the ranges did.
+        let packed_edges = mesh.edges.as_ref().map(|edges| PackedEdges {
+            segments: edges.segments.clone(),
+            segment_counts: edges
+                .ranges
+                .iter()
+                .map(|range| range.segment_count)
+                .collect(),
+        });
+        let added_edges = packed_edges.as_ref().map_or(0, |edges| {
+            u32::try_from(edges.segment_counts.len()).unwrap_or(u32::MAX)
+        });
+        let next_edge = self
+            .next_edge
+            .checked_add(added_edges)
+            .filter(|_| added_edges != u32::MAX)
+            .ok_or_else(|| CadError::input("a picture cannot hold that many edges"))?;
+
         // Ordinals are per snapshot, so the same face of one definition is one
         // identity however many times the definition is placed.
         self.face_owner
             .resize(next_face as usize, self.meshes.len());
         self.next_face = next_face;
+        // The same rule for edges, and for the same reason. A definition whose
+        // mesh carried no association adds none, so its edges are not numbered
+        // rather than numbered as absent.
+        self.edge_owner
+            .resize(next_edge as usize, self.meshes.len());
+        self.next_edge = next_edge;
 
         self.meshes.push(PackedMesh {
             vertices,
@@ -1034,6 +1236,7 @@ impl SnapshotBuilder {
             face_of_vertex,
             face_index_counts,
             line_indices,
+            edges: packed_edges,
             min,
             max,
         });
@@ -1134,6 +1337,7 @@ impl SnapshotBuilder {
             meshes: self.meshes,
             items: self.items,
             face_owner: self.face_owner,
+            edge_owner: self.edge_owner,
             min,
             max,
             has_geometry,
@@ -1154,11 +1358,21 @@ fn snapshot_identity(
     context: Option<&ContentHash>,
 ) -> ContentHash {
     let mut hasher = CanonicalHasher::new("ferritecad.render-snapshot");
-    // Four: version two added faces but accidentally hashed runs in vertex
-    // storage order, version three fixed that, and version four binds the
+    // Five: version two added faces but accidentally hashed runs in vertex
+    // storage order, version three fixed that, version four binds the
     // transient identities to any opaque interpretation supplied by the
-    // layer that knows what the picture means.
-    hasher.algorithm_version(4);
+    // layer that knows what the picture means, and version five covers the
+    // topological edge partition.
+    //
+    // The bump is a declaration rather than a repair. Version four hashed one
+    // partition of a mesh; version five hashes two, and the second one carries
+    // identities of its own — so a digest computed under the old rules is an
+    // answer to a different question about the same triangles, and saying so
+    // in the version costs nothing here. Nothing durable is keyed by this: a
+    // snapshot identity exists to make a transient pick refuse a picture it
+    // was not decoded against, and every one of them is rebuilt with its
+    // picture.
+    hasher.algorithm_version(5);
     hasher.field("identity_context");
     match context {
         Some(context) => {
@@ -1186,6 +1400,34 @@ fn snapshot_identity(
         hasher.field("faces").u64(mesh.face_count() as u64);
         for index_count in &mesh.face_index_counts {
             hasher.u64(u64::from(*index_count));
+        }
+        // The edge partition, on the same terms: which vertices each segment
+        // joins, and how the segments divide between edges. Two pictures with
+        // the same triangles whose kernels divided those segments differently
+        // are different pictures, because an edge identity of one names
+        // something else in the other.
+        //
+        // Whether there is an association at all is hashed first and
+        // separately, so a definition nothing is known about cannot key the
+        // same as one known to have no edges. Handles are not hashed, for the
+        // same reason the faces' are not: they belong to a session, and two
+        // identical pictures built twice would otherwise differ.
+        match &mesh.edges {
+            None => {
+                hasher.field("edges").str("unknown");
+            }
+            Some(edges) => {
+                hasher.field("edges").u64(edges.segment_counts.len() as u64);
+                for segment_count in &edges.segment_counts {
+                    hasher.u64(u64::from(*segment_count));
+                }
+                hasher
+                    .field("edge_segments")
+                    .u64(edges.segments.len() as u64);
+                for index in &edges.segments {
+                    hasher.u64(u64::from(*index));
+                }
+            }
         }
     }
     hasher.field("items").u64(items.len() as u64);

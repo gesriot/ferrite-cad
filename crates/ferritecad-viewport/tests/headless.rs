@@ -30,6 +30,7 @@ fn triangle() -> Mesh {
             first_index: 0,
             index_count: 3,
         }],
+        edges: None,
     }
 }
 
@@ -3733,6 +3734,7 @@ fn a_square_face_is_bounded_by_its_four_sides_and_not_by_its_diagonal() {
         normals,
         indices,
         faces: vec![range],
+        edges: None,
     };
 
     let packed = packed(&mesh);
@@ -3770,6 +3772,7 @@ fn two_faces_lying_in_one_plane_each_keep_their_own_boundary() {
         normals: [0.0, -1.0, 0.0].repeat(8),
         indices: vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7],
         faces: vec![face(0, 0), face(1, 6)],
+        edges: None,
     };
 
     let packed = packed(&mesh);
@@ -3822,6 +3825,7 @@ fn several_faces_and_separate_pieces_pack_the_same_lines_every_time() {
         normals: [0.0, -1.0, 0.0].repeat(12),
         indices,
         faces: vec![face(0, 0), face(1, 6), face(2, 12)],
+        edges: None,
     };
 
     let once = packed(&mesh);
@@ -3843,6 +3847,7 @@ fn the_order_and_the_winding_of_triangles_do_not_change_the_boundary() {
         normals: normals.clone(),
         indices: vec![0, 1, 2, 0, 2, 3],
         faces: vec![range],
+        edges: None,
     };
     // The same square: the other triangle first, and both wound the other way.
     let rearranged = Mesh {
@@ -3850,6 +3855,7 @@ fn the_order_and_the_winding_of_triangles_do_not_change_the_boundary() {
         normals,
         indices: vec![3, 2, 0, 2, 1, 0],
         faces: vec![range],
+        edges: None,
     };
 
     assert_eq!(
@@ -3875,6 +3881,7 @@ fn a_tessellation_that_is_not_a_surface_is_refused_rather_than_guessed_at() {
             first_index: 0,
             index_count: 9,
         }],
+        edges: None,
     };
 
     let mut builder = SnapshotBuilder::new();
@@ -3896,6 +3903,7 @@ fn a_tessellation_that_is_not_a_surface_is_refused_rather_than_guessed_at() {
         normals: normals.clone(),
         indices: indices.clone(),
         faces: vec![range],
+        edges: None,
     };
     assert!(SnapshotBuilder::new().add_mesh(&ragged).is_err());
 
@@ -3905,6 +3913,7 @@ fn a_tessellation_that_is_not_a_surface_is_refused_rather_than_guessed_at() {
         normals,
         indices: vec![0, 1, 9, 0, 2, 3],
         faces: vec![range],
+        edges: None,
     };
     assert!(SnapshotBuilder::new().add_mesh(&out_of_range).is_err());
 }
@@ -3916,6 +3925,7 @@ fn a_picture_with_no_triangles_invents_no_lines() {
         normals: Vec::new(),
         indices: Vec::new(),
         faces: Vec::new(),
+        edges: None,
     };
 
     let packed = packed(&mesh);
@@ -3936,6 +3946,7 @@ fn drawing_where_faces_stop_does_not_change_what_a_picture_is() {
         normals: normals.clone(),
         indices,
         faces: vec![range],
+        edges: None,
     };
     // The same four vertices, cut the other way: different triangles, and so
     // a different picture, even though the boundary is the same square.
@@ -3944,6 +3955,7 @@ fn drawing_where_faces_stop_does_not_change_what_a_picture_is() {
         normals,
         indices: vec![1, 2, 3, 1, 3, 0],
         faces: vec![range],
+        edges: None,
     };
 
     // A snapshot's identity is what its picks carry, which is how every other
@@ -3973,4 +3985,354 @@ fn drawing_where_faces_stop_does_not_change_what_a_picture_is() {
         boundary_set(&packed(&other_cut)),
         "the gate no longer proves the boundary is the same for both"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Topological edges: what the kernel named, as this picture numbers it.
+// ---------------------------------------------------------------------------
+
+/// A square of two triangles whose four sides are divided between topological
+/// edges as `division` says, in segments per edge.
+///
+/// The triangles are identical whatever the division is. That is the point:
+/// two pictures can draw the same lines in the same places and still disagree
+/// about which of them are one edge.
+fn square_with_edges(division: &[u32]) -> Mesh {
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let total: u32 = division.iter().sum();
+    let mut first_segment = 0;
+    let ranges = division
+        .iter()
+        .enumerate()
+        .map(|(ordinal, count)| {
+            let range = ferritecad_kernel::MeshEdgeRange {
+                edge: SubShapeHandle::new(shape, SubShapeKind::Edge, ordinal as u64),
+                first_segment,
+                segment_count: *count,
+            };
+            first_segment += count;
+            range
+        })
+        .collect();
+    // Four sides of the square, in order, and as many of them as the division
+    // accounts for.
+    let sides = [0u32, 1, 1, 2, 2, 3, 3, 0];
+    Mesh {
+        positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0],
+        normals: [0.0, 0.0, 1.0].repeat(4),
+        indices: vec![0, 1, 2, 0, 2, 3],
+        faces: vec![MeshFaceRange {
+            face: SubShapeHandle::new(shape, SubShapeKind::Face, 0),
+            first_index: 0,
+            index_count: 6,
+        }],
+        edges: Some(ferritecad_kernel::MeshEdges {
+            segments: sides[..total as usize * 2].to_vec(),
+            ranges,
+        }),
+    }
+}
+
+fn snapshot_of(meshes: &[Mesh]) -> RenderSnapshot {
+    let mut builder = SnapshotBuilder::new();
+    for mesh in meshes {
+        let index = builder.add_mesh(mesh).expect("packs");
+        builder
+            .place(index, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+            .expect("places");
+    }
+    builder.build()
+}
+
+#[test]
+fn an_edge_resolves_to_the_definition_and_the_segments_it_draws() {
+    // Four sides, one segment each.
+    let snapshot = snapshot_of(&[square_with_edges(&[1, 1, 1, 1])]);
+
+    assert_eq!(snapshot.edge_count(), 4);
+    assert_eq!(snapshot.meshes()[0].edge_count(), Some(4));
+
+    for ordinal in 0..4 {
+        let edge = snapshot
+            .edge_of(0, ordinal)
+            .expect("this picture numbers this edge");
+        assert_eq!(snapshot.definition_of_edge(edge), Some(0));
+        assert_eq!(
+            snapshot.segments_of_edge(edge),
+            Some(&[ordinal as u32, (ordinal as u32 + 1) % 4][..]),
+            "each side draws the segment between its own two corners"
+        );
+    }
+    assert!(
+        snapshot.edge_of(0, 4).is_none(),
+        "a fifth edge of a square is not one of its edges"
+    );
+}
+
+#[test]
+fn nothing_and_identities_from_other_pictures_name_no_edge() {
+    let snapshot = snapshot_of(&[square_with_edges(&[1, 1, 1, 1])]);
+    // The same geometry built again: a different picture, however alike.
+    let replaced = snapshot_of(&[square_with_edges(&[1, 1, 1, 1])]);
+    let another = snapshot_of(&[square_with_edges(&[2, 2])]);
+
+    assert_eq!(
+        snapshot.definition_of_edge(ferritecad_viewport::EdgePickId::NOTHING),
+        None
+    );
+    assert_eq!(
+        snapshot.segments_of_edge(ferritecad_viewport::EdgePickId::NOTHING),
+        None
+    );
+
+    let edge = snapshot.edge_of(0, 2).expect("numbers this edge");
+    // A picture built again from the same geometry is the same picture, and
+    // says so rather than pretending otherwise.
+    assert_eq!(replaced.definition_of_edge(edge), Some(0));
+    assert_eq!(
+        another.definition_of_edge(edge),
+        None,
+        "an edge of a differently divided picture names nothing here"
+    );
+    assert_eq!(another.segments_of_edge(edge), None);
+
+    // The case that a range check alone would let through: a picture with more
+    // edges than this one, in which the same raw number is perfectly in range
+    // and belongs to a different definition entirely.
+    let larger = snapshot_of(&[
+        square_with_edges(&[1, 1, 1, 1]),
+        square_with_edges(&[1, 1, 1, 1]),
+    ]);
+    let far = larger.edge_of(1, 3).expect("numbers this edge");
+    assert_eq!(larger.definition_of_edge(far), Some(1));
+    assert!(
+        far.to_raw() as usize > snapshot.edge_count(),
+        "the raw value must be out of this picture's range for the next line \
+         to be about identity rather than range"
+    );
+    let near = larger.edge_of(0, 2).expect("numbers this edge");
+    assert_eq!(near.to_raw(), edge.to_raw(), "the same raw number");
+    assert_eq!(
+        snapshot.definition_of_edge(near),
+        None,
+        "an in-range number from another picture is still not this picture's edge"
+    );
+    assert_eq!(snapshot.segments_of_edge(near), None);
+    assert_eq!(snapshot.definition_of_edge(far), None);
+
+    // And a raw number outside this picture's range reads as nothing.
+    assert_eq!(
+        ferritecad_viewport::EdgePickId::from_raw(99, &snapshot),
+        ferritecad_viewport::EdgePickId::NOTHING
+    );
+    assert_eq!(
+        ferritecad_viewport::EdgePickId::from_raw(0, &snapshot),
+        ferritecad_viewport::EdgePickId::NOTHING
+    );
+}
+
+#[test]
+fn how_the_segments_divide_between_edges_is_part_of_what_a_picture_is() {
+    // The same four vertices, the same two triangles, the same eight segment
+    // indices in the same order. Only the division into topological edges
+    // differs: four sides, or two edges of two segments each.
+    let four = snapshot_of(&[square_with_edges(&[1, 1, 1, 1])]);
+    let two = snapshot_of(&[square_with_edges(&[2, 2])]);
+
+    assert_eq!(
+        four.meshes()[0].vertices(),
+        two.meshes()[0].vertices(),
+        "the two pictures are drawn from the same vertices"
+    );
+    assert_eq!(
+        four.meshes()[0].indices(),
+        two.meshes()[0].indices(),
+        "and the same triangles"
+    );
+    assert_eq!(
+        four.meshes()[0].line_indices(),
+        two.meshes()[0].line_indices(),
+        "and they draw the same boundary"
+    );
+
+    // But the second edge of one is not the second edge of the other, and
+    // neither picture may accept the other's identity for it.
+    let from_four = four.edge_of(0, 1).expect("numbers this edge");
+    let from_two = two.edge_of(0, 1).expect("numbers this edge");
+    assert_eq!(
+        two.definition_of_edge(from_four),
+        None,
+        "an edge identity of a differently divided picture resolves to nothing"
+    );
+    assert_eq!(four.definition_of_edge(from_two), None);
+    assert_ne!(
+        four.segments_of_edge(from_four),
+        two.segments_of_edge(from_two),
+        "the two pictures disagree about what that edge draws"
+    );
+}
+
+#[test]
+fn an_unknown_association_is_not_a_shape_without_edges() {
+    let unknown = snapshot_of(&[triangle()]);
+    let none_to_draw = snapshot_of(&[Mesh {
+        edges: Some(ferritecad_kernel::MeshEdges::default()),
+        ..triangle()
+    }]);
+
+    // Neither picture can identify an edge, and the reasons differ.
+    assert_eq!(unknown.edge_count(), 0);
+    assert_eq!(none_to_draw.edge_count(), 0);
+    assert_eq!(unknown.edge_of(0, 0), None);
+    assert_eq!(none_to_draw.edge_of(0, 0), None);
+
+    assert_eq!(
+        unknown.meshes()[0].edge_count(),
+        None,
+        "nothing is known about this definition's edges"
+    );
+    assert_eq!(
+        none_to_draw.meshes()[0].edge_count(),
+        Some(0),
+        "this definition is known to have no edge to draw"
+    );
+
+    // And the two are different pictures, so an identity of one is not an
+    // identity of the other.
+    assert_ne!(
+        unknown.meshes()[0],
+        none_to_draw.meshes()[0],
+        "the two answers are not the same packed mesh"
+    );
+}
+
+#[test]
+fn edges_are_numbered_per_definition_and_not_per_placement() {
+    let mesh = square_with_edges(&[1, 1, 1, 1]);
+    let mut builder = SnapshotBuilder::new();
+    let definition = builder.add_mesh(&mesh).expect("packs");
+    for x in [0.0, 10.0, 20.0] {
+        builder
+            .place(definition, None, &moved(x, 0.0, 0.0), [0.5, 0.5, 0.5])
+            .expect("places");
+    }
+    let snapshot = builder.build();
+
+    assert_eq!(snapshot.draws().len(), 3, "three placements");
+    assert_eq!(
+        snapshot.edge_count(),
+        4,
+        "and four edges, not twelve: an edge belongs to the definition"
+    );
+    for ordinal in 0..4 {
+        assert_eq!(
+            snapshot.definition_of_edge(snapshot.edge_of(0, ordinal).expect("numbered")),
+            Some(0)
+        );
+    }
+}
+
+#[test]
+fn two_definitions_do_not_share_edge_identities() {
+    let snapshot = snapshot_of(&[square_with_edges(&[1, 1, 1, 1]), square_with_edges(&[2, 2])]);
+    assert_eq!(snapshot.edge_count(), 6);
+
+    let mut seen = Vec::new();
+    for (definition, count) in [(0usize, 4usize), (1, 2)] {
+        for ordinal in 0..count {
+            let edge = snapshot.edge_of(definition, ordinal).expect("numbered");
+            assert_eq!(snapshot.definition_of_edge(edge), Some(definition));
+            assert!(!seen.contains(&edge), "an identity was handed out twice");
+            seen.push(edge);
+        }
+    }
+    assert_eq!(seen.len(), 6);
+}
+
+#[test]
+fn a_definition_with_no_association_does_not_shift_another_ones_edges() {
+    // The unknown definition is packed first, so if it were numbered as though
+    // it had edges, every identity after it would be off by that many.
+    let snapshot = snapshot_of(&[triangle(), square_with_edges(&[1, 1, 1, 1])]);
+    assert_eq!(snapshot.edge_count(), 4);
+    for ordinal in 0..4 {
+        let edge = snapshot.edge_of(1, ordinal).expect("numbered");
+        assert_eq!(snapshot.definition_of_edge(edge), Some(1));
+        assert_eq!(
+            snapshot.segments_of_edge(edge),
+            Some(&[ordinal as u32, (ordinal as u32 + 1) % 4][..])
+        );
+    }
+    assert_eq!(snapshot.edge_of(0, 0), None);
+}
+
+#[test]
+fn nothing_a_session_issued_survives_into_the_picture() {
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let mesh = square_with_edges(&[1, 1, 1, 1]);
+    let handle = mesh.edges.as_ref().expect("has edges").ranges[0].edge;
+    let snapshot = snapshot_of(&[mesh]);
+
+    // What the kernel called these things is not written down anywhere in the
+    // picture, including in what a person debugging it would read.
+    let written = format!("{snapshot:?}");
+    for leaked in [
+        handle.to_string(),
+        handle.shape().to_string(),
+        handle.shape().session().to_string(),
+        shape.session().to_string(),
+    ] {
+        assert!(
+            !written.contains(&leaked),
+            "the picture still carries {leaked}"
+        );
+    }
+    for word in ["session#", "shape#", "edge#", "face#"] {
+        assert!(
+            !written.contains(word),
+            "the picture still carries a {word} name"
+        );
+    }
+}
+
+#[test]
+fn a_refused_mesh_consumes_no_edge_identities() {
+    // A mesh whose faces share a vertex is refused while packing, after the
+    // point at which its edges would have been counted.
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let mut shared = square_with_edges(&[1, 1, 1, 1]);
+    shared.faces = vec![
+        MeshFaceRange {
+            face: SubShapeHandle::new(shape, SubShapeKind::Face, 0),
+            first_index: 0,
+            index_count: 3,
+        },
+        MeshFaceRange {
+            face: SubShapeHandle::new(shape, SubShapeKind::Face, 1),
+            first_index: 3,
+            index_count: 3,
+        },
+    ];
+
+    let mut builder = SnapshotBuilder::new();
+    builder
+        .add_mesh(&shared)
+        .expect_err("two faces of these triangles share a vertex");
+    let definition = builder
+        .add_mesh(&square_with_edges(&[1, 1, 1, 1]))
+        .expect("packs afterwards");
+    builder
+        .place(definition, None, &Transform::IDENTITY, [1.0, 1.0, 1.0])
+        .expect("places");
+    let snapshot = builder.build();
+
+    assert_eq!(snapshot.edge_count(), 4, "the refusal consumed edge ids");
+    for ordinal in 0..4 {
+        let edge = snapshot.edge_of(definition, ordinal).expect("numbered");
+        assert_eq!(snapshot.definition_of_edge(edge), Some(definition));
+        assert_eq!(
+            snapshot.segments_of_edge(edge),
+            Some(&[ordinal as u32, (ordinal as u32 + 1) % 4][..])
+        );
+    }
 }

@@ -2047,6 +2047,7 @@ mod tests {
                 first_index: 0,
                 index_count: 3,
             }],
+            edges: None,
         };
         let mut builder = ferritecad_viewport::SnapshotBuilder::new();
         let definition = builder.add_mesh(&mesh).expect("finite mesh packs");
