@@ -15,10 +15,11 @@ use ferritecad_document::{CapSide, EntityKind, SelectionRule, SemanticRole, Topo
 use ferritecad_kernel::{
     ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, GeometryKernel, KernelIdentity,
     OperationContext, PlanarPoint, Profile, ProfileLoop, ProfileSegment, SegmentGeometry,
-    SketchPlane, mock::MockKernel,
+    SessionId, ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind, mock::MockKernel,
 };
 use ferritecad_topology::{
-    ArchivedFeature, BoundName, TopologyMap, archive_feature, resolve, restore_feature,
+    ArchivedFeature, BoundName, RestoredNames, TopologyMap, archive_feature, resolve,
+    restore_feature,
 };
 use ferritecad_types::{ContentHash, ErrorKind, ObjectId, Result, StableEntityId};
 
@@ -314,9 +315,11 @@ fn two_names_for_one_live_face_are_refused_before_archiving() {
         .record_restored(
             plate.feature,
             result.shape,
-            &[shared],
-            &[shared],
-            &BTreeMap::new(),
+            &RestoredNames {
+                start_cap: vec![shared],
+                end_cap: vec![shared],
+                ..RestoredNames::default()
+            },
         )
         .expect("the runtime map can express ancestry aliases");
 
@@ -522,4 +525,239 @@ fn a_kernel_identity_is_checked_before_any_geometry_is_read() {
     let err = restore_feature(&mut reader, &paired, &mut restored)
         .expect_err("another kernel wrote this");
     assert_eq!(err.kind(), ErrorKind::Kernel);
+}
+
+// ---------------------------------------------------------------------------
+// The edge where a cap meets a swept face.
+// ---------------------------------------------------------------------------
+
+/// A reference to that edge, for one side and one profile segment.
+fn cap_edge_ref(
+    feature: ObjectId,
+    side: CapSide,
+    segment: StableEntityId,
+    kind: EntityKind,
+    selection: SelectionRule,
+) -> TopologyRef {
+    TopologyRef {
+        id: StableEntityId::new(),
+        owner: feature,
+        producer_feature: feature,
+        expected_kind: kind,
+        output_role: SemanticRole::ExtrudeCapEdge {
+            side,
+            profile_segment: segment,
+        },
+        selection,
+        fallback_signature: None,
+    }
+}
+
+/// A map holding whatever cap edges are asked for, on a shape of its own.
+fn map_with_cap_edges(
+    feature: ObjectId,
+    shape: ShapeHandle,
+    segment: StableEntityId,
+    edges: &[SubShapeHandle],
+) -> TopologyMap {
+    let mut sides = BTreeMap::new();
+    sides.insert(segment, edges.to_vec());
+    let mut map = TopologyMap::new();
+    map.record_restored(
+        feature,
+        shape,
+        &RestoredNames {
+            start_cap_edges: sides,
+            ..RestoredNames::default()
+        },
+    )
+    .expect("records");
+    map
+}
+
+#[test]
+fn a_cap_edge_reference_must_expect_an_edge_and_select_exactly_one() {
+    let feature = ObjectId::new();
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let segment = StableEntityId::new();
+    let edge = SubShapeHandle::new(shape, SubShapeKind::Edge, 0);
+    let map = map_with_cap_edges(feature, shape, segment, &[edge]);
+
+    // The one well formed reference resolves.
+    assert_eq!(
+        resolve(
+            &map,
+            &cap_edge_ref(
+                feature,
+                CapSide::Start,
+                segment,
+                EntityKind::Edge,
+                SelectionRule::Exact
+            )
+        )
+        .expect("resolves"),
+        vec![edge]
+    );
+
+    // Expecting a face is a reference that describes nothing: this role is
+    // always an edge, and no rebuild will make it a face.
+    let wrong_kind = resolve(
+        &map,
+        &cap_edge_ref(
+            feature,
+            CapSide::Start,
+            segment,
+            EntityKind::Face,
+            SelectionRule::Exact,
+        ),
+    )
+    .expect_err("a cap edge is not a face");
+    assert_eq!(wrong_kind.kind(), ErrorKind::Input);
+
+    // And a family rule over something that is one edge is a contradiction.
+    let wrong_rule = resolve(
+        &map,
+        &cap_edge_ref(
+            feature,
+            CapSide::Start,
+            segment,
+            EntityKind::Edge,
+            SelectionRule::AllDerivedFrom { ancestor: segment },
+        ),
+    )
+    .expect_err("one edge is selected exactly");
+    assert_eq!(wrong_rule.kind(), ErrorKind::Input);
+
+    // The other end of the sweep produced none, and says so rather than
+    // offering the one it has.
+    let other_side = resolve(
+        &map,
+        &cap_edge_ref(
+            feature,
+            CapSide::End,
+            segment,
+            EntityKind::Edge,
+            SelectionRule::Exact,
+        ),
+    )
+    .expect_err("the end cap named nothing for this segment");
+    assert_eq!(other_side.kind(), ErrorKind::Topology);
+}
+
+#[test]
+fn several_edges_under_an_exact_reference_are_refused_rather_than_narrowed() {
+    let feature = ObjectId::new();
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let segment = StableEntityId::new();
+    let first = SubShapeHandle::new(shape, SubShapeKind::Edge, 0);
+    let second = SubShapeHandle::new(shape, SubShapeKind::Edge, 1);
+    let map = map_with_cap_edges(feature, shape, segment, &[first, second]);
+
+    let refusal = resolve(
+        &map,
+        &cap_edge_ref(
+            feature,
+            CapSide::Start,
+            segment,
+            EntityKind::Edge,
+            SelectionRule::Exact,
+        ),
+    )
+    .expect_err("two edges is not one edge");
+    assert_eq!(refusal.kind(), ErrorKind::Topology);
+    // And says so: two were found and neither was chosen.
+    assert!(
+        refusal
+            .to_string()
+            .contains("refusing rather than choosing"),
+        "the refusal must say it chose nothing: {refusal}"
+    );
+}
+
+#[test]
+fn a_name_of_another_shape_or_the_wrong_kind_is_refused_when_recorded() {
+    let feature = ObjectId::new();
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let stranger = ShapeHandle::new(SessionId::new(), 1);
+    let segment = StableEntityId::new();
+
+    for (what, handle) in [
+        (
+            "a face under an edge's name",
+            SubShapeHandle::new(shape, SubShapeKind::Face, 0),
+        ),
+        (
+            "an edge of another shape",
+            SubShapeHandle::new(stranger, SubShapeKind::Edge, 0),
+        ),
+    ] {
+        let mut sides = BTreeMap::new();
+        sides.insert(segment, vec![handle]);
+        let mut map = TopologyMap::new();
+        let refusal = map
+            .record_restored(
+                feature,
+                shape,
+                &RestoredNames {
+                    start_cap_edges: sides,
+                    ..RestoredNames::default()
+                },
+            )
+            .expect_err(what);
+        assert_eq!(refusal.kind(), ErrorKind::Topology, "{what}");
+    }
+}
+
+#[test]
+fn what_a_cap_edge_name_means_depends_on_the_side_and_the_segment() {
+    let feature = ObjectId::new();
+    let owner = ObjectId::new();
+    let one = StableEntityId::new();
+    let other = StableEntityId::new();
+    let id = StableEntityId::new();
+
+    let meaning = |side, segment| {
+        TopologyRef {
+            id,
+            owner,
+            producer_feature: feature,
+            expected_kind: EntityKind::Edge,
+            output_role: SemanticRole::ExtrudeCapEdge {
+                side,
+                profile_segment: segment,
+            },
+            selection: SelectionRule::Exact,
+            fallback_signature: None,
+        }
+        .meaning_hash()
+    };
+
+    // Four different things, and four different meanings.
+    let meanings = [
+        meaning(CapSide::Start, one),
+        meaning(CapSide::End, one),
+        meaning(CapSide::Start, other),
+        meaning(CapSide::End, other),
+    ];
+    for (i, a) in meanings.iter().enumerate() {
+        for (j, b) in meanings.iter().enumerate() {
+            assert_eq!(a == b, i == j, "meanings {i} and {j}");
+        }
+    }
+
+    // And none of them is the cap face of the same side, nor the side face of
+    // the same segment.
+    let cap_face = TopologyRef {
+        id,
+        owner,
+        producer_feature: feature,
+        expected_kind: EntityKind::Face,
+        output_role: SemanticRole::ExtrudeCap {
+            side: CapSide::Start,
+        },
+        selection: SelectionRule::Exact,
+        fallback_signature: None,
+    }
+    .meaning_hash();
+    assert!(!meanings.contains(&cap_face));
 }

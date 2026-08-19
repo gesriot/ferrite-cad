@@ -14,8 +14,9 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use crate::envelope::Envelope;
 use crate::graph::{Dependency, DependencyRole, evaluation_order};
 use crate::model::{
-    CORE_CAPABILITY, EntityKind, ImportedDefinitionRef, ImportedStep, ImporterIdentity,
-    ObjectPayload, STEP_SOURCE_FORMAT, TopologyRef, TopologyRefPayload,
+    CORE_CAPABILITY, EXTRUDE_CAP_EDGE_CAPABILITY, EntityKind, ImportedDefinitionRef, ImportedStep,
+    ImporterIdentity, ObjectPayload, STEP_SOURCE_FORMAT, SemanticRole, TopologyRef,
+    TopologyRefPayload,
 };
 use crate::schema::{
     self, CACHE_EXTENSION, DOCUMENT_APPLICATION_ID, FORMAT_VERSION, MINIMUM_READER_VERSION,
@@ -564,10 +565,22 @@ impl Document {
                     envelope.type_name, envelope.schema_version
                 )));
             }
-            if envelope.required_capabilities != vec![CORE_CAPABILITY.to_owned()] {
+            // Every capability the payload declares must be one this build
+            // implements. Compared against the supported list rather than
+            // against the core capability alone, so one rule covers this and
+            // `determine_access`: a reference that asks for something newer is
+            // refused by name here and makes the whole document read-only
+            // there, instead of arriving as a role nothing can parse.
+            let unsupported: Vec<&str> = envelope
+                .required_capabilities
+                .iter()
+                .map(String::as_str)
+                .filter(|name| !SUPPORTED_CAPABILITIES.contains(name))
+                .collect();
+            if !unsupported.is_empty() {
                 return Err(CadError::unsupported(format!(
                     "topology reference {id} requires unsupported capabilities: {}",
-                    envelope.required_capabilities.join(", ")
+                    unsupported.join(", ")
                 )));
             }
             let decoded: TopologyRefPayload = envelope.decode()?;
@@ -1145,7 +1158,7 @@ impl DocumentWriter<'_> {
         let payload = Envelope::encode(
             "topology_ref",
             1,
-            vec![CORE_CAPABILITY.to_owned()],
+            required_capabilities_of(&reference.output_role),
             &TopologyRefPayload {
                 output_role: reference.output_role.clone(),
                 selection: reference.selection.clone(),
@@ -1315,6 +1328,20 @@ fn read_meta(conn: &Connection) -> Result<DocumentMeta> {
             })
         },
     )
+}
+
+/// What a reader must implement before it may read one stored role.
+///
+/// The core capability always, and the cap-edge one only for the role that
+/// needs it. A document that names no such edge therefore declares exactly
+/// what it declared before this build existed, and stays writable by a reader
+/// that predates it.
+fn required_capabilities_of(role: &SemanticRole) -> Vec<String> {
+    let mut names = vec![CORE_CAPABILITY.to_owned()];
+    if matches!(role, SemanticRole::ExtrudeCapEdge { .. }) {
+        names.push(EXTRUDE_CAP_EDGE_CAPABILITY.to_owned());
+    }
+    names
 }
 
 /// Decides whether this build may write the document it just opened.

@@ -19,6 +19,14 @@ pub struct FeatureNames {
     start_cap: BTreeSet<SubShapeHandle>,
     end_cap: BTreeSet<SubShapeHandle>,
     sides: BTreeMap<StableEntityId, BTreeSet<SubShapeHandle>>,
+    /// The edge where each cap meets the face swept from one profile segment,
+    /// keyed by the side and then by the segment.
+    ///
+    /// A set rather than one handle, exactly as `sides` is. The kernel reports
+    /// at most one, and this is where a kernel that reported more would be
+    /// recorded honestly so the resolver can refuse rather than pick.
+    start_cap_edges: BTreeMap<StableEntityId, BTreeSet<SubShapeHandle>>,
+    end_cap_edges: BTreeMap<StableEntityId, BTreeSet<SubShapeHandle>>,
 }
 
 impl FeatureNames {
@@ -55,10 +63,57 @@ impl FeatureNames {
             .copied()
     }
 
+    /// The edges where one known end of the sweep meets the face raised from
+    /// one profile segment, in identifier order.
+    ///
+    /// `None` means this build does not understand the requested side, which
+    /// must not be read as "there is no such edge": a future `CapSide` folded
+    /// into one of the two known ends would silently retarget the reference.
+    pub fn cap_edge(
+        &self,
+        side: CapSide,
+        segment: StableEntityId,
+    ) -> Option<impl ExactSizeIterator<Item = SubShapeHandle> + '_> {
+        let edges = match side {
+            CapSide::Start => &self.start_cap_edges,
+            CapSide::End => &self.end_cap_edges,
+            _ => return None,
+        };
+        Some(
+            edges
+                .get(&segment)
+                .map(|set| set.iter())
+                .unwrap_or_default()
+                .copied(),
+        )
+    }
+
+    /// Every profile segment this feature named a cap edge for, in identifier
+    /// order, on either side.
+    pub fn named_cap_edge_segments(&self) -> impl ExactSizeIterator<Item = StableEntityId> {
+        let mut segments: BTreeSet<StableEntityId> = self.start_cap_edges.keys().copied().collect();
+        segments.extend(self.end_cap_edges.keys().copied());
+        segments.into_iter()
+    }
+
     /// Every profile segment this feature raised a face from.
     pub fn named_segments(&self) -> impl ExactSizeIterator<Item = StableEntityId> + '_ {
         self.sides.keys().copied()
     }
+}
+
+/// What an archive gave back, before it is checked and filed.
+///
+/// One value rather than five parameters. They are five parts of one answer —
+/// what this feature's geometry is called — and a caller that transposed two
+/// same-typed maps would file edges under faces' names with nothing to object.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RestoredNames {
+    pub start_cap: Vec<SubShapeHandle>,
+    pub end_cap: Vec<SubShapeHandle>,
+    pub sides: BTreeMap<StableEntityId, Vec<SubShapeHandle>>,
+    pub start_cap_edges: BTreeMap<StableEntityId, Vec<SubShapeHandle>>,
+    pub end_cap_edges: BTreeMap<StableEntityId, Vec<SubShapeHandle>>,
 }
 
 /// What a whole rebuild produced, addressed by feature and role.
@@ -134,6 +189,28 @@ impl TopologyMap {
             }
         }
 
+        // The edge each cap leaves against a swept face, filed under the same
+        // segment label its face is. Checked to be an edge of this feature's
+        // own shape for the same reason the faces are: a handle from anywhere
+        // else is a name pointing at another feature's geometry.
+        for (edges, into, what) in [
+            (
+                &result.start_cap_edges,
+                &mut names.start_cap_edges,
+                "an extrusion start cap edge",
+            ),
+            (
+                &result.end_cap_edges,
+                &mut names.end_cap_edges,
+                "an extrusion end cap edge",
+            ),
+        ] {
+            for (segment, edge) in edges {
+                check_kind(*edge, result.shape, producer, what, SubShapeKind::Edge)?;
+                into.entry(*segment).or_default().insert(*edge);
+            }
+        }
+
         // Replacing rather than merging: a feature is rebuilt whole, and
         // merging would let a stale name from a previous attempt survive.
         self.features.insert(producer, names);
@@ -150,9 +227,7 @@ impl TopologyMap {
         &mut self,
         producer: ObjectId,
         shape: ShapeHandle,
-        start_cap: &[SubShapeHandle],
-        end_cap: &[SubShapeHandle],
-        sides: &BTreeMap<StableEntityId, Vec<SubShapeHandle>>,
+        restored: &RestoredNames,
     ) -> Result<()> {
         let mut names = FeatureNames {
             shape: Some(shape),
@@ -160,18 +235,37 @@ impl TopologyMap {
         };
 
         for (faces, into) in [
-            (start_cap, &mut names.start_cap),
-            (end_cap, &mut names.end_cap),
+            (&restored.start_cap, &mut names.start_cap),
+            (&restored.end_cap, &mut names.end_cap),
         ] {
             for face in faces {
                 check(*face, shape, producer, "a restored extrusion cap")?;
                 into.insert(*face);
             }
         }
-        for (segment, faces) in sides {
+        for (segment, faces) in &restored.sides {
             for face in faces {
                 check(*face, shape, producer, "a restored extrusion side")?;
                 names.sides.entry(*segment).or_default().insert(*face);
+            }
+        }
+        for (edges, into, what) in [
+            (
+                &restored.start_cap_edges,
+                &mut names.start_cap_edges,
+                "a restored extrusion start cap edge",
+            ),
+            (
+                &restored.end_cap_edges,
+                &mut names.end_cap_edges,
+                "a restored extrusion end cap edge",
+            ),
+        ] {
+            for (segment, handles) in edges {
+                for edge in handles {
+                    check_kind(*edge, shape, producer, what, SubShapeKind::Edge)?;
+                    into.entry(*segment).or_default().insert(*edge);
+                }
             }
         }
 
@@ -181,16 +275,32 @@ impl TopologyMap {
 }
 
 fn check(face: SubShapeHandle, shape: ShapeHandle, producer: ObjectId, what: &str) -> Result<()> {
-    if face.kind() != SubShapeKind::Face {
+    check_kind(face, shape, producer, what, SubShapeKind::Face)
+}
+
+/// Refuses a name that is the wrong sort of thing or belongs to another shape.
+///
+/// One statement for faces and edges alike. A handle of the wrong kind would
+/// let a reference expecting an edge resolve to a face, and one of another
+/// shape would point at a different feature's geometry: both are exactly the
+/// silent retargeting this layer exists to prevent.
+fn check_kind(
+    sub: SubShapeHandle,
+    shape: ShapeHandle,
+    producer: ObjectId,
+    what: &str,
+    expected: SubShapeKind,
+) -> Result<()> {
+    if sub.kind() != expected {
         return Err(CadError::topology(format!(
-            "feature {producer} reported {what} as a {}, which is not a face",
-            face.kind()
+            "feature {producer} reported {what} as a {}, which is not a {expected}",
+            sub.kind()
         )));
     }
-    if face.shape() != shape {
+    if sub.shape() != shape {
         return Err(CadError::topology(format!(
             "feature {producer} reported {what} belonging to {}, not to the shape it built",
-            face.shape()
+            sub.shape()
         )));
     }
     Ok(())

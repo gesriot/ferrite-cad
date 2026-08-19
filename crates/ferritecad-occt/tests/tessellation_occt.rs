@@ -19,7 +19,7 @@ use ferritecad_document::CapSide;
 use ferritecad_kernel::{
     CancelToken, ExtrudeExtent, ExtrudeRequest, GeometryKernel, Mesh, OperationContext,
     PlanarPoint, Profile, ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane,
-    SubShapeHandle, TessellationParams,
+    SubShapeHandle, SubShapeKind, TessellationParams,
 };
 use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_topology::{TopologyMap, resolve};
@@ -826,4 +826,403 @@ fn the_same_shape_names_the_same_edges_twice() {
     assert_eq!(once.edges, again.edges);
 
     built.kernel.release(built.shape);
+}
+
+/// A durable reference to the edge where one cap of an extrusion meets the
+/// face raised from one profile segment.
+fn cap_edge_reference(
+    feature: ObjectId,
+    side: ferritecad_document::CapSide,
+    segment: StableEntityId,
+) -> ferritecad_document::TopologyRef {
+    ferritecad_document::TopologyRef {
+        id: StableEntityId::new(),
+        owner: feature,
+        producer_feature: feature,
+        expected_kind: ferritecad_document::EntityKind::Edge,
+        output_role: ferritecad_document::SemanticRole::ExtrudeCapEdge {
+            side,
+            profile_segment: segment,
+        },
+        selection: ferritecad_document::SelectionRule::Exact,
+        fallback_signature: None,
+    }
+}
+
+#[test]
+fn every_profile_segment_names_its_two_cap_boundary_edges() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+
+    let mut built = build();
+    let map = &built.map;
+    let feature = built.feature;
+
+    // The plate has four stable profile segments. Each of them must name one
+    // edge on the start cap and one on the end cap, and all eight must be
+    // different edges of the one shape.
+    let mut named = BTreeSet::new();
+    for segment in &built.segments {
+        for side in [
+            ferritecad_document::CapSide::Start,
+            ferritecad_document::CapSide::End,
+        ] {
+            let reference = cap_edge_reference(feature, side, *segment);
+            let resolved = resolve(map, &reference).unwrap_or_else(|error| {
+                panic!("the {side:?} cap edge of segment {segment} is not named: {error}")
+            });
+            assert_eq!(resolved.len(), 1, "one edge, not {}", resolved.len());
+            let edge = resolved[0];
+            assert_eq!(edge.kind(), SubShapeKind::Edge);
+            assert_eq!(edge.shape(), built.shape);
+            assert!(named.insert(edge), "{edge} was named twice");
+        }
+    }
+    assert_eq!(named.len(), 8, "four segments, two caps, eight edges");
+
+    // And every one of them is an edge the tessellation reports, so a name and
+    // a drawn line are the same edge rather than two things that resemble one.
+    let mesh = built
+        .kernel
+        .tessellate(
+            built.shape,
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("meshes");
+    let drawn: BTreeSet<SubShapeHandle> = mesh
+        .edges
+        .as_ref()
+        .expect("the association is there")
+        .ranges
+        .iter()
+        .map(|range| range.edge)
+        .collect();
+    for edge in &named {
+        assert!(drawn.contains(edge), "{edge} is named but never drawn");
+    }
+
+    built.kernel.release(built.shape);
+}
+
+/// One extrusion of a profile, with whatever extent is asked for, and the map
+/// of what it produced.
+fn swept(extent: ExtrudeExtent, reversed: bool, arc: bool) -> (Built, ExtrudeRequest) {
+    let (request, segments) = if arc {
+        let (request, labels) = arc_profile().expect("a valid half disc");
+        (request, labels)
+    } else {
+        plate().expect("a valid plate")
+    };
+    let request = ExtrudeRequest::new(request.profile().clone(), extent, reversed);
+    let feature = ObjectId::new();
+    let mut kernel = OcctKernel::new().expect("opens");
+    let result = kernel
+        .extrude(&request, &OperationContext::default())
+        .expect("builds");
+    let mut map = TopologyMap::new();
+    map.record_extrude(feature, request.profile(), &result)
+        .expect("records");
+    let shape = result.shape;
+    (
+        Built {
+            kernel,
+            map,
+            feature,
+            segments,
+            shape,
+        },
+        request,
+    )
+}
+
+/// A half disc: one arc and one chord, each with a stable label.
+fn arc_profile() -> Result<(ExtrudeRequest, Vec<StableEntityId>)> {
+    let arc_label = StableEntityId::new();
+    let chord_label = StableEntityId::new();
+    let arc = ProfileSegment::new(
+        arc_label,
+        SegmentGeometry::arc(PlanarPoint::ORIGIN, 10.0, 0.0, PI)?,
+    );
+    let chord = ProfileSegment::new(
+        chord_label,
+        SegmentGeometry::line(PlanarPoint::new(-10.0, 0.0)?, PlanarPoint::new(10.0, 0.0)?)?,
+    );
+    Ok((
+        ExtrudeRequest::new(
+            Profile::new(
+                SketchPlane::world_xy(),
+                ProfileLoop::new(vec![arc, chord])?,
+                Vec::new(),
+            )?,
+            ExtrudeExtent::blind(5.0)?,
+            false,
+        ),
+        vec![arc_label, chord_label],
+    ))
+}
+
+/// The one edge a cap-edge reference resolves to, or the failure.
+fn cap_edge_of(
+    built: &Built,
+    side: ferritecad_document::CapSide,
+    segment: StableEntityId,
+) -> Result<SubShapeHandle> {
+    let resolved = resolve(
+        &built.map,
+        &cap_edge_reference(built.feature, side, segment),
+    )?;
+    assert_eq!(resolved.len(), 1, "an exact reference selects one edge");
+    Ok(resolved[0])
+}
+
+#[test]
+fn the_two_ends_of_a_sweep_are_never_confused_for_each_other() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+    let mut built = build();
+    let mesh = built
+        .kernel
+        .tessellate(
+            built.shape,
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("meshes");
+    let edges = mesh.edges.as_ref().expect("the association is there");
+
+    // Which face each vertex belongs to. A tessellation gives every face its
+    // own nodes, so this is exact.
+    let mut face_of: BTreeMap<u32, SubShapeHandle> = BTreeMap::new();
+    for range in &mesh.faces {
+        let first = range.first_index as usize;
+        for index in &mesh.indices[first..first + range.index_count as usize] {
+            face_of.insert(*index, range.face);
+        }
+    }
+    // Whether a named edge is drawn from the vertices of a named face, which
+    // is what "this edge bounds that cap" means once both have names.
+    let bounds = |edge: SubShapeHandle, face: SubShapeHandle| {
+        let range = edges
+            .ranges
+            .iter()
+            .find(|range| range.edge == edge)
+            .expect("a named edge is drawn");
+        let first = range.first_segment as usize * 2;
+        let end = first + range.segment_count as usize * 2;
+        edges.segments[first..end]
+            .iter()
+            .any(|vertex| face_of.get(vertex).copied() == Some(face))
+    };
+
+    let start_cap = face_of_side(&built, ferritecad_document::CapSide::Start);
+    let end_cap = face_of_side(&built, ferritecad_document::CapSide::End);
+    assert_ne!(start_cap, end_cap);
+
+    for segment in &built.segments {
+        let start =
+            cap_edge_of(&built, ferritecad_document::CapSide::Start, *segment).expect("named");
+        let end = cap_edge_of(&built, ferritecad_document::CapSide::End, *segment).expect("named");
+        assert_ne!(
+            start, end,
+            "segment {segment} named one edge for both ends of the sweep"
+        );
+        // And each is on the cap it claims. Two edges that merely differ could
+        // still be the two ends the wrong way round; this cannot.
+        assert!(
+            bounds(start, start_cap),
+            "the start cap edge of {segment} does not bound the start cap"
+        );
+        assert!(
+            bounds(end, end_cap),
+            "the end cap edge of {segment} does not bound the end cap"
+        );
+        assert!(!bounds(start, end_cap), "the start edge is on the end cap");
+        assert!(!bounds(end, start_cap), "the end edge is on the start cap");
+    }
+    built.kernel.release(built.shape);
+}
+
+/// The face closing one end of the sweep, by its own durable name.
+fn face_of_side(built: &Built, side: ferritecad_document::CapSide) -> SubShapeHandle {
+    face_of(
+        built,
+        ferritecad_document::SemanticRole::ExtrudeCap { side },
+    )
+}
+
+#[test]
+fn a_reversed_and_a_symmetric_sweep_name_their_cap_edges_too() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+    for (what, extent, reversed) in [
+        ("blind", ExtrudeExtent::blind(HEIGHT).expect("valid"), false),
+        (
+            "reversed",
+            ExtrudeExtent::blind(HEIGHT).expect("valid"),
+            true,
+        ),
+        (
+            "symmetric",
+            ExtrudeExtent::symmetric(HEIGHT).expect("valid"),
+            false,
+        ),
+        (
+            "reversed symmetric",
+            ExtrudeExtent::symmetric(HEIGHT).expect("valid"),
+            true,
+        ),
+    ] {
+        let (mut built, _) = swept(extent, reversed, false);
+        let mut named = BTreeSet::new();
+        for segment in &built.segments {
+            for side in [
+                ferritecad_document::CapSide::Start,
+                ferritecad_document::CapSide::End,
+            ] {
+                let edge = cap_edge_of(&built, side, *segment)
+                    .unwrap_or_else(|e| panic!("{what}: {side:?} of {segment} is unnamed: {e}"));
+                assert_eq!(edge.kind(), SubShapeKind::Edge);
+                assert!(named.insert(edge), "{what}: {edge} was named twice");
+            }
+        }
+        assert_eq!(named.len(), 8, "{what}: eight distinct cap edges");
+        built.kernel.release(built.shape);
+    }
+}
+
+#[test]
+fn an_arc_segment_names_the_curved_edge_of_each_cap() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+    let (mut built, _) = swept(ExtrudeExtent::blind(5.0).expect("valid"), false, true);
+    let arc = built.segments[0];
+    let chord = built.segments[1];
+
+    let mesh = built
+        .kernel
+        .tessellate(
+            built.shape,
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("meshes");
+    let edges = mesh.edges.as_ref().expect("the association is there");
+    let segments_of = |handle: SubShapeHandle| {
+        edges
+            .ranges
+            .iter()
+            .find(|range| range.edge == handle)
+            .map(|range| range.segment_count)
+            .expect("the named edge is drawn")
+    };
+
+    for side in [
+        ferritecad_document::CapSide::Start,
+        ferritecad_document::CapSide::End,
+    ] {
+        let curved = cap_edge_of(&built, side, arc).expect("named");
+        let straight = cap_edge_of(&built, side, chord).expect("named");
+        assert_ne!(curved, straight);
+        // The curved one is the one a tessellation needs many chords for. A
+        // straight chord needs one per face side; an arc at this deflection
+        // needs a great many, so the two cannot be swapped unnoticed.
+        assert!(
+            segments_of(curved) > segments_of(straight) * 4,
+            "the arc's cap edge is drawn with {} segments and the chord's with {}",
+            segments_of(curved),
+            segments_of(straight)
+        );
+    }
+    built.kernel.release(built.shape);
+}
+
+#[test]
+fn the_edges_along_the_sweep_stay_unnamed() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+    let mut built = build();
+    let mut named = BTreeSet::new();
+    for segment in &built.segments {
+        for side in [
+            ferritecad_document::CapSide::Start,
+            ferritecad_document::CapSide::End,
+        ] {
+            named.insert(cap_edge_of(&built, side, *segment).expect("named"));
+        }
+    }
+
+    let mesh = built
+        .kernel
+        .tessellate(
+            built.shape,
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("meshes");
+    let drawn: BTreeSet<SubShapeHandle> = mesh
+        .edges
+        .as_ref()
+        .expect("the association is there")
+        .ranges
+        .iter()
+        .map(|range| range.edge)
+        .collect();
+
+    // A plate has twelve edges: eight around the two caps and four running
+    // along the sweep. The four are drawn and deliberately have no name.
+    assert_eq!(drawn.len(), 12, "the plate draws twelve edges");
+    assert_eq!(named.len(), 8, "eight of them are named");
+    assert_eq!(
+        drawn.difference(&named).count(),
+        4,
+        "and four are not, which is the honest answer for an edge along the sweep"
+    );
+    built.kernel.release(built.shape);
+}
+
+#[test]
+fn two_features_with_the_same_shape_do_not_share_a_name() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+    // Two extrusions of geometrically identical profiles, each with its own
+    // labels. Nothing about the geometry may make one answer for the other.
+    let (mut first, _) = swept(ExtrudeExtent::blind(HEIGHT).expect("valid"), false, false);
+    let (mut second, _) = swept(ExtrudeExtent::blind(HEIGHT).expect("valid"), false, false);
+
+    let side = ferritecad_document::CapSide::Start;
+    let mine = cap_edge_of(&first, side, first.segments[0]).expect("named");
+    let theirs = cap_edge_of(&second, side, second.segments[0]).expect("named");
+    assert_ne!(mine.shape(), theirs.shape(), "two shapes, two sessions");
+
+    // The other feature's label is not a name here, and this feature's label
+    // is not a name there.
+    assert!(
+        cap_edge_of(&first, side, second.segments[0]).is_err(),
+        "a label of another feature resolved against this one"
+    );
+    // And a reference naming the wrong producer resolves to nothing.
+    let wrong_producer = ferritecad_document::TopologyRef {
+        producer_feature: second.feature,
+        ..cap_edge_reference(first.feature, side, first.segments[0])
+    };
+    assert!(
+        resolve(&first.map, &wrong_producer).is_err(),
+        "a reference to another feature's output was answered"
+    );
+
+    first.kernel.release(first.shape);
+    second.kernel.release(second.shape);
 }

@@ -32,6 +32,9 @@ const STATUS_INTERNAL: i32 = 6;
 pub(crate) const SEGMENT_LINE: i32 = 0;
 pub(crate) const SEGMENT_ARC: i32 = 1;
 
+/// Must match `FC_OCCT_SUB_SHAPE_EDGE` in `ferritecad_occt.h`.
+const SUB_SHAPE_EDGE: i32 = 1;
+
 #[repr(C)]
 struct RawSession {
     _opaque: [u8; 0],
@@ -122,6 +125,16 @@ unsafe extern "C" {
         session: *mut RawSession,
         shape: u64,
         segment_index: usize,
+        out_ids: *mut u64,
+        capacity: usize,
+        out_count: *mut usize,
+        out_error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_extrude_cap_edges(
+        session: *mut RawSession,
+        shape: u64,
+        segment_index: usize,
+        which: i32,
         out_ids: *mut u64,
         capacity: usize,
         out_count: *mut usize,
@@ -243,6 +256,7 @@ unsafe extern "C" {
         slot_count: usize,
         out_shape: *mut u64,
         out_sub_shapes: *mut u64,
+        out_sub_kinds: *mut i32,
         out_error: *mut RawError,
     ) -> i32;
     fn fc_occt_release_shape(session: *mut RawSession, shape: u64);
@@ -405,6 +419,27 @@ impl Session {
             |s, ids, cap, count, err| {
                 // SAFETY: pointers are valid for the call; see `collect_ids`.
                 unsafe { fc_occt_extrude_side_faces(s, shape, segment_index, ids, cap, count, err) }
+            },
+        )
+    }
+
+    /// The edge one profile segment left where a cap meets its swept face.
+    ///
+    /// Zero or one identifier: the bridge reports none for a segment that
+    /// produced no such edge rather than offering a neighbour.
+    pub(crate) fn cap_edges(
+        &mut self,
+        shape: u64,
+        segment_index: usize,
+        which: i32,
+    ) -> Result<Vec<u64>> {
+        self.collect_ids(
+            "reading the edge where an extrusion cap meets a swept face",
+            |s, ids, cap, count, err| {
+                // SAFETY: pointers are valid for the call; see `collect_ids`.
+                unsafe {
+                    fc_occt_extrude_cap_edges(s, shape, segment_index, which, ids, cap, count, err)
+                }
             },
         )
     }
@@ -813,9 +848,10 @@ impl Session {
         &mut self,
         bytes: &[u8],
         slots: &[u32],
-    ) -> Result<(u64, Vec<u64>)> {
+    ) -> Result<(u64, Vec<(u64, bool)>)> {
         let mut shape = 0u64;
         let mut resolved = vec![0u64; slots.len()];
+        let mut kinds = vec![0i32; slots.len()];
         let mut error = RawError::empty();
 
         // SAFETY: both slices live across the call with their lengths; the
@@ -829,11 +865,21 @@ impl Session {
                 slots.len(),
                 &mut shape,
                 resolved.as_mut_ptr(),
+                kinds.as_mut_ptr(),
                 &mut error,
             )
         };
         interpret(status, &error, "restoring an archived shape")?;
-        Ok((shape, resolved))
+        // `true` for an edge, so the caller names each restored sub-shape what
+        // it is rather than what the archive's other entries happened to be.
+        Ok((
+            shape,
+            resolved
+                .into_iter()
+                .zip(kinds)
+                .map(|(id, kind)| (id, kind == SUB_SHAPE_EDGE))
+                .collect(),
+        ))
     }
 
     pub(crate) fn release(&mut self, shape: u64) {

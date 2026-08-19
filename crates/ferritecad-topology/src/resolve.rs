@@ -102,6 +102,48 @@ pub fn resolve(map: &TopologyMap, reference: &TopologyRef) -> Result<Vec<SubShap
             }
         }
 
+        SemanticRole::ExtrudeCapEdge {
+            side,
+            profile_segment,
+        } => {
+            require_kind(reference, EntityKind::Edge, "an extrusion cap edge")?;
+            match reference.selection {
+                SelectionRule::Exact => {}
+                SelectionRule::AllDerivedFrom { .. } => {
+                    return Err(CadError::input(format!(
+                        "topology reference {} names the edge where a cap meets the face \
+                         raised from segment {profile_segment}, which is one edge, but selects \
+                         everything derived from an ancestor",
+                        reference.id
+                    )));
+                }
+                ref other => return Err(unknown_rule(reference, other)),
+            }
+
+            let Some(edges) = map
+                .feature(reference.producer_feature)
+                .map(|names| names.cap_edge(*side, *profile_segment))
+            else {
+                return Err(CadError::topology(format!(
+                    "topology reference {} names geometry of a feature this rebuild produced \
+                     nothing for",
+                    reference.id
+                )));
+            };
+            let Some(edges) = edges else {
+                return Err(CadError::unsupported(format!(
+                    "topology reference {} names extrusion cap side {side:?}, which this build \
+                     does not understand",
+                    reference.id
+                )));
+            };
+            exactly_one(
+                reference,
+                edges.collect(),
+                &format!("the {side:?} cap edge of segment {profile_segment}"),
+            )
+        }
+
         // A real role, and one this slice cannot answer. The kernel emits no
         // shape for a sketch on its own, so there is no edge handle to hand
         // back; inventing one would be a name with nothing behind it.

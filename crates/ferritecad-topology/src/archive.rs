@@ -35,6 +35,10 @@ pub enum BoundName {
     EndCap,
     /// A face raised from one profile segment.
     Side { profile_segment: StableEntityId },
+    /// The edge where the start cap meets the face raised from one segment.
+    StartCapEdge { profile_segment: StableEntityId },
+    /// The same, at the end cap.
+    EndCapEdge { profile_segment: StableEntityId },
 }
 
 impl BoundName {
@@ -47,6 +51,26 @@ impl BoundName {
             CapSide::Start => Some(Self::StartCap),
             CapSide::End => Some(Self::EndCap),
             _ => None,
+        }
+    }
+
+    /// The cap-edge name for a side this build understands.
+    pub fn cap_edge(side: CapSide, profile_segment: StableEntityId) -> Option<Self> {
+        match side {
+            CapSide::Start => Some(Self::StartCapEdge { profile_segment }),
+            CapSide::End => Some(Self::EndCapEdge { profile_segment }),
+            _ => None,
+        }
+    }
+
+    /// What sort of geometry this name refers to.
+    ///
+    /// One statement, read when archiving and again when restoring, so a name
+    /// cannot be written down as a face and read back as an edge.
+    pub fn kind(self) -> SubShapeKind {
+        match self {
+            Self::StartCap | Self::EndCap | Self::Side { .. } => SubShapeKind::Face,
+            Self::StartCapEdge { .. } | Self::EndCapEdge { .. } => SubShapeKind::Edge,
         }
     }
 }
@@ -199,6 +223,19 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
             ));
         }
     }
+    // The cap edges, gathered through the same ordered map for the same
+    // reason. A segment with no such edge contributes nothing rather than an
+    // entry pointing nowhere.
+    for segment in names.named_cap_edge_segments() {
+        for side in [CapSide::Start, CapSide::End] {
+            let Some(name) = BoundName::cap_edge(side, segment) else {
+                continue;
+            };
+            for edge in names.cap_edge(side, segment).into_iter().flatten() {
+                wanted.push((name, edge));
+            }
+        }
+    }
 
     // A side that raised several faces cannot be archived under one slot in
     // this slice; the family rule needs several, and one slot names one.
@@ -217,10 +254,11 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
     // this is the last point that can still compare the live handles.
     let mut claimed = BTreeMap::new();
     for (name, face) in &wanted {
-        if face.kind() != SubShapeKind::Face {
+        if face.kind() != name.kind() {
             return Err(CadError::topology(format!(
-                "feature {producer} names {name:?} as a {}, which is not a face",
-                face.kind()
+                "feature {producer} names {name:?} as a {}, which is not a {}",
+                face.kind(),
+                name.kind()
             )));
         }
         if face.shape() != shape {
@@ -236,8 +274,8 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
         }
     }
 
-    let faces: Vec<_> = wanted.iter().map(|(_, face)| *face).collect();
-    let (blob, slots) = kernel.encode_shape_with(shape, &faces)?;
+    let subs: Vec<_> = wanted.iter().map(|(_, sub)| *sub).collect();
+    let (blob, slots) = kernel.encode_shape_with(shape, &subs)?;
 
     if slots.len() != wanted.len() {
         return Err(CadError::kernel(format!(
@@ -288,14 +326,17 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
         let mut start_cap = Vec::new();
         let mut end_cap = Vec::new();
         let mut sides: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
+        let mut start_cap_edges: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
+        let mut end_cap_edges: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
         let mut claimed = BTreeMap::new();
 
         for (name, face) in names.into_iter().zip(faces) {
-            if face.kind() != SubShapeKind::Face {
+            if face.kind() != name.kind() {
                 return Err(CadError::topology(format!(
-                    "the archive of feature {} restored {name:?} as a {}, which is not a face",
+                    "the archive of feature {} restored {name:?} as a {}, which is not a {}",
                     archived.producer,
-                    face.kind()
+                    face.kind(),
+                    name.kind()
                 )));
             }
             if face.shape() != shape {
@@ -318,10 +359,27 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 BoundName::Side { profile_segment } => {
                     sides.entry(profile_segment).or_default().push(face)
                 }
+                BoundName::StartCapEdge { profile_segment } => start_cap_edges
+                    .entry(profile_segment)
+                    .or_default()
+                    .push(face),
+                BoundName::EndCapEdge { profile_segment } => {
+                    end_cap_edges.entry(profile_segment).or_default().push(face)
+                }
             }
         }
 
-        into.record_restored(archived.producer, shape, &start_cap, &end_cap, &sides)
+        into.record_restored(
+            archived.producer,
+            shape,
+            &crate::RestoredNames {
+                start_cap,
+                end_cap,
+                sides,
+                start_cap_edges,
+                end_cap_edges,
+            },
+        )
     })();
 
     if restored.is_err() {

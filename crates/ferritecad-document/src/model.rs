@@ -22,6 +22,24 @@ use crate::envelope::{Envelope, UnknownObject};
 /// The capability every object this build writes depends on.
 pub const CORE_CAPABILITY: &str = "core.part.v1";
 
+/// What a document needs a reader to implement before it may name the edge an
+/// extrusion left where one of its caps meets the face swept from a profile
+/// segment.
+///
+/// A capability rather than a new payload version, and the difference is not a
+/// matter of taste. The stored bytes are laid out exactly as before: a
+/// `topology_ref` payload is still a role, a rule and an optional signature,
+/// and a version says the layout changed. What changed is the vocabulary of
+/// roles, which is precisely what a capability is for — a reader that does not
+/// know this role can still read every other reference in the document, and
+/// the envelope tells it so by name instead of failing to parse a tag it has
+/// never seen.
+///
+/// Declared only on the references that use the role. A document written
+/// before this build, and one written by it that names no such edge, requires
+/// nothing new and stays writable by a reader that lacks this.
+pub const EXTRUDE_CAP_EDGE_CAPABILITY: &str = "topology.extrude-cap-edge.v1";
+
 /// The capability an [`ImportedStep`] object depends on.
 ///
 /// Declared separately from [`CORE_CAPABILITY`] so a reader that understands
@@ -423,6 +441,23 @@ pub enum SemanticRole {
     ExtrudeCap { side: CapSide },
     /// The swept face raised from one profile segment.
     ExtrudeSide { profile_segment: StableEntityId },
+    /// The edge where one end of an extrusion meets the face swept from one
+    /// profile segment.
+    ///
+    /// A triple, and every part of it is needed: the producer feature comes
+    /// from the reference around this role, the side says which of the two
+    /// ends, and the segment says which of that end's boundary edges. Two of
+    /// the three would name four edges of a plate instead of one.
+    ///
+    /// Deliberately narrow. It says nothing about the edges running along the
+    /// sweep, nothing about vertices, and nothing about edges a fillet or an
+    /// import produced: those have no name this build could keep, and a role
+    /// that pretended otherwise would be a reference that resolves to whatever
+    /// the next rebuild happened to put in that position.
+    ExtrudeCapEdge {
+        side: CapSide,
+        profile_segment: StableEntityId,
+    },
     /// A face introduced by filleting an identified edge.
     FilletFace { source_edge: StableEntityId },
 }
@@ -514,6 +549,21 @@ impl TopologyRef {
             SemanticRole::ExtrudeSide { profile_segment } => {
                 hasher
                     .str("extrude_side")
+                    .bytes(&profile_segment.to_bytes());
+            }
+            SemanticRole::ExtrudeCapEdge {
+                side,
+                profile_segment,
+            } => {
+                // Both, and separately: an edge of the start cap and an edge of
+                // the end cap raised from one segment are different edges, and
+                // two segments' edges on one cap are different edges too.
+                hasher
+                    .str("extrude_cap_edge")
+                    .str(match side {
+                        CapSide::Start => "start",
+                        CapSide::End => "end",
+                    })
                     .bytes(&profile_segment.to_bytes());
             }
             SemanticRole::FilletFace { source_edge } => {

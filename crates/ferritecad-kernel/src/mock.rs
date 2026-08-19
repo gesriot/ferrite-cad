@@ -331,6 +331,11 @@ impl GeometryKernel for MockKernel {
             history,
             start_cap: vec![self.face(shape, start_cap_index)],
             end_cap: vec![self.face(shape, end_cap_index)],
+            // The mock sweeps a prism without building edges for its caps, so
+            // it names none. Absent rather than invented: a reference to one
+            // must fail to resolve against this kernel, not resolve wrongly.
+            start_cap_edges: BTreeMap::new(),
+            end_cap_edges: BTreeMap::new(),
         })
     }
 

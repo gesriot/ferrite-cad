@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MIT
+use std::collections::BTreeMap;
+
 use ferritecad_exchange::Import;
 use ferritecad_kernel::{
     ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, ExtrudeResult, GeometryKernel, History,
@@ -344,12 +346,53 @@ impl GeometryKernel for OcctKernel {
                 .map(|id| self.face(shape, id))
                 .collect();
 
-            Ok(ExtrudeResult {
+            // Where each cap meets the face raised from a segment. Read from
+            // the sweep's own history, segment by segment, and filed under the
+            // label the caller gave that segment rather than under its
+            // position: a profile that gains or loses a segment must not
+            // rename the edges of the ones that stayed.
+            let mut start_cap_edges = BTreeMap::new();
+            let mut end_cap_edges = BTreeMap::new();
+            for (index, segment) in outer.iter().enumerate() {
+                for (which, into) in [(0, &mut start_cap_edges), (1, &mut end_cap_edges)] {
+                    let mut named = self.session.cap_edges(raw, index, which)?.into_iter();
+                    let Some(id) = named.next() else {
+                        continue;
+                    };
+                    if named.next().is_some() {
+                        return Err(CadError::kernel(
+                            "the sweep named more than one cap edge for one profile segment, \
+                             and there is no way to choose between them",
+                        ));
+                    }
+                    if into
+                        .insert(
+                            segment.label,
+                            SubShapeHandle::new(shape, SubShapeKind::Edge, id),
+                        )
+                        .is_some()
+                    {
+                        return Err(CadError::kernel(format!(
+                            "profile segment {} appears twice, so its cap edge would be named \
+                             twice",
+                            segment.label
+                        )));
+                    }
+                }
+            }
+
+            let result = ExtrudeResult {
                 shape,
                 history,
                 start_cap,
                 end_cap,
-            })
+                start_cap_edges,
+                end_cap_edges,
+            };
+            // Checked here rather than trusted: a name pointing at another
+            // shape or at a face resolves, and resolves to the wrong thing.
+            result.validate()?;
+            Ok(result)
         })();
 
         if assembled.is_err() {
@@ -450,9 +493,9 @@ impl GeometryKernel for OcctKernel {
                     "{sub} does not belong to the shape being archived"
                 )));
             }
-            if sub.kind() != SubShapeKind::Face {
+            if !matches!(sub.kind(), SubShapeKind::Face | SubShapeKind::Edge) {
                 return Err(CadError::kernel(format!(
-                    "{sub} is a {}, and this slice archives faces",
+                    "{sub} is a {}, and this slice archives faces and edges",
                     sub.kind()
                 )));
             }
@@ -481,7 +524,14 @@ impl GeometryKernel for OcctKernel {
             shape,
             raw_subs
                 .into_iter()
-                .map(|id| self.face(shape, id))
+                .map(|(id, is_edge)| {
+                    let kind = if is_edge {
+                        SubShapeKind::Edge
+                    } else {
+                        SubShapeKind::Face
+                    };
+                    SubShapeHandle::new(shape, kind, id)
+                })
                 .collect(),
         ))
     }

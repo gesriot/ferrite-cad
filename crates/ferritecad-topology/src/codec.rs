@@ -55,6 +55,11 @@ const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>() + size_of::<u64>() + 32
 const TAG_START_CAP: u16 = 1;
 const TAG_END_CAP: u16 = 2;
 const TAG_SIDE: u16 = 3;
+/// The cap edges. New tags rather than a new format version: an older build
+/// reading one refuses the whole entry as malformed, and this is a cache, so a
+/// refused entry is rebuilt rather than lost.
+const TAG_START_CAP_EDGE: u16 = 4;
+const TAG_END_CAP_EDGE: u16 = 5;
 
 impl ArchivedFeature {
     /// Writes the archive out as bytes.
@@ -88,6 +93,14 @@ impl ArchivedFeature {
                 BoundName::EndCap => payload.extend_from_slice(&TAG_END_CAP.to_le_bytes()),
                 BoundName::Side { profile_segment } => {
                     payload.extend_from_slice(&TAG_SIDE.to_le_bytes());
+                    payload.extend_from_slice(&profile_segment.to_bytes());
+                }
+                BoundName::StartCapEdge { profile_segment } => {
+                    payload.extend_from_slice(&TAG_START_CAP_EDGE.to_le_bytes());
+                    payload.extend_from_slice(&profile_segment.to_bytes());
+                }
+                BoundName::EndCapEdge { profile_segment } => {
+                    payload.extend_from_slice(&TAG_END_CAP_EDGE.to_le_bytes());
                     payload.extend_from_slice(&profile_segment.to_bytes());
                 }
             }
@@ -171,6 +184,12 @@ impl ArchivedFeature {
                 TAG_START_CAP => BoundName::StartCap,
                 TAG_END_CAP => BoundName::EndCap,
                 TAG_SIDE => BoundName::Side {
+                    profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
+                },
+                TAG_START_CAP_EDGE => BoundName::StartCapEdge {
+                    profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
+                },
+                TAG_END_CAP_EDGE => BoundName::EndCapEdge {
                     profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
                 },
                 unknown => {

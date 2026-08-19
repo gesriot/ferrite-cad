@@ -113,6 +113,65 @@ pub struct ExtrudeResult {
     pub start_cap: Vec<SubShapeHandle>,
     /// The face closing the end of the sweep.
     pub end_cap: Vec<SubShapeHandle>,
+    /// Where the start cap meets the face swept from each profile segment.
+    ///
+    /// One edge per segment, and the map says so: a segment is a key, so a
+    /// kernel cannot report two edges for one segment on one side without
+    /// overwriting itself, and the claimed cardinality is the representation
+    /// rather than a rule applied afterwards. A segment that produced no such
+    /// edge is simply absent.
+    ///
+    /// Kept apart from `history` deliberately. History says which *faces* a
+    /// segment generated; folding an edge in beside them would make
+    /// `generated()` answer with a mixture nobody asked for.
+    pub start_cap_edges: BTreeMap<StableEntityId, SubShapeHandle>,
+    /// The same, where the end cap meets each swept face.
+    pub end_cap_edges: BTreeMap<StableEntityId, SubShapeHandle>,
+}
+
+impl ExtrudeResult {
+    /// Checks the naming a consumer is entitled to assume.
+    ///
+    /// A name that points at another shape, at a face rather than an edge, or
+    /// at geometry two segments both claim is worse than no name at all: it
+    /// resolves, and it resolves to the wrong thing. Refusing at the boundary
+    /// that produced it keeps the failure next to its cause.
+    pub fn validate(&self) -> Result<()> {
+        let mut claimed: BTreeMap<SubShapeHandle, StableEntityId> = BTreeMap::new();
+        for (side, edges) in [
+            ("start", &self.start_cap_edges),
+            ("end", &self.end_cap_edges),
+        ] {
+            for (segment, edge) in edges {
+                if edge.shape() != self.shape {
+                    return Err(CadError::kernel(format!(
+                        "the {side} cap edge named for segment {segment} is {edge}, which \
+                         belongs to another shape than {}",
+                        self.shape
+                    )));
+                }
+                if edge.kind() != SubShapeKind::Edge {
+                    return Err(CadError::kernel(format!(
+                        "the {side} cap edge named for segment {segment} is {edge}, which is \
+                         a {}",
+                        edge.kind()
+                    )));
+                }
+                // Within one cap, two segments naming one edge is a
+                // contradiction: the edge would answer to both names and a
+                // reference to either would be satisfied by the wrong one.
+                if let Some(other) = claimed.insert(*edge, *segment)
+                    && other != *segment
+                {
+                    return Err(CadError::kernel(format!(
+                        "segments {other} and {segment} both name {edge} as a cap edge"
+                    )));
+                }
+            }
+            claimed.clear();
+        }
+        Ok(())
+    }
 }
 
 /// A kernel's own serialisation of a shape, for the cache and nothing else.
@@ -713,6 +772,78 @@ mod tests {
             first_segment,
             segment_count,
         }
+    }
+
+    /// An extrusion result naming one cap edge for one segment.
+    fn swept(shape: ShapeHandle, named: &[(StableEntityId, SubShapeHandle)]) -> ExtrudeResult {
+        ExtrudeResult {
+            shape,
+            history: History::new(),
+            start_cap: Vec::new(),
+            end_cap: Vec::new(),
+            start_cap_edges: named.iter().copied().collect(),
+            end_cap_edges: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn a_cap_edge_of_another_shape_is_refused() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let stranger = ShapeHandle::new(SessionId::new(), 0);
+        let segment = StableEntityId::new();
+
+        assert!(
+            swept(
+                shape,
+                &[(segment, SubShapeHandle::new(shape, SubShapeKind::Edge, 0))]
+            )
+            .validate()
+            .is_ok()
+        );
+        assert!(
+            swept(
+                shape,
+                &[(
+                    segment,
+                    SubShapeHandle::new(stranger, SubShapeKind::Edge, 0)
+                )]
+            )
+            .validate()
+            .is_err(),
+            "an edge of another shape was accepted as this one's name"
+        );
+        assert!(
+            swept(
+                shape,
+                &[(segment, SubShapeHandle::new(shape, SubShapeKind::Face, 0))]
+            )
+            .validate()
+            .is_err(),
+            "a face was accepted under an edge's name"
+        );
+    }
+
+    #[test]
+    fn two_segments_naming_one_cap_edge_are_refused() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let edge = SubShapeHandle::new(shape, SubShapeKind::Edge, 0);
+        let one = StableEntityId::new();
+        let other = StableEntityId::new();
+
+        // One edge cannot answer to two segments: a reference to either would
+        // be satisfied by geometry the other named.
+        assert!(
+            swept(shape, &[(one, edge), (other, edge)])
+                .validate()
+                .is_err(),
+            "one edge was quietly given two names"
+        );
+
+        // The same edge on the two different caps is not a contradiction: they
+        // are different sides and the check is made within each.
+        let mut result = swept(shape, &[(one, edge)]);
+        result.end_cap_edges.insert(other, edge);
+        assert!(result.validate().is_ok());
     }
 
     #[test]

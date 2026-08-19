@@ -10,9 +10,9 @@
 #![allow(clippy::panic)]
 
 use ferritecad_document::{
-    Access, Body, CORE_CAPABILITY, CacheStore, DatumPlane, Dependency, DependencyRole, Document,
-    EndCondition, EntityKind, Envelope, Expression, Extrude, ObjectPayload, Point2, SelectionRule,
-    SemanticRole, Sketch, SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
+    Access, Body, CORE_CAPABILITY, CacheStore, CapSide, DatumPlane, Dependency, DependencyRole,
+    Document, EndCondition, EntityKind, Envelope, Expression, Extrude, ObjectPayload, Point2,
+    SelectionRule, SemanticRole, Sketch, SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
 };
 use ferritecad_types::{
     CadError, ContentHash, ErrorKind, ObjectId, Result, StableEntityId, Transform, Unit,
@@ -826,4 +826,60 @@ fn modification_time_advances_only_on_a_successful_edit() {
         })
         .expect("writes");
     assert!(document.meta().modified_at >= created);
+}
+
+#[test]
+fn naming_a_cap_edge_declares_a_capability_and_nothing_else_does() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let plate = populate(&mut document).expect("populates");
+
+    // Before: this document names faces only, so it asks a reader for exactly
+    // what it asked for before this build existed.
+    let stored = document.topology_refs().expect("reads");
+    assert!(!stored.is_empty(), "the fixture stores a reference");
+    let reopened = Document::open(&path).expect("opens");
+    assert!(
+        reopened.access().is_writable(),
+        "a document of faces must stay writable"
+    );
+    drop(reopened);
+
+    let cap_edge = StableEntityId::new();
+    document
+        .write(|w| {
+            w.put_topology_ref(&TopologyRef {
+                id: cap_edge,
+                owner: plate.extrude,
+                producer_feature: plate.extrude,
+                expected_kind: EntityKind::Edge,
+                output_role: SemanticRole::ExtrudeCapEdge {
+                    side: CapSide::Start,
+                    profile_segment: plate.first_segment,
+                },
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            })
+        })
+        .expect("stores the cap edge reference");
+
+    // After: it comes back exactly as written, and this build may still write.
+    let reopened = Document::open(&path).expect("opens");
+    assert!(
+        reopened.access().is_writable(),
+        "this build implements the capability it declares"
+    );
+    let refs = reopened.topology_refs().expect("reads");
+    let restored = refs
+        .iter()
+        .find(|stored| stored.id == cap_edge)
+        .expect("the cap edge reference is there");
+    assert_eq!(
+        restored.output_role,
+        SemanticRole::ExtrudeCapEdge {
+            side: CapSide::Start,
+            profile_segment: plate.first_segment,
+        }
+    );
+    assert_eq!(restored.expected_kind, EntityKind::Edge);
 }

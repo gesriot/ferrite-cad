@@ -115,6 +115,10 @@ struct ShapeRecord {
   std::vector<std::vector<uint64_t>> side_faces;
   std::vector<uint64_t> start_cap;
   std::vector<uint64_t> end_cap;
+  /// The edge each profile segment left where a cap meets the face swept from
+  /// it, in segment order. Empty for a segment that produced none.
+  std::vector<std::vector<uint64_t>> start_cap_edges;
+  std::vector<std::vector<uint64_t>> end_cap_edges;
   /// Identifier to sub-shape. The identifiers mean nothing outside this
   /// session, which is exactly what the Rust side promises about them.
   std::vector<TopoDS_Shape> sub_shapes;
@@ -566,6 +570,32 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
       }
     }
 
+    // Where each cap meets the face swept from one profile segment.
+    //
+    // BRepPrimAPI_MakePrism answers this for the input edge directly:
+    // FirstShape(e) is the edge at the base of the sweep and LastShape(e) the
+    // one at the top. Measured on 7.9.3 over a plate swept blind, reversed and
+    // symmetrically, and a profile with an arc swept blind and symmetrically:
+    // in all five, every segment yielded an EDGE that belongs to the solid and
+    // bounds the cap it should, the start and end sets never overlapped, and
+    // every named edge was one the tessellation walk also reaches. So the
+    // association is read rather than inferred, and a segment that yields
+    // nothing is left unnamed rather than matched to something nearby.
+    record.start_cap_edges.resize(segment_count);
+    record.end_cap_edges.resize(segment_count);
+    for (size_t i = 0; i < segment_count; ++i) {
+      for (int side = 0; side < 2; ++side) {
+        const TopoDS_Shape bound =
+            side == 0 ? prism.FirstShape(edges[i]) : prism.LastShape(edges[i]);
+        if (bound.IsNull() || bound.ShapeType() != TopAbs_EDGE) {
+          continue;
+        }
+        std::vector<uint64_t> &into =
+            side == 0 ? record.start_cap_edges[i] : record.end_cap_edges[i];
+        into.push_back(record.remember(bound));
+      }
+    }
+
     // The caps are generated from no input at all — the sweep creates them —
     // so history cannot name them and the algorithm reports them apart.
     // Measured on 7.9.3: both are a TopoDS_Face.
@@ -640,6 +670,45 @@ FcOcctStatus fc_occt_extrude_side_faces(FcOcctSession *session, uint64_t shape,
     }
     return copy_ids(found->second.side_faces[segment_index], out_ids, capacity,
                     out_count, out_error);
+  });
+}
+
+FcOcctStatus fc_occt_extrude_cap_edges(FcOcctSession *session, uint64_t shape,
+                                       size_t segment_index, int32_t which,
+                                       uint64_t *out_ids, size_t capacity,
+                                       size_t *out_count,
+                                       FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr) {
+      write_error(out_error, "no session");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    if (found->second.decoded) {
+      write_error(out_error,
+                  "shape " + std::to_string(shape) +
+                      " was decoded from a cache blob, which carries geometry "
+                      "but no history; rebuild it to name its cap edges");
+      return FC_OCCT_UNSUPPORTED;
+    }
+    if (which != 0 && which != 1) {
+      write_error(out_error, "cap selector must be 0 or 1");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const std::vector<std::vector<uint64_t>> &sides =
+        which == 0 ? found->second.start_cap_edges : found->second.end_cap_edges;
+    if (segment_index >= sides.size()) {
+      write_error(out_error, "segment " + std::to_string(segment_index) +
+                                 " is outside the profile");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    return copy_ids(sides[segment_index], out_ids, capacity, out_count,
+                    out_error);
   });
 }
 
@@ -1790,10 +1859,12 @@ FcOcctStatus fc_occt_decode_shape_named(FcOcctSession *session,
                                         const uint32_t *slots,
                                         size_t slot_count, uint64_t *out_shape,
                                         uint64_t *out_sub_shapes,
+                                        int32_t *out_sub_kinds,
                                         FcOcctError *out_error) noexcept {
   return guarded(out_error, [&]() -> FcOcctStatus {
     if (session == nullptr || bytes == nullptr || out_shape == nullptr ||
-        (slot_count > 0 && (slots == nullptr || out_sub_shapes == nullptr))) {
+        (slot_count > 0 && (slots == nullptr || out_sub_shapes == nullptr ||
+                            out_sub_kinds == nullptr))) {
       write_error(out_error,
                   "fc_occt_decode_shape_named was given a null argument");
       return FC_OCCT_INVALID_INPUT;
@@ -1845,14 +1916,18 @@ FcOcctStatus fc_occt_decode_shape_named(FcOcctSession *session,
     canonical[0] = record.shape;
     for (size_t entry = 1; entry < entries.size(); ++entry) {
       const TopoDS_Shape &sub_shape = entries[entry];
-      if (sub_shape.ShapeType() != TopAbs_FACE) {
+      // Faces and edges: an extrusion names both, and an archive that could
+      // carry only one of them would drop the other silently on the way back.
+      // Nothing else, because nothing else has a name to restore.
+      const TopAbs_ShapeEnum kind = sub_shape.ShapeType();
+      if (kind != TopAbs_FACE && kind != TopAbs_EDGE) {
         write_error(out_error, "archive entry " + std::to_string(entry) +
-                                   " is not a face");
+                                   " is neither a face nor an edge");
         return FC_OCCT_INVALID_INPUT;
       }
 
       bool contained = false;
-      for (TopExp_Explorer it(record.shape, TopAbs_FACE); it.More(); it.Next()) {
+      for (TopExp_Explorer it(record.shape, kind); it.More(); it.Next()) {
         if (it.Current().IsSame(sub_shape)) {
           canonical[entry] = it.Current();
           contained = true;
@@ -1867,6 +1942,7 @@ FcOcctStatus fc_occt_decode_shape_named(FcOcctSession *session,
     }
 
     std::vector<uint64_t> resolved(slot_count, 0);
+    std::vector<int32_t> kinds(slot_count, FC_OCCT_SUB_SHAPE_FACE);
     for (size_t i = 0; i < slot_count; ++i) {
       const uint32_t slot = slots[i];
       if (slot == 0) {
@@ -1882,6 +1958,12 @@ FcOcctStatus fc_occt_decode_shape_named(FcOcctSession *session,
         return FC_OCCT_INVALID_INPUT;
       }
       resolved[i] = record.remember(canonical[slot]);
+      // What it actually is, taken from the restored shape rather than
+      // assumed: an archive carries faces and edges, and a caller told the
+      // wrong kind would hand an edge back under a face's name.
+      kinds[i] = canonical[slot].ShapeType() == TopAbs_EDGE
+                     ? FC_OCCT_SUB_SHAPE_EDGE
+                     : FC_OCCT_SUB_SHAPE_FACE;
     }
 
     const uint64_t id = session->next_shape++;
@@ -1889,6 +1971,7 @@ FcOcctStatus fc_occt_decode_shape_named(FcOcctSession *session,
     *out_shape = id;
     for (size_t i = 0; i < slot_count; ++i) {
       out_sub_shapes[i] = resolved[i];
+      out_sub_kinds[i] = kinds[i];
     }
     return FC_OCCT_OK;
   });

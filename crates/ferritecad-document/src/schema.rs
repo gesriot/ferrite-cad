@@ -30,7 +30,11 @@ pub const MINIMUM_READER_VERSION: u32 = 1;
 ///
 /// A document that requires anything outside this list opens read-only: it is
 /// better to refuse to write than to drop what we did not understand.
-pub const SUPPORTED_CAPABILITIES: &[&str] = &["core.part.v1", "exchange.step.imported.v1"];
+pub const SUPPORTED_CAPABILITIES: &[&str] = &[
+    "core.part.v1",
+    "exchange.step.imported.v1",
+    "topology.extrude-cap-edge.v1",
+];
 
 /// `PRAGMA application_id` for a document: the ASCII bytes `FCAD`.
 ///

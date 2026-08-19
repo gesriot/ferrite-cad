@@ -88,6 +88,16 @@ typedef struct FcOcctPlane {
  * See fc_occt_extrude for what Open CASCADE actually does with this. */
 typedef int32_t (*FcOcctCancelFn)(void *context);
 
+/* What sort of sub-shape an archive restored.
+ *
+ * Reported rather than assumed. An archive carries faces and edges alike, and
+ * a caller that guessed would hand back an edge under a face's name. */
+typedef int32_t FcOcctSubShapeKind;
+enum {
+  FC_OCCT_SUB_SHAPE_FACE = 0,
+  FC_OCCT_SUB_SHAPE_EDGE = 1
+};
+
 /* An opaque kernel session. Shapes belong to the session that made them. */
 typedef struct FcOcctSession FcOcctSession;
 
@@ -173,6 +183,27 @@ FcOcctStatus fc_occt_extrude_side_faces(FcOcctSession *session, uint64_t shape,
                                         uint64_t *out_ids, size_t capacity,
                                         size_t *out_count,
                                         FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/*
+ * The edge one profile segment left where a cap meets the face swept from it.
+ *
+ * `which` is 0 for the start cap and 1 for the end cap, as for the cap faces.
+ * Zero or one identifier comes back: a segment that produced no such edge is
+ * reported as none rather than matched to a neighbour.
+ *
+ * The association is BRepPrimAPI_MakePrism's own — FirstShape and LastShape of
+ * the input edge — and was measured before it was relied on. On 7.9.3, over a
+ * plate swept blind, reversed and symmetrically and a profile with an arc
+ * swept blind and symmetrically: every segment yielded an EDGE belonging to
+ * the solid and bounding the cap it should, start and end never overlapped,
+ * and every named edge was one the tessellation walk also reaches, so a name
+ * and a drawn line are the same sub-shape.
+ */
+FcOcctStatus fc_occt_extrude_cap_edges(FcOcctSession *session, uint64_t shape,
+                                       size_t segment_index, int32_t which,
+                                       uint64_t *out_ids, size_t capacity,
+                                       size_t *out_count,
+                                       FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /* The cap faces. `which` is 0 for the start cap and 1 for the end cap. */
 FcOcctStatus fc_occt_extrude_cap_faces(FcOcctSession *session, uint64_t shape,
@@ -435,7 +466,8 @@ FcOcctStatus fc_occt_encode_shape_named(
  * Restores a shape and the sub-shapes named by their slots.
  *
  * `out_sub_shapes` receives one session-local identifier per requested slot
- * and must have room for `slot_count`. Slot 0 is the shape itself and is
+ * and must have room for `slot_count`, and `out_sub_kinds` receives what each
+ * of them is. Slot 0 is the shape itself and is
  * refused here: it is not a sub-shape.
  *
  * The restored shape still carries no history. This call returns the
@@ -446,7 +478,8 @@ FcOcctStatus fc_occt_encode_shape_named(
 FcOcctStatus fc_occt_decode_shape_named(
     FcOcctSession *session, const uint8_t *bytes, size_t length,
     const uint32_t *slots, size_t slot_count, uint64_t *out_shape,
-    uint64_t *out_sub_shapes, FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+    uint64_t *out_sub_shapes, int32_t *out_sub_kinds,
+    FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /* Drops a shape. Releasing an unknown or already-released identifier is not an
  * error: an unwinding caller must be able to release everything it might hold

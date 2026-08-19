@@ -141,6 +141,47 @@ fn open_cascade_geometry_and_its_names_survive_a_file() {
         after_stats.1
     );
 
+    // The cap edges survive too, and come back as edges of the restored shape
+    // rather than as whatever the archive's other entries happened to be. This
+    // is the whole point of writing them down: the handles that named them died
+    // with the session that issued them.
+    let mut restored_edges = std::collections::BTreeSet::new();
+    for side in [CapSide::Start, CapSide::End] {
+        for segment in &segments {
+            let found = resolve(
+                &restored,
+                &ferritecad_document::TopologyRef {
+                    id: StableEntityId::new(),
+                    owner: feature,
+                    producer_feature: feature,
+                    expected_kind: ferritecad_document::EntityKind::Edge,
+                    output_role: SemanticRole::ExtrudeCapEdge {
+                        side,
+                        profile_segment: *segment,
+                    },
+                    selection: ferritecad_document::SelectionRule::Exact,
+                    fallback_signature: None,
+                },
+            )
+            .unwrap_or_else(|e| panic!("the {side:?} cap edge of {segment} was lost: {e}"));
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].kind(), ferritecad_kernel::SubShapeKind::Edge);
+            assert_eq!(found[0].shape(), shape, "restored onto the restored shape");
+            assert!(restored_edges.insert(found[0]), "one edge answered twice");
+        }
+    }
+    assert_eq!(restored_edges.len(), 8, "four segments, two caps");
+
+    // And nothing that came back is a handle the previous session issued: the
+    // shape is a new one, so every name resolves through it.
+    let written = format!("{archived:?}");
+    for word in ["session#", "shape#", "edge#", "face#"] {
+        assert!(
+            !written.contains(word),
+            "the archive carries a live {word} name"
+        );
+    }
+
     let mut all = Vec::new();
     for side in [CapSide::Start, CapSide::End] {
         let faces = resolve(
