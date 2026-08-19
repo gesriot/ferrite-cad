@@ -50,7 +50,7 @@ use ferritecad_types::{
     CadError, CanonicalHasher, ContentHash, ImportedSourceId, ObjectId, Result, StableEntityId,
     Transform,
 };
-use ferritecad_viewport::{FacePickId, PickId, RenderSnapshot, SnapshotBuilder};
+use ferritecad_viewport::{EdgePickId, FacePickId, PickId, RenderSnapshot, SnapshotBuilder};
 use serde::{Deserialize, Serialize};
 
 /// A picture, and what each part of it is.
@@ -67,16 +67,70 @@ pub struct LoadedScene {
     /// What the document durably calls the faces of this picture, if
     /// anything does.
     pub faces: FaceNames,
+    /// What it durably calls the topological edges of this picture.
+    pub edges: EdgeNames,
 }
 
-/// What a document durably calls one face, in the document's own words.
+/// Every durable name this document has for the edges of one picture.
+///
+/// TEMPORARY: nothing is joined yet, so every edge answers with nothing. The
+/// gate that requires a real answer fails against this on purpose.
+#[derive(Clone, PartialEq)]
+pub struct EdgeNames {
+    /// One pick from the snapshot whose semantic context produced this, used
+    /// only as a binding check and deliberately absent from `Debug`.
+    picture: PickId,
+    /// Indexed by the picture's own edge identity, minus one.
+    by_edge: Vec<Vec<EdgeMeaning>>,
+}
+
+impl Default for EdgeNames {
+    fn default() -> Self {
+        Self {
+            picture: PickId::NOTHING,
+            by_edge: Vec::new(),
+        }
+    }
+}
+
+impl fmt::Debug for EdgeNames {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EdgeNames")
+            .field("by_edge", &self.by_edge)
+            .finish()
+    }
+}
+
+impl EdgeNames {
+    /// What the document calls this edge, or nothing.
+    pub fn of(&self, edge: EdgePickId, snapshot: &RenderSnapshot) -> &[EdgeMeaning] {
+        if snapshot.definition(self.picture).is_none()
+            || snapshot.definition_of_edge(edge).is_none()
+        {
+            return &[];
+        }
+        match (edge.to_raw() as usize).checked_sub(1) {
+            Some(index) => self.by_edge.get(index).map_or(&[], Vec::as_slice),
+            None => &[],
+        }
+    }
+}
+
+/// What a document durably calls one entity, in the document's own words.
 ///
 /// Every field is a portable term the document already stores. There is no
-/// handle here, no session, no face ordinal and no traversal position: this
-/// is what a stored [`TopologyRef`] says, minus the geometric fallback, which
-/// is a hint for a person and never an identity.
+/// handle here, no session, no ordinal and no traversal position: this is what
+/// a stored [`TopologyRef`] says, minus the geometric fallback, which is a hint
+/// for a person and never an identity.
+///
+/// One type for a face and for an edge. What a document stores about either is
+/// the same six fields, and two structures would be two places for the same
+/// rule to drift; which kind is meant is already in `expected_kind` and in the
+/// role. [`FaceMeaning`] and [`EdgeMeaning`] name it where a reader expects one
+/// or the other.
 #[derive(Debug, Clone, PartialEq)]
-pub struct FaceMeaning {
+pub struct PortableMeaning {
     /// The stored reference itself.
     pub reference: StableEntityId,
     /// The object holding the reference.
@@ -91,7 +145,13 @@ pub struct FaceMeaning {
     pub selection: SelectionRule,
 }
 
-impl FaceMeaning {
+/// What a document calls one face. See [`PortableMeaning`].
+pub type FaceMeaning = PortableMeaning;
+
+/// What a document calls one edge. See [`PortableMeaning`].
+pub type EdgeMeaning = PortableMeaning;
+
+impl PortableMeaning {
     fn of(reference: &TopologyRef) -> Self {
         Self {
             reference: reference.id,
@@ -107,8 +167,8 @@ impl FaceMeaning {
 /// A portable meaning while it is still paired with the deterministic digest
 /// used to bind the picture's transient identities to it.
 #[derive(Clone)]
-struct BoundFaceMeaning {
-    meaning: FaceMeaning,
+struct BoundMeaning {
+    meaning: PortableMeaning,
     identity: ContentHash,
 }
 
@@ -557,15 +617,15 @@ where
         // No failure is reported: a lost reference is a document-level fact, and
         // a viewer that refused to draw a model because one name no longer
         // resolves would be useless exactly when it is needed.
-        let named: Vec<(ferritecad_kernel::SubShapeHandle, BoundFaceMeaning)> = document
+        let named: Vec<(ferritecad_kernel::SubShapeHandle, BoundMeaning)> = document
             .topology_refs()?
             .iter()
             .filter_map(|reference| match built.resolve(reference) {
                 Ok(found) => match found.as_slice() {
                     [face] => Some((
                         *face,
-                        BoundFaceMeaning {
-                            meaning: FaceMeaning::of(reference),
+                        BoundMeaning {
+                            meaning: PortableMeaning::of(reference),
                             identity: reference.meaning_hash(),
                         },
                     )),
@@ -584,7 +644,11 @@ where
         // the kernel listed it under while packing. Turned into the picture's
         // own face identities once the picture exists, because the picture is
         // what numbers them.
-        let mut names: BTreeMap<usize, Vec<Vec<BoundFaceMeaning>>> = BTreeMap::new();
+        let mut names: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = BTreeMap::new();
+        // The same, for the topological edges the kernel named. A definition
+        // whose mesh carries no edge association contributes no entry at all,
+        // which is what keeps "nothing is known" from becoming "named nothing".
+        let mut edge_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = BTreeMap::new();
         let objects = document.objects()?;
 
         // Counted before anything is drawn, so each one can say what fraction
@@ -637,7 +701,31 @@ where
                             // Not by ordinal, not by geometry, and not by
                             // name: two faces of one body can be congruent,
                             // and traversal order is the kernel's business.
-                            let named: Vec<Vec<BoundFaceMeaning>> = mesh
+                            // The edges, joined the same way and for the same
+                            // reason: the handle the kernel gave the edge is
+                            // the only thing that says a stored name and this
+                            // run of segments are the same edge. A handle
+                            // carries its kind, so a face's name can never
+                            // match an edge's range however the two are
+                            // numbered.
+                            let named_edges: Vec<Vec<BoundMeaning>> = mesh
+                                .edges
+                                .as_ref()
+                                .map(|edges| {
+                                    edges
+                                        .ranges
+                                        .iter()
+                                        .map(|range| {
+                                            named
+                                                .iter()
+                                                .filter(|(handle, _)| *handle == range.edge)
+                                                .map(|(_, meaning)| meaning.clone())
+                                                .collect::<Vec<BoundMeaning>>()
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            let named: Vec<Vec<BoundMeaning>> = mesh
                                 .faces
                                 .iter()
                                 .map(|range| {
@@ -650,6 +738,9 @@ where
                                 .collect();
                             let definition = builder.add_mesh(&mesh)?;
                             names.insert(definition, named);
+                            if !named_edges.is_empty() {
+                                edge_named.insert(definition, named_edges);
+                            }
                             Ok(definition)
                         },
                     )?;
@@ -689,10 +780,11 @@ where
                 _ => continue,
             }
         }
-        builder.bind_identities_to(face_meaning_identity(&names))?;
+        builder.bind_identities_to(semantic_context_identity(&names, &edge_named))?;
         let snapshot = builder.build();
         Ok(LoadedScene {
             faces: face_names(&snapshot, names)?,
+            edges: edge_names(&snapshot, edge_named)?,
             snapshot,
             catalogue: catalogue.finish(),
         })
@@ -713,7 +805,7 @@ where
 /// exists, and the two would drift the first time either changed.
 fn face_names(
     snapshot: &RenderSnapshot,
-    named: BTreeMap<usize, Vec<Vec<BoundFaceMeaning>>>,
+    named: BTreeMap<usize, Vec<Vec<BoundMeaning>>>,
 ) -> Result<FaceNames> {
     let mut by_face = vec![Vec::new(); snapshot.face_count()];
     for (definition, per_ordinal) in named {
@@ -735,22 +827,67 @@ fn face_names(
     })
 }
 
-/// The exact portable meaning assigned to each packed face.
+/// Lays what each definition's edges are called out by the picture's own
+/// numbering.
 ///
-/// Definition and face positions are included because moving one stored name
-/// to another face must make every transient identity from the old
-/// interpretation stale. The viewport sees only the resulting digest.
-fn face_meaning_identity(named: &BTreeMap<usize, Vec<Vec<BoundFaceMeaning>>>) -> ContentHash {
-    let mut hasher = CanonicalHasher::new("ferritecad.scene.face-meanings");
+/// The mirror of [`face_names`], and asking the picture for the same reason:
+/// the numbering exists already, and computing it a second time here would be
+/// a second account that drifts the first time either changes.
+fn edge_names(
+    snapshot: &RenderSnapshot,
+    named: BTreeMap<usize, Vec<Vec<BoundMeaning>>>,
+) -> Result<EdgeNames> {
+    let mut by_edge = vec![Vec::new(); snapshot.edge_count()];
+    for (definition, per_ordinal) in named {
+        for (ordinal, bound) in per_ordinal.into_iter().enumerate() {
+            let edge = snapshot.edge_of(definition, ordinal).ok_or_else(|| {
+                CadError::topology(format!(
+                    "definition {definition} was packed with more edges than the picture numbered"
+                ))
+            })?;
+            let at = (edge.to_raw() as usize)
+                .checked_sub(1)
+                .ok_or_else(|| CadError::topology("an edge of a picture is never numbered zero"))?;
+            by_edge[at] = bound.into_iter().map(|named| named.meaning).collect();
+        }
+    }
+    Ok(EdgeNames {
+        picture: snapshot.pick_of(0).unwrap_or(PickId::NOTHING),
+        by_edge,
+    })
+}
+
+/// The exact portable meaning assigned to every packed face and edge.
+///
+/// One digest for the whole interpretation rather than one per kind. What
+/// binds a picture's transient identities is what the document says about it,
+/// and that is faces and edges together: moving one stored name from one face
+/// to another, or from one edge to another, must make every identity issued
+/// under the old reading stale, and so must adding an edge name to a picture
+/// whose triangles did not change.
+///
+/// Positions are hashed because they are what a name is attached to, and the
+/// two domains are separated explicitly so a face meaning and an edge meaning
+/// at the same position cannot produce the same digest. The viewport sees only
+/// the result.
+fn semantic_context_identity(
+    faces: &BTreeMap<usize, Vec<Vec<BoundMeaning>>>,
+    edges: &BTreeMap<usize, Vec<Vec<BoundMeaning>>>,
+) -> ContentHash {
+    let mut hasher = CanonicalHasher::new("ferritecad.scene.semantic-context");
     hasher.algorithm_version(1);
-    hasher.field("definitions").u64(named.len() as u64);
-    for (definition, faces) in named {
-        hasher.field("definition").u64(*definition as u64);
-        hasher.field("faces").u64(faces.len() as u64);
-        for meanings in faces {
-            hasher.field("meanings").u64(meanings.len() as u64);
-            for meaning in meanings {
-                hasher.hash(&meaning.identity);
+    for (domain, named) in [("faces", faces), ("edges", edges)] {
+        hasher.field("domain").str(domain);
+        hasher.field("definitions").u64(named.len() as u64);
+        for (definition, positions) in named {
+            hasher.field("definition").u64(*definition as u64);
+            hasher.field("positions").u64(positions.len() as u64);
+            for (position, meanings) in positions.iter().enumerate() {
+                hasher.field("position").u64(position as u64);
+                hasher.field("meanings").u64(meanings.len() as u64);
+                for meaning in meanings {
+                    hasher.hash(&meaning.identity);
+                }
             }
         }
     }
@@ -981,6 +1118,302 @@ mod tests {
         OperationResult, ShapeHandle, SubShapeHandle,
     };
     use ferritecad_types::ObjectId;
+
+    /// One reference and the digest it contributes.
+    fn bound(role: SemanticRole) -> BoundMeaning {
+        let reference = TopologyRef {
+            id: StableEntityId::new(),
+            owner: ObjectId::new(),
+            producer_feature: ObjectId::new(),
+            expected_kind: EntityKind::Edge,
+            output_role: role,
+            selection: SelectionRule::Exact,
+            fallback_signature: None,
+        };
+        BoundMeaning {
+            meaning: PortableMeaning::of(&reference),
+            identity: reference.meaning_hash(),
+        }
+    }
+
+    fn a_cap_edge(side: ferritecad_document::CapSide) -> SemanticRole {
+        SemanticRole::ExtrudeCapEdge {
+            side,
+            profile_segment: StableEntityId::new(),
+        }
+    }
+
+    #[test]
+    fn what_binds_a_picture_covers_its_edges_as_well_as_its_faces() {
+        use ferritecad_document::CapSide;
+
+        let faces: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+            [(0usize, vec![vec![bound(a_cap_edge(CapSide::Start))]])]
+                .into_iter()
+                .collect();
+        let edges: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+            [(0usize, vec![vec![bound(a_cap_edge(CapSide::End))]])]
+                .into_iter()
+                .collect();
+        let nothing = BTreeMap::new();
+
+        let bare = semantic_context_identity(&nothing, &nothing);
+        let with_faces = semantic_context_identity(&faces, &nothing);
+        let with_edges = semantic_context_identity(&nothing, &edges);
+        let with_both = semantic_context_identity(&faces, &edges);
+
+        // Adding a name of either kind changes what the picture means, and the
+        // two are told apart: the same meaning filed as a face and as an edge
+        // are different interpretations of the same geometry.
+        for (what, digest) in [
+            ("faces", with_faces),
+            ("edges", with_edges),
+            ("both", with_both),
+        ] {
+            assert_ne!(bare, digest, "adding {what} left the identity alone");
+        }
+        assert_ne!(with_faces, with_edges, "the two domains are not separated");
+        assert_ne!(with_both, with_faces);
+        assert_ne!(with_both, with_edges);
+
+        // And the position a name sits at is part of it. Both readings below
+        // have two edges and one name, so the counts are identical and only
+        // where the name sits differs: nothing but the position can tell them
+        // apart.
+        let one = edges[&0][0].clone();
+        let first: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+            [(0usize, vec![one.clone(), Vec::new()])]
+                .into_iter()
+                .collect();
+        let second: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+            [(0usize, vec![Vec::new(), one])].into_iter().collect();
+        assert_ne!(
+            semantic_context_identity(&nothing, &first),
+            semantic_context_identity(&nothing, &second),
+            "moving a name to another edge left the identity alone"
+        );
+    }
+
+    #[test]
+    fn an_edge_name_of_another_picture_names_nothing_here() {
+        let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
+        let mesh = |ordinal: u64| Mesh {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: vec![0, 1, 2],
+            faces: vec![ferritecad_kernel::MeshFaceRange {
+                face: SubShapeHandle::new(shape, ferritecad_kernel::SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 3,
+            }],
+            edges: Some(ferritecad_kernel::MeshEdges {
+                segments: vec![0, 1],
+                ranges: vec![ferritecad_kernel::MeshEdgeRange {
+                    edge: SubShapeHandle::new(
+                        shape,
+                        ferritecad_kernel::SubShapeKind::Edge,
+                        ordinal,
+                    ),
+                    first_segment: 0,
+                    segment_count: 1,
+                }],
+            }),
+        };
+
+        // Two pictures of the same geometry under different interpretations.
+        let picture = |role: SemanticRole| {
+            let mut builder = SnapshotBuilder::new();
+            let definition = builder.add_mesh(&mesh(0)).expect("packs");
+            builder
+                .place(definition, None, &Transform::IDENTITY, BODY_COLOUR)
+                .expect("places");
+            let named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+                [(0usize, vec![vec![bound(role)]])].into_iter().collect();
+            builder
+                .bind_identities_to(semantic_context_identity(&BTreeMap::new(), &named))
+                .expect("binds");
+            let snapshot = builder.build();
+            let names = edge_names(&snapshot, named).expect("lays out");
+            (snapshot, names)
+        };
+
+        use ferritecad_document::CapSide;
+        let (mine, my_names) = picture(a_cap_edge(CapSide::Start));
+        let (theirs, their_names) = picture(a_cap_edge(CapSide::End));
+
+        let my_edge = mine.edge_of(0, 0).expect("numbered");
+        let their_edge = theirs.edge_of(0, 0).expect("numbered");
+        assert_eq!(my_edge.to_raw(), their_edge.to_raw(), "the same raw value");
+        assert_ne!(my_edge, their_edge, "and different pictures");
+
+        assert_eq!(my_names.of(my_edge, &mine).len(), 1);
+        assert_eq!(their_names.of(their_edge, &theirs).len(), 1);
+        // In range and from another picture: still nothing.
+        assert!(my_names.of(their_edge, &mine).is_empty());
+        assert!(their_names.of(my_edge, &theirs).is_empty());
+        // And a name table of one picture answers nothing about another.
+        assert!(my_names.of(their_edge, &theirs).is_empty());
+    }
+
+    #[test]
+    fn a_document_whose_kernel_names_no_edges_loads_and_names_none() {
+        // The mock reports no edge association at all, which is the honest
+        // thing for it to say. The loader must carry that through: no picture
+        // edge, no entry, and no failure.
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("plate.fcad");
+        std::fs::copy(ferritecad_fixtures::plate_source(), &path).expect("copies the fixture");
+
+        let mut kernel = MockKernel::new();
+        let scene = snapshot_of(
+            &path,
+            &mut kernel,
+            no_imports,
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("the plate loads through the mock");
+
+        assert_eq!(
+            scene.snapshot.edge_count(),
+            0,
+            "the mock named no topological edge, so the picture numbers none"
+        );
+        assert!(scene.snapshot.edge_of(0, 0).is_none());
+        assert!(
+            scene
+                .edges
+                .of(EdgePickId::NOTHING, &scene.snapshot)
+                .is_empty()
+        );
+        // And the faces are still named exactly as before this slice.
+        assert!(
+            scene.snapshot.face_count() > 0,
+            "the faces of the plate are still numbered"
+        );
+    }
+
+    #[test]
+    fn a_second_definitions_edges_are_numbered_by_the_picture() {
+        use ferritecad_document::CapSide;
+
+        let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
+        let mesh = |edges: u64| Mesh {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: vec![0, 1, 2],
+            faces: vec![ferritecad_kernel::MeshFaceRange {
+                face: SubShapeHandle::new(shape, ferritecad_kernel::SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 3,
+            }],
+            edges: Some(ferritecad_kernel::MeshEdges {
+                segments: (0..edges).flat_map(|_| [0u32, 1]).collect(),
+                ranges: (0..edges)
+                    .map(|ordinal| ferritecad_kernel::MeshEdgeRange {
+                        edge: SubShapeHandle::new(
+                            shape,
+                            ferritecad_kernel::SubShapeKind::Edge,
+                            ordinal,
+                        ),
+                        first_segment: ordinal as u32,
+                        segment_count: 1,
+                    })
+                    .collect(),
+            }),
+        };
+
+        // Two definitions: the first with three edges, the second with one.
+        // The second definition's only edge is the picture's fourth, so a
+        // layout using the ordinal within the definition would file its name
+        // against the first definition's first edge instead.
+        let mut builder = SnapshotBuilder::new();
+        let first = builder.add_mesh(&mesh(3)).expect("packs");
+        let second = builder.add_mesh(&mesh(1)).expect("packs");
+        for definition in [first, second] {
+            builder
+                .place(definition, None, &Transform::IDENTITY, BODY_COLOUR)
+                .expect("places");
+        }
+        let named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = [
+            (first, vec![Vec::new(), Vec::new(), Vec::new()]),
+            (second, vec![vec![bound(a_cap_edge(CapSide::End))]]),
+        ]
+        .into_iter()
+        .collect();
+        builder
+            .bind_identities_to(semantic_context_identity(&BTreeMap::new(), &named))
+            .expect("binds");
+        let snapshot = builder.build();
+        assert_eq!(snapshot.edge_count(), 4);
+
+        let names = edge_names(&snapshot, named).expect("lays out");
+        let theirs = snapshot.edge_of(second, 0).expect("numbered");
+        assert_eq!(
+            names.of(theirs, &snapshot).len(),
+            1,
+            "the second definition's edge lost its name"
+        );
+        for ordinal in 0..3 {
+            let mine = snapshot.edge_of(first, ordinal).expect("numbered");
+            assert!(
+                names.of(mine, &snapshot).is_empty(),
+                "a name landed on the first definition's edge {ordinal}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mesh_with_no_edge_association_is_given_no_names() {
+        let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
+        let base = Mesh {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: vec![0, 1, 2],
+            faces: vec![ferritecad_kernel::MeshFaceRange {
+                face: SubShapeHandle::new(shape, ferritecad_kernel::SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 3,
+            }],
+            edges: None,
+        };
+
+        for (what, edges) in [
+            ("nothing is known", None),
+            (
+                "there are none",
+                Some(ferritecad_kernel::MeshEdges::default()),
+            ),
+        ] {
+            let mut builder = SnapshotBuilder::new();
+            let definition = builder
+                .add_mesh(&Mesh {
+                    edges,
+                    ..base.clone()
+                })
+                .expect("packs");
+            builder
+                .place(definition, None, &Transform::IDENTITY, BODY_COLOUR)
+                .expect("places");
+            builder
+                .bind_identities_to(semantic_context_identity(
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                ))
+                .expect("binds");
+            let snapshot = builder.build();
+            let names = edge_names(&snapshot, BTreeMap::new()).expect("lays out");
+            assert_eq!(snapshot.edge_count(), 0, "{what}");
+            assert!(
+                snapshot.edge_of(0, 0).is_none(),
+                "{what}: a picture invented an edge to name"
+            );
+            assert!(
+                names.of(EdgePickId::NOTHING, &snapshot).is_empty(),
+                "{what}"
+            );
+        }
+    }
 
     /// The committed plate, copied somewhere the test owns.
     ///

@@ -2520,6 +2520,7 @@ mod tests {
     fn loaded(snapshot: RenderSnapshot) -> LoadedScene {
         LoadedScene {
             faces: FaceNames::default(),
+            edges: ferritecad_scene::EdgeNames::default(),
             snapshot,
             catalogue: Vec::new(),
         }
