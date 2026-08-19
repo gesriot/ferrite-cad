@@ -980,3 +980,61 @@ fn a_joint_naming_a_segment_the_profile_never_had_is_refused_when_recorded() {
         .record_extrude(feature, &profile, &result)
         .expect("a joint of two of the profile's own segments records");
 }
+
+#[test]
+fn two_profile_segments_that_do_not_meet_cannot_name_a_sweep_edge() {
+    let fixture = plate().expect("a valid profile");
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let joint = ProfileJoint::new(fixture.segments[0], fixture.segments[2])
+        .expect("two different segments");
+    let result = ExtrudeResult {
+        shape,
+        history: History::new(),
+        start_cap: Vec::new(),
+        end_cap: Vec::new(),
+        start_cap_edges: BTreeMap::new(),
+        end_cap_edges: BTreeMap::new(),
+        sweep_edges: BTreeMap::from([(joint, SubShapeHandle::new(shape, SubShapeKind::Edge, 0))]),
+    };
+
+    let refusal = TopologyMap::new()
+        .record_extrude(fixture.feature, fixture.request.profile(), &result)
+        .expect_err("two segments elsewhere in one profile are not a corner");
+    assert_eq!(refusal.kind(), ErrorKind::Topology);
+    assert!(refusal.to_string().contains("do not meet"), "{refusal}");
+}
+
+#[test]
+fn a_segment_pair_that_meets_twice_names_neither_sweep_edge() {
+    let first = StableEntityId::new();
+    let second = StableEntityId::new();
+    let from = PlanarPoint::new(0.0, 0.0).expect("finite");
+    let to = PlanarPoint::new(10.0, 0.0).expect("finite");
+    let profile = Profile::new(
+        SketchPlane::world_xy(),
+        ProfileLoop::new(vec![
+            ProfileSegment::new(first, SegmentGeometry::line(from, to).expect("a line")),
+            ProfileSegment::new(second, SegmentGeometry::line(to, from).expect("a line")),
+        ])
+        .expect("a closed two-segment loop"),
+        Vec::new(),
+    )
+    .expect("a profile");
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let joint = ProfileJoint::new(first, second).expect("two different segments");
+    let result = ExtrudeResult {
+        shape,
+        history: History::new(),
+        start_cap: Vec::new(),
+        end_cap: Vec::new(),
+        start_cap_edges: BTreeMap::new(),
+        end_cap_edges: BTreeMap::new(),
+        sweep_edges: BTreeMap::from([(joint, SubShapeHandle::new(shape, SubShapeKind::Edge, 0))]),
+    };
+
+    let refusal = TopologyMap::new()
+        .record_extrude(ObjectId::new(), &profile, &result)
+        .expect_err("one pair cannot choose between two profile corners");
+    assert_eq!(refusal.kind(), ErrorKind::Topology);
+    assert!(refusal.to_string().contains("two corners"), "{refusal}");
+}

@@ -394,19 +394,14 @@ impl GeometryKernel for OcctKernel {
             // them. On a loop of two segments both corners are where the same
             // two segments meet, and there is no honest way to say which is
             // meant, so both are left unnamed rather than one being chosen.
-            let mut joints: Vec<Option<ProfileJoint>> = Vec::with_capacity(outer.len());
-            for index in 0..outer.len() {
-                let before = outer[(index + outer.len() - 1) % outer.len()].label;
-                joints.push(ProfileJoint::new(before, outer[index].label).ok());
-            }
+            let joints: Vec<ProfileJoint> = profile.outer().joints().collect();
             let mut seen: BTreeMap<ProfileJoint, usize> = BTreeMap::new();
-            for joint in joints.iter().flatten() {
+            for joint in &joints {
                 *seen.entry(*joint).or_insert(0) += 1;
             }
 
             let mut sweep_edges = BTreeMap::new();
             for (index, joint) in joints.iter().enumerate() {
-                let Some(joint) = joint else { continue };
                 if seen.get(joint).copied().unwrap_or(0) != 1 {
                     continue;
                 }

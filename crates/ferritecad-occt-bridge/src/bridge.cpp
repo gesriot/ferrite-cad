@@ -614,18 +614,41 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
     // a cap edge, never shared with another corner, and always one the
     // tessellation walk also reaches. Rebuilding the same profile starting
     // from a different segment moved no association, and every result came
-    // back FORWARD. Everything generated is reported, including a count other
-    // than one, so a kernel that answered differently is recorded rather than
-    // trimmed to fit.
+    // back FORWARD. Every generated result is reported, including a count
+    // other than one. A null result, another kind of sub-shape, or an edge not
+    // belonging to the finished solid refuses the operation rather than being
+    // silently trimmed to fit the measured answer.
+    TopTools_IndexedMapOfShape solid_edges;
+    TopExp::MapShapes(record.shape, TopAbs_EDGE, solid_edges);
     record.sweep_edges.resize(segment_count);
     for (size_t j = 0; j < segment_count; ++j) {
       const NCollection_List<TopoDS_Shape> &swept = prism.Generated(corners[j]);
       for (NCollection_List<TopoDS_Shape>::Iterator it(swept); it.More();
            it.Next()) {
-        if (it.Value().IsNull() || it.Value().ShapeType() != TopAbs_EDGE) {
-          continue;
+        const TopoDS_Shape &candidate = it.Value();
+        if (candidate.IsNull()) {
+          write_error(
+              out_error,
+              "the sweep returned a null result for profile joint " +
+                  std::to_string(j));
+          return FC_OCCT_KERNEL;
         }
-        record.sweep_edges[j].push_back(record.remember(it.Value()));
+        if (candidate.ShapeType() != TopAbs_EDGE) {
+          write_error(out_error,
+                      "the sweep returned a non-edge result for profile joint " +
+                          std::to_string(j));
+          return FC_OCCT_KERNEL;
+        }
+        // IndexedMapOfShape uses IsSame identity, so orientation does not turn
+        // the same topological edge into a foreign one here.
+        if (!solid_edges.Contains(candidate)) {
+          write_error(
+              out_error,
+              "the sweep returned an edge outside the finished solid for profile joint " +
+                  std::to_string(j));
+          return FC_OCCT_KERNEL;
+        }
+        record.sweep_edges[j].push_back(record.remember(candidate));
       }
     }
 

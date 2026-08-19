@@ -208,6 +208,10 @@ impl TopologyMap {
             .iter()
             .map(|segment| segment.label)
             .collect();
+        let mut profile_joints: BTreeMap<ProfileJoint, usize> = BTreeMap::new();
+        for joint in profile.outer().joints() {
+            *profile_joints.entry(joint).or_insert(0) += 1;
+        }
 
         for face in &result.start_cap {
             check(*face, result.shape, producer, "an extrusion start cap")?;
@@ -260,14 +264,37 @@ impl TopologyMap {
 
         // The edge along the sweep at each corner, filed under the pair that
         // names it. Both of the pair must be segments of the profile that was
-        // actually swept: a joint naming a segment from somewhere else is a
-        // name for a corner this feature does not have.
+        // actually swept, they must meet, and they must meet at exactly one
+        // corner. Membership alone is insufficient: non-adjacent segments do
+        // not name a corner, while the one unordered pair in a two-segment
+        // loop occurs at both corners and cannot choose between them.
         for (joint, edge) in &result.sweep_edges {
             for segment in joint.segments() {
                 if !profile_segments.contains(&segment) {
                     return Err(CadError::topology(format!(
                         "feature {producer} reported an extrusion sweep edge for {joint}, and \
                          segment {segment} is not in the swept outer profile"
+                    )));
+                }
+            }
+            match profile_joints.get(joint).copied() {
+                None => {
+                    return Err(CadError::topology(format!(
+                        "feature {producer} reported an extrusion sweep edge for {joint}, but its \
+                         segments do not meet in the swept outer profile"
+                    )));
+                }
+                Some(1) => {}
+                Some(2) => {
+                    return Err(CadError::topology(format!(
+                        "feature {producer} reported an extrusion sweep edge for {joint}, but the \
+                         pair meets at two corners and names neither"
+                    )));
+                }
+                Some(corners) => {
+                    return Err(CadError::topology(format!(
+                        "feature {producer} reported an extrusion sweep edge for {joint}, but the \
+                         pair meets at {corners} corners and names none of them"
                     )));
                 }
             }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 use ferritecad_types::{
-    CadError, CanonicalHasher, Point3, Result, StableEntityId, Vec3, normalize_f64,
+    CadError, CanonicalHasher, Point3, ProfileJoint, Result, StableEntityId, Vec3, normalize_f64,
 };
 
 /// A point in a sketch plane's own coordinates, in millimetres.
@@ -293,6 +293,21 @@ impl ProfileLoop {
         &self.segments
     }
 
+    /// The unordered pair of segment labels meeting at each corner.
+    ///
+    /// There is one answer per corner, not necessarily one per distinct pair.
+    /// A two-segment loop therefore reports the same pair twice. Consumers
+    /// naming topology must treat that pair as ambiguous rather than choosing
+    /// one of the two corners by position.
+    pub fn joints(&self) -> impl ExactSizeIterator<Item = ProfileJoint> + '_ {
+        self.segments.iter().enumerate().map(|(index, segment)| {
+            let before =
+                self.segments[(index + self.segments.len() - 1) % self.segments.len()].label;
+            ProfileJoint::new(before, segment.label)
+                .expect("profile segment labels are distinct by construction")
+        })
+    }
+
     fn feed(&self, hasher: &mut CanonicalHasher) {
         hasher.field("loop").u64(self.segments.len() as u64);
         for segment in &self.segments {
@@ -388,6 +403,62 @@ mod tests {
     #[test]
     fn a_closed_square_is_accepted() {
         assert_eq!(square().expect("closes").segments().len(), 4);
+    }
+
+    #[test]
+    fn a_square_has_one_joint_for_each_adjacent_pair() {
+        let profile = square().expect("closes");
+        let labels: Vec<_> = profile
+            .segments()
+            .iter()
+            .map(|segment| segment.label)
+            .collect();
+        let joints: Vec<_> = profile.joints().collect();
+
+        assert_eq!(joints.len(), labels.len());
+        for index in 0..labels.len() {
+            assert_eq!(
+                joints[index],
+                ProfileJoint::new(
+                    labels[(index + labels.len() - 1) % labels.len()],
+                    labels[index]
+                )
+                .expect("the square has distinct labels")
+            );
+        }
+        assert_eq!(
+            joints
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            labels.len(),
+            "each corner of this profile has a different pair"
+        );
+    }
+
+    #[test]
+    fn two_segments_have_two_corners_but_only_one_unordered_pair() {
+        let a = PlanarPoint::new(0.0, 0.0).expect("finite");
+        let b = PlanarPoint::new(10.0, 0.0).expect("finite");
+        let profile = ProfileLoop::new(vec![
+            ProfileSegment::new(
+                StableEntityId::new(),
+                SegmentGeometry::line(a, b).expect("line"),
+            ),
+            ProfileSegment::new(
+                StableEntityId::new(),
+                SegmentGeometry::line(b, a).expect("line"),
+            ),
+        ])
+        .expect("the two segments close");
+
+        let joints: Vec<_> = profile.joints().collect();
+        assert_eq!(joints.len(), 2, "the loop has two geometric corners");
+        assert_eq!(
+            joints[0], joints[1],
+            "the unordered name cannot tell them apart"
+        );
     }
 
     #[test]
