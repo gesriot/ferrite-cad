@@ -51,8 +51,9 @@ it in portable terms. Clicking a face of a native body the document has a
 durable name for selects that face, and the inspector says what the document
 calls it: which feature made it, what it is – the end cap of that extrusion, the
 side raised from that sketch segment – and how the reference selects it.
-Clicking anything else selects its definition, which is the honest answer:
-imported faces have no durable names, so a face of one is a face of nothing this
+Clicking geometry for which the document has neither an exact edge name nor an
+exact face name selects its definition, which is the honest answer: imported
+faces and edges have no durable names, so neither has a subshape identity this
 document could store. Selecting a part selects every placement of it, and
 selecting a face marks that face in every placement, because a click names what
 a thing is and never the place it happened to land on.
@@ -203,11 +204,12 @@ vertices through the same matrix as the surface itself.
 What is drawn as ordinary linework is the boundary of the tessellation, and
 that is worth stating plainly: it is where the triangles of one face end, not
 a curve read from the original geometry. The seams inside a face, where one
-triangle meets the next, are deliberately not drawn. Those boundary pixels are
-not a selectable object. The separate topological-edge identity can answer a
-pointer question where the rendered samples agree, but a click still chooses
-the face or the part beneath it. Hiding a part takes both its surface and its
-linework with it.
+triangle meets the next, are deliberately not drawn. That linework does not
+invent a selectable object of its own. A separate topological-edge identity can
+answer where the rendered samples agree, and a click selects it only when the
+document has an exact durable name for it; otherwise the click falls through to
+the named face or the part beneath it. Hiding a part takes both its surface and
+its linework with it.
 
 Moving the pointer over the model marks the most particular answer the picture
 has: a coherent topological edge first, otherwise the face under it, otherwise
@@ -215,9 +217,10 @@ the whole definition. The same edge, face or definition is marked wherever
 that definition appears. Moving over a row of the list marks that whole
 definition everywhere. Neither route chooses anything, so geometry can be
 found before anything is selected, and what is already selected keeps its
-appearance while you look around it. A click chooses a named native face as
-that face and otherwise chooses its definition; edges are not selectable in
-this build. Opening another document is the only editing operation there is.
+appearance while you look around it. A click chooses the most particular
+durable answer the document has: an exact named native edge first, otherwise a
+named native face, otherwise its definition. Opening another document is the
+only editing operation there is.
 
 ## How a document is put together
 
