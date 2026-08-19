@@ -1276,9 +1276,10 @@ fn topology_name(words: &TopologyWords) -> ferritecad_ui::TopologyName<'_> {
 
 /// What a stored role says, as a sentence.
 ///
-/// The document's own vocabulary, spelled out. A role names what a face *is* –
-/// the end cap of this extrusion, the side raised from that sketch segment –
-/// and every part of that sentence is durable.
+/// The document's own vocabulary, spelled out. A role names what a subshape
+/// *is* – the end cap of this extrusion, the side raised from that sketch
+/// segment, or the edge where two such things meet – and every part of that
+/// sentence is durable.
 fn describe_role(role: &SemanticRole) -> String {
     match role {
         SemanticRole::ExtrudeCap { side } => match side {
@@ -4016,12 +4017,28 @@ mod tests {
             .collect()
     }
 
-    /// One sweep edge together with a face it actually bounds.
+    /// One edge together with a face it actually bounds.
     ///
     /// Neither identity is inferred from the other's ordinal. The picture's
     /// own partition is the relationship a click on their shared pixel has to
     /// satisfy, so a fixture reordered during packing cannot quietly turn an
     /// edge gate into a test of an unrelated face.
+    fn edge_with_bounding_face(
+        picture: &RenderSnapshot,
+        edge: EdgePickId,
+    ) -> (PickId, ferritecad_viewport::FacePickId, EdgePickId) {
+        let definition_index = picture
+            .definition_of_edge(edge)
+            .expect("the picture issued the edge");
+        let definition = picture.pick_of(definition_index).expect("drawn");
+        let face = (0..picture.face_count())
+            .filter_map(|ordinal| picture.face_of(definition_index, ordinal))
+            .find(|face| picture.edge_bounds_face(edge, *face))
+            .expect("a drawn edge bounds a face of its definition");
+        (definition, face, edge)
+    }
+
+    /// One named sweep edge together with a face it actually bounds.
     fn named_sweep_edge(
         scene: &LoadedScene,
     ) -> (PickId, ferritecad_viewport::FacePickId, EdgePickId) {
@@ -4037,15 +4054,26 @@ mod tests {
                     })
             })
             .expect("the document names an edge along the sweep");
-        let definition_index = picture
-            .definition_of_edge(edge)
-            .expect("the picture issued the edge");
-        let definition = picture.pick_of(definition_index).expect("drawn");
-        let face = (0..picture.face_count())
-            .filter_map(|ordinal| picture.face_of(definition_index, ordinal))
-            .find(|face| picture.edge_bounds_face(edge, *face))
-            .expect("a drawn edge bounds a face of its definition");
-        (definition, face, edge)
+        edge_with_bounding_face(picture, edge)
+    }
+
+    /// One named cap edge together with a face it actually bounds.
+    fn named_cap_edge(
+        scene: &LoadedScene,
+    ) -> (PickId, ferritecad_viewport::FacePickId, EdgePickId) {
+        let picture = &scene.snapshot;
+        let edge = (0..picture.meshes().len())
+            .find_map(|definition| {
+                (0..picture.edge_count())
+                    .filter_map(|ordinal| picture.edge_of(definition, ordinal))
+                    .find(|edge| {
+                        scene.edges.of(*edge, picture).iter().any(|meaning| {
+                            matches!(meaning.output_role, SemanticRole::ExtrudeCapEdge { .. })
+                        })
+                    })
+            })
+            .expect("the document names an edge at a cap");
+        edge_with_bounding_face(picture, edge)
     }
 
     #[test]
@@ -4433,8 +4461,38 @@ mod tests {
         assert!(changed > 0, "the chosen edge was drawn no differently");
 
         // The inspector says which cap and which segment, in the document's
-        // own words.
-        let said = cap_meanings(selected);
+        // own words. Go through the whole handoff that supplies the panel: a
+        // direct call to `describe_role` would not catch a dropped name, a
+        // reordered name, or an edge presented as some other kind.
+        let words = words_of(&chosen, &scene.catalogue, &picture);
+        assert!(words.faces.is_empty(), "an edge was described as a face");
+        let names: Vec<ferritecad_ui::TopologyName<'_>> =
+            words.edges.iter().map(topology_name).collect();
+        let described = inspected(
+            &chosen,
+            &scene.catalogue,
+            &words.identities,
+            &[],
+            &names,
+            &picture,
+        )
+        .expect("the chosen cap edge reaches the inspector");
+        let rows = described.rows();
+        assert_eq!(
+            rows.first().map(|(label, value)| (*label, value.as_str())),
+            Some(("Kind", "Edge"))
+        );
+        let said: Vec<&str> = rows
+            .iter()
+            .filter(|(label, _)| *label == "Role")
+            .map(|(_, value)| value.as_str())
+            .collect();
+        let expected = cap_meanings(selected);
+        assert_eq!(
+            said,
+            expected.iter().map(String::as_str).collect::<Vec<_>>(),
+            "the inspector dropped or reordered the chosen edge's names"
+        );
         assert!(
             !said.is_empty(),
             "the inspector says nothing about the chosen cap edge"
@@ -4458,6 +4516,25 @@ mod tests {
                 assert!(
                     !sentence.contains(forbidden),
                     "the inspector printed {forbidden}: {sentence}"
+                );
+            }
+        }
+        for (_, value) in &rows {
+            for forbidden in [
+                "EdgePickId",
+                "FacePickId",
+                "SubShapeHandle",
+                "ShapeHandle",
+                "SessionId",
+                "session#",
+                "shape#",
+                "edge#",
+                "face#",
+                ".fcad",
+            ] {
+                assert!(
+                    !value.contains(forbidden),
+                    "the inspector printed {forbidden}: {value}"
                 );
             }
         }
@@ -4606,18 +4683,51 @@ mod tests {
             .find(|edge| scene.edges.of(*edge, &picture).len() == 3)
             .expect("one edge carries the three stored names");
 
+        // Select through a face the edge actually bounds, and hand the result
+        // through the same conversion the live inspector uses.
+        let (definition, face, edge) = edge_with_bounding_face(&picture, edge);
+        let chosen = Selection::at(definition, face, edge, &picture, &scene.faces, &scene.edges);
+        let Selection::Edge(selected) = &chosen else {
+            panic!("the triply named cap edge was not selected as an edge: {chosen:?}");
+        };
+        let words = words_of(&chosen, &scene.catalogue, &picture);
+        let names: Vec<ferritecad_ui::TopologyName<'_>> =
+            words.edges.iter().map(topology_name).collect();
+        let described = inspected(
+            &chosen,
+            &scene.catalogue,
+            &words.identities,
+            &[],
+            &names,
+            &picture,
+        )
+        .expect("the triply named edge reaches the inspector");
+        let rows = described.rows();
+        assert_eq!(
+            rows.first().map(|(label, value)| (*label, value.as_str())),
+            Some(("Kind", "Edge"))
+        );
+
         // One sentence per stored name, all alike because all three say the
         // same thing, and in the order the document keeps them.
-        let meanings = scene.edges.of(edge, &picture);
-        let said: Vec<String> = meanings
+        let said: Vec<&str> = rows
             .iter()
-            .map(|meaning| describe_role(&meaning.output_role))
+            .filter(|(label, _)| *label == "Role")
+            .map(|(_, value)| value.as_str())
             .collect();
         assert_eq!(said.len(), 3, "three names, three sentences");
+        assert_eq!(
+            said,
+            cap_meanings(selected)
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            "the inspector dropped or reordered the cap-edge sentences"
+        );
         for sentence in &said {
             assert_eq!(
-                sentence,
-                &format!("Start cap edge of profile segment {segment}")
+                *sentence,
+                format!("Start cap edge of profile segment {segment}")
             );
         }
 
@@ -4629,23 +4739,24 @@ mod tests {
             .filter(|entry| written.iter().any(|w| w.id == entry.id))
             .map(|entry| entry.id)
             .collect();
-        let arrived: Vec<ferritecad_types::StableEntityId> =
-            meanings.iter().map(|meaning| meaning.reference).collect();
-        assert_eq!(arrived, order, "the names are not in the document's order");
+        let arrived: Vec<String> = rows
+            .iter()
+            .filter(|(label, _)| *label == "Reference")
+            .map(|(_, value)| value.clone())
+            .collect();
+        assert_eq!(
+            arrived,
+            order.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "the inspector names are not in the document's order"
+        );
 
         // The named edge is a cap edge in the geometry too, asked through the
         // faces it bounds rather than through any coincidence of numbering.
-        let cap_face =
-            (0..picture.face_count())
-                .filter_map(|ordinal| picture.face_of(0, ordinal))
-                .find(|face| {
-                    scene.faces.of(*face, &picture).iter().any(|meaning| {
-                        matches!(meaning.output_role, SemanticRole::ExtrudeCap { .. })
-                    })
-                })
-                .expect("the picture has a cap face");
+        let definition_index = picture
+            .definition_of_edge(edge)
+            .expect("the picture issued the edge");
         let side_face = (0..picture.face_count())
-            .filter_map(|ordinal| picture.face_of(0, ordinal))
+            .filter_map(|ordinal| picture.face_of(definition_index, ordinal))
             .find(|face| {
                 scene.faces.of(*face, &picture).iter().any(|meaning| {
                     matches!(
@@ -4660,15 +4771,14 @@ mod tests {
             "a cap edge of this segment must bound the face raised from it"
         );
         assert!(
-            picture.edge_bounds_face(edge, cap_face)
-                || (0..picture.face_count())
-                    .filter_map(|ordinal| picture.face_of(0, ordinal))
-                    .filter(|face| {
-                        scene.faces.of(*face, &picture).iter().any(|meaning| {
-                            matches!(meaning.output_role, SemanticRole::ExtrudeCap { .. })
-                        })
+            (0..picture.face_count())
+                .filter_map(|ordinal| picture.face_of(definition_index, ordinal))
+                .filter(|face| {
+                    scene.faces.of(*face, &picture).iter().any(|meaning| {
+                        matches!(meaning.output_role, SemanticRole::ExtrudeCap { .. })
                     })
-                    .any(|face| picture.edge_bounds_face(edge, face)),
+                })
+                .any(|face| picture.edge_bounds_face(edge, face)),
             "a cap edge must bound a cap face"
         );
     }
@@ -4747,13 +4857,8 @@ mod tests {
         let Some((_directory, scene)) = native_plate_with_named_edges() else {
             return;
         };
+        let (definition, face, edge) = named_cap_edge(&scene);
         let picture = scene.snapshot;
-        let definition = picture.pick_of(0).expect("drawn");
-        let face = picture.face_of(0, 0).expect("numbered");
-        let edge = (0..picture.edge_count())
-            .filter_map(|ordinal| picture.edge_of(0, ordinal))
-            .find(|edge| !scene.edges.of(*edge, &picture).is_empty())
-            .expect("the document names an edge of the plate");
 
         let chosen = Selection::at(definition, face, edge, &picture, &scene.faces, &scene.edges);
         assert!(matches!(chosen, Selection::Edge(_)), "{chosen:?}");
