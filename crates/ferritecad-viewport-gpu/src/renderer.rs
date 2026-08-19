@@ -1791,11 +1791,13 @@ pub struct Frame {
     edges: Vec<u32>,
 }
 
-/// What one pixel turned out to be: a definition, and the face of it.
+/// What one pixel turned out to be: a definition, its face and any topological
+/// edge rasterised over it.
 ///
-/// Both, together, because they were read from the same pixel of the same
-/// frame and are only true of each other there. Neither field is readable as a
-/// number and neither is stored anywhere.
+/// All three together, because they were read from the same pixel of the same
+/// frame and are only true of each other there. None is readable as a number
+/// and none is stored anywhere. The constructor below refuses a face or edge
+/// whose owner disagrees with the definition at that sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hit {
     definition: PickId,
@@ -1872,7 +1874,8 @@ impl Frame {
         }
     }
 
-    /// What was drawn at one pixel, and which face of it.
+    /// What was drawn at one pixel, which face of it and which topological edge
+    /// was rasterised over that surface.
     ///
     /// Beside [`Self::pick_at`] rather than instead of it: what a click means
     /// is a settled question, and a hover asks a different one. Outside the
@@ -1924,12 +1927,17 @@ impl Frame {
     /// Which topological edge of the model was drawn at one pixel.
     ///
     /// Resolved against this frame's own snapshot, exactly as a pick is.
-    /// Outside the frame, over the grid, over the background and anywhere
-    /// inside a face this is [`EdgePickId::NOTHING`].
+    /// Outside the frame, over the cleared grid or backdrop and anywhere inside
+    /// a face this is [`EdgePickId::NOTHING`]. At an outer silhouette the line
+    /// rasteriser can cover a neighbouring sample the filled triangle did not;
+    /// this raw target still reports the edge there, while [`Self::hit_at`]
+    /// refuses it because that sample has no agreeing definition.
     ///
     /// The raw answer for the pixel and nothing more. [`Self::hit_at`] is
     /// where an edge is required to agree with the definition under it; this
-    /// says what the target holds.
+    /// says what the target holds. A single integer target can retain only one
+    /// answer where several edges cover the same sample, at a shared endpoint
+    /// or projected crossing; the deterministic draw order decides which one.
     pub fn edge_at(&self, x: u32, y: u32) -> EdgePickId {
         let Some(at) = self.index(x, y) else {
             return EdgePickId::NOTHING;
