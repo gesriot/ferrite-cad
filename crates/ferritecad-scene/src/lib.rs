@@ -244,6 +244,41 @@ pub enum Selection {
     Nothing,
     Definition(PickId),
     Face(SelectedFace),
+    Edge(SelectedEdge),
+}
+
+/// One chosen topological edge: which edge, of what, and what it is called.
+///
+/// Private fields, exactly as [`SelectedFace`] has them, and for the same
+/// reason: a caller outside this crate cannot put together an edge that
+/// belongs to one definition beside a definition it does not belong to, or an
+/// edge with no durable name at all. [`Selection::at`] decides all three
+/// together or produces no edge.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectedEdge {
+    edge: EdgePickId,
+    definition: PickId,
+    meanings: Vec<EdgeMeaning>,
+}
+
+impl SelectedEdge {
+    /// The transient identity of the edge, for this picture only.
+    pub fn edge(&self) -> EdgePickId {
+        self.edge
+    }
+
+    /// The definition it belongs to, in this picture.
+    pub fn definition(&self) -> PickId {
+        self.definition
+    }
+
+    /// Every stored reference that resolves exactly to this edge, in the order
+    /// the document stores them. All of them, for the reason a face keeps all
+    /// of its: choosing the first would present storage order as a decision
+    /// about which name is right.
+    pub fn meanings(&self) -> &[EdgeMeaning] {
+        &self.meanings
+    }
 }
 
 /// One chosen face: which face, of what, and what it is called.
@@ -285,9 +320,29 @@ impl Selection {
     pub fn at(
         definition: PickId,
         face: FacePickId,
+        edge: EdgePickId,
         snapshot: &RenderSnapshot,
         names: &FaceNames,
+        edges: &EdgeNames,
     ) -> Self {
+        // Most particular first, and only where the document can say what the
+        // thing is. An edge the document names beats a face it also names,
+        // because a person who aimed at a line meant the line; an edge nobody
+        // named is not a lesser edge, it is not a choice at all, and falls
+        // through to whatever this picture can honestly say instead.
+        let edge_owner = snapshot.definition_of_edge(edge);
+        let edge_meanings = edges.of(edge, snapshot);
+        if !edge_meanings.is_empty()
+            && edge_owner.is_some()
+            && edge_owner == snapshot.definition(definition)
+        {
+            return Self::Edge(SelectedEdge {
+                edge,
+                definition,
+                meanings: edge_meanings.to_vec(),
+            });
+        }
+
         let owner = snapshot.definition_of_face(face);
         let meanings = names.of(face, snapshot);
         // The pick and the face must be two statements about one pixel. They
@@ -321,6 +376,7 @@ impl Selection {
             Self::Nothing => None,
             Self::Definition(pick) => snapshot.definition(*pick),
             Self::Face(chosen) => snapshot.definition(chosen.definition),
+            Self::Edge(chosen) => snapshot.definition(chosen.definition),
         }
     }
 
@@ -330,6 +386,7 @@ impl Selection {
             Self::Nothing => ferritecad_viewport::Marked::Nothing,
             Self::Definition(pick) => ferritecad_viewport::Marked::Definition(*pick),
             Self::Face(chosen) => ferritecad_viewport::Marked::Face(chosen.face),
+            Self::Edge(chosen) => ferritecad_viewport::Marked::Edge(chosen.edge),
         }
     }
 
@@ -342,6 +399,7 @@ impl Selection {
             Self::Nothing => None,
             Self::Definition(pick) => snapshot.bounds_of(*pick),
             Self::Face(chosen) => snapshot.bounds_of_face(chosen.face),
+            Self::Edge(chosen) => snapshot.bounds_of_edge(chosen.edge),
         }
     }
 }
@@ -1298,6 +1356,139 @@ mod tests {
             scene.snapshot.face_count() > 0,
             "the faces of the plate are still numbered"
         );
+    }
+
+    /// A picture with one edge the document names, and one it does not.
+    ///
+    /// Two edges of one definition: the first carries a durable name, the
+    /// second carries none. The face carries one too, so "the edge wins" is a
+    /// statement with content rather than the only answer available.
+    fn a_named_edge() -> (RenderSnapshot, FaceNames, EdgeNames) {
+        use ferritecad_document::CapSide;
+
+        let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
+        let mesh = Mesh {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: vec![0, 1, 2],
+            faces: vec![ferritecad_kernel::MeshFaceRange {
+                face: SubShapeHandle::new(shape, ferritecad_kernel::SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 3,
+            }],
+            edges: Some(ferritecad_kernel::MeshEdges {
+                segments: vec![0, 1, 1, 2],
+                ranges: (0..2)
+                    .map(|ordinal| ferritecad_kernel::MeshEdgeRange {
+                        edge: SubShapeHandle::new(
+                            shape,
+                            ferritecad_kernel::SubShapeKind::Edge,
+                            ordinal,
+                        ),
+                        first_segment: ordinal as u32,
+                        segment_count: 1,
+                    })
+                    .collect(),
+            }),
+        };
+
+        let mut builder = SnapshotBuilder::new();
+        let definition = builder.add_mesh(&mesh).expect("packs");
+        builder
+            .place(definition, None, &Transform::IDENTITY, BODY_COLOUR)
+            .expect("places");
+        // Three stored names for the first edge, none for the second.
+        let three: Vec<BoundMeaning> = (0..3).map(|_| bound(a_cap_edge(CapSide::Start))).collect();
+        let edge_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+            [(definition, vec![three, Vec::new()])]
+                .into_iter()
+                .collect();
+        let face_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+            [(definition, vec![vec![bound(a_cap_edge(CapSide::End))]])]
+                .into_iter()
+                .collect();
+        builder
+            .bind_identities_to(semantic_context_identity(&face_named, &edge_named))
+            .expect("binds");
+        let snapshot = builder.build();
+        let faces = face_names(&snapshot, face_named).expect("lays out");
+        let edges = edge_names(&snapshot, edge_named).expect("lays out");
+        (snapshot, faces, edges)
+    }
+
+    #[test]
+    fn a_named_edge_is_chosen_before_the_face_it_lies_on() {
+        let (snapshot, faces, edges) = a_named_edge();
+        let definition = snapshot.pick_of(0).expect("drawn");
+        let face = snapshot.face_of(0, 0).expect("numbered");
+        let named = snapshot.edge_of(0, 0).expect("numbered");
+        let unnamed = snapshot.edge_of(0, 1).expect("numbered");
+        assert!(
+            !faces.of(face, &snapshot).is_empty(),
+            "the face is named too"
+        );
+
+        // The edge wins.
+        let chosen = Selection::at(definition, face, named, &snapshot, &faces, &edges);
+        let Selection::Edge(edge) = &chosen else {
+            panic!("a named edge did not win over a named face: {chosen:?}")
+        };
+        assert_eq!(edge.edge(), named);
+        assert_eq!(edge.definition(), definition);
+        // All three names, in the order they were stored.
+        assert_eq!(edge.meanings().len(), 3);
+        assert_eq!(edge.meanings(), edges.of(named, &snapshot));
+        // And the three answers about one choice agree.
+        assert_eq!(chosen.marked(), ferritecad_viewport::Marked::Edge(named));
+        assert_eq!(chosen.owning_definition(&snapshot), Some(0));
+        assert_eq!(chosen.bounds(&snapshot), snapshot.bounds_of_edge(named));
+
+        // An edge nobody named is not a lesser edge; it is not a choice, and
+        // the named face beneath it is.
+        let fallback = Selection::at(definition, face, unnamed, &snapshot, &faces, &edges);
+        assert!(
+            matches!(fallback, Selection::Face(_)),
+            "an unnamed edge chose {fallback:?}"
+        );
+        // With no named face either, the part.
+        let bare = Selection::at(
+            definition,
+            face,
+            unnamed,
+            &snapshot,
+            &FaceNames::default(),
+            &edges,
+        );
+        assert!(matches!(bare, Selection::Definition(_)), "{bare:?}");
+    }
+
+    #[test]
+    fn an_edge_that_contradicts_its_pixel_chooses_no_edge() {
+        let (snapshot, faces, edges) = a_named_edge();
+        let definition = snapshot.pick_of(0).expect("drawn");
+        let face = snapshot.face_of(0, 0).expect("numbered");
+        let named = snapshot.edge_of(0, 0).expect("numbered");
+
+        // A second picture whose raw values are in range here.
+        let (other, _, other_edges) = a_named_edge();
+        let foreign = other.edge_of(0, 0).expect("numbered");
+        assert_eq!(foreign.to_raw(), named.to_raw(), "the same raw value");
+        assert!(
+            !other_edges.of(foreign, &other).is_empty(),
+            "and named in its own picture"
+        );
+
+        for (what, definition, edge) in [
+            ("an edge of another picture", definition, foreign),
+            ("nothing at all", definition, EdgePickId::NOTHING),
+            ("a definition of nothing", PickId::NOTHING, named),
+        ] {
+            let chosen = Selection::at(definition, face, edge, &snapshot, &faces, &edges);
+            assert!(
+                !matches!(chosen, Selection::Edge(_)),
+                "{what} assembled an edge: {chosen:?}"
+            );
+        }
     }
 
     #[test]
@@ -3853,7 +4044,14 @@ mod tests {
 
         // A face the document names is chosen as that face, and carries what
         // the document calls it.
-        let chosen = Selection::at(pick, named, snapshot, &scene.faces);
+        let chosen = Selection::at(
+            pick,
+            named,
+            EdgePickId::NOTHING,
+            snapshot,
+            &scene.faces,
+            &EdgeNames::default(),
+        );
         let Selection::Face(face) = &chosen else {
             panic!("a named face was not chosen as a face: {chosen:?}");
         };
@@ -3865,7 +4063,14 @@ mod tests {
 
         // Nothing at all is nothing at all.
         assert_eq!(
-            Selection::at(PickId::NOTHING, FacePickId::NOTHING, snapshot, &scene.faces),
+            Selection::at(
+                PickId::NOTHING,
+                FacePickId::NOTHING,
+                EdgePickId::NOTHING,
+                snapshot,
+                &scene.faces,
+                &EdgeNames::default()
+            ),
             Selection::Nothing
         );
     }
@@ -3885,7 +4090,14 @@ mod tests {
         // The honest answer, and the one this application could already give:
         // the part, not an invented name for one of its faces.
         assert_eq!(
-            Selection::at(pick, face, snapshot, &scene.faces),
+            Selection::at(
+                pick,
+                face,
+                EdgePickId::NOTHING,
+                snapshot,
+                &scene.faces,
+                &EdgeNames::default()
+            ),
             Selection::Definition(pick)
         );
     }
@@ -3914,7 +4126,14 @@ mod tests {
         let pick = snapshot.pick_of(0).expect("the import is drawn");
         let face = snapshot.face_of(0, 0).expect("numbered");
         assert_eq!(
-            Selection::at(pick, face, snapshot, &scene.faces),
+            Selection::at(
+                pick,
+                face,
+                EdgePickId::NOTHING,
+                snapshot,
+                &scene.faces,
+                &EdgeNames::default()
+            ),
             Selection::Definition(pick),
             "an imported face has no durable name and must not be chosen as one"
         );
@@ -3938,12 +4157,26 @@ mod tests {
         let stale = other.snapshot.face_of(0, 0).expect("numbered");
 
         assert_eq!(
-            Selection::at(pick, stale, snapshot, &scene.faces),
+            Selection::at(
+                pick,
+                stale,
+                EdgePickId::NOTHING,
+                snapshot,
+                &scene.faces,
+                &EdgeNames::default()
+            ),
             Selection::Definition(pick),
             "a face from another picture must not attach itself to this one"
         );
         assert_eq!(
-            Selection::at(PickId::NOTHING, stale, snapshot, &scene.faces),
+            Selection::at(
+                PickId::NOTHING,
+                stale,
+                EdgePickId::NOTHING,
+                snapshot,
+                &scene.faces,
+                &EdgeNames::default()
+            ),
             Selection::Nothing
         );
     }
@@ -4060,7 +4293,14 @@ mod tests {
             "a name stored only in the first document leaked into the second"
         );
         assert_eq!(
-            Selection::at(pick, face, &unnamed.snapshot, &named.faces),
+            Selection::at(
+                pick,
+                face,
+                EdgePickId::NOTHING,
+                &unnamed.snapshot,
+                &named.faces,
+                &EdgeNames::default(),
+            ),
             Selection::Definition(pick),
             "a face the current document does not name became selectable as a face"
         );

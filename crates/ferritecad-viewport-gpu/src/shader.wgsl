@@ -26,13 +26,14 @@ struct Globals {
     hovered: u32,
     // Which topological edge the pointer is over, or zero.
     hovered_edge: u32,
-    // Three scalars of padding, spelled out. The matrix above gives this
-    // struct sixteen-byte alignment, so WGSL rounds its size up to a multiple
-    // of sixteen; without these the Rust type would be 84 bytes and this one
-    // 96. Both are 96, and Rust asserts it.
+    // Which topological edge has been chosen, or zero.
+    selected_edge: u32,
+    // Two scalars of padding, spelled out. The matrix above gives this struct
+    // sixteen-byte alignment, so WGSL rounds its size up to a multiple of
+    // sixteen; without these the Rust type would be 88 bytes and this one 96.
+    // Both are 96, and Rust asserts it.
     padding_0: u32,
     padding_1: u32,
-    padding_2: u32,
 };
 
 struct Draw {
@@ -315,10 +316,22 @@ fn vertex_edge_mark(
 // face belongs to keep exactly the colour they had.
 @fragment
 fn fragment_edge_mark(in: EdgeMarkOut) -> @location(0) vec4<f32> {
-    if (globals.hovered_edge == 0u || in.edge != globals.hovered_edge) {
+    let chosen = globals.selected_edge != 0u && in.edge == globals.selected_edge;
+    let asked = globals.hovered_edge != 0u && in.edge == globals.hovered_edge;
+    if (!chosen && !asked) {
         discard;
     }
     let ink = marked_colour(draw.colour.rgb, 1.0);
+    if (chosen) {
+        // A decision, and it must not be mistakeable for the question. The
+        // question is carried half way to a warm accent; a choice goes all the
+        // way to a cool one, so the two differ in hue as well as in strength
+        // and neither can be read as a brighter version of the other. A choice
+        // wins on the edge it is about: `chosen` is tested first, so pointing
+        // at what is already chosen changes nothing.
+        let decided = vec3<f32>(0.15, 0.70, 1.0);
+        return vec4<f32>(mix(ink, decided, 0.85), draw.colour.a);
+    }
     let accent = vec3<f32>(1.0, 0.55, 0.1);
     return vec4<f32>(mix(ink, accent, 0.5), draw.colour.a);
 }

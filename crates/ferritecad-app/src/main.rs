@@ -37,7 +37,8 @@ use ferritecad_document::{CapSide, DOCUMENT_EXTENSION, SelectionRule, SemanticRo
 use ferritecad_kernel::{CancelToken, OperationContext, ProgressSink, TessellationParams};
 use ferritecad_occt::OcctKernel;
 use ferritecad_scene::{
-    CatalogueEntry, FaceMeaning, FaceNames, LoadedScene, SceneItem, Selection, snapshot_of,
+    CatalogueEntry, EdgeNames, FaceMeaning, FaceNames, LoadedScene, SceneItem,
+    Selection, snapshot_of,
 };
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
@@ -534,8 +535,21 @@ fn finish_answer(
 /// A pixel that names nothing chooses nothing: clicking the background is how
 /// a person unchooses, and a pick left over from a document that has since
 /// been replaced names a definition of a picture nobody is looking at.
-fn selection_at(hit: Hit, snapshot: &RenderSnapshot, faces: &FaceNames) -> Selection {
-    Selection::at(hit.definition(), hit.face(), snapshot, faces)
+fn selection_at(
+    hit: Hit,
+    snapshot: &RenderSnapshot,
+    faces: &FaceNames,
+    edges: &EdgeNames,
+) -> Selection {
+    // All three answers about one pixel, from one frame, decided together.
+    Selection::at(
+        hit.definition(),
+        hit.face(),
+        hit.edge(),
+        snapshot,
+        faces,
+        edges,
+    )
 }
 
 /// Chooses the definition named by a list row and draws that change once.
@@ -585,7 +599,14 @@ fn prepare_load<P>(
     current_input: &ViewportInput,
     loaded: Result<LoadedScene>,
     prepare: impl FnOnce(Arc<RenderSnapshot>) -> Result<P>,
-) -> Result<(ViewportInput, P, Vec<CatalogueEntry>, FaceNames, Visibility)> {
+) -> Result<(
+    ViewportInput,
+    P,
+    Vec<CatalogueEntry>,
+    FaceNames,
+    EdgeNames,
+    Visibility,
+)> {
     let mut input = current_input.clone();
     let loaded = loaded?;
     let snapshot = input.accept_load(Ok(loaded.snapshot))?;
@@ -595,7 +616,14 @@ fn prepare_load<P>(
     // opening with parts already missing.
     let visibility = Visibility::new(&snapshot);
     let prepared = prepare(Arc::new(snapshot))?;
-    Ok((input, prepared, loaded.catalogue, loaded.faces, visibility))
+    Ok((
+        input,
+        prepared,
+        loaded.catalogue,
+        loaded.faces,
+        loaded.edges,
+        visibility,
+    ))
 }
 
 /// Applies every texture upload and consumes it from egui's command set.
@@ -695,6 +723,10 @@ struct LiveScene<P> {
     /// What the document durably calls each face of `prepared`, which is what
     /// makes a face selectable as a face rather than as the part it is on.
     faces: FaceNames,
+    /// What the document durably calls the topological edges of `prepared`.
+    /// Beside `faces` and replaced with it, for the same reason: what a name
+    /// means belongs to the picture it was read against.
+    edges: EdgeNames,
     /// Which definitions this window is drawing. Transient, bound to
     /// `prepared`, and reset with it: what is hidden is a state of looking at
     /// a document, not a fact about the document.
@@ -717,12 +749,14 @@ impl<P> LiveScene<P> {
         prepared: P,
         catalogue: Vec<CatalogueEntry>,
         faces: FaceNames,
+        edges: EdgeNames,
         visibility: Visibility,
     ) -> Self {
         Self {
             prepared,
             catalogue,
             faces,
+            edges,
             visibility,
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
@@ -788,10 +822,17 @@ impl<P> LiveScene<P> {
 fn commit_scene<P>(
     scene: &mut LiveScene<P>,
     camera: &mut ViewportInput,
-    next: Result<(ViewportInput, P, Vec<CatalogueEntry>, FaceNames, Visibility)>,
+    next: Result<(
+        ViewportInput,
+        P,
+        Vec<CatalogueEntry>,
+        FaceNames,
+        EdgeNames,
+        Visibility,
+    )>,
 ) -> Result<()> {
-    let (framed, prepared, catalogue, faces, visibility) = next?;
-    *scene = LiveScene::new(prepared, catalogue, faces, visibility);
+    let (framed, prepared, catalogue, faces, edges, visibility) = next?;
+    *scene = LiveScene::new(prepared, catalogue, faces, edges, visibility);
     *camera = framed;
     Ok(())
 }
@@ -1160,15 +1201,20 @@ fn hover_request(row: Option<usize>, interface_has_pointer: bool, question: Hove
 /// in it is a durable identifier or a display fact the loader sanitised.
 struct Words {
     identities: Vec<String>,
-    faces: Vec<FaceWords>,
+    faces: Vec<TopologyWords>,
+    /// The same six terms for a chosen edge. One type, two lists: what is
+    /// chosen is one thing, so only one of these is ever non-empty.
+    edges: Vec<TopologyWords>,
 }
 
-/// One durable face name, in the words a person reads.
+/// One durable name, in the words a person reads.
 ///
-/// Portable terms only. There is no field here for a face ordinal, a mesh
-/// index, a handle or a session, because there is nothing true to put in one:
-/// what names a face is the reference the document stores.
-struct FaceWords {
+/// Portable terms only. There is no field here for an ordinal, a mesh index, a
+/// handle, a session or a transient identity, because there is nothing true to
+/// put in one: what names a face or an edge is the reference the document
+/// stores. One type for both, because the document stores the same six terms
+/// about either.
+struct TopologyWords {
     reference: String,
     owner: String,
     producer_feature: String,
@@ -1188,21 +1234,25 @@ fn words_of(
     catalogue: &[CatalogueEntry],
     snapshot: &RenderSnapshot,
 ) -> Words {
+    let known = selection.owning_definition(snapshot).is_some();
     let faces = match selection {
-        Selection::Face(face) if selection.owning_definition(snapshot).is_some() => {
-            face.meanings().iter().map(face_words).collect()
-        }
+        Selection::Face(face) if known => face.meanings().iter().map(topology_words).collect(),
+        _ => Vec::new(),
+    };
+    let edges = match selection {
+        Selection::Edge(edge) if known => edge.meanings().iter().map(topology_words).collect(),
         _ => Vec::new(),
     };
     Words {
         identities: identities_of(catalogue),
         faces,
+        edges,
     }
 }
 
 /// One stored reference, said in the document's own terms.
-fn face_words(meaning: &FaceMeaning) -> FaceWords {
-    FaceWords {
+fn topology_words(meaning: &FaceMeaning) -> TopologyWords {
+    TopologyWords {
         reference: meaning.reference.to_string(),
         owner: meaning.owner.to_string(),
         producer_feature: meaning.producer_feature.to_string(),
@@ -1212,8 +1262,8 @@ fn face_words(meaning: &FaceMeaning) -> FaceWords {
     }
 }
 
-fn face_name(words: &FaceWords) -> ferritecad_ui::FaceName<'_> {
-    ferritecad_ui::FaceName {
+fn topology_name(words: &TopologyWords) -> ferritecad_ui::TopologyName<'_> {
+    ferritecad_ui::TopologyName {
         reference: &words.reference,
         owner: &words.owner,
         producer_feature: &words.producer_feature,
@@ -1265,7 +1315,8 @@ fn inspected<'a>(
     selection: &Selection,
     catalogue: &'a [CatalogueEntry],
     identities: &'a [String],
-    faces: &'a [ferritecad_ui::FaceName<'a>],
+    faces: &'a [ferritecad_ui::TopologyName<'a>],
+    edges: &'a [ferritecad_ui::TopologyName<'a>],
     snapshot: &RenderSnapshot,
 ) -> Option<Selected<'a>> {
     let definition = selection.owning_definition(snapshot)?;
@@ -1276,6 +1327,14 @@ fn inspected<'a>(
             name,
             object,
             names: faces,
+        }),
+        // An edge, on the same terms and for the same reason: only a native
+        // body has durable edge names, so an edge of an imported definition is
+        // never chosen as an edge and never reaches here.
+        (Selection::Edge(_), Selected::Body { name, object }) => Some(Selected::Edge {
+            name,
+            object,
+            names: edges,
         }),
         // An imported definition has no durable face names, so a face of one
         // is never chosen as a face and never reaches here.
@@ -1738,7 +1797,12 @@ impl App {
 
         match Self::hit_at(live, self.input.camera(), x as f32, y as f32) {
             Ok(hit) => {
-                let chosen = selection_at(hit, live.scene.prepared.snapshot(), &live.scene.faces);
+                let chosen = selection_at(
+                    hit,
+                    live.scene.prepared.snapshot(),
+                    &live.scene.faces,
+                    &live.scene.edges,
+                );
                 if chosen != live.scene.selection {
                     live.scene.selection = chosen;
                     self.input.request_redraw();
@@ -2106,6 +2170,7 @@ impl App {
                 prepared,
                 Vec::new(),
                 FaceNames::default(),
+                EdgeNames::default(),
                 Visibility::default(),
             ),
             egui,
@@ -2148,8 +2213,10 @@ impl Live {
             &scene.catalogue,
             scene.prepared.snapshot(),
         );
-        let face_names: Vec<ferritecad_ui::FaceName<'_>> =
-            words.faces.iter().map(face_name).collect();
+        let face_names: Vec<ferritecad_ui::TopologyName<'_>> =
+            words.faces.iter().map(topology_name).collect();
+        let edge_names: Vec<ferritecad_ui::TopologyName<'_>> =
+            words.edges.iter().map(topology_name).collect();
         // One answer for both sides of the choice: the row a list marks and
         // the facts an inspector shows come from the same resolution.
         let (definitions, chosen_row) = scene.view(&words.identities, scene.prepared.snapshot());
@@ -2163,6 +2230,7 @@ impl Live {
             &scene.catalogue,
             &words.identities,
             &face_names,
+            &edge_names,
             scene.prepared.snapshot(),
         );
 
@@ -2520,7 +2588,7 @@ mod tests {
     fn loaded(snapshot: RenderSnapshot) -> LoadedScene {
         LoadedScene {
             faces: FaceNames::default(),
-            edges: ferritecad_scene::EdgeNames::default(),
+            edges: EdgeNames::default(),
             snapshot,
             catalogue: Vec::new(),
         }
@@ -2698,7 +2766,7 @@ mod tests {
         // call a document ready before the frame that put it there.
         let outcome = if loads.accepts(generation) {
             match prepare_load(input, result, |_| Ok(())) {
-                Ok((updated, (), _, _, _)) => {
+                Ok((updated, (), _, _, _, _)) => {
                     *input = updated;
                     Ok(())
                 }
@@ -3193,6 +3261,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Hovered::Nothing,
@@ -3211,6 +3280,7 @@ mod tests {
             (),
             vec![a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::default(),
         );
         assert_eq!(replacement.selection, Selection::Nothing);
@@ -3229,6 +3299,7 @@ mod tests {
             prepared: (),
             catalogue: vec![mine.clone()],
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             // A real question about the picture that is still on screen, so
@@ -3271,6 +3342,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Hovered::Nothing,
@@ -3290,6 +3362,7 @@ mod tests {
                 (),
                 vec![arriving.clone()],
                 FaceNames::default(),
+                EdgeNames::default(),
                 Visibility::default(),
             )),
         )
@@ -3311,6 +3384,7 @@ mod tests {
             prepared: (),
             catalogue: vec![mine.clone()],
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(
                 picture
@@ -3341,6 +3415,7 @@ mod tests {
             prepared: (),
             catalogue: Vec::new(),
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: scene.selection,
             hovered: Hovered::Nothing,
@@ -3361,6 +3436,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Hovered::Nothing,
@@ -3475,6 +3551,7 @@ mod tests {
             prepared: (),
             catalogue: entries.clone(),
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
@@ -3649,6 +3726,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::new(&picture),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
@@ -3765,6 +3843,324 @@ mod tests {
             }
         }
         assert!(on_faces > 0, "the model is drawn and its faces answer");
+    }
+
+    /// The committed plate through the real kernel, with an exact durable name
+    /// written for every cap-boundary edge.
+    fn native_plate_with_named_edges() -> Option<(tempfile::TempDir, LoadedScene)> {
+        use ferritecad_document::{CapSide, Document, EntityKind, SelectionRule};
+
+        if !ferritecad_occt::is_available() {
+            eprintln!("skipped: this build has no Open CASCADE");
+            return None;
+        }
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("plate.fcad");
+        std::fs::copy(ferritecad_fixtures::plate_source(), &path).expect("copies the fixture");
+
+        let mut document = Document::open(&path).expect("opens the plate");
+        let stored = document.topology_refs().expect("reads");
+        let sides: Vec<(ferritecad_types::ObjectId, ferritecad_types::StableEntityId)> = stored
+            .iter()
+            .filter_map(|reference| match &reference.output_role {
+                SemanticRole::ExtrudeSide { profile_segment } => {
+                    Some((reference.producer_feature, *profile_segment))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(!sides.is_empty(), "the fixture names its swept faces");
+        let owner = stored[0].owner;
+        document
+            .write(|w| {
+                for (producer, segment) in &sides {
+                    for side in [CapSide::Start, CapSide::End] {
+                        w.put_topology_ref(&ferritecad_document::TopologyRef {
+                            id: ferritecad_types::StableEntityId::new(),
+                            owner,
+                            producer_feature: *producer,
+                            expected_kind: EntityKind::Edge,
+                            output_role: SemanticRole::ExtrudeCapEdge {
+                                side,
+                                profile_segment: *segment,
+                            },
+                            selection: SelectionRule::Exact,
+                            fallback_signature: None,
+                        })?;
+                    }
+                }
+                Ok(())
+            })
+            .expect("stores the cap edge references");
+        drop(document);
+
+        let mut kernel = OcctKernel::new().expect("opens a session");
+        let scene = snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel: &mut OcctKernel, bytes: &[u8]| kernel.import_step(bytes),
+            &ferritecad_kernel::TessellationParams::default(),
+            &ferritecad_kernel::OperationContext::default(),
+        )
+        .expect("the plate loads through Open CASCADE");
+        Some((directory, scene))
+    }
+
+    #[test]
+    fn clicking_a_named_edge_of_the_committed_plate_chooses_that_edge() {
+        let Some((_directory, scene)) = native_plate_with_named_edges() else {
+            return;
+        };
+        let mut renderer = renderer_or_skip!();
+        let picture = std::sync::Arc::new(scene.snapshot);
+        let prepared = renderer
+            .prepare(std::sync::Arc::clone(&picture))
+            .expect("uploads");
+        let mut input = ViewportInput::new();
+        input.resize(480, 480);
+        input
+            .frame(picture.bounds().expect("somewhere"))
+            .expect("frames");
+        // Turned off the axis so a cap edge lies over the body rather than on
+        // its silhouette. Which edges have a coherent pixel depends on the
+        // view: a line on the outer silhouette is refused by `Hit`, because
+        // the edge target and the definition target disagree there.
+        input.handle(ViewportEvent::PointerMoved { x: 200.0, y: 200.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(ViewportEvent::PointerMoved { x: 260.0, y: 150.0 }, false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        let visibility = Visibility::new(&picture);
+
+        let plain = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                Marked::Nothing,
+                Hovered::Nothing,
+                &visibility,
+            )
+            .expect("draws");
+
+        // A pixel that is on a topological edge the document names.
+        let (x, y, edge) = (0..plain.height())
+            .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+            .find_map(|(x, y)| {
+                let hit = plain.hit_at(x, y);
+                let edge = hit.edge();
+                (edge != EdgePickId::NOTHING && !scene.edges.of(edge, &picture).is_empty())
+                    .then_some((x, y, edge))
+            })
+            .expect("the plate draws an edge the document names");
+
+        // The click must choose that edge, and not the face beneath it.
+        let chosen = selection_at(plain.hit_at(x, y), &picture, &scene.faces, &scene.edges);
+        let Selection::Edge(selected) = &chosen else {
+            panic!("clicking a named edge chose {chosen:?} instead of the edge");
+        };
+        assert_eq!(selected.edge(), edge);
+        assert_eq!(chosen.marked(), Marked::Edge(edge));
+        assert!(!selected.meanings().is_empty(), "and it carries its names");
+
+        // And the next frame must show it, differently from the plain picture.
+        let marked = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                chosen.marked(),
+                Hovered::Nothing,
+                &visibility,
+            )
+            .expect("draws");
+        assert_ne!(
+            marked.colour_at(x, y),
+            plain.colour_at(x, y),
+            "the chosen edge was not drawn as chosen"
+        );
+
+        // The inspector describes it in the document's own words and in no
+        // others.
+        let words = words_of(&chosen, &scene.catalogue, &picture);
+        assert!(
+            !words.faces.is_empty() || !words.edges.is_empty(),
+            "the inspector says nothing about the chosen edge"
+        );
+    }
+
+    #[test]
+    fn a_chosen_edge_is_framed_hidden_and_described_as_its_own_thing() {
+        let Some((_directory, scene)) = native_plate_with_named_edges() else {
+            return;
+        };
+        let picture = scene.snapshot;
+        let definition = picture.pick_of(0).expect("drawn");
+        let face = picture.face_of(0, 0).expect("numbered");
+        let edge = (0..picture.edge_count())
+            .filter_map(|ordinal| picture.edge_of(0, ordinal))
+            .find(|edge| !scene.edges.of(*edge, &picture).is_empty())
+            .expect("the document names an edge of the plate");
+
+        let chosen = Selection::at(definition, face, edge, &picture, &scene.faces, &scene.edges);
+        assert!(matches!(chosen, Selection::Edge(_)), "{chosen:?}");
+
+        // Framed on the edge itself, not on the face or the part.
+        assert_eq!(chosen.bounds(&picture), picture.bounds_of_edge(edge));
+        assert_ne!(chosen.bounds(&picture), picture.bounds_of(definition));
+        assert_ne!(chosen.bounds(&picture), picture.bounds_of_face(face));
+
+        // Hiding and isolating act on the part the edge belongs to.
+        let mut visibility = Visibility::new(&picture);
+        assert!(visibility.can_hide(chosen.marked(), &picture));
+        assert!(visibility.can_isolate(chosen.marked(), &picture) || picture.meshes().len() == 1);
+        assert!(visibility.hide(chosen.marked(), &picture));
+        assert!(!visibility.shows(0, &picture));
+
+        // A list row still chooses the definition and never the edge.
+        let by_row = Selection::definition(definition, &picture);
+        assert!(matches!(by_row, Selection::Definition(_)), "{by_row:?}");
+
+        // The inspector says only durable words, and says every name.
+        let words = words_of(&chosen, &scene.catalogue, &picture);
+        assert!(words.faces.is_empty(), "an edge was described as a face");
+        assert_eq!(
+            words.edges.len(),
+            scene.edges.of(edge, &picture).len(),
+            "the inspector dropped a stored name"
+        );
+        let names: Vec<ferritecad_ui::TopologyName<'_>> =
+            words.edges.iter().map(topology_name).collect();
+        let described = inspected(
+            &chosen,
+            &scene.catalogue,
+            &words.identities,
+            &[],
+            &names,
+            &picture,
+        )
+        .expect("an edge of a native body is described");
+        let rows = described.rows();
+        assert_eq!(
+            rows.first().map(|(k, v)| (*k, v.as_str())),
+            Some(("Kind", "Edge"))
+        );
+        for (_, value) in &rows {
+            for forbidden in [
+                "session#",
+                "shape#",
+                "face#",
+                "edge#",
+                "EdgePickId",
+                "FacePickId",
+                "SubShapeHandle",
+            ] {
+                assert!(
+                    !value.contains(forbidden),
+                    "the inspector printed {forbidden}: {value}"
+                );
+            }
+        }
+        // Every stored term reaches the panel.
+        for label in ["Reference", "Owner", "Feature", "Entity", "Role", "Rule"] {
+            assert!(
+                rows.iter().any(|(key, _)| *key == label),
+                "the inspector never said {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_open_keeps_a_chosen_edge_and_a_successful_one_forgets_it() {
+        let Some((_directory, loaded)) = native_plate_with_named_edges() else {
+            return;
+        };
+        let picture = loaded.snapshot;
+        let definition = picture.pick_of(0).expect("drawn");
+        let face = picture.face_of(0, 0).expect("numbered");
+        let edge = (0..picture.edge_count())
+            .filter_map(|ordinal| picture.edge_of(0, ordinal))
+            .find(|edge| !loaded.edges.of(*edge, &picture).is_empty())
+            .expect("named");
+        let chosen = Selection::at(
+            definition,
+            face,
+            edge,
+            &picture,
+            &loaded.faces,
+            &loaded.edges,
+        );
+
+        let mut scene = LiveScene {
+            prepared: (),
+            catalogue: loaded.catalogue.clone(),
+            faces: loaded.faces.clone(),
+            edges: loaded.edges.clone(),
+            visibility: Visibility::new(&picture),
+            selection: chosen.clone(),
+            hovered: Hovered::Nothing,
+        };
+        let mut camera = ViewportInput::new();
+        camera.resize(800, 600);
+
+        // A load that failed changes nothing, including the edge names it
+        // would need to describe what is chosen.
+        commit_scene(
+            &mut scene,
+            &mut camera,
+            Err(CadError::input("this is not a document")),
+        )
+        .expect_err("a failed load is reported");
+        assert_eq!(scene.selection, chosen, "a failed open lost the choice");
+        assert!(
+            !scene.edges.of(edge, &picture).is_empty(),
+            "a failed open lost the edge names"
+        );
+
+        // A load that arrived replaces all of it, choice included.
+        let mut framed = ViewportInput::new();
+        framed.resize(640, 480);
+        commit_scene(
+            &mut scene,
+            &mut camera,
+            Ok((
+                framed,
+                (),
+                loaded.catalogue.clone(),
+                FaceNames::default(),
+                EdgeNames::default(),
+                Visibility::default(),
+            )),
+        )
+        .expect("a load that arrived commits");
+        assert_eq!(scene.selection, Selection::Nothing);
+        assert!(scene.edges.of(edge, &picture).is_empty());
+    }
+
+    #[test]
+    fn what_a_load_hands_over_includes_the_names_of_its_edges() {
+        let Some((_directory, loaded)) = native_plate_with_named_edges() else {
+            return;
+        };
+        let picture = loaded.snapshot.clone();
+        let edge = (0..picture.edge_count())
+            .filter_map(|ordinal| picture.edge_of(0, ordinal))
+            .find(|edge| !loaded.edges.of(*edge, &picture).is_empty())
+            .expect("the document names an edge of the plate");
+        let expected = loaded.edges.of(edge, &picture).len();
+
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        // The route a real Open takes: everything fallible first, and the
+        // parts handed over together afterwards.
+        let (_framed, (), _catalogue, _faces, edges, _visibility) =
+            prepare_load(&input, Ok(loaded), |_| Ok(())).expect("the load is prepared");
+
+        assert_eq!(
+            edges.of(edge, &picture).len(),
+            expected,
+            "preparing a load dropped what the document calls its edges"
+        );
     }
 
     /// A pixel of the picture that sits on a topological edge, and the edge.
@@ -4076,6 +4472,7 @@ mod tests {
             (),
             vec![a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(picture),
         );
         scene.selection =
@@ -4102,6 +4499,7 @@ mod tests {
             (),
             vec![a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         scene.selection =
@@ -4218,6 +4616,7 @@ mod tests {
             (),
             vec![a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -4355,6 +4754,7 @@ mod tests {
                 (),
                 vec![a_body(), a_body()],
                 FaceNames::default(),
+                EdgeNames::default(),
                 Visibility::new(&next),
             )),
         )
@@ -4458,7 +4858,7 @@ mod tests {
             Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
         };
         use ferritecad_kernel::mock::MockKernel;
-        use ferritecad_types::{ObjectId, StableEntityId};
+        use ferritecad_types::ObjectId;
 
         let directory = tempfile::tempdir().expect("a temporary directory is available");
         let path = directory.path().join("plate.fcad");
@@ -4490,7 +4890,7 @@ mod tests {
                         let (sx, sy) = corners[index];
                         let (ex, ey) = corners[(index + 1) % corners.len()];
                         curves.push(SketchCurve {
-                            id: StableEntityId::new(),
+                            id: ferritecad_types::StableEntityId::new(),
                             construction: false,
                             geometry: SketchGeometry::Line {
                                 start: Point2::new(sx, sy)?,
@@ -4579,8 +4979,10 @@ mod tests {
         let chosen = Selection::at(
             snapshot.pick_of(0).expect("drawn"),
             face,
+            EdgePickId::NOTHING,
             snapshot,
             &scene.faces,
+            &EdgeNames::default(),
         );
         let Selection::Face(before) = &chosen else {
             panic!("the plate's face is not named: {chosen:?}");
@@ -4620,6 +5022,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -4631,8 +5034,10 @@ mod tests {
         scene.selection = Selection::at(
             picture.pick_of(1).expect("drawn"),
             face,
+            EdgePickId::NOTHING,
             &picture,
             &FaceNames::default(),
+            &EdgeNames::default(),
         );
         // With no durable names this falls back to the definition, so the face
         // case is stated with the transient mark the renderer is given.
@@ -4711,6 +5116,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
 
@@ -4763,6 +5169,7 @@ mod tests {
             (),
             vec![a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(drawn).expect("has a row"));
@@ -4793,6 +5200,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -4829,6 +5237,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -4881,6 +5290,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -4970,6 +5380,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -5002,6 +5413,7 @@ mod tests {
                 (),
                 vec![a_body(), a_body(), a_body()],
                 FaceNames::default(),
+                EdgeNames::default(),
                 Visibility::new(&next),
             )),
         )
@@ -5094,6 +5506,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -5156,8 +5569,10 @@ mod tests {
         let chosen = Selection::at(
             snapshot.pick_of(0).expect("drawn"),
             face,
+            EdgePickId::NOTHING,
             snapshot,
             &scene.faces,
+            &EdgeNames::default(),
         );
         let Selection::Face(before) = &chosen else {
             panic!("the plate's face is not named: {chosen:?}");
@@ -5201,6 +5616,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -5342,6 +5758,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -5381,6 +5798,7 @@ mod tests {
                 (),
                 vec![a_body(), a_body(), a_body()],
                 FaceNames::default(),
+                EdgeNames::default(),
                 Visibility::new(&next),
             )),
         )
@@ -5398,8 +5816,10 @@ mod tests {
         let mut chosen = Selection::at(
             snapshot.pick_of(0).expect("drawn"),
             face,
+            EdgePickId::NOTHING,
             snapshot,
             &scene.faces,
+            &EdgeNames::default(),
         );
         let Selection::Face(before) = &chosen else {
             panic!("the plate's face is not named: {chosen:?}");
@@ -5452,6 +5872,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -5520,6 +5941,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -5625,6 +6047,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -5658,6 +6081,7 @@ mod tests {
                 (),
                 vec![a_body(), a_body(), a_body()],
                 FaceNames::default(),
+                EdgeNames::default(),
                 Visibility::new(&next),
             )),
         )
@@ -5755,6 +6179,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -5828,6 +6253,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -5907,6 +6333,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -5987,6 +6414,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -6028,6 +6456,7 @@ mod tests {
                 (),
                 vec![a_body(), a_body(), a_body()],
                 FaceNames::default(),
+                EdgeNames::default(),
                 Visibility::new(&next),
             )),
         )
@@ -6052,8 +6481,10 @@ mod tests {
         let mut chosen = Selection::at(
             snapshot.pick_of(0).expect("drawn"),
             face,
+            EdgePickId::NOTHING,
             snapshot,
             &scene.faces,
+            &EdgeNames::default(),
         );
         let Selection::Face(before) = &chosen else {
             panic!("the plate's face is not named: {chosen:?}");
@@ -6190,6 +6621,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -6336,8 +6768,10 @@ mod tests {
         let mut chosen = Selection::at(
             snapshot.pick_of(0).expect("drawn"),
             face,
+            EdgePickId::NOTHING,
             snapshot,
             &scene.faces,
+            &EdgeNames::default(),
         );
         let Selection::Face(named) = &chosen else {
             panic!("the plate's face is not named: {chosen:?}");
@@ -6427,6 +6861,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -6517,6 +6952,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -6621,6 +7057,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -6703,6 +7140,7 @@ mod tests {
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -6798,6 +7236,7 @@ mod tests {
             (),
             Vec::new(),
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&snapshot),
         );
         scene.selection = Selection::Definition(front);
@@ -6905,7 +7344,7 @@ mod tests {
 
         // The defect: this face is named by the document, so clicking it must
         // choose the face and not merely the body it is part of.
-        let chosen = selection_at(hit, &snapshot, &scene.faces);
+        let chosen = selection_at(hit, &snapshot, &scene.faces, &scene.edges);
         let Selection::Face(face) = &chosen else {
             panic!("clicking a named face of the plate chose {chosen:?}");
         };
@@ -6942,13 +7381,16 @@ mod tests {
 
         // And what the inspector says about it is the document's own words.
         let words = words_of(&chosen, &scene.catalogue, &snapshot);
-        let face_names: Vec<ferritecad_ui::FaceName<'_>> =
-            words.faces.iter().map(face_name).collect();
+        let face_names: Vec<ferritecad_ui::TopologyName<'_>> =
+            words.faces.iter().map(topology_name).collect();
+        let edge_names: Vec<ferritecad_ui::TopologyName<'_>> =
+            words.edges.iter().map(topology_name).collect();
         let inspected = inspected(
             &chosen,
             &scene.catalogue,
             &words.identities,
             &face_names,
+            &edge_names,
             &snapshot,
         )
         .expect("a chosen face is described");
@@ -6969,7 +7411,14 @@ mod tests {
         let (directory, scene) = plate_scene();
         let pick = scene.snapshot.pick_of(0).expect("the plate is drawn");
         let face = scene.snapshot.face_of(0, 0).expect("numbered");
-        let chosen = Selection::at(pick, face, &scene.snapshot, &scene.faces);
+        let chosen = Selection::at(
+            pick,
+            face,
+            EdgePickId::NOTHING,
+            &scene.snapshot,
+            &scene.faces,
+            &EdgeNames::default(),
+        );
         assert!(
             matches!(chosen, Selection::Face(_)),
             "the fixture must begin with a face chosen"
@@ -6990,6 +7439,7 @@ mod tests {
             (),
             vec![a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&scene.snapshot),
         );
         live.selection = chosen.clone();
@@ -7059,6 +7509,7 @@ mod tests {
             (),
             Vec::new(),
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&snapshot),
         );
         live.selection = Selection::Definition(marker);
@@ -7324,6 +7775,7 @@ mod tests {
             (),
             vec![a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&scene.snapshot),
         );
         live.selection = chosen;
@@ -7400,6 +7852,7 @@ mod tests {
             (),
             vec![a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(snapshot),
         );
 
@@ -7469,6 +7922,7 @@ mod tests {
             (),
             vec![a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(snapshot),
         );
         live.selection = chosen.clone();
@@ -7518,6 +7972,7 @@ mod tests {
             (),
             vec![a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::new(&scene.snapshot),
         );
         let mut input = ViewportInput::new();
@@ -7727,8 +8182,13 @@ mod tests {
         // And the camera actually goes to the smaller of the two.
         let mut looking_at_the_face = ViewportInput::new();
         looking_at_the_face.resize(800, 600);
-        let mut scene_with_face =
-            LiveScene::new((), Vec::new(), FaceNames::default(), Visibility::default());
+        let mut scene_with_face = LiveScene::new(
+            (),
+            Vec::new(),
+            FaceNames::default(),
+            EdgeNames::default(),
+            Visibility::default(),
+        );
         scene_with_face.selection = chosen;
         assert!(
             frame_selection(&scene_with_face, &scene.snapshot, &mut looking_at_the_face)
@@ -7738,8 +8198,13 @@ mod tests {
 
         let mut looking_at_the_part = ViewportInput::new();
         looking_at_the_part.resize(800, 600);
-        let mut scene_with_part =
-            LiveScene::new((), Vec::new(), FaceNames::default(), Visibility::default());
+        let mut scene_with_part = LiveScene::new(
+            (),
+            Vec::new(),
+            FaceNames::default(),
+            EdgeNames::default(),
+            Visibility::default(),
+        );
         scene_with_part.selection = definition;
         assert!(
             frame_selection(&scene_with_part, &scene.snapshot, &mut looking_at_the_part)
@@ -7759,6 +8224,7 @@ mod tests {
             (),
             vec![a_body()],
             FaceNames::default(),
+            EdgeNames::default(),
             Visibility::default(),
         );
         live.selection = chosen.clone();
@@ -7787,6 +8253,7 @@ mod tests {
                 (),
                 vec![a_body()],
                 FaceNames::default(),
+                EdgeNames::default(),
                 Visibility::default(),
             )),
         )
@@ -7804,7 +8271,14 @@ mod tests {
         let picture = distant_scene();
         let pick = picture.pick_of(0).expect("drawn");
         assert_eq!(
-            Selection::at(pick, stale, &picture, &FaceNames::default()),
+            Selection::at(
+                pick,
+                stale,
+                EdgePickId::NOTHING,
+                &picture,
+                &FaceNames::default(),
+                &EdgeNames::default(),
+            ),
             Selection::Definition(pick),
             "a face of the replaced picture attached itself to the new one"
         );
@@ -7814,13 +8288,16 @@ mod tests {
     fn the_inspector_and_the_marked_pixels_describe_one_selection() {
         let (_directory, scene, chosen) = plate_with_a_chosen_face();
         let words = words_of(&chosen, &scene.catalogue, &scene.snapshot);
-        let face_names: Vec<ferritecad_ui::FaceName<'_>> =
-            words.faces.iter().map(face_name).collect();
+        let face_names: Vec<ferritecad_ui::TopologyName<'_>> =
+            words.faces.iter().map(topology_name).collect();
+        let edge_names: Vec<ferritecad_ui::TopologyName<'_>> =
+            words.edges.iter().map(topology_name).collect();
         let described = inspected(
             &chosen,
             &scene.catalogue,
             &words.identities,
             &face_names,
+            &edge_names,
             &scene.snapshot,
         )
         .expect("a chosen face is described");
@@ -7836,13 +8313,16 @@ mod tests {
         // Choosing the part instead moves both views together.
         let definition = Selection::Definition(scene.snapshot.pick_of(0).expect("drawn"));
         let words = words_of(&definition, &scene.catalogue, &scene.snapshot);
-        let face_names: Vec<ferritecad_ui::FaceName<'_>> =
-            words.faces.iter().map(face_name).collect();
+        let face_names: Vec<ferritecad_ui::TopologyName<'_>> =
+            words.faces.iter().map(topology_name).collect();
+        let edge_names: Vec<ferritecad_ui::TopologyName<'_>> =
+            words.edges.iter().map(topology_name).collect();
         let described = inspected(
             &definition,
             &scene.catalogue,
             &words.identities,
             &face_names,
+            &edge_names,
             &scene.snapshot,
         )
         .expect("a chosen definition is described");
@@ -7865,6 +8345,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Hovered::Nothing,
@@ -7915,6 +8396,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Hovered::Definition(chosen),
@@ -7941,6 +8423,7 @@ mod tests {
                 (),
                 vec![a_body()],
                 FaceNames::default(),
+                EdgeNames::default(),
                 Visibility::default(),
             )),
         )
@@ -7977,6 +8460,7 @@ mod tests {
             prepared: (),
             catalogue: entries.clone(),
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
@@ -8057,6 +8541,7 @@ mod tests {
             prepared: (),
             catalogue: vec![entry],
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
@@ -8078,6 +8563,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body(), a_body()],
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
@@ -8109,6 +8595,7 @@ mod tests {
             prepared: (),
             catalogue: entries.clone(),
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(picture.pick_of(1).expect("the picture has that row")),
             hovered: Hovered::Nothing,
@@ -8159,6 +8646,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(
                 picture.pick_of(mesh).expect("the picture has that row"),
@@ -8219,6 +8707,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
@@ -8267,6 +8756,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body(), a_body()],
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(
                 picture.pick_of(chosen).expect("the picture has that row"),
@@ -8329,6 +8819,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(
                 picture.pick_of(only).expect("the picture has that row"),
@@ -8381,6 +8872,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(picture.pick_of(0).expect("the picture has that row")),
             hovered: Hovered::Nothing,
@@ -8407,6 +8899,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
@@ -8443,6 +8936,7 @@ mod tests {
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
+            edges: EdgeNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(
                 picture
@@ -8505,6 +8999,7 @@ mod tests {
                 prepared: (),
                 catalogue: vec![entry.clone()],
                 faces: FaceNames::default(),
+                edges: EdgeNames::default(),
                 visibility: Visibility::default(),
                 selection: Selection::Definition(draw.pick),
                 hovered: Hovered::Nothing,

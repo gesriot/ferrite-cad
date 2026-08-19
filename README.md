@@ -67,10 +67,22 @@ exactly the colour they had, so it reads as a line rather than as a change of
 material. A choice already made stays stronger than a question: an edge of a
 selected part, or one bounding a selected face, is left alone rather than
 painted over, while an edge elsewhere on the same part is still marked.
-Pointing is only ever a question. It never selects anything, and a click on a
-marked edge selects the face beneath it exactly as it would have without the
-mark: edges cannot be selected in this build, and nothing in the interface
-offers to. A
+Pointing is only ever a question: it never selects anything.
+Clicking a marked edge selects that edge, but only when the document has an
+exact durable name for it. On a native body that means the edge where one end
+of an extrusion meets a face raised from a sketch segment; the inspector then
+says what the document calls it, in the same portable terms it uses for a
+face, and shows every stored name rather than picking one. A chosen edge is
+marked along the whole of itself, in every placement of its part and on both
+of the faces that meet at it, and it is drawn differently from a mere
+question about the same line so a decision cannot be mistaken for one. An
+edge nobody named is not a lesser edge, it is not a choice: clicking one
+selects the named face beneath it if there is one and otherwise the part, and
+an edge of an imported definition always selects the definition, because an
+imported edge is an edge of nothing this document could store.
+`Frame selected` brings the chosen edge itself into view rather than the face
+or the part it belongs to, and `Hide selected` and `Isolate selected` act on
+the part that owns it, because what can be hidden is a definition. A
 list beside the model offers the same definitions by name and identity, which
 is how one that is hidden, tiny or out of shot can still be chosen, and
 `Frame selected` (or `F`) brings what is selected into view without changing

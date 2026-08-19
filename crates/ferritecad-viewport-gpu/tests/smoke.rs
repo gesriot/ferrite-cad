@@ -5945,3 +5945,249 @@ fn two_edges_that_meet_give_one_answer_and_not_two() {
     );
     assert_eq!(answer, again.edge_at(corner.0, corner.1));
 }
+
+#[test]
+fn a_chosen_edge_is_marked_as_chosen_and_nothing_else_is() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair(320, 320);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let uploaded = renderer.geometry_uploads();
+    let chosen = snapshot.edge_of(0, 0).expect("numbered");
+    let neighbour = snapshot.edge_of(0, 1).expect("numbered");
+    let definition = snapshot.pick_of(0).expect("drawn");
+    let face = snapshot.face_of(0, 0).expect("numbered");
+
+    let plain = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+    let selected = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Edge(chosen),
+        Hovered::Nothing,
+        &visibility,
+    );
+
+    // Every sample of that edge changed, in both faces' representations and
+    // in every placement, and nothing off it did.
+    let moved_pixels = changed(&plain, &selected);
+    assert!(moved_pixels.len() > 40, "{} pixels", moved_pixels.len());
+    for (x, y) in &moved_pixels {
+        assert!(
+            is_a_sample_of(&plain, chosen, *x, *y),
+            "the pixel at {x},{y} changed and is not on the chosen edge"
+        );
+    }
+    for (x, y) in pixels_of(&plain, |frame, x, y| frame.edge_at(x, y) == chosen) {
+        assert_ne!(
+            plain.colour_at(x, y),
+            selected.colour_at(x, y),
+            "a sample of the chosen edge at {x},{y} was left alone"
+        );
+    }
+    for shift in [-24.0, 24.0] {
+        for world in [
+            [
+                f64::from(FINE_ARC[1][0]),
+                f64::from(FINE_ARC[1][1]),
+                f64::from(FINE_ARC[1][2]),
+            ],
+            between(COARSE_ARC[0], COARSE_ARC[1]),
+        ] {
+            let at = pixel_of(&camera, placed(world, shift)).expect("on screen");
+            assert!(
+                moved_pixels
+                    .iter()
+                    .any(|(x, y)| x.abs_diff(at.0) <= 2 && y.abs_diff(at.1) <= 2),
+                "nothing was marked near {at:?}"
+            );
+        }
+    }
+
+    // A decision does not look like a question, nor like the other states.
+    // Every frame is drawn first and compared afterwards, at a pixel the mark
+    // is known to have covered, so nothing here depends on the order they were
+    // asked for.
+    let asked = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Edge(chosen),
+        &visibility,
+    );
+    let chosen_face = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Face(face),
+        Hovered::Nothing,
+        &visibility,
+    );
+    let chosen_part = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Definition(definition),
+        Hovered::Nothing,
+        &visibility,
+    );
+    let at = *moved_pixels.first().expect("the mark covered something");
+    let decided = selected.colour_at(at.0, at.1).expect("on screen");
+    for (what, other) in [
+        ("plain", &plain),
+        ("the same edge asked about", &asked),
+        ("a chosen face", &chosen_face),
+        ("a chosen part", &chosen_part),
+    ] {
+        assert_ne!(
+            Some(decided),
+            other.colour_at(at.0, at.1),
+            "a chosen edge looks like {what} at {at:?}"
+        );
+    }
+
+    // A choice wins over a question about the same edge, and a question about
+    // another edge is still answered.
+    let asked_about_itself = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Edge(chosen),
+        Hovered::Edge(chosen),
+        &visibility,
+    );
+    assert_eq!(
+        asked_about_itself.colour(),
+        selected.colour(),
+        "pointing at what is already chosen repainted it"
+    );
+    let both = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Edge(chosen),
+        Hovered::Edge(neighbour),
+        &visibility,
+    );
+    let elsewhere = pixel_of(
+        &camera,
+        placed(between(FINE_ARC[0], [0.0, 0.0, -16.0]), -24.0),
+    )
+    .expect("on screen");
+    assert_ne!(
+        both.colour_at(elsewhere.0, elsewhere.1),
+        selected.colour_at(elsewhere.0, elsewhere.1),
+        "another edge could not be asked about beside the chosen one"
+    );
+
+    // Nothing about any pixel changed, and nothing was uploaded.
+    assert_eq!(renderer.geometry_uploads(), uploaded);
+    for y in 0..plain.height() {
+        for x in 0..plain.width() {
+            assert_eq!(plain.pick_at(x, y), selected.pick_at(x, y), "at {x},{y}");
+            assert_eq!(
+                plain.hit_at(x, y).face(),
+                selected.hit_at(x, y).face(),
+                "at {x},{y}"
+            );
+            assert_eq!(plain.edge_at(x, y), selected.edge_at(x, y), "at {x},{y}");
+        }
+    }
+    // And two identical frames are identical.
+    let again = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Edge(chosen),
+        Hovered::Nothing,
+        &visibility,
+    );
+    assert_eq!(selected.colour(), again.colour());
+}
+
+#[test]
+fn a_chosen_edge_of_a_hidden_part_marks_nothing() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair(256, 256);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let chosen = snapshot.edge_of(0, 0).expect("numbered");
+    let mut visibility = Visibility::new(&snapshot);
+    assert!(visibility.hide(Marked::Edge(chosen), &snapshot));
+
+    let plain = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+    let selected = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Edge(chosen),
+        Hovered::Nothing,
+        &visibility,
+    );
+    assert_eq!(
+        plain.colour(),
+        selected.colour(),
+        "a hidden part's edge was marked"
+    );
+}
+
+#[test]
+fn a_chosen_edge_follows_the_camera_through_both_projections() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair(288, 288);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let chosen = snapshot.edge_of(0, 0).expect("numbered");
+
+    let mut moved_camera = camera;
+    moved_camera.orbit(0.3, -0.18);
+    moved_camera.pan(9.0, -5.0);
+    moved_camera.roll(0.35);
+
+    for (what, mut camera) in [
+        ("as drawn", camera),
+        ("orbited, panned and rolled", moved_camera),
+    ] {
+        for projection in [Projection::Orthographic, Projection::Perspective] {
+            camera.set_projection(projection);
+            let plain = draw(
+                &mut renderer,
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Hovered::Nothing,
+                &visibility,
+            );
+            let selected = draw(
+                &mut renderer,
+                &prepared,
+                &camera,
+                Marked::Edge(chosen),
+                Hovered::Nothing,
+                &visibility,
+            );
+            let moved_pixels = changed(&plain, &selected);
+            assert!(!moved_pixels.is_empty(), "{what} in {projection:?}");
+            for (x, y) in moved_pixels {
+                assert!(
+                    is_a_sample_of(&plain, chosen, x, y),
+                    "{what} in {projection:?}: the mark at {x},{y} is off the edge"
+                );
+            }
+        }
+    }
+}

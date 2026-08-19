@@ -4478,3 +4478,101 @@ fn an_edge_bounds_the_faces_its_segments_touch_and_no_others() {
         ferritecad_viewport::FacePickId::NOTHING
     ));
 }
+
+#[test]
+fn a_chosen_edge_is_where_its_own_segments_are_and_nowhere_else() {
+    // Two edges of one definition, placed twice. The first runs along one
+    // side of the square, the second along the opposite side, so the bounds
+    // of one exclude the other and both exclude the face between them.
+    let mesh = square_with_edges(&[1, 1, 1, 1]);
+    let mut builder = SnapshotBuilder::new();
+    let definition = builder.add_mesh(&mesh).expect("packs");
+    for x in [0.0, 10.0] {
+        builder
+            .place(definition, None, &moved(x, 0.0, 0.0), [0.5, 0.5, 0.5])
+            .expect("places");
+    }
+    let snapshot = builder.build();
+
+    let first = snapshot.edge_of(0, 0).expect("numbered");
+    let (low, high) = snapshot
+        .bounds_of_edge(first)
+        .expect("the edge is somewhere");
+
+    // Every placement: the definition is drawn at x = 0 and x = 10, and the
+    // edge belongs to the definition, so it is in both.
+    assert!(
+        low[0] <= 0.0 + 1e-6 && high[0] >= 10.0 - 1e-6,
+        "{low:?} {high:?}"
+    );
+    // Its own segment and no other: the first side runs from (0,0,0) to
+    // (1,0,0), so nothing of it reaches the far side of the square.
+    assert!(high[2] <= 1e-6, "{low:?} {high:?}: it reached another side");
+    // And it is not the whole definition, which spans the unit square.
+    let whole = snapshot
+        .bounds_of(snapshot.pick_of(0).expect("drawn"))
+        .expect("somewhere");
+    assert_ne!((low, high), whole, "an edge was framed as its whole part");
+    // Nor the face it bounds.
+    assert_ne!(
+        (low, high),
+        snapshot
+            .bounds_of_face(snapshot.face_of(0, 0).expect("numbered"))
+            .expect("somewhere")
+    );
+
+    // A different edge is somewhere else.
+    let third = snapshot.edge_of(0, 2).expect("numbered");
+    assert_ne!(snapshot.bounds_of_edge(third), Some((low, high)));
+
+    // And nothing of another picture, or of no picture, is anywhere.
+    let other = snapshot_of(&[square_with_edges(&[1, 1, 1, 1])]);
+    assert_eq!(
+        snapshot.bounds_of_edge(other.edge_of(0, 0).expect("numbered")),
+        None
+    );
+    assert_eq!(
+        snapshot.bounds_of_edge(ferritecad_viewport::EdgePickId::NOTHING),
+        None
+    );
+}
+
+#[test]
+fn a_mark_on_an_edge_belongs_to_the_definition_that_owns_it() {
+    let snapshot = snapshot_of(&[square_with_edges(&[1, 1, 1, 1]), triangle()]);
+    let edge = snapshot.edge_of(0, 0).expect("numbered");
+    let mark = Marked::Edge(edge);
+
+    assert_eq!(mark.known_to(&snapshot), mark);
+    assert_eq!(snapshot.definition_of_edge(edge), Some(0));
+
+    // Hiding through an edge hides the part it belongs to, exactly as hiding
+    // through a face does: what is hidden is a definition.
+    let mut visibility = Visibility::new(&snapshot);
+    assert!(visibility.can_hide(mark, &snapshot));
+    assert!(visibility.hide(mark, &snapshot));
+    assert!(!visibility.shows(0, &snapshot));
+    assert!(visibility.shows(1, &snapshot), "and only that one");
+
+    // Show and undo answer for the same definition.
+    assert!(visibility.can_show(mark, &snapshot));
+    assert!(visibility.show(mark, &snapshot));
+    assert!(visibility.shows(0, &snapshot));
+    assert!(visibility.isolate(mark, &snapshot));
+    assert!(visibility.shows(0, &snapshot));
+    assert!(!visibility.shows(1, &snapshot));
+    assert!(visibility.undo(&snapshot));
+    assert!(visibility.shows(1, &snapshot));
+
+    // A mark of another picture marks nothing at all.
+    let other = snapshot_of(&[square_with_edges(&[1, 1, 1, 1])]);
+    let foreign = Marked::Edge(other.edge_of(0, 0).expect("numbered"));
+    assert_eq!(foreign.known_to(&snapshot), Marked::Nothing);
+    let mut untouched = Visibility::new(&snapshot);
+    assert!(!untouched.can_hide(foreign, &snapshot));
+    assert!(!untouched.hide(foreign, &snapshot));
+    assert!(!untouched.hide(
+        Marked::Edge(ferritecad_viewport::EdgePickId::NOTHING),
+        &snapshot
+    ));
+}

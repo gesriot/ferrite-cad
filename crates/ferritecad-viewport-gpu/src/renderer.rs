@@ -90,15 +90,21 @@ struct GlobalsUniform {
     hovered: u32,
     /// The topological edge the pointer is over, or zero.
     hovered_edge: u32,
-    /// Three scalars, written down rather than left to a compiler.
+    /// The topological edge that has been chosen, or zero.
+    ///
+    /// Taken from the padding that was already there rather than added to the
+    /// end: the struct stays ninety-six bytes, and the assertion below is what
+    /// says so on both sides rather than a backend's willingness to forgive.
+    selected_edge: u32,
+    /// Two scalars, written down rather than left to a compiler.
     ///
     /// A `mat4x4` gives this struct sixteen-byte alignment in WGSL, so its
-    /// size is rounded up to a multiple of sixteen there. Five `u32` after the
-    /// matrix is 84 bytes in Rust and 96 in WGSL, and a uniform binding whose
+    /// size is rounded up to a multiple of sixteen there. Six `u32` after the
+    /// matrix is 88 bytes in Rust and 96 in WGSL, and a uniform binding whose
     /// size disagrees with the shader's view of it is a mismatch one backend
     /// may forgive and another will not. Padding to 96 on both sides makes the
     /// agreement explicit, and the assertion below makes it checked.
-    padding: [u32; 3],
+    padding: [u32; 2],
 }
 
 // Ninety-six bytes, matching `Globals` in `shader.wgsl` exactly. A change to
@@ -485,10 +491,27 @@ impl Renderer {
         // never told to mark one.
         let marked_edge =
             Self::marked_edge(snapshot, selected, hovered).map_or(0, |edge| edge.to_raw());
-        let (selected, selected_face) = match selected.known_to(snapshot) {
-            Marked::Nothing => (PickId::NOTHING.to_raw(), FacePickId::NOTHING.to_raw()),
-            Marked::Definition(pick) => (pick.to_raw(), FacePickId::NOTHING.to_raw()),
-            Marked::Face(face) => (PickId::NOTHING.to_raw(), face.to_raw()),
+        let (selected, selected_face, selected_edge) = match selected.known_to(snapshot) {
+            Marked::Nothing => (
+                PickId::NOTHING.to_raw(),
+                FacePickId::NOTHING.to_raw(),
+                EdgePickId::NOTHING.to_raw(),
+            ),
+            Marked::Definition(pick) => (
+                pick.to_raw(),
+                FacePickId::NOTHING.to_raw(),
+                EdgePickId::NOTHING.to_raw(),
+            ),
+            Marked::Face(face) => (
+                PickId::NOTHING.to_raw(),
+                face.to_raw(),
+                EdgePickId::NOTHING.to_raw(),
+            ),
+            Marked::Edge(edge) => (
+                PickId::NOTHING.to_raw(),
+                FacePickId::NOTHING.to_raw(),
+                edge.to_raw(),
+            ),
         };
         let (hovered, hovered_face, hovered_edge) = match hovered.known_to(snapshot) {
             Hovered::Nothing => (
@@ -522,7 +545,8 @@ impl Renderer {
                 hovered_face,
                 hovered,
                 hovered_edge,
-                padding: [0; 3],
+                selected_edge,
+                padding: [0; 2],
             }),
         );
     }
@@ -638,7 +662,9 @@ impl Renderer {
             // And the marked edge over all of it, from the same stream and
             // the same rule the readback uses. A window pass is colour-only
             // already, so the mark needs no pass of its own here.
-            if Self::marked_edge(prepared.snapshot(), selected, hovered).is_some() {
+            if Self::marked_edge(prepared.snapshot(), selected, hovered).is_some()
+                || Self::chosen_edge(prepared.snapshot(), selected).is_some()
+            {
                 let mark_pipeline = self
                     .edge_mark_surface_pipelines
                     .get(&format)
@@ -790,6 +816,18 @@ impl Renderer {
                 (snapshot.definition(pick) != snapshot.definition_of_edge(edge)).then_some(edge)
             }
             Marked::Face(face) => (!snapshot.edge_bounds_face(edge, face)).then_some(edge),
+            // The chosen edge is drawn as chosen, so a question about it is
+            // not asked again in another colour. A question about a different
+            // edge of the same part is still worth answering.
+            Marked::Edge(chosen) => (chosen != edge).then_some(edge),
+        }
+    }
+
+    /// Which edge, if any, this frame draws as chosen.
+    fn chosen_edge(snapshot: &RenderSnapshot, selected: Marked) -> Option<EdgePickId> {
+        match selected.known_to(snapshot) {
+            Marked::Edge(edge) => Some(edge),
+            _ => None,
         }
     }
 
@@ -1161,8 +1199,11 @@ impl Renderer {
             Self::draw_lines(&mut pass, prepared, visibility, self.draw_stride);
         }
 
-        if Self::marked_edge(prepared.snapshot(), selected, hovered).is_some() {
-            // The one edge under the pointer, over the picture and nothing
+        if Self::marked_edge(prepared.snapshot(), selected, hovered).is_some()
+            || Self::chosen_edge(prepared.snapshot(), selected).is_some()
+        {
+            // The edge under the pointer and the edge that was chosen, over
+            // the picture and nothing
             // else. Its own pass, with the colour and the depth loaded: the
             // identity targets are not attached, so marking an edge cannot
             // change what any pixel *is*. Skipped entirely when there is no

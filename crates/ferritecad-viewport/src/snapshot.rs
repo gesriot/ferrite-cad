@@ -482,6 +482,11 @@ pub enum Marked {
     Definition(PickId),
     /// One face, as only a pixel can say.
     Face(FacePickId),
+    /// One topological edge, as only a pixel of a line can say.
+    ///
+    /// A choice rather than a question: an edge reaches this type only once
+    /// the document has a durable name for it, which is decided a layer up.
+    Edge(EdgePickId),
 }
 
 impl Marked {
@@ -499,6 +504,10 @@ impl Marked {
                 None => Self::Nothing,
             },
             Self::Face(face) => match snapshot.definition_of_face(face) {
+                Some(_) => self,
+                None => Self::Nothing,
+            },
+            Self::Edge(edge) => match snapshot.definition_of_edge(edge) {
                 Some(_) => self,
                 None => Self::Nothing,
             },
@@ -852,6 +861,7 @@ impl Visibility {
             Marked::Nothing => None,
             Marked::Definition(pick) => snapshot.definition(pick),
             Marked::Face(face) => snapshot.definition_of_face(face),
+            Marked::Edge(edge) => snapshot.definition_of_edge(edge),
         }
     }
 
@@ -1146,6 +1156,40 @@ impl RenderSnapshot {
         segments
             .iter()
             .any(|vertex| mesh.face_of_vertex.get(*vertex as usize).copied() == Some(face.raw))
+    }
+
+    /// Where one topological edge of one definition is, in every placement.
+    ///
+    /// The edge's own segments and nothing else: neither the face it bounds
+    /// nor the part it belongs to. Every placement, for the reason a face's
+    /// bounds cover every placement – an edge belongs to a definition, so it
+    /// is wherever that definition appears. The same `Extent` the rest of the
+    /// framing uses, so a camera framed on an edge and one framed on a part
+    /// are answering the same question in the same arithmetic.
+    ///
+    /// An edge of another picture, of a replaced one, or one whose segments
+    /// are not there is nowhere rather than at the origin.
+    pub fn bounds_of_edge(&self, edge: EdgePickId) -> Option<([f32; 3], [f32; 3])> {
+        let definition = self.definition_of_edge(edge)?;
+        let segments = self.segments_of_edge(edge)?;
+        if segments.is_empty() {
+            return None;
+        }
+        let mesh = &self.meshes[definition];
+        let mut extent = Extent::default();
+        for item in self.items.iter().filter(|item| item.mesh == definition) {
+            for vertex in segments {
+                let at = *vertex as usize * VERTEX_FLOATS;
+                let Some(position) = mesh.vertices.get(at..at + 3) else {
+                    continue;
+                };
+                extent.grow(apply(
+                    &item.transform,
+                    [position[0], position[1], position[2]],
+                ));
+            }
+        }
+        extent.bounds()
     }
 
     /// The definition a pick identifies, if it identifies one.

@@ -88,7 +88,20 @@ pub enum Selected<'a> {
         /// the document stores them. More than one is normal and is shown as
         /// more than one: which of them is "the" name is not this window's
         /// decision to make.
-        names: &'a [FaceName<'a>],
+        names: &'a [TopologyName<'a>],
+    },
+    /// One topological edge of a native body, named exactly by the document.
+    ///
+    /// Only durable terms reach here, exactly as for a face: an edge the
+    /// document does not name is not selectable as an edge at all.
+    Edge {
+        /// What the body is called, if the document called it anything.
+        name: Option<&'a str>,
+        /// The identifier the document stores for the body.
+        object: &'a str,
+        /// Every stored reference that names exactly this edge, in the order
+        /// the document stores them.
+        names: &'a [TopologyName<'a>],
     },
     /// A definition inside a file this document imported.
     Imported {
@@ -103,13 +116,17 @@ pub enum Selected<'a> {
     },
 }
 
-/// One durable name for a face, already turned into words by the caller.
+/// One durable name for an entity, already turned into words by the caller.
 ///
 /// Text rather than document types, for the same reason the rest of this
 /// module deals in text: a panel that could name a `SemanticRole` would be a
 /// panel that knows what a document is.
+///
+/// One type for a face and for an edge. What a document stores about either is
+/// the same six terms, and two structures would be two formats to keep in
+/// step; which kind is meant is already in `expected_kind` and in the role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FaceName<'a> {
+pub struct TopologyName<'a> {
     /// The identifier the document stores for the reference itself.
     pub reference: &'a str,
     /// The object holding the reference.
@@ -122,6 +139,28 @@ pub struct FaceName<'a> {
     pub role: &'a str,
     /// How many entities it selects, and which.
     pub rule: &'a str,
+}
+
+/// What a document calls one face. See [`TopologyName`].
+pub type FaceName<'a> = TopologyName<'a>;
+
+/// What a document calls one edge. See [`TopologyName`].
+pub type EdgeName<'a> = TopologyName<'a>;
+
+/// Every stored name, in the order the document stores them.
+///
+/// One statement for a face and for an edge: what the document says about
+/// either is the same six terms, and two copies of this loop would be two
+/// formats to keep in step.
+fn push_names(rows: &mut Vec<(&'static str, String)>, names: &[TopologyName<'_>]) {
+    for name in names {
+        rows.push(("Reference", name.reference.to_owned()));
+        rows.push(("Owner", name.owner.to_owned()));
+        rows.push(("Feature", name.producer_feature.to_owned()));
+        rows.push(("Entity", name.expected_kind.to_owned()));
+        rows.push(("Role", name.role.to_owned()));
+        rows.push(("Rule", name.rule.to_owned()));
+    }
 }
 
 impl Selected<'_> {
@@ -150,14 +189,19 @@ impl Selected<'_> {
                     rows.push(("Body", (*name).to_owned()));
                 }
                 rows.push(("Object", (*object).to_owned()));
-                for face in *names {
-                    rows.push(("Reference", face.reference.to_owned()));
-                    rows.push(("Owner", face.owner.to_owned()));
-                    rows.push(("Feature", face.producer_feature.to_owned()));
-                    rows.push(("Entity", face.expected_kind.to_owned()));
-                    rows.push(("Role", face.role.to_owned()));
-                    rows.push(("Rule", face.rule.to_owned()));
+                push_names(&mut rows, names);
+            }
+            Self::Edge {
+                name,
+                object,
+                names,
+            } => {
+                rows.push(("Kind", "Edge".to_owned()));
+                if let Some(name) = name {
+                    rows.push(("Body", (*name).to_owned()));
                 }
+                rows.push(("Object", (*object).to_owned()));
+                push_names(&mut rows, names);
             }
             Self::Imported {
                 name,
@@ -197,10 +241,10 @@ impl Selected<'_> {
                 Some(name) => format!("{name} · {object}"),
                 None => format!("Body · {object}"),
             },
-            // A list of definitions holds no faces, so this is what a face
-            // would be called if one ever reached a row: the body it is part
-            // of, said the same way.
-            Self::Face { name, object, .. } => match name {
+            // A list of definitions holds no faces and no edges, so this is
+            // what either would be called if one ever reached a row: the body
+            // it is part of, said the same way.
+            Self::Face { name, object, .. } | Self::Edge { name, object, .. } => match name {
                 Some(name) => format!("{name} · {object}"),
                 None => format!("Body · {object}"),
             },
