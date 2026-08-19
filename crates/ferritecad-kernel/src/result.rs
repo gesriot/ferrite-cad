@@ -223,10 +223,11 @@ pub struct MeshEdgeRange {
 
 /// Which rendered segments belong to which topological edge.
 ///
-/// One value rather than two parallel fields on [`Mesh`], so that "segments
-/// with no edges owning them" and "edges owning nothing" are not states a
-/// caller can build and a validator has to catch afterwards. A mesh either has
-/// this association or does not have it; see [`Mesh::edges`].
+/// One value rather than two parallel fields on [`Mesh`], so availability and
+/// the data it qualifies cannot drift apart: a mesh either carries this whole
+/// association or does not; see [`Mesh::edges`]. The fields stay public because
+/// this is a kernel-result DTO, so malformed combinations can still be built by
+/// an adapter and are deliberately refused by [`Mesh::validate`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MeshEdges {
     /// Pairs of vertex indices, two per segment, into the same vertices the
