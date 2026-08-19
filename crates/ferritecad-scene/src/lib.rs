@@ -73,8 +73,10 @@ pub struct LoadedScene {
 
 /// Every durable name this document has for the edges of one picture.
 ///
-/// TEMPORARY: nothing is joined yet, so every edge answers with nothing. The
-/// gate that requires a real answer fails against this on purpose.
+/// Built while the rebuild's topology map and the tessellation's edge handles
+/// are both in hand, which is the only moment they can be joined, and holding
+/// neither afterwards. An edge nothing names has an empty list rather than an
+/// invented entry: a name that was not stored is not a name.
 #[derive(Clone, PartialEq)]
 pub struct EdgeNames {
     /// One pick from the snapshot whose semantic context produced this, used
@@ -104,6 +106,10 @@ impl fmt::Debug for EdgeNames {
 
 impl EdgeNames {
     /// What the document calls this edge, or nothing.
+    ///
+    /// Answered through the picture that issued the edge, so an edge of a
+    /// picture that has been replaced names nothing here however plausible
+    /// its number looks.
     pub fn of(&self, edge: EdgePickId, snapshot: &RenderSnapshot) -> &[EdgeMeaning] {
         if snapshot.definition(self.picture).is_none()
             || snapshot.definition_of_edge(edge).is_none()
@@ -606,14 +612,15 @@ where
     // Everything that can fail happens in here, so that the shapes can be
     // handed back in one place whatever the outcome.
     let snapshot = (|| -> Result<LoadedScene> {
-        // Every stored reference that names exactly one face of this rebuild,
+        // Every stored reference that names exactly one entity of this rebuild,
         // paired with the handle it named. Resolved once, in the order the
-        // document stores its references, so what a face is called does not depend
-        // on the order faces happen to be tessellated in.
+        // document stores its references, so what an entity is called does not
+        // depend on the order faces or edges happen to be tessellated in.
         //
-        // A reference that resolves to several faces is not a name for whichever
-        // one was clicked, so it is not here; one that resolves to none, or that
-        // this build cannot resolve at all, names nothing and is not here either.
+        // A reference that resolves to several entities is not a name for
+        // whichever one was clicked, so it is not here; one that resolves to
+        // none, or that this build cannot resolve at all, names nothing and is
+        // not here either.
         // No failure is reported: a lost reference is a document-level fact, and
         // a viewer that refused to draw a model because one name no longer
         // resolves would be useless exactly when it is needed.
@@ -622,8 +629,8 @@ where
             .iter()
             .filter_map(|reference| match built.resolve(reference) {
                 Ok(found) => match found.as_slice() {
-                    [face] => Some((
-                        *face,
+                    [entity] => Some((
+                        *entity,
                         BoundMeaning {
                             meaning: PortableMeaning::of(reference),
                             identity: reference.meaning_hash(),

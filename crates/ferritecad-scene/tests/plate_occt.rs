@@ -11,9 +11,6 @@
 //! build configuration. The pin workflow sets `FERRITECAD_REQUIRE_OCCT=1`, so
 //! the run whose purpose is to prove the adapter works cannot pass by skipping.
 
-// A test asserting the shape of a value has nowhere to return an error to.
-#![allow(clippy::panic)]
-
 use ferritecad_kernel::{OperationContext, TessellationParams};
 use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_scene::snapshot_of;
@@ -246,12 +243,16 @@ fn a_stored_cap_edge_name_reaches_the_edge_of_the_picture_it_names() {
     for ordinal in 0..scene.snapshot.edge_count() {
         let edge = scene.snapshot.edge_of(0, ordinal).expect("numbered");
         for meaning in scene.edges.of(edge, &scene.snapshot) {
+            assert!(
+                matches!(meaning.output_role, SemanticRole::ExtrudeCapEdge { .. }),
+                "an edge was named with a role that is not a cap edge"
+            );
             let SemanticRole::ExtrudeCapEdge {
                 side,
                 profile_segment,
             } = &meaning.output_role
             else {
-                panic!("an edge was named with a role that is not a cap edge");
+                continue;
             };
             assert_eq!(meaning.expected_kind, ferritecad_document::EntityKind::Edge);
             // The words the document stored, unaltered. A meaning built by
