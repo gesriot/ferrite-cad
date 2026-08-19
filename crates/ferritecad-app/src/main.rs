@@ -4004,6 +4004,38 @@ mod tests {
             .collect()
     }
 
+    /// One sweep edge together with a face it actually bounds.
+    ///
+    /// Neither identity is inferred from the other's ordinal. The picture's
+    /// own partition is the relationship a click on their shared pixel has to
+    /// satisfy, so a fixture reordered during packing cannot quietly turn an
+    /// edge gate into a test of an unrelated face.
+    fn named_sweep_edge(
+        scene: &LoadedScene,
+    ) -> (PickId, ferritecad_viewport::FacePickId, EdgePickId) {
+        let picture = &scene.snapshot;
+        let edge = (0..picture.meshes().len())
+            .find_map(|definition| {
+                (0..picture.edge_count())
+                    .filter_map(|ordinal| picture.edge_of(definition, ordinal))
+                    .find(|edge| {
+                        scene.edges.of(*edge, picture).iter().any(|meaning| {
+                            matches!(meaning.output_role, SemanticRole::ExtrudeSweepEdge { .. })
+                        })
+                    })
+            })
+            .expect("the document names an edge along the sweep");
+        let definition_index = picture
+            .definition_of_edge(edge)
+            .expect("the picture issued the edge");
+        let definition = picture.pick_of(definition_index).expect("drawn");
+        let face = (0..picture.face_count())
+            .filter_map(|ordinal| picture.face_of(definition_index, ordinal))
+            .find(|face| picture.edge_bounds_face(edge, *face))
+            .expect("a drawn edge bounds a face of its definition");
+        (definition, face, edge)
+    }
+
     #[test]
     fn clicking_an_edge_along_the_sweep_chooses_it_and_says_what_it_is() {
         let Some((_directory, scene)) = native_plate_with_named_sweep_edges() else {
@@ -4086,8 +4118,25 @@ mod tests {
             plain.colour_at(x, y),
             "the chosen edge was not drawn as chosen"
         );
+        let mut changed = 0usize;
         for probe_y in 0..plain.height() {
             for probe_x in 0..plain.width() {
+                if plain.colour_at(probe_x, probe_y) != marked.colour_at(probe_x, probe_y) {
+                    changed += 1;
+                    let belongs_to_edge = (-1i64..=1).any(|dy| {
+                        (-1i64..=1).any(|dx| {
+                            let neighbour_x = i64::from(probe_x) + dx;
+                            let neighbour_y = i64::from(probe_y) + dy;
+                            neighbour_x >= 0
+                                && neighbour_y >= 0
+                                && plain.edge_at(neighbour_x as u32, neighbour_y as u32) == edge
+                        })
+                    });
+                    assert!(
+                        belongs_to_edge,
+                        "the chosen edge changed an unrelated pixel at {probe_x},{probe_y}"
+                    );
+                }
                 assert_eq!(
                     plain.pick_at(probe_x, probe_y),
                     marked.pick_at(probe_x, probe_y),
@@ -4097,6 +4146,28 @@ mod tests {
                     plain.hit_at(probe_x, probe_y).edge(),
                     marked.hit_at(probe_x, probe_y).edge(),
                     "at {probe_x},{probe_y}"
+                );
+            }
+        }
+        assert!(changed > 0, "choosing the edge changed no pixels");
+
+        // Asking about an edge that is already chosen cannot replace the
+        // decision with the hover style anywhere in the frame.
+        let selected_and_asked = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                chosen.marked(),
+                Hovered::Edge(edge),
+                &visibility,
+            )
+            .expect("draws");
+        for probe_y in 0..plain.height() {
+            for probe_x in 0..plain.width() {
+                assert_eq!(
+                    selected_and_asked.colour_at(probe_x, probe_y),
+                    marked.colour_at(probe_x, probe_y),
+                    "hover over the chosen edge won at {probe_x},{probe_y}"
                 );
             }
         }
@@ -4217,17 +4288,8 @@ mod tests {
         let Some((_directory, scene)) = native_plate_with_named_sweep_edges() else {
             return;
         };
+        let (definition, face, edge) = named_sweep_edge(&scene);
         let picture = scene.snapshot;
-        let definition = picture.pick_of(0).expect("drawn");
-        let face = picture.face_of(0, 0).expect("numbered");
-        let edge = (0..picture.edge_count())
-            .filter_map(|ordinal| picture.edge_of(0, ordinal))
-            .find(|edge| {
-                scene.edges.of(*edge, &picture).iter().any(|meaning| {
-                    matches!(meaning.output_role, SemanticRole::ExtrudeSweepEdge { .. })
-                })
-            })
-            .expect("the document names an edge along the sweep");
 
         let chosen = Selection::at(definition, face, edge, &picture, &scene.faces, &scene.edges);
         let Selection::Edge(selected) = &chosen else {
@@ -4250,30 +4312,22 @@ mod tests {
         let by_row = Selection::definition(definition, &picture);
         assert!(matches!(by_row, Selection::Definition(_)), "{by_row:?}");
 
-        // Pointing is still a question and choosing is still a decision: the
-        // precedence a hover answers with has not moved.
+        // A pixel with no edge follows the existing face-selection rule. It
+        // cannot retain the edge merely because the preceding pixel had one.
         assert_eq!(chosen.marked(), Marked::Edge(edge));
-        assert_eq!(
-            Selection::at(
-                definition,
-                face,
-                EdgePickId::NOTHING,
-                &picture,
-                &scene.faces,
-                &scene.edges
-            )
-            .marked(),
-            Selection::at(
-                definition,
-                face,
-                EdgePickId::NOTHING,
-                &picture,
-                &scene.faces,
-                &scene.edges
-            )
-            .marked(),
-            "the answer for a pixel with no edge changed"
+        let without_edge = Selection::at(
+            definition,
+            face,
+            EdgePickId::NOTHING,
+            &picture,
+            &scene.faces,
+            &scene.edges,
         );
+        assert!(
+            matches!(without_edge, Selection::Face(_)),
+            "a named face under no edge produced {without_edge:?}"
+        );
+        assert_ne!(without_edge.marked(), chosen.marked());
 
         // The inspector says every stored name, in the document's order, and
         // describes each in portable terms.
@@ -4384,17 +4438,8 @@ mod tests {
         let Some((_directory, scene)) = native_plate_with_named_sweep_edges() else {
             return;
         };
+        let (definition, face, edge) = named_sweep_edge(&scene);
         let picture = scene.snapshot;
-        let definition = picture.pick_of(0).expect("drawn");
-        let face = picture.face_of(0, 0).expect("numbered");
-        let edge = (0..picture.edge_count())
-            .filter_map(|ordinal| picture.edge_of(0, ordinal))
-            .find(|edge| {
-                scene.edges.of(*edge, &picture).iter().any(|meaning| {
-                    matches!(meaning.output_role, SemanticRole::ExtrudeSweepEdge { .. })
-                })
-            })
-            .expect("the document names an edge along the sweep");
         let chosen = Selection::at(definition, face, edge, &picture, &scene.faces, &scene.edges);
 
         // The two segments the stored name is actually made of.
