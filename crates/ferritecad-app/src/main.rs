@@ -37,8 +37,8 @@ use ferritecad_document::{CapSide, DOCUMENT_EXTENSION, SelectionRule, SemanticRo
 use ferritecad_kernel::{CancelToken, OperationContext, ProgressSink, TessellationParams};
 use ferritecad_occt::OcctKernel;
 use ferritecad_scene::{
-    CatalogueEntry, EdgeNames, FaceMeaning, FaceNames, LoadedScene, SceneItem,
-    Selection, snapshot_of,
+    CatalogueEntry, EdgeNames, FaceMeaning, FaceNames, LoadedScene, SceneItem, Selection,
+    snapshot_of,
 };
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
