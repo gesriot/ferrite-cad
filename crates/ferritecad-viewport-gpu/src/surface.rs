@@ -16,7 +16,7 @@
 use ferritecad_types::{CadError, Result};
 
 use crate::renderer::{PreparedSnapshot, Renderer, RendererId};
-use ferritecad_viewport::{Camera, Marked, Visibility};
+use ferritecad_viewport::{Camera, Hovered, Marked, Visibility};
 
 /// Whether a frame reached the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,7 +334,7 @@ impl WindowSurface {
     ///
     /// ```no_run
     /// # use ferritecad_viewport_gpu::{PreparedSnapshot, Renderer, WindowSurface};
-    /// # use ferritecad_viewport::{Camera, Marked, Visibility};
+    /// # use ferritecad_viewport::{Camera, Hovered, Marked, Visibility};
     /// fn compose(
     ///     surface: &mut WindowSurface,
     ///     renderer: &mut Renderer,
@@ -346,7 +346,7 @@ impl WindowSurface {
     ///         return Ok(()); // Nothing to draw into, and nothing wrong.
     ///     };
     ///     let frame =
-    ///         frame.draw_scene(prepared, camera, Marked::Nothing, Marked::Nothing, visibility)?;
+    ///         frame.draw_scene(prepared, camera, Marked::Nothing, Hovered::Nothing, visibility)?;
     ///     // An interface would draw into `frame.view()` here, on top of the
     ///     // model and before anything is published.
     ///     frame.present();
@@ -415,7 +415,7 @@ impl WindowSurface {
         prepared: &PreparedSnapshot,
         camera: &Camera,
         selected: Marked,
-        hovered: Marked,
+        hovered: Hovered,
         visibility: &Visibility,
     ) -> Result<Presented> {
         let Some(frame) = self.begin(renderer)? else {
@@ -469,7 +469,7 @@ impl<'a> SurfaceFrame<'a> {
         prepared: &PreparedSnapshot,
         camera: &Camera,
         selected: Marked,
-        hovered: Marked,
+        hovered: Hovered,
         visibility: &Visibility,
     ) -> Result<ComposedSurfaceFrame<'a>> {
         self.renderer.draw_into(

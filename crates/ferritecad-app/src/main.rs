@@ -45,7 +45,8 @@ use ferritecad_ui::{
     PointerButton, RowVisibility, SHOW_ALL_KEY, Selected, VIEWS, ViewportEvent, ViewportInput,
 };
 use ferritecad_viewport::{
-    Camera, Marked, PickId, Projection, RenderSnapshot, SnapshotBuilder, StandardView, Visibility,
+    Camera, EdgePickId, FacePickId, Hovered, Marked, PickId, Projection, RenderSnapshot,
+    SnapshotBuilder, StandardView, Visibility,
 };
 use ferritecad_viewport_gpu::{Hit, PreparedSnapshot, Renderer, WindowSurface};
 use winit::application::ApplicationHandler;
@@ -707,7 +708,7 @@ struct LiveScene<P> {
     /// states rather than one identity, because a list row can only name a
     /// definition and a pixel can name the face under it, and the two are
     /// different things to show.
-    hovered: Marked,
+    hovered: Hovered,
 }
 
 impl<P> LiveScene<P> {
@@ -724,7 +725,7 @@ impl<P> LiveScene<P> {
             faces,
             visibility,
             selection: Selection::Nothing,
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         }
     }
 
@@ -835,7 +836,7 @@ fn can_hide_selection<P>(scene: &LiveScene<P>, snapshot: &RenderSnapshot) -> boo
 fn hide_selected(
     visibility: &mut Visibility,
     selection: &mut Selection,
-    hovered: &mut Marked,
+    hovered: &mut Hovered,
     snapshot: &RenderSnapshot,
     input: &mut ViewportInput,
 ) -> bool {
@@ -843,7 +844,7 @@ fn hide_selected(
         return false;
     }
     *selection = Selection::Nothing;
-    *hovered = Marked::Nothing;
+    *hovered = Hovered::Nothing;
     input.forget_pending();
     true
 }
@@ -871,14 +872,14 @@ fn can_isolate_selection<P>(scene: &LiveScene<P>, snapshot: &RenderSnapshot) -> 
 fn isolate_selected(
     visibility: &mut Visibility,
     selection: &Selection,
-    hovered: &mut Marked,
+    hovered: &mut Hovered,
     snapshot: &RenderSnapshot,
     input: &mut ViewportInput,
 ) -> bool {
     if !visibility.isolate(selection.marked(), snapshot) {
         return false;
     }
-    *hovered = Marked::Nothing;
+    *hovered = Hovered::Nothing;
     input.forget_pending();
     true
 }
@@ -893,11 +894,11 @@ fn isolate_selected(
 /// Every pixel means something different afterwards, so what the pointer was
 /// over, and any click, question or gesture in flight, are forgotten: they
 /// describe a frame that is being replaced.
-fn change_projection(input: &mut ViewportInput, hovered: &mut Marked, to: Projection) -> bool {
+fn change_projection(input: &mut ViewportInput, hovered: &mut Hovered, to: Projection) -> bool {
     if !input.set_projection(to) {
         return false;
     }
-    *hovered = Marked::Nothing;
+    *hovered = Hovered::Nothing;
     input.forget_pending();
     true
 }
@@ -923,7 +924,7 @@ fn other_projection(current: Projection) -> Projection {
 fn undo_visibility(
     visibility: &mut Visibility,
     selection: &mut Selection,
-    hovered: &mut Marked,
+    hovered: &mut Hovered,
     snapshot: &RenderSnapshot,
     input: &mut ViewportInput,
 ) -> bool {
@@ -935,7 +936,7 @@ fn undo_visibility(
     {
         *selection = Selection::Nothing;
     }
-    *hovered = Marked::Nothing;
+    *hovered = Hovered::Nothing;
     input.forget_pending();
     true
 }
@@ -986,7 +987,7 @@ fn rows_visibility(visibility: &Visibility, snapshot: &RenderSnapshot) -> Vec<Ro
 fn hide_one(
     visibility: &mut Visibility,
     selection: &mut Selection,
-    hovered: &mut Marked,
+    hovered: &mut Hovered,
     snapshot: &RenderSnapshot,
     requested: PickId,
     input: &mut ViewportInput,
@@ -998,7 +999,7 @@ fn hide_one(
     if selection.owning_definition(snapshot) == requested_definition {
         *selection = Selection::Nothing;
     }
-    *hovered = Marked::Nothing;
+    *hovered = Hovered::Nothing;
     input.forget_pending();
     true
 }
@@ -1018,7 +1019,7 @@ fn hide_one(
 /// frame in which it is present.
 fn show_one(
     visibility: &mut Visibility,
-    hovered: &mut Marked,
+    hovered: &mut Hovered,
     snapshot: &RenderSnapshot,
     requested: PickId,
     input: &mut ViewportInput,
@@ -1026,7 +1027,7 @@ fn show_one(
     if !visibility.show(Marked::Definition(requested), snapshot) {
         return false;
     }
-    *hovered = Marked::Nothing;
+    *hovered = Hovered::Nothing;
     input.forget_pending();
     true
 }
@@ -1039,11 +1040,11 @@ fn show_one(
 /// flight are different: they describe pixels of the frame before hidden
 /// geometry returned, so answering them afterwards could name something that
 /// was absent when the question was recorded.
-fn show_all(visibility: &mut Visibility, hovered: &mut Marked, input: &mut ViewportInput) -> bool {
+fn show_all(visibility: &mut Visibility, hovered: &mut Hovered, input: &mut ViewportInput) -> bool {
     if !visibility.show_all() {
         return false;
     }
-    *hovered = Marked::Nothing;
+    *hovered = Hovered::Nothing;
     input.forget_pending();
     true
 }
@@ -1088,7 +1089,33 @@ fn frame_scene(
 ///
 /// Given the one field it may change and nothing else, so pointing at
 /// something cannot choose it however this is called.
-fn hover(hovered: &mut Marked, snapshot: &RenderSnapshot, answer: Marked) -> bool {
+/// What one pixel of the model is a question about.
+///
+/// Most specific first, and from one hit rather than three reads: an edge is a
+/// line a person aimed at, a face is the surface behind it, and a definition
+/// is what is left when the picture cannot say which face. Every arm comes
+/// from the same pixel of the same frame, so the answer cannot describe one
+/// thing and be resolved against another.
+///
+/// The edge arm is already coherent: [`Hit::edge`] gives nothing where the
+/// edge target and the definition target disagree, which is exactly the outer
+/// silhouette, where a line lands on a pixel the fill did not reach. So the
+/// silhouette answers with the face or with nothing, never with an edge whose
+/// definition is not there.
+fn hovered_at(hit: Hit) -> Hovered {
+    if hit.edge() != EdgePickId::NOTHING {
+        return Hovered::Edge(hit.edge());
+    }
+    if hit.face() != FacePickId::NOTHING {
+        return Hovered::Face(hit.face());
+    }
+    if hit.definition() != PickId::NOTHING {
+        return Hovered::Definition(hit.definition());
+    }
+    Hovered::Nothing
+}
+
+fn hover(hovered: &mut Hovered, snapshot: &RenderSnapshot, answer: Hovered) -> bool {
     let answer = answer.known_to(snapshot);
     if answer == *hovered {
         return false;
@@ -1885,12 +1912,12 @@ impl App {
                 .prepared
                 .snapshot()
                 .pick_of(row)
-                .map(Marked::Definition),
+                .map(Hovered::Definition),
             HoverRequest::Pixel(x, y) => {
                 // One offscreen frame, and only because the pointer moved. A
                 // pixel is the only thing that knows which face it came from.
                 match Self::hit_at(live, self.input.camera(), x, y) {
-                    Ok(hit) => Some(Marked::Face(hit.face())),
+                    Ok(hit) => Some(hovered_at(hit)),
                     Err(error) => {
                         eprintln!("ferritecad: {error}");
                         return;
@@ -1899,7 +1926,7 @@ impl App {
             }
             // Away from the model, over a panel, or in the middle of a
             // gesture: whatever was under the pointer is not any more.
-            HoverRequest::Clear => Some(Marked::Nothing),
+            HoverRequest::Clear => Some(Hovered::Nothing),
             // Nothing moved, so nothing changed.
             HoverRequest::Unchanged => None,
         };
@@ -1933,7 +1960,7 @@ impl App {
             &live.scene.prepared,
             camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &live.scene.visibility,
         )?;
         Ok(frame.hit_at(x, y))
@@ -3167,7 +3194,7 @@ mod tests {
             faces: FaceNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
         assert_eq!(
             old.selection,
@@ -3203,7 +3230,9 @@ mod tests {
             faces: FaceNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
-            hovered: Marked::Nothing,
+            // A real question about the picture that is still on screen, so
+            // "nothing changed" is a statement with content.
+            hovered: Hovered::Definition(chosen),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -3220,6 +3249,11 @@ mod tests {
         .expect_err("a failed load must not commit a picture");
         assert!(error.to_string().contains("not a document"));
         assert_eq!(scene.selection, Selection::Definition(chosen));
+        assert_eq!(
+            scene.hovered,
+            Hovered::Definition(chosen),
+            "a failed load forgot what the pointer was over"
+        );
         assert_eq!(scene.catalogue, vec![mine]);
         assert_eq!(*camera.camera(), framing);
     }
@@ -3238,7 +3272,7 @@ mod tests {
             faces: FaceNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -3284,7 +3318,7 @@ mod tests {
                     .expect("the picture draws something")
                     .pick,
             ),
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
 
         // Two lookups and no search: this snapshot names the definition, this
@@ -3308,7 +3342,7 @@ mod tests {
             faces: FaceNames::default(),
             visibility: Visibility::default(),
             selection: scene.selection,
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
         assert_eq!(short.chosen(&picture), None);
     }
@@ -3328,7 +3362,7 @@ mod tests {
             faces: FaceNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
 
         // Pointing at the definition that is already chosen: a question about
@@ -3336,9 +3370,9 @@ mod tests {
         assert!(hover(
             &mut scene.hovered,
             &picture,
-            Marked::Definition(chosen)
+            Hovered::Definition(chosen)
         ));
-        assert_eq!(scene.hovered, Marked::Definition(chosen));
+        assert_eq!(scene.hovered, Hovered::Definition(chosen));
         assert_eq!(
             scene.selection,
             Selection::Definition(chosen),
@@ -3348,14 +3382,14 @@ mod tests {
         // Asking the same thing again changes nothing, so nothing asks for a
         // frame that would draw the picture that is already on screen.
         assert!(
-            !hover(&mut scene.hovered, &picture, Marked::Definition(chosen)),
+            !hover(&mut scene.hovered, &picture, Hovered::Definition(chosen)),
             "the same question was treated as news"
         );
 
         // Away from the model: the question is answered with nothing, and the
         // choice survives it.
-        assert!(hover(&mut scene.hovered, &picture, Marked::Nothing));
-        assert_eq!(scene.hovered, Marked::Nothing);
+        assert!(hover(&mut scene.hovered, &picture, Hovered::Nothing));
+        assert_eq!(scene.hovered, Hovered::Nothing);
         assert_eq!(scene.selection, Selection::Definition(chosen));
 
         // A question about a picture that has been replaced marks nothing in
@@ -3363,9 +3397,9 @@ mod tests {
         assert!(!hover(
             &mut scene.hovered,
             &other,
-            Marked::Definition(chosen)
+            Hovered::Definition(chosen)
         ));
-        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(scene.hovered, Hovered::Nothing);
     }
 
     #[test]
@@ -3442,19 +3476,19 @@ mod tests {
             faces: FaceNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
         assert!(hover(
             &mut scene.hovered,
             &picture,
-            Marked::Definition(picture.pick_of(first).expect("a row"))
+            Hovered::Definition(picture.pick_of(first).expect("a row"))
         ));
         assert!(hover(
             &mut scene.hovered,
             &picture,
-            Marked::Definition(by_row)
+            Hovered::Definition(by_row)
         ));
-        assert_eq!(scene.hovered, Marked::Definition(by_row));
+        assert_eq!(scene.hovered, Hovered::Definition(by_row));
         assert_eq!(scene.selection, Selection::Nothing);
         assert_eq!(
             scene.chosen(&picture),
@@ -3481,6 +3515,32 @@ mod tests {
         (directory, scene)
     }
 
+    /// The committed plate through the kernel that ships, so its topological
+    /// edges are named rather than absent.
+    ///
+    /// The mock kernel reports no edge association at all, which is the honest
+    /// thing for it to say and useless for this gate: what is being measured
+    /// is that a real edge, named by Open CASCADE, reaches a pixel.
+    fn native_plate_scene() -> Option<(tempfile::TempDir, LoadedScene)> {
+        if !ferritecad_occt::is_available() {
+            eprintln!("skipped: this build has no Open CASCADE");
+            return None;
+        }
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("plate.fcad");
+        std::fs::copy(ferritecad_fixtures::plate_source(), &path).expect("copies the fixture");
+        let mut kernel = OcctKernel::new().expect("opens a session");
+        let scene = snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel: &mut OcctKernel, bytes: &[u8]| kernel.import_step(bytes),
+            &ferritecad_kernel::TessellationParams::default(),
+            &ferritecad_kernel::OperationContext::default(),
+        )
+        .expect("the committed plate loads through Open CASCADE");
+        Some((directory, scene))
+    }
+
     /// A renderer, or a reason this machine cannot run a pixel gate.
     macro_rules! renderer_or_skip {
         () => {
@@ -3493,6 +3553,299 @@ mod tests {
                 Err(reason) => panic!("a renderer failed after adapter discovery: {reason}"),
             }
         };
+    }
+
+    #[test]
+    fn what_a_pixel_is_a_question_about_is_the_most_particular_thing_it_is() {
+        let Some((_directory, scene)) = native_plate_scene() else {
+            return;
+        };
+        let mut renderer = renderer_or_skip!();
+        let picture = std::sync::Arc::new(scene.snapshot);
+        let prepared = renderer
+            .prepare(std::sync::Arc::clone(&picture))
+            .expect("uploads");
+        let mut input = ViewportInput::new();
+        input.resize(480, 480);
+        input
+            .frame(picture.bounds().expect("somewhere"))
+            .expect("frames");
+        let frame = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                Marked::Nothing,
+                Hovered::Nothing,
+                &Visibility::new(&picture),
+            )
+            .expect("draws");
+
+        // Every pixel of a real picture, sorted by what it actually is. All
+        // four kinds occur here, and each must answer with the most particular
+        // thing true of it rather than with the first thing looked for.
+        let (mut on_edges, mut on_faces, mut on_nothing) = (0u32, 0u32, 0u32);
+        for y in 0..frame.height() {
+            for x in 0..frame.width() {
+                let hit = frame.hit_at(x, y);
+                let answer = hovered_at(hit);
+                if hit.edge() != EdgePickId::NOTHING {
+                    assert_eq!(answer, Hovered::Edge(hit.edge()), "at {x},{y}");
+                    on_edges += 1;
+                } else if hit.face() != FacePickId::NOTHING {
+                    assert_eq!(answer, Hovered::Face(hit.face()), "at {x},{y}");
+                    on_faces += 1;
+                } else if hit.definition() != PickId::NOTHING {
+                    assert_eq!(answer, Hovered::Definition(hit.definition()), "at {x},{y}");
+                } else {
+                    assert_eq!(answer, Hovered::Nothing, "at {x},{y}");
+                    on_nothing += 1;
+                }
+            }
+        }
+        assert!(
+            on_edges > 0 && on_faces > 0 && on_nothing > 0,
+            "all three kinds of pixel occur: {on_edges} on edges, {on_faces} on \
+             surfaces, {on_nothing} on nothing"
+        );
+
+        // A pixel that is on an edge is also on a face: the ordering is what
+        // decides between them, not the absence of the other answer.
+        let (x, y, _) = an_edge_pixel(&frame).expect("the plate draws its edges");
+        assert_ne!(frame.hit_at(x, y).face(), FacePickId::NOTHING);
+        assert_ne!(frame.hit_at(x, y).definition(), PickId::NOTHING);
+    }
+
+    #[test]
+    fn a_question_about_an_edge_leaves_the_choice_and_the_click_alone() {
+        let Some((_directory, scene)) = native_plate_scene() else {
+            return;
+        };
+        let mut renderer = renderer_or_skip!();
+        let picture = std::sync::Arc::new(scene.snapshot);
+        let prepared = renderer
+            .prepare(std::sync::Arc::clone(&picture))
+            .expect("uploads");
+        let mut input = ViewportInput::new();
+        input.resize(480, 480);
+        input
+            .frame(picture.bounds().expect("somewhere"))
+            .expect("frames");
+        let visibility = Visibility::new(&picture);
+
+        let plain = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                Marked::Nothing,
+                Hovered::Nothing,
+                &visibility,
+            )
+            .expect("draws");
+        let (x, y, edge) = an_edge_pixel(&plain).expect("the plate draws its edges");
+
+        // A choice already made, and a question about an edge of it.
+        let mut scene = LiveScene {
+            prepared: (),
+            catalogue: vec![a_body()],
+            faces: FaceNames::default(),
+            visibility: Visibility::new(&picture),
+            selection: Selection::Nothing,
+            hovered: Hovered::Nothing,
+        };
+        let before = scene.selection.clone();
+        assert!(hover(
+            &mut scene.hovered,
+            &picture,
+            hovered_at(plain.hit_at(x, y))
+        ));
+        assert_eq!(scene.hovered, Hovered::Edge(edge));
+        assert_eq!(
+            scene.selection, before,
+            "pointing at an edge changed what was chosen"
+        );
+        // Asking the same thing again is not a reason to draw again.
+        assert!(!hover(
+            &mut scene.hovered,
+            &picture,
+            hovered_at(plain.hit_at(x, y))
+        ));
+
+        // And a click on that very pixel finds what it found before: the mark
+        // is drawn over the picture and changes no answer about it.
+        let marked = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                Marked::Nothing,
+                scene.hovered,
+                &visibility,
+            )
+            .expect("draws");
+        assert_eq!(
+            marked.pick_at(x, y),
+            plain.pick_at(x, y),
+            "the marked edge changed which definition the pixel is"
+        );
+        assert_eq!(
+            marked.hit_at(x, y).face(),
+            plain.hit_at(x, y).face(),
+            "the marked edge changed which face the pixel is"
+        );
+        assert_ne!(
+            plain.hit_at(x, y).face(),
+            FacePickId::NOTHING,
+            "a click on a line still lands on the face under it"
+        );
+    }
+
+    #[test]
+    fn a_row_answers_with_its_definition_and_never_with_an_edge() {
+        let Some((_directory, scene)) = native_plate_scene() else {
+            return;
+        };
+        let picture = scene.snapshot;
+        assert!(picture.edge_count() > 0, "this picture has edges to offer");
+
+        let mut hovered = Hovered::Nothing;
+        // What a row asks, exactly as `point_at` asks it.
+        let answer = picture.pick_of(0).map(Hovered::Definition).expect("a row");
+        assert!(hover(&mut hovered, &picture, answer));
+        assert!(
+            matches!(hovered, Hovered::Definition(_)),
+            "a list of definitions answered with something else: {hovered:?}"
+        );
+        // A row names a definition and can say nothing about a face or an
+        // edge: there are none in a list of definitions.
+        assert_eq!(hovered.definition(&picture), Some(0));
+    }
+
+    #[test]
+    fn a_picture_whose_kernel_named_no_edges_still_answers_about_faces() {
+        // The mock kernel reports no edge association at all, which is the
+        // honest thing for it to say. Every pixel of the model must then fall
+        // back to the face under it, and none may invent an edge.
+        let (_directory, scene) = plate_scene();
+        let mut renderer = renderer_or_skip!();
+        let picture = std::sync::Arc::new(scene.snapshot);
+        assert_eq!(
+            picture.edge_count(),
+            0,
+            "the mock kernel names no topological edges"
+        );
+        let prepared = renderer
+            .prepare(std::sync::Arc::clone(&picture))
+            .expect("uploads");
+        let mut input = ViewportInput::new();
+        input.resize(320, 320);
+        input
+            .frame(picture.bounds().expect("somewhere"))
+            .expect("frames");
+        let frame = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                Marked::Nothing,
+                Hovered::Nothing,
+                &Visibility::new(&picture),
+            )
+            .expect("draws");
+
+        let mut on_faces = 0u32;
+        for y in 0..frame.height() {
+            for x in 0..frame.width() {
+                let answer = hovered_at(frame.hit_at(x, y));
+                assert!(
+                    !matches!(answer, Hovered::Edge(_)),
+                    "a picture with no edge association answered with one at {x},{y}"
+                );
+                if matches!(answer, Hovered::Face(_)) {
+                    on_faces += 1;
+                }
+            }
+        }
+        assert!(on_faces > 0, "the model is drawn and its faces answer");
+    }
+
+    /// A pixel of the picture that sits on a topological edge, and the edge.
+    ///
+    /// Chosen through `Hit`, so the pixel is one where the edge and the
+    /// definition under it agree: the outer silhouette, where a line lands on
+    /// a pixel the fill did not reach, is deliberately not a candidate.
+    fn an_edge_pixel(
+        frame: &ferritecad_viewport_gpu::Frame,
+    ) -> Option<(u32, u32, ferritecad_viewport::EdgePickId)> {
+        (0..frame.height())
+            .flat_map(|y| (0..frame.width()).map(move |x| (x, y)))
+            .find_map(|(x, y)| {
+                let hit = frame.hit_at(x, y);
+                (hit.edge() != ferritecad_viewport::EdgePickId::NOTHING).then_some((
+                    x,
+                    y,
+                    hit.edge(),
+                ))
+            })
+    }
+
+    #[test]
+    fn pointing_at_a_topological_edge_of_the_committed_plate_marks_that_edge() {
+        let Some((_directory, scene)) = native_plate_scene() else {
+            return;
+        };
+        let mut renderer = renderer_or_skip!();
+        let picture = std::sync::Arc::new(scene.snapshot);
+        let prepared = renderer
+            .prepare(std::sync::Arc::clone(&picture))
+            .expect("uploads");
+        let mut input = ViewportInput::new();
+        input.resize(480, 480);
+        input
+            .frame(picture.bounds().expect("the plate is somewhere"))
+            .expect("frames");
+        let visibility = Visibility::new(&picture);
+
+        let plain = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                Marked::Nothing,
+                Hovered::Nothing,
+                &visibility,
+            )
+            .expect("draws");
+
+        assert!(
+            picture.edge_count() > 0,
+            "the kernel that ships names the plate's edges"
+        );
+        let (x, y, edge) = an_edge_pixel(&plain).expect("the plate draws its edges");
+
+        // The pointer is over that pixel. What the app decides it is over must
+        // be the edge, and not the face the edge happens to lie on.
+        let hit = plain.hit_at(x, y);
+        assert_eq!(
+            hovered_at(hit),
+            Hovered::Edge(edge),
+            "the pointer over an exact topological edge did not mark the edge"
+        );
+
+        // And the next frame must show it: those pixels change, and the inside
+        // of the face does not.
+        let mut hovered = Hovered::Nothing;
+        assert!(hover(&mut hovered, &picture, hovered_at(hit)));
+        let marked = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                Marked::Nothing,
+                hovered,
+                &visibility,
+            )
+            .expect("draws");
+        assert_ne!(
+            marked.colour_at(x, y),
+            plain.colour_at(x, y),
+            "the edge under the pointer was not drawn any differently"
+        );
     }
 
     /// A big plate with a small one directly behind it.
@@ -3656,7 +4009,7 @@ mod tests {
                     &prepared,
                     camera,
                     Marked::Nothing,
-                    Marked::Nothing,
+                    Hovered::Nothing,
                     &everything,
                 )
                 .expect("draws")
@@ -3777,7 +4130,7 @@ mod tests {
     fn hiding_what_is_chosen_forgets_it_and_everything_pointing_at_it() {
         let picture = two_definitions();
         let mut scene = live_with(&picture, 0);
-        scene.hovered = Marked::Definition(picture.pick_of(0).expect("drawn"));
+        scene.hovered = Hovered::Definition(picture.pick_of(0).expect("drawn"));
         let mut input = ViewportInput::new();
         input.resize(800, 600);
         let camera = input.camera().view_projection();
@@ -3810,7 +4163,7 @@ mod tests {
         // What was chosen is not chosen, what was pointed at is not pointed
         // at, and nothing in flight can bring either back.
         assert_eq!(scene.selection, Selection::Nothing);
-        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(scene.hovered, Hovered::Nothing);
         assert_eq!(
             input.take_pick(),
             None,
@@ -3853,7 +4206,7 @@ mod tests {
         // Putting something back on screen is not deciding that it is what the
         // user is working on.
         assert_eq!(scene.selection, Selection::Nothing);
-        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(scene.hovered, Hovered::Nothing);
         assert_eq!(input.camera().view_projection(), camera);
     }
 
@@ -4008,7 +4361,7 @@ mod tests {
         assert!(!scene.visibility.anything_hidden());
         assert!(scene.visibility.shows(0, &next));
         assert_eq!(scene.selection, Selection::Nothing);
-        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(scene.hovered, Hovered::Nothing);
     }
 
     #[test]
@@ -4234,7 +4587,7 @@ mod tests {
         let meanings = before.meanings().to_vec();
 
         let mut visibility = Visibility::new(snapshot);
-        let mut hovered = Marked::Nothing;
+        let mut hovered = Hovered::Nothing;
         let mut input = ViewportInput::new();
         input.resize(800, 600);
         assert!(visibility.can_isolate(chosen.marked(), snapshot));
@@ -4282,7 +4635,7 @@ mod tests {
         );
         // With no durable names this falls back to the definition, so the face
         // case is stated with the transient mark the renderer is given.
-        scene.hovered = Marked::Face(picture.face_of(0, 0).expect("numbered"));
+        scene.hovered = Hovered::Face(picture.face_of(0, 0).expect("numbered"));
         let chosen = scene.selection.clone();
         let camera = input.camera().view_projection();
 
@@ -4308,7 +4661,7 @@ mod tests {
         assert_eq!(scene.selection, chosen);
         // What pointed elsewhere is gone, and nothing in flight can answer
         // against the frame being replaced.
-        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(scene.hovered, Hovered::Nothing);
         assert_eq!(input.take_pick(), None);
         assert_eq!(input.take_hover(), Hover::Cleared);
         assert!(input.take_redraw(), "isolating owes a frame");
@@ -4319,7 +4672,7 @@ mod tests {
     fn isolating_a_chosen_face_keeps_it_chosen_as_that_face() {
         let (_directory, scene, chosen) = plate_with_a_chosen_face();
         let mut visibility = Visibility::new(&scene.snapshot);
-        let mut hovered = Marked::Nothing;
+        let mut hovered = Hovered::Nothing;
         let mut input = ViewportInput::new();
         input.resize(800, 600);
         // Construction and resizing both owe a frame of their own; what this
@@ -4545,7 +4898,7 @@ mod tests {
         // A mark, click and question all belong to the isolated frame. Show
         // all will put geometry under pixels where none existed when these
         // were recorded, so none may be answered against the next frame.
-        scene.hovered = Marked::Definition(picture.pick_of(1).expect("drawn"));
+        scene.hovered = Hovered::Definition(picture.pick_of(1).expect("drawn"));
         input.handle(ViewportEvent::PointerMoved { x: 4.0, y: 4.0 }, false);
         input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
         input.handle(
@@ -4571,7 +4924,7 @@ mod tests {
         assert_eq!(scene.selection, chosen, "Show all changed the choice");
         assert_eq!(
             scene.hovered,
-            Marked::Nothing,
+            Hovered::Nothing,
             "a hover from the isolated frame survived Show all"
         );
         assert_eq!(
@@ -4654,7 +5007,7 @@ mod tests {
         .expect("a load that arrived commits");
         assert!(!scene.visibility.anything_hidden());
         assert_eq!(scene.selection, Selection::Nothing);
-        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(scene.hovered, Hovered::Nothing);
     }
 
     #[test]
@@ -4757,7 +5110,7 @@ mod tests {
 
         // A pointer question, a click and a gesture, all recorded while the
         // definition about to return was absent.
-        scene.hovered = Marked::Definition(picture.pick_of(1).expect("drawn"));
+        scene.hovered = Hovered::Definition(picture.pick_of(1).expect("drawn"));
         input.handle(ViewportEvent::PointerMoved { x: 4.0, y: 4.0 }, false);
         input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
         input.handle(
@@ -4782,7 +5135,7 @@ mod tests {
 
         // Returning geometry changes what some pixels mean, so nothing
         // recorded against the frame before it may be answered afterwards.
-        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(scene.hovered, Hovered::Nothing);
         assert_eq!(input.take_pick(), None, "a click survived the change");
         assert_eq!(input.take_hover(), Hover::Cleared);
         assert!(!input.is_dragging(), "a gesture survived the change");
@@ -4811,7 +5164,7 @@ mod tests {
         let meanings = before.meanings().to_vec();
 
         let mut visibility = Visibility::new(snapshot);
-        let mut hovered = Marked::Nothing;
+        let mut hovered = Hovered::Nothing;
         let mut input = ViewportInput::new();
         input.resize(800, 600);
         assert!(isolate_selected(
@@ -4856,7 +5209,7 @@ mod tests {
         // A no-op must preserve real transient state, not merely turn one
         // empty state into another. Record a mark, click and hover question
         // that still belong to this unchanged frame.
-        scene.hovered = Marked::Definition(picture.pick_of(1).expect("drawn"));
+        scene.hovered = Hovered::Definition(picture.pick_of(1).expect("drawn"));
         let hovered = scene.hovered;
         input.handle(ViewportEvent::PointerMoved { x: 4.0, y: 4.0 }, false);
         input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
@@ -5033,7 +5386,7 @@ mod tests {
         .expect("a load that arrived commits");
         assert!(!scene.visibility.anything_hidden());
         assert_eq!(scene.selection, Selection::Nothing);
-        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(scene.hovered, Hovered::Nothing);
     }
 
     #[test]
@@ -5053,7 +5406,7 @@ mod tests {
         let meanings = before.meanings().to_vec();
 
         let mut visibility = Visibility::new(snapshot);
-        let mut hovered = Marked::Nothing;
+        let mut hovered = Hovered::Nothing;
         let mut input = ViewportInput::new();
         input.resize(800, 600);
 
@@ -5102,7 +5455,7 @@ mod tests {
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
         let chosen = scene.selection.clone();
-        scene.hovered = Marked::Definition(picture.pick_of(2).expect("drawn"));
+        scene.hovered = Hovered::Definition(picture.pick_of(2).expect("drawn"));
         let mut input = ViewportInput::new();
         input.resize(800, 600);
         let camera = input.camera().view_projection();
@@ -5127,7 +5480,7 @@ mod tests {
             &mut input
         ));
 
-        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(scene.hovered, Hovered::Nothing);
         assert_eq!(input.take_pick(), None, "a click survived the change");
         assert_eq!(input.take_hover(), Hover::Cleared);
         assert!(input.take_redraw(), "hiding a row owes a frame");
@@ -5184,7 +5537,7 @@ mod tests {
 
         // Real transient state belonging to this unchanged frame, not the
         // absence of any.
-        scene.hovered = Marked::Definition(picture.pick_of(2).expect("drawn"));
+        scene.hovered = Hovered::Definition(picture.pick_of(2).expect("drawn"));
         let hovered = scene.hovered;
         input.handle(ViewportEvent::PointerMoved { x: 4.0, y: 4.0 }, false);
         input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
@@ -5324,13 +5677,13 @@ mod tests {
         for door in 0..5 {
             let mut visibility = Visibility::new(&picture);
             let mut selection = chosen.clone();
-            let mut hovered = Marked::Nothing;
+            let mut hovered = Hovered::Nothing;
             if door >= 3 {
                 // Show one and Show all need something already missing.
                 assert!(hide_one(
                     &mut visibility,
                     &mut Selection::Nothing,
-                    &mut Marked::Nothing,
+                    &mut Hovered::Nothing,
                     &picture,
                     picture.pick_of(0).expect("drawn"),
                     &mut input
@@ -5488,7 +5841,7 @@ mod tests {
         ));
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
         let chosen = scene.selection.clone();
-        scene.hovered = Marked::Definition(picture.pick_of(2).expect("drawn"));
+        scene.hovered = Hovered::Definition(picture.pick_of(2).expect("drawn"));
         let camera = input.camera().view_projection();
 
         input.handle(ViewportEvent::PointerMoved { x: 4.0, y: 4.0 }, false);
@@ -5508,7 +5861,7 @@ mod tests {
             &mut input
         ));
 
-        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(scene.hovered, Hovered::Nothing);
         assert_eq!(input.take_pick(), None, "a click survived the change");
         assert_eq!(input.take_hover(), Hover::Cleared);
         assert!(input.take_redraw(), "taking a change back owes a frame");
@@ -5563,7 +5916,7 @@ mod tests {
 
         // Real transient state belonging to this unchanged frame, not the
         // absence of any, and a frame already owed.
-        scene.hovered = Marked::Definition(picture.pick_of(2).expect("drawn"));
+        scene.hovered = Hovered::Definition(picture.pick_of(2).expect("drawn"));
         let hovered = scene.hovered;
         input.handle(ViewportEvent::PointerMoved { x: 4.0, y: 4.0 }, false);
         input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
@@ -5707,7 +6060,7 @@ mod tests {
         let meanings = before.meanings().to_vec();
 
         let mut visibility = Visibility::new(snapshot);
-        let mut hovered = Marked::Nothing;
+        let mut hovered = Hovered::Nothing;
         let mut input = ViewportInput::new();
         input.resize(800, 600);
         input
@@ -5727,7 +6080,7 @@ mod tests {
         assert!(visibility.can_undo(snapshot));
 
         // Real pointing state belonging to the frame about to be replaced.
-        hovered = Marked::Definition(snapshot.pick_of(0).expect("drawn"));
+        hovered = Hovered::Definition(snapshot.pick_of(0).expect("drawn"));
         input.handle(ViewportEvent::PointerMoved { x: 4.0, y: 4.0 }, false);
         input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
         input.handle(
@@ -5764,7 +6117,7 @@ mod tests {
         assert_eq!(input.camera().target(), target);
         assert_eq!(input.camera().eye(), eye);
         assert_eq!(input.projection(), Projection::Orthographic);
-        assert_eq!(hovered, Marked::Nothing);
+        assert_eq!(hovered, Hovered::Nothing);
         assert_eq!(input.take_pick(), None, "a click survived the change");
         assert_eq!(input.take_hover(), Hover::Cleared);
         assert!(input.take_redraw(), "changing projection owes a frame");
@@ -5794,7 +6147,7 @@ mod tests {
         input
             .frame(([-10.0, -10.0, -10.0], [10.0, 10.0, 10.0]))
             .expect("frames");
-        let mut hovered = Marked::Definition(distant_scene().pick_of(0).expect("drawn"));
+        let mut hovered = Hovered::Definition(distant_scene().pick_of(0).expect("drawn"));
         let recorded = hovered;
 
         // Real transient state belonging to this unchanged frame.
@@ -5967,7 +6320,7 @@ mod tests {
             assert!(hide_one(
                 &mut visibility,
                 &mut Selection::Nothing,
-                &mut Marked::Nothing,
+                &mut Hovered::Nothing,
                 snapshot,
                 snapshot.pick_of(definition).expect("drawn"),
                 &mut input
@@ -6007,7 +6360,7 @@ mod tests {
             Some(RowVisibility::Hide(pick)) => pick,
             other => panic!("the drawn row offers no way out: {other:?}"),
         };
-        let mut hovered = Marked::Nothing;
+        let mut hovered = Hovered::Nothing;
         assert!(hide_one(
             &mut visibility,
             &mut chosen,
@@ -6419,7 +6772,7 @@ mod tests {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &Visibility::new(&snapshot),
             )
             .expect("draws");
@@ -6526,7 +6879,7 @@ mod tests {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &Visibility::new(&snapshot),
             )
             .expect("draws");
@@ -6565,7 +6918,7 @@ mod tests {
                 &prepared,
                 &camera,
                 chosen.marked(),
-                Marked::Nothing,
+                Hovered::Nothing,
                 &Visibility::new(&snapshot),
             )
             .expect("draws");
@@ -6726,7 +7079,7 @@ mod tests {
                     &prepared,
                     camera,
                     Marked::Nothing,
-                    Marked::Nothing,
+                    Hovered::Nothing,
                     &live.visibility,
                 )
                 .expect("draws")
@@ -6876,7 +7229,7 @@ mod tests {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &Visibility::default(),
             )
             .expect("draws");
@@ -7408,7 +7761,7 @@ mod tests {
             Visibility::default(),
         );
         live.selection = chosen.clone();
-        live.hovered = Marked::Face(scene.snapshot.face_of(0, 1).expect("numbered"));
+        live.hovered = Hovered::Face(scene.snapshot.face_of(0, 1).expect("numbered"));
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
 
@@ -7419,7 +7772,7 @@ mod tests {
         assert_eq!(live.selection, chosen);
         assert_eq!(
             live.hovered,
-            Marked::Face(scene.snapshot.face_of(0, 1).expect("numbered"))
+            Hovered::Face(scene.snapshot.face_of(0, 1).expect("numbered"))
         );
 
         // A load that arrived replaces all of it at once.
@@ -7438,7 +7791,7 @@ mod tests {
         )
         .expect("a load that arrived commits");
         assert_eq!(live.selection, Selection::Nothing);
-        assert_eq!(live.hovered, Marked::Nothing);
+        assert_eq!(live.hovered, Hovered::Nothing);
     }
 
     #[test]
@@ -7513,15 +7866,15 @@ mod tests {
             faces: FaceNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
 
         // The face a pixel of this picture would report.
         let face = FacePickId::from_raw(1, &picture);
         assert_eq!(picture.definition_of_face(face), Some(0));
 
-        assert!(hover(&mut scene.hovered, &picture, Marked::Face(face)));
-        assert_eq!(scene.hovered, Marked::Face(face));
+        assert!(hover(&mut scene.hovered, &picture, Hovered::Face(face)));
+        assert_eq!(scene.hovered, Hovered::Face(face));
         assert_eq!(
             scene.selection,
             Selection::Definition(chosen),
@@ -7533,9 +7886,9 @@ mod tests {
         assert!(hover(
             &mut scene.hovered,
             &picture,
-            Marked::Definition(chosen)
+            Hovered::Definition(chosen)
         ));
-        assert_eq!(scene.hovered, Marked::Definition(chosen));
+        assert_eq!(scene.hovered, Hovered::Definition(chosen));
 
         // A face of a picture that has been replaced marks nothing here,
         // however plausible its number looks: the other picture numbers its
@@ -7543,9 +7896,9 @@ mod tests {
         assert!(hover(
             &mut scene.hovered,
             &other,
-            Marked::Face(FacePickId::from_raw(1, &picture))
+            Hovered::Face(FacePickId::from_raw(1, &picture))
         ));
-        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(scene.hovered, Hovered::Nothing);
         assert_eq!(scene.selection, Selection::Definition(chosen));
     }
 
@@ -7563,7 +7916,7 @@ mod tests {
             faces: FaceNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
-            hovered: Marked::Definition(chosen),
+            hovered: Hovered::Definition(chosen),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -7572,7 +7925,7 @@ mod tests {
         // what the pointer was over.
         commit_scene(&mut scene, &mut camera, Err(CadError::input("no")))
             .expect_err("a failed load commits nothing");
-        assert_eq!(scene.hovered, Marked::Definition(chosen));
+        assert_eq!(scene.hovered, Hovered::Definition(chosen));
         assert_eq!(scene.selection, Selection::Definition(chosen));
 
         // A load that arrived replaces all of it: the question belonged to the
@@ -7591,7 +7944,7 @@ mod tests {
             )),
         )
         .expect("a load that arrived commits");
-        assert_eq!(scene.hovered, Marked::Nothing);
+        assert_eq!(scene.hovered, Hovered::Nothing);
         assert_eq!(scene.selection, Selection::Nothing);
     }
 
@@ -7625,7 +7978,7 @@ mod tests {
             faces: FaceNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
 
         // Choosing from a list: the row becomes an identity by asking the
@@ -7705,7 +8058,7 @@ mod tests {
             faces: FaceNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
 
         let identities = identities_of(&scene.catalogue);
@@ -7726,7 +8079,7 @@ mod tests {
             faces: FaceNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
         let identities = identities_of(&twins.catalogue);
         assert_eq!(twins.rows(&identities).len(), 2);
@@ -7757,7 +8110,7 @@ mod tests {
             faces: FaceNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(picture.pick_of(1).expect("the picture has that row")),
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
 
         let identities = identities_of(&scene.catalogue);
@@ -7809,7 +8162,7 @@ mod tests {
             selection: Selection::Definition(
                 picture.pick_of(mesh).expect("the picture has that row"),
             ),
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -7867,7 +8220,7 @@ mod tests {
             faces: FaceNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
         let identities = identities_of(&scene.catalogue);
         let (rows, marked) = scene.view(&identities, &picture);
@@ -7917,7 +8270,7 @@ mod tests {
             selection: Selection::Definition(
                 picture.pick_of(chosen).expect("the picture has that row"),
             ),
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
 
         let mut showing_choice = ViewportInput::new();
@@ -7979,7 +8332,7 @@ mod tests {
             selection: Selection::Definition(
                 picture.pick_of(only).expect("the picture has that row"),
             ),
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
         assert_eq!(selection_bounds(&scene, &picture), picture.bounds());
 
@@ -8029,7 +8382,7 @@ mod tests {
             faces: FaceNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(picture.pick_of(0).expect("the picture has that row")),
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -8055,7 +8408,7 @@ mod tests {
             faces: FaceNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
         for _ in 0..3 {
             assert!(!frame_selection(&empty, &picture, &mut camera).expect("no failure"));
@@ -8097,7 +8450,7 @@ mod tests {
                     .expect("the picture draws something")
                     .pick,
             ),
-            hovered: Marked::Nothing,
+            hovered: Hovered::Nothing,
         };
         assert!(scene.chosen(&picture).is_some());
 
@@ -8153,7 +8506,7 @@ mod tests {
                 faces: FaceNames::default(),
                 visibility: Visibility::default(),
                 selection: Selection::Definition(draw.pick),
-                hovered: Marked::Nothing,
+                hovered: Hovered::Nothing,
             };
             assert_eq!(scene.chosen(&picture), Some((0, &entry)));
         }

@@ -4336,3 +4336,145 @@ fn a_refused_mesh_consumes_no_edge_identities() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// What the pointer is over, as a question distinct from a choice.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_question_tells_its_four_answers_apart() {
+    use ferritecad_viewport::Hovered;
+
+    let snapshot = snapshot_of(&[square_with_edges(&[1, 1, 1, 1])]);
+    let definition = snapshot.pick_of(0).expect("drawn");
+    let face = snapshot.face_of(0, 0).expect("numbered");
+    let edge = snapshot.edge_of(0, 0).expect("numbered");
+
+    let answers = [
+        Hovered::Nothing,
+        Hovered::Definition(definition),
+        Hovered::Face(face),
+        Hovered::Edge(edge),
+    ];
+    // Four distinct states, not three with a flag beside them.
+    for (i, one) in answers.iter().enumerate() {
+        for (j, other) in answers.iter().enumerate() {
+            assert_eq!(one == other, i == j, "{one:?} and {other:?}");
+        }
+    }
+    assert_eq!(Hovered::default(), Hovered::Nothing);
+
+    // All four resolve to the same definition, or to none.
+    assert_eq!(Hovered::Nothing.definition(&snapshot), None);
+    for answer in &answers[1..] {
+        assert_eq!(answer.definition(&snapshot), Some(0), "{answer:?}");
+    }
+}
+
+#[test]
+fn a_question_about_another_picture_is_about_nothing() {
+    use ferritecad_viewport::Hovered;
+
+    let snapshot = snapshot_of(&[square_with_edges(&[1, 1, 1, 1])]);
+    // A different picture that numbers more of everything, so the raw values
+    // taken from it are perfectly in range here. Only the identity differs.
+    let larger = snapshot_of(&[
+        square_with_edges(&[1, 1, 1, 1]),
+        square_with_edges(&[1, 1, 1, 1]),
+    ]);
+
+    for answer in [
+        Hovered::Definition(larger.pick_of(0).expect("drawn")),
+        Hovered::Face(larger.face_of(0, 0).expect("numbered")),
+        Hovered::Edge(larger.edge_of(0, 0).expect("numbered")),
+    ] {
+        assert_eq!(
+            answer.known_to(&snapshot),
+            Hovered::Nothing,
+            "{answer:?} of another picture was accepted"
+        );
+        assert_eq!(answer.definition(&snapshot), None);
+    }
+
+    // And the same picture's own answers survive, so the refusal above is
+    // about which picture issued them and not about edges in general.
+    let edge = snapshot.edge_of(0, 2).expect("numbered");
+    assert_eq!(Hovered::Edge(edge).known_to(&snapshot), Hovered::Edge(edge));
+}
+
+#[test]
+fn an_edge_bounds_the_faces_its_segments_touch_and_no_others() {
+    // Two faces meeting along one edge, each with its own vertices: the shared
+    // edge bounds both, the outer edges bound one each.
+    let shape = ShapeHandle::new(SessionId::new(), 5);
+    let mesh = Mesh {
+        positions: vec![
+            // The lower face's own four corners.
+            -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, 0.0, 1.0, //
+            // The upper face's, sharing the line z = 1 geometrically only.
+            -1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 2.0, -1.0, 0.0, 2.0,
+        ],
+        normals: [0.0, -1.0, 0.0].repeat(8),
+        indices: vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7],
+        faces: vec![
+            MeshFaceRange {
+                face: SubShapeHandle::new(shape, SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 6,
+            },
+            MeshFaceRange {
+                face: SubShapeHandle::new(shape, SubShapeKind::Face, 1),
+                first_index: 6,
+                index_count: 6,
+            },
+        ],
+        edges: Some(ferritecad_kernel::MeshEdges {
+            // The shared edge, drawn from both sides; then one outer edge of
+            // each face.
+            segments: vec![3, 2, 4, 5, 0, 1, 6, 7],
+            ranges: vec![
+                ferritecad_kernel::MeshEdgeRange {
+                    edge: SubShapeHandle::new(shape, SubShapeKind::Edge, 0),
+                    first_segment: 0,
+                    segment_count: 2,
+                },
+                ferritecad_kernel::MeshEdgeRange {
+                    edge: SubShapeHandle::new(shape, SubShapeKind::Edge, 1),
+                    first_segment: 2,
+                    segment_count: 1,
+                },
+                ferritecad_kernel::MeshEdgeRange {
+                    edge: SubShapeHandle::new(shape, SubShapeKind::Edge, 2),
+                    first_segment: 3,
+                    segment_count: 1,
+                },
+            ],
+        }),
+    };
+    let snapshot = snapshot_of(&[mesh]);
+    let lower = snapshot.face_of(0, 0).expect("numbered");
+    let upper = snapshot.face_of(0, 1).expect("numbered");
+    let shared = snapshot.edge_of(0, 0).expect("numbered");
+    let lower_only = snapshot.edge_of(0, 1).expect("numbered");
+    let upper_only = snapshot.edge_of(0, 2).expect("numbered");
+
+    // The shared edge bounds both faces, and says so from either side: the
+    // answer is a property of the edge, not of whichever representation of it
+    // is asked about.
+    assert!(snapshot.edge_bounds_face(shared, lower));
+    assert!(snapshot.edge_bounds_face(shared, upper));
+
+    assert!(snapshot.edge_bounds_face(lower_only, lower));
+    assert!(!snapshot.edge_bounds_face(lower_only, upper));
+    assert!(snapshot.edge_bounds_face(upper_only, upper));
+    assert!(!snapshot.edge_bounds_face(upper_only, lower));
+
+    // Nothing of another picture bounds anything of this one.
+    let other = snapshot_of(&[square_with_edges(&[1, 1, 1, 1])]);
+    assert!(!snapshot.edge_bounds_face(other.edge_of(0, 0).expect("numbered"), lower));
+    assert!(!snapshot.edge_bounds_face(shared, other.face_of(0, 0).expect("numbered")));
+    assert!(!snapshot.edge_bounds_face(
+        ferritecad_viewport::EdgePickId::NOTHING,
+        ferritecad_viewport::FacePickId::NOTHING
+    ));
+}

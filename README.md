@@ -55,7 +55,22 @@ Clicking anything else selects its definition, which is the honest answer:
 imported faces have no durable names, so a face of one is a face of nothing this
 document could store. Selecting a part selects every placement of it, and
 selecting a face marks that face in every placement, because a click names what
-a thing is and never the place it happened to land on. A
+a thing is and never the place it happened to land on.
+Moving the pointer over the model asks what is under it, and the answer is as
+particular as the picture can be: over a line where two faces of a native body
+meet, that one topological edge is marked, in every placement of the part and
+along the whole of it, including the part of it each of the two faces drew for
+itself. Off the line, the face under the pointer is marked instead, and where
+the picture cannot say which face, the part. What is marked is the edge and
+nothing around it: the faces it separates and the part they belong to keep
+exactly the colour they had, so it reads as a line rather than as a change of
+material. A choice already made stays stronger than a question: an edge of a
+selected part, or one bounding a selected face, is left alone rather than
+painted over, while an edge elsewhere on the same part is still marked.
+Pointing is only ever a question. It never selects anything, and a click on a
+marked edge selects the face beneath it exactly as it would have without the
+mark: edges cannot be selected in this build, and nothing in the interface
+offers to. A
 list beside the model offers the same definitions by name and identity, which
 is how one that is hidden, tiny or out of shot can still be chosen, and
 `Frame selected` (or `F`) brings what is selected into view without changing

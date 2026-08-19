@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use ferritecad_types::{CadError, Result};
 use ferritecad_viewport::{
-    Camera, EdgePickId, FacePickId, Marked, PickId, RenderSnapshot, VERTEX_FLOATS, Visibility,
+    Camera, EdgePickId, FacePickId, Hovered, Marked, PickId, RenderSnapshot, VERTEX_FLOATS,
+    Visibility,
 };
 use wgpu::util::DeviceExt as _;
 
@@ -87,7 +88,23 @@ struct GlobalsUniform {
     /// selection because they are different states and a person must be able
     /// to tell which is which: one is a decision and the other is a question.
     hovered: u32,
+    /// The topological edge the pointer is over, or zero.
+    hovered_edge: u32,
+    /// Three scalars, written down rather than left to a compiler.
+    ///
+    /// A `mat4x4` gives this struct sixteen-byte alignment in WGSL, so its
+    /// size is rounded up to a multiple of sixteen there. Five `u32` after the
+    /// matrix is 84 bytes in Rust and 96 in WGSL, and a uniform binding whose
+    /// size disagrees with the shader's view of it is a mismatch one backend
+    /// may forgive and another will not. Padding to 96 on both sides makes the
+    /// agreement explicit, and the assertion below makes it checked.
+    padding: [u32; 3],
 }
+
+// Ninety-six bytes, matching `Globals` in `shader.wgsl` exactly. A change to
+// either that forgets the other stops the build here rather than at whichever
+// driver notices first.
+const _: () = assert!(std::mem::size_of::<GlobalsUniform>() == 96);
 
 /// What a grid pass needs to know, and all it is allowed to know.
 ///
@@ -149,6 +166,11 @@ pub struct Renderer {
     /// Draws the topological edges into their own identity target. Offscreen
     /// only: a window has no such attachment and is not asked for one.
     edge_pipeline: wgpu::RenderPipeline,
+    /// Marks the edge under the pointer, offscreen.
+    edge_mark_pipeline: wgpu::RenderPipeline,
+    /// The same mark for a window format, learned when a window is.
+    edge_mark_surface_pipelines:
+        std::collections::HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
     layout: wgpu::BindGroupLayout,
@@ -322,6 +344,8 @@ impl Renderer {
         let line_pipeline =
             build_line_pipeline(&device, &shader, &pipeline_layout, COLOUR_FORMAT, true);
         let edge_pipeline = build_edge_pipeline(&device, &shader, &pipeline_layout);
+        let edge_mark_pipeline =
+            build_edge_mark_pipeline(&device, &shader, &pipeline_layout, COLOUR_FORMAT);
         // Pop both even when the inner scope caught an error. Leaving the
         // outer one installed would make a later, unrelated device error look
         // as though it belonged to this build.
@@ -352,6 +376,8 @@ impl Renderer {
             surface_pipelines: std::collections::HashMap::new(),
             line_surface_pipelines: std::collections::HashMap::new(),
             edge_pipeline,
+            edge_mark_pipeline,
+            edge_mark_surface_pipelines: std::collections::HashMap::new(),
             shader,
             pipeline_layout,
             layout,
@@ -448,19 +474,44 @@ impl Renderer {
         camera: &Camera,
         prepared: &PreparedSnapshot,
         selected: Marked,
-        hovered: Marked,
+        hovered: Hovered,
     ) {
         // Every identity asked of the picture about to be drawn, and by the
         // same question. A number that named a definition of some other
         // picture would otherwise light up whichever one occupies it here.
         let snapshot = prepared.snapshot();
-        let raw = |mark: Marked| match mark.known_to(snapshot) {
+        // The rule, asked once and before the raw values shadow their marks:
+        // an edge the choice already covers is not marked, so the shader is
+        // never told to mark one.
+        let marked_edge =
+            Self::marked_edge(snapshot, selected, hovered).map_or(0, |edge| edge.to_raw());
+        let (selected, selected_face) = match selected.known_to(snapshot) {
             Marked::Nothing => (PickId::NOTHING.to_raw(), FacePickId::NOTHING.to_raw()),
             Marked::Definition(pick) => (pick.to_raw(), FacePickId::NOTHING.to_raw()),
             Marked::Face(face) => (PickId::NOTHING.to_raw(), face.to_raw()),
         };
-        let (selected, selected_face) = raw(selected);
-        let (hovered, hovered_face) = raw(hovered);
+        let (hovered, hovered_face, hovered_edge) = match hovered.known_to(snapshot) {
+            Hovered::Nothing => (
+                PickId::NOTHING.to_raw(),
+                FacePickId::NOTHING.to_raw(),
+                EdgePickId::NOTHING.to_raw(),
+            ),
+            Hovered::Definition(pick) => (
+                pick.to_raw(),
+                FacePickId::NOTHING.to_raw(),
+                EdgePickId::NOTHING.to_raw(),
+            ),
+            Hovered::Face(face) => (
+                PickId::NOTHING.to_raw(),
+                face.to_raw(),
+                EdgePickId::NOTHING.to_raw(),
+            ),
+            Hovered::Edge(_) => (
+                PickId::NOTHING.to_raw(),
+                FacePickId::NOTHING.to_raw(),
+                marked_edge,
+            ),
+        };
         self.queue.write_buffer(
             &self.globals,
             0,
@@ -470,6 +521,8 @@ impl Renderer {
                 selected_face,
                 hovered_face,
                 hovered,
+                hovered_edge,
+                padding: [0; 3],
             }),
         );
     }
@@ -500,7 +553,7 @@ impl Renderer {
         prepared: &PreparedSnapshot,
         camera: &Camera,
         selected: Marked,
-        hovered: Marked,
+        hovered: Hovered,
         visibility: &Visibility,
         view: &wgpu::TextureView,
         format: wgpu::TextureFormat,
@@ -581,6 +634,18 @@ impl Renderer {
                 .expect("the line pipeline for this format was just ensured");
             pass.set_pipeline(line_pipeline);
             Self::draw_lines(&mut pass, prepared, visibility, self.draw_stride);
+
+            // And the marked edge over all of it, from the same stream and
+            // the same rule the readback uses. A window pass is colour-only
+            // already, so the mark needs no pass of its own here.
+            if Self::marked_edge(prepared.snapshot(), selected, hovered).is_some() {
+                let mark_pipeline = self
+                    .edge_mark_surface_pipelines
+                    .get(&format)
+                    .expect("the edge mark pipeline for this format was just ensured");
+                pass.set_pipeline(mark_pipeline);
+                Self::draw_edges(&mut pass, prepared, visibility, self.draw_stride);
+            }
         }
         self.queue.submit(Some(encoder.finish()));
         Ok(())
@@ -697,6 +762,37 @@ impl Renderer {
         }
     }
 
+    /// Which edge, if any, this frame marks under the pointer.
+    ///
+    /// A question loses to a decision wherever the two are about the same
+    /// geometry, and this is the whole of that rule. A part that has been
+    /// chosen keeps its chosen look, so an edge of it is not marked; a face
+    /// that has been chosen keeps its chosen look, so an edge bounding it is
+    /// not marked either. An edge of the same part that does not bound the
+    /// chosen face is marked, because nothing about it overlaps the choice,
+    /// and a choice made in another part does not reach here at all.
+    ///
+    /// Adjacency is asked of the picture, which reads it out of the packed
+    /// partition. It is a property of the edge rather than of either side of
+    /// it, so the answer cannot depend on which of two coincident face-side
+    /// lines happened to be drawn last.
+    fn marked_edge(
+        snapshot: &RenderSnapshot,
+        selected: Marked,
+        hovered: Hovered,
+    ) -> Option<EdgePickId> {
+        let Hovered::Edge(edge) = hovered.known_to(snapshot) else {
+            return None;
+        };
+        match selected.known_to(snapshot) {
+            Marked::Nothing => Some(edge),
+            Marked::Definition(pick) => {
+                (snapshot.definition(pick) != snapshot.definition_of_edge(edge)).then_some(edge)
+            }
+            Marked::Face(face) => (!snapshot.edge_bounds_face(edge, face)).then_some(edge),
+        }
+    }
+
     pub(crate) fn present(&self, texture: wgpu::SurfaceTexture) {
         self.queue.present(texture);
     }
@@ -706,7 +802,8 @@ impl Renderer {
         let needs_model = !self.surface_pipelines.contains_key(&format);
         let needs_grid = !self.grid_surface_pipelines.contains_key(&format);
         let needs_lines = !self.line_surface_pipelines.contains_key(&format);
-        if !needs_model && !needs_grid && !needs_lines {
+        let needs_marks = !self.edge_mark_surface_pipelines.contains_key(&format);
+        if !needs_model && !needs_grid && !needs_lines && !needs_marks {
             return Ok(());
         }
 
@@ -745,13 +842,16 @@ impl Renderer {
                 false,
             )
         });
+        let marks = needs_marks.then(|| {
+            build_edge_mark_pipeline(&self.device, &self.shader, &self.pipeline_layout, format)
+        });
         let internal_refusal = pollster::block_on(internal.pop()).map(|error| error.to_string());
         let validation_refusal =
             pollster::block_on(validation.pop()).map(|error| error.to_string());
         pipeline_refusal(validation_refusal, internal_refusal)?;
 
-        // Publish neither until both requested pipelines were accepted. A
-        // retry after a refusal therefore starts from one coherent state.
+        // Publish none until every requested pipeline was accepted. A retry
+        // after a refusal therefore starts from one coherent state.
         if let Some(model) = model {
             self.surface_pipelines.insert(format, model);
         }
@@ -760,6 +860,9 @@ impl Renderer {
         }
         if let Some(lines) = lines {
             self.line_surface_pipelines.insert(format, lines);
+        }
+        if let Some(marks) = marks {
+            self.edge_mark_surface_pipelines.insert(format, marks);
         }
         Ok(())
     }
@@ -932,7 +1035,7 @@ impl Renderer {
         prepared: &PreparedSnapshot,
         camera: &Camera,
         selected: Marked,
-        hovered: Marked,
+        hovered: Hovered,
         visibility: &Visibility,
     ) -> Result<Frame> {
         self.require_own(prepared)?;
@@ -1056,6 +1159,44 @@ impl Renderer {
             // Last, over the surfaces they bound and behind anything nearer.
             pass.set_pipeline(&self.line_pipeline);
             Self::draw_lines(&mut pass, prepared, visibility, self.draw_stride);
+        }
+
+        if Self::marked_edge(prepared.snapshot(), selected, hovered).is_some() {
+            // The one edge under the pointer, over the picture and nothing
+            // else. Its own pass, with the colour and the depth loaded: the
+            // identity targets are not attached, so marking an edge cannot
+            // change what any pixel *is*. Skipped entirely when there is no
+            // edge to mark, so a picture with no question in it is drawn by
+            // exactly the passes it was drawn by before.
+            let colour_view = colour.create_view(&Default::default());
+            let depth_view = depth.create_view(&Default::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ferritecad viewport edge mark pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &colour_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        // The model's own depth, kept for the identity pass
+                        // that follows. Nothing here writes it.
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.edge_mark_pipeline);
+            Self::draw_edges(&mut pass, prepared, visibility, self.draw_stride);
         }
 
         {
@@ -1601,6 +1742,83 @@ fn edge_stream(
     Ok(stream)
 }
 
+/// The pipeline that marks the one topological edge under the pointer.
+///
+/// Colour and nothing else, whatever it is drawn into. That is what lets one
+/// builder serve the window and the readback alike: both have a colour target
+/// and the mark writes no identity, so there is one statement of what marking
+/// an edge means rather than an offscreen one and a window one that could
+/// drift.
+///
+/// Depth is tested and not written, exactly as the face boundaries are: the
+/// mark lies on the surface it bounds and must not lose every tie to it, and
+/// it must not answer through a nearer part. No bias, which wgpu refuses on a
+/// line topology and which nothing here needs.
+fn build_edge_mark_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    pipeline_layout: &wgpu::PipelineLayout,
+    colour_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("ferritecad viewport edge mark pipeline"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vertex_edge_mark"),
+            compilation_options: Default::default(),
+            buffers: &edge_vertex_buffer_layout(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fragment_edge_mark"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: colour_format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::LineList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// What a vertex of the expanded edge stream is, for either pipeline that
+/// draws it. One layout, so the identity pass and the mark cannot disagree
+/// about the buffer they share.
+fn edge_vertex_buffer_layout() -> [Option<wgpu::VertexBufferLayout<'static>>; 1] {
+    [Some(wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<EdgeVertex>() as u64,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &[
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x3,
+                offset: 0,
+                shader_location: 0,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Uint32,
+                offset: (3 * std::mem::size_of::<f32>()) as u64,
+                shader_location: 1,
+            },
+        ],
+    })]
+}
+
 /// The pipeline that says which topological edge a pixel is on.
 ///
 /// Offscreen only, and one target: no colour, no definition and no face. The
@@ -1627,22 +1845,7 @@ fn build_edge_pipeline(
             module: shader,
             entry_point: Some("vertex_edge"),
             compilation_options: Default::default(),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<EdgeVertex>() as u64,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &[
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x3,
-                        offset: 0,
-                        shader_location: 0,
-                    },
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Uint32,
-                        offset: (3 * std::mem::size_of::<f32>()) as u64,
-                        shader_location: 1,
-                    },
-                ],
-            })],
+            buffers: &edge_vertex_buffer_layout(),
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
@@ -2082,7 +2285,7 @@ mod tests {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &Visibility::default(),
                 &view,
                 format,
@@ -2128,6 +2331,25 @@ mod tests {
         camera: &Camera,
         visibility: &Visibility,
     ) -> Vec<u8> {
+        window_colour_marked(
+            renderer,
+            prepared,
+            camera,
+            Marked::Nothing,
+            Hovered::Nothing,
+            visibility,
+        )
+    }
+
+    /// The same window path, told what is chosen and what is asked about.
+    fn window_colour_marked(
+        renderer: &mut Renderer,
+        prepared: &PreparedSnapshot,
+        camera: &Camera,
+        selected: Marked,
+        hovered: Hovered,
+        visibility: &Visibility,
+    ) -> Vec<u8> {
         let (width, height) = (camera.width(), camera.height());
         let format = COLOUR_FORMAT;
         let target = renderer.device.create_texture(&wgpu::TextureDescriptor {
@@ -2147,15 +2369,7 @@ mod tests {
         let view = target.create_view(&Default::default());
         renderer
             .draw_into(
-                prepared,
-                camera,
-                Marked::Nothing,
-                Marked::Nothing,
-                visibility,
-                &view,
-                format,
-                width,
-                height,
+                prepared, camera, selected, hovered, visibility, &view, format, width, height,
             )
             .expect("the window path draws");
 
@@ -2243,7 +2457,7 @@ mod tests {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &everything,
             )
             .expect("draws")
@@ -2254,7 +2468,7 @@ mod tests {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &hiding,
             )
             .expect("draws")
@@ -2303,7 +2517,7 @@ mod tests {
                 &prepared,
                 &flat,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &everything,
             )
             .expect("draws")
@@ -2331,7 +2545,7 @@ mod tests {
                     &prepared,
                     &aimed,
                     Marked::Nothing,
-                    Marked::Nothing,
+                    Hovered::Nothing,
                     &everything,
                 )
                 .expect("draws")
@@ -2360,7 +2574,7 @@ mod tests {
                     &prepared,
                     &turned,
                     Marked::Nothing,
-                    Marked::Nothing,
+                    Hovered::Nothing,
                     &everything,
                 )
                 .expect("draws")
@@ -2391,7 +2605,7 @@ mod tests {
                     &prepared,
                     &fitted,
                     Marked::Nothing,
-                    Marked::Nothing,
+                    Hovered::Nothing,
                     &everything,
                 )
                 .expect("draws")
@@ -2420,7 +2634,7 @@ mod tests {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &isolating,
             )
             .expect("draws")
@@ -2441,7 +2655,13 @@ mod tests {
             &snapshot
         ));
         let offscreen_shown = renderer
-            .render(&prepared, &camera, Marked::Nothing, Marked::Nothing, &shown)
+            .render(
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Hovered::Nothing,
+                &shown,
+            )
             .expect("draws")
             .colour()
             .to_vec();
@@ -2450,6 +2670,129 @@ mod tests {
             window_colour(&mut renderer, &prepared, &camera, &shown),
             offscreen_shown,
             "the window and the readback disagree about what came back"
+        );
+    }
+
+    #[test]
+    fn what_a_frame_is_drawn_against_is_the_size_the_shader_declares() {
+        // The assertion beside the type is the real gate; this states the
+        // number in a place a reader looking for it will find, and fails
+        // loudly rather than at whichever driver notices a short binding.
+        assert_eq!(
+            std::mem::size_of::<GlobalsUniform>(),
+            96,
+            "Globals must stay the size WGSL rounds it to"
+        );
+        assert_eq!(std::mem::align_of::<GlobalsUniform>(), 4);
+    }
+
+    #[test]
+    fn a_window_marks_the_same_edge_the_readback_marks() {
+        let mut renderer = match Renderer::new() {
+            Ok(renderer) => renderer,
+            Err(error) if error.kind() == ErrorKind::Unsupported => {
+                eprintln!("skipped: {error}");
+                return;
+            }
+            Err(error) => panic!("a renderer failed after adapter discovery: {error}"),
+        };
+
+        // Two faces of one definition meeting along an edge, so there is a
+        // real edge to mark rather than an empty frame to compare.
+        let shape = ShapeHandle::new(SessionId::new(), 9);
+        let mesh = Mesh {
+            positions: vec![
+                -6.0, 0.0, -6.0, 6.0, 0.0, -6.0, 6.0, 0.0, 0.0, -6.0, 0.0, 0.0, //
+                -6.0, 0.0, 0.0, 6.0, 0.0, 0.0, 6.0, 0.0, 6.0, -6.0, 0.0, 6.0,
+            ],
+            normals: [0.0, -1.0, 0.0].repeat(8),
+            indices: vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7],
+            faces: (0..2)
+                .map(|face| MeshFaceRange {
+                    face: SubShapeHandle::new(shape, SubShapeKind::Face, face),
+                    first_index: face as u32 * 6,
+                    index_count: 6,
+                })
+                .collect(),
+            edges: Some(ferritecad_kernel::MeshEdges {
+                segments: vec![3, 2, 4, 5, 0, 1],
+                ranges: vec![
+                    ferritecad_kernel::MeshEdgeRange {
+                        edge: SubShapeHandle::new(shape, SubShapeKind::Edge, 0),
+                        first_segment: 0,
+                        segment_count: 2,
+                    },
+                    ferritecad_kernel::MeshEdgeRange {
+                        edge: SubShapeHandle::new(shape, SubShapeKind::Edge, 1),
+                        first_segment: 2,
+                        segment_count: 1,
+                    },
+                ],
+            }),
+        };
+        let mut builder = SnapshotBuilder::new();
+        let definition = builder.add_mesh(&mesh).expect("packs");
+        builder
+            .place(definition, None, &Transform::IDENTITY, [0.15, 0.5, 0.85])
+            .expect("places");
+        let snapshot = Arc::new(builder.build());
+        let mut camera = Camera::new();
+        camera.resize(192, 192);
+        camera
+            .frame(snapshot.bounds().expect("drawn"))
+            .expect("frames");
+        let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+        let visibility = Visibility::new(&snapshot);
+        let edge = snapshot.edge_of(0, 0).expect("numbered");
+
+        let plain = renderer
+            .render(
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Hovered::Nothing,
+                &visibility,
+            )
+            .expect("draws")
+            .colour()
+            .to_vec();
+        let marked = renderer
+            .render(
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Hovered::Edge(edge),
+                &visibility,
+            )
+            .expect("draws")
+            .colour()
+            .to_vec();
+        // The comparison is worth making only if there is a mark in it.
+        assert_ne!(plain, marked, "the readback drew no mark to compare");
+
+        assert_eq!(
+            window_colour_marked(
+                &mut renderer,
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Hovered::Edge(edge),
+                &visibility,
+            ),
+            marked,
+            "the window and the readback marked different pixels"
+        );
+        assert_eq!(
+            window_colour_marked(
+                &mut renderer,
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Hovered::Nothing,
+                &visibility,
+            ),
+            plain,
+            "the window and the readback disagree without a mark"
         );
     }
 

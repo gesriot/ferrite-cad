@@ -24,6 +24,15 @@ struct Globals {
     // Which definition the pointer is over, or zero. A question rather than a
     // decision, and drawn differently so the two can be told apart.
     hovered: u32,
+    // Which topological edge the pointer is over, or zero.
+    hovered_edge: u32,
+    // Three scalars of padding, spelled out. The matrix above gives this
+    // struct sixteen-byte alignment, so WGSL rounds its size up to a multiple
+    // of sixteen; without these the Rust type would be 84 bytes and this one
+    // 96. Both are 96, and Rust asserts it.
+    padding_0: u32,
+    padding_1: u32,
+    padding_2: u32,
 };
 
 struct Draw {
@@ -255,4 +264,61 @@ fn vertex_edge(
 @fragment
 fn fragment_edge(in: EdgeOut) -> @location(0) u32 {
     return in.edge;
+}
+
+// The one topological edge under the pointer, drawn over the picture.
+//
+// The same expanded vertex stream the identity pass uses, and the same
+// matrices: a highlight computed through arithmetic of its own would come
+// away from the line it is meant to mark as soon as the camera moved.
+//
+// Every segment of the edge is drawn, from both of the faces that meet at it
+// and in every placement of the definition, because an identity belongs to the
+// edge and not to one side of it or one occurrence of it. Everything else is
+// discarded, so pointing at one edge changes that edge and nothing around it.
+struct EdgeMarkOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) @interpolate(flat) edge: u32,
+};
+
+@vertex
+fn vertex_edge_mark(
+    @location(0) position: vec3<f32>,
+    @location(1) edge: u32,
+) -> EdgeMarkOut {
+    var out: EdgeMarkOut;
+    out.edge = edge;
+    out.clip = globals.view_projection * (draw.transform * vec4<f32>(position, 1.0));
+    return out;
+}
+
+// What the marked edge is drawn in.
+//
+// Two things at once, and both are needed. The base is the end of the range
+// opposite this part's material, which is what guarantees the mark is visible
+// on a part of any colour: towards white on a very dark one and towards black
+// on a very light one. It is then carried half way to a fixed warm accent,
+// which is what makes it a different thing to look at rather than a brighter
+// version of something already there. Every other line in the picture is
+// achromatic by construction, and a choice or a question about a face or a
+// part moves the fill rather than the line, so this is the only place where a
+// line has a hue.
+//
+// Measured against the material rather than against the shading at this pixel,
+// and that is a real simplification: the expanded edge stream carries no
+// normal, because the identity pass it is shared with has no use for one, and
+// a stream with normals would be a second copy of the same geometry. The half
+// step to the accent is what keeps the mark legible on a face turned away from
+// the light, where the shading is darker than the material.
+//
+// Only the samples of this edge change. The face it lies on and the part that
+// face belongs to keep exactly the colour they had.
+@fragment
+fn fragment_edge_mark(in: EdgeMarkOut) -> @location(0) vec4<f32> {
+    if (globals.hovered_edge == 0u || in.edge != globals.hovered_edge) {
+        discard;
+    }
+    let ink = marked_colour(draw.colour.rgb, 1.0);
+    let accent = vec3<f32>(1.0, 0.55, 0.1);
+    return vec4<f32>(mix(ink, accent, 0.5), draw.colour.a);
 }

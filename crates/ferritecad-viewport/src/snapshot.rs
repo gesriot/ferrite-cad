@@ -507,6 +507,70 @@ impl Marked {
     }
 }
 
+/// What one mark on the picture is a question about, transiently.
+///
+/// Four states rather than three, and a type of its own rather than a variant
+/// added to [`Marked`]. That separation is the point: `Marked` is what a
+/// person has *chosen*, and this build has no way to choose an edge. Sharing
+/// one type would make `Selection::Edge` a state the program could be put
+/// into, and the compiler would stop objecting to it.
+///
+/// Every arm carries an identity bound to the picture that issued it, exactly
+/// as [`Marked`] does, and none of them is a row number, a face ordinal or an
+/// edge ordinal. Not serialisable: what the pointer is over is a fact about
+/// one frame of one window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Hovered {
+    #[default]
+    Nothing,
+    /// A whole definition, as a list row can say.
+    Definition(PickId),
+    /// One face, as a pixel of the surface can say.
+    Face(FacePickId),
+    /// One topological edge, as a pixel of a line can say.
+    Edge(EdgePickId),
+}
+
+impl Hovered {
+    /// The same question, resolved against the picture about to be drawn.
+    ///
+    /// An identity of another picture, of a picture that has been replaced, or
+    /// of nothing at all is [`Nothing`][Self::Nothing] here. The same rule
+    /// [`Marked::known_to`] applies, extended to the arm `Marked` does not
+    /// have, so a stale answer cannot mark anything through either type.
+    pub fn known_to(self, snapshot: &RenderSnapshot) -> Self {
+        match self {
+            Self::Nothing => Self::Nothing,
+            Self::Definition(pick) => match snapshot.definition(pick) {
+                Some(_) => self,
+                None => Self::Nothing,
+            },
+            Self::Face(face) => match snapshot.definition_of_face(face) {
+                Some(_) => self,
+                None => Self::Nothing,
+            },
+            Self::Edge(edge) => match snapshot.definition_of_edge(edge) {
+                Some(_) => self,
+                None => Self::Nothing,
+            },
+        }
+    }
+
+    /// Which definition this question is about, if any.
+    ///
+    /// One resolution for all four arms, so a renderer deciding what to draw
+    /// and a reducer deciding what to forget cannot disagree about which part
+    /// of the picture a question concerns.
+    pub fn definition(self, snapshot: &RenderSnapshot) -> Option<usize> {
+        match self {
+            Self::Nothing => None,
+            Self::Definition(pick) => snapshot.definition(pick),
+            Self::Face(face) => snapshot.definition_of_face(face),
+            Self::Edge(edge) => snapshot.definition_of_edge(edge),
+        }
+    }
+}
+
 /// Which definitions of one picture are drawn, for as long as it is on screen.
 ///
 /// Per definition and not per placement: a definition drawn four times is one
@@ -1053,6 +1117,36 @@ impl RenderSnapshot {
             .sum();
         let ordinal = (edge.raw as usize).checked_sub(1)?.checked_sub(before)?;
         self.meshes[definition].segments_of_edge(ordinal)
+    }
+
+    /// Whether one topological edge is a boundary of one face.
+    ///
+    /// Read out of the partition the picture was packed with: an edge's
+    /// segments name vertices, every vertex belongs to exactly one face, and
+    /// the faces so named are the faces that edge bounds. No coordinate is
+    /// compared and no kernel handle is consulted.
+    ///
+    /// The answer is a property of the edge and not of either side of it. An
+    /// edge shared by two faces bounds both, so both of its face-side
+    /// representations get the same answer, and a rule resting on this cannot
+    /// depend on which of two coincident lines happened to be drawn last.
+    ///
+    /// Both must belong to this picture, and to the same definition of it: an
+    /// edge of one part does not bound a face of another.
+    pub fn edge_bounds_face(&self, edge: EdgePickId, face: FacePickId) -> bool {
+        let Some(definition) = self.definition_of_edge(edge) else {
+            return false;
+        };
+        if self.definition_of_face(face) != Some(definition) {
+            return false;
+        }
+        let Some(segments) = self.segments_of_edge(edge) else {
+            return false;
+        };
+        let mesh = &self.meshes[definition];
+        segments
+            .iter()
+            .any(|vertex| mesh.face_of_vertex.get(*vertex as usize).copied() == Some(face.raw))
     }
 
     /// The definition a pick identifies, if it identifies one.

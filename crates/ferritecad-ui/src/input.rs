@@ -2336,6 +2336,31 @@ mod tests {
     }
 
     #[test]
+    fn a_drag_asks_nothing_about_the_edges_it_passes_over() {
+        let mut input = ready();
+        // Standing still is a question.
+        input.handle(ViewportEvent::PointerMoved { x: 100.0, y: 100.0 }, false);
+        assert_eq!(input.take_hover(), Hover::At(100.0, 100.0));
+
+        // Turning the model is not. Every position the pointer travels through
+        // while a gesture is under way would otherwise be a question about
+        // whatever line it crossed, and each one costs an offscreen frame.
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        for (x, y) in [(120.0, 110.0), (140.0, 125.0), (160.0, 140.0)] {
+            input.handle(ViewportEvent::PointerMoved { x, y }, false);
+            assert_eq!(
+                input.take_hover(),
+                Hover::Cleared,
+                "a drag asked what it was passing over at {x},{y}"
+            );
+        }
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+    }
+
+    #[test]
     fn pressing_a_panel_asks_nothing_of_the_model() {
         let mut input = ready();
 

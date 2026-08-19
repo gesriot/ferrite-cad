@@ -23,8 +23,8 @@ use ferritecad_kernel::{
 };
 use ferritecad_types::{ErrorKind, Transform, Vec3};
 use ferritecad_viewport::{
-    Camera, FacePickId, Marked, PickId, Projection, RenderSnapshot, SnapshotBuilder, StandardView,
-    Visibility,
+    Camera, FacePickId, Hovered, Marked, PickId, Projection, RenderSnapshot, SnapshotBuilder,
+    StandardView, Visibility,
 };
 use ferritecad_viewport_gpu::{Frame, Renderer};
 
@@ -387,7 +387,7 @@ fn a_model_is_drawn_over_a_grid_that_is_never_selectable() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -467,7 +467,7 @@ fn the_grid_belongs_to_the_world_and_not_to_the_screen() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -481,7 +481,7 @@ fn the_grid_belongs_to_the_world_and_not_to_the_screen() {
             &prepared,
             &panned,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -504,7 +504,7 @@ fn the_grid_belongs_to_the_world_and_not_to_the_screen() {
             &prepared,
             &orbited,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -529,7 +529,7 @@ fn the_grid_belongs_to_the_world_and_not_to_the_screen() {
             &prepared,
             &far,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -557,7 +557,7 @@ fn a_backdrop_costs_no_geometry_and_repeats_exactly() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -566,7 +566,7 @@ fn a_backdrop_costs_no_geometry_and_repeats_exactly() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -627,7 +627,7 @@ fn a_part_below_the_plane_is_still_drawn_over_the_grid() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -677,7 +677,7 @@ fn a_picture_with_nothing_in_it_gets_no_backdrop() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -708,7 +708,7 @@ fn choosing_a_definition_changes_every_placement_of_it_and_nothing_else() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -747,7 +747,7 @@ fn choosing_a_definition_changes_every_placement_of_it_and_nothing_else() {
             &prepared,
             &camera,
             Marked::Definition(chosen),
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -782,7 +782,7 @@ fn pointing_at_a_definition_marks_every_placement_of_it_and_no_other() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -806,7 +806,7 @@ fn pointing_at_a_definition_marks_every_placement_of_it_and_no_other() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Definition(hovered),
+            Hovered::Definition(hovered),
             &Visibility::default(),
         )
         .expect("draws");
@@ -846,7 +846,7 @@ fn a_choice_and_a_question_are_told_apart() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -869,7 +869,7 @@ fn a_choice_and_a_question_are_told_apart() {
             &prepared,
             &camera,
             Marked::Definition(a),
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -878,7 +878,7 @@ fn a_choice_and_a_question_are_told_apart() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Definition(a),
+            Hovered::Definition(a),
             &Visibility::default(),
         )
         .expect("draws");
@@ -887,7 +887,7 @@ fn a_choice_and_a_question_are_told_apart() {
             &prepared,
             &camera,
             Marked::Definition(a),
-            Marked::Definition(b),
+            Hovered::Definition(b),
             &Visibility::default(),
         )
         .expect("draws");
@@ -896,7 +896,7 @@ fn a_choice_and_a_question_are_told_apart() {
             &prepared,
             &camera,
             Marked::Definition(a),
-            Marked::Definition(a),
+            Hovered::Definition(a),
             &Visibility::default(),
         )
         .expect("draws");
@@ -935,7 +935,7 @@ fn light_and_dark_parts_can_both_be_chosen_and_pointed_at() {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &Visibility::default(),
             )
             .expect("draws");
@@ -960,7 +960,7 @@ fn light_and_dark_parts_can_both_be_chosen_and_pointed_at() {
                 &prepared,
                 &camera,
                 Marked::Definition(pick),
-                Marked::Nothing,
+                Hovered::Nothing,
                 &Visibility::default(),
             )
             .expect("draws selection");
@@ -969,7 +969,7 @@ fn light_and_dark_parts_can_both_be_chosen_and_pointed_at() {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Definition(pick),
+                Hovered::Definition(pick),
                 &Visibility::default(),
             )
             .expect("draws hover");
@@ -1004,7 +1004,7 @@ fn nothing_worth_pointing_at_is_marked() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1017,7 +1017,7 @@ fn nothing_worth_pointing_at_is_marked() {
             &elsewhere,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1033,7 +1033,7 @@ fn nothing_worth_pointing_at_is_marked() {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Definition(hovered),
+                Hovered::Definition(hovered),
                 &Visibility::default(),
             )
             .expect("draws");
@@ -1057,7 +1057,7 @@ fn pointing_costs_no_geometry_and_leaves_the_backdrop_alone() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1072,7 +1072,7 @@ fn pointing_costs_no_geometry_and_leaves_the_backdrop_alone() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Definition(hovered),
+            Hovered::Definition(hovered),
             &Visibility::default(),
         )
         .expect("draws");
@@ -1081,7 +1081,7 @@ fn pointing_costs_no_geometry_and_leaves_the_backdrop_alone() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Definition(hovered),
+            Hovered::Definition(hovered),
             &Visibility::default(),
         )
         .expect("draws");
@@ -1125,7 +1125,7 @@ fn a_selection_from_another_snapshot_selects_nothing() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1147,7 +1147,7 @@ fn a_selection_from_another_snapshot_selects_nothing() {
             &elsewhere,
             &other_camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1162,7 +1162,7 @@ fn a_selection_from_another_snapshot_selects_nothing() {
             &prepared,
             &camera,
             Marked::Definition(foreign),
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1184,7 +1184,7 @@ fn a_snapshot_reaches_the_colour_target() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1221,7 +1221,7 @@ fn the_pick_target_comes_back_carrying_the_identities_that_went_in() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1266,7 +1266,7 @@ fn every_placement_is_drawn_and_they_all_pick_their_definition() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1317,7 +1317,7 @@ fn a_frame_cannot_be_read_against_a_different_snapshot() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1362,7 +1362,7 @@ fn a_viewport_of_no_size_draws_nothing_and_says_so() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws nothing");
@@ -1382,7 +1382,7 @@ fn a_viewport_of_no_size_draws_nothing_and_says_so() {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &Visibility::default()
             )
             .expect("draws nothing")
@@ -1404,7 +1404,7 @@ fn a_viewport_larger_than_the_device_can_hold_is_refused_before_allocation() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect_err("an impossible target must be refused");
@@ -1448,7 +1448,7 @@ fn a_normal_and_its_baked_equivalent_receive_the_same_light() {
             &transformed_prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1457,7 +1457,7 @@ fn a_normal_and_its_baked_equivalent_receive_the_same_light() {
             &baked_prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1500,7 +1500,7 @@ fn an_empty_snapshot_draws_a_cleared_frame() {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &Visibility::default(),
             )
             .expect("draws nothing");
@@ -1527,7 +1527,7 @@ fn two_frames_of_one_snapshot_are_the_same_picture() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1536,7 +1536,7 @@ fn two_frames_of_one_snapshot_are_the_same_picture() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1596,7 +1596,7 @@ fn geometry_is_uploaded_once_and_repeat_frames_only_move_the_camera() {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &Visibility::default(),
             )
             .expect("draws");
@@ -1643,7 +1643,7 @@ fn a_snapshot_prepared_by_another_renderer_is_refused() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect_err("another renderer's buffers must not be drawn");
@@ -1659,7 +1659,7 @@ fn a_snapshot_prepared_by_another_renderer_is_refused() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("its own buffers");
@@ -1678,7 +1678,7 @@ fn an_older_frame_keeps_resolving_against_the_snapshot_it_was_drawn_from() {
             &first_prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1700,7 +1700,7 @@ fn an_older_frame_keeps_resolving_against_the_snapshot_it_was_drawn_from() {
             &second_prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1731,7 +1731,7 @@ fn two_faces_of_one_plate_are_one_definition_and_two_faces() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1775,7 +1775,7 @@ fn pointing_at_a_face_marks_that_face_in_every_placement_and_nothing_else() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1804,7 +1804,7 @@ fn pointing_at_a_face_marks_that_face_in_every_placement_and_nothing_else() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Face(face),
+            Hovered::Face(face),
             &Visibility::default(),
         )
         .expect("draws");
@@ -1843,7 +1843,7 @@ fn pointing_at_a_definition_still_marks_all_of_it() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1857,7 +1857,7 @@ fn pointing_at_a_definition_still_marks_all_of_it() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Definition(pick),
+            Hovered::Definition(pick),
             &Visibility::default(),
         )
         .expect("draws");
@@ -1883,7 +1883,7 @@ fn a_chosen_definition_outranks_a_pointed_at_face() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1899,7 +1899,7 @@ fn a_chosen_definition_outranks_a_pointed_at_face() {
             &prepared,
             &camera,
             Marked::Definition(chosen),
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1908,7 +1908,7 @@ fn a_chosen_definition_outranks_a_pointed_at_face() {
             &prepared,
             &camera,
             Marked::Definition(chosen),
-            Marked::Face(face),
+            Hovered::Face(face),
             &Visibility::default(),
         )
         .expect("draws");
@@ -1933,7 +1933,7 @@ fn the_backdrop_and_the_grid_are_no_face_at_all() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1961,7 +1961,7 @@ fn a_face_of_another_picture_marks_nothing() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -1986,7 +1986,7 @@ fn a_face_of_another_picture_marks_nothing() {
             &other_prepared,
             &other_camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -2000,7 +2000,7 @@ fn a_face_of_another_picture_marks_nothing() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Face(foreign),
+            Hovered::Face(foreign),
             &Visibility::default(),
         )
         .expect("draws");
@@ -2021,7 +2021,7 @@ fn pointing_at_faces_uploads_no_geometry_and_draws_the_same_frame_twice() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -2036,7 +2036,7 @@ fn pointing_at_faces_uploads_no_geometry_and_draws_the_same_frame_twice() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Face(face),
+            Hovered::Face(face),
             &Visibility::default(),
         )
         .expect("draws");
@@ -2045,7 +2045,7 @@ fn pointing_at_faces_uploads_no_geometry_and_draws_the_same_frame_twice() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Face(face),
+            Hovered::Face(face),
             &Visibility::default(),
         )
         .expect("draws");
@@ -2074,7 +2074,7 @@ fn choosing_a_face_marks_that_face_in_every_placement_and_nothing_else() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -2105,7 +2105,7 @@ fn choosing_a_face_marks_that_face_in_every_placement_and_nothing_else() {
             &prepared,
             &camera,
             Marked::Face(face),
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -2145,7 +2145,7 @@ fn a_chosen_face_a_chosen_definition_and_a_pointed_at_face_all_look_different() 
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -2161,7 +2161,7 @@ fn a_chosen_face_a_chosen_definition_and_a_pointed_at_face_all_look_different() 
             &prepared,
             &camera,
             Marked::Face(face),
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -2170,7 +2170,7 @@ fn a_chosen_face_a_chosen_definition_and_a_pointed_at_face_all_look_different() 
             &prepared,
             &camera,
             Marked::Definition(definition),
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -2179,7 +2179,7 @@ fn a_chosen_face_a_chosen_definition_and_a_pointed_at_face_all_look_different() 
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Face(face),
+            Hovered::Face(face),
             &Visibility::default(),
         )
         .expect("draws");
@@ -2208,7 +2208,7 @@ fn choosing_a_face_beats_pointing_at_anything() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -2231,14 +2231,14 @@ fn choosing_a_face_beats_pointing_at_anything() {
             &prepared,
             &camera,
             Marked::Face(face),
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
     for hovered in [
-        Marked::Face(face),
-        Marked::Face(other_face),
-        Marked::Definition(definition),
+        Hovered::Face(face),
+        Hovered::Face(other_face),
+        Hovered::Definition(definition),
     ] {
         let with_pointer = renderer
             .render(
@@ -2270,7 +2270,7 @@ fn a_face_of_another_picture_chooses_nothing() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -2292,7 +2292,7 @@ fn a_face_of_another_picture_chooses_nothing() {
             &other_prepared,
             &other_camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -2306,7 +2306,7 @@ fn a_face_of_another_picture_chooses_nothing() {
             &prepared,
             &camera,
             Marked::Face(foreign),
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -2327,7 +2327,7 @@ fn choosing_a_face_costs_no_geometry_and_draws_the_same_frame_twice() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -2342,7 +2342,7 @@ fn choosing_a_face_costs_no_geometry_and_draws_the_same_frame_twice() {
             &prepared,
             &camera,
             Marked::Face(face),
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -2351,7 +2351,7 @@ fn choosing_a_face_costs_no_geometry_and_draws_the_same_frame_twice() {
             &prepared,
             &camera,
             Marked::Face(face),
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -2377,7 +2377,7 @@ fn the_backdrop_and_the_grid_cannot_be_chosen_as_a_face() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -2398,7 +2398,7 @@ fn the_backdrop_and_the_grid_cannot_be_chosen_as_a_face() {
             &prepared,
             &camera,
             Marked::Face(FacePickId::NOTHING),
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -2460,7 +2460,7 @@ fn hiding_what_is_in_front_reveals_exactly_what_was_behind_it() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &everything,
         )
         .expect("draws");
@@ -2482,7 +2482,7 @@ fn hiding_what_is_in_front_reveals_exactly_what_was_behind_it() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -2530,7 +2530,7 @@ fn a_hidden_definition_cannot_be_marked_by_a_selection_or_a_pointer() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -2538,10 +2538,10 @@ fn a_hidden_definition_cannot_be_marked_by_a_selection_or_a_pointer() {
     // Choosing or pointing at something that is not drawn tints nothing: it
     // has no pixels to tint, which is the whole of why hiding is omission.
     for (selected, hovered) in [
-        (Marked::Definition(front), Marked::Nothing),
-        (Marked::Face(face), Marked::Nothing),
-        (Marked::Nothing, Marked::Definition(front)),
-        (Marked::Nothing, Marked::Face(face)),
+        (Marked::Definition(front), Hovered::Nothing),
+        (Marked::Face(face), Hovered::Nothing),
+        (Marked::Nothing, Hovered::Definition(front)),
+        (Marked::Nothing, Hovered::Face(face)),
     ] {
         let marked = renderer
             .render(&prepared, &camera, selected, hovered, &visibility)
@@ -2565,7 +2565,7 @@ fn a_selected_face_hides_the_whole_definition_it_is_on() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &everything,
         )
         .expect("draws");
@@ -2593,7 +2593,7 @@ fn a_selected_face_hides_the_whole_definition_it_is_on() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -2627,7 +2627,7 @@ fn the_grid_is_not_something_that_can_be_hidden() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -2641,7 +2641,7 @@ fn the_grid_is_not_something_that_can_be_hidden() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -2675,7 +2675,7 @@ fn hiding_and_showing_upload_nothing_and_repeat_exactly() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &everything,
         )
         .expect("draws");
@@ -2689,7 +2689,7 @@ fn hiding_and_showing_upload_nothing_and_repeat_exactly() {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &visibility,
             )
             .expect("draws");
@@ -2698,7 +2698,7 @@ fn hiding_and_showing_upload_nothing_and_repeat_exactly() {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &visibility,
             )
             .expect("draws");
@@ -2710,7 +2710,7 @@ fn hiding_and_showing_upload_nothing_and_repeat_exactly() {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &visibility,
             )
             .expect("draws");
@@ -2778,7 +2778,7 @@ fn isolating_one_definition_leaves_only_its_pixels_picks_and_faces() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &everything,
         )
         .expect("draws");
@@ -2803,7 +2803,7 @@ fn isolating_one_definition_leaves_only_its_pixels_picks_and_faces() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -2861,7 +2861,7 @@ fn an_isolated_definition_still_looks_chosen_and_its_neighbours_cannot_be_marked
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -2871,7 +2871,7 @@ fn an_isolated_definition_still_looks_chosen_and_its_neighbours_cannot_be_marked
             &prepared,
             &camera,
             Marked::Definition(keep),
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -2880,7 +2880,7 @@ fn an_isolated_definition_still_looks_chosen_and_its_neighbours_cannot_be_marked
             &prepared,
             &camera,
             Marked::Face(face),
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -2891,10 +2891,10 @@ fn an_isolated_definition_still_looks_chosen_and_its_neighbours_cannot_be_marked
     // And nothing that was removed can be marked, chosen or pointed at: it has
     // no pixels to mark.
     for (selected, hovered) in [
-        (Marked::Definition(gone), Marked::Nothing),
-        (Marked::Face(gone_face), Marked::Nothing),
-        (Marked::Nothing, Marked::Definition(gone)),
-        (Marked::Nothing, Marked::Face(gone_face)),
+        (Marked::Definition(gone), Hovered::Nothing),
+        (Marked::Face(gone_face), Hovered::Nothing),
+        (Marked::Nothing, Hovered::Definition(gone)),
+        (Marked::Nothing, Hovered::Face(gone_face)),
     ] {
         let marked = renderer
             .render(&prepared, &camera, selected, hovered, &visibility)
@@ -2938,7 +2938,7 @@ fn isolating_keeps_the_backdrop_and_costs_no_geometry() {
             &prepared,
             &three_camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -2947,7 +2947,7 @@ fn isolating_keeps_the_backdrop_and_costs_no_geometry() {
             &prepared,
             &three_camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -2988,7 +2988,7 @@ fn one_definition_returns_with_its_own_pixels_picks_and_faces() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -3004,7 +3004,7 @@ fn one_definition_returns_with_its_own_pixels_picks_and_faces() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -3048,7 +3048,7 @@ fn one_definition_returns_with_its_own_pixels_picks_and_faces() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -3077,7 +3077,7 @@ fn a_definition_that_came_back_does_not_disturb_what_was_chosen() {
             &prepared,
             &camera,
             Marked::Definition(kept),
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -3086,7 +3086,7 @@ fn a_definition_that_came_back_does_not_disturb_what_was_chosen() {
             &prepared,
             &camera,
             Marked::Face(face),
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -3097,7 +3097,7 @@ fn a_definition_that_came_back_does_not_disturb_what_was_chosen() {
             &prepared,
             &camera,
             Marked::Definition(kept),
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -3106,7 +3106,7 @@ fn a_definition_that_came_back_does_not_disturb_what_was_chosen() {
             &prepared,
             &camera,
             Marked::Face(face),
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -3117,7 +3117,7 @@ fn a_definition_that_came_back_does_not_disturb_what_was_chosen() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -3132,11 +3132,11 @@ fn a_definition_that_came_back_does_not_disturb_what_was_chosen() {
 
     // And what is still hidden cannot be marked, chosen or pointed at.
     for (selected, hovered) in [
-        (Marked::Definition(staying_hidden), Marked::Nothing),
-        (Marked::Nothing, Marked::Definition(staying_hidden)),
+        (Marked::Definition(staying_hidden), Hovered::Nothing),
+        (Marked::Nothing, Hovered::Definition(staying_hidden)),
         (
             Marked::Nothing,
-            Marked::Face(snapshot.face_of(2, 0).expect("numbered")),
+            Hovered::Face(snapshot.face_of(2, 0).expect("numbered")),
         ),
     ] {
         let marked = renderer
@@ -3163,7 +3163,7 @@ fn one_definition_taken_off_screen_leaves_no_trace_of_itself() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &everything,
         )
         .expect("draws");
@@ -3187,7 +3187,7 @@ fn one_definition_taken_off_screen_leaves_no_trace_of_itself() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -3242,7 +3242,7 @@ fn taking_a_change_back_draws_the_frame_that_was_there_before_it() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -3257,7 +3257,7 @@ fn taking_a_change_back_draws_the_frame_that_was_there_before_it() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -3273,7 +3273,7 @@ fn taking_a_change_back_draws_the_frame_that_was_there_before_it() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -3381,7 +3381,7 @@ fn equal_plates_at_two_depths_are_equal_only_in_an_orthographic_view() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &everything,
         )
         .expect("draws");
@@ -3406,7 +3406,7 @@ fn equal_plates_at_two_depths_are_equal_only_in_an_orthographic_view() {
             &prepared,
             &square,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &everything,
         )
         .expect("draws");
@@ -3459,7 +3459,7 @@ fn a_drawing_still_hides_what_is_behind_something_and_repeats_exactly() {
             &prepared,
             &flat,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &everything,
         )
         .expect("draws");
@@ -3484,7 +3484,7 @@ fn a_drawing_still_hides_what_is_behind_something_and_repeats_exactly() {
             &prepared,
             &flat,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -3497,7 +3497,7 @@ fn a_drawing_still_hides_what_is_behind_something_and_repeats_exactly() {
             &prepared,
             &flat,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &everything,
         )
         .expect("draws");
@@ -3526,7 +3526,7 @@ fn the_backdrop_belongs_to_the_world_in_a_drawing_too() {
             &prepared,
             &flat,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &everything,
         )
         .expect("draws");
@@ -3552,7 +3552,7 @@ fn the_backdrop_belongs_to_the_world_in_a_drawing_too() {
             &prepared,
             &overhead,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &everything,
         )
         .expect("draws");
@@ -3676,7 +3676,7 @@ fn a_wheel_keeps_the_part_it_was_pointed_at_under_the_same_pixel() {
                     &prepared,
                     camera,
                     Marked::Nothing,
-                    Marked::Nothing,
+                    Hovered::Nothing,
                     &everything,
                 )
                 .expect("draws")
@@ -3802,7 +3802,7 @@ fn the_backdrop_follows_an_anchored_wheel_and_is_still_nobody_to_click() {
                 &prepared,
                 &overhead,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &everything,
             )
             .expect("draws");
@@ -3887,7 +3887,7 @@ fn turning_the_view_turns_the_model_around_what_it_is_looking_at() {
                     &prepared,
                     camera,
                     Marked::Nothing,
-                    Marked::Nothing,
+                    Hovered::Nothing,
                     &everything,
                 )
                 .expect("draws")
@@ -4120,7 +4120,7 @@ fn a_face_is_drawn_with_the_edges_it_stops_at_and_not_its_own_seams() {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &everything,
             )
             .expect("draws");
@@ -4189,7 +4189,7 @@ fn a_face_is_drawn_with_the_edges_it_stops_at_and_not_its_own_seams() {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &everything,
             )
             .expect("draws");
@@ -4206,7 +4206,7 @@ fn a_face_is_drawn_with_the_edges_it_stops_at_and_not_its_own_seams() {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &everything,
             )
             .expect("draws");
@@ -4229,7 +4229,7 @@ fn every_placement_of_a_definition_is_drawn_with_its_own_lines() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -4265,7 +4265,7 @@ fn a_boundary_behind_another_part_is_not_drawn_through_it() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &everything,
         )
         .expect("draws");
@@ -4311,7 +4311,7 @@ fn a_boundary_behind_another_part_is_not_drawn_through_it() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &hiding,
         )
         .expect("draws");
@@ -4339,7 +4339,7 @@ fn hiding_a_part_takes_its_lines_with_it_and_taking_it_back_restores_them() {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 visibility,
             )
             .expect("draws")
@@ -4420,7 +4420,7 @@ fn an_empty_picture_still_draws_nothing_at_all() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws");
@@ -4444,7 +4444,7 @@ fn the_backdrop_draws_no_linework_of_its_own() {
                 prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 visibility,
             )
             .expect("draws")
@@ -4489,15 +4489,15 @@ fn linework_leaves_a_choice_and_a_question_telling_themselves_apart() {
     let everything = Visibility::default();
     let face = snapshot.face_of(0, 0).expect("numbered");
 
-    let draw = |renderer: &mut Renderer, selected: Marked, hovered: Marked| {
+    let draw = |renderer: &mut Renderer, selected: Marked, hovered: Hovered| {
         renderer
             .render(&prepared, &camera, selected, hovered, &everything)
             .expect("draws")
     };
 
-    let plain = draw(&mut renderer, Marked::Nothing, Marked::Nothing);
-    let chosen = draw(&mut renderer, Marked::Face(face), Marked::Nothing);
-    let asked = draw(&mut renderer, Marked::Nothing, Marked::Face(face));
+    let plain = draw(&mut renderer, Marked::Nothing, Hovered::Nothing);
+    let chosen = draw(&mut renderer, Marked::Face(face), Hovered::Nothing);
+    let asked = draw(&mut renderer, Marked::Nothing, Hovered::Face(face));
 
     // A pixel of that face, away from any line, in all three pictures.
     let plain_face = pixels_of(&plain, |frame, x, y| {
@@ -4714,7 +4714,7 @@ fn one_topological_edge_answers_with_one_identity_from_both_of_its_faces() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::new(&snapshot),
         )
         .expect("draws");
@@ -4889,7 +4889,7 @@ fn an_edge_behind_a_nearer_part_does_not_answer_through_it() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -4925,7 +4925,7 @@ fn an_edge_behind_a_nearer_part_does_not_answer_through_it() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &isolated,
         )
         .expect("draws");
@@ -4948,7 +4948,7 @@ fn what_is_not_drawn_leaves_no_edge_identity_behind() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::new(&snapshot),
         )
         .expect("draws");
@@ -4964,7 +4964,7 @@ fn what_is_not_drawn_leaves_no_edge_identity_behind() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -4981,7 +4981,7 @@ fn what_is_not_drawn_leaves_no_edge_identity_behind() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -5013,7 +5013,7 @@ fn isolating_one_of_two_definitions_keeps_only_its_edges() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -5028,7 +5028,7 @@ fn isolating_one_of_two_definitions_keeps_only_its_edges() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &visibility,
         )
         .expect("draws");
@@ -5080,7 +5080,7 @@ fn an_edge_target_changes_no_colour_and_no_other_answer() {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &Visibility::new(snapshot),
             )
             .expect("draws")
@@ -5152,7 +5152,7 @@ fn a_proven_absence_of_edges_draws_no_edge_geometry_either() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::new(&snapshot),
         )
         .expect("draws");
@@ -5171,7 +5171,7 @@ fn a_proven_absence_of_edges_draws_no_edge_geometry_either() {
             &prepared,
             &small,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::new(&empty),
         )
         .expect("draws");
@@ -5192,7 +5192,7 @@ fn edges_cost_no_geometry_per_frame_and_repeat_exactly() {
                 &prepared,
                 &camera,
                 Marked::Nothing,
-                Marked::Nothing,
+                Hovered::Nothing,
                 &visibility,
             )
             .expect("draws")
@@ -5244,7 +5244,7 @@ fn edges_follow_the_camera_through_both_projections() {
                     &prepared,
                     &camera,
                     Marked::Nothing,
-                    Marked::Nothing,
+                    Hovered::Nothing,
                     &visibility,
                 )
                 .expect("draws");
@@ -5278,7 +5278,7 @@ fn nothing_but_the_model_ever_carries_an_edge_identity() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::new(&snapshot),
         )
         .expect("draws");
@@ -5317,9 +5317,631 @@ fn a_prepared_picture_of_another_renderer_is_still_refused() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::new(&snapshot),
         )
         .expect_err("another renderer's buffers were drawn");
     assert_eq!(refusal.kind(), ErrorKind::Rendering, "{refusal}");
+}
+
+// ---------------------------------------------------------------------------
+// Marking the one topological edge under the pointer.
+// ---------------------------------------------------------------------------
+
+/// The curved definition placed twice, in whatever material is asked for.
+fn curved_pair_coloured(
+    width: u32,
+    height: u32,
+    colour: [f64; 3],
+) -> (Arc<RenderSnapshot>, Camera) {
+    let mut builder = SnapshotBuilder::new();
+    let definition = builder
+        .add_mesh(&two_faces_sharing_a_curve())
+        .expect("packs");
+    for x in [-24.0, 24.0] {
+        builder
+            .place(definition, None, &moved(x, 0.0, 0.0), colour)
+            .expect("places");
+    }
+    let snapshot = Arc::new(builder.build());
+    let mut camera = Camera::new();
+    camera.resize(width, height);
+    camera
+        .frame(snapshot.bounds().expect("something is drawn"))
+        .expect("frames");
+    (snapshot, camera)
+}
+
+/// Whether a pixel is a sample of `edge`, or touches one.
+///
+/// The reach of one pixel is not slack, it is the identity target's own
+/// limitation stated honestly. That target holds one value per sample, so
+/// where two edges meet or cross in the picture the sample reports whichever
+/// was drawn last, while the mark, which draws one edge, legitimately covers
+/// it. Everything further away than that belongs to another line.
+fn is_a_sample_of(frame: &Frame, edge: ferritecad_viewport::EdgePickId, x: u32, y: u32) -> bool {
+    (-1i64..=1).any(|dy| {
+        (-1i64..=1).any(|dx| {
+            let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+            nx >= 0 && ny >= 0 && frame.edge_at(nx as u32, ny as u32) == edge
+        })
+    })
+}
+
+/// Every pixel whose colour differs between two frames of one size.
+fn changed(before: &Frame, after: &Frame) -> Vec<(u32, u32)> {
+    pixels_of(before, |frame, x, y| {
+        frame.colour_at(x, y) != after.colour_at(x, y)
+    })
+}
+
+fn draw(
+    renderer: &mut Renderer,
+    prepared: &ferritecad_viewport_gpu::PreparedSnapshot,
+    camera: &Camera,
+    selected: Marked,
+    hovered: Hovered,
+    visibility: &Visibility,
+) -> Frame {
+    renderer
+        .render(prepared, camera, selected, hovered, visibility)
+        .expect("draws")
+}
+
+#[test]
+fn marking_one_edge_marks_every_segment_of_it_and_nothing_else() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair(320, 320);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let shared = snapshot.edge_of(0, 0).expect("numbered");
+
+    let plain = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+    let marked = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Edge(shared),
+        &visibility,
+    );
+
+    let moved_pixels = changed(&plain, &marked);
+    assert!(
+        moved_pixels.len() > 40,
+        "the mark covered {} pixels, which is not a line",
+        moved_pixels.len()
+    );
+
+    // Everything that changed is a sample of that edge, and nothing that
+    // changed belongs to another edge or to the inside of a face.
+    for (x, y) in &moved_pixels {
+        assert_ne!(
+            plain.edge_at(*x, *y),
+            ferritecad_viewport::EdgePickId::NOTHING,
+            "the pixel at {x},{y} changed and is not on any edge at all"
+        );
+        assert!(
+            is_a_sample_of(&plain, shared, *x, *y),
+            "the pixel at {x},{y} changed and is not on the marked edge"
+        );
+    }
+    // And every sample of that edge changed: not the first segment only, and
+    // not one side of it only.
+    for (x, y) in pixels_of(&plain, |frame, x, y| frame.edge_at(x, y) == shared) {
+        assert_ne!(
+            plain.colour_at(x, y),
+            marked.colour_at(x, y),
+            "a sample of the marked edge at {x},{y} was left alone"
+        );
+    }
+
+    // Both faces' own approximations of the shared curve, and both placements.
+    for shift in [-24.0, 24.0] {
+        for world in [
+            [
+                f64::from(FINE_ARC[1][0]),
+                f64::from(FINE_ARC[1][1]),
+                f64::from(FINE_ARC[1][2]),
+            ],
+            between(COARSE_ARC[0], COARSE_ARC[1]),
+            between(FINE_ARC[2], FINE_ARC[3]),
+        ] {
+            let at = pixel_of(&camera, placed(world, shift)).expect("on screen");
+            assert!(
+                moved_pixels
+                    .iter()
+                    .any(|(x, y)| x.abs_diff(at.0) <= 2 && y.abs_diff(at.1) <= 2),
+                "nothing was marked near {at:?}"
+            );
+        }
+    }
+
+    // A neighbouring edge and the inside of a face are untouched.
+    for world in [between(FINE_ARC[0], [0.0, 0.0, -16.0]), [-2.89, 0.0, 5.67]] {
+        let at = pixel_of(&camera, placed(world, -24.0)).expect("on screen");
+        assert_eq!(
+            plain.colour_at(at.0, at.1),
+            marked.colour_at(at.0, at.1),
+            "marking one edge changed something at {at:?}"
+        );
+    }
+}
+
+#[test]
+fn a_marked_edge_looks_like_none_of_the_other_four_states() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair(288, 288);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let definition = snapshot.pick_of(0).expect("drawn");
+    let face = snapshot.face_of(0, 0).expect("numbered");
+    let edge = snapshot.edge_of(0, 0).expect("numbered");
+
+    let at =
+        pixel_of(&camera, placed(between(COARSE_ARC[0], COARSE_ARC[1]), 24.0)).expect("on screen");
+    let colour = |renderer: &mut Renderer, selected, hovered| {
+        draw(renderer, &prepared, &camera, selected, hovered, &visibility)
+            .colour_at(at.0, at.1)
+            .expect("on screen")
+    };
+
+    let marked_edge = colour(&mut renderer, Marked::Nothing, Hovered::Edge(edge));
+    let others = [
+        (
+            "plain",
+            colour(&mut renderer, Marked::Nothing, Hovered::Nothing),
+        ),
+        (
+            "definition hover",
+            colour(
+                &mut renderer,
+                Marked::Nothing,
+                Hovered::Definition(definition),
+            ),
+        ),
+        (
+            "face hover",
+            colour(&mut renderer, Marked::Nothing, Hovered::Face(face)),
+        ),
+        (
+            "selected definition",
+            colour(
+                &mut renderer,
+                Marked::Definition(definition),
+                Hovered::Nothing,
+            ),
+        ),
+        (
+            "selected face",
+            colour(&mut renderer, Marked::Face(face), Hovered::Nothing),
+        ),
+    ];
+    for (what, other) in others {
+        assert_ne!(
+            marked_edge, other,
+            "a marked edge is indistinguishable from {what} at {at:?}"
+        );
+    }
+}
+
+#[test]
+fn a_marked_edge_is_visible_on_a_nearly_white_and_a_nearly_black_part() {
+    let mut renderer = renderer_or_skip!();
+    for (what, material) in [
+        ("nearly white", [0.97, 0.97, 0.97]),
+        ("nearly black", [0.02, 0.02, 0.02]),
+    ] {
+        let (snapshot, camera) = curved_pair_coloured(256, 256, material);
+        let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+        let visibility = Visibility::new(&snapshot);
+        let edge = snapshot.edge_of(0, 0).expect("numbered");
+        let plain = draw(
+            &mut renderer,
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Hovered::Nothing,
+            &visibility,
+        );
+        let marked = draw(
+            &mut renderer,
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Hovered::Edge(edge),
+            &visibility,
+        );
+
+        let samples = pixels_of(&plain, |frame, x, y| frame.edge_at(x, y) == edge);
+        assert!(!samples.is_empty(), "{what}: the edge is drawn");
+        // Not merely different from the material, but far from it: a mark a
+        // person cannot see is not a mark.
+        for (x, y) in &samples {
+            let ink = marked.colour_at(*x, *y).expect("on screen");
+            let fill = [
+                (material[0] * 255.0) as i32,
+                (material[1] * 255.0) as i32,
+                (material[2] * 255.0) as i32,
+            ];
+            let distance: i32 = (0..3)
+                .map(|c| (i32::from(ink[c]) - fill[c]).abs())
+                .max()
+                .expect("three channels");
+            assert!(
+                distance > 60,
+                "{what}: the mark at {x},{y} is {ink:?} against a fill of {fill:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_choice_already_made_is_not_repainted_by_a_question_about_its_edge() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair(288, 288);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let definition = snapshot.pick_of(0).expect("drawn");
+    let lower = snapshot.face_of(0, 0).expect("numbered");
+    let upper = snapshot.face_of(0, 1).expect("numbered");
+    // The shared curve bounds both faces; the lower face's own side edge
+    // bounds only the lower one.
+    let shared = snapshot.edge_of(0, 0).expect("numbered");
+    let lower_side = snapshot.edge_of(0, 1).expect("numbered");
+    assert!(snapshot.edge_bounds_face(shared, lower));
+    assert!(snapshot.edge_bounds_face(shared, upper));
+    assert!(snapshot.edge_bounds_face(lower_side, lower));
+    assert!(!snapshot.edge_bounds_face(lower_side, upper));
+
+    let with = |renderer: &mut Renderer, selected, hovered| {
+        draw(renderer, &prepared, &camera, selected, hovered, &visibility)
+    };
+
+    // The whole part is chosen: an edge of it is not marked over the choice.
+    let chosen_part = with(
+        &mut renderer,
+        Marked::Definition(definition),
+        Hovered::Nothing,
+    );
+    let asked_too = with(
+        &mut renderer,
+        Marked::Definition(definition),
+        Hovered::Edge(shared),
+    );
+    assert_eq!(
+        chosen_part.colour(),
+        asked_too.colour(),
+        "a question about an edge repainted a chosen part"
+    );
+
+    // One face is chosen, and the edge asked about bounds it: same rule.
+    let chosen_face = with(&mut renderer, Marked::Face(lower), Hovered::Nothing);
+    let asked_adjacent = with(&mut renderer, Marked::Face(lower), Hovered::Edge(shared));
+    assert_eq!(
+        chosen_face.colour(),
+        asked_adjacent.colour(),
+        "a question about an edge of a chosen face repainted it"
+    );
+
+    // A face is chosen and the edge asked about does not bound it: the
+    // question is still worth answering, and it is answered.
+    let asked_elsewhere = with(
+        &mut renderer,
+        Marked::Face(upper),
+        Hovered::Edge(lower_side),
+    );
+    let plain_upper = with(&mut renderer, Marked::Face(upper), Hovered::Nothing);
+    assert_ne!(
+        plain_upper.colour(),
+        asked_elsewhere.colour(),
+        "an edge that bounds no chosen face was suppressed anyway"
+    );
+    for (x, y) in changed(&plain_upper, &asked_elsewhere) {
+        assert!(
+            is_a_sample_of(&plain_upper, lower_side, x, y),
+            "something other than the asked edge changed at {x},{y}"
+        );
+    }
+}
+
+#[test]
+fn a_choice_in_another_part_does_not_suppress_a_question_here() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair_behind_a_plate(288, 288);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let mut visibility = Visibility::new(&snapshot);
+    // Out of the way, so the edge is on screen at all.
+    assert!(visibility.hide(
+        Marked::Definition(snapshot.pick_of(1).expect("the plate")),
+        &snapshot
+    ));
+    let plate = snapshot.pick_of(1).expect("the plate");
+    let edge = snapshot.edge_of(0, 0).expect("numbered");
+
+    let plain = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Definition(plate),
+        Hovered::Nothing,
+        &visibility,
+    );
+    let marked = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Definition(plate),
+        Hovered::Edge(edge),
+        &visibility,
+    );
+    assert_ne!(
+        plain.colour(),
+        marked.colour(),
+        "a choice made in another part suppressed this one's edge"
+    );
+}
+
+#[test]
+fn a_marked_edge_changes_no_answer_about_any_pixel() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair(256, 256);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let uploaded = renderer.geometry_uploads();
+    let edge = snapshot.edge_of(0, 0).expect("numbered");
+
+    let plain = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+    let marked = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Edge(edge),
+        &visibility,
+    );
+    let again = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Edge(edge),
+        &visibility,
+    );
+
+    assert_eq!(
+        renderer.geometry_uploads(),
+        uploaded,
+        "pointing at an edge uploaded geometry"
+    );
+    assert_eq!(
+        marked.colour(),
+        again.colour(),
+        "two identical frames differ"
+    );
+    for y in 0..plain.height() {
+        for x in 0..plain.width() {
+            assert_eq!(plain.pick_at(x, y), marked.pick_at(x, y), "at {x},{y}");
+            assert_eq!(
+                plain.hit_at(x, y).face(),
+                marked.hit_at(x, y).face(),
+                "at {x},{y}"
+            );
+            assert_eq!(plain.edge_at(x, y), marked.edge_at(x, y), "at {x},{y}");
+            assert_eq!(marked.edge_at(x, y), again.edge_at(x, y), "at {x},{y}");
+        }
+    }
+}
+
+#[test]
+fn a_question_about_a_hidden_part_marks_nothing() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair(256, 256);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let definition = snapshot.pick_of(0).expect("drawn");
+    let edge = snapshot.edge_of(0, 0).expect("numbered");
+
+    let mut visibility = Visibility::new(&snapshot);
+    assert!(visibility.hide(Marked::Definition(definition), &snapshot));
+    let hidden_plain = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+    let hidden_marked = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Edge(edge),
+        &visibility,
+    );
+    assert_eq!(
+        hidden_plain.colour(),
+        hidden_marked.colour(),
+        "a hidden part was marked"
+    );
+
+    // Bringing it back gives exactly the picture it had, byte for byte.
+    let shown_before = {
+        let all = Visibility::new(&snapshot);
+        draw(
+            &mut renderer,
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Hovered::Edge(edge),
+            &all,
+        )
+    };
+    assert!(visibility.show(Marked::Definition(definition), &snapshot));
+    let shown_after = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Edge(edge),
+        &visibility,
+    );
+    assert_eq!(
+        shown_before.colour(),
+        shown_after.colour(),
+        "showing a part again did not restore its marked edge exactly"
+    );
+}
+
+#[test]
+fn the_backdrop_never_answers_a_question_about_an_edge() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = model_over_the_plane(256, 256);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    // This picture's meshes carry no edge association at all, so there is no
+    // edge to ask about and every value is one the picture does not know.
+    assert_eq!(snapshot.edge_count(), 0);
+
+    let other = snapshot_of_curved();
+    let foreign = other.edge_of(0, 0).expect("numbered");
+    let plain = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+    let asked = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Edge(foreign),
+        &visibility,
+    );
+    assert_eq!(
+        plain.colour(),
+        asked.colour(),
+        "an edge of another picture marked this one"
+    );
+}
+
+/// A curved picture built on its own, for identities to borrow from.
+fn snapshot_of_curved() -> Arc<RenderSnapshot> {
+    curved_pair(64, 64).0
+}
+
+#[test]
+fn a_marked_edge_follows_the_camera_through_both_projections() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair(288, 288);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let edge = snapshot.edge_of(0, 0).expect("numbered");
+
+    let mut moved_camera = camera;
+    moved_camera.orbit(0.3, -0.18);
+    moved_camera.pan(9.0, -5.0);
+    moved_camera.roll(0.35);
+
+    for (what, mut camera) in [
+        ("as drawn", camera),
+        ("orbited, panned and rolled", moved_camera),
+    ] {
+        for projection in [Projection::Orthographic, Projection::Perspective] {
+            camera.set_projection(projection);
+            let plain = draw(
+                &mut renderer,
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Hovered::Nothing,
+                &visibility,
+            );
+            let marked = draw(
+                &mut renderer,
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Hovered::Edge(edge),
+                &visibility,
+            );
+            let moved_pixels = changed(&plain, &marked);
+            assert!(
+                !moved_pixels.is_empty(),
+                "{what} in {projection:?}: nothing was marked"
+            );
+            for (x, y) in moved_pixels {
+                assert!(
+                    is_a_sample_of(&plain, edge, x, y),
+                    "{what} in {projection:?}: the mark at {x},{y} is not on the edge"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn two_edges_that_meet_give_one_answer_and_not_two() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair(320, 320);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let frame = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &Visibility::new(&snapshot),
+    );
+
+    // Where the shared curve meets the lower face's side edge, three edges
+    // are within a pixel or two of each other. The target holds one value per
+    // sample, so the answer there is one edge: which one is settled by the
+    // draw order the picture packs, and nothing here claims to resolve a
+    // choice between candidates.
+    let corner = pixel_of(
+        &camera,
+        placed(
+            [
+                f64::from(FINE_ARC[0][0]),
+                f64::from(FINE_ARC[0][1]),
+                f64::from(FINE_ARC[0][2]),
+            ],
+            -24.0,
+        ),
+    )
+    .expect("on screen");
+    let answer = frame.edge_at(corner.0, corner.1);
+    assert_ne!(
+        answer,
+        ferritecad_viewport::EdgePickId::NOTHING,
+        "the corner is on some edge"
+    );
+    // Asked again, the same sample gives the same one edge.
+    let again = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &Visibility::new(&snapshot),
+    );
+    assert_eq!(answer, again.edge_at(corner.0, corner.1));
 }

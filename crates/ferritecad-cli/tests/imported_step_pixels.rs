@@ -23,7 +23,7 @@ use ferritecad_kernel::{OperationContext, TessellationParams};
 use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_scene::snapshot_of;
 use ferritecad_types::ErrorKind;
-use ferritecad_viewport::{Camera, Marked, Visibility};
+use ferritecad_viewport::{Camera, Hovered, Marked, Visibility};
 use ferritecad_viewport_gpu::Renderer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,7 +199,7 @@ fn a_nested_assembly_goes_from_step_to_pixels() {
             &prepared,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws a frame");
@@ -226,7 +226,7 @@ fn a_nested_assembly_goes_from_step_to_pixels() {
             &nothing,
             &camera,
             Marked::Nothing,
-            Marked::Nothing,
+            Hovered::Nothing,
             &Visibility::default(),
         )
         .expect("draws an empty frame");
