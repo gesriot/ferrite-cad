@@ -181,6 +181,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_joint_is_the_same_joint_named_either_way_round() {
+        let one = StableEntityId::new();
+        let other = StableEntityId::new();
+        let forwards = ProfileJoint::new(one, other).expect("two different segments");
+        let backwards = ProfileJoint::new(other, one).expect("two different segments");
+        assert_eq!(forwards, backwards);
+        assert_eq!(forwards.segments(), backwards.segments());
+        assert!(forwards.touches(one) && forwards.touches(other));
+        assert!(!forwards.touches(StableEntityId::new()));
+    }
+
+    #[test]
+    fn a_segment_does_not_join_itself() {
+        let one = StableEntityId::new();
+        let refusal = ProfileJoint::new(one, one).expect_err("one segment is no corner");
+        assert!(
+            refusal.to_string().contains("two different segments"),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn a_stored_joint_out_of_canonical_order_is_refused_rather_than_sorted() {
+        let [first, second] = ProfileJoint::new(StableEntityId::new(), StableEntityId::new())
+            .expect("two different segments")
+            .segments();
+        assert!(ProfileJoint::from_canonical([first, second]).is_ok());
+        let refusal = ProfileJoint::from_canonical([second, first])
+            .expect_err("a swapped stored pair is not canonical");
+        assert!(refusal.to_string().contains("canonical order"), "{refusal}");
+        // And a pair naming one segment twice is not a joint either.
+        assert!(ProfileJoint::from_canonical([first, first]).is_err());
+    }
+
+    #[test]
     fn round_trips_through_canonical_bytes() {
         let id = ObjectId::new();
         assert_eq!(ObjectId::from_bytes(id.to_bytes()).expect("UUIDv7"), id);
@@ -223,5 +258,83 @@ mod tests {
     fn feature_id_widens_to_object_id() {
         let feature = FeatureId::new();
         assert_eq!(ObjectId::from(feature).to_bytes(), feature.to_bytes());
+    }
+}
+
+/// The corner where two adjacent profile segments meet.
+///
+/// A joint is the same joint whichever of its two segments you name first, so
+/// the pair is sorted when the joint is built and there is no way to hold an
+/// unsorted one. That is not tidiness: two spellings of one joint would be two
+/// durable references that name the same edge and that no comparison could
+/// tell apart, and a file could then contain both.
+///
+/// Nothing positional goes in. A joint is its two segments and nothing else,
+/// so inserting or removing an unrelated segment elsewhere in the profile
+/// leaves every surviving joint with the name it already had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProfileJoint([StableEntityId; 2]);
+
+impl ProfileJoint {
+    /// The joint where two segments meet, named in either order.
+    ///
+    /// A segment does not join itself, and a pair that names one segment twice
+    /// names no corner of any profile.
+    pub fn new(one: StableEntityId, other: StableEntityId) -> crate::Result<Self> {
+        if one == other {
+            return Err(CadError::input(format!(
+                "a profile joint is where two different segments meet, and both sides of this \
+                 one are {one}"
+            )));
+        }
+        let mut pair = [one, other];
+        pair.sort_unstable();
+        Ok(Self(pair))
+    }
+
+    /// A joint from a pair that is already canonical, refusing one that is not.
+    ///
+    /// The rule a stored joint is held to, in one place, so a file and a cache
+    /// entry cannot disagree about it. Sorting the pair here instead would
+    /// accept a swapped spelling and quietly write it back canonical, and one
+    /// meaning would have had two spellings on the way in.
+    pub fn from_canonical(pair: [StableEntityId; 2]) -> crate::Result<Self> {
+        if pair[0] >= pair[1] {
+            return Err(CadError::input(format!(
+                "a stored profile joint names its segments in canonical order, and this one \
+                 names {} before {}",
+                pair[0], pair[1]
+            )));
+        }
+        Ok(Self(pair))
+    }
+
+    /// The two segments that meet here, in canonical order.
+    pub fn segments(self) -> [StableEntityId; 2] {
+        self.0
+    }
+
+    /// Whether this joint is where the given segment meets another.
+    pub fn touches(self, segment: StableEntityId) -> bool {
+        self.0[0] == segment || self.0[1] == segment
+    }
+}
+
+impl fmt::Display for ProfileJoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "the joint of segments {} and {}", self.0[0], self.0[1])
+    }
+}
+
+impl Serialize for ProfileJoint {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProfileJoint {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let pair = <[StableEntityId; 2]>::deserialize(deserializer)?;
+        Self::from_canonical(pair).map_err(de::Error::custom)
     }
 }

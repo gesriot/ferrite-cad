@@ -144,6 +144,37 @@ pub fn resolve(map: &TopologyMap, reference: &TopologyRef) -> Result<Vec<SubShap
             )
         }
 
+        SemanticRole::ExtrudeSweepEdge { joint } => {
+            require_kind(reference, EntityKind::Edge, "an extrusion sweep edge")?;
+            match reference.selection {
+                SelectionRule::Exact => {}
+                SelectionRule::AllDerivedFrom { .. } => {
+                    return Err(CadError::input(format!(
+                        "topology reference {} names the edge swept from {joint}, which is one \
+                         edge, but selects everything derived from an ancestor",
+                        reference.id
+                    )));
+                }
+                ref other => return Err(unknown_rule(reference, other)),
+            }
+
+            let Some(edges) = map
+                .feature(reference.producer_feature)
+                .map(|names| names.sweep_edge(*joint))
+            else {
+                return Err(CadError::topology(format!(
+                    "topology reference {} names geometry of a feature this rebuild produced \
+                     nothing for",
+                    reference.id
+                )));
+            };
+            exactly_one(
+                reference,
+                edges.collect(),
+                &format!("the edge swept from {joint}"),
+            )
+        }
+
         // A real role, and one this slice cannot answer. The kernel emits no
         // shape for a sketch on its own, so there is no edge handle to hand
         // back; inventing one would be a name with nothing behind it.

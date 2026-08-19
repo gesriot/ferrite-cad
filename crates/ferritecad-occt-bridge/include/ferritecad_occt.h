@@ -205,6 +205,30 @@ FcOcctStatus fc_occt_extrude_cap_edges(FcOcctSession *session, uint64_t shape,
                                        size_t *out_count,
                                        FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
+/*
+ * The edge swept from one corner of the profile.
+ *
+ * `joint_index` counts corners the way the segments are counted: joint `j` is
+ * where segment `j - 1` meets segment `j` round the loop, so joint 0 is where
+ * the last segment meets the first. Everything the algorithm generated there
+ * comes back, so a count other than one is reported rather than trimmed.
+ *
+ * The association is BRepPrimAPI_MakePrism's own answer for the corner vertex
+ * the two input edges already share, and was measured before it was relied on.
+ * On 7.9.3, over a rectangular plate swept blind, reversed, symmetrically and
+ * reversed-symmetrically, a three-segment profile containing an arc swept
+ * blind and symmetrically, a triangle, and a two-segment profile: every corner
+ * yielded exactly one EDGE that belongs to the solid, bounds exactly the two
+ * side faces raised from the segments meeting there, is never a cap edge, is
+ * never shared with another corner, and is one the tessellation walk reaches.
+ * Rebuilding a profile from a different starting segment moved no association.
+ */
+FcOcctStatus fc_occt_extrude_sweep_edges(FcOcctSession *session, uint64_t shape,
+                                         size_t joint_index, uint64_t *out_ids,
+                                         size_t capacity, size_t *out_count,
+                                         FcOcctError *out_error)
+    FC_OCCT_NOEXCEPT;
+
 /* The cap faces. `which` is 0 for the start cap and 1 for the end cap. */
 FcOcctStatus fc_occt_extrude_cap_faces(FcOcctSession *session, uint64_t shape,
                                        int32_t which, uint64_t *out_ids,

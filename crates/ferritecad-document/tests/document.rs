@@ -11,12 +11,13 @@
 
 use ferritecad_document::{
     Access, Body, CORE_CAPABILITY, CacheStore, CapSide, DatumPlane, Dependency, DependencyRole,
-    Document, EXTRUDE_CAP_EDGE_CAPABILITY, EndCondition, EntityKind, Envelope, Expression, Extrude,
-    ObjectPayload, Point2, SelectionRule, SemanticRole, Sketch, SketchCurve, SketchGeometry,
-    SolidOperation, TopologyRef,
+    Document, EXTRUDE_CAP_EDGE_CAPABILITY, EXTRUDE_SWEEP_EDGE_CAPABILITY, EndCondition, EntityKind,
+    Envelope, Expression, Extrude, ObjectPayload, Point2, SelectionRule, SemanticRole, Sketch,
+    SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
 };
 use ferritecad_types::{
-    CadError, ContentHash, ErrorKind, ObjectId, Result, StableEntityId, Transform, Unit,
+    CadError, ContentHash, ErrorKind, ObjectId, ProfileJoint, Result, StableEntityId, Transform,
+    Unit,
 };
 use tempfile::TempDir;
 
@@ -952,4 +953,179 @@ fn a_cap_edge_role_cannot_hide_the_capability_it_needs() {
         refusal.to_string().contains(EXTRUDE_CAP_EDGE_CAPABILITY),
         "the refusal should name the missing contract, got: {refusal}"
     );
+}
+
+#[test]
+fn a_sweep_edge_reference_declares_its_own_capability_and_round_trips() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let plate = populate(&mut document).expect("populates");
+    let other_segment = StableEntityId::new();
+    let joint = ProfileJoint::new(plate.first_segment, other_segment).expect("two segments");
+    let sweep_edge = StableEntityId::new();
+
+    document
+        .write(|w| {
+            w.put_topology_ref(&TopologyRef {
+                id: sweep_edge,
+                owner: plate.extrude,
+                producer_feature: plate.extrude,
+                expected_kind: EntityKind::Edge,
+                output_role: SemanticRole::ExtrudeSweepEdge { joint },
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            })
+        })
+        .expect("stores the sweep edge reference");
+
+    let reopened = Document::open(&path).expect("opens");
+    assert!(
+        reopened.access().is_writable(),
+        "this build implements the capability it declares"
+    );
+    let refs = reopened.topology_refs().expect("reads");
+    let restored = refs
+        .iter()
+        .find(|stored| stored.id == sweep_edge)
+        .expect("the sweep edge reference is there");
+    assert_eq!(
+        restored.output_role,
+        SemanticRole::ExtrudeSweepEdge { joint }
+    );
+    assert_eq!(restored.expected_kind, EntityKind::Edge);
+
+    // Its own capability, not the cap-edge one: a reader that understands
+    // where a cap meets a swept face does not thereby understand a corner.
+    let conn = rusqlite::Connection::open(&path).expect("opens raw");
+    let stored: Vec<u8> = conn
+        .query_row(
+            "SELECT payload FROM topology_refs WHERE id = ?1",
+            [sweep_edge.to_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .expect("reads the envelope");
+    let envelope = Envelope::from_bytes(&stored).expect("decodes");
+    assert!(
+        envelope
+            .required_capabilities
+            .iter()
+            .any(|name| name == EXTRUDE_SWEEP_EDGE_CAPABILITY)
+    );
+    assert!(
+        !envelope
+            .required_capabilities
+            .iter()
+            .any(|name| name == EXTRUDE_CAP_EDGE_CAPABILITY),
+        "a sweep edge must not ask for the cap-edge contract"
+    );
+}
+
+#[test]
+fn a_sweep_edge_role_cannot_hide_the_capability_it_needs() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let plate = populate(&mut document).expect("populates");
+    let joint =
+        ProfileJoint::new(plate.first_segment, StableEntityId::new()).expect("two segments");
+    let sweep_edge = StableEntityId::new();
+    document
+        .write(|w| {
+            w.put_topology_ref(&TopologyRef {
+                id: sweep_edge,
+                owner: plate.extrude,
+                producer_feature: plate.extrude,
+                expected_kind: EntityKind::Edge,
+                output_role: SemanticRole::ExtrudeSweepEdge { joint },
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            })
+        })
+        .expect("stores the sweep edge reference");
+    document.close().expect("closes");
+
+    // Byte-consistent damage: the role is still a sweep edge, but the envelope
+    // declares only the older core capability. Trusting the declaration would
+    // grant write access to a reader that cannot reproduce the reference.
+    let conn = rusqlite::Connection::open(&path).expect("opens raw");
+    let stored: Vec<u8> = conn
+        .query_row(
+            "SELECT payload FROM topology_refs WHERE id = ?1",
+            [sweep_edge.to_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .expect("reads the envelope");
+    let mut envelope = Envelope::from_bytes(&stored).expect("decodes");
+    envelope.required_capabilities = vec![CORE_CAPABILITY.to_owned()];
+    let damaged = envelope.to_bytes().expect("re-encodes");
+    let damaged_hash = ContentHash::of_bytes(&damaged);
+    conn.execute(
+        "UPDATE topology_refs SET payload = ?1, payload_hash = ?2 WHERE id = ?3",
+        rusqlite::params![
+            damaged,
+            damaged_hash.as_bytes().as_slice(),
+            sweep_edge.to_bytes().as_slice()
+        ],
+    )
+    .expect("updates bytes and their integrity hash");
+    drop(conn);
+
+    let refusal = match Document::open(&path) {
+        Ok(_) => panic!("an under-declared sweep-edge role gained write access"),
+        Err(error) => error,
+    };
+    assert_eq!(refusal.kind(), ErrorKind::Input);
+    assert!(
+        refusal.to_string().contains(EXTRUDE_SWEEP_EDGE_CAPABILITY),
+        "the refusal should name the missing contract, got: {refusal}"
+    );
+}
+
+#[test]
+fn one_corner_has_one_meaning_and_one_stored_spelling() {
+    let feature = ObjectId::new();
+    let one = StableEntityId::new();
+    let other = StableEntityId::new();
+    // One reference identity throughout: what is under test is whether the
+    // pair changes the meaning, not whether two different references differ.
+    let id = StableEntityId::new();
+    let reference = |joint| TopologyRef {
+        id,
+        owner: feature,
+        producer_feature: feature,
+        expected_kind: EntityKind::Edge,
+        output_role: SemanticRole::ExtrudeSweepEdge { joint },
+        selection: SelectionRule::Exact,
+        fallback_signature: None,
+    };
+
+    // Named either way round, it means the same thing.
+    let forwards = ProfileJoint::new(one, other).expect("two segments");
+    let backwards = ProfileJoint::new(other, one).expect("two segments");
+    assert_eq!(
+        reference(forwards).meaning_hash(),
+        reference(backwards).meaning_hash()
+    );
+    // And a different corner means something else.
+    let elsewhere = ProfileJoint::new(one, StableEntityId::new()).expect("two segments");
+    assert_ne!(
+        reference(forwards).meaning_hash(),
+        reference(elsewhere).meaning_hash()
+    );
+
+    // A stored pair out of order is refused rather than sorted on the way in,
+    // so one corner never acquires a second spelling on disk. Checked through
+    // CBOR, which is the codec a stored role actually travels in.
+    let [first, second] = forwards.segments();
+    let mut canonical = Vec::new();
+    ciborium::into_writer(&[first, second], &mut canonical).expect("encodes");
+    assert_eq!(
+        ciborium::from_reader::<ProfileJoint, _>(canonical.as_slice()).expect("round trips"),
+        forwards
+    );
+
+    let mut swapped = Vec::new();
+    ciborium::into_writer(&[second, first], &mut swapped).expect("encodes");
+    let refusal = ciborium::from_reader::<ProfileJoint, _>(swapped.as_slice())
+        .expect_err("a swapped stored pair is refused");
+    assert!(refusal.to_string().contains("canonical order"), "{refusal}");
 }

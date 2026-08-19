@@ -140,6 +140,15 @@ unsafe extern "C" {
         out_count: *mut usize,
         out_error: *mut RawError,
     ) -> i32;
+    fn fc_occt_extrude_sweep_edges(
+        session: *mut RawSession,
+        shape: u64,
+        joint_index: usize,
+        out_ids: *mut u64,
+        capacity: usize,
+        out_count: *mut usize,
+        out_error: *mut RawError,
+    ) -> i32;
     fn fc_occt_extrude_cap_faces(
         session: *mut RawSession,
         shape: u64,
@@ -440,6 +449,20 @@ impl Session {
                 unsafe {
                     fc_occt_extrude_cap_edges(s, shape, segment_index, which, ids, cap, count, err)
                 }
+            },
+        )
+    }
+
+    /// The edge swept from one corner of the profile.
+    ///
+    /// Everything the bridge recorded there, so a count other than one is the
+    /// caller's to refuse rather than something silently trimmed here.
+    pub(crate) fn sweep_edges(&mut self, shape: u64, joint_index: usize) -> Result<Vec<u64>> {
+        self.collect_ids(
+            "reading the edge swept from a corner of an extrusion profile",
+            |s, ids, cap, count, err| {
+                // SAFETY: pointers are valid for the call; see `collect_ids`.
+                unsafe { fc_occt_extrude_sweep_edges(s, shape, joint_index, ids, cap, count, err) }
             },
         )
     }

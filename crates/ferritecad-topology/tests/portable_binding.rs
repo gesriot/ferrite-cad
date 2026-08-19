@@ -13,15 +13,16 @@ use std::{collections::BTreeMap, mem::size_of};
 
 use ferritecad_document::{CapSide, EntityKind, SelectionRule, SemanticRole, TopologyRef};
 use ferritecad_kernel::{
-    ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, GeometryKernel, KernelIdentity,
-    OperationContext, PlanarPoint, Profile, ProfileLoop, ProfileSegment, SegmentGeometry,
-    SessionId, ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind, mock::MockKernel,
+    ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, ExtrudeResult, GeometryKernel, History,
+    KernelIdentity, OperationContext, PlanarPoint, Profile, ProfileLoop, ProfileSegment,
+    SegmentGeometry, SessionId, ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind,
+    mock::MockKernel,
 };
 use ferritecad_topology::{
     ArchivedFeature, BoundName, RestoredNames, TopologyMap, archive_feature, resolve,
     restore_feature,
 };
-use ferritecad_types::{ContentHash, ErrorKind, ObjectId, Result, StableEntityId};
+use ferritecad_types::{ContentHash, ErrorKind, ObjectId, ProfileJoint, Result, StableEntityId};
 
 struct Plate {
     request: ExtrudeRequest,
@@ -760,4 +761,222 @@ fn what_a_cap_edge_name_means_depends_on_the_side_and_the_segment() {
     }
     .meaning_hash();
     assert!(!meanings.contains(&cap_face));
+}
+
+/// A map holding whatever edges are given for one joint, restored rather than
+/// built, which is the only way more than one can reach it.
+fn map_with_sweep_edges(
+    feature: ObjectId,
+    shape: ShapeHandle,
+    joint: ProfileJoint,
+    edges: &[SubShapeHandle],
+) -> TopologyMap {
+    let mut joints = BTreeMap::new();
+    joints.insert(joint, edges.to_vec());
+    let mut map = TopologyMap::new();
+    map.record_restored(
+        feature,
+        shape,
+        &RestoredNames {
+            sweep_edges: joints,
+            ..RestoredNames::default()
+        },
+    )
+    .expect("records");
+    map
+}
+
+fn sweep_ref(
+    feature: ObjectId,
+    joint: ProfileJoint,
+    kind: EntityKind,
+    selection: SelectionRule,
+) -> TopologyRef {
+    TopologyRef {
+        id: StableEntityId::new(),
+        owner: feature,
+        producer_feature: feature,
+        expected_kind: kind,
+        output_role: SemanticRole::ExtrudeSweepEdge { joint },
+        selection,
+        fallback_signature: None,
+    }
+}
+
+fn a_joint() -> ProfileJoint {
+    ProfileJoint::new(StableEntityId::new(), StableEntityId::new()).expect("two segments")
+}
+
+#[test]
+fn several_edges_under_one_joint_are_refused_rather_than_narrowed() {
+    let feature = ObjectId::new();
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let joint = a_joint();
+    let map = map_with_sweep_edges(
+        feature,
+        shape,
+        joint,
+        &[
+            SubShapeHandle::new(shape, SubShapeKind::Edge, 0),
+            SubShapeHandle::new(shape, SubShapeKind::Edge, 1),
+        ],
+    );
+
+    let refusal = resolve(
+        &map,
+        &sweep_ref(feature, joint, EntityKind::Edge, SelectionRule::Exact),
+    )
+    .expect_err("two edges is not one edge");
+    assert_eq!(refusal.kind(), ErrorKind::Topology);
+    assert!(
+        refusal
+            .to_string()
+            .contains("refusing rather than choosing"),
+        "the refusal must say it chose nothing: {refusal}"
+    );
+
+    // And a joint this rebuild named nothing for says so differently.
+    let missing = resolve(
+        &map,
+        &sweep_ref(feature, a_joint(), EntityKind::Edge, SelectionRule::Exact),
+    )
+    .expect_err("an unnamed joint");
+    assert_eq!(missing.kind(), ErrorKind::Topology);
+    assert!(missing.to_string().contains("produced none"), "{missing}");
+    assert_ne!(refusal.to_string(), missing.to_string());
+}
+
+#[test]
+fn a_restored_sweep_edge_of_the_wrong_kind_or_shape_is_refused() {
+    let feature = ObjectId::new();
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let stranger = ShapeHandle::new(SessionId::new(), 2);
+    let joint = a_joint();
+
+    let mut joints = BTreeMap::new();
+    joints.insert(
+        joint,
+        vec![SubShapeHandle::new(shape, SubShapeKind::Face, 0)],
+    );
+    let refusal = TopologyMap::new()
+        .record_restored(
+            feature,
+            shape,
+            &RestoredNames {
+                sweep_edges: joints,
+                ..RestoredNames::default()
+            },
+        )
+        .expect_err("a face is not an edge along the sweep");
+    assert_eq!(refusal.kind(), ErrorKind::Topology);
+
+    let mut joints = BTreeMap::new();
+    joints.insert(
+        joint,
+        vec![SubShapeHandle::new(stranger, SubShapeKind::Edge, 0)],
+    );
+    let refusal = TopologyMap::new()
+        .record_restored(
+            feature,
+            shape,
+            &RestoredNames {
+                sweep_edges: joints,
+                ..RestoredNames::default()
+            },
+        )
+        .expect_err("an edge of another shape is not this feature's");
+    assert_eq!(refusal.kind(), ErrorKind::Topology);
+}
+
+#[test]
+fn one_restored_edge_cannot_answer_to_two_joints_or_to_a_cap_as_well() {
+    let feature = ObjectId::new();
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let edge = SubShapeHandle::new(shape, SubShapeKind::Edge, 4);
+
+    let mut joints = BTreeMap::new();
+    joints.insert(a_joint(), vec![edge]);
+    joints.insert(a_joint(), vec![edge]);
+    let refusal = TopologyMap::new()
+        .record_restored(
+            feature,
+            shape,
+            &RestoredNames {
+                sweep_edges: joints,
+                ..RestoredNames::default()
+            },
+        )
+        .expect_err("one edge is not two corners");
+    assert!(
+        refusal.to_string().contains("as the same edge"),
+        "{refusal}"
+    );
+
+    let mut joints = BTreeMap::new();
+    joints.insert(a_joint(), vec![edge]);
+    let mut caps = BTreeMap::new();
+    caps.insert(StableEntityId::new(), vec![edge]);
+    let refusal = TopologyMap::new()
+        .record_restored(
+            feature,
+            shape,
+            &RestoredNames {
+                start_cap_edges: caps,
+                sweep_edges: joints,
+                ..RestoredNames::default()
+            },
+        )
+        .expect_err("one edge is not both a cap edge and a corner");
+    assert!(
+        refusal.to_string().contains("and as the sweep edge of"),
+        "{refusal}"
+    );
+}
+
+#[test]
+fn a_joint_naming_a_segment_the_profile_never_had_is_refused_when_recorded() {
+    let feature = ObjectId::new();
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let fixture = plate().expect("a valid profile");
+    let profile = fixture.request.profile().clone();
+    let labels = &fixture.segments;
+
+    // A joint of one real segment and one that belongs to no profile. The
+    // kernel would never report it; the check is at the public boundary, where
+    // a caller with a hand-built result can.
+    let stranger = ProfileJoint::new(labels[0], StableEntityId::new()).expect("two segments");
+    let mut result = ExtrudeResult {
+        shape,
+        history: History::new(),
+        start_cap: Vec::new(),
+        end_cap: Vec::new(),
+        start_cap_edges: BTreeMap::new(),
+        end_cap_edges: BTreeMap::new(),
+        sweep_edges: BTreeMap::new(),
+    };
+    result
+        .sweep_edges
+        .insert(stranger, SubShapeHandle::new(shape, SubShapeKind::Edge, 0));
+
+    let refusal = TopologyMap::new()
+        .record_extrude(feature, &profile, &result)
+        .expect_err("a joint of a segment this profile never swept");
+    assert_eq!(refusal.kind(), ErrorKind::Topology);
+    assert!(
+        refusal
+            .to_string()
+            .contains("is not in the swept outer profile"),
+        "{refusal}"
+    );
+
+    // A joint of two real neighbours records without complaint, so the refusal
+    // is about the stranger and not about sweep edges being unrecordable.
+    let real = ProfileJoint::new(labels[0], labels[1]).expect("two segments");
+    result.sweep_edges.clear();
+    result
+        .sweep_edges
+        .insert(real, SubShapeHandle::new(shape, SubShapeKind::Edge, 0));
+    TopologyMap::new()
+        .record_extrude(feature, &profile, &result)
+        .expect("a joint of two of the profile's own segments records");
 }

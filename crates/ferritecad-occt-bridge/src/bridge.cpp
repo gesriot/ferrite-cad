@@ -119,6 +119,11 @@ struct ShapeRecord {
   /// it, in segment order. Empty for a segment that produced none.
   std::vector<std::vector<uint64_t>> start_cap_edges;
   std::vector<std::vector<uint64_t>> end_cap_edges;
+  /// The edge swept from each corner of the profile, indexed by joint. Joint
+  /// `j` is the corner where segment `j - 1` meets segment `j`, counting round
+  /// the loop, which is the corner the shared vertex `corners[j]` sits at.
+  /// Empty for a corner that swept none.
+  std::vector<std::vector<uint64_t>> sweep_edges;
   /// Identifier to sub-shape. The identifiers mean nothing outside this
   /// session, which is exactly what the Rust side promises about them.
   std::vector<TopoDS_Shape> sub_shapes;
@@ -596,6 +601,34 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
       }
     }
 
+    // The edge each corner of the profile swept.
+    //
+    // The corner vertices are the ones the input edges already share, so this
+    // asks the algorithm about the very vertex two segments meet at rather
+    // than about a point rebuilt to look like it. Measured on 7.9.3 over a
+    // rectangular plate swept blind, reversed, symmetrically and
+    // reversed-symmetrically, a three-segment profile with an arc swept blind
+    // and symmetrically, a triangle, and a two-segment profile: every corner
+    // yielded exactly one EDGE, belonging to the solid, bounding exactly the
+    // two side faces raised from the segments that meet there, never equal to
+    // a cap edge, never shared with another corner, and always one the
+    // tessellation walk also reaches. Rebuilding the same profile starting
+    // from a different segment moved no association, and every result came
+    // back FORWARD. Everything generated is reported, including a count other
+    // than one, so a kernel that answered differently is recorded rather than
+    // trimmed to fit.
+    record.sweep_edges.resize(segment_count);
+    for (size_t j = 0; j < segment_count; ++j) {
+      const NCollection_List<TopoDS_Shape> &swept = prism.Generated(corners[j]);
+      for (NCollection_List<TopoDS_Shape>::Iterator it(swept); it.More();
+           it.Next()) {
+        if (it.Value().IsNull() || it.Value().ShapeType() != TopAbs_EDGE) {
+          continue;
+        }
+        record.sweep_edges[j].push_back(record.remember(it.Value()));
+      }
+    }
+
     // The caps are generated from no input at all — the sweep creates them —
     // so history cannot name them and the algorithm reports them apart.
     // Measured on 7.9.3: both are a TopoDS_Face.
@@ -708,6 +741,39 @@ FcOcctStatus fc_occt_extrude_cap_edges(FcOcctSession *session, uint64_t shape,
       return FC_OCCT_INVALID_INPUT;
     }
     return copy_ids(sides[segment_index], out_ids, capacity, out_count,
+                    out_error);
+  });
+}
+
+FcOcctStatus fc_occt_extrude_sweep_edges(FcOcctSession *session, uint64_t shape,
+                                         size_t joint_index, uint64_t *out_ids,
+                                         size_t capacity, size_t *out_count,
+                                         FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr) {
+      write_error(out_error, "no session");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    if (found->second.decoded) {
+      write_error(out_error,
+                  "shape " + std::to_string(shape) +
+                      " was decoded from a cache blob, which carries geometry "
+                      "but no history; rebuild it to name its sweep edges");
+      return FC_OCCT_UNSUPPORTED;
+    }
+    const std::vector<std::vector<uint64_t>> &joints = found->second.sweep_edges;
+    if (joint_index >= joints.size()) {
+      write_error(out_error, "joint " + std::to_string(joint_index) +
+                                 " is outside the profile");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    return copy_ids(joints[joint_index], out_ids, capacity, out_count,
                     out_error);
   });
 }

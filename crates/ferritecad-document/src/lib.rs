@@ -65,11 +65,11 @@ pub use document::{
 pub use envelope::{Envelope, UnknownObject};
 pub use graph::{Dependency, DependencyRole, evaluation_order};
 pub use model::{
-    Body, CORE_CAPABILITY, CapSide, DatumPlane, EXTRUDE_CAP_EDGE_CAPABILITY, EndCondition,
-    EntityKind, Expression, Extrude, GeomSignature, IMPORTED_STEP_CAPABILITY,
-    ImportedDefinitionRef, ImportedStep, ImporterIdentity, ObjectKind, ObjectPayload, Parameter,
-    Point2, STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch, SketchCurve, SketchGeometry,
-    SolidOperation, TopologyRef,
+    Body, CORE_CAPABILITY, CapSide, DatumPlane, EXTRUDE_CAP_EDGE_CAPABILITY,
+    EXTRUDE_SWEEP_EDGE_CAPABILITY, EndCondition, EntityKind, Expression, Extrude, GeomSignature,
+    IMPORTED_STEP_CAPABILITY, ImportedDefinitionRef, ImportedStep, ImporterIdentity, ObjectKind,
+    ObjectPayload, Parameter, Point2, STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch,
+    SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
 };
 pub use schema::{
     CACHE_EXTENSION, DOCUMENT_EXTENSION, FORMAT_VERSION, MINIMUM_READER_VERSION,

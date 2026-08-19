@@ -336,6 +336,8 @@ impl GeometryKernel for MockKernel {
             // must fail to resolve against this kernel, not resolve wrongly.
             start_cap_edges: BTreeMap::new(),
             end_cap_edges: BTreeMap::new(),
+            // And no edges along the sweep either, for the same reason.
+            sweep_edges: BTreeMap::new(),
         })
     }
 

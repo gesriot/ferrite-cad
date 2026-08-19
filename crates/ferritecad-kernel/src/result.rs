@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 use std::collections::{BTreeMap, BTreeSet};
 
-use ferritecad_types::{CadError, ContentHash, Result, StableEntityId};
+use ferritecad_types::{CadError, ContentHash, ProfileJoint, Result, StableEntityId};
 
 use crate::handle::{ShapeHandle, SubShapeHandle, SubShapeKind};
 use crate::identity::KernelIdentity;
@@ -127,6 +127,17 @@ pub struct ExtrudeResult {
     pub start_cap_edges: BTreeMap<StableEntityId, SubShapeHandle>,
     /// The same, where the end cap meets each swept face.
     pub end_cap_edges: BTreeMap<StableEntityId, SubShapeHandle>,
+    /// The edge running along the sweep at each corner of the profile.
+    ///
+    /// Keyed by the joint, which is the unordered pair of the two segments
+    /// that meet there. Neither of the two owns the edge — it is where their
+    /// swept faces meet — so filing it under one of them would be a choice the
+    /// geometry does not make, and would break as soon as the profile were
+    /// walked from the other direction.
+    ///
+    /// One edge per joint, and the map says so, for the same reason the cap
+    /// edges do. A corner that produced none is absent.
+    pub sweep_edges: BTreeMap<ProfileJoint, SubShapeHandle>,
 }
 
 impl ExtrudeResult {
@@ -169,6 +180,40 @@ impl ExtrudeResult {
                          edge of segment {segment} both name {edge}"
                     )));
                 }
+            }
+        }
+
+        let mut swept: BTreeMap<SubShapeHandle, ProfileJoint> = BTreeMap::new();
+        for (joint, edge) in &self.sweep_edges {
+            if edge.shape() != self.shape {
+                return Err(CadError::kernel(format!(
+                    "the sweep edge named for {joint} is {edge}, which belongs to another shape \
+                     than {}",
+                    self.shape
+                )));
+            }
+            if edge.kind() != SubShapeKind::Edge {
+                return Err(CadError::kernel(format!(
+                    "the sweep edge named for {joint} is {edge}, which is a {}",
+                    edge.kind()
+                )));
+            }
+            // A cap edge and a sweep edge are different edges of the solid.
+            // One handle answering to both would be two durable references
+            // resolving to the same geometry, which is the failure these
+            // names exist to prevent.
+            if let Some((side, segment)) = claimed.get(edge) {
+                return Err(CadError::kernel(format!(
+                    "{edge} is named both as the {side} cap edge of segment {segment} and as the \
+                     sweep edge of {joint}"
+                )));
+            }
+            if let Some(other) = swept.insert(*edge, *joint)
+                && other != *joint
+            {
+                return Err(CadError::kernel(format!(
+                    "the sweep edges of {other} and of {joint} both name {edge}"
+                )));
             }
         }
         Ok(())
@@ -784,7 +829,88 @@ mod tests {
             end_cap: Vec::new(),
             start_cap_edges: named.iter().copied().collect(),
             end_cap_edges: BTreeMap::new(),
+            sweep_edges: BTreeMap::new(),
         }
+    }
+
+    /// An extrusion result naming one edge along the sweep for one joint.
+    fn along(shape: ShapeHandle, named: &[(ProfileJoint, SubShapeHandle)]) -> ExtrudeResult {
+        ExtrudeResult {
+            shape,
+            history: History::new(),
+            start_cap: Vec::new(),
+            end_cap: Vec::new(),
+            start_cap_edges: BTreeMap::new(),
+            end_cap_edges: BTreeMap::new(),
+            sweep_edges: named.iter().copied().collect(),
+        }
+    }
+
+    fn joint() -> ProfileJoint {
+        ProfileJoint::new(StableEntityId::new(), StableEntityId::new())
+            .expect("two different segments")
+    }
+
+    #[test]
+    fn a_sweep_edge_of_another_shape_or_of_the_wrong_kind_is_refused() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let stranger = ShapeHandle::new(SessionId::new(), 0);
+        let corner = joint();
+
+        assert!(
+            along(
+                shape,
+                &[(corner, SubShapeHandle::new(shape, SubShapeKind::Edge, 0))]
+            )
+            .validate()
+            .is_ok()
+        );
+
+        let elsewhere = along(
+            shape,
+            &[(corner, SubShapeHandle::new(stranger, SubShapeKind::Edge, 0))],
+        )
+        .validate()
+        .expect_err("an edge of another shape is not this feature's");
+        assert!(
+            elsewhere.to_string().contains("belongs to another shape"),
+            "{elsewhere}"
+        );
+
+        let face = along(
+            shape,
+            &[(corner, SubShapeHandle::new(shape, SubShapeKind::Face, 0))],
+        )
+        .validate()
+        .expect_err("a sweep edge is never a face");
+        assert!(face.to_string().contains("which is a face"), "{face}");
+    }
+
+    #[test]
+    fn two_joints_naming_one_edge_are_refused() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let edge = SubShapeHandle::new(shape, SubShapeKind::Edge, 7);
+        let refusal = along(shape, &[(joint(), edge), (joint(), edge)])
+            .validate()
+            .expect_err("one edge cannot be two corners");
+        assert!(refusal.to_string().contains("both name"), "{refusal}");
+    }
+
+    #[test]
+    fn a_cap_edge_cannot_also_be_a_sweep_edge() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let edge = SubShapeHandle::new(shape, SubShapeKind::Edge, 3);
+        let mut result = swept(shape, &[(StableEntityId::new(), edge)]);
+        result.sweep_edges.insert(joint(), edge);
+        let refusal = result
+            .validate()
+            .expect_err("one edge cannot be a cap edge and a corner at once");
+        assert!(
+            refusal
+                .to_string()
+                .contains("named both as the start cap edge"),
+            "{refusal}"
+        );
     }
 
     #[test]

@@ -8,7 +8,7 @@ use ferritecad_kernel::{
     SegmentGeometry, SessionId, ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind,
     TessellationParams,
 };
-use ferritecad_types::{CadError, ContentHash, Result, Transform};
+use ferritecad_types::{CadError, ContentHash, ProfileJoint, Result, Transform};
 
 use crate::ffi;
 
@@ -381,6 +381,48 @@ impl GeometryKernel for OcctKernel {
                 }
             }
 
+            // The edge along the sweep at each corner of the profile, filed
+            // under the pair of segments that meet there.
+            //
+            // Joint `index` is where the segment before it meets the segment
+            // at it, which is the corner the two share. The pair is the name;
+            // nothing about where either segment sits in the loop is kept, so
+            // walking the profile from a different segment, or editing an
+            // unrelated part of it, leaves this joint called what it was.
+            //
+            // A pair that arises at more than one corner names neither of
+            // them. On a loop of two segments both corners are where the same
+            // two segments meet, and there is no honest way to say which is
+            // meant, so both are left unnamed rather than one being chosen.
+            let mut joints: Vec<Option<ProfileJoint>> = Vec::with_capacity(outer.len());
+            for index in 0..outer.len() {
+                let before = outer[(index + outer.len() - 1) % outer.len()].label;
+                joints.push(ProfileJoint::new(before, outer[index].label).ok());
+            }
+            let mut seen: BTreeMap<ProfileJoint, usize> = BTreeMap::new();
+            for joint in joints.iter().flatten() {
+                *seen.entry(*joint).or_insert(0) += 1;
+            }
+
+            let mut sweep_edges = BTreeMap::new();
+            for (index, joint) in joints.iter().enumerate() {
+                let Some(joint) = joint else { continue };
+                if seen.get(joint).copied().unwrap_or(0) != 1 {
+                    continue;
+                }
+                let mut named = self.session.sweep_edges(raw, index)?.into_iter();
+                let Some(id) = named.next() else {
+                    continue;
+                };
+                if named.next().is_some() {
+                    return Err(CadError::kernel(format!(
+                        "the sweep named more than one edge for {joint}, and there is no way to \
+                         choose between them"
+                    )));
+                }
+                sweep_edges.insert(*joint, SubShapeHandle::new(shape, SubShapeKind::Edge, id));
+            }
+
             let result = ExtrudeResult {
                 shape,
                 history,
@@ -388,6 +430,7 @@ impl GeometryKernel for OcctKernel {
                 end_cap,
                 start_cap_edges,
                 end_cap_edges,
+                sweep_edges,
             };
             // Checked here rather than trusted: a name pointing at another
             // shape or at a face resolves, and resolves to the wrong thing.

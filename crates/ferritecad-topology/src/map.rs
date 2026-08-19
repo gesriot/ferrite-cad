@@ -5,7 +5,7 @@ use ferritecad_document::CapSide;
 use ferritecad_kernel::{
     ExtrudeResult, HistoryInput, Profile, ShapeHandle, SubShapeHandle, SubShapeKind,
 };
-use ferritecad_types::{CadError, ObjectId, Result, StableEntityId};
+use ferritecad_types::{CadError, ObjectId, ProfileJoint, Result, StableEntityId};
 
 /// What one feature's output is called, in the session that produced it.
 ///
@@ -27,6 +27,11 @@ pub struct FeatureNames {
     /// recorded honestly so the resolver can refuse rather than pick.
     start_cap_edges: BTreeMap<StableEntityId, BTreeSet<SubShapeHandle>>,
     end_cap_edges: BTreeMap<StableEntityId, BTreeSet<SubShapeHandle>>,
+    /// The edge running along the sweep at each corner of the profile, keyed
+    /// by the pair of segments meeting there. A set for the same reason as
+    /// above: a kernel reporting more than one is recorded as it answered so
+    /// the resolver can refuse instead of choosing.
+    sweep_edges: BTreeMap<ProfileJoint, BTreeSet<SubShapeHandle>>,
 }
 
 impl FeatureNames {
@@ -88,6 +93,28 @@ impl FeatureNames {
         )
     }
 
+    /// The edges running along the sweep at one corner of the profile, in
+    /// identifier order.
+    ///
+    /// An empty iterator means this rebuild named no edge for that joint,
+    /// which is what a corner whose pair is not unique, or whose sweep
+    /// produced nothing, honestly is.
+    pub fn sweep_edge(
+        &self,
+        joint: ProfileJoint,
+    ) -> impl ExactSizeIterator<Item = SubShapeHandle> + '_ {
+        self.sweep_edges
+            .get(&joint)
+            .map(|set| set.iter())
+            .unwrap_or_default()
+            .copied()
+    }
+
+    /// Every joint this feature named an edge along the sweep for.
+    pub fn named_joints(&self) -> impl ExactSizeIterator<Item = ProfileJoint> + '_ {
+        self.sweep_edges.keys().copied()
+    }
+
     /// Every profile segment this feature named a cap edge for, in identifier
     /// order, on either side.
     pub fn named_cap_edge_segments(&self) -> impl ExactSizeIterator<Item = StableEntityId> {
@@ -114,6 +141,7 @@ pub struct RestoredNames {
     pub sides: BTreeMap<StableEntityId, Vec<SubShapeHandle>>,
     pub start_cap_edges: BTreeMap<StableEntityId, Vec<SubShapeHandle>>,
     pub end_cap_edges: BTreeMap<StableEntityId, Vec<SubShapeHandle>>,
+    pub sweep_edges: BTreeMap<ProfileJoint, Vec<SubShapeHandle>>,
 }
 
 /// What a whole rebuild produced, addressed by feature and role.
@@ -230,6 +258,29 @@ impl TopologyMap {
             }
         }
 
+        // The edge along the sweep at each corner, filed under the pair that
+        // names it. Both of the pair must be segments of the profile that was
+        // actually swept: a joint naming a segment from somewhere else is a
+        // name for a corner this feature does not have.
+        for (joint, edge) in &result.sweep_edges {
+            for segment in joint.segments() {
+                if !profile_segments.contains(&segment) {
+                    return Err(CadError::topology(format!(
+                        "feature {producer} reported an extrusion sweep edge for {joint}, and \
+                         segment {segment} is not in the swept outer profile"
+                    )));
+                }
+            }
+            check_kind(
+                *edge,
+                result.shape,
+                producer,
+                "an extrusion sweep edge",
+                SubShapeKind::Edge,
+            )?;
+            names.sweep_edges.entry(*joint).or_default().insert(*edge);
+        }
+
         // Replacing rather than merging: a feature is rebuilt whole, and
         // merging would let a stale name from a previous attempt survive.
         self.features.insert(producer, names);
@@ -298,6 +349,34 @@ impl TopologyMap {
                     }
                     into.entry(*segment).or_default().insert(*edge);
                 }
+            }
+        }
+
+        let mut claimed_joints: BTreeMap<SubShapeHandle, ProfileJoint> = BTreeMap::new();
+        for (joint, handles) in &restored.sweep_edges {
+            for edge in handles {
+                check_kind(
+                    *edge,
+                    shape,
+                    producer,
+                    "a restored extrusion sweep edge",
+                    SubShapeKind::Edge,
+                )?;
+                if let Some((side, segment)) = claimed_edges.get(edge) {
+                    return Err(CadError::topology(format!(
+                        "feature {producer} restored {edge} both as the {side} cap edge of \
+                         segment {segment} and as the sweep edge of {joint}"
+                    )));
+                }
+                if let Some(other) = claimed_joints.insert(*edge, *joint)
+                    && other != *joint
+                {
+                    return Err(CadError::topology(format!(
+                        "feature {producer} restored the sweep edges of {other} and of {joint} \
+                         as the same edge"
+                    )));
+                }
+                names.sweep_edges.entry(*joint).or_default().insert(*edge);
             }
         }
 

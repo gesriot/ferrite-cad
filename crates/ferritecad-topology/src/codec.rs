@@ -26,7 +26,7 @@
 use std::mem::size_of;
 
 use ferritecad_kernel::{ArchiveSlot, BrepBlob, KernelIdentity};
-use ferritecad_types::{CadError, ContentHash, ObjectId, Result, StableEntityId};
+use ferritecad_types::{CadError, ContentHash, ObjectId, ProfileJoint, Result, StableEntityId};
 
 use crate::archive::{ArchivedFeature, BoundName};
 
@@ -60,6 +60,12 @@ const TAG_SIDE: u16 = 3;
 /// refused entry is rebuilt rather than lost.
 const TAG_START_CAP_EDGE: u16 = 4;
 const TAG_END_CAP_EDGE: u16 = 5;
+/// The edges along the sweep. A new tag again, and again not a new format
+/// version: the layout of an entry is unchanged and only the vocabulary of
+/// names grew. An older build meeting this tag refuses the whole entry as
+/// malformed rather than reading past it, so it cannot restore a partial set
+/// of names and believe it has them all; the entry is a cache and is rebuilt.
+const TAG_SWEEP_EDGE: u16 = 6;
 
 impl ArchivedFeature {
     /// Writes the archive out as bytes.
@@ -102,6 +108,12 @@ impl ArchivedFeature {
                 BoundName::EndCapEdge { profile_segment } => {
                     payload.extend_from_slice(&TAG_END_CAP_EDGE.to_le_bytes());
                     payload.extend_from_slice(&profile_segment.to_bytes());
+                }
+                BoundName::SweepEdge { joint } => {
+                    payload.extend_from_slice(&TAG_SWEEP_EDGE.to_le_bytes());
+                    for segment in joint.segments() {
+                        payload.extend_from_slice(&segment.to_bytes());
+                    }
                 }
             }
             payload.extend_from_slice(&slot.index().to_le_bytes());
@@ -191,6 +203,12 @@ impl ArchivedFeature {
                 },
                 TAG_END_CAP_EDGE => BoundName::EndCapEdge {
                     profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
+                },
+                TAG_SWEEP_EDGE => BoundName::SweepEdge {
+                    joint: ProfileJoint::from_canonical([
+                        StableEntityId::from_bytes(reader.array("first profile segment")?)?,
+                        StableEntityId::from_bytes(reader.array("second profile segment")?)?,
+                    ])?,
                 },
                 unknown => {
                     return Err(malformed(format!(

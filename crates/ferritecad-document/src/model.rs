@@ -11,8 +11,8 @@ use ferritecad_exchange::{
 };
 use ferritecad_kernel::KernelIdentity;
 use ferritecad_types::{
-    CadError, CanonicalHasher, ContentHash, Dimension, ImportedSourceId, ObjectId, Point3, Result,
-    StableEntityId, Transform, normalize_f64,
+    CadError, CanonicalHasher, ContentHash, Dimension, ImportedSourceId, ObjectId, Point3,
+    ProfileJoint, Result, StableEntityId, Transform, normalize_f64,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -39,6 +39,15 @@ pub const CORE_CAPABILITY: &str = "core.part.v1";
 /// before this build, and one written by it that names no such edge, requires
 /// nothing new and stays writable by a reader that lacks this.
 pub const EXTRUDE_CAP_EDGE_CAPABILITY: &str = "topology.extrude-cap-edge.v1";
+
+/// The capability a stored [`SemanticRole::ExtrudeSweepEdge`] depends on.
+///
+/// Its own name rather than a widening of the cap-edge one. A reader that
+/// understands cap edges does not thereby understand sweep edges, and telling
+/// it otherwise would let it rewrite a document containing references whose
+/// meaning it cannot reproduce. The payload layout is again unchanged, so this
+/// is once more a vocabulary change and not a version bump.
+pub const EXTRUDE_SWEEP_EDGE_CAPABILITY: &str = "topology.extrude-sweep-edge.v1";
 
 /// The capability an [`ImportedStep`] object depends on.
 ///
@@ -458,6 +467,15 @@ pub enum SemanticRole {
         side: CapSide,
         profile_segment: StableEntityId,
     },
+    /// The edge running along the sweep where two adjacent profile segments
+    /// meet.
+    ///
+    /// It belongs to the joint, not to either segment: the corner is where the
+    /// two swept faces meet, and picking one of them to own it would be a
+    /// choice the geometry does not make. So the name is the unordered pair,
+    /// and it stays the same name when the profile is walked from a different
+    /// starting segment or in the other direction.
+    ExtrudeSweepEdge { joint: ProfileJoint },
     /// A face introduced by filleting an identified edge.
     FilletFace { source_edge: StableEntityId },
 }
@@ -565,6 +583,16 @@ impl TopologyRef {
                         CapSide::End => "end",
                     })
                     .bytes(&profile_segment.to_bytes());
+            }
+            SemanticRole::ExtrudeSweepEdge { joint } => {
+                // The pair is already canonical, so the two segments hash in
+                // one order only and naming them the other way round produces
+                // the same meaning rather than a second one.
+                let [one, other] = joint.segments();
+                hasher
+                    .str("extrude_sweep_edge")
+                    .bytes(&one.to_bytes())
+                    .bytes(&other.to_bytes());
             }
             SemanticRole::FilletFace { source_edge } => {
                 hasher.str("fillet_face").bytes(&source_edge.to_bytes());

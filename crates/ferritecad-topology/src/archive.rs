@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ferritecad_document::CapSide;
 use ferritecad_kernel::{ArchiveSlot, BrepBlob, GeometryKernel, SubShapeKind};
-use ferritecad_types::{CadError, ContentHash, ObjectId, Result, StableEntityId};
+use ferritecad_types::{CadError, ContentHash, ObjectId, ProfileJoint, Result, StableEntityId};
 
 use crate::map::TopologyMap;
 
@@ -39,6 +39,8 @@ pub enum BoundName {
     StartCapEdge { profile_segment: StableEntityId },
     /// The same, at the end cap.
     EndCapEdge { profile_segment: StableEntityId },
+    /// The edge running along the sweep where two profile segments meet.
+    SweepEdge { joint: ProfileJoint },
 }
 
 impl BoundName {
@@ -70,7 +72,9 @@ impl BoundName {
     pub fn kind(self) -> SubShapeKind {
         match self {
             Self::StartCap | Self::EndCap | Self::Side { .. } => SubShapeKind::Face,
-            Self::StartCapEdge { .. } | Self::EndCapEdge { .. } => SubShapeKind::Edge,
+            Self::StartCapEdge { .. } | Self::EndCapEdge { .. } | Self::SweepEdge { .. } => {
+                SubShapeKind::Edge
+            }
         }
     }
 }
@@ -237,6 +241,13 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
         }
     }
 
+    // The edges along the sweep, by the joint that names them.
+    for joint in names.named_joints() {
+        for edge in names.sweep_edge(joint) {
+            wanted.push((BoundName::SweepEdge { joint }, edge));
+        }
+    }
+
     // A side that raised several faces cannot be archived under one slot in
     // this slice; the family rule needs several, and one slot names one.
     let mut seen = BTreeSet::new();
@@ -328,6 +339,7 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
         let mut sides: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
         let mut start_cap_edges: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
         let mut end_cap_edges: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
+        let mut sweep_edges: BTreeMap<ProfileJoint, Vec<_>> = BTreeMap::new();
         let mut claimed = BTreeMap::new();
 
         for (name, face) in names.into_iter().zip(faces) {
@@ -366,6 +378,7 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 BoundName::EndCapEdge { profile_segment } => {
                     end_cap_edges.entry(profile_segment).or_default().push(face)
                 }
+                BoundName::SweepEdge { joint } => sweep_edges.entry(joint).or_default().push(face),
             }
         }
 
@@ -378,6 +391,7 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 sides,
                 start_cap_edges,
                 end_cap_edges,
+                sweep_edges,
             },
         )
     })();
