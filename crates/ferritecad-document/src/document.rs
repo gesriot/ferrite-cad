@@ -566,11 +566,10 @@ impl Document {
                 )));
             }
             // Every capability the payload declares must be one this build
-            // implements. Compared against the supported list rather than
-            // against the core capability alone, so one rule covers this and
-            // `determine_access`: a reference that asks for something newer is
-            // refused by name here and makes the whole document read-only
-            // there, instead of arriving as a role nothing can parse.
+            // implements. A reference that asks for something newer is
+            // refused by name here and makes the whole document read-only in
+            // `determine_access`, instead of arriving as a role nothing can
+            // parse.
             let unsupported: Vec<&str> = envelope
                 .required_capabilities
                 .iter()
@@ -584,6 +583,7 @@ impl Document {
                 )));
             }
             let decoded: TopologyRefPayload = envelope.decode()?;
+            require_role_capabilities(&envelope, &decoded.output_role)?;
             let reference = TopologyRef {
                 id,
                 owner: ObjectId::from_slice(&owner)?,
@@ -1344,6 +1344,29 @@ fn required_capabilities_of(role: &SemanticRole) -> Vec<String> {
     names
 }
 
+/// Refuses a known role whose envelope omits part of its capability contract.
+///
+/// Checking only what an envelope *does* declare is not enough: a damaged or
+/// hand-edited cap-edge reference could otherwise omit its new capability and
+/// make an older reader believe the document was safe to rewrite. Extra
+/// supported capabilities remain conservative and are therefore allowed.
+fn require_role_capabilities(envelope: &Envelope, role: &SemanticRole) -> Result<()> {
+    let missing: Vec<String> = required_capabilities_of(role)
+        .into_iter()
+        .filter(|required| !envelope.required_capabilities.contains(required))
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(CadError::input(format!(
+            "{} schema v{} omits required capabilities: {}",
+            envelope.type_name,
+            envelope.schema_version,
+            missing.join(", ")
+        )))
+    }
+}
+
 /// Decides whether this build may write the document it just opened.
 fn determine_access(conn: &Connection) -> Result<Access> {
     let mut missing: Vec<String> = declared_capabilities(conn)?
@@ -1396,7 +1419,24 @@ fn declared_capabilities(conn: &Connection) -> Result<BTreeSet<String>> {
         for row in rows {
             let bytes = row.map_err(|e| CadError::io(format!("reading {context} payload"), e))?;
             let envelope = Envelope::from_bytes(&bytes)?;
-            capabilities.extend(envelope.required_capabilities);
+            let all_supported = envelope
+                .required_capabilities
+                .iter()
+                .all(|name| SUPPORTED_CAPABILITIES.contains(&name.as_str()));
+            capabilities.extend(envelope.required_capabilities.iter().cloned());
+
+            // A future topology-reference role must still be allowed to open
+            // read-only without this build trying to decode it. A known,
+            // wholly supported payload has no such excuse: its declared
+            // capabilities must cover the role actually stored inside it.
+            if table == "topology_refs"
+                && envelope.type_name == "topology_ref"
+                && envelope.schema_version == 1
+                && all_supported
+            {
+                let decoded: TopologyRefPayload = envelope.decode()?;
+                require_role_capabilities(&envelope, &decoded.output_role)?;
+            }
         }
     }
     Ok(capabilities)

@@ -137,7 +137,7 @@ impl ExtrudeResult {
     /// resolves, and it resolves to the wrong thing. Refusing at the boundary
     /// that produced it keeps the failure next to its cause.
     pub fn validate(&self) -> Result<()> {
-        let mut claimed: BTreeMap<SubShapeHandle, StableEntityId> = BTreeMap::new();
+        let mut claimed: BTreeMap<SubShapeHandle, (&str, StableEntityId)> = BTreeMap::new();
         for (side, edges) in [
             ("start", &self.start_cap_edges),
             ("end", &self.end_cap_edges),
@@ -157,18 +157,19 @@ impl ExtrudeResult {
                         edge.kind()
                     )));
                 }
-                // Within one cap, two segments naming one edge is a
-                // contradiction: the edge would answer to both names and a
-                // reference to either would be satisfied by the wrong one.
-                if let Some(other) = claimed.insert(*edge, *segment)
-                    && other != *segment
+                // One physical edge may carry exactly one cap-edge meaning.
+                // A start and an end are as distinct as two segments: letting
+                // either pair share a handle would make two durable references
+                // resolve to the same geometry.
+                if let Some((other_side, other_segment)) = claimed.insert(*edge, (side, *segment))
+                    && (other_side != side || other_segment != *segment)
                 {
                     return Err(CadError::kernel(format!(
-                        "segments {other} and {segment} both name {edge} as a cap edge"
+                        "the {other_side} cap edge of segment {other_segment} and the {side} cap \
+                         edge of segment {segment} both name {edge}"
                     )));
                 }
             }
-            claimed.clear();
         }
         Ok(())
     }
@@ -838,12 +839,24 @@ mod tests {
                 .is_err(),
             "one edge was quietly given two names"
         );
+    }
 
-        // The same edge on the two different caps is not a contradiction: they
-        // are different sides and the check is made within each.
+    #[test]
+    fn one_edge_cannot_name_both_caps() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let edge = SubShapeHandle::new(shape, SubShapeKind::Edge, 0);
+        let one = StableEntityId::new();
+        let other = StableEntityId::new();
+
+        // The two caps are distinct meanings too. A non-degenerate sweep
+        // cannot use one physical edge for both, and accepting it would make
+        // two durable references resolve to the same geometry.
         let mut result = swept(shape, &[(one, edge)]);
         result.end_cap_edges.insert(other, edge);
-        assert!(result.validate().is_ok());
+        assert!(
+            result.validate().is_err(),
+            "one edge was quietly named on both ends of the sweep"
+        );
     }
 
     #[test]

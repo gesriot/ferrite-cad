@@ -11,8 +11,9 @@
 
 use ferritecad_document::{
     Access, Body, CORE_CAPABILITY, CacheStore, CapSide, DatumPlane, Dependency, DependencyRole,
-    Document, EndCondition, EntityKind, Envelope, Expression, Extrude, ObjectPayload, Point2,
-    SelectionRule, SemanticRole, Sketch, SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
+    Document, EXTRUDE_CAP_EDGE_CAPABILITY, EndCondition, EntityKind, Envelope, Expression, Extrude,
+    ObjectPayload, Point2, SelectionRule, SemanticRole, Sketch, SketchCurve, SketchGeometry,
+    SolidOperation, TopologyRef,
 };
 use ferritecad_types::{
     CadError, ContentHash, ErrorKind, ObjectId, Result, StableEntityId, Transform, Unit,
@@ -882,4 +883,73 @@ fn naming_a_cap_edge_declares_a_capability_and_nothing_else_does() {
         }
     );
     assert_eq!(restored.expected_kind, EntityKind::Edge);
+}
+
+#[test]
+fn a_cap_edge_role_cannot_hide_the_capability_it_needs() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let plate = populate(&mut document).expect("populates");
+    let cap_edge = StableEntityId::new();
+    document
+        .write(|w| {
+            w.put_topology_ref(&TopologyRef {
+                id: cap_edge,
+                owner: plate.extrude,
+                producer_feature: plate.extrude,
+                expected_kind: EntityKind::Edge,
+                output_role: SemanticRole::ExtrudeCapEdge {
+                    side: CapSide::Start,
+                    profile_segment: plate.first_segment,
+                },
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            })
+        })
+        .expect("stores the cap edge reference");
+    document.close().expect("closes");
+
+    // Simulate damage that is internally consistent at the byte/hash level:
+    // the role is still a cap edge, but the envelope lies by declaring only
+    // the older core capability. Looking only at the declaration would grant
+    // write access and defeat the purpose of capability negotiation.
+    let conn = rusqlite::Connection::open(&path).expect("opens raw");
+    let stored: Vec<u8> = conn
+        .query_row(
+            "SELECT payload FROM topology_refs WHERE id = ?1",
+            [cap_edge.to_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .expect("reads topology reference envelope");
+    let mut envelope = Envelope::from_bytes(&stored).expect("decodes envelope");
+    assert!(
+        envelope
+            .required_capabilities
+            .iter()
+            .any(|name| name == EXTRUDE_CAP_EDGE_CAPABILITY),
+        "the writer must establish the precondition"
+    );
+    envelope.required_capabilities = vec![CORE_CAPABILITY.to_owned()];
+    let damaged = envelope.to_bytes().expect("re-encodes damaged envelope");
+    let damaged_hash = ContentHash::of_bytes(&damaged);
+    conn.execute(
+        "UPDATE topology_refs SET payload = ?1, payload_hash = ?2 WHERE id = ?3",
+        rusqlite::params![
+            damaged,
+            damaged_hash.as_bytes().as_slice(),
+            cap_edge.to_bytes().as_slice()
+        ],
+    )
+    .expect("updates bytes and their integrity hash");
+    drop(conn);
+
+    let refusal = match Document::open(&path) {
+        Ok(_) => panic!("an under-declared cap-edge role gained write access"),
+        Err(error) => error,
+    };
+    assert_eq!(refusal.kind(), ErrorKind::Input);
+    assert!(
+        refusal.to_string().contains(EXTRUDE_CAP_EDGE_CAPABILITY),
+        "the refusal should name the missing contract, got: {refusal}"
+    );
 }

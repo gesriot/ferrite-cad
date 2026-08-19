@@ -153,20 +153,33 @@ impl TopologyMap {
     /// exactly what is being recorded, and reassembling it afterwards from
     /// parts would be inventing it.
     ///
-    /// Every handle is checked to be a face of this extrusion's own shape. A
-    /// handle from somewhere else would be a name pointing at another feature's
-    /// geometry, which is the failure this whole layer exists to prevent, so it
-    /// is refused here rather than resolved later.
+    /// Every handle is checked to be the right kind of sub-shape of this
+    /// extrusion's own shape. A handle from somewhere else would be a name
+    /// pointing at another feature's geometry, which is the failure this whole
+    /// layer exists to prevent, so it is refused here rather than resolved
+    /// later.
     pub fn record_extrude(
         &mut self,
         producer: ObjectId,
         profile: &Profile,
         result: &ExtrudeResult,
     ) -> Result<()> {
+        // Do not rely on every GeometryKernel implementation remembering to
+        // validate its DTO before returning it. The topology boundary is the
+        // last place a contradictory durable meaning can be refused before it
+        // is filed as an apparently valid name.
+        result.validate()?;
+
         let mut names = FeatureNames {
             shape: Some(result.shape),
             ..FeatureNames::default()
         };
+        let profile_segments: BTreeSet<StableEntityId> = profile
+            .outer()
+            .segments()
+            .iter()
+            .map(|segment| segment.label)
+            .collect();
 
         for face in &result.start_cap {
             check(*face, result.shape, producer, "an extrusion start cap")?;
@@ -206,6 +219,12 @@ impl TopologyMap {
             ),
         ] {
             for (segment, edge) in edges {
+                if !profile_segments.contains(segment) {
+                    return Err(CadError::topology(format!(
+                        "feature {producer} reported {what} for segment {segment}, which is not \
+                         in the swept outer profile"
+                    )));
+                }
                 check_kind(*edge, result.shape, producer, what, SubShapeKind::Edge)?;
                 into.entry(*segment).or_default().insert(*edge);
             }
@@ -219,10 +238,10 @@ impl TopologyMap {
 
     /// Records names restored from an archive rather than from an operation.
     ///
-    /// The same checks as a fresh record: every face must be a face of the
-    /// shape it was restored with. What is deliberately absent is history —
-    /// an archive carries the sub-shapes that were named, not how they were
-    /// made — so this cannot be used to fake a rebuild.
+    /// The same checks as a fresh record: every sub-shape must have the right
+    /// kind and belong to the shape it was restored with. What is deliberately
+    /// absent is history — an archive carries the sub-shapes that were named,
+    /// not how they were made — so this cannot be used to fake a rebuild.
     pub fn record_restored(
         &mut self,
         producer: ObjectId,
@@ -249,13 +268,16 @@ impl TopologyMap {
                 names.sides.entry(*segment).or_default().insert(*face);
             }
         }
-        for (edges, into, what) in [
+        let mut claimed_edges: BTreeMap<SubShapeHandle, (&str, StableEntityId)> = BTreeMap::new();
+        for (side, edges, into, what) in [
             (
+                "start",
                 &restored.start_cap_edges,
                 &mut names.start_cap_edges,
                 "a restored extrusion start cap edge",
             ),
             (
+                "end",
                 &restored.end_cap_edges,
                 &mut names.end_cap_edges,
                 "a restored extrusion end cap edge",
@@ -264,6 +286,16 @@ impl TopologyMap {
             for (segment, handles) in edges {
                 for edge in handles {
                     check_kind(*edge, shape, producer, what, SubShapeKind::Edge)?;
+                    if let Some((other_side, other_segment)) =
+                        claimed_edges.insert(*edge, (side, *segment))
+                        && (other_side != side || other_segment != *segment)
+                    {
+                        return Err(CadError::topology(format!(
+                            "feature {producer} restored the {other_side} cap edge of segment \
+                             {other_segment} and the {side} cap edge of segment {segment} as \
+                             the same edge"
+                        )));
+                    }
                     into.entry(*segment).or_default().insert(*edge);
                 }
             }
@@ -441,6 +473,57 @@ mod tests {
         let err = TopologyMap::new()
             .record_extrude(ObjectId::new(), square.request.profile(), &result)
             .expect_err("a cap is a face");
+        assert_eq!(err.kind(), ferritecad_types::ErrorKind::Topology);
+    }
+
+    #[test]
+    fn a_kernel_result_cannot_file_one_edge_under_both_caps() {
+        let square = square();
+        let mut kernel = MockKernel::new();
+        let mut result = built(&mut kernel, &square);
+        let edge = SubShapeHandle::new(result.shape, SubShapeKind::Edge, 100);
+        result.start_cap_edges.insert(square.labels[0], edge);
+        result.end_cap_edges.insert(square.labels[1], edge);
+
+        let err = TopologyMap::new()
+            .record_extrude(ObjectId::new(), square.request.profile(), &result)
+            .expect_err("one edge cannot acquire two durable meanings");
+        assert_eq!(err.kind(), ferritecad_types::ErrorKind::Kernel);
+    }
+
+    #[test]
+    fn a_cap_edge_cannot_be_filed_under_a_segment_outside_the_profile() {
+        let square = square();
+        let mut kernel = MockKernel::new();
+        let mut result = built(&mut kernel, &square);
+        let invented = StableEntityId::new();
+        result.start_cap_edges.insert(
+            invented,
+            SubShapeHandle::new(result.shape, SubShapeKind::Edge, 100),
+        );
+
+        let err = TopologyMap::new()
+            .record_extrude(ObjectId::new(), square.request.profile(), &result)
+            .expect_err("an unknown segment cannot become a durable edge name");
+        assert_eq!(err.kind(), ferritecad_types::ErrorKind::Topology);
+        assert!(err.to_string().contains(&invented.to_string()));
+    }
+
+    #[test]
+    fn an_archive_result_cannot_file_one_edge_under_both_caps() {
+        let shape = ShapeHandle::new(SessionId::new(), 1);
+        let edge = SubShapeHandle::new(shape, SubShapeKind::Edge, 100);
+        let one = StableEntityId::new();
+        let other = StableEntityId::new();
+        let restored = RestoredNames {
+            start_cap_edges: BTreeMap::from([(one, vec![edge])]),
+            end_cap_edges: BTreeMap::from([(other, vec![edge])]),
+            ..RestoredNames::default()
+        };
+
+        let err = TopologyMap::new()
+            .record_restored(ObjectId::new(), shape, &restored)
+            .expect_err("an archived edge cannot acquire two durable meanings");
         assert_eq!(err.kind(), ferritecad_types::ErrorKind::Topology);
     }
 
