@@ -494,3 +494,385 @@ fn two_readings_of_one_picture_differ_when_only_the_edge_names_do() {
     let face = plain.snapshot.face_of(0, 0).expect("numbered");
     assert_eq!(named.snapshot.definition_of_face(face), None);
 }
+
+/// The committed plate, copied, with an exact name for every edge that runs
+/// along the sweep and for every cap edge too.
+///
+/// The corners come from `ProfileLoop::joints`. Pairing the sketch curves here
+/// would be a second piece of adjacency arithmetic, free to disagree with the
+/// one the kernel and the topology map already share.
+fn plate_with_every_edge_named(
+    path: &std::path::Path,
+) -> (
+    Vec<ferritecad_document::TopologyRef>,
+    Vec<ferritecad_document::TopologyRef>,
+) {
+    use ferritecad_document::{Document, EntityKind, ObjectPayload, SelectionRule, SemanticRole};
+
+    let caps = plate_with_named_cap_edges(path);
+
+    let mut document = Document::open(path).expect("opens the plate");
+    let objects = document.objects().expect("reads objects");
+    let sketch = objects
+        .iter()
+        .find_map(|object| match &object.payload {
+            ObjectPayload::Sketch(sketch) => Some(sketch.clone()),
+            _ => None,
+        })
+        .expect("the fixture has a sketch");
+    let datum = objects
+        .iter()
+        .find_map(|object| match &object.payload {
+            ObjectPayload::DatumPlane(datum) => Some(datum.clone()),
+            _ => None,
+        })
+        .expect("the fixture has a datum plane");
+    let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
+    let profile = ferritecad_eval::profile_from_sketch(&sketch, plane).expect("builds a profile");
+
+    let stored = document.topology_refs().expect("reads");
+    let producer = stored
+        .iter()
+        .find_map(|reference| match &reference.output_role {
+            SemanticRole::ExtrudeSide { .. } => Some(reference.producer_feature),
+            _ => None,
+        })
+        .expect("the fixture names its swept faces");
+    let owner = stored[0].owner;
+
+    let mut written = Vec::new();
+    for joint in profile.outer().joints() {
+        written.push(ferritecad_document::TopologyRef {
+            id: ferritecad_types::StableEntityId::new(),
+            owner,
+            producer_feature: producer,
+            expected_kind: EntityKind::Edge,
+            output_role: SemanticRole::ExtrudeSweepEdge { joint },
+            selection: SelectionRule::Exact,
+            fallback_signature: None,
+        });
+    }
+    assert_eq!(written.len(), 4, "the plate has four corners");
+    document
+        .write(|w| {
+            for reference in &written {
+                w.put_topology_ref(reference)?;
+            }
+            Ok(())
+        })
+        .expect("stores the sweep edge references");
+    (caps, written)
+}
+
+#[test]
+fn the_sweep_edge_names_and_the_cap_edge_names_together_cover_the_plate() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+    use ferritecad_document::SemanticRole;
+
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("plate.fcad");
+    let (caps, sweeps) = plate_with_every_edge_named(&path);
+
+    let mut kernel = OcctKernel::new().expect("opens a kernel session");
+    let scene = snapshot_of(
+        &path,
+        &mut kernel,
+        no_imports,
+        &TessellationParams::default(),
+        &OperationContext::default(),
+    )
+    .expect("the plate loads");
+    assert_eq!(scene.snapshot.edge_count(), 12);
+
+    // Which edges each kind of name reached.
+    let mut along = std::collections::BTreeSet::new();
+    let mut at_caps = std::collections::BTreeSet::new();
+    let mut otherwise = Vec::new();
+    let mut reached: std::collections::BTreeSet<ferritecad_types::StableEntityId> =
+        std::collections::BTreeSet::new();
+    for ordinal in 0..scene.snapshot.edge_count() {
+        let edge = scene
+            .snapshot
+            .edge_of(0, ordinal)
+            .expect("the picture numbers this edge");
+        for meaning in scene.edges.of(edge, &scene.snapshot) {
+            reached.insert(meaning.reference);
+            match meaning.output_role {
+                SemanticRole::ExtrudeSweepEdge { .. } => {
+                    along.insert(edge.to_raw());
+                }
+                SemanticRole::ExtrudeCapEdge { .. } => {
+                    at_caps.insert(edge.to_raw());
+                }
+                ref other => otherwise.push(format!("{other:?}")),
+            }
+        }
+    }
+
+    assert!(
+        otherwise.is_empty(),
+        "an edge of the plate is named something else: {otherwise:?}"
+    );
+
+    // Four along the sweep, eight at the caps, and no edge answering to both.
+    assert_eq!(along.len(), 4, "four edges run along the sweep");
+    assert_eq!(at_caps.len(), 8, "eight edges bound a cap");
+    assert!(
+        along.is_disjoint(&at_caps),
+        "an edge is named both along the sweep and at a cap"
+    );
+    assert_eq!(
+        along.union(&at_caps).count(),
+        12,
+        "the twelve edges are not covered exactly"
+    );
+
+    // And every stored reference of either kind found its edge.
+    for reference in caps.iter().chain(sweeps.iter()) {
+        assert!(
+            reached.contains(&reference.id),
+            "the stored name {} reached no edge of the picture",
+            reference.id
+        );
+    }
+
+    // Which edge, not merely how many. A corner's name must land on the edge
+    // between the two faces raised from its own two segments; landing on the
+    // corner beside it would keep every count above intact.
+    let face_of_segment = |segment: ferritecad_types::StableEntityId| {
+        (0..scene.snapshot.face_count())
+            .filter_map(|ordinal| scene.snapshot.face_of(0, ordinal))
+            .find(|face| {
+                scene.faces.of(*face, &scene.snapshot).iter().any(|meaning| {
+                    matches!(
+                        meaning.output_role,
+                        SemanticRole::ExtrudeSide { profile_segment } if profile_segment == segment
+                    )
+                })
+            })
+            .expect("the picture has a face raised from every profile segment")
+    };
+    let mut checked = 0;
+    for ordinal in 0..scene.snapshot.edge_count() {
+        let edge = scene
+            .snapshot
+            .edge_of(0, ordinal)
+            .expect("the picture numbers this edge");
+        for meaning in scene.edges.of(edge, &scene.snapshot) {
+            let SemanticRole::ExtrudeSweepEdge { joint } = &meaning.output_role else {
+                continue;
+            };
+            for segment in joint.segments() {
+                let face = face_of_segment(segment);
+                assert!(
+                    scene.snapshot.edge_bounds_face(edge, face),
+                    "the name of the corner of segments {:?} landed on an edge that does not \
+                     touch the face raised from {segment}",
+                    joint.segments()
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 4, "four corners were checked against their faces");
+}
+
+#[test]
+fn a_picture_with_no_sweep_edge_names_invents_none() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+    use ferritecad_document::SemanticRole;
+
+    // The same plate with cap-edge names only. The four edges along the sweep
+    // must come back unnamed rather than borrowing a neighbour's name.
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("plate.fcad");
+    let _caps = plate_with_named_cap_edges(&path);
+
+    let mut kernel = OcctKernel::new().expect("opens a kernel session");
+    let scene = snapshot_of(
+        &path,
+        &mut kernel,
+        no_imports,
+        &TessellationParams::default(),
+        &OperationContext::default(),
+    )
+    .expect("the plate loads");
+
+    let mut unnamed = 0;
+    for ordinal in 0..scene.snapshot.edge_count() {
+        let edge = scene
+            .snapshot
+            .edge_of(0, ordinal)
+            .expect("the picture numbers this edge");
+        let meanings = scene.edges.of(edge, &scene.snapshot);
+        if meanings.is_empty() {
+            unnamed += 1;
+            continue;
+        }
+        for meaning in meanings {
+            assert!(
+                !matches!(meaning.output_role, SemanticRole::ExtrudeSweepEdge { .. }),
+                "a picture with no sweep-edge names produced one"
+            );
+        }
+    }
+    assert_eq!(unnamed, 4, "the four edges along the sweep stay unnamed");
+}
+
+#[test]
+fn every_stored_sweep_edge_name_of_one_edge_is_kept_in_document_order() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+    use ferritecad_document::{Document, EntityKind, SelectionRule, SemanticRole};
+
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("plate.fcad");
+    let (_caps, sweeps) = plate_with_every_edge_named(&path);
+
+    // A second and a third exact reference to one corner, which a document may
+    // hold: two objects can both name the same edge.
+    let first = sweeps.first().expect("four corners were written").clone();
+    let mut again = Vec::new();
+    for _ in 0..2 {
+        let mut copy = first.clone();
+        copy.id = ferritecad_types::StableEntityId::new();
+        again.push(copy);
+    }
+    let mut document = Document::open(&path).expect("opens the plate");
+    document
+        .write(|w| {
+            for reference in &again {
+                w.put_topology_ref(reference)?;
+            }
+            Ok(())
+        })
+        .expect("stores the extra references");
+    let _ = (EntityKind::Edge, SelectionRule::Exact);
+    drop(document);
+
+    let mut kernel = OcctKernel::new().expect("opens a kernel session");
+    let scene = snapshot_of(
+        &path,
+        &mut kernel,
+        no_imports,
+        &TessellationParams::default(),
+        &OperationContext::default(),
+    )
+    .expect("the plate loads");
+
+    // The corner now carries three names, and they arrive in the order the
+    // document stores them rather than in the order they were written.
+    let wanted: std::collections::BTreeSet<ferritecad_types::StableEntityId> =
+        std::iter::once(first.id)
+            .chain(again.iter().map(|reference| reference.id))
+            .collect();
+    let mut seen = Vec::new();
+    for ordinal in 0..scene.snapshot.edge_count() {
+        let edge = scene
+            .snapshot
+            .edge_of(0, ordinal)
+            .expect("the picture numbers this edge");
+        let names: Vec<ferritecad_types::StableEntityId> = scene
+            .edges
+            .of(edge, &scene.snapshot)
+            .iter()
+            .filter(|meaning| {
+                matches!(meaning.output_role, SemanticRole::ExtrudeSweepEdge { .. })
+                    && wanted.contains(&meaning.reference)
+            })
+            .map(|meaning| meaning.reference)
+            .collect();
+        if !names.is_empty() {
+            seen.push(names);
+        }
+    }
+    assert_eq!(seen.len(), 1, "three names of one corner reached one edge");
+    let names = &seen[0];
+    assert_eq!(names.len(), 3);
+
+    let stored = Document::open(&path)
+        .expect("reopens")
+        .topology_refs()
+        .expect("reads");
+    let order: Vec<ferritecad_types::StableEntityId> = stored
+        .iter()
+        .filter(|entry| wanted.contains(&entry.id))
+        .map(|entry| entry.id)
+        .collect();
+    assert_eq!(names, &order, "the names are not in the document's order");
+}
+
+#[test]
+fn a_stale_or_foreign_edge_identity_names_no_sweep_edge() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("plate.fcad");
+    let _ = plate_with_every_edge_named(&path);
+
+    let mut kernel = OcctKernel::new().expect("opens a kernel session");
+    let scene = snapshot_of(
+        &path,
+        &mut kernel,
+        no_imports,
+        &TessellationParams::default(),
+        &OperationContext::default(),
+    )
+    .expect("the plate loads");
+
+    // A different picture: the same plate read with cap-edge names only. It
+    // is a different interpretation of the geometry, so its names must not
+    // answer about this one's edges. Two readings of the *same* file would
+    // not do: a picture's identity is what it means, so two readings of one
+    // unchanged document are the same picture and answer alike.
+    let other_directory = tempfile::tempdir().expect("a temporary directory is available");
+    let other_path = other_directory.path().join("plate.fcad");
+    let _ = plate_with_named_cap_edges(&other_path);
+    let other = snapshot_of(
+        &other_path,
+        &mut kernel,
+        no_imports,
+        &TessellationParams::default(),
+        &OperationContext::default(),
+    )
+    .expect("the other plate loads");
+
+    let named = (0..scene.snapshot.edge_count())
+        .filter_map(|ordinal| scene.snapshot.edge_of(0, ordinal))
+        .find(|edge| !scene.edges.of(*edge, &scene.snapshot).is_empty())
+        .expect("the document names an edge");
+
+    assert!(
+        other.edges.of(named, &scene.snapshot).is_empty(),
+        "one picture's names answered about another picture's edge"
+    );
+    assert!(
+        scene
+            .edges
+            .of(ferritecad_viewport::EdgePickId::NOTHING, &scene.snapshot)
+            .is_empty(),
+        "an edge identity of nothing was given a name"
+    );
+    // A number this picture never issued does not become an edge of it at
+    // all, so it cannot carry a name either.
+    let past_the_end = ferritecad_viewport::EdgePickId::from_raw(
+        u32::try_from(scene.snapshot.edge_count()).expect("small") + 500,
+        &scene.snapshot,
+    );
+    assert_eq!(past_the_end, ferritecad_viewport::EdgePickId::NOTHING);
+    assert!(
+        scene.edges.of(past_the_end, &scene.snapshot).is_empty(),
+        "an edge identity this picture never issued was given a name"
+    );
+}

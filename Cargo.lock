@@ -695,6 +695,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "ferritecad-document",
+ "ferritecad-eval",
  "ferritecad-fixtures",
  "ferritecad-kernel",
  "ferritecad-occt",

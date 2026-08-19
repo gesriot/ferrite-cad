@@ -1289,6 +1289,14 @@ fn describe_role(role: &SemanticRole) -> String {
         SemanticRole::ExtrudeSide { profile_segment } => {
             format!("Side raised from profile segment {profile_segment}")
         }
+        SemanticRole::ExtrudeSweepEdge { joint } => {
+            // Both segments, in the order the joint keeps them, which is the
+            // canonical one. Naming one of the two would describe a corner by
+            // half of what it is, and the other half is what tells it from the
+            // corner next to it.
+            let [one, other] = joint.segments();
+            format!("Sweep edge at the joint of profile segments {one} and {other}")
+        }
         SemanticRole::SketchSegment { segment } => format!("Sketch segment {segment}"),
         SemanticRole::FilletFace { source_edge } => format!("Fillet of edge {source_edge}"),
         other => format!("{other:?}"),
@@ -3908,6 +3916,219 @@ mod tests {
         Some((directory, scene))
     }
 
+    /// A copy of the committed plate with an exact name for every edge that
+    /// runs along the sweep.
+    ///
+    /// The corners come from `ProfileLoop::joints`, which is the one piece of
+    /// adjacency arithmetic in the workspace. Pairing the sketch curves here
+    /// would be a second one, free to disagree with the first.
+    fn native_plate_with_named_sweep_edges() -> Option<(tempfile::TempDir, LoadedScene)> {
+        use ferritecad_document::{Document, EntityKind, ObjectPayload, SelectionRule};
+
+        if !ferritecad_occt::is_available() {
+            eprintln!("skipped: this build has no Open CASCADE");
+            return None;
+        }
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("plate.fcad");
+        std::fs::copy(ferritecad_fixtures::plate_source(), &path).expect("copies the fixture");
+
+        let mut document = Document::open(&path).expect("opens the plate");
+        let objects = document.objects().expect("reads objects");
+        let sketch = objects
+            .iter()
+            .find_map(|object| match &object.payload {
+                ObjectPayload::Sketch(sketch) => Some(sketch.clone()),
+                _ => None,
+            })
+            .expect("the fixture has a sketch");
+        let datum = objects
+            .iter()
+            .find_map(|object| match &object.payload {
+                ObjectPayload::DatumPlane(datum) => Some(datum.clone()),
+                _ => None,
+            })
+            .expect("the fixture has a datum plane");
+        let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
+        let profile = ferritecad_eval::profile_from_sketch(&sketch, plane).expect("builds");
+
+        let stored = document.topology_refs().expect("reads");
+        let producer = stored
+            .iter()
+            .find_map(|reference| match &reference.output_role {
+                SemanticRole::ExtrudeSide { .. } => Some(reference.producer_feature),
+                _ => None,
+            })
+            .expect("the fixture names its swept faces");
+        let owner = stored[0].owner;
+
+        let joints: Vec<ferritecad_types::ProfileJoint> = profile.outer().joints().collect();
+        assert_eq!(joints.len(), 4, "the plate has four corners");
+        document
+            .write(|w| {
+                for joint in &joints {
+                    w.put_topology_ref(&ferritecad_document::TopologyRef {
+                        id: ferritecad_types::StableEntityId::new(),
+                        owner,
+                        producer_feature: producer,
+                        expected_kind: EntityKind::Edge,
+                        output_role: SemanticRole::ExtrudeSweepEdge { joint: *joint },
+                        selection: SelectionRule::Exact,
+                        fallback_signature: None,
+                    })?;
+                }
+                Ok(())
+            })
+            .expect("stores the sweep edge references");
+        drop(document);
+
+        let mut kernel = OcctKernel::new().expect("opens a session");
+        let scene = snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel: &mut OcctKernel, bytes: &[u8]| kernel.import_step(bytes),
+            &ferritecad_kernel::TessellationParams::default(),
+            &ferritecad_kernel::OperationContext::default(),
+        )
+        .expect("the plate loads through Open CASCADE");
+        Some((directory, scene))
+    }
+
+    /// Every stored sweep-edge meaning of one edge, as the inspector says it.
+    fn sweep_meanings(selected: &ferritecad_scene::SelectedEdge) -> Vec<String> {
+        selected
+            .meanings()
+            .iter()
+            .filter(|meaning| matches!(meaning.output_role, SemanticRole::ExtrudeSweepEdge { .. }))
+            .map(|meaning| describe_role(&meaning.output_role))
+            .collect()
+    }
+
+    #[test]
+    fn clicking_an_edge_along_the_sweep_chooses_it_and_says_what_it_is() {
+        let Some((_directory, scene)) = native_plate_with_named_sweep_edges() else {
+            return;
+        };
+        let mut renderer = renderer_or_skip!();
+        let picture = std::sync::Arc::new(scene.snapshot);
+        let prepared = renderer
+            .prepare(std::sync::Arc::clone(&picture))
+            .expect("uploads");
+        let mut input = ViewportInput::new();
+        input.resize(480, 480);
+        input
+            .frame(picture.bounds().expect("somewhere"))
+            .expect("frames");
+        // Off the axis, for the reason the cap-edge gate turns: which edges
+        // have a coherent pixel depends on the view, and a line on the outer
+        // silhouette is refused by `Hit` because the edge target and the
+        // definition target disagree there.
+        input.handle(ViewportEvent::PointerMoved { x: 200.0, y: 200.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(ViewportEvent::PointerMoved { x: 260.0, y: 150.0 }, false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        let visibility = Visibility::new(&picture);
+
+        let plain = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                Marked::Nothing,
+                Hovered::Nothing,
+                &visibility,
+            )
+            .expect("draws");
+
+        // A pixel that is on an edge the document names as a sweep edge.
+        let (x, y, edge) = (0..plain.height())
+            .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+            .find_map(|(x, y)| {
+                let hit = plain.hit_at(x, y);
+                let edge = hit.edge();
+                if edge == EdgePickId::NOTHING {
+                    return None;
+                }
+                scene
+                    .edges
+                    .of(edge, &picture)
+                    .iter()
+                    .any(|meaning| {
+                        matches!(meaning.output_role, SemanticRole::ExtrudeSweepEdge { .. })
+                    })
+                    .then_some((x, y, edge))
+            })
+            .expect("the plate draws an edge the document names along the sweep");
+
+        // The click chooses that edge, not the face under it and not the part.
+        let chosen = selection_at(plain.hit_at(x, y), &picture, &scene.faces, &scene.edges);
+        let Selection::Edge(selected) = &chosen else {
+            panic!("clicking an edge along the sweep chose {chosen:?} instead of the edge");
+        };
+        assert_eq!(selected.edge(), edge);
+        assert_eq!(chosen.marked(), Marked::Edge(edge));
+
+        // The next frame marks it and nothing else, and leaves what the
+        // picture answers about identity alone.
+        let marked = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                chosen.marked(),
+                Hovered::Nothing,
+                &visibility,
+            )
+            .expect("draws");
+        assert_ne!(
+            marked.colour_at(x, y),
+            plain.colour_at(x, y),
+            "the chosen edge was not drawn as chosen"
+        );
+        for probe_y in 0..plain.height() {
+            for probe_x in 0..plain.width() {
+                assert_eq!(
+                    plain.pick_at(probe_x, probe_y),
+                    marked.pick_at(probe_x, probe_y),
+                    "at {probe_x},{probe_y}"
+                );
+                assert_eq!(
+                    plain.hit_at(probe_x, probe_y).edge(),
+                    marked.hit_at(probe_x, probe_y).edge(),
+                    "at {probe_x},{probe_y}"
+                );
+            }
+        }
+
+        // And the inspector says what it is in the document's own terms.
+        let said = sweep_meanings(selected);
+        assert!(
+            !said.is_empty(),
+            "the inspector says nothing about the chosen sweep edge"
+        );
+        for sentence in &said {
+            assert!(
+                sentence.starts_with("Sweep edge at the joint of profile segments "),
+                "the inspector does not describe a sweep edge: {sentence}"
+            );
+            for forbidden in [
+                "ExtrudeSweepEdge",
+                "ProfileJoint",
+                "EdgePickId",
+                "{",
+                "}",
+                "joint:",
+                "raw",
+            ] {
+                assert!(
+                    !sentence.contains(forbidden),
+                    "the inspector printed {forbidden}: {sentence}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn clicking_a_named_edge_of_the_committed_plate_chooses_that_edge() {
         let Some((_directory, scene)) = native_plate_with_named_edges() else {
@@ -3992,6 +4213,92 @@ mod tests {
     }
 
     #[test]
+    fn a_chosen_sweep_edge_uses_the_edge_semantics_that_already_existed() {
+        let Some((_directory, scene)) = native_plate_with_named_sweep_edges() else {
+            return;
+        };
+        let picture = scene.snapshot;
+        let definition = picture.pick_of(0).expect("drawn");
+        let face = picture.face_of(0, 0).expect("numbered");
+        let edge = (0..picture.edge_count())
+            .filter_map(|ordinal| picture.edge_of(0, ordinal))
+            .find(|edge| {
+                scene.edges.of(*edge, &picture).iter().any(|meaning| {
+                    matches!(meaning.output_role, SemanticRole::ExtrudeSweepEdge { .. })
+                })
+            })
+            .expect("the document names an edge along the sweep");
+
+        let chosen = Selection::at(definition, face, edge, &picture, &scene.faces, &scene.edges);
+        let Selection::Edge(selected) = &chosen else {
+            panic!("a named sweep edge was not chosen as an edge: {chosen:?}");
+        };
+
+        // Everything below is the generic edge behaviour, asked of a sweep
+        // edge. Nothing here is a branch on the role: if one existed, these
+        // would be the answers it changed.
+        assert_eq!(chosen.bounds(&picture), picture.bounds_of_edge(edge));
+        assert_ne!(chosen.bounds(&picture), picture.bounds_of(definition));
+        assert_ne!(chosen.bounds(&picture), picture.bounds_of_face(face));
+
+        let mut visibility = Visibility::new(&picture);
+        assert!(visibility.can_hide(chosen.marked(), &picture));
+        assert!(visibility.hide(chosen.marked(), &picture));
+        assert!(!visibility.shows(0, &picture));
+
+        // A list row still chooses the definition and never the edge.
+        let by_row = Selection::definition(definition, &picture);
+        assert!(matches!(by_row, Selection::Definition(_)), "{by_row:?}");
+
+        // Pointing is still a question and choosing is still a decision: the
+        // precedence a hover answers with has not moved.
+        assert_eq!(chosen.marked(), Marked::Edge(edge));
+        assert_eq!(
+            Selection::at(
+                definition,
+                face,
+                EdgePickId::NOTHING,
+                &picture,
+                &scene.faces,
+                &scene.edges
+            )
+            .marked(),
+            Selection::at(
+                definition,
+                face,
+                EdgePickId::NOTHING,
+                &picture,
+                &scene.faces,
+                &scene.edges
+            )
+            .marked(),
+            "the answer for a pixel with no edge changed"
+        );
+
+        // The inspector says every stored name, in the document's order, and
+        // describes each in portable terms.
+        let words = words_of(&chosen, &scene.catalogue, &picture);
+        assert!(words.faces.is_empty(), "an edge was described as a face");
+        assert_eq!(
+            words.edges.len(),
+            scene.edges.of(edge, &picture).len(),
+            "the inspector dropped a stored name"
+        );
+        let expected: Vec<String> = scene
+            .edges
+            .of(edge, &picture)
+            .iter()
+            .map(|meaning| describe_role(&meaning.output_role))
+            .collect();
+        let said: Vec<String> = words.edges.iter().map(|words| words.role.clone()).collect();
+        assert_eq!(said, expected, "the inspector reordered the stored names");
+        assert_eq!(said, sweep_meanings(selected));
+        for sentence in &said {
+            assert!(sentence.starts_with("Sweep edge at the joint of profile segments "));
+        }
+    }
+
+    #[test]
     fn a_chosen_edge_is_framed_hidden_and_described_as_its_own_thing() {
         let Some((_directory, scene)) = native_plate_with_named_edges() else {
             return;
@@ -4069,6 +4376,95 @@ mod tests {
                 rows.iter().any(|(key, _)| *key == label),
                 "the inspector never said {label}"
             );
+        }
+    }
+
+    #[test]
+    fn the_inspector_names_a_sweep_edge_by_both_of_its_profile_segments() {
+        let Some((_directory, scene)) = native_plate_with_named_sweep_edges() else {
+            return;
+        };
+        let picture = scene.snapshot;
+        let definition = picture.pick_of(0).expect("drawn");
+        let face = picture.face_of(0, 0).expect("numbered");
+        let edge = (0..picture.edge_count())
+            .filter_map(|ordinal| picture.edge_of(0, ordinal))
+            .find(|edge| {
+                scene.edges.of(*edge, &picture).iter().any(|meaning| {
+                    matches!(meaning.output_role, SemanticRole::ExtrudeSweepEdge { .. })
+                })
+            })
+            .expect("the document names an edge along the sweep");
+        let chosen = Selection::at(definition, face, edge, &picture, &scene.faces, &scene.edges);
+
+        // The two segments the stored name is actually made of.
+        let joints: Vec<[ferritecad_types::StableEntityId; 2]> = scene
+            .edges
+            .of(edge, &picture)
+            .iter()
+            .filter_map(|meaning| match &meaning.output_role {
+                SemanticRole::ExtrudeSweepEdge { joint } => Some(joint.segments()),
+                _ => None,
+            })
+            .collect();
+        assert!(!joints.is_empty(), "the chosen edge has a sweep name");
+
+        let words = words_of(&chosen, &scene.catalogue, &picture);
+        let names: Vec<ferritecad_ui::TopologyName<'_>> =
+            words.edges.iter().map(topology_name).collect();
+        let described = inspected(
+            &chosen,
+            &scene.catalogue,
+            &words.identities,
+            &[],
+            &names,
+            &picture,
+        )
+        .expect("an edge of a native body is described");
+        let rows = described.rows();
+
+        assert_eq!(
+            rows.first().map(|(k, v)| (*k, v.as_str())),
+            Some(("Kind", "Edge"))
+        );
+
+        // Both durable identifiers are shown, and the sentence is the stable
+        // one rather than whatever Debug would print today.
+        let roles: Vec<&str> = rows
+            .iter()
+            .filter(|(key, _)| *key == "Role")
+            .map(|(_, value)| value.as_str())
+            .collect();
+        assert_eq!(roles.len(), joints.len(), "one sentence per stored name");
+        for (sentence, [one, other]) in roles.iter().zip(&joints) {
+            assert_eq!(
+                *sentence,
+                format!("Sweep edge at the joint of profile segments {one} and {other}")
+            );
+        }
+
+        // And nothing transient or kernel-side reaches any row.
+        for (_, value) in &rows {
+            for forbidden in [
+                "session#",
+                "shape#",
+                "face#",
+                "edge#",
+                "EdgePickId",
+                "FacePickId",
+                "SubShapeHandle",
+                "ShapeHandle",
+                "SessionId",
+                "ProfileJoint",
+                "ExtrudeSweepEdge",
+                "StableEntityId(",
+                ".fcad",
+            ] {
+                assert!(
+                    !value.contains(forbidden),
+                    "the inspector printed {forbidden}: {value}"
+                );
+            }
         }
     }
 

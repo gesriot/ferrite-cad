@@ -52,7 +52,13 @@ winit = { version = "0.30", default-features = false, features = ["x11", "waylan
 
 # Only the tests read a document from disk: the committed plate is what an
 # end-to-end gate needs to click a face the document actually names.
+#
+# ferritecad-eval is here for one reason: a gate that names the edges along a
+# sweep needs to know which profile segments meet, and `ProfileLoop::joints` is
+# where that is decided. Pairing the sketch curves in the test instead would be
+# a second piece of adjacency arithmetic, free to disagree with the first.
 [dev-dependencies]
+ferritecad-eval.workspace = true
 ferritecad-fixtures.workspace = true
 tempfile = "3"
 
