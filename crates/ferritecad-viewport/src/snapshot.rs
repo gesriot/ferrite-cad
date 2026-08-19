@@ -465,15 +465,15 @@ impl EdgePickId {
 
 /// What one chosen mark on the picture is on, transiently.
 ///
-/// Three states rather than two identities, because "no face and definition
-/// three" and "face seven, whose definition is three" are different things to
-/// draw and would otherwise have to be told apart by which of two fields
-/// happened to be set. Nothing here is a row number or a face ordinal: both
-/// arms carry an identity bound to the picture that issued it.
+/// Four states rather than several optional identities, because a definition,
+/// one of its faces and one of its edges are different things to draw and must
+/// not be told apart by whichever fields happen to be set. Nothing here is a
+/// row number or a face or edge ordinal: every non-empty arm carries an
+/// identity bound to the picture that issued it.
 ///
-/// Deliberately only what is chosen. [`Hovered`] is a separate type because an
-/// edge can answer a pointer question in this build but cannot be selected;
-/// putting that answer here would make an edge selection representable.
+/// Deliberately only what is chosen. [`Hovered`] has the same shape but is a
+/// separate type because a question and a choice have different precedence
+/// and lifetimes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Marked {
     #[default]
@@ -517,11 +517,11 @@ impl Marked {
 
 /// What one mark on the picture is a question about, transiently.
 ///
-/// Four states rather than three, and a type of its own rather than a variant
-/// added to [`Marked`]. That separation is the point: `Marked` is what a
-/// person has *chosen*, and this build has no way to choose an edge. Sharing
-/// one type would make `Selection::Edge` a state the program could be put
-/// into, and the compiler would stop objecting to it.
+/// A type of its own even though it has the same four states as [`Marked`].
+/// That separation is the point: `Marked` is what a person has *chosen*, while
+/// this is the short-lived answer to a pointer question. Sharing one type
+/// would let question and choice flow through the same APIs and blur their
+/// different precedence and invalidation rules.
 ///
 /// Every arm carries an identity bound to the picture that issued it, exactly
 /// as [`Marked`] does, and none of them is a row number, a face ordinal or an
@@ -544,8 +544,8 @@ impl Hovered {
     ///
     /// An identity of another picture, of a picture that has been replaced, or
     /// of nothing at all is [`Nothing`][Self::Nothing] here. The same rule
-    /// [`Marked::known_to`] applies, extended to the arm `Marked` does not
-    /// have, so a stale answer cannot mark anything through either type.
+    /// [`Marked::known_to`] applies to the same four arms, so a stale answer
+    /// cannot mark anything through either type.
     pub fn known_to(self, snapshot: &RenderSnapshot) -> Self {
         match self {
             Self::Nothing => Self::Nothing,

@@ -233,11 +233,11 @@ impl FaceNames {
 
 /// What is chosen in one picture, as one state.
 ///
-/// Three states, not a pair of fields that can disagree. A face selection
-/// carries the face, the definition it belongs to and what the document calls
-/// it, all decided together by [`Selection::at`]; the fields are private, so a
-/// caller cannot assemble a face that belongs to one definition beside a
-/// definition it does not belong to.
+/// Four states, not a collection of fields that can disagree. A face or edge
+/// selection carries the subshape, the definition it belongs to and what the
+/// document calls it, all decided together by [`Selection::at`]; the fields
+/// are private, so a caller cannot assemble a subshape beside a definition it
+/// does not belong to.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum Selection {
     #[default]
@@ -312,11 +312,12 @@ impl SelectedFace {
 impl Selection {
     /// What a click on one pixel chooses.
     ///
-    /// A face only when the document has an exact durable name for it. A face
-    /// of an imported definition, a face of a native body nobody named, and a
-    /// face whose only references select families of several faces all fall
-    /// back to the definition, which is what this application could already
-    /// say honestly. Nothing that resolves in this picture chooses nothing.
+    /// An edge is chosen only when it is coherent with the definition and
+    /// face read from the same pixel and the document has an exact durable
+    /// name for it. Otherwise an exactly named face is chosen. An imported or
+    /// unnamed subshape, and one whose references select a family, falls back
+    /// to the most specific thing the document can say honestly. Nothing that
+    /// resolves in this picture chooses nothing.
     pub fn at(
         definition: PickId,
         face: FacePickId,
@@ -335,6 +336,7 @@ impl Selection {
         if !edge_meanings.is_empty()
             && edge_owner.is_some()
             && edge_owner == snapshot.definition(definition)
+            && snapshot.edge_bounds_face(edge, face)
         {
             return Self::Edge(SelectedEdge {
                 edge,
@@ -362,7 +364,7 @@ impl Selection {
     /// The definition a pick names, or nothing.
     ///
     /// What a list row chooses, and what a click on something with no durable
-    /// face name falls back to.
+    /// face or edge name falls back to.
     pub fn definition(pick: PickId, snapshot: &RenderSnapshot) -> Self {
         match snapshot.definition(pick) {
             Some(_) => Self::Definition(pick),
@@ -392,8 +394,9 @@ impl Selection {
 
     /// Where what is chosen is, in every placement of it.
     ///
-    /// A face is its own triangles; a definition is all of it. One question,
-    /// answered by the picture that issued the choice.
+    /// A face is its own triangles, an edge its own segments, and a definition
+    /// all of it. One question, answered by the picture that issued the
+    /// choice.
     pub fn bounds(&self, snapshot: &RenderSnapshot) -> Option<([f32; 3], [f32; 3])> {
         match self {
             Self::Nothing => None,
@@ -1368,14 +1371,26 @@ mod tests {
 
         let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
         let mesh = Mesh {
-            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
-            indices: vec![0, 1, 2],
-            faces: vec![ferritecad_kernel::MeshFaceRange {
-                face: SubShapeHandle::new(shape, ferritecad_kernel::SubShapeKind::Face, 0),
-                first_index: 0,
-                index_count: 3,
-            }],
+            positions: vec![
+                0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 0.0, 0.0, 3.0, 0.0, 0.0, 2.0,
+                1.0, 0.0,
+            ],
+            normals: vec![
+                0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0,
+                0.0, 1.0,
+            ],
+            indices: vec![0, 1, 2, 3, 4, 5],
+            faces: (0..2)
+                .map(|ordinal| ferritecad_kernel::MeshFaceRange {
+                    face: SubShapeHandle::new(
+                        shape,
+                        ferritecad_kernel::SubShapeKind::Face,
+                        ordinal,
+                    ),
+                    first_index: ordinal as u32 * 3,
+                    index_count: 3,
+                })
+                .collect(),
             edges: Some(ferritecad_kernel::MeshEdges {
                 segments: vec![0, 1, 1, 2],
                 ranges: (0..2)
@@ -1403,10 +1418,12 @@ mod tests {
             [(definition, vec![three, Vec::new()])]
                 .into_iter()
                 .collect();
-        let face_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
-            [(definition, vec![vec![bound(a_cap_edge(CapSide::End))]])]
-                .into_iter()
-                .collect();
+        let face_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = [(
+            definition,
+            vec![vec![bound(a_cap_edge(CapSide::End))], Vec::new()],
+        )]
+        .into_iter()
+        .collect();
         builder
             .bind_identities_to(semantic_context_identity(&face_named, &edge_named))
             .expect("binds");
@@ -1467,7 +1484,9 @@ mod tests {
         let (snapshot, faces, edges) = a_named_edge();
         let definition = snapshot.pick_of(0).expect("drawn");
         let face = snapshot.face_of(0, 0).expect("numbered");
+        let unrelated_face = snapshot.face_of(0, 1).expect("numbered");
         let named = snapshot.edge_of(0, 0).expect("numbered");
+        assert!(!snapshot.edge_bounds_face(named, unrelated_face));
 
         // A second picture whose raw values are in range here.
         let (other, _, other_edges) = a_named_edge();
@@ -1478,10 +1497,16 @@ mod tests {
             "and named in its own picture"
         );
 
-        for (what, definition, edge) in [
-            ("an edge of another picture", definition, foreign),
-            ("nothing at all", definition, EdgePickId::NOTHING),
-            ("a definition of nothing", PickId::NOTHING, named),
+        for (what, definition, face, edge) in [
+            ("an edge of another picture", definition, face, foreign),
+            ("nothing at all", definition, face, EdgePickId::NOTHING),
+            ("a definition of nothing", PickId::NOTHING, face, named),
+            (
+                "an edge that does not bound the pixel's face",
+                definition,
+                unrelated_face,
+                named,
+            ),
         ] {
             let chosen = Selection::at(definition, face, edge, &snapshot, &faces, &edges);
             assert!(

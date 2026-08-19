@@ -2145,17 +2145,18 @@ impl Frame {
         } else {
             FacePickId::NOTHING
         };
-        // The same rule again, for the edge. An edge is drawn over the surface
-        // it bounds, so the two answers are about one pixel and must agree
-        // about whose pixel it is. Where they do not — the outer silhouette,
-        // where a line lands on a pixel the fill did not reach — this says no
-        // edge rather than an edge of some other definition, and leaves the
-        // definition and the face exactly as they were.
+        // The same rule again, for the edge, including the face it bounds. An
+        // edge is drawn over a surface, so all three answers about one pixel
+        // must agree. Where they do not — at the outer silhouette, or where
+        // two independently rasterised identity targets choose incompatible
+        // samples — this says no edge and leaves the definition and face
+        // exactly as they were.
         let candidate = self.edges.get(at).map_or(EdgePickId::NOTHING, |raw| {
             EdgePickId::from_raw(*raw, &self.snapshot)
         });
         let edge = if self.snapshot.definition(definition)
             == self.snapshot.definition_of_edge(candidate)
+            && self.snapshot.edge_bounds_face(candidate, face)
         {
             candidate
         } else {
@@ -2178,10 +2179,11 @@ impl Frame {
     /// refuses it because that sample has no agreeing definition.
     ///
     /// The raw answer for the pixel and nothing more. [`Self::hit_at`] is
-    /// where an edge is required to agree with the definition under it; this
-    /// says what the target holds. A single integer target can retain only one
-    /// answer where several edges cover the same sample, at a shared endpoint
-    /// or projected crossing; the deterministic draw order decides which one.
+    /// where an edge is required to agree with the definition and face under
+    /// it; this says what the target holds. A single integer target can retain
+    /// only one answer where several edges cover the same sample, at a shared
+    /// endpoint or projected crossing; the deterministic draw order decides
+    /// which one.
     pub fn edge_at(&self, x: u32, y: u32) -> EdgePickId {
         let Some(at) = self.index(x, y) else {
             return EdgePickId::NOTHING;
@@ -2906,6 +2908,71 @@ mod tests {
         assert_eq!(hit.definition(), snapshot.pick_of(0).expect("first pick"));
         assert_eq!(hit.face(), snapshot.face_of(0, 0).expect("first face"));
         assert_eq!(hit.edge(), snapshot.edge_of(0, 0).expect("first edge"));
+    }
+
+    #[test]
+    fn an_edge_that_does_not_bound_the_pixels_face_is_not_a_hit() {
+        let shape = ShapeHandle::new(SessionId::new(), 1);
+        let mesh = Mesh {
+            positions: vec![
+                0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 0.0, 0.0, 3.0, 0.0, 0.0, 2.0,
+                1.0, 0.0,
+            ],
+            normals: vec![
+                0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0,
+                0.0, 1.0,
+            ],
+            indices: vec![0, 1, 2, 3, 4, 5],
+            faces: (0..2)
+                .map(|ordinal| MeshFaceRange {
+                    face: SubShapeHandle::new(shape, SubShapeKind::Face, ordinal),
+                    first_index: ordinal as u32 * 3,
+                    index_count: 3,
+                })
+                .collect(),
+            edges: Some(ferritecad_kernel::MeshEdges {
+                segments: vec![0, 1],
+                ranges: vec![ferritecad_kernel::MeshEdgeRange {
+                    edge: SubShapeHandle::new(shape, SubShapeKind::Edge, 0),
+                    first_segment: 0,
+                    segment_count: 1,
+                }],
+            }),
+        };
+        let mut builder = SnapshotBuilder::new();
+        builder.add_mesh(&mesh).expect("packs");
+        let snapshot = Arc::new(builder.build());
+        let first_face = snapshot.face_of(0, 0).expect("first face");
+        let other_face = snapshot.face_of(0, 1).expect("other face");
+        let edge = snapshot.edge_of(0, 0).expect("edge");
+        assert!(snapshot.edge_bounds_face(edge, first_face));
+        assert!(!snapshot.edge_bounds_face(edge, other_face));
+
+        let frame = Frame {
+            snapshot: Arc::clone(&snapshot),
+            width: 1,
+            height: 1,
+            colour: vec![0; 4],
+            picks: vec![1],
+            faces: vec![other_face.to_raw()],
+            edges: vec![edge.to_raw()],
+        };
+        let hit = frame.hit_at(0, 0);
+        assert_eq!(hit.definition(), snapshot.pick_of(0).expect("definition"));
+        assert_eq!(hit.face(), other_face);
+        assert_eq!(hit.edge(), EdgePickId::NOTHING);
+        assert_eq!(frame.edge_at(0, 0), edge, "the raw target is unchanged");
+
+        let agreeing = Frame {
+            snapshot,
+            width: 1,
+            height: 1,
+            colour: vec![0; 4],
+            picks: vec![1],
+            faces: vec![first_face.to_raw()],
+            edges: vec![edge.to_raw()],
+        };
+        assert_eq!(agreeing.hit_at(0, 0).edge(), edge);
     }
 
     #[test]

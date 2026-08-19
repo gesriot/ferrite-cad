@@ -528,9 +528,10 @@ fn finish_answer(
 
 /// What a click on one pixel chooses.
 ///
-/// Both halves of the pixel are read from one frame and decided together, by
-/// the scene, which is the only place that knows what the document calls a
-/// face and is therefore the only place that can decide.
+/// All three identities of the pixel are read from one frame and decided
+/// together, by the scene, which is the only place that knows what the
+/// document calls a face or edge and is therefore the only place that can
+/// decide.
 ///
 /// A pixel that names nothing chooses nothing: clicking the background is how
 /// a person unchooses, and a pick left over from a document that has since
@@ -1969,8 +1970,8 @@ impl App {
 
         let answer = match hover_request(row, interface_has_pointer, question) {
             // The list said which one, which needs no pixel read at all. A row
-            // names a definition and can say nothing about a face: a list of
-            // definitions has no faces in it.
+            // names a definition and can say nothing about a face or edge: a
+            // list of definitions has neither in it.
             HoverRequest::Row(row) => live
                 .scene
                 .prepared
@@ -1979,7 +1980,8 @@ impl App {
                 .map(Hovered::Definition),
             HoverRequest::Pixel(x, y) => {
                 // One offscreen frame, and only because the pointer moved. A
-                // pixel is the only thing that knows which face it came from.
+                // pixel is the only thing that knows which face or edge it
+                // came from.
                 match Self::hit_at(live, self.input.camera(), x, y) {
                     Ok(hit) => Some(hovered_at(hit)),
                     Err(error) => {
@@ -2010,9 +2012,9 @@ impl App {
     /// Reads one pixel and all three answers about it.
     ///
     /// The definition, face and edge come from one pixel of one frame, so they
-    /// cannot describe different geometry. The click decision still reads
-    /// only the definition and face from that [`Hit`]: what a click means is
-    /// unchanged by edge hover.
+    /// cannot describe different geometry. The click decision reads the same
+    /// three identities from that [`Hit`] and lets the scene accept an edge
+    /// only when the document can name it durably.
     fn hit_at(live: &mut Live, camera: &Camera, x: f32, y: f32) -> Result<Hit> {
         let (Ok(x), Ok(y)) = (
             u32::try_from(x.round() as i64),
