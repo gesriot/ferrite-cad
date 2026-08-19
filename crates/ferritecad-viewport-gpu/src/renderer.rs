@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use ferritecad_types::{CadError, Result};
 use ferritecad_viewport::{
-    Camera, FacePickId, Marked, PickId, RenderSnapshot, VERTEX_FLOATS, Visibility,
+    Camera, EdgePickId, FacePickId, Marked, PickId, RenderSnapshot, VERTEX_FLOATS, Visibility,
 };
 use wgpu::util::DeviceExt as _;
 
@@ -25,7 +25,27 @@ pub const PICK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 /// the two answers about one pixel are answers about the same triangle.
 pub const FACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
+/// Where a topological edge identity is written, offscreen and nowhere else.
+///
+/// Its own target rather than a fourth channel of the pass beside it. An edge
+/// is drawn over the surface it belongs to, so a pixel has both an edge and a
+/// face, and one attachment cannot hold two answers. Cleared to zero, which is
+/// what a pixel with no edge on it reads as.
+pub const EDGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
+
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+/// One vertex of the expanded edge stream.
+///
+/// Sixteen bytes: a position and the identity of the edge this end belongs to.
+/// See `vertex_edge` in the shader for why the identity travels with a vertex
+/// of its own rather than beside the model's positions.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct EdgeVertex {
+    position: [f32; 3],
+    edge: u32,
+}
 
 /// Per-draw uniform data, as the shader declares it.
 ///
@@ -126,6 +146,9 @@ pub struct Renderer {
     surface_pipelines: std::collections::HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     /// The same linework for a window format, learned when a window is.
     line_surface_pipelines: std::collections::HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    /// Draws the topological edges into their own identity target. Offscreen
+    /// only: a window has no such attachment and is not asked for one.
+    edge_pipeline: wgpu::RenderPipeline,
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
     layout: wgpu::BindGroupLayout,
@@ -298,6 +321,7 @@ impl Renderer {
         );
         let line_pipeline =
             build_line_pipeline(&device, &shader, &pipeline_layout, COLOUR_FORMAT, true);
+        let edge_pipeline = build_edge_pipeline(&device, &shader, &pipeline_layout);
         // Pop both even when the inner scope caught an error. Leaving the
         // outer one installed would make a later, unrelated device error look
         // as though it belonged to this build.
@@ -327,6 +351,7 @@ impl Renderer {
             line_pipeline,
             surface_pipelines: std::collections::HashMap::new(),
             line_surface_pipelines: std::collections::HashMap::new(),
+            edge_pipeline,
             shader,
             pipeline_layout,
             layout,
@@ -640,6 +665,38 @@ impl Renderer {
         }
     }
 
+    /// Draws every visible definition's topological edges, in the same order.
+    ///
+    /// The same visibility and the same placements as the fill, for the same
+    /// reasons: a definition that is not drawn leaves no edge identity behind,
+    /// and a definition placed twice answers with the same edge identities in
+    /// both places, because an edge belongs to a definition and not to an
+    /// occurrence of one.
+    ///
+    /// One draw per placement rather than one per edge. What distinguishes the
+    /// edges is in the vertex stream, so the whole of a definition's linework
+    /// is one call however many edges it has.
+    fn draw_edges(
+        pass: &mut wgpu::RenderPass<'_>,
+        prepared: &PreparedSnapshot,
+        visibility: &Visibility,
+        stride: u64,
+    ) {
+        let hidden = visibility.hidden_in(prepared.snapshot());
+        for (index, item) in prepared.snapshot.draws().iter().enumerate() {
+            if hidden.get(item.mesh).copied().unwrap_or(false) {
+                continue;
+            }
+            let mesh = &prepared.meshes[item.mesh];
+            if mesh.edge_vertex_count == 0 {
+                continue;
+            }
+            pass.set_bind_group(0, &prepared.bindings, &[(index as u64 * stride) as u32]);
+            pass.set_vertex_buffer(0, mesh.edges.slice(..));
+            pass.draw(0..mesh.edge_vertex_count, 0..1);
+        }
+    }
+
     pub(crate) fn present(&self, texture: wgpu::SurfaceTexture) {
         self.queue.present(texture);
     }
@@ -779,7 +836,7 @@ impl Renderer {
         meshes
             .try_reserve_exact(snapshot.meshes().len())
             .map_err(|error| CadError::rendering_because("recording mesh buffers", error))?;
-        for mesh in snapshot.meshes() {
+        for (index, mesh) in snapshot.meshes().iter().enumerate() {
             let vertices = self
                 .device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -819,6 +876,29 @@ impl Renderer {
                     }),
                     usage: wgpu::BufferUsages::INDEX,
                 });
+            // The topological edges, expanded so that each segment carries
+            // its own two ends. Built here, once, from the partition the
+            // picture was packed with: no position is matched against another,
+            // and nothing the kernel called an edge is uploaded — only the
+            // number this picture gave it.
+            let edge_vertices = edge_stream(&snapshot, index, mesh)?;
+            let edge_vertex_count = edge_vertices.len() as u32;
+            let edges = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("ferritecad viewport edge identities"),
+                    contents: if edge_vertices.is_empty() {
+                        // A zero-sized buffer is not a buffer. Nothing draws
+                        // from this one: the count above is what decides.
+                        bytemuck::bytes_of(&EdgeVertex {
+                            position: [0.0; 3],
+                            edge: 0,
+                        })
+                    } else {
+                        bytemuck::cast_slice(&edge_vertices)
+                    },
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
             meshes.push(GpuMesh {
                 vertices,
                 faces,
@@ -826,6 +906,8 @@ impl Renderer {
                 index_count: mesh.indices().len() as u32,
                 lines,
                 line_index_count: mesh.line_indices().len() as u32,
+                edges,
+                edge_vertex_count,
             });
             self.geometry_uploads += 1;
         }
@@ -868,6 +950,7 @@ impl Renderer {
                 colour: Vec::new(),
                 picks: Vec::new(),
                 faces: Vec::new(),
+                edges: Vec::new(),
             });
         }
 
@@ -881,6 +964,7 @@ impl Renderer {
         let colour = self.target("colour", extent, COLOUR_FORMAT);
         let pick = self.target("pick", extent, PICK_FORMAT);
         let face = self.target("face", extent, FACE_FORMAT);
+        let edge = self.target("edge", extent, EDGE_FORMAT);
         let depth = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ferritecad viewport depth"),
             size: extent,
@@ -948,7 +1032,10 @@ impl Renderer {
                     view: &depth_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Discard,
+                        // Kept, because the edge pass that follows tests
+                        // against exactly this depth. Discarding it would make
+                        // that pass answer for edges the model hides.
+                        store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
                 }),
@@ -971,14 +1058,64 @@ impl Renderer {
             Self::draw_lines(&mut pass, prepared, visibility, self.draw_stride);
         }
 
+        {
+            // Which topological edge is under each pixel, in a pass of its own
+            // against the depth the picture was drawn to.
+            //
+            // A separate pass rather than a fourth attachment on the one
+            // above. The grid, the fill and the face boundaries would all have
+            // to declare a target they never write, and "the backdrop leaves
+            // the edge target alone" would then be a write mask somebody could
+            // change. Here they are simply not drawn into it.
+            //
+            // The colour, definition and face targets are not attached at all,
+            // so nothing in this pass can reach them.
+            let edge_view = edge.create_view(&Default::default());
+            let depth_view = depth.create_view(&Default::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ferritecad viewport edge identity pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &edge_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        // Zero, which is what a pixel with no edge on it reads
+                        // as: an edge's identity is its number within the
+                        // picture plus one.
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        // Loaded, not cleared: this is the model's own depth,
+                        // which is what stops an edge answering through the
+                        // part in front of it. Discarded afterwards, because
+                        // nothing else reads it and this pass wrote none of it.
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.edge_pipeline);
+            Self::draw_edges(&mut pass, prepared, visibility, self.draw_stride);
+        }
+
         let colour_read = self.readback(&mut encoder, &colour, extent, readback);
         let pick_read = self.readback(&mut encoder, &pick, extent, readback);
         let face_read = self.readback(&mut encoder, &face, extent, readback);
+        let edge_read = self.readback(&mut encoder, &edge, extent, readback);
         self.queue.submit(Some(encoder.finish()));
 
         let colour = self.take(colour_read, height, readback)?;
         let picks = self.take(pick_read, height, readback)?;
         let faces = self.take(face_read, height, readback)?;
+        let edges = self.take(edge_read, height, readback)?;
 
         Ok(Frame {
             snapshot,
@@ -987,6 +1124,7 @@ impl Renderer {
             colour,
             picks: unpack(&picks),
             faces: unpack(&faces),
+            edges: unpack(&edges),
         })
     }
 
@@ -1182,6 +1320,16 @@ struct GpuMesh {
     /// selection nor what is hidden can change one.
     lines: wgpu::Buffer,
     line_index_count: u32,
+    /// Two vertices per drawn edge segment, each carrying the identity this
+    /// picture gave the topological edge it belongs to.
+    ///
+    /// Expanded rather than indexed, and that is the whole point. One position
+    /// can be an end of several topological edges — a corner of a box is an end
+    /// of three — so an identity stored once per position could not say which
+    /// of them a segment belongs to. Uploaded once beside the triangles; no
+    /// camera, pointer or selection changes it.
+    edges: wgpu::Buffer,
+    edge_vertex_count: u32,
 }
 
 /// A snapshot whose geometry is on a device and stays there.
@@ -1403,6 +1551,127 @@ fn build_line_pipeline(
     })
 }
 
+/// One definition's topological edges, as the vertices a line list draws.
+///
+/// Two vertices per segment, both carrying the identity this picture gave the
+/// edge that owns the segment. Positions are read out of the packed mesh by
+/// the very indices the kernel supplied, so an end that several edges meet at
+/// is written once per edge rather than shared and guessed at afterwards.
+///
+/// A definition whose mesh carried no edge association, and one whose
+/// association is empty, both produce nothing here: neither has an edge this
+/// picture can name, so neither gets geometry.
+fn edge_stream(
+    snapshot: &RenderSnapshot,
+    definition: usize,
+    mesh: &ferritecad_viewport::PackedMesh,
+) -> Result<Vec<EdgeVertex>> {
+    let Some(count) = mesh.edge_count() else {
+        return Ok(Vec::new());
+    };
+    let mut stream: Vec<EdgeVertex> = Vec::new();
+    for ordinal in 0..count {
+        // This picture's own numbering, asked for rather than recomputed: a
+        // second account of it here is a second thing to drift.
+        let edge = snapshot.edge_of(definition, ordinal).ok_or_else(|| {
+            CadError::rendering(format!(
+                "the picture numbers {count} edges of definition {definition} but \
+                 will not name edge {ordinal}"
+            ))
+        })?;
+        let raw = edge.to_raw();
+        let segments = snapshot
+            .segments_of_edge(edge)
+            .ok_or_else(|| CadError::rendering("an edge of this picture draws nothing"))?;
+        for pair in segments.chunks_exact(2) {
+            for index in pair {
+                let at = *index as usize * VERTEX_FLOATS;
+                let position = mesh.vertices().get(at..at + 3).ok_or_else(|| {
+                    CadError::rendering(format!(
+                        "an edge segment names vertex {index}, which this mesh does not have"
+                    ))
+                })?;
+                stream.push(EdgeVertex {
+                    position: [position[0], position[1], position[2]],
+                    edge: raw,
+                });
+            }
+        }
+    }
+    Ok(stream)
+}
+
+/// The pipeline that says which topological edge a pixel is on.
+///
+/// Offscreen only, and one target: no colour, no definition and no face. The
+/// pass it runs in has no such attachments, so this cannot disturb them by
+/// accident rather than by policy.
+///
+/// Depth is tested against the model already drawn and never written. Tested,
+/// so an edge behind a nearer part does not answer through it; `LessEqual`,
+/// because an edge lies exactly on the surface it bounds and would otherwise
+/// lose every tie to it; and not written, because this pass is about
+/// identity and must leave the picture's depth exactly as the model left it.
+/// No bias either way: wgpu rejects one outright on a line topology, and the
+/// edge and the surface are projected from the same matrices, so there is
+/// nothing to correct for.
+fn build_edge_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    pipeline_layout: &wgpu::PipelineLayout,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("ferritecad viewport edge identity pipeline"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vertex_edge"),
+            compilation_options: Default::default(),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<EdgeVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x3,
+                        offset: 0,
+                        shader_location: 0,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Uint32,
+                        offset: (3 * std::mem::size_of::<f32>()) as u64,
+                        shader_location: 1,
+                    },
+                ],
+            })],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fragment_edge"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: EDGE_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::LineList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
 /// What a vertex of the model is, for whichever pipeline draws it.
 fn vertex_buffer_layouts() -> [Option<wgpu::VertexBufferLayout<'static>>; 2] {
     [
@@ -1519,6 +1788,7 @@ pub struct Frame {
     colour: Vec<u8>,
     picks: Vec<u32>,
     faces: Vec<u32>,
+    edges: Vec<u32>,
 }
 
 /// What one pixel turned out to be: a definition, and the face of it.
@@ -1530,6 +1800,7 @@ pub struct Frame {
 pub struct Hit {
     definition: PickId,
     face: FacePickId,
+    edge: EdgePickId,
 }
 
 impl Hit {
@@ -1537,6 +1808,7 @@ impl Hit {
     pub const NOTHING: Self = Self {
         definition: PickId::NOTHING,
         face: FacePickId::NOTHING,
+        edge: EdgePickId::NOTHING,
     };
 
     /// Which definition, exactly as [`Frame::pick_at`] would answer.
@@ -1547,6 +1819,11 @@ impl Hit {
     /// Which face of it, for as long as this picture is on screen.
     pub fn face(self) -> FacePickId {
         self.face
+    }
+
+    /// Which topological edge of it lies under this pixel, if one does.
+    pub fn edge(self) -> EdgePickId {
+        self.edge
     }
 }
 
@@ -1621,7 +1898,46 @@ impl Frame {
         } else {
             FacePickId::NOTHING
         };
-        Hit { definition, face }
+        // The same rule again, for the edge. An edge is drawn over the surface
+        // it bounds, so the two answers are about one pixel and must agree
+        // about whose pixel it is. Where they do not — the outer silhouette,
+        // where a line lands on a pixel the fill did not reach — this says no
+        // edge rather than an edge of some other definition, and leaves the
+        // definition and the face exactly as they were.
+        let candidate = self.edges.get(at).map_or(EdgePickId::NOTHING, |raw| {
+            EdgePickId::from_raw(*raw, &self.snapshot)
+        });
+        let edge = if self.snapshot.definition(definition)
+            == self.snapshot.definition_of_edge(candidate)
+        {
+            candidate
+        } else {
+            EdgePickId::NOTHING
+        };
+        Hit {
+            definition,
+            face,
+            edge,
+        }
+    }
+
+    /// Which topological edge of the model was drawn at one pixel.
+    ///
+    /// Resolved against this frame's own snapshot, exactly as a pick is.
+    /// Outside the frame, over the grid, over the background and anywhere
+    /// inside a face this is [`EdgePickId::NOTHING`].
+    ///
+    /// The raw answer for the pixel and nothing more. [`Self::hit_at`] is
+    /// where an edge is required to agree with the definition under it; this
+    /// says what the target holds.
+    pub fn edge_at(&self, x: u32, y: u32) -> EdgePickId {
+        let Some(at) = self.index(x, y) else {
+            return EdgePickId::NOTHING;
+        };
+        match self.edges.get(at) {
+            Some(raw) => EdgePickId::from_raw(*raw, &self.snapshot),
+            None => EdgePickId::NOTHING,
+        }
     }
 
     fn index(&self, x: u32, y: u32) -> Option<usize> {
@@ -2132,16 +2448,23 @@ mod tests {
     #[test]
     fn contradictory_targets_never_make_a_face_of_another_definition() {
         let shape = ShapeHandle::new(SessionId::new(), 1);
-        let mesh = |face| Mesh {
+        let mesh = |ordinal| Mesh {
             positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
             indices: vec![0, 1, 2],
             faces: vec![MeshFaceRange {
-                face: SubShapeHandle::new(shape, SubShapeKind::Face, face),
+                face: SubShapeHandle::new(shape, SubShapeKind::Face, ordinal),
                 first_index: 0,
                 index_count: 3,
             }],
-            edges: None,
+            edges: Some(ferritecad_kernel::MeshEdges {
+                segments: vec![0, 1],
+                ranges: vec![ferritecad_kernel::MeshEdgeRange {
+                    edge: SubShapeHandle::new(shape, SubShapeKind::Edge, ordinal),
+                    first_segment: 0,
+                    segment_count: 1,
+                }],
+            }),
         };
         let mut builder = SnapshotBuilder::new();
         builder.add_mesh(&mesh(0)).expect("packs first");
@@ -2155,10 +2478,90 @@ mod tests {
             picks: vec![1],
             // Face two belongs to definition two, not the definition target.
             faces: vec![2],
+            // And so does edge two.
+            edges: vec![2],
         };
 
         let hit = frame.hit_at(0, 0);
         assert_eq!(hit.definition(), snapshot.pick_of(0).expect("first pick"));
         assert_eq!(hit.face(), FacePickId::NOTHING);
+        assert_eq!(
+            hit.edge(),
+            EdgePickId::NOTHING,
+            "an edge of another definition was kept"
+        );
+        // The raw target is reported as it stands. Refusing it is what a hit
+        // does about a contradiction, not what a readback does about a value.
+        assert_eq!(
+            frame.edge_at(0, 0),
+            snapshot
+                .edge_of(1, 0)
+                .expect("the second definition's edge"),
+        );
+
+        // The agreeing case, so the refusal above is about the contradiction
+        // and not about edges never surviving at all.
+        let agreeing = Frame {
+            snapshot: Arc::clone(&snapshot),
+            width: 1,
+            height: 1,
+            colour: vec![0; 4],
+            picks: vec![1],
+            faces: vec![1],
+            edges: vec![1],
+        };
+        let hit = agreeing.hit_at(0, 0);
+        assert_eq!(hit.definition(), snapshot.pick_of(0).expect("first pick"));
+        assert_eq!(hit.face(), snapshot.face_of(0, 0).expect("first face"));
+        assert_eq!(hit.edge(), snapshot.edge_of(0, 0).expect("first edge"));
+    }
+
+    #[test]
+    fn an_edge_value_from_outside_the_frame_or_the_picture_names_nothing() {
+        let shape = ShapeHandle::new(SessionId::new(), 1);
+        let mesh = Mesh {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: vec![0, 1, 2],
+            faces: vec![MeshFaceRange {
+                face: SubShapeHandle::new(shape, SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 3,
+            }],
+            edges: Some(ferritecad_kernel::MeshEdges {
+                segments: vec![0, 1],
+                ranges: vec![ferritecad_kernel::MeshEdgeRange {
+                    edge: SubShapeHandle::new(shape, SubShapeKind::Edge, 0),
+                    first_segment: 0,
+                    segment_count: 1,
+                }],
+            }),
+        };
+        let mut builder = SnapshotBuilder::new();
+        builder.add_mesh(&mesh).expect("packs");
+        let snapshot = Arc::new(builder.build());
+        let frame = Frame {
+            snapshot,
+            width: 1,
+            height: 1,
+            colour: vec![0; 4],
+            picks: vec![1],
+            faces: vec![1],
+            // A number no edge of this picture carries.
+            edges: vec![9],
+        };
+
+        assert_eq!(frame.edge_at(0, 0), EdgePickId::NOTHING);
+        assert_eq!(
+            frame.edge_at(1, 0),
+            EdgePickId::NOTHING,
+            "outside the width"
+        );
+        assert_eq!(
+            frame.edge_at(0, 1),
+            EdgePickId::NOTHING,
+            "outside the height"
+        );
+        assert_eq!(frame.hit_at(0, 0).edge(), EdgePickId::NOTHING);
     }
 }

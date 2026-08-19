@@ -218,3 +218,41 @@ fn fragment_line(in: VertexOut) -> FragmentOut {
 fn fragment_line_colour(in: VertexOut) -> @location(0) vec4<f32> {
     return ink(in, in.face);
 }
+
+// Which topological edge of the model a pixel is on.
+//
+// Its own vertex stream, and it has to be. A vertex buffer parallel to the
+// positions could carry one edge identity per vertex, exactly as the faces do,
+// and that works for faces only because a tessellation gives each face its own
+// nodes. Edges are not like that: one corner of a box is an end of three
+// different edges, so a single value per position cannot say which of them a
+// line belongs to. So every segment is expanded into two vertices of its own,
+// each carrying its edge's identity, and a position that several edges meet at
+// simply appears several times.
+//
+// The same matrices as everything else. A pass that projected differently
+// would put its answer somewhere other than the picture it is answering about.
+struct EdgeOut {
+    @builtin(position) clip: vec4<f32>,
+    // Flat: an edge identity is a fact about the whole segment, and there is
+    // nothing between two of them to interpolate.
+    @location(0) @interpolate(flat) edge: u32,
+};
+
+@vertex
+fn vertex_edge(
+    @location(0) position: vec3<f32>,
+    @location(1) edge: u32,
+) -> EdgeOut {
+    var out: EdgeOut;
+    out.edge = edge;
+    out.clip = globals.view_projection * (draw.transform * vec4<f32>(position, 1.0));
+    return out;
+}
+
+// One target and one integer. No colour, no definition and no face: this pass
+// has none of those attachments, so it cannot write them by mistake.
+@fragment
+fn fragment_edge(in: EdgeOut) -> @location(0) u32 {
+    return in.edge;
+}

@@ -4529,3 +4529,797 @@ fn linework_leaves_a_choice_and_a_question_telling_themselves_apart() {
         "choosing a face erased its boundary"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Topological edge identities, on a device.
+// ---------------------------------------------------------------------------
+
+/// Five points of one arc, as a face that meshed it finely would place them.
+const FINE_ARC: [[f32; 3]; 5] = [
+    [-8.66, 0.0, -1.0],
+    [-5.0, 0.0, 2.66],
+    [0.0, 0.0, 4.0],
+    [5.0, 0.0, 2.66],
+    [8.66, 0.0, -1.0],
+];
+
+/// Three points of the same arc, as a neighbouring face that meshed it coarsely
+/// would place them: the first, the middle and the last of the five.
+const COARSE_ARC: [[f32; 3]; 3] = [FINE_ARC[0], FINE_ARC[2], FINE_ARC[4]];
+
+/// Two faces meeting along one curved topological edge, each with its own
+/// vertices and its own approximation of that edge.
+///
+/// This is the shape of a real tessellation and not a convenience. Two faces
+/// never share a vertex, so each keeps its own nodes; and two faces meshed to
+/// different fineness approximate the curve they share with different chords,
+/// which is what makes "one edge, two face-side representations" a statement
+/// with observable content rather than two names for the same pixels.
+///
+/// Vertices 0..4 are the fine arc and 5 is the apex below it; 6..8 are the
+/// coarse arc and 9 the apex above. The shared edge owns six segments, four
+/// from the lower face and two from the upper one; the four remaining edges
+/// own one each.
+fn two_faces_sharing_a_curve() -> Mesh {
+    let shape = ShapeHandle::new(SessionId::new(), 7);
+    let mut positions: Vec<f32> = Vec::new();
+    for point in FINE_ARC {
+        positions.extend_from_slice(&point);
+    }
+    positions.extend_from_slice(&[0.0, 0.0, -16.0]);
+    for point in COARSE_ARC {
+        positions.extend_from_slice(&point);
+    }
+    positions.extend_from_slice(&[0.0, 0.0, 14.0]);
+
+    let edge =
+        |index: u64, first_segment: u32, segment_count: u32| ferritecad_kernel::MeshEdgeRange {
+            edge: SubShapeHandle::new(shape, SubShapeKind::Edge, index),
+            first_segment,
+            segment_count,
+        };
+
+    Mesh {
+        positions,
+        normals: [[0.0f32, -1.0, 0.0]; 10].into_iter().flatten().collect(),
+        // A fan of four triangles below the curve, and one of two above it.
+        indices: vec![5, 0, 1, 5, 1, 2, 5, 2, 3, 5, 3, 4, 9, 6, 7, 9, 7, 8],
+        faces: vec![
+            MeshFaceRange {
+                face: SubShapeHandle::new(shape, SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 12,
+            },
+            MeshFaceRange {
+                face: SubShapeHandle::new(shape, SubShapeKind::Face, 1),
+                first_index: 12,
+                index_count: 6,
+            },
+        ],
+        edges: Some(ferritecad_kernel::MeshEdges {
+            segments: vec![
+                // The shared curve: the lower face's four chords, then the
+                // upper face's two, under one identity.
+                0, 1, 1, 2, 2, 3, 3, 4, 6, 7, 7, 8, //
+                // The four edges that belong to one face each.
+                5, 0, // lower left
+                4, 5, // lower right
+                9, 6, // upper left
+                8, 9, // upper right
+            ],
+            ranges: vec![
+                edge(0, 0, 6),
+                edge(1, 6, 1),
+                edge(2, 7, 1),
+                edge(3, 8, 1),
+                edge(4, 9, 1),
+            ],
+        }),
+    }
+}
+
+/// That definition placed twice, side by side.
+fn curved_pair(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
+    let mut builder = SnapshotBuilder::new();
+    let definition = builder
+        .add_mesh(&two_faces_sharing_a_curve())
+        .expect("packs");
+    for x in [-24.0, 24.0] {
+        builder
+            .place(definition, None, &moved(x, 0.0, 0.0), [0.2, 0.6, 0.2])
+            .expect("places");
+    }
+    let snapshot = Arc::new(builder.build());
+
+    let mut camera = Camera::new();
+    camera.resize(width, height);
+    camera
+        .frame(snapshot.bounds().expect("something is drawn"))
+        .expect("frames");
+    (snapshot, camera)
+}
+
+/// Where a world point lands, through the very matrix the frame was drawn with.
+///
+/// No second projection: the camera is asked for the matrix it gave the shader,
+/// so a probe cannot disagree with the picture about where something is.
+fn pixel_of(camera: &Camera, world: [f64; 3]) -> Option<(u32, u32)> {
+    let m = camera.view_projection();
+    let mut clip = [0.0f64; 4];
+    for (row, value) in clip.iter_mut().enumerate() {
+        *value = f64::from(m[row]) * world[0]
+            + f64::from(m[4 + row]) * world[1]
+            + f64::from(m[8 + row]) * world[2]
+            + f64::from(m[12 + row]);
+    }
+    if clip[3].abs() < 1e-9 {
+        return None;
+    }
+    let ndc = [clip[0] / clip[3], clip[1] / clip[3]];
+    let x = (ndc[0] * 0.5 + 0.5) * f64::from(camera.width());
+    // Clip space has +y up and a frame's rows begin at the top.
+    let y = (0.5 - ndc[1] * 0.5) * f64::from(camera.height());
+    if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 {
+        return None;
+    }
+    let (x, y) = (x as u32, y as u32);
+    (x < camera.width() && y < camera.height()).then_some((x, y))
+}
+
+/// The edge identity at a probe, allowing for where a line lands on a grid.
+///
+/// A rasterised line passes within a pixel of the geometry it came from, not
+/// exactly through the pixel arithmetic says. Anything further than this is a
+/// different line: the probes below are placed several pixels clear of every
+/// other edge, and the distances are stated where they are chosen.
+fn edge_near(frame: &Frame, at: (u32, u32)) -> ferritecad_viewport::EdgePickId {
+    const REACH: i64 = 2;
+    let mut found = ferritecad_viewport::EdgePickId::NOTHING;
+    for dy in -REACH..=REACH {
+        for dx in -REACH..=REACH {
+            let (x, y) = (at.0 as i64 + dx, at.1 as i64 + dy);
+            if x < 0 || y < 0 {
+                continue;
+            }
+            let edge = frame.edge_at(x as u32, y as u32);
+            if edge != ferritecad_viewport::EdgePickId::NOTHING {
+                found = edge;
+            }
+        }
+    }
+    found
+}
+
+/// The midpoint of two world points.
+fn between(a: [f32; 3], b: [f32; 3]) -> [f64; 3] {
+    [
+        f64::from(a[0] + b[0]) / 2.0,
+        f64::from(a[1] + b[1]) / 2.0,
+        f64::from(a[2] + b[2]) / 2.0,
+    ]
+}
+
+/// The same point, in the placement that is `shift` along x.
+fn placed(point: [f64; 3], shift: f64) -> [f64; 3] {
+    [point[0] + shift, point[1], point[2]]
+}
+
+#[test]
+fn one_topological_edge_answers_with_one_identity_from_both_of_its_faces() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair(320, 320);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let frame = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &Visibility::new(&snapshot),
+        )
+        .expect("draws");
+
+    let shared = snapshot
+        .edge_of(0, 0)
+        .expect("the picture numbers this edge");
+
+    // A point on the lower face's approximation of the shared curve, and one
+    // on the upper face's. The fine vertex sits 1.34 world units from the
+    // coarse chord and the coarse midpoint 1.29 from the fine polyline, which
+    // at this framing is about nine pixels: far outside the two-pixel reach
+    // above, so neither probe can be answered by the other side's line.
+    let on_the_lower_side = [
+        f64::from(FINE_ARC[1][0]),
+        f64::from(FINE_ARC[1][1]),
+        f64::from(FINE_ARC[1][2]),
+    ];
+    let on_the_upper_side = between(COARSE_ARC[0], COARSE_ARC[1]);
+    // A third, on a chord of the lower side that the coarse approximation
+    // does not go near either.
+    let further_along_the_lower_side = between(FINE_ARC[2], FINE_ARC[3]);
+
+    for (shift, placement) in [(-24.0, "left"), (24.0, "right")] {
+        for (what, world) in [
+            ("the lower face's chord", on_the_lower_side),
+            ("the upper face's chord", on_the_upper_side),
+            (
+                "a later chord of the lower face",
+                further_along_the_lower_side,
+            ),
+        ] {
+            let at = pixel_of(&camera, placed(world, shift)).expect("the probe is on screen");
+            assert_eq!(
+                edge_near(&frame, at),
+                shared,
+                "{what} of the {placement} placement, at {at:?}, did not answer the shared edge"
+            );
+        }
+    }
+
+    // The four edges that belong to one face each are four other identities.
+    let others = [
+        (1usize, between(FINE_ARC[0], [0.0, 0.0, -16.0])),
+        (2, between(FINE_ARC[4], [0.0, 0.0, -16.0])),
+        (3, between(COARSE_ARC[0], [0.0, 0.0, 14.0])),
+        (4, between(COARSE_ARC[2], [0.0, 0.0, 14.0])),
+    ];
+    for (ordinal, world) in others {
+        let expected = snapshot.edge_of(0, ordinal).expect("numbered");
+        assert_ne!(expected, shared, "the picture reused an identity");
+        let at = pixel_of(&camera, placed(world, -24.0)).expect("on screen");
+        assert_eq!(
+            edge_near(&frame, at),
+            expected,
+            "edge {ordinal} did not answer with its own identity"
+        );
+    }
+
+    // Inside a face, and far from the model, there is no edge. The probe is
+    // the centroid of one of the upper face's triangles, which is 1.66 world
+    // units from the nearest edge of it and 2.89 from the shared curve.
+    let inside = pixel_of(&camera, placed([-2.89, 0.0, 5.67], -24.0)).expect("on screen");
+    assert_eq!(
+        frame.edge_at(inside.0, inside.1),
+        ferritecad_viewport::EdgePickId::NOTHING,
+        "the inside of a face answered with an edge"
+    );
+    assert_eq!(
+        frame.edge_at(2, 2),
+        ferritecad_viewport::EdgePickId::NOTHING,
+        "the background answered with an edge"
+    );
+
+    // What was already true of this pixel stays true: an edge target is one
+    // more answer about a pixel, not a replacement for the two it had.
+    let on_edge = pixel_of(&camera, placed(on_the_upper_side, -24.0)).expect("on screen");
+    let hit = frame.hit_at(on_edge.0, on_edge.1);
+    assert_eq!(
+        hit.definition(),
+        frame.pick_at(on_edge.0, on_edge.1),
+        "the definition under an edge changed"
+    );
+    assert_ne!(
+        hit.definition(),
+        PickId::NOTHING,
+        "the probe is meant to be on the model"
+    );
+}
+
+/// The curved pair, with a plate in front of the left placement.
+///
+/// The plate is a definition with no edge association of its own, so every
+/// edge identity in the picture belongs to the curved definition behind it.
+fn curved_pair_behind_a_plate(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
+    let shape = ShapeHandle::new(SessionId::new(), 11);
+    let cover = Mesh {
+        positions: vec![
+            -20.0, -8.0, -20.0, 8.0, -8.0, -20.0, 8.0, -8.0, 20.0, -20.0, -8.0, 20.0,
+        ],
+        normals: [[0.0f32, -1.0, 0.0]; 4].into_iter().flatten().collect(),
+        indices: vec![0, 1, 2, 0, 2, 3],
+        faces: vec![MeshFaceRange {
+            face: SubShapeHandle::new(shape, SubShapeKind::Face, 0),
+            first_index: 0,
+            index_count: 6,
+        }],
+        edges: None,
+    };
+
+    let mut builder = SnapshotBuilder::new();
+    let curved = builder
+        .add_mesh(&two_faces_sharing_a_curve())
+        .expect("packs");
+    let plate = builder.add_mesh(&cover).expect("packs");
+    for x in [-24.0, 24.0] {
+        builder
+            .place(curved, None, &moved(x, 0.0, 0.0), [0.2, 0.6, 0.2])
+            .expect("places");
+    }
+    // Nearer the eye than the left placement, and covering all of it.
+    builder
+        .place(plate, None, &moved(-24.0, 0.0, 0.0), [0.9, 0.3, 0.2])
+        .expect("places");
+    let snapshot = Arc::new(builder.build());
+
+    let mut camera = Camera::new();
+    camera.resize(width, height);
+    camera
+        .frame(snapshot.bounds().expect("something is drawn"))
+        .expect("frames");
+    (snapshot, camera)
+}
+
+/// How many pixels carry an edge identity while lying clear of the model.
+///
+/// The one measurement that says the edge pass and the fill agree about where
+/// the model is: an edge is drawn from the same vertices through the same
+/// matrices, so every pixel of one must touch the other. The outer silhouette
+/// is why the reach is a pixel rather than none — a line legitimately lands on
+/// a pixel the fill did not quite reach — and anything beyond that is the edge
+/// pass drawing somewhere the model is not.
+fn strays_from_the_model(frame: &Frame) -> usize {
+    edge_pixels(frame)
+        .into_iter()
+        .filter(|(x, y)| {
+            !(-1i64..=1).any(|dy| {
+                (-1i64..=1).any(|dx| {
+                    let (nx, ny) = (*x as i64 + dx, *y as i64 + dy);
+                    nx >= 0 && ny >= 0 && frame.pick_at(nx as u32, ny as u32) != PickId::NOTHING
+                })
+            })
+        })
+        .count()
+}
+
+/// Every pixel that answers with some topological edge.
+fn edge_pixels(frame: &Frame) -> Vec<(u32, u32)> {
+    pixels_of(frame, |frame, x, y| {
+        frame.edge_at(x, y) != ferritecad_viewport::EdgePickId::NOTHING
+    })
+}
+
+#[test]
+fn an_edge_behind_a_nearer_part_does_not_answer_through_it() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair_behind_a_plate(320, 320);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let frame = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+
+    let shared = snapshot.edge_of(0, 0).expect("numbered");
+    let on_the_curve = between(COARSE_ARC[0], COARSE_ARC[1]);
+
+    // Covered by the plate in the left placement, and not in the right one.
+    let hidden_at = pixel_of(&camera, placed(on_the_curve, -24.0)).expect("on screen");
+    let shown_at = pixel_of(&camera, placed(on_the_curve, 24.0)).expect("on screen");
+    assert_eq!(
+        edge_near(&frame, shown_at),
+        shared,
+        "the placement in the open should answer with its edge"
+    );
+    assert_eq!(
+        edge_near(&frame, hidden_at),
+        ferritecad_viewport::EdgePickId::NOTHING,
+        "an edge answered through the part covering it"
+    );
+
+    // Taking the cover away brings that edge back, at the same identity.
+    let mut isolated = Visibility::new(&snapshot);
+    assert!(
+        isolated.hide(
+            Marked::Definition(snapshot.pick_of(1).expect("the plate")),
+            &snapshot
+        ),
+        "the plate should be hideable"
+    );
+    let uncovered = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &isolated,
+        )
+        .expect("draws");
+    assert_eq!(
+        edge_near(&uncovered, hidden_at),
+        shared,
+        "the edge did not come back when what covered it was hidden"
+    );
+}
+
+#[test]
+fn what_is_not_drawn_leaves_no_edge_identity_behind() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair(320, 320);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let curved = snapshot.pick_of(0).expect("the only definition");
+
+    let shown = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &Visibility::new(&snapshot),
+        )
+        .expect("draws");
+    assert!(
+        !edge_pixels(&shown).is_empty(),
+        "the picture should have edges to begin with"
+    );
+
+    let mut visibility = Visibility::new(&snapshot);
+    assert!(visibility.hide(Marked::Definition(curved), &snapshot));
+    let hidden = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+    assert!(
+        edge_pixels(&hidden).is_empty(),
+        "a hidden definition still answered with its edges"
+    );
+
+    // Isolating the only definition that draws anything changes nothing, and
+    // showing it again returns exactly the identities it had.
+    assert!(visibility.show(Marked::Definition(curved), &snapshot));
+    let again = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+    assert_eq!(
+        edge_pixels(&again),
+        edge_pixels(&shown),
+        "showing a definition again did not restore its edges exactly"
+    );
+    for (x, y) in edge_pixels(&again) {
+        assert_eq!(
+            again.edge_at(x, y),
+            shown.edge_at(x, y),
+            "the identity at {x},{y} changed across hide and show"
+        );
+    }
+}
+
+#[test]
+fn isolating_one_of_two_definitions_keeps_only_its_edges() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair_behind_a_plate(320, 320);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+
+    let mut visibility = Visibility::new(&snapshot);
+    let plate = snapshot.pick_of(1).expect("the plate");
+    assert!(visibility.isolate(Marked::Definition(plate), &snapshot));
+    let alone = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+    assert!(
+        edge_pixels(&alone).is_empty(),
+        "isolating a definition with no edge association left edges on screen"
+    );
+
+    assert!(visibility.show_all());
+    let all = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &visibility,
+        )
+        .expect("draws");
+    let shared = snapshot.edge_of(0, 0).expect("numbered");
+    let at =
+        pixel_of(&camera, placed(between(COARSE_ARC[0], COARSE_ARC[1]), 24.0)).expect("on screen");
+    assert_eq!(
+        edge_near(&all, at),
+        shared,
+        "showing everything again did not restore the edge identities"
+    );
+}
+
+#[test]
+fn an_edge_target_changes_no_colour_and_no_other_answer() {
+    let mut renderer = renderer_or_skip!();
+
+    // The same triangles twice: once with the kernel's edge association and
+    // once without it. Only the edge target may differ.
+    let with_edges = two_faces_sharing_a_curve();
+    let without_edges = Mesh {
+        edges: None,
+        ..two_faces_sharing_a_curve()
+    };
+
+    let build = |mesh: &Mesh| {
+        let mut builder = SnapshotBuilder::new();
+        let definition = builder.add_mesh(mesh).expect("packs");
+        for x in [-24.0, 24.0] {
+            builder
+                .place(definition, None, &moved(x, 0.0, 0.0), [0.2, 0.6, 0.2])
+                .expect("places");
+        }
+        Arc::new(builder.build())
+    };
+    let named = build(&with_edges);
+    let plain = build(&without_edges);
+
+    let mut camera = Camera::new();
+    camera.resize(288, 288);
+    camera
+        .frame(named.bounds().expect("something is drawn"))
+        .expect("frames");
+
+    let draw = |renderer: &mut Renderer, snapshot: &Arc<RenderSnapshot>| {
+        let prepared = renderer.prepare(Arc::clone(snapshot)).expect("prepares");
+        renderer
+            .render(
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Marked::Nothing,
+                &Visibility::new(snapshot),
+            )
+            .expect("draws")
+    };
+    let named_frame = draw(&mut renderer, &named);
+    let plain_frame = draw(&mut renderer, &plain);
+
+    assert_eq!(
+        named_frame.colour(),
+        plain_frame.colour(),
+        "drawing the edge identities changed the picture"
+    );
+
+    // The other two answers are the same as well, pixel for pixel. They are
+    // read through the pictures that issued them, so they are compared as
+    // definition indices rather than as identities of two different pictures.
+    for y in 0..named_frame.height() {
+        for x in 0..named_frame.width() {
+            assert_eq!(
+                named.definition(named_frame.pick_at(x, y)),
+                plain.definition(plain_frame.pick_at(x, y)),
+                "the definition at {x},{y} changed"
+            );
+            assert_eq!(
+                named.definition_of_face(named_frame.hit_at(x, y).face()),
+                plain.definition_of_face(plain_frame.hit_at(x, y).face()),
+                "the face at {x},{y} changed"
+            );
+        }
+    }
+
+    // A definition with no association draws no edge geometry at all, so its
+    // whole edge target stays as it was cleared.
+    assert!(
+        edge_pixels(&plain_frame).is_empty(),
+        "a picture with no edge association answered with edges"
+    );
+    assert!(
+        !edge_pixels(&named_frame).is_empty(),
+        "a picture with an edge association answered with none"
+    );
+}
+
+#[test]
+fn a_proven_absence_of_edges_draws_no_edge_geometry_either() {
+    let mut renderer = renderer_or_skip!();
+    // Not "nothing is known about this definition's edges" but "this
+    // definition has none": a different value, and the same picture.
+    let mesh = Mesh {
+        edges: Some(ferritecad_kernel::MeshEdges::default()),
+        ..two_faces_sharing_a_curve()
+    };
+    let mut builder = SnapshotBuilder::new();
+    let definition = builder.add_mesh(&mesh).expect("packs");
+    builder
+        .place(definition, None, &Transform::IDENTITY, [0.2, 0.6, 0.2])
+        .expect("places");
+    let snapshot = Arc::new(builder.build());
+    assert_eq!(snapshot.edge_count(), 0);
+
+    let mut camera = Camera::new();
+    camera.resize(192, 192);
+    camera
+        .frame(snapshot.bounds().expect("drawn"))
+        .expect("frames");
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let frame = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &Visibility::new(&snapshot),
+        )
+        .expect("draws");
+
+    assert!(
+        edge_pixels(&frame).is_empty(),
+        "a definition proven to have no edges answered with one"
+    );
+    // And an empty picture, which has neither meshes nor edges.
+    let empty = Arc::new(SnapshotBuilder::new().build());
+    let mut small = Camera::new();
+    small.resize(32, 32);
+    let prepared = renderer.prepare(Arc::clone(&empty)).expect("prepares");
+    let frame = renderer
+        .render(
+            &prepared,
+            &small,
+            Marked::Nothing,
+            Marked::Nothing,
+            &Visibility::new(&empty),
+        )
+        .expect("draws");
+    assert!(edge_pixels(&frame).is_empty());
+}
+
+#[test]
+fn edges_cost_no_geometry_per_frame_and_repeat_exactly() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair(256, 256);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let uploaded = renderer.geometry_uploads();
+    let visibility = Visibility::new(&snapshot);
+
+    let draw = |renderer: &mut Renderer| {
+        renderer
+            .render(
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Marked::Nothing,
+                &visibility,
+            )
+            .expect("draws")
+    };
+    let first = draw(&mut renderer);
+    let second = draw(&mut renderer);
+
+    assert_eq!(
+        renderer.geometry_uploads(),
+        uploaded,
+        "asking again uploaded geometry"
+    );
+    assert_eq!(first.colour(), second.colour(), "the colour differed");
+    for y in 0..first.height() {
+        for x in 0..first.width() {
+            assert_eq!(first.pick_at(x, y), second.pick_at(x, y));
+            assert_eq!(first.hit_at(x, y).face(), second.hit_at(x, y).face());
+            assert_eq!(
+                first.edge_at(x, y),
+                second.edge_at(x, y),
+                "the edge at {x},{y} differed between two identical frames"
+            );
+        }
+    }
+}
+
+#[test]
+fn edges_follow_the_camera_through_both_projections() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair(320, 320);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let shared = snapshot.edge_of(0, 0).expect("numbered");
+    let probe = placed(between(COARSE_ARC[0], COARSE_ARC[1]), 24.0);
+
+    let mut moved_camera = camera;
+    moved_camera.orbit(0.35, -0.2);
+    moved_camera.pan(12.0, -7.0);
+    moved_camera.roll(0.4);
+
+    for (what, mut camera) in [
+        ("as drawn", camera),
+        ("orbited, panned and rolled", moved_camera),
+    ] {
+        for projection in [Projection::Orthographic, Projection::Perspective] {
+            camera.set_projection(projection);
+            let frame = renderer
+                .render(
+                    &prepared,
+                    &camera,
+                    Marked::Nothing,
+                    Marked::Nothing,
+                    &visibility,
+                )
+                .expect("draws");
+            let at = pixel_of(&camera, probe).expect("the probe stays on screen");
+            assert_eq!(
+                edge_near(&frame, at),
+                shared,
+                "{what} in {projection:?}: the edge is not where the shared \
+                 camera arithmetic says it is"
+            );
+            // And not merely near the right place: every edge pixel of the
+            // whole picture touches the model. A pass that projected through
+            // arithmetic of its own would drift off it, and the further from
+            // the middle of the picture the more.
+            assert_eq!(
+                strays_from_the_model(&frame),
+                0,
+                "{what} in {projection:?}: edge pixels landed away from the model"
+            );
+        }
+    }
+}
+
+#[test]
+fn nothing_but_the_model_ever_carries_an_edge_identity() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair(256, 256);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let frame = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &Visibility::new(&snapshot),
+        )
+        .expect("draws");
+
+    // Every pixel carrying an edge is on the model or within a pixel of it.
+    // The outer silhouette is where a line legitimately lands on a pixel the
+    // fill did not reach; the backdrop, the grid and the space around them
+    // never do. `hit_at` is what refuses such a pixel's edge, and this is the
+    // measurement of how few of them there are.
+    let strays = strays_from_the_model(&frame);
+    for (x, y) in edge_pixels(&frame) {
+        if frame.pick_at(x, y) == PickId::NOTHING {
+            // Whatever the target holds, a hit refuses it here.
+            assert_eq!(
+                frame.hit_at(x, y).edge(),
+                ferritecad_viewport::EdgePickId::NOTHING,
+                "an edge at {x},{y} survived over the background"
+            );
+        }
+    }
+    assert_eq!(
+        strays, 0,
+        "{strays} pixels away from the model carried an edge identity"
+    );
+}
+
+#[test]
+fn a_prepared_picture_of_another_renderer_is_still_refused() {
+    let mut renderer = renderer_or_skip!();
+    let mut other = renderer_or_skip!();
+    let (snapshot, camera) = curved_pair(64, 64);
+    let prepared = other.prepare(Arc::clone(&snapshot)).expect("prepares");
+
+    let refusal = renderer
+        .render(
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Marked::Nothing,
+            &Visibility::new(&snapshot),
+        )
+        .expect_err("another renderer's buffers were drawn");
+    assert_eq!(refusal.kind(), ErrorKind::Rendering, "{refusal}");
+}
