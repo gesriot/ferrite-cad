@@ -1289,6 +1289,18 @@ fn describe_role(role: &SemanticRole) -> String {
         SemanticRole::ExtrudeSide { profile_segment } => {
             format!("Side raised from profile segment {profile_segment}")
         }
+        SemanticRole::ExtrudeCapEdge {
+            side,
+            profile_segment,
+        } => match side {
+            // Which end and which segment, because either alone names four
+            // edges of a plate rather than one. `CapSide` is non-exhaustive,
+            // and a side this build has no words for is said the way the cap
+            // faces beside it say one.
+            CapSide::Start => format!("Start cap edge of profile segment {profile_segment}"),
+            CapSide::End => format!("End cap edge of profile segment {profile_segment}"),
+            other => format!("{other:?} cap edge of profile segment {profile_segment}"),
+        },
         SemanticRole::ExtrudeSweepEdge { joint } => {
             // Both segments, in the order the joint keeps them, which is the
             // canonical one. Naming one of the two would describe a corner by
@@ -4280,6 +4292,384 @@ mod tests {
         assert!(
             !words.faces.is_empty() || !words.edges.is_empty(),
             "the inspector says nothing about the chosen edge"
+        );
+    }
+
+    /// Every stored cap-edge meaning of one edge, as the inspector says it.
+    fn cap_meanings(selected: &ferritecad_scene::SelectedEdge) -> Vec<String> {
+        selected
+            .meanings()
+            .iter()
+            .filter(|meaning| matches!(meaning.output_role, SemanticRole::ExtrudeCapEdge { .. }))
+            .map(|meaning| describe_role(&meaning.output_role))
+            .collect()
+    }
+
+    #[test]
+    fn clicking_a_cap_edge_says_which_cap_and_which_segment_it_is() {
+        let Some((_directory, scene)) = native_plate_with_named_edges() else {
+            return;
+        };
+        let mut renderer = renderer_or_skip!();
+        let picture = std::sync::Arc::new(scene.snapshot);
+        let prepared = renderer
+            .prepare(std::sync::Arc::clone(&picture))
+            .expect("uploads");
+        let mut input = ViewportInput::new();
+        input.resize(480, 480);
+        input
+            .frame(picture.bounds().expect("somewhere"))
+            .expect("frames");
+        // Off the axis, so a cap edge lies over the body rather than on its
+        // silhouette, where `Hit` refuses it because the edge target and the
+        // definition target disagree.
+        input.handle(ViewportEvent::PointerMoved { x: 200.0, y: 200.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(ViewportEvent::PointerMoved { x: 260.0, y: 150.0 }, false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        let visibility = Visibility::new(&picture);
+
+        let plain = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                Marked::Nothing,
+                Hovered::Nothing,
+                &visibility,
+            )
+            .expect("draws");
+
+        // A pixel on an edge the document names as a cap edge.
+        let (x, y, edge) = (0..plain.height())
+            .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+            .find_map(|(x, y)| {
+                let hit = plain.hit_at(x, y);
+                let edge = hit.edge();
+                if edge == EdgePickId::NOTHING {
+                    return None;
+                }
+                scene
+                    .edges
+                    .of(edge, &picture)
+                    .iter()
+                    .any(|meaning| {
+                        matches!(meaning.output_role, SemanticRole::ExtrudeCapEdge { .. })
+                    })
+                    .then_some((x, y, edge))
+            })
+            .expect("the plate draws an edge the document names at a cap");
+
+        // The click still chooses that edge, not the face under it.
+        let chosen = selection_at(plain.hit_at(x, y), &picture, &scene.faces, &scene.edges);
+        let Selection::Edge(selected) = &chosen else {
+            panic!("clicking a named cap edge chose {chosen:?} instead of the edge");
+        };
+        assert_eq!(selected.edge(), edge);
+        assert_eq!(chosen.marked(), Marked::Edge(edge));
+
+        // The next frame marks that edge and nothing else. Checked over every
+        // pixel, not only the one clicked, and with the one-pixel reach the
+        // identity target is already documented to have: where two edges meet
+        // at a shared vertex or cross in projection, a sample reports whichever
+        // was drawn last, so a marked pixel may sit one across from the sample
+        // that names it.
+        let marked = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                chosen.marked(),
+                Hovered::Nothing,
+                &visibility,
+            )
+            .expect("draws");
+        assert_ne!(
+            marked.colour_at(x, y),
+            plain.colour_at(x, y),
+            "the chosen edge was not drawn as chosen"
+        );
+
+        let mut changed = 0;
+        for probe_y in 0..plain.height() {
+            for probe_x in 0..plain.width() {
+                // Nothing the picture answers about identity moved.
+                assert_eq!(
+                    plain.pick_at(probe_x, probe_y),
+                    marked.pick_at(probe_x, probe_y),
+                    "at {probe_x},{probe_y}"
+                );
+                assert_eq!(
+                    plain.hit_at(probe_x, probe_y).face(),
+                    marked.hit_at(probe_x, probe_y).face(),
+                    "at {probe_x},{probe_y}"
+                );
+                assert_eq!(
+                    plain.hit_at(probe_x, probe_y).edge(),
+                    marked.hit_at(probe_x, probe_y).edge(),
+                    "at {probe_x},{probe_y}"
+                );
+
+                if plain.colour_at(probe_x, probe_y) == marked.colour_at(probe_x, probe_y) {
+                    continue;
+                }
+                changed += 1;
+                let near = (probe_x.saturating_sub(1)..=probe_x + 1)
+                    .flat_map(|nx| {
+                        (probe_y.saturating_sub(1)..=probe_y + 1).map(move |ny| (nx, ny))
+                    })
+                    .any(|(nx, ny)| {
+                        nx < plain.width()
+                            && ny < plain.height()
+                            && plain.hit_at(nx, ny).edge() == edge
+                    });
+                assert!(
+                    near,
+                    "the pixel at {probe_x},{probe_y} changed and is not on the chosen edge"
+                );
+            }
+        }
+        assert!(changed > 0, "the chosen edge was drawn no differently");
+
+        // The inspector says which cap and which segment, in the document's
+        // own words.
+        let said = cap_meanings(selected);
+        assert!(
+            !said.is_empty(),
+            "the inspector says nothing about the chosen cap edge"
+        );
+        for sentence in &said {
+            assert!(
+                sentence.starts_with("Start cap edge of profile segment ")
+                    || sentence.starts_with("End cap edge of profile segment "),
+                "the inspector does not describe a cap edge: {sentence}"
+            );
+            for forbidden in [
+                "ExtrudeCapEdge",
+                "CapSide",
+                "StableEntityId(",
+                "EdgePickId",
+                "{",
+                "}",
+                "side:",
+                "profile_segment:",
+            ] {
+                assert!(
+                    !sentence.contains(forbidden),
+                    "the inspector printed {forbidden}: {sentence}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_two_caps_of_one_segment_are_said_differently_and_exactly() {
+        let Some((_directory, scene)) = native_plate_with_named_edges() else {
+            return;
+        };
+        let picture = scene.snapshot;
+
+        // Every stored cap-edge name of the plate, by side and segment.
+        let mut by_side: std::collections::BTreeMap<
+            (bool, ferritecad_types::StableEntityId),
+            String,
+        > = std::collections::BTreeMap::new();
+        for ordinal in 0..picture.edge_count() {
+            let edge = picture.edge_of(0, ordinal).expect("numbered");
+            for meaning in scene.edges.of(edge, &picture) {
+                if let SemanticRole::ExtrudeCapEdge {
+                    side,
+                    profile_segment,
+                } = &meaning.output_role
+                {
+                    let starts = matches!(side, CapSide::Start);
+                    by_side.insert(
+                        (starts, *profile_segment),
+                        describe_role(&meaning.output_role),
+                    );
+                }
+            }
+        }
+        assert_eq!(by_side.len(), 8, "four segments, two caps");
+
+        let segments: std::collections::BTreeSet<ferritecad_types::StableEntityId> =
+            by_side.keys().map(|(_, segment)| *segment).collect();
+        assert_eq!(segments.len(), 4);
+
+        for segment in &segments {
+            let start = by_side
+                .get(&(true, *segment))
+                .expect("the start cap of this segment is named");
+            let end = by_side
+                .get(&(false, *segment))
+                .expect("the end cap of this segment is named");
+
+            // Exactly these sentences, and the two ends are not the same one.
+            assert_eq!(
+                start,
+                &format!("Start cap edge of profile segment {segment}")
+            );
+            assert_eq!(end, &format!("End cap edge of profile segment {segment}"));
+            assert_ne!(start, end, "both ends of one segment read alike");
+
+            // The identifier is present whole, and only in its own sentence.
+            let text = segment.to_string();
+            assert!(start.contains(&text) && end.contains(&text));
+            for (other, sentence) in &by_side {
+                if other.1 != *segment {
+                    assert!(
+                        !sentence.contains(&text),
+                        "segment {segment} appears in another segment's sentence: {sentence}"
+                    );
+                }
+            }
+        }
+
+        // And the wording settled in the previous slice is untouched.
+        let joint = ferritecad_types::ProfileJoint::new(
+            *segments.iter().next().expect("four segments"),
+            *segments.iter().nth(1).expect("four segments"),
+        )
+        .expect("two different segments");
+        let [one, other] = joint.segments();
+        assert_eq!(
+            describe_role(&SemanticRole::ExtrudeSweepEdge { joint }),
+            format!("Sweep edge at the joint of profile segments {one} and {other}")
+        );
+    }
+
+    #[test]
+    fn several_stored_cap_edge_names_of_one_edge_are_said_one_each_in_order() {
+        use ferritecad_document::{Document, EntityKind, SelectionRule};
+
+        if !ferritecad_occt::is_available() {
+            eprintln!("skipped: this build has no Open CASCADE");
+            return;
+        }
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("plate.fcad");
+        std::fs::copy(ferritecad_fixtures::plate_source(), &path).expect("copies the fixture");
+
+        // One cap edge named three times over, which a document may hold: two
+        // objects can both name the same edge.
+        let mut document = Document::open(&path).expect("opens the plate");
+        let stored = document.topology_refs().expect("reads");
+        let (producer, segment) = stored
+            .iter()
+            .find_map(|reference| match &reference.output_role {
+                SemanticRole::ExtrudeSide { profile_segment } => {
+                    Some((reference.producer_feature, *profile_segment))
+                }
+                _ => None,
+            })
+            .expect("the fixture names its swept faces");
+        let owner = stored[0].owner;
+        let mut written = Vec::new();
+        for _ in 0..3 {
+            written.push(ferritecad_document::TopologyRef {
+                id: ferritecad_types::StableEntityId::new(),
+                owner,
+                producer_feature: producer,
+                expected_kind: EntityKind::Edge,
+                output_role: SemanticRole::ExtrudeCapEdge {
+                    side: CapSide::Start,
+                    profile_segment: segment,
+                },
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            });
+        }
+        document
+            .write(|w| {
+                for reference in &written {
+                    w.put_topology_ref(reference)?;
+                }
+                Ok(())
+            })
+            .expect("stores the cap edge references");
+        drop(document);
+
+        let mut kernel = OcctKernel::new().expect("opens a session");
+        let scene = snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel: &mut OcctKernel, bytes: &[u8]| kernel.import_step(bytes),
+            &ferritecad_kernel::TessellationParams::default(),
+            &ferritecad_kernel::OperationContext::default(),
+        )
+        .expect("the plate loads through Open CASCADE");
+        let picture = scene.snapshot;
+
+        let edge = (0..picture.edge_count())
+            .filter_map(|ordinal| picture.edge_of(0, ordinal))
+            .find(|edge| scene.edges.of(*edge, &picture).len() == 3)
+            .expect("one edge carries the three stored names");
+
+        // One sentence per stored name, all alike because all three say the
+        // same thing, and in the order the document keeps them.
+        let meanings = scene.edges.of(edge, &picture);
+        let said: Vec<String> = meanings
+            .iter()
+            .map(|meaning| describe_role(&meaning.output_role))
+            .collect();
+        assert_eq!(said.len(), 3, "three names, three sentences");
+        for sentence in &said {
+            assert_eq!(
+                sentence,
+                &format!("Start cap edge of profile segment {segment}")
+            );
+        }
+
+        let order: Vec<ferritecad_types::StableEntityId> = Document::open(&path)
+            .expect("reopens")
+            .topology_refs()
+            .expect("reads")
+            .iter()
+            .filter(|entry| written.iter().any(|w| w.id == entry.id))
+            .map(|entry| entry.id)
+            .collect();
+        let arrived: Vec<ferritecad_types::StableEntityId> =
+            meanings.iter().map(|meaning| meaning.reference).collect();
+        assert_eq!(arrived, order, "the names are not in the document's order");
+
+        // The named edge is a cap edge in the geometry too, asked through the
+        // faces it bounds rather than through any coincidence of numbering.
+        let cap_face =
+            (0..picture.face_count())
+                .filter_map(|ordinal| picture.face_of(0, ordinal))
+                .find(|face| {
+                    scene.faces.of(*face, &picture).iter().any(|meaning| {
+                        matches!(meaning.output_role, SemanticRole::ExtrudeCap { .. })
+                    })
+                })
+                .expect("the picture has a cap face");
+        let side_face = (0..picture.face_count())
+            .filter_map(|ordinal| picture.face_of(0, ordinal))
+            .find(|face| {
+                scene.faces.of(*face, &picture).iter().any(|meaning| {
+                    matches!(
+                        meaning.output_role,
+                        SemanticRole::ExtrudeSide { profile_segment } if profile_segment == segment
+                    )
+                })
+            })
+            .expect("the picture has the face raised from that segment");
+        assert!(
+            picture.edge_bounds_face(edge, side_face),
+            "a cap edge of this segment must bound the face raised from it"
+        );
+        assert!(
+            picture.edge_bounds_face(edge, cap_face)
+                || (0..picture.face_count())
+                    .filter_map(|ordinal| picture.face_of(0, ordinal))
+                    .filter(|face| {
+                        scene.faces.of(*face, &picture).iter().any(|meaning| {
+                            matches!(meaning.output_role, SemanticRole::ExtrudeCap { .. })
+                        })
+                    })
+                    .any(|face| picture.edge_bounds_face(edge, face)),
+            "a cap edge must bound a cap face"
         );
     }
 
