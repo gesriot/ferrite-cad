@@ -188,21 +188,24 @@ on a white one, they are hidden by anything nearer, and they follow the model
 through every camera and both projections because they are drawn from the same
 vertices through the same matrix as the surface itself.
 
-What is drawn is the boundary of the tessellation, and that is worth stating
-plainly: it is where the triangles of one face end, not a curve read from the
-original geometry. The seams inside a face, where one triangle meets the next,
-are deliberately not drawn. Nothing here is selectable: a line has no identity,
-a click still chooses the face or the part beneath it, and hiding a part takes
-its linework with it exactly as it takes its surface.
+What is drawn as ordinary linework is the boundary of the tessellation, and
+that is worth stating plainly: it is where the triangles of one face end, not
+a curve read from the original geometry. The seams inside a face, where one
+triangle meets the next, are deliberately not drawn. Those boundary pixels are
+not a selectable object. The separate topological-edge identity can answer a
+pointer question where the rendered samples agree, but a click still chooses
+the face or the part beneath it. Hiding a part takes both its surface and its
+linework with it.
 
-Moving the pointer
-over the model marks the face under it, and the same face wherever that
-definition appears; moving it over a row of the list marks that whole
-definition everywhere. Neither chooses anything, so a part or a surface can be
+Moving the pointer over the model marks the most particular answer the picture
+has: a coherent topological edge first, otherwise the face under it, otherwise
+the whole definition. The same edge, face or definition is marked wherever
+that definition appears. Moving over a row of the list marks that whole
+definition everywhere. Neither route chooses anything, so geometry can be
 found before anything is selected, and what is already selected keeps its
 appearance while you look around it. A click chooses a named native face as
-that face and otherwise chooses its definition. Opening another document is
-the only editing operation there is.
+that face and otherwise chooses its definition; edges are not selectable in
+this build. Opening another document is the only editing operation there is.
 
 ## How a document is put together
 

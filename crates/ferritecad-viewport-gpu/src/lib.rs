@@ -3,9 +3,9 @@
 //!
 //! No window and no interface. This renders into textures it owns, reads them
 //! back, and hands over a [`Frame`]. That is enough to prove a snapshot really
-//! is drawable and that a pick really does come back as the definition that was
-//! drawn, which are the two things a window would otherwise be the first to
-//! discover.
+//! is drawable and that its definition, face and topological-edge targets
+//! answer for the geometry that was drawn, which a window would otherwise be
+//! the first to discover.
 //!
 //! # A frame keeps the snapshot it was drawn from
 //!

@@ -681,7 +681,7 @@ struct Live {
     egui_renderer: egui_wgpu::Renderer,
 }
 
-/// The GPU picture and both meanings of a choice made in it.
+/// The GPU picture and the transient state that belongs to it.
 ///
 /// These values describe one snapshot and are replaced as one. In particular,
 /// selection cannot survive Open merely because the next document happens to
@@ -704,10 +704,10 @@ struct LiveScene<P> {
     /// arrangement in which they describe different things.
     selection: Selection,
     /// What the pointer is over, which is a question and not a decision. Also
-    /// issued by `prepared`, also transient, and written down nowhere. Three
-    /// states rather than one identity, because a list row can only name a
-    /// definition and a pixel can name the face under it, and the two are
-    /// different things to show.
+    /// issued by `prepared`, also transient, and written down nowhere. Four
+    /// states rather than one identity, because a list row can name only a
+    /// definition while a pixel can name a definition, a face or an edge, and
+    /// those are different things to show.
     hovered: Hovered,
 }
 
@@ -1079,16 +1079,6 @@ fn frame_scene(
     camera.frame_extent(visibility.bounds(snapshot))
 }
 
-/// Records what the pointer is over, and says whether anything changed.
-///
-/// Answered through the picture that is on screen, so a question about a
-/// picture that has been replaced marks nothing – a definition of another
-/// picture and a face of another picture alike. Returns whether the answer
-/// differs from the one already showing: pointing at the same face again is
-/// not a reason to draw the same picture twice.
-///
-/// Given the one field it may change and nothing else, so pointing at
-/// something cannot choose it however this is called.
 /// What one pixel of the model is a question about.
 ///
 /// Most specific first, and from one hit rather than three reads: an edge is a
@@ -1115,6 +1105,16 @@ fn hovered_at(hit: Hit) -> Hovered {
     Hovered::Nothing
 }
 
+/// Records what the pointer is over, and says whether anything changed.
+///
+/// Answered through the picture that is on screen, so a question about a
+/// picture that has been replaced marks nothing, whether it names a
+/// definition, face or edge. Returns whether the answer differs from the one
+/// already showing: pointing at the same thing again is not a reason to draw
+/// the same picture twice.
+///
+/// Given the one field it may change and nothing else, so pointing at
+/// something cannot choose it however this is called.
 fn hover(hovered: &mut Hovered, snapshot: &RenderSnapshot, answer: Hovered) -> bool {
     let answer = answer.known_to(snapshot);
     if answer == *hovered {
@@ -1943,12 +1943,12 @@ impl App {
         }
     }
 
-    /// Reads one pixel, and both answers about it.
+    /// Reads one pixel and all three answers about it.
     ///
-    /// The definition and the face come from one pixel of one frame, so they
-    /// cannot describe different triangles. A click asks only the first half
-    /// through [`Self::pick_at`]: what a click means is unchanged by any of
-    /// this.
+    /// The definition, face and edge come from one pixel of one frame, so they
+    /// cannot describe different geometry. The click decision still reads
+    /// only the definition and face from that [`Hit`]: what a click means is
+    /// unchanged by edge hover.
     fn hit_at(live: &mut Live, camera: &Camera, x: f32, y: f32) -> Result<Hit> {
         let (Ok(x), Ok(y)) = (
             u32::try_from(x.round() as i64),

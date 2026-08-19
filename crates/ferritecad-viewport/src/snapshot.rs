@@ -463,7 +463,7 @@ impl EdgePickId {
     }
 }
 
-/// What one mark on the picture is on, transiently.
+/// What one chosen mark on the picture is on, transiently.
 ///
 /// Three states rather than two identities, because "no face and definition
 /// three" and "face seven, whose definition is three" are different things to
@@ -471,10 +471,9 @@ impl EdgePickId {
 /// happened to be set. Nothing here is a row number or a face ordinal: both
 /// arms carry an identity bound to the picture that issued it.
 ///
-/// One type for what is chosen and for what is under the pointer, because the
-/// question "which part of this picture" has one shape and one answer, and the
-/// rule that an identity of another picture marks nothing is the same rule
-/// twice. What differs is how each is drawn, which is the renderer's business.
+/// Deliberately only what is chosen. [`Hovered`] is a separate type because an
+/// edge can answer a pointer question in this build but cannot be selected;
+/// putting that answer here would make an edge selection representable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Marked {
     #[default]
