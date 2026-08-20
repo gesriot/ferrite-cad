@@ -2039,6 +2039,7 @@ mod tests {
 
         let shape = ShapeHandle::new(SessionId::new(), 2);
         let mesh = Mesh {
+            topological_vertices: None,
             positions: vec![-f32::MAX, 0.0, 0.0, f32::MAX, 0.0, 0.0, 0.0, 1.0, 0.0],
             normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
             indices: vec![0, 1, 2],

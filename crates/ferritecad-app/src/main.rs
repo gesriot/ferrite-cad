@@ -5196,6 +5196,7 @@ mod tests {
         let plate = |half: f32, y: f32, shape: u64| {
             let handle = ShapeHandle::new(SessionId::new(), shape);
             Mesh {
+                topological_vertices: None,
                 positions: vec![
                     -half, y, -half, half, y, -half, half, y, half, -half, y, half,
                 ],
@@ -5252,6 +5253,7 @@ mod tests {
         let plate = |half: f32, shape: u64| {
             let handle = ShapeHandle::new(SessionId::new(), shape);
             Mesh {
+                topological_vertices: None,
                 positions: vec![
                     -half, 0.0, -half, half, 0.0, -half, half, 0.0, half, -half, 0.0, half,
                 ],

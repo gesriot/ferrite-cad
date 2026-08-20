@@ -176,6 +176,7 @@ mod tests {
     /// triangle no face owns.
     fn one_triangle(positions: Vec<f32>) -> Mesh {
         Mesh {
+            topological_vertices: None,
             normals: [0.0, 0.0, 1.0].repeat(positions.len() / 3),
             positions,
             indices: vec![0, 1, 2],

@@ -95,7 +95,8 @@ typedef int32_t (*FcOcctCancelFn)(void *context);
 typedef int32_t FcOcctSubShapeKind;
 enum {
   FC_OCCT_SUB_SHAPE_FACE = 0,
-  FC_OCCT_SUB_SHAPE_EDGE = 1
+  FC_OCCT_SUB_SHAPE_EDGE = 1,
+  FC_OCCT_SUB_SHAPE_VERTEX = 2
 };
 
 /* An opaque kernel session. Shapes belong to the session that made them. */
@@ -131,6 +132,48 @@ typedef struct FcOcctEdgeBuffers {
   size_t out_segment_count;
   size_t out_edge_count;
 } FcOcctEdgeBuffers;
+
+/*
+ * Where fc_occt_tessellate writes which packed positions are which corner.
+ *
+ * A B-Rep vertex is one point of the model and several points of the mesh:
+ * every face meeting there carries its own copy. So this is one identifier per
+ * topological vertex and a run of packed positions for each, never a partition
+ * of the positions: most nodes of a tessellation lie inside a face and are no
+ * B-Rep vertex at all.
+ *
+ * The association is read from topology, not from coordinates. For each edge
+ * lying on a meshed face, BRep_Tool::PolygonOnTriangulation gives that edge's
+ * run of nodes across the face, and TopExp::Vertices gives the edge's two ends;
+ * the first and last node of the run are those two ends.
+ *
+ * Two details are measured rather than assumed, on OCCT 7.9.3 over a plate, a
+ * cylinder, a half cylinder, a sphere, a torus, a filleted and a shelled plate
+ * and five STEP files:
+ *
+ *   * the location is load-bearing. Asked without it, every association on the
+ *     two assembly files is lost, 30 of 30 and 96 of 96.
+ *   * the run follows the edge's own sense, not the face's use of it. Of the
+ *     edge uses that are REVERSED in their face, reading the ends face-relative
+ *     puts the first node at the wrong end in every single case measured.
+ *
+ * Caller-owned and read with the same two-call protocol as everything else.
+ * `occurrences` holds packed position indices; `vertex_shapes` receives one
+ * session-local identifier per topological vertex, and `vertex_first` /
+ * `vertex_occurrence_count` say which run of occurrences that vertex owns. The
+ * runs are contiguous, in vertex order, and cover every occurrence exactly.
+ */
+typedef struct FcOcctVertexBuffers {
+  uint32_t *occurrences;
+  size_t occurrence_capacity;
+  uint64_t *vertex_shapes;
+  uint32_t *vertex_first;
+  uint32_t *vertex_occurrence_count;
+  size_t vertex_capacity;
+  /* Always written, on both calls. */
+  size_t out_occurrence_count;
+  size_t out_vertex_count;
+} FcOcctVertexBuffers;
 
 #ifdef __cplusplus
 #define FC_OCCT_NOEXCEPT noexcept
@@ -476,8 +519,8 @@ FcOcctStatus fc_occt_tessellate(
     size_t vertex_capacity, uint32_t *out_indices, size_t index_capacity,
     uint64_t *out_face_shapes, uint32_t *out_face_first,
     uint32_t *out_face_index_count, size_t face_capacity,
-    FcOcctEdgeBuffers *edges, size_t *out_vertex_count,
-    size_t *out_index_count, size_t *out_face_count,
+    FcOcctEdgeBuffers *edges, FcOcctVertexBuffers *corners,
+    size_t *out_vertex_count, size_t *out_index_count, size_t *out_face_count,
     FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 FcOcctStatus fc_occt_encode_shape_named(

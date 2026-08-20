@@ -1266,6 +1266,7 @@ mod tests {
     fn an_edge_name_of_another_picture_names_nothing_here() {
         let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
         let mesh = |ordinal: u64| Mesh {
+            topological_vertices: None,
             positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
             indices: vec![0, 1, 2],
@@ -1371,6 +1372,7 @@ mod tests {
 
         let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
         let mesh = Mesh {
+            topological_vertices: None,
             positions: vec![
                 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 0.0, 0.0, 3.0, 0.0, 0.0, 2.0,
                 1.0, 0.0,
@@ -1522,6 +1524,7 @@ mod tests {
 
         let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
         let mesh = |edges: u64| Mesh {
+            topological_vertices: None,
             positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
             indices: vec![0, 1, 2],
@@ -1590,6 +1593,7 @@ mod tests {
     fn a_mesh_with_no_edge_association_is_given_no_names() {
         let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
         let base = Mesh {
+            topological_vertices: None,
             positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
             indices: vec![0, 1, 2],
@@ -3486,6 +3490,7 @@ mod tests {
         ) -> Result<Mesh> {
             let mesh = self.inner.tessellate(shape, params, context)?;
             let mut reversed = Mesh {
+                topological_vertices: None,
                 positions: mesh.positions.clone(),
                 normals: mesh.normals.clone(),
                 indices: Vec::with_capacity(mesh.indices.len()),

@@ -1253,6 +1253,7 @@ mod tests {
     fn a_pick(count: usize) -> PickId {
         let mut builder = ferritecad_viewport::SnapshotBuilder::new();
         let mesh = ferritecad_kernel::Mesh {
+            topological_vertices: None,
             positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
             indices: vec![0, 1, 2],

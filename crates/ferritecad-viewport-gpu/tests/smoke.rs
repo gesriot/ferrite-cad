@@ -61,6 +61,7 @@ fn tilted_quad(baked_scale: bool) -> Mesh {
         [-scale, -1.0, 1.0],
     ];
     Mesh {
+        topological_vertices: None,
         positions: positions.into_iter().flatten().collect(),
         normals: [normal; 4].into_iter().flatten().collect(),
         indices: vec![0, 1, 2, 0, 2, 3],
@@ -81,6 +82,7 @@ fn tilted_quad(baked_scale: bool) -> Mesh {
 fn quad(half: f32) -> Mesh {
     let shape = ShapeHandle::new(SessionId::new(), 1);
     Mesh {
+        topological_vertices: None,
         positions: vec![
             -half, 0.0, -half, half, 0.0, -half, half, 0.0, half, -half, 0.0, half,
         ],
@@ -180,6 +182,7 @@ fn two_faced_plate(half: f32) -> Mesh {
     positions.extend_from_slice(&square(-half * 1.2));
     positions.extend_from_slice(&square(half * 1.2));
     Mesh {
+        topological_vertices: None,
         positions,
         normals: [[0.0f32, -1.0, 0.0]; 8].into_iter().flatten().collect(),
         indices: vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7],
@@ -1474,6 +1477,7 @@ fn an_empty_snapshot_draws_a_cleared_frame() {
     let empty = Arc::new(SnapshotBuilder::new().build());
     let placed_empty = {
         let mesh = Mesh {
+            topological_vertices: None,
             positions: Vec::new(),
             normals: Vec::new(),
             indices: Vec::new(),
@@ -2413,6 +2417,7 @@ fn occluding_pair(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
     let plate = |half: f32, y: f32, shape: u64| {
         let handle = ShapeHandle::new(SessionId::new(), shape);
         Mesh {
+            topological_vertices: None,
             positions: vec![
                 -half, y, -half, half, y, -half, half, y, half, -half, y, half,
             ],
@@ -3309,6 +3314,7 @@ fn two_equal_plates_at_two_depths(width: u32, height: u32) -> (Arc<RenderSnapsho
     let plate = |shape: u64| {
         let handle = ShapeHandle::new(SessionId::new(), shape);
         Mesh {
+            topological_vertices: None,
             positions: vec![
                 -5.0, 0.0, -5.0, 5.0, 0.0, -5.0, 5.0, 0.0, 5.0, -5.0, 0.0, 5.0,
             ],
@@ -3583,6 +3589,7 @@ fn plates_in_the_target_plane(width: u32, height: u32) -> (Arc<RenderSnapshot>, 
     let plate = |shape: u64, half: f32| {
         let handle = ShapeHandle::new(SessionId::new(), shape);
         Mesh {
+            topological_vertices: None,
             positions: vec![
                 -half, 0.0, -half, half, 0.0, -half, half, 0.0, half, -half, 0.0, half,
             ],
@@ -4035,6 +4042,7 @@ fn plates_coloured(width: u32, height: u32, colour: [f64; 3]) -> (Arc<RenderSnap
     let plate = |shape: u64, half: f32, y: f32| {
         let handle = ShapeHandle::new(SessionId::new(), shape);
         Mesh {
+            topological_vertices: None,
             positions: vec![
                 -half, y, -half, half, y, -half, half, y, half, -half, y, half,
             ],
@@ -4580,6 +4588,7 @@ fn two_faces_sharing_a_curve() -> Mesh {
         };
 
     Mesh {
+        topological_vertices: None,
         positions,
         normals: [[0.0f32, -1.0, 0.0]; 10].into_iter().flatten().collect(),
         // A fan of four triangles below the curve, and one of two above it.
@@ -4812,6 +4821,7 @@ fn one_topological_edge_answers_with_one_identity_from_both_of_its_faces() {
 fn curved_pair_behind_a_plate(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
     let shape = ShapeHandle::new(SessionId::new(), 11);
     let cover = Mesh {
+        topological_vertices: None,
         positions: vec![
             -20.0, -8.0, -20.0, 8.0, -8.0, -20.0, 8.0, -8.0, 20.0, -20.0, -8.0, 20.0,
         ],

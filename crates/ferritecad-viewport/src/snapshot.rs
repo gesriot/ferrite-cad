@@ -132,6 +132,13 @@ pub struct PackedMesh {
     /// of the two entitles a later renderer to say "no edge here" rather than
     /// "no edge information here".
     edges: Option<PackedEdges>,
+    /// The topological vertices of this definition, when the kernel named them.
+    ///
+    /// `None` when the mesh arrived without an association, which is not the
+    /// same as a definition proven to have no corner. The difference is kept
+    /// for the reason it is kept for the edges: only one of the two entitles a
+    /// later layer to say "no corner here" rather than "nothing is known".
+    corners: Option<PackedCorners>,
     min: [f32; 3],
     max: [f32; 3],
 }
@@ -151,6 +158,26 @@ struct PackedEdges {
     /// contiguous and cover `segments` exactly, which the kernel checked and
     /// this preserves.
     segment_counts: Vec<u32>,
+}
+
+/// Which packed positions are which topological vertex, after packing.
+///
+/// The kernel's handles do not survive here either, for the reason they do not
+/// survive in [`PackedEdges`]: a `SubShapeHandle` belongs to the session that
+/// issued it. What is kept is the partition - how many positions each corner
+/// owns and which ones - and nothing that outlives the picture.
+///
+/// Deliberately not a partition of the positions. Most nodes of a tessellation
+/// lie inside a face and are no B-Rep vertex, so the occurrences cover only the
+/// positions that really are corners.
+#[derive(Debug, Clone, PartialEq)]
+struct PackedCorners {
+    /// Positions that are a corner, grouped by corner, in corner order.
+    occurrences: Vec<u32>,
+    /// How many occurrences each corner owns, in corner order. The runs are
+    /// contiguous and cover `occurrences` exactly, which the kernel checked
+    /// and this preserves.
+    occurrence_counts: Vec<u32>,
 }
 
 impl PackedMesh {
@@ -220,6 +247,35 @@ impl PackedMesh {
             .map(|count| *count as usize)
             .sum();
         edges.segments.get(first * 2..(first + count) * 2)
+    }
+
+    /// How many topological vertices this definition has, or `None` when the
+    /// kernel that produced it did not say.
+    ///
+    /// The two answers are different, exactly as they are for the edges:
+    /// `Some(0)` is a definition proven to have no corner, and `None` is a
+    /// definition nothing is known about.
+    pub fn corner_count(&self) -> Option<usize> {
+        self.corners
+            .as_ref()
+            .map(|corners| corners.occurrence_counts.len())
+    }
+
+    /// Every packed position one topological vertex of this definition is
+    /// drawn at.
+    ///
+    /// `None` when this definition has no association, or when `ordinal` names
+    /// no corner of it.
+    pub fn occurrences_of_corner(&self, ordinal: usize) -> Option<&[u32]> {
+        let corners = self.corners.as_ref()?;
+        let count = *corners.occurrence_counts.get(ordinal)? as usize;
+        // Contiguous and in order, so a corner's own run begins after every
+        // corner packed before it. Checked by the kernel before packing.
+        let first: usize = corners.occurrence_counts[..ordinal]
+            .iter()
+            .map(|count| *count as usize)
+            .sum();
+        corners.occurrences.get(first..first + count)
     }
 
     /// The corners of this mesh's own bounding box, before any placement.
@@ -455,6 +511,57 @@ impl EdgePickId {
     pub fn from_raw(raw: u32, snapshot: &RenderSnapshot) -> Self {
         match (raw as usize).checked_sub(1) {
             Some(edge) if edge < snapshot.edge_owner.len() => Self {
+                raw,
+                snapshot: snapshot.identity,
+            },
+            _ => Self::NOTHING,
+        }
+    }
+}
+
+/// One topological vertex of one definition, for as long as this picture is on
+/// screen.
+///
+/// The same kind of value as [`EdgePickId`], for a corner of the model rather
+/// than an edge of it: bound to the picture that issued it, carrying no number
+/// anyone outside can read, and not serialisable. It says "the vertex the
+/// kernel named, as this picture numbers it", and nothing that outlives the
+/// picture. No kernel handle survives inside it.
+///
+/// What it is *not* is a node of the tessellation. Most packed positions lie
+/// inside a face and are no B-Rep vertex at all; this identifies one of the
+/// corners the kernel had to name. A picture whose kernel did not name them
+/// has no vertex identity, and every value here resolves to nothing against it.
+///
+/// Numbered per definition, never per placement, for the reason every other
+/// identity here is - see the module documentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VertexPickId {
+    raw: u32,
+    snapshot: ContentHash,
+}
+
+impl VertexPickId {
+    /// What every value naming no topological vertex reads as.
+    pub const NOTHING: Self = Self {
+        raw: 0,
+        snapshot: ContentHash::from_bytes([0; 32]),
+    };
+
+    /// The value a buffer would store.
+    pub fn to_raw(self) -> u32 {
+        self.raw
+    }
+
+    /// Reads a value back against the picture it is claimed to belong to.
+    ///
+    /// A number naming no vertex of `snapshot` reads as
+    /// [`NOTHING`][Self::NOTHING]. The caller must decode against the exact
+    /// snapshot that issued it: an in-range integer carries no generation, so
+    /// a value valid in another picture is refused here by its snapshot alone.
+    pub fn from_raw(raw: u32, snapshot: &RenderSnapshot) -> Self {
+        match (raw as usize).checked_sub(1) {
+            Some(corner) if corner < snapshot.corner_owner.len() => Self {
                 raw,
                 snapshot: snapshot.identity,
             },
@@ -933,6 +1040,9 @@ pub struct RenderSnapshot {
     /// disagree: the definition is looked up from the identity rather than
     /// carried beside it.
     edge_owner: Vec<usize>,
+    /// Which definition each topological vertex belongs to, indexed by
+    /// identity minus one, and kept for the reason `edge_owner` is.
+    corner_owner: Vec<usize>,
     min: [f32; 3],
     max: [f32; 3],
     has_geometry: bool,
@@ -1113,6 +1223,61 @@ impl RenderSnapshot {
         })
     }
 
+    /// Which definition a topological vertex belongs to.
+    ///
+    /// `None` for [`VertexPickId::NOTHING`], for an identity of another
+    /// picture, and for one this picture never issued.
+    pub fn definition_of_vertex(&self, vertex: VertexPickId) -> Option<usize> {
+        if vertex.snapshot != self.identity {
+            return None;
+        }
+        let index = (vertex.raw as usize).checked_sub(1)?;
+        self.corner_owner.get(index).copied()
+    }
+
+    /// How many topological vertices this picture has identities for.
+    pub fn vertex_count(&self) -> usize {
+        self.corner_owner.len()
+    }
+
+    /// The identity this picture gave one topological vertex of one definition.
+    ///
+    /// The inverse of [`Self::definition_of_vertex`]. `None` for a definition
+    /// whose mesh carried no vertex association, which is the answer that keeps
+    /// "nothing is known here" distinct from "there is no corner here".
+    pub fn vertex_of(&self, definition: usize, ordinal: usize) -> Option<VertexPickId> {
+        let mesh = self.meshes.get(definition)?;
+        if ordinal >= mesh.corner_count()? {
+            return None;
+        }
+        // Corners are numbered in packing order, so a definition's own run
+        // begins after every corner packed before it.
+        let before: usize = self.meshes[..definition]
+            .iter()
+            .map(|mesh| mesh.corner_count().unwrap_or(0))
+            .sum();
+        let raw = u32::try_from(before.checked_add(ordinal)?.checked_add(1)?).ok()?;
+        Some(VertexPickId {
+            raw,
+            snapshot: self.identity,
+        })
+    }
+
+    /// Every packed position one identified vertex is drawn at, in its
+    /// definition's own vertices.
+    ///
+    /// The whole of what this layer knows about a corner, resolved from an
+    /// identity alone. A vertex of another picture is drawn nowhere here.
+    pub fn occurrences_of_vertex(&self, vertex: VertexPickId) -> Option<&[u32]> {
+        let definition = self.definition_of_vertex(vertex)?;
+        let before: usize = self.meshes[..definition]
+            .iter()
+            .map(|mesh| mesh.corner_count().unwrap_or(0))
+            .sum();
+        let ordinal = (vertex.raw as usize).checked_sub(1)?.checked_sub(before)?;
+        self.meshes[definition].occurrences_of_corner(ordinal)
+    }
+
     /// The segments one identified edge draws, as pairs of vertex indices into
     /// its definition's packed vertices.
     ///
@@ -1230,6 +1395,10 @@ pub struct SnapshotBuilder {
     /// Which definition each topological edge belongs to, indexed by identity
     /// minus one.
     edge_owner: Vec<usize>,
+    /// The last topological vertex identity handed out, and which definition
+    /// each belongs to, numbered the same way and for the same reason.
+    next_corner: u32,
+    corner_owner: Vec<usize>,
 }
 
 impl SnapshotBuilder {
@@ -1355,6 +1524,30 @@ impl SnapshotBuilder {
             .filter(|_| added_edges != u32::MAX)
             .ok_or_else(|| CadError::input("a picture cannot hold that many edges"))?;
 
+        // The kernel's vertex partition, on the same terms. The ranges were
+        // checked to be contiguous, in order, complete and free of two corners
+        // claiming one position before this, so the counts alone say what the
+        // ranges did.
+        let packed_corners = mesh
+            .topological_vertices
+            .as_ref()
+            .map(|corners| PackedCorners {
+                occurrences: corners.occurrences.clone(),
+                occurrence_counts: corners
+                    .ranges
+                    .iter()
+                    .map(|range| range.occurrence_count)
+                    .collect(),
+            });
+        let added_corners = packed_corners.as_ref().map_or(0, |corners| {
+            u32::try_from(corners.occurrence_counts.len()).unwrap_or(u32::MAX)
+        });
+        let next_corner = self
+            .next_corner
+            .checked_add(added_corners)
+            .filter(|_| added_corners != u32::MAX)
+            .ok_or_else(|| CadError::input("a picture cannot hold that many vertices"))?;
+
         // Ordinals are per snapshot, so the same face of one definition is one
         // identity however many times the definition is placed.
         self.face_owner
@@ -1366,6 +1559,10 @@ impl SnapshotBuilder {
         self.edge_owner
             .resize(next_edge as usize, self.meshes.len());
         self.next_edge = next_edge;
+        // And the same for the corners.
+        self.corner_owner
+            .resize(next_corner as usize, self.meshes.len());
+        self.next_corner = next_corner;
 
         self.meshes.push(PackedMesh {
             vertices,
@@ -1374,6 +1571,7 @@ impl SnapshotBuilder {
             face_index_counts,
             line_indices,
             edges: packed_edges,
+            corners: packed_corners,
             min,
             max,
         });
@@ -1475,6 +1673,7 @@ impl SnapshotBuilder {
             items: self.items,
             face_owner: self.face_owner,
             edge_owner: self.edge_owner,
+            corner_owner: self.corner_owner,
             min,
             max,
             has_geometry,
@@ -1509,7 +1708,7 @@ fn snapshot_identity(
     // snapshot identity exists to make a transient pick refuse a picture it
     // was not decoded against, and every one of them is rebuilt with its
     // picture.
-    hasher.algorithm_version(5);
+    hasher.algorithm_version(6);
     hasher.field("identity_context");
     match context {
         Some(context) => {
@@ -1562,6 +1761,35 @@ fn snapshot_identity(
                     .field("edge_segments")
                     .u64(edges.segments.len() as u64);
                 for index in &edges.segments {
+                    hasher.u64(u64::from(*index));
+                }
+            }
+        }
+        // The vertex partition, on exactly the same terms as the edge one:
+        // which positions are corners and how those divide between corners.
+        // Two pictures with the same triangles whose kernels divided their
+        // corners differently are different pictures, because a vertex
+        // identity of one names something else in the other.
+        //
+        // Whether there is an association at all is hashed first and
+        // separately, so a definition nothing is known about cannot key the
+        // same as one proven to have no corner. Handles are not hashed, for
+        // the reason the faces' and edges' are not.
+        match &mesh.corners {
+            None => {
+                hasher.field("corners").str("unknown");
+            }
+            Some(corners) => {
+                hasher
+                    .field("corners")
+                    .u64(corners.occurrence_counts.len() as u64);
+                for occurrence_count in &corners.occurrence_counts {
+                    hasher.u64(u64::from(*occurrence_count));
+                }
+                hasher
+                    .field("corner_occurrences")
+                    .u64(corners.occurrences.len() as u64);
+                for index in &corners.occurrences {
                     hasher.u64(u64::from(*index));
                 }
             }

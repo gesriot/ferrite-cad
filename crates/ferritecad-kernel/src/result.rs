@@ -326,6 +326,41 @@ pub struct MeshEdgeRange {
     pub segment_count: u32,
 }
 
+/// One topological vertex of a shape, and the packed positions that draw it.
+///
+/// A B-Rep vertex is one point of the model and many points of the mesh: every
+/// face meeting there carries its own copy of it. Measured on OCCT 7.9.3 over a
+/// plate, a cylinder, a half cylinder, a sphere, a torus, a filleted and a
+/// shelled plate and five STEP files: between two and five copies each, never
+/// zero. So this is one-to-many by construction rather than by convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeshVertexRange {
+    pub vertex: SubShapeHandle,
+    /// First occurrence, counted in occurrences rather than in floats.
+    pub first_occurrence: u32,
+    pub occurrence_count: u32,
+}
+
+/// Which packed positions belong to which topological vertex.
+///
+/// One value rather than two parallel fields on [`Mesh`], for the reason
+/// [`MeshEdges`] is one: a mesh either carries this whole association or does
+/// not. The fields stay public because this is a kernel-result DTO, so
+/// malformed combinations can still be built by an adapter and are deliberately
+/// refused by [`Mesh::validate`].
+///
+/// Deliberately *not* a partition of the packed positions. Most nodes of a
+/// tessellation are interior and are no B-Rep vertex at all; requiring them to
+/// be covered would be requiring the kernel to invent identities.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MeshVertices {
+    /// Indices into the packed positions, referenced by the ranges.
+    pub occurrences: Vec<u32>,
+    /// Which topological vertex owns which occurrences: ordered, contiguous,
+    /// and covering `occurrences` exactly.
+    pub ranges: Vec<MeshVertexRange>,
+}
+
 /// Which rendered segments belong to which topological edge.
 ///
 /// One value rather than two parallel fields on [`Mesh`], so availability and
@@ -368,6 +403,16 @@ pub struct Mesh {
     /// whose association is merely unknown the same standing as one proven to
     /// have no edges, which is the invention this contract exists to refuse.
     pub edges: Option<MeshEdges>,
+    /// The topological vertices of this shape, when the producer can name them.
+    ///
+    /// `None` and `Some` of an empty [`MeshVertices`] are different answers and
+    /// are kept apart, exactly as they are for the edges: `None` says the
+    /// producer did not associate positions with vertices at all, and an empty
+    /// association says it looked and this shape has no topological vertex.
+    ///
+    /// Named at length so it cannot be read as [`Mesh::vertex_count`], which
+    /// counts packed positions and is a different thing entirely.
+    pub topological_vertices: Option<MeshVertices>,
 }
 
 impl Mesh {
@@ -483,9 +528,114 @@ impl Mesh {
         if let Some(edges) = &self.edges {
             validate_edges(edges, vertices, shape)?;
         }
+        if let Some(corners) = &self.topological_vertices {
+            validate_topological_vertices(corners, vertices, shape)?;
+        }
 
         Ok(())
     }
+}
+
+/// Checks a vertex association against the mesh that carries it.
+///
+/// The rules are the edge association's, plus one the geometry forces: two
+/// different topological vertices may not claim the same packed position. Each
+/// face carries its own copy of every corner it touches, so a position belongs
+/// to exactly one B-Rep vertex, and a mesh saying otherwise cannot answer which
+/// vertex a point is.
+///
+/// Not required: that the occurrences cover the packed positions. Most nodes of
+/// a tessellation lie inside a face and are no B-Rep vertex at all.
+fn validate_topological_vertices(
+    corners: &MeshVertices,
+    vertices: u32,
+    face_shape: Option<ShapeHandle>,
+) -> Result<()> {
+    if let Some(out_of_range) = corners.occurrences.iter().find(|i| **i >= vertices) {
+        return Err(CadError::kernel(format!(
+            "mesh vertex association addresses position {out_of_range} of {vertices}"
+        )));
+    }
+
+    let total = u32::try_from(corners.occurrences.len())
+        .map_err(|_| CadError::kernel("mesh has more vertex occurrences than uint32 can count"))?;
+    let mut covered = 0u32;
+    let mut seen = BTreeSet::new();
+    let mut claimed: BTreeMap<u32, SubShapeHandle> = BTreeMap::new();
+    // The shape every vertex must belong to, carried through the whole loop so
+    // a stranger cannot enter behind a correct first one.
+    let mut expected = face_shape;
+    for range in &corners.ranges {
+        match expected {
+            Some(shape) if range.vertex.shape() != shape => {
+                return Err(CadError::kernel(format!(
+                    "mesh mixes vertices from {} and {shape}",
+                    range.vertex.shape()
+                )));
+            }
+            Some(_) => {}
+            None => expected = Some(range.vertex.shape()),
+        }
+        if range.vertex.kind() != SubShapeKind::Vertex {
+            return Err(CadError::kernel(format!(
+                "mesh vertex range names {}, which is not a vertex",
+                range.vertex
+            )));
+        }
+        if range.occurrence_count == 0 {
+            return Err(CadError::kernel(format!(
+                "mesh vertex {} is drawn nowhere",
+                range.vertex
+            )));
+        }
+        if !seen.insert(range.vertex) {
+            return Err(CadError::kernel(format!(
+                "mesh contains more than one range for vertex {}",
+                range.vertex
+            )));
+        }
+        if range.first_occurrence != covered {
+            return Err(CadError::kernel(format!(
+                "mesh vertex ranges are not contiguous: expected to continue at {covered}, \
+                 found a range starting at {}",
+                range.first_occurrence
+            )));
+        }
+        covered = covered
+            .checked_add(range.occurrence_count)
+            .ok_or_else(|| CadError::kernel("mesh vertex ranges overflow the occurrence space"))?;
+        if covered > total {
+            return Err(CadError::kernel(format!(
+                "mesh vertex {} claims occurrences beyond the {total} the mesh has",
+                range.vertex
+            )));
+        }
+
+        let first = range.first_occurrence as usize;
+        let last = first + range.occurrence_count as usize;
+        let mut own = BTreeSet::new();
+        for index in &corners.occurrences[first..last] {
+            if !own.insert(*index) {
+                return Err(CadError::kernel(format!(
+                    "mesh vertex {} is drawn at position {index} twice",
+                    range.vertex
+                )));
+            }
+            if let Some(other) = claimed.insert(*index, range.vertex) {
+                return Err(CadError::kernel(format!(
+                    "vertices {other} and {} both claim position {index}",
+                    range.vertex
+                )));
+            }
+        }
+    }
+    if covered != total {
+        return Err(CadError::kernel(format!(
+            "mesh vertex ranges cover {covered} of {total} occurrences"
+        )));
+    }
+
+    Ok(())
 }
 
 /// Checks an edge association against the mesh that carries it.
@@ -688,6 +838,7 @@ mod tests {
     #[test]
     fn a_mesh_with_a_dangling_index_is_refused() {
         let mesh = Mesh {
+            topological_vertices: None,
             positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
             indices: vec![0, 1, 9],
@@ -704,6 +855,7 @@ mod tests {
     #[test]
     fn a_mesh_with_mismatched_normals_is_refused() {
         let mesh = Mesh {
+            topological_vertices: None,
             positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             normals: vec![0.0, 0.0, 1.0],
             indices: vec![0, 1, 2],
@@ -720,6 +872,7 @@ mod tests {
     #[test]
     fn a_mesh_whose_face_ranges_leave_a_gap_is_refused() {
         let mesh = Mesh {
+            topological_vertices: None,
             positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
             indices: vec![0, 1, 2],
@@ -737,6 +890,7 @@ mod tests {
     fn a_mesh_face_range_cannot_split_a_triangle() {
         let shape = ShapeHandle::new(SessionId::new(), 0);
         let mesh = Mesh {
+            topological_vertices: None,
             positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
             indices: vec![0, 1, 2],
@@ -761,6 +915,7 @@ mod tests {
     fn a_mesh_range_must_name_a_face() {
         let shape = ShapeHandle::new(SessionId::new(), 0);
         let mesh = Mesh {
+            topological_vertices: None,
             positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
             indices: vec![0, 1, 2],
@@ -777,6 +932,7 @@ mod tests {
     #[test]
     fn a_mesh_with_a_non_finite_coordinate_is_refused() {
         let mesh = Mesh {
+            topological_vertices: None,
             positions: vec![0.0, 0.0, f32::NAN, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
             indices: vec![0, 1, 2],
@@ -793,6 +949,7 @@ mod tests {
     /// A triangle of one face, with whatever edge association is being tried.
     fn triangle_with(shape: ShapeHandle, edges: Option<MeshEdges>) -> Mesh {
         Mesh {
+            topological_vertices: None,
             positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
             indices: vec![0, 1, 2],
@@ -803,6 +960,177 @@ mod tests {
             }],
             edges,
         }
+    }
+
+    /// A triangle of one face, with whatever vertex association is being tried.
+    fn triangle_cornered(shape: ShapeHandle, corners: Option<MeshVertices>) -> Mesh {
+        let mut mesh = triangle_with(shape, None);
+        mesh.topological_vertices = corners;
+        mesh
+    }
+
+    /// One corner of that triangle, owning `count` occurrences from `first`.
+    fn corner(shape: ShapeHandle, index: u64, first: u32, count: u32) -> MeshVertexRange {
+        MeshVertexRange {
+            vertex: SubShapeHandle::new(shape, SubShapeKind::Vertex, index),
+            first_occurrence: first,
+            occurrence_count: count,
+        }
+    }
+
+    #[test]
+    fn a_vertex_association_the_mesh_can_carry_is_accepted() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        // Three corners, one of them drawn twice, and one position of the
+        // triangle left unnamed: an interior node is no B-Rep vertex, so full
+        // coverage is deliberately not required.
+        let mesh = triangle_cornered(
+            shape,
+            Some(MeshVertices {
+                occurrences: vec![0, 1, 2],
+                ranges: vec![corner(shape, 0, 0, 2), corner(shape, 1, 2, 1)],
+            }),
+        );
+        mesh.validate()
+            .expect("a partial, consistent association is fine");
+    }
+
+    #[test]
+    fn a_vertex_association_of_the_wrong_kind_or_shape_is_refused() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let stranger = ShapeHandle::new(SessionId::new(), 0);
+
+        let wrong_kind = triangle_cornered(
+            shape,
+            Some(MeshVertices {
+                occurrences: vec![0],
+                ranges: vec![MeshVertexRange {
+                    vertex: SubShapeHandle::new(shape, SubShapeKind::Edge, 0),
+                    first_occurrence: 0,
+                    occurrence_count: 1,
+                }],
+            }),
+        )
+        .validate()
+        .expect_err("an edge is not a vertex");
+        assert!(
+            wrong_kind.to_string().contains("which is not a vertex"),
+            "{wrong_kind}"
+        );
+
+        let foreign = triangle_cornered(
+            shape,
+            Some(MeshVertices {
+                occurrences: vec![0],
+                ranges: vec![corner(stranger, 0, 0, 1)],
+            }),
+        )
+        .validate()
+        .expect_err("a vertex of another shape is not this mesh's");
+        assert!(foreign.to_string().contains("mixes vertices"), "{foreign}");
+    }
+
+    #[test]
+    fn a_vertex_drawn_nowhere_or_out_of_range_is_refused() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+
+        let nowhere = triangle_cornered(
+            shape,
+            Some(MeshVertices {
+                occurrences: Vec::new(),
+                ranges: vec![corner(shape, 0, 0, 0)],
+            }),
+        )
+        .validate()
+        .expect_err("a corner drawn nowhere names nothing");
+        assert!(nowhere.to_string().contains("drawn nowhere"), "{nowhere}");
+
+        let past_the_end = triangle_cornered(
+            shape,
+            Some(MeshVertices {
+                occurrences: vec![9],
+                ranges: vec![corner(shape, 0, 0, 1)],
+            }),
+        )
+        .validate()
+        .expect_err("a corner cannot be drawn at a position that is not there");
+        assert!(
+            past_the_end.to_string().contains("addresses position 9"),
+            "{past_the_end}"
+        );
+    }
+
+    #[test]
+    fn two_corners_cannot_claim_one_position_and_one_cannot_claim_it_twice() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+
+        let shared = triangle_cornered(
+            shape,
+            Some(MeshVertices {
+                occurrences: vec![0, 0],
+                ranges: vec![corner(shape, 0, 0, 1), corner(shape, 1, 1, 1)],
+            }),
+        )
+        .validate()
+        .expect_err("one position belongs to one corner");
+        assert!(
+            shared.to_string().contains("both claim position"),
+            "{shared}"
+        );
+
+        let twice = triangle_cornered(
+            shape,
+            Some(MeshVertices {
+                occurrences: vec![1, 1],
+                ranges: vec![corner(shape, 0, 0, 2)],
+            }),
+        )
+        .validate()
+        .expect_err("a corner drawn at one position twice says nothing more");
+        assert!(twice.to_string().contains("twice"), "{twice}");
+
+        let repeated = triangle_cornered(
+            shape,
+            Some(MeshVertices {
+                occurrences: vec![0, 1],
+                ranges: vec![corner(shape, 0, 0, 1), corner(shape, 0, 1, 1)],
+            }),
+        )
+        .validate()
+        .expect_err("one corner cannot have two ranges");
+        assert!(
+            repeated
+                .to_string()
+                .contains("more than one range for vertex"),
+            "{repeated}"
+        );
+    }
+
+    #[test]
+    fn vertex_ranges_that_do_not_cover_the_occurrences_are_refused() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+
+        let gap = triangle_cornered(
+            shape,
+            Some(MeshVertices {
+                occurrences: vec![0, 1, 2],
+                ranges: vec![corner(shape, 0, 0, 1), corner(shape, 1, 2, 1)],
+            }),
+        )
+        .validate()
+        .expect_err("a gap leaves an occurrence belonging to no corner");
+        assert!(gap.to_string().contains("not contiguous"), "{gap}");
+
+        let short = triangle_cornered(
+            shape,
+            Some(MeshVertices {
+                occurrences: vec![0, 1, 2],
+                ranges: vec![corner(shape, 0, 0, 1)],
+            }),
+        )
+        .validate()
+        .expect_err("occurrences belonging to no corner are not a mesh");
+        assert!(short.to_string().contains("cover 1 of 3"), "{short}");
     }
 
     /// One side of that triangle, owning `segment_count` segments from

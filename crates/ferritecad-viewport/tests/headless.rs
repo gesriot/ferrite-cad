@@ -15,13 +15,14 @@ use ferritecad_kernel::{
 use ferritecad_types::{ContentHash, ErrorKind, Transform, Vec3};
 use ferritecad_viewport::{
     Camera, FacePickId, Marked, PickId, Projection, RenderSnapshot, SnapshotBuilder, StandardView,
-    VERTEX_FLOATS, Visibility,
+    VERTEX_FLOATS, VertexPickId, Visibility,
 };
 
 /// One triangle, with distinguishable positions and normals.
 fn triangle() -> Mesh {
     let shape = ShapeHandle::new(SessionId::new(), 1);
     Mesh {
+        topological_vertices: None,
         positions: vec![0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0, 0.0],
         normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
         indices: vec![0, 1, 2],
@@ -3730,6 +3731,7 @@ fn packed(mesh: &Mesh) -> ferritecad_viewport::PackedMesh {
 fn a_square_face_is_bounded_by_its_four_sides_and_not_by_its_diagonal() {
     let (positions, normals, indices, range) = square_face(1, 0);
     let mesh = Mesh {
+        topological_vertices: None,
         positions,
         normals,
         indices,
@@ -3765,6 +3767,7 @@ fn two_faces_lying_in_one_plane_each_keep_their_own_boundary() {
         index_count: 6,
     };
     let mesh = Mesh {
+        topological_vertices: None,
         positions: vec![
             0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 2.0, 0.0,
             0.0, 2.0, 0.0, 1.0, 1.0, 0.0, 1.0,
@@ -3821,6 +3824,7 @@ fn several_faces_and_separate_pieces_pack_the_same_lines_every_time() {
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
     let mesh = Mesh {
+        topological_vertices: None,
         positions,
         normals: [0.0, -1.0, 0.0].repeat(12),
         indices,
@@ -3843,6 +3847,7 @@ fn several_faces_and_separate_pieces_pack_the_same_lines_every_time() {
 fn the_order_and_the_winding_of_triangles_do_not_change_the_boundary() {
     let (positions, normals, _, range) = square_face(3, 0);
     let straightforward = Mesh {
+        topological_vertices: None,
         positions: positions.clone(),
         normals: normals.clone(),
         indices: vec![0, 1, 2, 0, 2, 3],
@@ -3851,6 +3856,7 @@ fn the_order_and_the_winding_of_triangles_do_not_change_the_boundary() {
     };
     // The same square: the other triangle first, and both wound the other way.
     let rearranged = Mesh {
+        topological_vertices: None,
         positions,
         normals,
         indices: vec![3, 2, 0, 2, 1, 0],
@@ -3871,6 +3877,7 @@ fn a_tessellation_that_is_not_a_surface_is_refused_rather_than_guessed_at() {
     // Three triangles sharing one edge: no surface has that, and there is no
     // boundary to choose.
     let mesh = Mesh {
+        topological_vertices: None,
         positions: vec![
             0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.5, 0.0, 1.0, 0.5, 1.0, -1.0, 0.5, -1.0, -1.0,
         ],
@@ -3899,6 +3906,7 @@ fn a_tessellation_that_is_not_a_surface_is_refused_rather_than_guessed_at() {
     let (positions, normals, indices, mut range) = square_face(6, 0);
     range.index_count = 4;
     let ragged = Mesh {
+        topological_vertices: None,
         positions: positions.clone(),
         normals: normals.clone(),
         indices: indices.clone(),
@@ -3909,6 +3917,7 @@ fn a_tessellation_that_is_not_a_surface_is_refused_rather_than_guessed_at() {
 
     let (_, _, _, range) = square_face(6, 0);
     let out_of_range = Mesh {
+        topological_vertices: None,
         positions,
         normals,
         indices: vec![0, 1, 9, 0, 2, 3],
@@ -3921,6 +3930,7 @@ fn a_tessellation_that_is_not_a_surface_is_refused_rather_than_guessed_at() {
 #[test]
 fn a_picture_with_no_triangles_invents_no_lines() {
     let mesh = Mesh {
+        topological_vertices: None,
         positions: Vec::new(),
         normals: Vec::new(),
         indices: Vec::new(),
@@ -3942,6 +3952,7 @@ fn drawing_where_faces_stop_does_not_change_what_a_picture_is() {
     // pictures apart and still calls the same picture the same.
     let (positions, normals, indices, range) = square_face(9, 0);
     let square = Mesh {
+        topological_vertices: None,
         positions: positions.clone(),
         normals: normals.clone(),
         indices,
@@ -3951,6 +3962,7 @@ fn drawing_where_faces_stop_does_not_change_what_a_picture_is() {
     // The same four vertices, cut the other way: different triangles, and so
     // a different picture, even though the boundary is the same square.
     let other_cut = Mesh {
+        topological_vertices: None,
         positions,
         normals,
         indices: vec![1, 2, 3, 1, 3, 0],
@@ -4018,6 +4030,7 @@ fn square_with_edges(division: &[u32]) -> Mesh {
     // accounts for.
     let sides = [0u32, 1, 1, 2, 2, 3, 3, 0];
     Mesh {
+        topological_vertices: None,
         positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0],
         normals: [0.0, 0.0, 1.0].repeat(4),
         indices: vec![0, 1, 2, 0, 2, 3],
@@ -4408,6 +4421,7 @@ fn an_edge_bounds_the_faces_its_segments_touch_and_no_others() {
     // edge bounds both, the outer edges bound one each.
     let shape = ShapeHandle::new(SessionId::new(), 5);
     let mesh = Mesh {
+        topological_vertices: None,
         positions: vec![
             // The lower face's own four corners.
             -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, -1.0, 0.0, 1.0, //
@@ -4575,4 +4589,246 @@ fn a_mark_on_an_edge_belongs_to_the_definition_that_owns_it() {
         Marked::Edge(ferritecad_viewport::EdgePickId::NOTHING),
         &snapshot
     ));
+}
+
+/// A triangle whose three positions are each a topological vertex, plus the
+/// handles that name them.
+fn cornered(shape: ShapeHandle, occurrences: Vec<u32>, counts: &[u32]) -> Mesh {
+    let mut ranges = Vec::new();
+    let mut first = 0u32;
+    for (index, count) in counts.iter().enumerate() {
+        ranges.push(ferritecad_kernel::MeshVertexRange {
+            vertex: SubShapeHandle::new(shape, SubShapeKind::Vertex, index as u64),
+            first_occurrence: first,
+            occurrence_count: *count,
+        });
+        first += count;
+    }
+    let mut mesh = triangle();
+    mesh.faces = vec![MeshFaceRange {
+        face: SubShapeHandle::new(shape, SubShapeKind::Face, 0),
+        first_index: 0,
+        index_count: 3,
+    }];
+    mesh.topological_vertices = Some(ferritecad_kernel::MeshVertices {
+        occurrences,
+        ranges,
+    });
+    mesh
+}
+
+#[test]
+fn a_corner_is_numbered_per_definition_and_not_per_placement() {
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let mut builder = SnapshotBuilder::new();
+    let definition = builder
+        .add_mesh(&cornered(shape, vec![0, 1, 2], &[1, 1, 1]))
+        .expect("packs");
+    // The same definition placed four times.
+    let root = builder
+        .place(definition, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+        .expect("places");
+    for offset in 1..4 {
+        builder
+            .place(
+                definition,
+                Some(root),
+                &moved(f64::from(offset), 0.0, 0.0),
+                [0.5, 0.5, 0.5],
+            )
+            .expect("places");
+    }
+    let snapshot = builder.build();
+
+    assert_eq!(
+        snapshot.vertex_count(),
+        3,
+        "four placements of one definition must not multiply its corners"
+    );
+    let mut seen: Vec<VertexPickId> = Vec::new();
+    for ordinal in 0..3 {
+        let corner = snapshot.vertex_of(definition, ordinal).expect("numbered");
+        assert_eq!(snapshot.definition_of_vertex(corner), Some(definition));
+        assert!(!seen.contains(&corner), "two corners share one identity");
+        seen.push(corner);
+    }
+    assert_eq!(snapshot.vertex_of(definition, 3), None);
+}
+
+#[test]
+fn one_corner_answers_with_every_position_it_is_drawn_at() {
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    // One corner drawn at all three positions, as a corner shared by three
+    // faces is; the other two corners are absent by construction.
+    let mut builder = SnapshotBuilder::new();
+    let definition = builder
+        .add_mesh(&cornered(shape, vec![0, 1, 2], &[3]))
+        .expect("packs");
+    builder
+        .place(definition, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+        .expect("places");
+    let snapshot = builder.build();
+
+    assert_eq!(snapshot.vertex_count(), 1);
+    let corner = snapshot.vertex_of(definition, 0).expect("numbered");
+    assert_eq!(snapshot.occurrences_of_vertex(corner), Some(&[0, 1, 2][..]));
+}
+
+#[test]
+fn a_stale_or_foreign_corner_identity_names_nothing() {
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let mut one = SnapshotBuilder::new();
+    let definition = one
+        .add_mesh(&cornered(shape, vec![0, 1, 2], &[1, 1, 1]))
+        .expect("packs");
+    one.place(definition, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+        .expect("places");
+    let one = one.build();
+
+    // A different picture: same triangles, a different corner partition, so a
+    // raw value valid in one names something else in the other.
+    let mut other = SnapshotBuilder::new();
+    let elsewhere = other
+        .add_mesh(&cornered(shape, vec![0, 1, 2], &[3]))
+        .expect("packs");
+    other
+        .place(elsewhere, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+        .expect("places");
+    let other = other.build();
+
+    let corner = one.vertex_of(definition, 0).expect("numbered");
+    assert_eq!(other.definition_of_vertex(corner), None);
+    assert_eq!(other.occurrences_of_vertex(corner), None);
+    assert_eq!(one.definition_of_vertex(VertexPickId::NOTHING), None);
+    assert_eq!(one.occurrences_of_vertex(VertexPickId::NOTHING), None);
+
+    // A raw value that is in range in both is still refused by the picture it
+    // was not decoded against.
+    assert_eq!(VertexPickId::from_raw(1, &one).to_raw(), 1);
+    assert_ne!(VertexPickId::from_raw(1, &one), corner_of(&other, 1));
+    // And a number this picture never issued reads as nothing.
+    assert_eq!(
+        VertexPickId::from_raw(99, &one),
+        VertexPickId::NOTHING,
+        "a value out of range must land on nothing"
+    );
+}
+
+/// The identity a picture gives raw value `raw`, for comparing two pictures.
+fn corner_of(snapshot: &ferritecad_viewport::RenderSnapshot, raw: u32) -> VertexPickId {
+    VertexPickId::from_raw(raw, snapshot)
+}
+
+#[test]
+fn a_definition_nothing_is_known_about_differs_from_one_proven_to_have_no_corner() {
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+
+    let mut unknown = SnapshotBuilder::new();
+    let a = unknown.add_mesh(&triangle()).expect("packs");
+    unknown
+        .place(a, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+        .expect("places");
+    let unknown = unknown.build();
+
+    let mut empty = SnapshotBuilder::new();
+    let b = empty
+        .add_mesh(&cornered(shape, Vec::new(), &[]))
+        .expect("packs");
+    empty
+        .place(b, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+        .expect("places");
+    let empty = empty.build();
+
+    // Neither has an identity to hand out, and they are still different
+    // pictures: one was never told, the other was told there is nothing.
+    assert_eq!(unknown.vertex_count(), 0);
+    assert_eq!(empty.vertex_count(), 0);
+    // Compared through a value each picture issues, which is the only way its
+    // identity is observable and the exact thing that must not collide.
+    assert_ne!(
+        PickId::from_raw(1, &unknown),
+        PickId::from_raw(1, &empty),
+        "an unknown association and a proven-empty one must not key alike"
+    );
+}
+
+#[test]
+fn the_corner_partition_is_part_of_what_a_picture_means() {
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+
+    // Same triangles, same faces, same edges, and only the corner partition
+    // differs: three corners of one position each, against one of three.
+    let mut split = SnapshotBuilder::new();
+    let a = split
+        .add_mesh(&cornered(shape, vec![0, 1, 2], &[1, 1, 1]))
+        .expect("packs");
+    split
+        .place(a, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+        .expect("places");
+    let split = split.build();
+
+    let mut joined = SnapshotBuilder::new();
+    let b = joined
+        .add_mesh(&cornered(shape, vec![0, 1, 2], &[3]))
+        .expect("packs");
+    joined
+        .place(b, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+        .expect("places");
+    let joined = joined.build();
+
+    assert_ne!(
+        PickId::from_raw(1, &split),
+        PickId::from_raw(1, &joined),
+        "two corner partitions of one mesh are two pictures"
+    );
+}
+
+#[test]
+fn nothing_of_the_kernels_own_naming_survives_packing() {
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let mut builder = SnapshotBuilder::new();
+    let definition = builder
+        .add_mesh(&cornered(shape, vec![0, 1, 2], &[2, 1]))
+        .expect("packs");
+    builder
+        .place(definition, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+        .expect("places");
+    let snapshot = builder.build();
+
+    let written = format!("{snapshot:?}");
+    for forbidden in ["SubShapeHandle", "ShapeHandle", "SessionId", "Vertex {"] {
+        assert!(
+            !written.contains(forbidden),
+            "the packed picture still mentions {forbidden}"
+        );
+    }
+    // The corner is still there, said in the picture's own terms.
+    assert_eq!(snapshot.vertex_count(), 2);
+}
+
+#[test]
+fn a_refused_mesh_spends_no_corner_identities() {
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let mut builder = SnapshotBuilder::new();
+    let good = builder
+        .add_mesh(&cornered(shape, vec![0, 1, 2], &[1, 1, 1]))
+        .expect("packs");
+
+    // Two corners claiming one position: refused whole.
+    let mut bad = cornered(shape, vec![0, 0], &[1, 1]);
+    bad.faces[0].face = SubShapeHandle::new(shape, SubShapeKind::Face, 0);
+    assert!(
+        builder.add_mesh(&bad).is_err(),
+        "two corners cannot own one position"
+    );
+
+    builder
+        .place(good, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+        .expect("places");
+    let snapshot = builder.build();
+    assert_eq!(
+        snapshot.vertex_count(),
+        3,
+        "a refused mesh must not consume identities"
+    );
 }

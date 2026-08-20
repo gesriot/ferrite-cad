@@ -239,6 +239,7 @@ unsafe extern "C" {
         out_face_index_count: *mut u32,
         face_capacity: usize,
         out_edges: *mut RawEdgeBuffers,
+        out_corners: *mut RawVertexBuffers,
         out_vertex_count: *mut usize,
         out_index_count: *mut usize,
         out_face_count: *mut usize,
@@ -337,6 +338,11 @@ pub(crate) struct RawMesh {
     pub(crate) edge_shapes: Vec<u64>,
     pub(crate) edge_first_segment: Vec<u32>,
     pub(crate) edge_segment_count: Vec<u32>,
+    /// Packed position indices, referenced by the vertex runs below.
+    pub(crate) vertex_occurrences: Vec<u32>,
+    pub(crate) vertex_shapes: Vec<u64>,
+    pub(crate) vertex_first: Vec<u32>,
+    pub(crate) vertex_occurrence_count: Vec<u32>,
 }
 
 /// The buffers `fc_occt_tessellate` writes the edge association into.
@@ -353,6 +359,35 @@ struct RawEdgeBuffers {
     edge_capacity: usize,
     out_segment_count: usize,
     out_edge_count: usize,
+}
+
+/// Mirrors `FcOcctVertexBuffers`.
+#[repr(C)]
+struct RawVertexBuffers {
+    occurrences: *mut u32,
+    occurrence_capacity: usize,
+    vertex_shapes: *mut u64,
+    vertex_first: *mut u32,
+    vertex_occurrence_count: *mut u32,
+    vertex_capacity: usize,
+    out_occurrence_count: usize,
+    out_vertex_count: usize,
+}
+
+impl RawVertexBuffers {
+    /// Buffers that ask for the counts and receive no data.
+    fn measuring() -> Self {
+        Self {
+            occurrences: std::ptr::null_mut(),
+            occurrence_capacity: 0,
+            vertex_shapes: std::ptr::null_mut(),
+            vertex_first: std::ptr::null_mut(),
+            vertex_occurrence_count: std::ptr::null_mut(),
+            vertex_capacity: 0,
+            out_occurrence_count: 0,
+            out_vertex_count: 0,
+        }
+    }
 }
 
 impl RawEdgeBuffers {
@@ -692,6 +727,7 @@ impl Session {
         let mut error = RawError::empty();
         let (mut vertices, mut indices, mut faces) = (0usize, 0usize, 0usize);
         let mut measured = RawEdgeBuffers::measuring();
+        let mut measured_corners = RawVertexBuffers::measuring();
 
         // SAFETY: every out-parameter is valid; passing no buffers with zero
         // capacity is the size query the bridge documents.
@@ -714,6 +750,7 @@ impl Session {
                 std::ptr::null_mut(),
                 0,
                 &mut measured,
+                &mut measured_corners,
                 &mut vertices,
                 &mut indices,
                 &mut faces,
@@ -723,6 +760,8 @@ impl Session {
         interpret(status, &error, "measuring a tessellation")?;
         let segments = measured.out_segment_count;
         let edges = measured.out_edge_count;
+        let occurrences = measured_corners.out_occurrence_count;
+        let corners = measured_corners.out_vertex_count;
 
         let coordinates = vertices
             .checked_mul(3)
@@ -741,8 +780,19 @@ impl Session {
             edge_shapes: vec![0; edges],
             edge_first_segment: vec![0; edges],
             edge_segment_count: vec![0; edges],
+            vertex_occurrences: vec![0; occurrences],
+            vertex_shapes: vec![0; corners],
+            vertex_first: vec![0; corners],
+            vertex_occurrence_count: vec![0; corners],
         };
-        if vertices == 0 && indices == 0 && faces == 0 && segments == 0 && edges == 0 {
+        if vertices == 0
+            && indices == 0
+            && faces == 0
+            && segments == 0
+            && edges == 0
+            && occurrences == 0
+            && corners == 0
+        {
             return Ok(mesh);
         }
 
@@ -756,6 +806,16 @@ impl Session {
             edge_capacity: edges,
             out_segment_count: 0,
             out_edge_count: 0,
+        };
+        let mut filled_corners = RawVertexBuffers {
+            occurrences: mesh.vertex_occurrences.as_mut_ptr(),
+            occurrence_capacity: occurrences,
+            vertex_shapes: mesh.vertex_shapes.as_mut_ptr(),
+            vertex_first: mesh.vertex_first.as_mut_ptr(),
+            vertex_occurrence_count: mesh.vertex_occurrence_count.as_mut_ptr(),
+            vertex_capacity: corners,
+            out_occurrence_count: 0,
+            out_vertex_count: 0,
         };
         // SAFETY: each buffer was allocated at the size the call above
         // reported, and the capacities passed match those allocations.
@@ -778,6 +838,7 @@ impl Session {
                 mesh.face_index_count.as_mut_ptr(),
                 faces,
                 &mut filled,
+                &mut filled_corners,
                 &mut got_vertices,
                 &mut got_indices,
                 &mut got_faces,
@@ -1012,6 +1073,7 @@ mod tests {
         let mut indices = 0usize;
         let mut faces = 0usize;
         let mut edges = RawEdgeBuffers::measuring();
+        let mut corners = RawVertexBuffers::measuring();
         let mut error = RawError::empty();
 
         // The bridge checks once before and once after OCCT. Cancelling only
@@ -1037,6 +1099,7 @@ mod tests {
                 std::ptr::null_mut(),
                 0,
                 &mut edges,
+                &mut corners,
                 &mut vertices,
                 &mut indices,
                 &mut faces,

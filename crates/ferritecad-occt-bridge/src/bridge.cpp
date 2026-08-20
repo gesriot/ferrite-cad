@@ -14,6 +14,7 @@
 #include <XSControl_WorkSession.hxx>
 
 #include <cmath>
+#include <map>
 #include <cstring>
 #include <exception>
 #include <limits>
@@ -1484,13 +1485,13 @@ FcOcctStatus fc_occt_tessellate(
     size_t vertex_capacity, uint32_t *out_indices, size_t index_capacity,
     uint64_t *out_face_shapes, uint32_t *out_face_first,
     uint32_t *out_face_index_count, size_t face_capacity,
-    FcOcctEdgeBuffers *out_edges, size_t *out_vertex_count,
-    size_t *out_index_count, size_t *out_face_count,
+    FcOcctEdgeBuffers *out_edges, FcOcctVertexBuffers *out_corners,
+    size_t *out_vertex_count, size_t *out_index_count, size_t *out_face_count,
     FcOcctError *out_error) noexcept {
   return guarded(out_error, [&]() -> FcOcctStatus {
     if (session == nullptr || out_vertex_count == nullptr ||
         out_index_count == nullptr || out_face_count == nullptr ||
-        out_edges == nullptr) {
+        out_edges == nullptr || out_corners == nullptr) {
       write_error(out_error, "fc_occt_tessellate was given a null argument");
       return FC_OCCT_INVALID_INPUT;
     }
@@ -1800,6 +1801,88 @@ FcOcctStatus fc_occt_tessellate(
       edge_segment_count.push_back(static_cast<uint32_t>(count));
     }
 
+    // Which packed positions are which corner.
+    //
+    // Read from topology: an edge's run of nodes across a face begins and ends
+    // at that edge's two topological ends, so the ends name the nodes. The
+    // vertices are consolidated by the same `remember` the faces and edges use,
+    // so one corner shared by three faces is one identifier and not three.
+    //
+    // `Oriented(TopAbs_FORWARD)` is not decoration. The run follows the edge's
+    // own sense, not the face's use of it, and measurement on 7.9.3 found that
+    // of every edge use that is REVERSED in its face, reading the ends
+    // face-relative puts the first node at the wrong end - in all 12 such uses
+    // on a plate, all 48 on a filleted plate, and every one of the rest.
+    //
+    // The location is equally load-bearing: asked without it, both assembly
+    // files in the STEP corpus lose every association they have.
+    std::map<uint64_t, std::vector<uint32_t>> corner_nodes;
+    for (const MeshedFace &owner : meshed) {
+      for (TopExp_Explorer et(owner.face, TopAbs_EDGE); et.More(); et.Next()) {
+        const TopoDS_Edge edge = TopoDS::Edge(et.Current());
+        const Handle(Poly_PolygonOnTriangulation) polyline =
+            BRep_Tool::PolygonOnTriangulation(edge, owner.triangulation,
+                                              owner.location);
+        if (polyline.IsNull()) {
+          continue;
+        }
+        const int nodes = polyline->NbNodes();
+        if (nodes < 1) {
+          continue;
+        }
+        TopoDS_Vertex first_vertex, last_vertex;
+        TopExp::Vertices(TopoDS::Edge(edge.Oriented(TopAbs_FORWARD)),
+                         first_vertex, last_vertex);
+        const int node_total = owner.triangulation->NbNodes();
+        const std::pair<TopoDS_Vertex, int> ends[2] = {
+            {first_vertex, polyline->Nodes().Value(polyline->Nodes().Lower())},
+            {last_vertex,
+             polyline->Nodes().Value(polyline->Nodes().Lower() + nodes - 1)}};
+        for (const auto &end : ends) {
+          if (end.first.IsNull()) {
+            continue;
+          }
+          if (end.second < 1 || end.second > node_total) {
+            BRepTools::Clean(record.shape);
+            write_error(out_error,
+                        "an edge polyline names a node outside the "
+                        "triangulation of the face it lies on");
+            return FC_OCCT_KERNEL;
+          }
+          const uint32_t at =
+              owner.base + static_cast<uint32_t>(end.second - 1);
+          std::vector<uint32_t> &into = corner_nodes[record.remember(end.first)];
+          if (std::find(into.begin(), into.end(), at) == into.end()) {
+            into.push_back(at);
+          }
+        }
+      }
+    }
+
+    std::vector<uint32_t> corner_occurrences;
+    std::vector<uint64_t> corner_shapes;
+    std::vector<uint32_t> corner_first;
+    std::vector<uint32_t> corner_count;
+    for (const auto &entry : corner_nodes) {
+      if (entry.second.empty()) {
+        continue;
+      }
+      const size_t first = corner_occurrences.size();
+      if (first > static_cast<size_t>(std::numeric_limits<uint32_t>::max()) ||
+          entry.second.size() >
+              static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+        BRepTools::Clean(record.shape);
+        write_error(out_error, "the tessellation has more vertex occurrences "
+                               "than uint32 can count");
+        return FC_OCCT_KERNEL;
+      }
+      corner_occurrences.insert(corner_occurrences.end(), entry.second.begin(),
+                                entry.second.end());
+      corner_shapes.push_back(entry.first);
+      corner_first.push_back(static_cast<uint32_t>(first));
+      corner_count.push_back(static_cast<uint32_t>(entry.second.size()));
+    }
+
     // Do not let drawing change later serialisation or the next tessellation.
     // Positions, normals and face identities above are already caller-owned.
     BRepTools::Clean(record.shape);
@@ -1809,15 +1892,21 @@ FcOcctStatus fc_occt_tessellate(
     *out_face_count = face_shapes.size();
     out_edges->out_segment_count = edge_segments.size() / 2;
     out_edges->out_edge_count = edge_shapes.size();
+    out_corners->out_occurrence_count = corner_occurrences.size();
+    out_corners->out_vertex_count = corner_shapes.size();
 
     if (vertex_capacity == 0 && index_capacity == 0 && face_capacity == 0 &&
-        out_edges->segment_capacity == 0 && out_edges->edge_capacity == 0) {
+        out_edges->segment_capacity == 0 && out_edges->edge_capacity == 0 &&
+        out_corners->occurrence_capacity == 0 &&
+        out_corners->vertex_capacity == 0) {
       return FC_OCCT_OK;
     }
     if (vertex_capacity < positions.size() / 3 ||
         index_capacity < indices.size() || face_capacity < face_shapes.size() ||
         out_edges->segment_capacity < edge_segments.size() / 2 ||
-        out_edges->edge_capacity < edge_shapes.size()) {
+        out_edges->edge_capacity < edge_shapes.size() ||
+        out_corners->occurrence_capacity < corner_occurrences.size() ||
+        out_corners->vertex_capacity < corner_shapes.size()) {
       write_error(out_error, "the mesh buffers are too small: " +
                                  std::to_string(positions.size() / 3) +
                                  " vertices, " + std::to_string(indices.size()) +
@@ -1834,7 +1923,11 @@ FcOcctStatus fc_occt_tessellate(
         out_face_first == nullptr || out_face_index_count == nullptr ||
         out_edges->segments == nullptr || out_edges->edge_shapes == nullptr ||
         out_edges->edge_first_segment == nullptr ||
-        out_edges->edge_segment_count == nullptr) {
+        out_edges->edge_segment_count == nullptr ||
+        out_corners->occurrences == nullptr ||
+        out_corners->vertex_shapes == nullptr ||
+        out_corners->vertex_first == nullptr ||
+        out_corners->vertex_occurrence_count == nullptr) {
       write_error(out_error,
                   "fc_occt_tessellate was given capacity but no buffer");
       return FC_OCCT_INVALID_INPUT;
@@ -1857,6 +1950,14 @@ FcOcctStatus fc_occt_tessellate(
                 edge_first.size() * sizeof(uint32_t));
     std::memcpy(out_edges->edge_segment_count, edge_segment_count.data(),
                 edge_segment_count.size() * sizeof(uint32_t));
+    std::memcpy(out_corners->occurrences, corner_occurrences.data(),
+                corner_occurrences.size() * sizeof(uint32_t));
+    std::memcpy(out_corners->vertex_shapes, corner_shapes.data(),
+                corner_shapes.size() * sizeof(uint64_t));
+    std::memcpy(out_corners->vertex_first, corner_first.data(),
+                corner_first.size() * sizeof(uint32_t));
+    std::memcpy(out_corners->vertex_occurrence_count, corner_count.data(),
+                corner_count.size() * sizeof(uint32_t));
     return FC_OCCT_OK;
   });
 }

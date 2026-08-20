@@ -2255,6 +2255,7 @@ mod tests {
     fn one_quad(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
         let shape = ShapeHandle::new(SessionId::new(), 1);
         let mesh = Mesh {
+            topological_vertices: None,
             // XZ, facing the camera that `frame` places along -Y.
             positions: vec![
                 -10.0, 0.0, -10.0, 10.0, 0.0, -10.0, 10.0, 0.0, 10.0, -10.0, 0.0, 10.0,
@@ -2454,6 +2455,7 @@ mod tests {
         // Two quads, one behind the other, so hiding one changes the picture.
         let shape = |id| ShapeHandle::new(SessionId::new(), id);
         let plate = |half: f32, y: f32, id: u64| Mesh {
+            topological_vertices: None,
             positions: vec![
                 -half, y, -half, half, y, -half, half, y, half, -half, y, half,
             ],
@@ -2744,6 +2746,7 @@ mod tests {
         // real edge to mark rather than an empty frame to compare.
         let shape = ShapeHandle::new(SessionId::new(), 9);
         let mesh = Mesh {
+            topological_vertices: None,
             positions: vec![
                 -6.0, 0.0, -6.0, 6.0, 0.0, -6.0, 6.0, 0.0, 0.0, -6.0, 0.0, 0.0, //
                 -6.0, 0.0, 0.0, 6.0, 0.0, 0.0, 6.0, 0.0, 6.0, -6.0, 0.0, 6.0,
@@ -2843,6 +2846,7 @@ mod tests {
     fn contradictory_targets_never_make_a_face_of_another_definition() {
         let shape = ShapeHandle::new(SessionId::new(), 1);
         let mesh = |ordinal| Mesh {
+            topological_vertices: None,
             positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
             indices: vec![0, 1, 2],
@@ -2914,6 +2918,7 @@ mod tests {
     fn an_edge_that_does_not_bound_the_pixels_face_is_not_a_hit() {
         let shape = ShapeHandle::new(SessionId::new(), 1);
         let mesh = Mesh {
+            topological_vertices: None,
             positions: vec![
                 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 0.0, 0.0, 3.0, 0.0, 0.0, 2.0,
                 1.0, 0.0,
@@ -2979,6 +2984,7 @@ mod tests {
     fn an_edge_value_from_outside_the_frame_or_the_picture_names_nothing() {
         let shape = ShapeHandle::new(SessionId::new(), 1);
         let mesh = Mesh {
+            topological_vertices: None,
             positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
             indices: vec![0, 1, 2],

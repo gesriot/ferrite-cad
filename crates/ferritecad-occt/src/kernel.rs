@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 use ferritecad_exchange::Import;
 use ferritecad_kernel::{
     ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, ExtrudeResult, GeometryKernel, History,
-    HistoryInput, KernelIdentity, Mesh, MeshEdgeRange, MeshEdges, MeshFaceRange, OperationContext,
-    SegmentGeometry, SessionId, ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind,
-    TessellationParams,
+    HistoryInput, KernelIdentity, Mesh, MeshEdgeRange, MeshEdges, MeshFaceRange, MeshVertexRange,
+    MeshVertices, OperationContext, SegmentGeometry, SessionId, ShapeHandle, SketchPlane,
+    SubShapeHandle, SubShapeKind, TessellationParams,
 };
 use ferritecad_types::{CadError, ContentHash, ProfileJoint, Result, Transform};
 
@@ -498,7 +498,30 @@ impl GeometryKernel for OcctKernel {
             })
             .collect();
 
+        // Which packed positions are which corner, on the same terms: Open
+        // CASCADE's own answer, read from each edge's polyline and each edge's
+        // topological ends. One corner shared by three faces is one identifier
+        // owning three occurrences, not three corners.
+        let corners = mesh
+            .vertex_shapes
+            .iter()
+            .zip(
+                mesh.vertex_first
+                    .iter()
+                    .zip(mesh.vertex_occurrence_count.iter()),
+            )
+            .map(|(id, (first, count))| MeshVertexRange {
+                vertex: SubShapeHandle::new(shape, SubShapeKind::Vertex, *id),
+                first_occurrence: *first,
+                occurrence_count: *count,
+            })
+            .collect();
+
         let mesh = Mesh {
+            topological_vertices: Some(MeshVertices {
+                occurrences: mesh.vertex_occurrences,
+                ranges: corners,
+            }),
             positions: mesh.positions,
             normals: mesh.normals,
             indices: mesh.indices,
