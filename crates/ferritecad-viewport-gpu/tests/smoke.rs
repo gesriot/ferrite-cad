@@ -26,7 +26,9 @@ use ferritecad_viewport::{
     Camera, FacePickId, Hovered, Marked, PickId, Projection, RenderSnapshot, SnapshotBuilder,
     StandardView, VERTEX_FLOATS, Visibility,
 };
-use ferritecad_viewport_gpu::{Frame, Renderer, VERTEX_PICK_RADIUS_PIXELS};
+use ferritecad_viewport_gpu::{
+    Frame, Renderer, VERTEX_MARK_RADIUS_PIXELS, VERTEX_PICK_RADIUS_PIXELS,
+};
 
 /// A renderer, or a reason to stop.
 macro_rules! renderer_or_skip {
@@ -6933,5 +6935,243 @@ fn a_corner_of_one_face_is_refused_on_the_face_next_to_it() {
     assert!(
         kept_on_its_own > 0,
         "the corner was refused even on the face it does touch"
+    );
+}
+
+#[test]
+fn one_corner_is_marked_in_every_placement_and_nothing_else_is() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = cornered_pair(320, 320);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let uploaded = renderer.geometry_uploads();
+
+    let corner = snapshot.vertex_of(0, 0).expect("numbered");
+    let plain = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+    let asked = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Vertex(corner),
+        &visibility,
+    );
+
+    // The mark is really there before anything is compared.
+    let moved: Vec<(u32, u32)> = (0..plain.height())
+        .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+        .filter(|(x, y)| plain.colour_at(*x, *y) != asked.colour_at(*x, *y))
+        .collect();
+    assert!(!moved.is_empty(), "asking about a corner marked nothing");
+
+    // Only where that corner is drawn, in both placements, and nowhere near
+    // the other corners. The aperture may legitimately reach past the
+    // silhouette into the background, so the test is nearness to this corner's
+    // own samples rather than being on the surface.
+    let mine = samples_of_corner(&plain, corner);
+    assert!(!mine.is_empty());
+    for (x, y) in &moved {
+        let near = mine
+            .iter()
+            .any(|(cx, cy)| x.abs_diff(*cx) <= 4 && y.abs_diff(*cy) <= 4);
+        assert!(
+            near,
+            "a pixel at {x},{y} changed away from the marked corner"
+        );
+    }
+    let left = moved.iter().filter(|(x, _)| *x < 160).count();
+    assert!(
+        left > 0 && moved.len() - left > 0,
+        "the corner must be marked in both placements"
+    );
+
+    // And the mark is centred on the corner, not merely near it: the drawn dot
+    // comes from the same stage as the aperture and cannot be projected apart
+    // from it.
+    let centre = |of: &[(u32, u32)]| {
+        let near: Vec<(u32, u32)> = of.iter().copied().filter(|(x, _)| *x < 160).collect();
+        let sx: u32 = near.iter().map(|(x, _)| *x).sum();
+        let sy: u32 = near.iter().map(|(_, y)| *y).sum();
+        let n = near.len() as u32;
+        (sx / n, sy / n)
+    };
+    // The drawn dot is the declared size, and it is smaller than the area that
+    // answers. WGSL cannot read either constant, so this is what keeps the two
+    // literals in the shader honest about the two constants here.
+    let left_marks: Vec<(u32, u32)> = moved.iter().copied().filter(|(x, _)| *x < 160).collect();
+    let span_x = left_marks.iter().map(|(x, _)| *x).max().expect("some")
+        - left_marks.iter().map(|(x, _)| *x).min().expect("some");
+    let want = (VERTEX_MARK_RADIUS_PIXELS * 2.0).round() as u32;
+    assert!(
+        span_x.abs_diff(want) <= 1,
+        "the mark spans {span_x} pixels, not the declared {want}"
+    );
+
+    let marked_at = centre(&moved);
+    let corner_at = centre(&mine);
+    assert!(
+        marked_at.0.abs_diff(corner_at.0) <= 1 && marked_at.1.abs_diff(corner_at.1) <= 1,
+        "the mark is centred at {marked_at:?}, the corner answers around {corner_at:?}"
+    );
+    for ordinal in 1..4 {
+        let other = snapshot.vertex_of(0, ordinal).expect("numbered");
+        for (x, y) in samples_of_corner(&plain, other) {
+            assert!(
+                !moved.contains(&(x, y)),
+                "another corner was marked at {x},{y}"
+            );
+        }
+    }
+
+    // Nothing about identity moved, and nothing was uploaded.
+    assert_eq!(renderer.geometry_uploads(), uploaded);
+    for y in 0..plain.height() {
+        for x in 0..plain.width() {
+            assert_eq!(plain.pick_at(x, y), asked.pick_at(x, y), "at {x},{y}");
+            assert_eq!(plain.hit_at(x, y).face(), asked.hit_at(x, y).face());
+            assert_eq!(plain.hit_at(x, y).edge(), asked.hit_at(x, y).edge());
+            assert_eq!(plain.vertex_at(x, y), asked.vertex_at(x, y));
+            assert_eq!(plain.hit_at(x, y).vertex(), asked.hit_at(x, y).vertex());
+        }
+    }
+
+    // The same question twice is the same frame.
+    let again = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Vertex(corner),
+        &visibility,
+    );
+    assert_eq!(
+        asked.colour(),
+        again.colour(),
+        "two identical frames differ"
+    );
+
+    // The mark is its own thing: not the colour a hovered edge, a hovered
+    // face, a chosen part, a chosen face or a chosen edge would paint.
+    let at = *moved.first().expect("something was marked");
+    let mark = asked.colour_at(at.0, at.1).expect("on screen");
+    let edge = snapshot.edge_of(0, 0).expect("numbered");
+    let face = snapshot.face_of(0, 0).expect("numbered");
+    let part = snapshot.pick_of(0).expect("drawn");
+    for (what, selected, hovered) in [
+        ("a hovered edge", Marked::Nothing, Hovered::Edge(edge)),
+        ("a hovered face", Marked::Nothing, Hovered::Face(face)),
+        ("a hovered part", Marked::Nothing, Hovered::Definition(part)),
+        ("a chosen edge", Marked::Edge(edge), Hovered::Nothing),
+        ("a chosen face", Marked::Face(face), Hovered::Nothing),
+        ("a chosen part", Marked::Definition(part), Hovered::Nothing),
+    ] {
+        let other = draw(
+            &mut renderer,
+            &prepared,
+            &camera,
+            selected,
+            hovered,
+            &visibility,
+        );
+        // Compared where that style actually paints. Comparing at the corner's
+        // own pixel would pass whatever colour the corner used, because the
+        // other style may draw nothing there at all.
+        let theirs = (0..plain.height())
+            .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+            .find_map(|(x, y)| {
+                (plain.colour_at(x, y) != other.colour_at(x, y)).then(|| other.colour_at(x, y))
+            })
+            .unwrap_or_else(|| panic!("{what} painted nothing to compare against"))
+            .expect("on screen");
+        assert_ne!(
+            mark, theirs,
+            "a marked corner is painted the same as {what}"
+        );
+    }
+
+    // Selection covers this corner only where it really overlaps it.
+    // An edge of the same definition that this corner does not end, and a face
+    // of the same definition it does not touch: neither may cover it. Read
+    // from the packed facts rather than assumed.
+    let elsewhere = (0..4)
+        .filter_map(|ordinal| snapshot.edge_of(0, ordinal))
+        .find(|other| !snapshot.vertex_ends_edge(corner, *other))
+        .expect("an edge of this part that this corner does not end");
+    assert_eq!(
+        snapshot.definition_of_edge(elsewhere),
+        snapshot.definition_of_vertex(corner),
+        "and it is an edge of the same part"
+    );
+    let untouched = (0..2)
+        .filter_map(|ordinal| snapshot.face_of(0, ordinal))
+        .find(|other| !snapshot.vertex_touches_face(corner, *other));
+
+    let mut matrix = vec![
+        ("its own part", Marked::Definition(part), false),
+        ("a face it touches", Marked::Face(face), false),
+        ("an edge it ends", Marked::Edge(edge), false),
+        ("an edge it does not end", Marked::Edge(elsewhere), true),
+    ];
+    if let Some(untouched) = untouched {
+        matrix.push(("a face it does not touch", Marked::Face(untouched), true));
+    }
+    for (what, selected, marked) in matrix {
+        let with = draw(
+            &mut renderer,
+            &prepared,
+            &camera,
+            selected,
+            Hovered::Vertex(corner),
+            &visibility,
+        );
+        let without = draw(
+            &mut renderer,
+            &prepared,
+            &camera,
+            selected,
+            Hovered::Nothing,
+            &visibility,
+        );
+        let differs = (0..plain.height())
+            .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+            .any(|(x, y)| with.colour_at(x, y) != without.colour_at(x, y));
+        assert_eq!(
+            differs,
+            marked,
+            "selecting {what} should {} the corner",
+            if marked { "leave" } else { "cover" }
+        );
+    }
+
+    // A hidden part marks nothing at all.
+    let mut hidden = Visibility::new(&snapshot);
+    assert!(hidden.hide(Marked::Definition(part), &snapshot));
+    let gone = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Vertex(corner),
+        &hidden,
+    );
+    let bare = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &hidden,
+    );
+    assert_eq!(
+        gone.colour(),
+        bare.colour(),
+        "a hidden part was still marked"
     );
 }

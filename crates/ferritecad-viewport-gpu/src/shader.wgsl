@@ -36,6 +36,13 @@ struct Globals {
     // scalars that used to pad this struct, so its size is unchanged: the
     // matrix above gives it sixteen-byte alignment, and Rust asserts 96.
     viewport: vec2<f32>,
+    // Which topological vertex the pointer is over, or zero. A question only:
+    // a corner has no durable name, so there is no chosen counterpart.
+    hovered_vertex: u32,
+    // Three scalars of padding, spelled out, so both sides are 112 bytes.
+    padding_0: u32,
+    padding_1: u32,
+    padding_2: u32,
 };
 
 struct Draw {
@@ -315,6 +322,53 @@ fn vertex_corner(
 @fragment
 fn fragment_corner(in: CornerOut) -> @location(0) u32 {
     return in.vertex;
+}
+
+// The one topological vertex under the pointer, drawn over the picture.
+//
+// The same stream the identity pass uses, so nothing is built or uploaded to
+// mark a corner, and the same expansion, so the mark cannot drift from the
+// area that answers. The offsets are scaled down deliberately: what is drawn
+// is smaller than what responds, which is a decision recorded on the Rust side
+// beside both constants.
+@vertex
+fn vertex_corner_mark(
+    @location(0) position: vec3<f32>,
+    @location(1) vertex: u32,
+    @location(2) offset: vec2<f32>,
+) -> CornerOut {
+    var out: CornerOut;
+    out.vertex = vertex;
+    let centre = globals.view_projection * (draw.transform * vec4<f32>(position, 1.0));
+    // The drawn dot: smaller than the 3.0 pixel hit aperture above.
+    let radius = 2.0;
+    let per_pixel = vec2<f32>(2.0 / globals.viewport.x, 2.0 / globals.viewport.y);
+    out.clip = vec4<f32>(
+        centre.x + offset.x * radius * per_pixel.x * centre.w,
+        centre.y + offset.y * radius * per_pixel.y * centre.w,
+        centre.z,
+        centre.w,
+    );
+    return out;
+}
+
+// What the corner under the pointer is drawn in.
+//
+// A cool, fully saturated mark, taken to the end of the range opposite this
+// part's own material so it is visible on a part of any colour, and then
+// carried almost all the way to that accent. Every other question and choice
+// in the picture goes towards a warm accent or a cool one at half strength;
+// this is the only thing drawn at nearly full strength towards cyan, which is
+// what tells a corner apart from a hovered edge, a hovered face, a chosen
+// edge, a chosen face and a chosen part.
+@fragment
+fn fragment_corner_mark(in: CornerOut) -> @location(0) vec4<f32> {
+    if (globals.hovered_vertex == 0u || in.vertex != globals.hovered_vertex) {
+        discard;
+    }
+    let ink = marked_colour(draw.colour.rgb, 1.0);
+    let asked = vec3<f32>(0.0, 1.0, 0.85);
+    return vec4<f32>(mix(ink, asked, 0.92), draw.colour.a);
 }
 
 // The one topological edge under the pointer, drawn over the picture.

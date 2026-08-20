@@ -58,7 +58,20 @@ document could store. Selecting a part selects every placement of it, and
 selecting a face marks that face in every placement, because a click names what
 a thing is and never the place it happened to land on.
 Moving the pointer over the model asks what is under it, and the answer is as
-particular as the picture can be: over a line where two faces of a native body
+particular as the picture can be. The most particular thing is a corner: where
+the faces and edges of a native body meet at one point, that one topological
+vertex is marked, in every placement of the part. A corner is a point and
+covers no pixel of its own, so it answers within a small square around where it
+is drawn; that square is a hit area, and the dot you see is deliberately a
+little smaller than it. Pointing at a corner is a question and nothing more.
+The corner has no durable name in this build, so it cannot be selected, and
+clicking there still chooses the most particular thing the document can name:
+the edge if it is named, otherwise the face, otherwise the part. The question
+lasts only as long as the picture on screen and is forgotten when a new one
+arrives. Where two corners are drawn close enough that their squares overlap,
+one answer is kept for that pixel, decided the same way every time by drawing
+order; nothing here resolves between several candidates.
+Off a corner, over a line where two faces of a native body
 meet, that one topological edge is marked, in every placement of the part and
 along the whole of it, including the part of it each of the two faces drew for
 itself. Off the line, the face under the pointer is marked instead, and where

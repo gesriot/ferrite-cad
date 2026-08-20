@@ -14,8 +14,8 @@ use ferritecad_kernel::{
 };
 use ferritecad_types::{ContentHash, ErrorKind, Transform, Vec3};
 use ferritecad_viewport::{
-    Camera, FacePickId, Marked, PickId, Projection, RenderSnapshot, SnapshotBuilder, StandardView,
-    VERTEX_FLOATS, VertexPickId, Visibility,
+    Camera, FacePickId, Hovered, Marked, PickId, Projection, RenderSnapshot, SnapshotBuilder,
+    StandardView, VERTEX_FLOATS, VertexPickId, Visibility,
 };
 
 /// One triangle, with distinguishable positions and normals.
@@ -4831,4 +4831,105 @@ fn a_refused_mesh_spends_no_corner_identities() {
         3,
         "a refused mesh must not consume identities"
     );
+}
+
+#[test]
+fn a_question_about_a_corner_is_resolved_against_the_picture_that_issued_it() {
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let mut builder = SnapshotBuilder::new();
+    let definition = builder
+        .add_mesh(&cornered(shape, vec![0, 1, 2], &[1, 1, 1]))
+        .expect("packs");
+    builder
+        .place(definition, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+        .expect("places");
+    let snapshot = builder.build();
+
+    let corner = snapshot.vertex_of(definition, 0).expect("numbered");
+    let asked = Hovered::Vertex(corner);
+    assert_eq!(asked.known_to(&snapshot), asked);
+    assert_eq!(asked.definition(&snapshot), Some(definition));
+
+    // Nothing, and an identity of a different picture, answer with nothing.
+    assert_eq!(
+        Hovered::Vertex(VertexPickId::NOTHING).known_to(&snapshot),
+        Hovered::Nothing
+    );
+    assert_eq!(
+        Hovered::Vertex(VertexPickId::NOTHING).definition(&snapshot),
+        None
+    );
+
+    let mut other = SnapshotBuilder::new();
+    let elsewhere = other
+        .add_mesh(&cornered(shape, vec![0, 1, 2], &[3]))
+        .expect("packs");
+    other
+        .place(elsewhere, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+        .expect("places");
+    let other = other.build();
+    assert_eq!(
+        Hovered::Vertex(corner).known_to(&other),
+        Hovered::Nothing,
+        "a corner of another picture must ask nothing here"
+    );
+    assert_eq!(Hovered::Vertex(corner).definition(&other), None);
+}
+
+#[test]
+fn the_facts_selection_precedence_rests_on_answer_both_ways() {
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let stranger = ShapeHandle::new(SessionId::new(), 2);
+
+    // One triangle whose three positions are three corners, one face and one
+    // edge joining positions 0 and 1.
+    let mut mesh = cornered(shape, vec![0, 1, 2], &[1, 1, 1]);
+    mesh.edges = Some(ferritecad_kernel::MeshEdges {
+        segments: vec![0, 1],
+        ranges: vec![ferritecad_kernel::MeshEdgeRange {
+            edge: SubShapeHandle::new(shape, SubShapeKind::Edge, 0),
+            first_segment: 0,
+            segment_count: 1,
+        }],
+    });
+
+    let mut builder = SnapshotBuilder::new();
+    let definition = builder.add_mesh(&mesh).expect("packs");
+    // A second, unrelated definition, so "another definition" is a real case.
+    let apart = builder
+        .add_mesh(&cornered(stranger, vec![0, 1, 2], &[1, 1, 1]))
+        .expect("packs");
+    builder
+        .place(definition, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+        .expect("places");
+    builder
+        .place(apart, None, &moved(40.0, 0.0, 0.0), [0.5, 0.5, 0.5])
+        .expect("places");
+    let snapshot = builder.build();
+
+    let face = snapshot.face_of(definition, 0).expect("numbered");
+    let edge = snapshot.edge_of(definition, 0).expect("numbered");
+    let on_edge = snapshot.vertex_of(definition, 0).expect("position 0");
+    let off_edge = snapshot.vertex_of(definition, 2).expect("position 2");
+    let elsewhere = snapshot.face_of(apart, 0).expect("numbered");
+
+    // The face of this definition is touched by both of its corners.
+    assert!(snapshot.vertex_touches_face(on_edge, face));
+    assert!(snapshot.vertex_touches_face(off_edge, face));
+    // And by neither corner of the other definition's face.
+    assert!(!snapshot.vertex_touches_face(on_edge, elsewhere));
+    assert!(!snapshot.vertex_touches_face(off_edge, elsewhere));
+
+    // The edge joins positions 0 and 1, so it is ended by the first corner and
+    // not by the third.
+    assert!(snapshot.vertex_ends_edge(on_edge, edge));
+    assert!(
+        !snapshot.vertex_ends_edge(off_edge, edge),
+        "a corner that is not an end of this edge must say so"
+    );
+
+    // And a corner of the other definition ends none of this one's edges.
+    let far = snapshot.vertex_of(apart, 0).expect("numbered");
+    assert!(!snapshot.vertex_ends_edge(far, edge));
+    assert!(!snapshot.vertex_touches_face(far, face));
 }

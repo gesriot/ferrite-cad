@@ -150,12 +150,21 @@ struct GlobalsUniform {
     /// may forgive and another will not. Filling to 96 on both sides makes the
     /// agreement explicit, and the assertion below makes it checked.
     viewport: [f32; 2],
+    /// The topological vertex the pointer is over, or zero.
+    ///
+    /// A question only: a corner has no durable name, so there is no
+    /// `selected_vertex` beside this.
+    hovered_vertex: u32,
+    /// Three scalars of padding, spelled out. Adding the field above took the
+    /// struct past ninety-six, and WGSL rounds a sixteen-byte-aligned struct up
+    /// to a multiple of sixteen; both sides are 112 and the assertion checks it.
+    padding: [u32; 3],
 }
 
 // Ninety-six bytes, matching `Globals` in `shader.wgsl` exactly. A change to
 // either that forgets the other stops the build here rather than at whichever
 // driver notices first.
-const _: () = assert!(std::mem::size_of::<GlobalsUniform>() == 96);
+const _: () = assert!(std::mem::size_of::<GlobalsUniform>() == 112);
 
 /// What a grid pass needs to know, and all it is allowed to know.
 ///
@@ -220,8 +229,12 @@ pub struct Renderer {
     corner_pipeline: wgpu::RenderPipeline,
     /// Marks the edge under the pointer, offscreen.
     edge_mark_pipeline: wgpu::RenderPipeline,
+    corner_mark_pipeline: wgpu::RenderPipeline,
     /// The same mark for a window format, learned when a window is.
     edge_mark_surface_pipelines:
+        std::collections::HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    /// And the corner mark, learned the same way and for the same reason.
+    corner_mark_surface_pipelines:
         std::collections::HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
@@ -399,6 +412,8 @@ impl Renderer {
         let corner_pipeline = build_corner_pipeline(&device, &shader, &pipeline_layout);
         let edge_mark_pipeline =
             build_edge_mark_pipeline(&device, &shader, &pipeline_layout, COLOUR_FORMAT);
+        let corner_mark_pipeline =
+            build_corner_mark_pipeline(&device, &shader, &pipeline_layout, COLOUR_FORMAT);
         // Pop both even when the inner scope caught an error. Leaving the
         // outer one installed would make a later, unrelated device error look
         // as though it belonged to this build.
@@ -431,7 +446,9 @@ impl Renderer {
             edge_pipeline,
             corner_pipeline,
             edge_mark_pipeline,
+            corner_mark_pipeline,
             edge_mark_surface_pipelines: std::collections::HashMap::new(),
+            corner_mark_surface_pipelines: std::collections::HashMap::new(),
             shader,
             pipeline_layout,
             layout,
@@ -562,6 +579,10 @@ impl Renderer {
                 edge.to_raw(),
             ),
         };
+        let hovered_vertex = match hovered.known_to(snapshot) {
+            Hovered::Vertex(vertex) => vertex.to_raw(),
+            _ => VertexPickId::NOTHING.to_raw(),
+        };
         let (hovered, hovered_face, hovered_edge) = match hovered.known_to(snapshot) {
             Hovered::Nothing => (
                 PickId::NOTHING.to_raw(),
@@ -583,6 +604,13 @@ impl Renderer {
                 FacePickId::NOTHING.to_raw(),
                 marked_edge,
             ),
+            // Not drawn yet: this build marks no topological vertex, so a
+            // question about one lights nothing.
+            Hovered::Vertex(_) => (
+                PickId::NOTHING.to_raw(),
+                FacePickId::NOTHING.to_raw(),
+                EdgePickId::NOTHING.to_raw(),
+            ),
         };
         self.queue.write_buffer(
             &self.globals,
@@ -596,6 +624,8 @@ impl Renderer {
                 hovered_edge,
                 selected_edge,
                 viewport,
+                hovered_vertex,
+                padding: [0; 3],
             }),
         );
     }
@@ -726,6 +756,17 @@ impl Renderer {
                     .expect("the edge mark pipeline for this format was just ensured");
                 pass.set_pipeline(mark_pipeline);
                 Self::draw_edges(&mut pass, prepared, visibility, self.draw_stride);
+            }
+
+            // And the corner under the pointer, by the same rule and from the
+            // same stream the readback uses.
+            if Self::marked_vertex(prepared.snapshot(), selected, hovered).is_some() {
+                let corner_pipeline = self
+                    .corner_mark_surface_pipelines
+                    .get(&format)
+                    .expect("the vertex mark pipeline for this format was just ensured");
+                pass.set_pipeline(corner_pipeline);
+                Self::draw_corners(&mut pass, prepared, visibility, self.draw_stride);
             }
         }
         self.queue.submit(Some(encoder.finish()));
@@ -884,6 +925,33 @@ impl Renderer {
     /// partition. It is a property of the edge rather than of either side of
     /// it, so the answer cannot depend on which of two coincident face-side
     /// lines happened to be drawn last.
+    /// Which topological vertex, if any, this frame marks under the pointer.
+    ///
+    /// A question about a corner survives only where the selection does not
+    /// already cover that very corner. Overlap is read from the packed facts,
+    /// never from where things landed on screen: a chosen part covers its own
+    /// corners, a chosen face covers the corners it touches, and a chosen edge
+    /// covers only the corners that end it. A chosen edge of the same part that
+    /// this corner does not end leaves the question alone, and so does any
+    /// selection in another definition.
+    fn marked_vertex(
+        snapshot: &RenderSnapshot,
+        selected: Marked,
+        hovered: Hovered,
+    ) -> Option<VertexPickId> {
+        let Hovered::Vertex(vertex) = hovered.known_to(snapshot) else {
+            return None;
+        };
+        match selected.known_to(snapshot) {
+            Marked::Nothing => Some(vertex),
+            Marked::Definition(pick) => (snapshot.definition(pick)
+                != snapshot.definition_of_vertex(vertex))
+            .then_some(vertex),
+            Marked::Face(face) => (!snapshot.vertex_touches_face(vertex, face)).then_some(vertex),
+            Marked::Edge(edge) => (!snapshot.vertex_ends_edge(vertex, edge)).then_some(vertex),
+        }
+    }
+
     fn marked_edge(
         snapshot: &RenderSnapshot,
         selected: Marked,
@@ -923,6 +991,7 @@ impl Renderer {
         let needs_grid = !self.grid_surface_pipelines.contains_key(&format);
         let needs_lines = !self.line_surface_pipelines.contains_key(&format);
         let needs_marks = !self.edge_mark_surface_pipelines.contains_key(&format);
+        let needs_corner_marks = !self.corner_mark_surface_pipelines.contains_key(&format);
         if !needs_model && !needs_grid && !needs_lines && !needs_marks {
             return Ok(());
         }
@@ -965,6 +1034,9 @@ impl Renderer {
         let marks = needs_marks.then(|| {
             build_edge_mark_pipeline(&self.device, &self.shader, &self.pipeline_layout, format)
         });
+        let corner_marks = needs_corner_marks.then(|| {
+            build_corner_mark_pipeline(&self.device, &self.shader, &self.pipeline_layout, format)
+        });
         let internal_refusal = pollster::block_on(internal.pop()).map(|error| error.to_string());
         let validation_refusal =
             pollster::block_on(validation.pop()).map(|error| error.to_string());
@@ -983,6 +1055,10 @@ impl Renderer {
         }
         if let Some(marks) = marks {
             self.edge_mark_surface_pipelines.insert(format, marks);
+        }
+        if let Some(corner_marks) = corner_marks {
+            self.corner_mark_surface_pipelines
+                .insert(format, corner_marks);
         }
         Ok(())
     }
@@ -1351,6 +1427,41 @@ impl Renderer {
             });
             pass.set_pipeline(&self.edge_mark_pipeline);
             Self::draw_edges(&mut pass, prepared, visibility, self.draw_stride);
+        }
+
+        if Self::marked_vertex(prepared.snapshot(), selected, hovered).is_some() {
+            // The corner under the pointer, over the picture and nothing else.
+            // Its own pass with the colour and depth loaded, so marking a
+            // corner cannot change what any pixel *is*. Skipped entirely when
+            // there is no corner to mark, so a picture with no question in it
+            // is drawn by exactly the passes it was drawn by before.
+            let colour_view = colour.create_view(&Default::default());
+            let depth_view = depth.create_view(&Default::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ferritecad viewport vertex mark pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &colour_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.corner_mark_pipeline);
+            Self::draw_corners(&mut pass, prepared, visibility, self.draw_stride);
         }
 
         {
@@ -1944,6 +2055,76 @@ fn edge_stream(
         }
     }
     Ok(stream)
+}
+
+/// How large the drawn corner mark is, in pixels.
+///
+/// Deliberately smaller than [`VERTEX_PICK_RADIUS_PIXELS`], and the difference
+/// is the decision rather than an accident of rasterisation: what answers is a
+/// little larger than what is drawn, so a corner is easy to hit without the
+/// dot looking coarse. Both numbers are stated here and both are gated.
+///
+/// The mark is the whole of this smaller square, not a shape inside it.
+pub const VERTEX_MARK_RADIUS_PIXELS: f32 = 2.0;
+
+/// The drawn dot is smaller than the area that answers, and the compiler keeps
+/// it that way: swapping the two numbers is the one way this decision could be
+/// reversed by accident.
+const _: () = assert!(VERTEX_MARK_RADIUS_PIXELS < VERTEX_PICK_RADIUS_PIXELS);
+
+/// The pipeline that marks the one topological vertex under the pointer.
+///
+/// Colour and nothing else, whatever it is drawn into, for the reason the edge
+/// mark builder gives: one statement of what marking a corner means serves the
+/// window and the readback alike, so the two cannot drift.
+///
+/// Depth is tested and not written. A corner sits exactly on the surfaces that
+/// meet there, so `LessEqual` is what lets it draw at all, and a corner behind
+/// a nearer part stays behind it. At a silhouette the square legitimately
+/// reaches past the surface into the background, where nothing was drawn and
+/// the depth is cleared, so part of the mark appears there; that is what the
+/// gates say rather than pretending the surface clips it.
+fn build_corner_mark_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    pipeline_layout: &wgpu::PipelineLayout,
+    colour_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("ferritecad viewport vertex mark pipeline"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vertex_corner_mark"),
+            compilation_options: Default::default(),
+            buffers: &corner_vertex_buffer_layout(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fragment_corner_mark"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: colour_format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 /// The pipeline that marks the one topological edge under the pointer.
@@ -3077,7 +3258,7 @@ mod tests {
         // loudly rather than at whichever driver notices a short binding.
         assert_eq!(
             std::mem::size_of::<GlobalsUniform>(),
-            96,
+            112,
             "Globals must stay the size WGSL rounds it to"
         );
         assert_eq!(std::mem::align_of::<GlobalsUniform>(), 4);

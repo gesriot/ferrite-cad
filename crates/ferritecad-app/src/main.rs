@@ -1135,6 +1135,13 @@ fn frame_scene(
 /// silhouette answers with the face or with nothing, never with an edge whose
 /// definition is not there.
 fn hovered_at(hit: Hit) -> Hovered {
+    // The corner first, and only the coherent one. `Hit::vertex` is where the
+    // aperture is checked against the definition, the face and the edge under
+    // the same sample; the raw target deliberately reaches past the surface
+    // and must never be read here.
+    if hit.vertex() != ferritecad_viewport::VertexPickId::NOTHING {
+        return Hovered::Vertex(hit.vertex());
+    }
     if hit.edge() != EdgePickId::NOTHING {
         return Hovered::Edge(hit.edge());
     }
@@ -3684,12 +3691,15 @@ mod tests {
         // Every pixel of a real picture, sorted by what it actually is. All
         // four kinds occur here, and each must answer with the most particular
         // thing true of it rather than with the first thing looked for.
-        let (mut on_edges, mut on_faces, mut on_nothing) = (0u32, 0u32, 0u32);
+        let (mut on_corners, mut on_edges, mut on_faces, mut on_nothing) = (0u32, 0u32, 0u32, 0u32);
         for y in 0..frame.height() {
             for x in 0..frame.width() {
                 let hit = frame.hit_at(x, y);
                 let answer = hovered_at(hit);
-                if hit.edge() != EdgePickId::NOTHING {
+                if hit.vertex() != ferritecad_viewport::VertexPickId::NOTHING {
+                    assert_eq!(answer, Hovered::Vertex(hit.vertex()), "at {x},{y}");
+                    on_corners += 1;
+                } else if hit.edge() != EdgePickId::NOTHING {
                     assert_eq!(answer, Hovered::Edge(hit.edge()), "at {x},{y}");
                     on_edges += 1;
                 } else if hit.face() != FacePickId::NOTHING {
@@ -3704,9 +3714,9 @@ mod tests {
             }
         }
         assert!(
-            on_edges > 0 && on_faces > 0 && on_nothing > 0,
-            "all three kinds of pixel occur: {on_edges} on edges, {on_faces} on \
-             surfaces, {on_nothing} on nothing"
+            on_corners > 0 && on_edges > 0 && on_faces > 0 && on_nothing > 0,
+            "all four kinds of pixel occur: {on_corners} on corners, {on_edges} on \
+             edges, {on_faces} on surfaces, {on_nothing} on nothing"
         );
 
         // A pixel that is on an edge is also on a face: the ordering is what
@@ -3714,6 +3724,19 @@ mod tests {
         let (x, y, _) = an_edge_pixel(&frame).expect("the plate draws its edges");
         assert_ne!(frame.hit_at(x, y).face(), FacePickId::NOTHING);
         assert_ne!(frame.hit_at(x, y).definition(), PickId::NOTHING);
+
+        // And the same is true one step further in: a pixel on a corner is on
+        // an edge and a face too, so the corner wins by precedence rather than
+        // because nothing else was there.
+        let on_a_corner = (0..frame.height())
+            .flat_map(|y| (0..frame.width()).map(move |x| (x, y)))
+            .find(|(x, y)| {
+                frame.hit_at(*x, *y).vertex() != ferritecad_viewport::VertexPickId::NOTHING
+            })
+            .expect("the plate draws its corners");
+        let hit = frame.hit_at(on_a_corner.0, on_a_corner.1);
+        assert_ne!(hit.face(), FacePickId::NOTHING);
+        assert_ne!(hit.definition(), PickId::NOTHING);
     }
 
     #[test]
@@ -4238,6 +4261,83 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn pointing_at_a_corner_of_the_committed_plate_asks_about_that_corner() {
+        // The whole route: the committed plate, the real loader and Open
+        // CASCADE's own vertex association, a picture, a real frame, an orbit,
+        // a coherent corner sample, the application's answer, a second real
+        // frame, and its pixels.
+        let Some((_directory, scene)) = native_plate_with_named_edges() else {
+            return;
+        };
+        let mut renderer = renderer_or_skip!();
+        let picture = std::sync::Arc::new(scene.snapshot);
+        let prepared = renderer
+            .prepare(std::sync::Arc::clone(&picture))
+            .expect("uploads");
+        let mut input = ViewportInput::new();
+        input.resize(480, 480);
+        input
+            .frame(picture.bounds().expect("somewhere"))
+            .expect("frames");
+        input.handle(ViewportEvent::PointerMoved { x: 200.0, y: 200.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(ViewportEvent::PointerMoved { x: 260.0, y: 150.0 }, false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        let visibility = Visibility::new(&picture);
+        let plain = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                Marked::Nothing,
+                Hovered::Nothing,
+                &visibility,
+            )
+            .expect("draws");
+
+        // A pixel where the hit itself is coherent about a corner. The raw
+        // aperture is deliberately not used here: it reaches past the surface
+        // and only the hit checks that everything agrees.
+        let (x, y, corner) = (0..plain.height())
+            .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+            .find_map(|(x, y)| {
+                let vertex = plain.hit_at(x, y).vertex();
+                (vertex != ferritecad_viewport::VertexPickId::NOTHING).then_some((x, y, vertex))
+            })
+            .expect("the plate draws a corner the picture is coherent about");
+
+        // The application must ask about that corner rather than the edge or
+        // face beneath it.
+        let answer = hovered_at(plain.hit_at(x, y));
+        assert_eq!(
+            answer,
+            Hovered::Vertex(corner),
+            "pointing at a corner asked {answer:?} instead"
+        );
+
+        // And the next frame must show it, differently from the plain picture.
+        let marked = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                Marked::Nothing,
+                answer,
+                &visibility,
+            )
+            .expect("draws");
+        let changed = (0..plain.height())
+            .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+            .filter(|(x, y)| plain.colour_at(*x, *y) != marked.colour_at(*x, *y))
+            .count();
+        assert!(
+            changed > 0,
+            "asking about a corner changed no pixel of the picture"
+        );
     }
 
     #[test]
@@ -5172,11 +5272,12 @@ mod tests {
             .flat_map(|y| (0..frame.width()).map(move |x| (x, y)))
             .find_map(|(x, y)| {
                 let hit = frame.hit_at(x, y);
-                (hit.edge() != ferritecad_viewport::EdgePickId::NOTHING).then_some((
-                    x,
-                    y,
-                    hit.edge(),
-                ))
+                // On an edge and not on a corner. A corner is the more
+                // particular answer, so a pixel that is both is a question
+                // about the corner and would say so.
+                (hit.edge() != ferritecad_viewport::EdgePickId::NOTHING
+                    && hit.vertex() == ferritecad_viewport::VertexPickId::NOTHING)
+                    .then_some((x, y, hit.edge()))
             })
     }
 

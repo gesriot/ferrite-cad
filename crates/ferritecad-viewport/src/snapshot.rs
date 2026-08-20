@@ -644,6 +644,13 @@ pub enum Hovered {
     Face(FacePickId),
     /// One topological edge, as a pixel of a line can say.
     Edge(EdgePickId),
+    /// One topological vertex, as a pixel inside its aperture can say.
+    ///
+    /// A question only. A corner has no durable name in this build, so nothing
+    /// here reaches [`Marked`]: pointing at one says what it is for as long as
+    /// the picture is on screen, and choosing still answers with the most
+    /// specific durable thing the document can name.
+    Vertex(VertexPickId),
 }
 
 impl Hovered {
@@ -668,6 +675,10 @@ impl Hovered {
                 Some(_) => self,
                 None => Self::Nothing,
             },
+            Self::Vertex(vertex) => match snapshot.definition_of_vertex(vertex) {
+                Some(_) => self,
+                None => Self::Nothing,
+            },
         }
     }
 
@@ -682,6 +693,7 @@ impl Hovered {
             Self::Definition(pick) => snapshot.definition(pick),
             Self::Face(face) => snapshot.definition_of_face(face),
             Self::Edge(edge) => snapshot.definition_of_edge(edge),
+            Self::Vertex(vertex) => snapshot.definition_of_vertex(vertex),
         }
     }
 }
