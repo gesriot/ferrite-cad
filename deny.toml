@@ -58,3 +58,6 @@ deny = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# Exact source pinned in Cargo.toml while the arrayref registry incident is
+# unresolved. No other git dependency is permitted by this exception.
+allow-git = ["https://github.com/droundy/arrayref"]
