@@ -24,9 +24,9 @@ use ferritecad_kernel::{
 use ferritecad_types::{ErrorKind, Transform, Vec3};
 use ferritecad_viewport::{
     Camera, FacePickId, Hovered, Marked, PickId, Projection, RenderSnapshot, SnapshotBuilder,
-    StandardView, Visibility,
+    StandardView, VERTEX_FLOATS, Visibility,
 };
-use ferritecad_viewport_gpu::{Frame, Renderer};
+use ferritecad_viewport_gpu::{Frame, Renderer, VERTEX_PICK_RADIUS_PIXELS};
 
 /// A renderer, or a reason to stop.
 macro_rules! renderer_or_skip {
@@ -6200,4 +6200,738 @@ fn a_chosen_edge_follows_the_camera_through_both_projections() {
             }
         }
     }
+}
+
+/// The cornered part, with a plate drawn in front of one of its placements.
+fn cornered_pair_behind_a_plate(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
+    let shape = ShapeHandle::new(SessionId::new(), 11);
+    let cover = Mesh {
+        topological_vertices: None,
+        positions: vec![
+            -20.0, -8.0, -20.0, 8.0, -8.0, -20.0, 8.0, -8.0, 20.0, -20.0, -8.0, 20.0,
+        ],
+        normals: [[0.0f32, -1.0, 0.0]; 4].into_iter().flatten().collect(),
+        indices: vec![0, 1, 2, 0, 2, 3],
+        faces: vec![MeshFaceRange {
+            face: SubShapeHandle::new(shape, SubShapeKind::Face, 0),
+            first_index: 0,
+            index_count: 6,
+        }],
+        edges: None,
+    };
+
+    let mut builder = SnapshotBuilder::new();
+    let curved = builder.add_mesh(&two_faces_with_corners()).expect("packs");
+    let plate = builder.add_mesh(&cover).expect("packs");
+    for x in [-24.0, 24.0] {
+        builder
+            .place(curved, None, &moved(x, 0.0, 0.0), [0.2, 0.6, 0.2])
+            .expect("places");
+    }
+    builder
+        .place(plate, None, &moved(-24.0, 0.0, 0.0), [0.9, 0.3, 0.2])
+        .expect("places");
+    let snapshot = Arc::new(builder.build());
+    let mut camera = Camera::new();
+    camera.resize(width, height);
+    camera
+        .frame(snapshot.bounds().expect("something is drawn"))
+        .expect("frames");
+    (snapshot, camera)
+}
+
+/// The same two faces, with the corners the kernel would have named.
+///
+/// Four topological vertices. Two of them are the ends of the shared curve and
+/// each has a copy in both faces, which is what makes "one corner, several
+/// face-local occurrences" a statement with observable content. The other two
+/// are the apex of each face and have one copy each.
+fn two_faces_with_corners() -> Mesh {
+    let shape = ShapeHandle::new(SessionId::new(), 7);
+    let mut mesh = two_faces_sharing_a_curve();
+    // The same shape handle the faces and edges of this mesh already name.
+    let owner = mesh.faces[0].face.shape();
+    let corner = |index: u64, first: u32, count: u32| ferritecad_kernel::MeshVertexRange {
+        vertex: SubShapeHandle::new(owner, SubShapeKind::Vertex, index),
+        first_occurrence: first,
+        occurrence_count: count,
+    };
+    let _ = shape;
+    mesh.topological_vertices = Some(ferritecad_kernel::MeshVertices {
+        // Left end in both faces, right end in both faces, then each apex.
+        occurrences: vec![0, 6, 4, 8, 5, 9],
+        ranges: vec![
+            corner(0, 0, 2),
+            corner(1, 2, 2),
+            corner(2, 4, 1),
+            corner(3, 5, 1),
+        ],
+    });
+    mesh
+}
+
+/// That definition placed twice, side by side, with its corners named.
+fn cornered_pair(width: u32, height: u32) -> (Arc<RenderSnapshot>, Camera) {
+    let mut builder = SnapshotBuilder::new();
+    let definition = builder.add_mesh(&two_faces_with_corners()).expect("packs");
+    for x in [-24.0, 24.0] {
+        builder
+            .place(definition, None, &moved(x, 0.0, 0.0), [0.2, 0.6, 0.2])
+            .expect("places");
+    }
+    let snapshot = Arc::new(builder.build());
+    let mut camera = Camera::new();
+    camera.resize(width, height);
+    camera
+        .frame(snapshot.bounds().expect("something is drawn"))
+        .expect("frames");
+    (snapshot, camera)
+}
+
+/// Every pixel whose vertex target names `corner`.
+fn samples_of_corner(frame: &Frame, corner: ferritecad_viewport::VertexPickId) -> Vec<(u32, u32)> {
+    (0..frame.height())
+        .flat_map(|y| (0..frame.width()).map(move |x| (x, y)))
+        .filter(|(x, y)| frame.vertex_at(*x, *y) == corner)
+        .collect()
+}
+
+#[test]
+fn every_corner_of_the_picture_can_be_had_as_its_own_identity() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = cornered_pair(320, 320);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let frame = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+
+    assert_eq!(snapshot.vertex_count(), 4, "four corners, one definition");
+    let mut answered = 0;
+    for ordinal in 0..4 {
+        let corner = snapshot.vertex_of(0, ordinal).expect("numbered");
+        let samples = samples_of_corner(&frame, corner);
+        if samples.is_empty() {
+            continue;
+        }
+        answered += 1;
+        // Every sample of a corner sits within the aperture of that corner's
+        // own projection, in one of the two placements.
+        for (x, y) in &samples {
+            let near = snapshot
+                .draws()
+                .iter()
+                .filter_map(|item| {
+                    let at = *snapshot.occurrences_of_vertex(corner)?.first()?;
+                    let mesh = &snapshot.meshes()[item.mesh];
+                    let floats = at as usize * VERTEX_FLOATS;
+                    let position = mesh.vertices().get(floats..floats + 3)?;
+                    pixel_of(
+                        &camera,
+                        placed(
+                            [
+                                f64::from(position[0]),
+                                f64::from(position[1]),
+                                f64::from(position[2]),
+                            ],
+                            item.transform[12].into(),
+                        ),
+                    )
+                })
+                .any(|(cx, cy)| {
+                    x.abs_diff(cx) <= VERTEX_PICK_RADIUS_PIXELS as u32 + 1
+                        && y.abs_diff(cy) <= VERTEX_PICK_RADIUS_PIXELS as u32 + 1
+                });
+            assert!(
+                near,
+                "a sample of a corner at {x},{y} is nowhere near its projection"
+            );
+        }
+    }
+    assert!(answered >= 3, "only {answered} corners answered at all");
+}
+
+#[test]
+fn one_corner_keeps_one_identity_in_every_face_and_every_placement() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = cornered_pair(320, 320);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let frame = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+
+    // The first corner has a copy in each of the two faces and is placed
+    // twice, so it is drawn four times over. One identity throughout.
+    let corner = snapshot.vertex_of(0, 0).expect("numbered");
+    assert_eq!(
+        snapshot.occurrences_of_vertex(corner).map(<[u32]>::len),
+        Some(2),
+        "this corner has a copy in each face"
+    );
+    let samples = samples_of_corner(&frame, corner);
+    assert!(!samples.is_empty(), "the corner is drawn somewhere");
+
+    // Two placements, so the samples fall in two separated clusters and both
+    // report the same identity.
+    let left = samples.iter().filter(|(x, _)| *x < 160).count();
+    let right = samples.len() - left;
+    assert!(
+        left > 0 && right > 0,
+        "both placements must answer with the same corner: {left} and {right}"
+    );
+
+    // And the neighbours are answered too, each with its own identity and its
+    // own pixels. Checking only that they do not overlap would pass if they
+    // had been given this corner's identity and answered nowhere of their own.
+    let mut answered_elsewhere = 0;
+    for ordinal in 1..4 {
+        let other = snapshot.vertex_of(0, ordinal).expect("numbered");
+        assert_ne!(other, corner);
+        let theirs = samples_of_corner(&frame, other);
+        if theirs.is_empty() {
+            continue;
+        }
+        answered_elsewhere += 1;
+        for (x, y) in theirs {
+            assert!(!samples.contains(&(x, y)), "two corners answer at {x},{y}");
+        }
+    }
+    assert!(
+        answered_elsewhere >= 2,
+        "only {answered_elsewhere} of the neighbouring corners kept an identity of their own"
+    );
+}
+
+#[test]
+fn a_picture_whose_kernel_named_no_corner_answers_with_none() {
+    let mut renderer = renderer_or_skip!();
+    // The same geometry with no association at all, and the same geometry
+    // proven to have no corner. Neither may invent one.
+    for (what, corners) in [
+        ("unknown", None),
+        (
+            "proven empty",
+            Some(ferritecad_kernel::MeshVertices::default()),
+        ),
+    ] {
+        let mut mesh = two_faces_sharing_a_curve();
+        mesh.topological_vertices = corners;
+        let mut builder = SnapshotBuilder::new();
+        let definition = builder.add_mesh(&mesh).expect("packs");
+        builder
+            .place(definition, None, &Transform::IDENTITY, [0.2, 0.6, 0.2])
+            .expect("places");
+        let snapshot = Arc::new(builder.build());
+        let mut camera = Camera::new();
+        camera.resize(160, 160);
+        camera
+            .frame(snapshot.bounds().expect("something is drawn"))
+            .expect("frames");
+
+        let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+        let visibility = Visibility::new(&snapshot);
+        let frame = draw(
+            &mut renderer,
+            &prepared,
+            &camera,
+            Marked::Nothing,
+            Hovered::Nothing,
+            &visibility,
+        );
+        assert_eq!(snapshot.vertex_count(), 0, "{what}");
+        for y in 0..frame.height() {
+            for x in 0..frame.width() {
+                assert_eq!(
+                    frame.vertex_at(x, y),
+                    ferritecad_viewport::VertexPickId::NOTHING,
+                    "{what}: a corner was invented at {x},{y}"
+                );
+                assert_eq!(
+                    frame.hit_at(x, y).vertex(),
+                    ferritecad_viewport::VertexPickId::NOTHING
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_hidden_part_leaves_no_corner_behind() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = cornered_pair(320, 320);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+
+    let mut visibility = Visibility::new(&snapshot);
+    let shown = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+    let before: usize = (0..shown.height())
+        .flat_map(|y| (0..shown.width()).map(move |x| (x, y)))
+        .filter(|(x, y)| shown.vertex_at(*x, *y) != ferritecad_viewport::VertexPickId::NOTHING)
+        .count();
+    assert!(before > 0, "corners answer while the part is shown");
+
+    assert!(visibility.hide(
+        Marked::Definition(snapshot.pick_of(0).expect("drawn")),
+        &snapshot
+    ));
+    let hidden = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+    for y in 0..hidden.height() {
+        for x in 0..hidden.width() {
+            assert_eq!(
+                hidden.vertex_at(x, y),
+                ferritecad_viewport::VertexPickId::NOTHING,
+                "a hidden part still answers at {x},{y}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_corner_behind_a_nearer_part_does_not_answer_through_it() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = cornered_pair_behind_a_plate(320, 320);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let frame = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+
+    // Wherever the near plate is what the picture shows, no corner of the part
+    // behind it may answer.
+    let plate = snapshot.pick_of(1).or_else(|| snapshot.pick_of(0));
+    let mut covered = 0;
+    for y in 0..frame.height() {
+        for x in 0..frame.width() {
+            let corner = frame.vertex_at(x, y);
+            if corner == ferritecad_viewport::VertexPickId::NOTHING {
+                continue;
+            }
+            let owner = snapshot.definition_of_vertex(corner);
+            let drawn = snapshot.definition(frame.pick_at(x, y));
+            if owner != drawn && drawn.is_some() {
+                covered += 1;
+            }
+        }
+    }
+    assert_eq!(
+        covered, 0,
+        "a corner answered through the part drawn in front of it"
+    );
+    let _ = plate;
+}
+
+#[test]
+fn the_other_identity_targets_are_untouched_and_frames_repeat() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = cornered_pair(320, 320);
+
+    // The same picture with and without a corner association, so the
+    // difference is exactly the new pass.
+    let mut plain_mesh = two_faces_sharing_a_curve();
+    plain_mesh.topological_vertices = None;
+    let mut plain_builder = SnapshotBuilder::new();
+    let plain_definition = plain_builder.add_mesh(&plain_mesh).expect("packs");
+    for x in [-24.0, 24.0] {
+        plain_builder
+            .place(plain_definition, None, &moved(x, 0.0, 0.0), [0.2, 0.6, 0.2])
+            .expect("places");
+    }
+    let plain_snapshot = Arc::new(plain_builder.build());
+
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let plain_prepared = renderer
+        .prepare(Arc::clone(&plain_snapshot))
+        .expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let plain_visibility = Visibility::new(&plain_snapshot);
+
+    let uploaded = renderer.geometry_uploads();
+    let with = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+    let without = draw(
+        &mut renderer,
+        &plain_prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &plain_visibility,
+    );
+    assert_eq!(
+        renderer.geometry_uploads(),
+        uploaded,
+        "drawing uploaded geometry"
+    );
+
+    // Colour, definition, face and edge answers are bit for bit what they were
+    // before a corner was ever drawn.
+    assert_eq!(with.colour(), without.colour(), "the colour target moved");
+    for y in 0..with.height() {
+        for x in 0..with.width() {
+            assert_eq!(
+                with.pick_at(x, y).to_raw(),
+                without.pick_at(x, y).to_raw(),
+                "the definition target moved at {x},{y}"
+            );
+            assert_eq!(
+                with.hit_at(x, y).face().to_raw(),
+                without.hit_at(x, y).face().to_raw(),
+                "the face target moved at {x},{y}"
+            );
+            assert_eq!(
+                with.edge_at(x, y).to_raw(),
+                without.edge_at(x, y).to_raw(),
+                "the edge target moved at {x},{y}"
+            );
+            // And the edge a hit resolves to, which is the coherent one: a
+            // corner may agree with it or be refused, never replace it.
+            assert_eq!(
+                with.hit_at(x, y).edge().to_raw(),
+                without.hit_at(x, y).edge().to_raw(),
+                "the edge a hit answers with moved at {x},{y}"
+            );
+        }
+    }
+
+    // And the same frame twice is the same frame.
+    let again = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+    for y in 0..with.height() {
+        for x in 0..with.width() {
+            assert_eq!(
+                with.vertex_at(x, y),
+                again.vertex_at(x, y),
+                "two identical frames disagree at {x},{y}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_aperture_is_the_declared_radius_and_sits_on_the_shared_projection() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = cornered_pair(400, 400);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let frame = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+
+    // The apex of the lower face, which is a corner of one occurrence only, so
+    // its footprint is one square and can be measured.
+    let corner = snapshot.vertex_of(0, 2).expect("numbered");
+    let samples = samples_of_corner(&frame, corner);
+    assert!(!samples.is_empty(), "the apex corner is drawn");
+
+    // Its samples fall in one cluster per placement. Take the left one.
+    let left: Vec<(u32, u32)> = samples.iter().copied().filter(|(x, _)| *x < 200).collect();
+    assert!(!left.is_empty(), "the left placement draws it");
+    let min_x = left.iter().map(|(x, _)| *x).min().expect("some");
+    let max_x = left.iter().map(|(x, _)| *x).max().expect("some");
+    let min_y = left.iter().map(|(_, y)| *y).min().expect("some");
+    let max_y = left.iter().map(|(_, y)| *y).max().expect("some");
+
+    // A square of the declared radius about a centre, so its span is twice the
+    // radius, to within the pixel the rasteriser rounds to.
+    let want = (VERTEX_PICK_RADIUS_PIXELS * 2.0).round() as u32;
+    for (axis, span) in [("x", max_x - min_x), ("y", max_y - min_y)] {
+        assert!(
+            span.abs_diff(want) <= 1,
+            "the aperture spans {span} pixels in {axis}, not {want}"
+        );
+    }
+
+    // And its centre is where the shared view-projection puts the corner, not
+    // where a second projection would.
+    let at = *snapshot
+        .occurrences_of_vertex(corner)
+        .expect("drawn")
+        .first()
+        .expect("one");
+    let mesh = &snapshot.meshes()[0];
+    let floats = at as usize * VERTEX_FLOATS;
+    let position = mesh.vertices().get(floats..floats + 3).expect("there");
+    let expected = pixel_of(
+        &camera,
+        placed(
+            [
+                f64::from(position[0]),
+                f64::from(position[1]),
+                f64::from(position[2]),
+            ],
+            -24.0,
+        ),
+    )
+    .expect("on screen");
+    let centre = ((min_x + max_x) / 2, (min_y + max_y) / 2);
+    assert!(
+        centre.0.abs_diff(expected.0) <= 1 && centre.1.abs_diff(expected.1) <= 1,
+        "the aperture is centred at {centre:?}, the camera puts the corner at {expected:?}"
+    );
+}
+
+#[test]
+fn corners_answer_through_every_camera_and_both_projections() {
+    let mut renderer = renderer_or_skip!();
+    for (width, height) in [(320u32, 200u32), (200, 320)] {
+        let (snapshot, base) = cornered_pair(width, height);
+        let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+        let visibility = Visibility::new(&snapshot);
+
+        for projection in [Projection::Perspective, Projection::Orthographic] {
+            for (what, adjust) in [
+                ("framed", (0.0f32, 0.0f32, 0.0f32, 1.0f32)),
+                ("orbited", (0.6, 0.3, 0.0, 1.0)),
+                ("panned", (0.0, 0.0, 12.0, 1.0)),
+                ("zoomed", (0.0, 0.0, 0.0, 0.5)),
+                ("rolled", (0.2, 0.0, 0.0, 1.0)),
+            ] {
+                let mut camera = base;
+                camera.set_projection(projection);
+                let (yaw, pitch, pan, zoom) = adjust;
+                if yaw != 0.0 || pitch != 0.0 {
+                    camera.orbit(yaw, pitch);
+                }
+                if pan != 0.0 {
+                    camera.pan(pan, pan);
+                }
+                if (zoom - 1.0).abs() > f32::EPSILON {
+                    camera.zoom(zoom);
+                }
+                if what == "rolled" {
+                    camera.roll(0.3);
+                }
+
+                let frame = draw(
+                    &mut renderer,
+                    &prepared,
+                    &camera,
+                    Marked::Nothing,
+                    Hovered::Nothing,
+                    &visibility,
+                );
+                let answered = (0..frame.height())
+                    .flat_map(|y| (0..frame.width()).map(move |x| (x, y)))
+                    .filter(|(x, y)| {
+                        frame.vertex_at(*x, *y) != ferritecad_viewport::VertexPickId::NOTHING
+                    })
+                    .count();
+                assert!(
+                    answered > 0,
+                    "{width}x{height} {projection:?} {what}: no corner answered at all"
+                );
+                // Whatever answers belongs to this picture.
+                for y in 0..frame.height() {
+                    for x in 0..frame.width() {
+                        let corner = frame.vertex_at(x, y);
+                        if corner == ferritecad_viewport::VertexPickId::NOTHING {
+                            continue;
+                        }
+                        assert!(
+                            snapshot.definition_of_vertex(corner).is_some(),
+                            "{what}: an unknown corner answered at {x},{y}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_corner_is_only_answered_where_everything_else_agrees_with_it() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = cornered_pair(320, 320);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let frame = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+
+    let mut raw_only = 0;
+    let mut coherent = 0;
+    for y in 0..frame.height() {
+        for x in 0..frame.width() {
+            let claimed = frame.vertex_at(x, y);
+            let hit = frame.hit_at(x, y);
+            if claimed == ferritecad_viewport::VertexPickId::NOTHING {
+                assert_eq!(hit.vertex(), ferritecad_viewport::VertexPickId::NOTHING);
+                continue;
+            }
+            if hit.vertex() == ferritecad_viewport::VertexPickId::NOTHING {
+                raw_only += 1;
+                continue;
+            }
+            coherent += 1;
+            // Everything the hit says about this pixel agrees with the corner.
+            assert_eq!(hit.vertex(), claimed);
+            assert_eq!(
+                snapshot.definition_of_vertex(hit.vertex()),
+                snapshot.definition(hit.definition()),
+                "at {x},{y}"
+            );
+            assert!(
+                snapshot.vertex_touches_face(hit.vertex(), hit.face()),
+                "a corner was answered on a face it does not touch, at {x},{y}"
+            );
+            if hit.edge() != ferritecad_viewport::EdgePickId::NOTHING {
+                assert!(
+                    snapshot.vertex_ends_edge(hit.vertex(), hit.edge()),
+                    "a corner was answered on an edge it does not end, at {x},{y}"
+                );
+            }
+        }
+    }
+    assert!(coherent > 0, "no corner survived the coherence rule");
+    assert!(
+        raw_only > 0,
+        "the aperture never reached past its own surface, so the rule was never exercised"
+    );
+
+    // And a corner does not agree with a face or edge it has nothing to do
+    // with: the rule is a real question, not one that always says yes.
+    let corner = snapshot.vertex_of(0, 2).expect("the lower apex");
+    let upper_face = snapshot.face_of(0, 1).expect("the upper face");
+    assert!(
+        !snapshot.vertex_touches_face(corner, upper_face),
+        "the lower apex must not touch the upper face"
+    );
+    let shared_edge = snapshot.edge_of(0, 0).expect("the shared curve");
+    assert!(
+        !snapshot.vertex_ends_edge(corner, shared_edge),
+        "the lower apex is no end of the shared curve"
+    );
+}
+
+#[test]
+fn a_corner_of_one_face_is_refused_on_the_face_next_to_it() {
+    let mut renderer = renderer_or_skip!();
+
+    // The left end of the shared curve, recorded as a corner of the lower face
+    // only. Its aperture reaches a few pixels past that face and onto the
+    // upper one, which is exactly the case the face rule exists to refuse: the
+    // sample is on a face this corner does not touch.
+    let mut mesh = two_faces_sharing_a_curve();
+    let owner = mesh.faces[0].face.shape();
+    mesh.topological_vertices = Some(ferritecad_kernel::MeshVertices {
+        occurrences: vec![0],
+        ranges: vec![ferritecad_kernel::MeshVertexRange {
+            vertex: SubShapeHandle::new(owner, SubShapeKind::Vertex, 0),
+            first_occurrence: 0,
+            occurrence_count: 1,
+        }],
+    });
+
+    let mut builder = SnapshotBuilder::new();
+    let definition = builder.add_mesh(&mesh).expect("packs");
+    builder
+        .place(definition, None, &Transform::IDENTITY, [0.2, 0.6, 0.2])
+        .expect("places");
+    let snapshot = Arc::new(builder.build());
+    let mut camera = Camera::new();
+    camera.resize(400, 400);
+    camera
+        .frame(snapshot.bounds().expect("something is drawn"))
+        .expect("frames");
+
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let frame = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+
+    let corner = snapshot.vertex_of(0, 0).expect("numbered");
+    let lower = snapshot.face_of(0, 0).expect("the lower face");
+    let upper = snapshot.face_of(0, 1).expect("the upper face");
+    assert!(snapshot.vertex_touches_face(corner, lower));
+    assert!(
+        !snapshot.vertex_touches_face(corner, upper),
+        "this corner is recorded on the lower face only"
+    );
+
+    // The aperture does land on the upper face somewhere, and there the corner
+    // is refused while the raw target still names it.
+    let mut refused_on_the_neighbour = 0;
+    let mut kept_on_its_own = 0;
+    for y in 0..frame.height() {
+        for x in 0..frame.width() {
+            if frame.vertex_at(x, y) != corner {
+                continue;
+            }
+            let hit = frame.hit_at(x, y);
+            if hit.face() == upper {
+                assert_eq!(
+                    hit.vertex(),
+                    ferritecad_viewport::VertexPickId::NOTHING,
+                    "a corner was answered on the face beside it, at {x},{y}"
+                );
+                refused_on_the_neighbour += 1;
+            } else if hit.face() == lower {
+                kept_on_its_own += 1;
+            }
+        }
+    }
+    assert!(
+        refused_on_the_neighbour > 0,
+        "the aperture never reached the neighbouring face, so the rule was not exercised"
+    );
+    assert!(
+        kept_on_its_own > 0,
+        "the corner was refused even on the face it does touch"
+    );
 }

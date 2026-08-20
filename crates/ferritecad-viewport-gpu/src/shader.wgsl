@@ -32,8 +32,10 @@ struct Globals {
     // sixteen-byte alignment, so WGSL rounds its size up to a multiple of
     // sixteen; without these the Rust type would be 88 bytes and this one 96.
     // Both are 96, and Rust asserts it.
-    padding_0: u32,
-    padding_1: u32,
+    // The size of what is being drawn into, in pixels. Occupies the two
+    // scalars that used to pad this struct, so its size is unchanged: the
+    // matrix above gives it sixteen-byte alignment, and Rust asserts 96.
+    viewport: vec2<f32>,
 };
 
 struct Draw {
@@ -265,6 +267,54 @@ fn vertex_edge(
 @fragment
 fn fragment_edge(in: EdgeOut) -> @location(0) u32 {
     return in.edge;
+}
+
+struct CornerOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) @interpolate(flat) vertex: u32,
+};
+
+// The square that lets a corner be hit.
+//
+// A B-Rep vertex is a point and rasterises to nothing, so each one is given an
+// aperture. The centre goes through exactly the transform the picture uses -
+// the draw's own placement, then the shared view-projection - and only then is
+// the result pushed out by a fixed number of pixels along each clip axis.
+//
+// Multiplying by `clip.w` is what keeps the square the same size on screen at
+// any depth: the perspective divide that follows undoes it. Two pixels of NDC
+// span the viewport, hence the factor of two.
+//
+// Nothing is projected a second time and nothing about the model moves. The
+// six offsets arriving per corner are the corners of two triangles.
+@vertex
+fn vertex_corner(
+    @location(0) position: vec3<f32>,
+    @location(1) vertex: u32,
+    @location(2) offset: vec2<f32>,
+) -> CornerOut {
+    var out: CornerOut;
+    out.vertex = vertex;
+    let centre = globals.view_projection * (draw.transform * vec4<f32>(position, 1.0));
+    // Kept equal to VERTEX_PICK_RADIUS_PIXELS on the Rust side. WGSL cannot
+    // read that constant, so a gate measures the footprint this produces and
+    // compares it against the constant rather than trusting the two to agree.
+    let radius = 3.0;
+    let per_pixel = vec2<f32>(2.0 / globals.viewport.x, 2.0 / globals.viewport.y);
+    out.clip = vec4<f32>(
+        centre.x + offset.x * radius * per_pixel.x * centre.w,
+        centre.y + offset.y * radius * per_pixel.y * centre.w,
+        centre.z,
+        centre.w,
+    );
+    return out;
+}
+
+// One target and one integer, as the edge pass has: this pass attaches no
+// colour, no definition, no face and no edge, so it cannot reach them.
+@fragment
+fn fragment_corner(in: CornerOut) -> @location(0) u32 {
+    return in.vertex;
 }
 
 // The one topological edge under the pointer, drawn over the picture.

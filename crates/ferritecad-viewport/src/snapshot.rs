@@ -1323,6 +1323,49 @@ impl RenderSnapshot {
             .any(|vertex| mesh.face_of_vertex.get(*vertex as usize).copied() == Some(face.raw))
     }
 
+    /// Whether one topological vertex is a corner of one face.
+    ///
+    /// Read from the partitions already packed: every position belongs to
+    /// exactly one face, and a corner's occurrences are positions, so the
+    /// faces a corner touches are the faces its occurrences belong to. No
+    /// coordinate, no ordinal and no traversal order takes part.
+    pub fn vertex_touches_face(&self, vertex: VertexPickId, face: FacePickId) -> bool {
+        let Some(definition) = self.definition_of_vertex(vertex) else {
+            return false;
+        };
+        if self.definition_of_face(face) != Some(definition) {
+            return false;
+        }
+        let Some(occurrences) = self.occurrences_of_vertex(vertex) else {
+            return false;
+        };
+        let mesh = &self.meshes[definition];
+        occurrences
+            .iter()
+            .any(|index| mesh.face_of_vertex.get(*index as usize).copied() == Some(face.raw))
+    }
+
+    /// Whether one topological vertex is an end of one topological edge.
+    ///
+    /// Read the same way: an edge's segments name positions, and the only
+    /// positions that are corners are the occurrences of some vertex, so a
+    /// corner shared with an edge's segments is one of that edge's ends.
+    pub fn vertex_ends_edge(&self, vertex: VertexPickId, edge: EdgePickId) -> bool {
+        let Some(definition) = self.definition_of_vertex(vertex) else {
+            return false;
+        };
+        if self.definition_of_edge(edge) != Some(definition) {
+            return false;
+        }
+        let (Some(occurrences), Some(segments)) = (
+            self.occurrences_of_vertex(vertex),
+            self.segments_of_edge(edge),
+        ) else {
+            return false;
+        };
+        segments.iter().any(|index| occurrences.contains(index))
+    }
+
     /// Where one topological edge of one definition is, in every placement.
     ///
     /// The edge's own segments and nothing else: neither the face it bounds

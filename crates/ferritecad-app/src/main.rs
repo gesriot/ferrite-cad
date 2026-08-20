@@ -4241,6 +4241,65 @@ mod tests {
     }
 
     #[test]
+    fn a_pixel_of_a_corner_of_the_committed_plate_says_which_corner_it_is() {
+        // The whole route: the committed plate, the real loader and Open
+        // CASCADE's own vertex association, a picture, prepared geometry, a
+        // real offscreen frame, and a pixel at a corner's own projection.
+        let Some((_directory, scene)) = native_plate_with_named_edges() else {
+            return;
+        };
+        let mut renderer = renderer_or_skip!();
+        let picture = std::sync::Arc::new(scene.snapshot);
+        assert_eq!(
+            picture.vertex_count(),
+            8,
+            "the plate's corners reach the picture"
+        );
+        let prepared = renderer
+            .prepare(std::sync::Arc::clone(&picture))
+            .expect("uploads");
+        let mut input = ViewportInput::new();
+        input.resize(480, 480);
+        input
+            .frame(picture.bounds().expect("somewhere"))
+            .expect("frames");
+        // Off the axis, so the corners are not all on the silhouette.
+        input.handle(ViewportEvent::PointerMoved { x: 200.0, y: 200.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(ViewportEvent::PointerMoved { x: 260.0, y: 150.0 }, false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        let visibility = Visibility::new(&picture);
+        let frame = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                Marked::Nothing,
+                Hovered::Nothing,
+                &visibility,
+            )
+            .expect("draws");
+
+        // Somewhere in the picture a corner must be answerable.
+        let found = (0..frame.height())
+            .flat_map(|y| (0..frame.width()).map(move |x| (x, y)))
+            .find_map(|(x, y)| {
+                let corner = frame.vertex_at(x, y);
+                (corner != ferritecad_viewport::VertexPickId::NOTHING).then_some((x, y, corner))
+            });
+        let Some((x, y, corner)) = found else {
+            panic!("no pixel of the drawn plate says which corner it is on");
+        };
+        assert_eq!(
+            picture.definition_of_vertex(corner),
+            picture.definition(picture.pick_of(0).expect("drawn")),
+            "the corner at {x},{y} belongs to another definition"
+        );
+    }
+
+    #[test]
     fn clicking_a_named_edge_of_the_committed_plate_chooses_that_edge() {
         let Some((_directory, scene)) = native_plate_with_named_edges() else {
             return;

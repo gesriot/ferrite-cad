@@ -71,7 +71,7 @@ mod surface;
 
 pub use renderer::{
     COLOUR_FORMAT, DEPTH_FORMAT, EDGE_FORMAT, FACE_FORMAT, Frame, Hit, PICK_FORMAT,
-    PreparedSnapshot, Renderer, RendererId,
+    PreparedSnapshot, Renderer, RendererId, VERTEX_FORMAT, VERTEX_PICK_RADIUS_PIXELS,
 };
 pub use surface::{
     ComposedSurfaceFrame, Presented, SurfaceFrame, SurfaceRecovery, WindowSurface, recovery_for,

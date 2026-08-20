@@ -6,7 +6,7 @@ use std::sync::Arc;
 use ferritecad_types::{CadError, Result};
 use ferritecad_viewport::{
     Camera, EdgePickId, FacePickId, Hovered, Marked, PickId, RenderSnapshot, VERTEX_FLOATS,
-    Visibility,
+    VertexPickId, Visibility,
 };
 use wgpu::util::DeviceExt as _;
 
@@ -34,6 +34,26 @@ pub const FACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 /// what a pixel with no edge on it reads as.
 pub const EDGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
+/// What the vertex identity target holds, one `u32` per pixel.
+pub const VERTEX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
+
+/// How far, in pixels, a corner answers from its own projected centre.
+///
+/// A B-Rep vertex is a point and covers no pixel, so it is given an aperture:
+/// an axis-aligned square in screen space, centred on where the shared
+/// view-projection puts the corner, reaching this many pixels along each axis.
+/// A sample inside that square is a sample of the corner.
+///
+/// It is a hit area and nothing else. It is not drawn, it is not a tolerance
+/// on the topology, and it does not move the model: the square is built in the
+/// vertex shader after the same world transform the picture uses, so the
+/// geometry that produced it is the geometry that was already there.
+///
+/// Two ordinary triangles rasterise it, which is why it is the same size on
+/// every backend: nothing here asks for a point size or any optional
+/// capability that Metal, Vulkan and DX12 might each answer differently.
+pub const VERTEX_PICK_RADIUS_PIXELS: f32 = 3.0;
+
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// One vertex of the expanded edge stream.
@@ -46,6 +66,20 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 struct EdgeVertex {
     position: [f32; 3],
     edge: u32,
+}
+
+/// One corner of the footprint that lets a topological vertex be hit.
+///
+/// The same world position six times over, with the six corner offsets of two
+/// triangles. Expanding in the vertex shader rather than here is what keeps the
+/// aperture a fixed number of pixels at any zoom without a second projection
+/// on the processor.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct CornerVertex {
+    position: [f32; 3],
+    vertex: u32,
+    offset: [f32; 2],
 }
 
 /// Per-draw uniform data, as the shader declares it.
@@ -92,19 +126,30 @@ struct GlobalsUniform {
     hovered_edge: u32,
     /// The topological edge that has been chosen, or zero.
     ///
+    /// (See below: the two scalars that used to pad this struct now carry the
+    /// viewport size, so the size is unchanged.)
+    ///
     /// Taken from the padding that was already there rather than added to the
     /// end: the struct stays ninety-six bytes, and the assertion below is what
     /// says so on both sides rather than a backend's willingness to forgive.
     selected_edge: u32,
     /// Two scalars, written down rather than left to a compiler.
     ///
+    /// The size of what is being drawn into, in pixels.
+    ///
+    /// Taken from the two scalars that used to pad this struct, so the size is
+    /// exactly what it was. The vertex identity pass needs it to turn a radius
+    /// in pixels into an offset in clip space, and taking it from the uniform
+    /// the camera already fills is what keeps that arithmetic on the same
+    /// projection as the picture rather than beside it.
+    ///
     /// A `mat4x4` gives this struct sixteen-byte alignment in WGSL, so its
     /// size is rounded up to a multiple of sixteen there. Six `u32` after the
     /// matrix is 88 bytes in Rust and 96 in WGSL, and a uniform binding whose
     /// size disagrees with the shader's view of it is a mismatch one backend
-    /// may forgive and another will not. Padding to 96 on both sides makes the
+    /// may forgive and another will not. Filling to 96 on both sides makes the
     /// agreement explicit, and the assertion below makes it checked.
-    padding: [u32; 2],
+    viewport: [f32; 2],
 }
 
 // Ninety-six bytes, matching `Globals` in `shader.wgsl` exactly. A change to
@@ -172,6 +217,7 @@ pub struct Renderer {
     /// Draws the topological edges into their own identity target. Offscreen
     /// only: a window has no such attachment and is not asked for one.
     edge_pipeline: wgpu::RenderPipeline,
+    corner_pipeline: wgpu::RenderPipeline,
     /// Marks the edge under the pointer, offscreen.
     edge_mark_pipeline: wgpu::RenderPipeline,
     /// The same mark for a window format, learned when a window is.
@@ -350,6 +396,7 @@ impl Renderer {
         let line_pipeline =
             build_line_pipeline(&device, &shader, &pipeline_layout, COLOUR_FORMAT, true);
         let edge_pipeline = build_edge_pipeline(&device, &shader, &pipeline_layout);
+        let corner_pipeline = build_corner_pipeline(&device, &shader, &pipeline_layout);
         let edge_mark_pipeline =
             build_edge_mark_pipeline(&device, &shader, &pipeline_layout, COLOUR_FORMAT);
         // Pop both even when the inner scope caught an error. Leaving the
@@ -382,6 +429,7 @@ impl Renderer {
             surface_pipelines: std::collections::HashMap::new(),
             line_surface_pipelines: std::collections::HashMap::new(),
             edge_pipeline,
+            corner_pipeline,
             edge_mark_pipeline,
             edge_mark_surface_pipelines: std::collections::HashMap::new(),
             shader,
@@ -481,6 +529,7 @@ impl Renderer {
         prepared: &PreparedSnapshot,
         selected: Marked,
         hovered: Hovered,
+        viewport: [f32; 2],
     ) {
         // Every identity asked of the picture about to be drawn, and by the
         // same question. A number that named a definition of some other
@@ -546,7 +595,7 @@ impl Renderer {
                 hovered,
                 hovered_edge,
                 selected_edge,
-                padding: [0; 2],
+                viewport,
             }),
         );
     }
@@ -603,7 +652,13 @@ impl Renderer {
         });
         let depth_view = depth.create_view(&Default::default());
 
-        self.write_globals(camera, prepared, selected, hovered);
+        self.write_globals(
+            camera,
+            prepared,
+            selected,
+            hovered,
+            [width as f32, height as f32],
+        );
         let grid = self.write_grid(camera, prepared.snapshot());
 
         let mut encoder = self
@@ -785,6 +840,33 @@ impl Renderer {
             pass.set_bind_group(0, &prepared.bindings, &[(index as u64 * stride) as u32]);
             pass.set_vertex_buffer(0, mesh.edges.slice(..));
             pass.draw(0..mesh.edge_vertex_count, 0..1);
+        }
+    }
+
+    /// Every corner footprint of every visible placement.
+    ///
+    /// The same placement loop the model and the edges use, so a corner is
+    /// drawn wherever its definition is and nowhere it is not. A hidden
+    /// definition contributes nothing, which is what leaves the target empty
+    /// there rather than leaving a stale answer.
+    fn draw_corners(
+        pass: &mut wgpu::RenderPass<'_>,
+        prepared: &PreparedSnapshot,
+        visibility: &Visibility,
+        stride: u64,
+    ) {
+        let hidden = visibility.hidden_in(prepared.snapshot());
+        for (index, item) in prepared.snapshot.draws().iter().enumerate() {
+            if hidden.get(item.mesh).copied().unwrap_or(false) {
+                continue;
+            }
+            let mesh = &prepared.meshes[item.mesh];
+            if mesh.corner_vertex_count == 0 {
+                continue;
+            }
+            pass.set_bind_group(0, &prepared.bindings, &[(index as u64 * stride) as u32]);
+            pass.set_vertex_buffer(0, mesh.corners.slice(..));
+            pass.draw(0..mesh.corner_vertex_count, 0..1);
         }
     }
 
@@ -1040,6 +1122,27 @@ impl Renderer {
                     },
                     usage: wgpu::BufferUsages::VERTEX,
                 });
+            // The corner footprints, uploaded once here with everything else.
+            // Nothing is built or uploaded per frame.
+            let corner_vertices = corner_stream(&snapshot, index, mesh)?;
+            let corner_vertex_count = corner_vertices.len() as u32;
+            let corners = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("ferritecad viewport vertex identities"),
+                    contents: if corner_vertices.is_empty() {
+                        // A zero-sized buffer is not a buffer. Nothing draws
+                        // from this one: the count above is what decides.
+                        bytemuck::bytes_of(&CornerVertex {
+                            position: [0.0; 3],
+                            vertex: 0,
+                            offset: [0.0; 2],
+                        })
+                    } else {
+                        bytemuck::cast_slice(&corner_vertices)
+                    },
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
             meshes.push(GpuMesh {
                 vertices,
                 faces,
@@ -1049,6 +1152,8 @@ impl Renderer {
                 line_index_count: mesh.line_indices().len() as u32,
                 edges,
                 edge_vertex_count,
+                corners,
+                corner_vertex_count,
             });
             self.geometry_uploads += 1;
         }
@@ -1092,6 +1197,7 @@ impl Renderer {
                 picks: Vec::new(),
                 faces: Vec::new(),
                 edges: Vec::new(),
+                vertices: Vec::new(),
             });
         }
 
@@ -1106,6 +1212,7 @@ impl Renderer {
         let pick = self.target("pick", extent, PICK_FORMAT);
         let face = self.target("face", extent, FACE_FORMAT);
         let edge = self.target("edge", extent, EDGE_FORMAT);
+        let corner = self.target("vertex", extent, VERTEX_FORMAT);
         let depth = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ferritecad viewport depth"),
             size: extent,
@@ -1118,7 +1225,13 @@ impl Renderer {
         });
 
         // The things that differ from frame to frame.
-        self.write_globals(camera, prepared, selected, hovered);
+        self.write_globals(
+            camera,
+            prepared,
+            selected,
+            hovered,
+            [width as f32, height as f32],
+        );
         let grid = self.write_grid(camera, prepared.snapshot());
 
         let mut encoder = self
@@ -1241,6 +1354,51 @@ impl Renderer {
         }
 
         {
+            // Which topological vertex is under each pixel, in a pass of its
+            // own against the depth the picture was drawn to.
+            //
+            // Before the edge pass rather than after it, because that one
+            // discards the depth it borrowed and this one needs the same
+            // depth. Nothing here writes depth either.
+            //
+            // The colour, definition, face and edge targets are not attached
+            // at all, so nothing in this pass can reach them.
+            let corner_view = corner.create_view(&Default::default());
+            let depth_view = depth.create_view(&Default::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ferritecad viewport vertex identity pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &corner_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        // Zero, which is what a pixel with no corner on it
+                        // reads as: a vertex identity is its number within the
+                        // picture plus one.
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        // The model's own depth, which is what stops a corner
+                        // on the far side answering through the near surface.
+                        // Kept, because the edge pass after this reads it too.
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.corner_pipeline);
+            Self::draw_corners(&mut pass, prepared, visibility, self.draw_stride);
+        }
+
+        {
             // Which topological edge is under each pixel, in a pass of its own
             // against the depth the picture was drawn to.
             //
@@ -1292,12 +1450,14 @@ impl Renderer {
         let pick_read = self.readback(&mut encoder, &pick, extent, readback);
         let face_read = self.readback(&mut encoder, &face, extent, readback);
         let edge_read = self.readback(&mut encoder, &edge, extent, readback);
+        let corner_read = self.readback(&mut encoder, &corner, extent, readback);
         self.queue.submit(Some(encoder.finish()));
 
         let colour = self.take(colour_read, height, readback)?;
         let picks = self.take(pick_read, height, readback)?;
         let faces = self.take(face_read, height, readback)?;
         let edges = self.take(edge_read, height, readback)?;
+        let corners = self.take(corner_read, height, readback)?;
 
         Ok(Frame {
             snapshot,
@@ -1307,6 +1467,7 @@ impl Renderer {
             picks: unpack(&picks),
             faces: unpack(&faces),
             edges: unpack(&edges),
+            vertices: unpack(&corners),
         })
     }
 
@@ -1512,6 +1673,8 @@ struct GpuMesh {
     /// camera, pointer or selection changes it.
     edges: wgpu::Buffer,
     edge_vertex_count: u32,
+    corners: wgpu::Buffer,
+    corner_vertex_count: u32,
 }
 
 /// A snapshot whose geometry is on a device and stays there.
@@ -1860,6 +2023,141 @@ fn edge_vertex_buffer_layout() -> [Option<wgpu::VertexBufferLayout<'static>>; 1]
     })]
 }
 
+fn corner_vertex_buffer_layout() -> [Option<wgpu::VertexBufferLayout<'static>>; 1] {
+    [Some(wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<CornerVertex>() as u64,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &[
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x3,
+                offset: 0,
+                shader_location: 0,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Uint32,
+                offset: (3 * std::mem::size_of::<f32>()) as u64,
+                shader_location: 1,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x2,
+                offset: (4 * std::mem::size_of::<f32>()) as u64,
+                shader_location: 2,
+            },
+        ],
+    })]
+}
+
+/// The pipeline that says which topological vertex a pixel is on.
+///
+/// Offscreen only, and one target: no colour, no definition, no face and no
+/// edge. The pass it runs in has no such attachments, so this cannot disturb
+/// them by accident rather than by policy.
+///
+/// Ordinary triangles, so the aperture is the same size wherever this runs:
+/// no point size, no optional capability, nothing a backend may interpret its
+/// own way. Depth is tested against the model already drawn and never written,
+/// which is what stops a corner on the far side answering through the near
+/// surface. No bias: a corner sits exactly on the surface it belongs to, and
+/// `LessEqual` is what lets it pass there.
+fn build_corner_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    pipeline_layout: &wgpu::PipelineLayout,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("ferritecad viewport vertex identity pipeline"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vertex_corner"),
+            compilation_options: Default::default(),
+            buffers: &corner_vertex_buffer_layout(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fragment_corner"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: VERTEX_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// The footprint geometry for every corner of one definition.
+///
+/// One square per topological vertex, at the position of its first packed
+/// occurrence. Every occurrence of a corner is the same point of the model -
+/// they are the copies each adjoining face keeps - so which one is read does
+/// not change where the square goes, and all of them carry the one identity
+/// the picture gave that corner.
+fn corner_stream(
+    snapshot: &RenderSnapshot,
+    definition: usize,
+    mesh: &ferritecad_viewport::PackedMesh,
+) -> Result<Vec<CornerVertex>> {
+    let Some(count) = mesh.corner_count() else {
+        return Ok(Vec::new());
+    };
+    // Two triangles of a square, in the order a triangle list reads them.
+    const OFFSETS: [[f32; 2]; 6] = [
+        [-1.0, -1.0],
+        [1.0, -1.0],
+        [1.0, 1.0],
+        [-1.0, -1.0],
+        [1.0, 1.0],
+        [-1.0, 1.0],
+    ];
+    let mut stream: Vec<CornerVertex> = Vec::new();
+    for ordinal in 0..count {
+        // This picture's own numbering, asked for rather than recomputed.
+        let corner = snapshot.vertex_of(definition, ordinal).ok_or_else(|| {
+            CadError::rendering(format!(
+                "the picture numbers {count} vertices of definition {definition} but \
+                 will not name vertex {ordinal}"
+            ))
+        })?;
+        let raw = corner.to_raw();
+        let occurrences = snapshot
+            .occurrences_of_vertex(corner)
+            .ok_or_else(|| CadError::rendering("a vertex of this picture is drawn nowhere"))?;
+        let first = *occurrences
+            .first()
+            .ok_or_else(|| CadError::rendering("a vertex of this picture owns no occurrence"))?;
+        let at = first as usize * VERTEX_FLOATS;
+        let position = mesh.vertices().get(at..at + 3).ok_or_else(|| {
+            CadError::rendering(format!(
+                "a vertex occurrence names position {first}, which this mesh does not have"
+            ))
+        })?;
+        for offset in OFFSETS {
+            stream.push(CornerVertex {
+                position: [position[0], position[1], position[2]],
+                vertex: raw,
+                offset,
+            });
+        }
+    }
+    Ok(stream)
+}
+
 /// The pipeline that says which topological edge a pixel is on.
 ///
 /// Offscreen only, and one target: no colour, no definition and no face. The
@@ -2033,6 +2331,7 @@ pub struct Frame {
     picks: Vec<u32>,
     faces: Vec<u32>,
     edges: Vec<u32>,
+    vertices: Vec<u32>,
 }
 
 /// What one pixel turned out to be: a definition, its face and any topological
@@ -2047,6 +2346,7 @@ pub struct Hit {
     definition: PickId,
     face: FacePickId,
     edge: EdgePickId,
+    vertex: VertexPickId,
 }
 
 impl Hit {
@@ -2055,6 +2355,7 @@ impl Hit {
         definition: PickId::NOTHING,
         face: FacePickId::NOTHING,
         edge: EdgePickId::NOTHING,
+        vertex: VertexPickId::NOTHING,
     };
 
     /// Which definition, exactly as [`Frame::pick_at`] would answer.
@@ -2070,6 +2371,11 @@ impl Hit {
     /// Which topological edge of it lies under this pixel, if one does.
     pub fn edge(self) -> EdgePickId {
         self.edge
+    }
+
+    /// Which topological vertex of it lies under this pixel, if one does.
+    pub fn vertex(self) -> VertexPickId {
+        self.vertex
     }
 }
 
@@ -2162,10 +2468,33 @@ impl Frame {
         } else {
             EdgePickId::NOTHING
         };
+        // A corner is answered only where everything else at this sample
+        // agrees with it. Its aperture is a few pixels wide, so it reaches
+        // past the surface it belongs to and over neighbours; each of the
+        // checks below is one way that can be wrong.
+        //
+        // The definition must be the corner's own, the face under the sample
+        // must be a face the corner actually touches, and where this sample
+        // already has a coherent edge the corner must be one of that edge's
+        // ends. Adjacency comes from the packed partitions, never from where
+        // things happen to be on screen.
+        let claimed = self.vertices.get(at).map_or(VertexPickId::NOTHING, |raw| {
+            VertexPickId::from_raw(*raw, &self.snapshot)
+        });
+        let coherent = self.snapshot.definition(definition)
+            == self.snapshot.definition_of_vertex(claimed)
+            && self.snapshot.vertex_touches_face(claimed, face)
+            && (edge == EdgePickId::NOTHING || self.snapshot.vertex_ends_edge(claimed, edge));
+        let vertex = if coherent {
+            claimed
+        } else {
+            VertexPickId::NOTHING
+        };
         Hit {
             definition,
             face,
             edge,
+            vertex,
         }
     }
 
@@ -2191,6 +2520,29 @@ impl Frame {
         match self.edges.get(at) {
             Some(raw) => EdgePickId::from_raw(*raw, &self.snapshot),
             None => EdgePickId::NOTHING,
+        }
+    }
+
+    /// Which topological vertex of the model was drawn at one pixel.
+    ///
+    /// Resolved against this frame's own snapshot, exactly as a pick is. A
+    /// corner covers no pixel by itself, so each is drawn with a square
+    /// aperture of [`VERTEX_PICK_RADIUS_PIXELS`] around its own projection;
+    /// this reports the corner whose aperture covers the sample.
+    ///
+    /// The raw answer for the pixel and nothing more. [`Self::hit_at`] is
+    /// where a corner is required to agree with the definition, face and edge
+    /// under it, and where an aperture hanging off the surface is refused. A
+    /// single integer target can retain only one answer where two apertures
+    /// overlap; the deterministic draw order decides which one, and nothing
+    /// here resolves between several candidates.
+    pub fn vertex_at(&self, x: u32, y: u32) -> VertexPickId {
+        let Some(at) = self.index(x, y) else {
+            return VertexPickId::NOTHING;
+        };
+        match self.vertices.get(at) {
+            Some(raw) => VertexPickId::from_raw(*raw, &self.snapshot),
+            None => VertexPickId::NOTHING,
         }
     }
 
@@ -2869,6 +3221,7 @@ mod tests {
         builder.add_mesh(&mesh(1)).expect("packs second");
         let snapshot = Arc::new(builder.build());
         let frame = Frame {
+            vertices: Vec::new(),
             snapshot: Arc::clone(&snapshot),
             width: 1,
             height: 1,
@@ -2900,6 +3253,7 @@ mod tests {
         // The agreeing case, so the refusal above is about the contradiction
         // and not about edges never surviving at all.
         let agreeing = Frame {
+            vertices: Vec::new(),
             snapshot: Arc::clone(&snapshot),
             width: 1,
             height: 1,
@@ -2954,6 +3308,7 @@ mod tests {
         assert!(!snapshot.edge_bounds_face(edge, other_face));
 
         let frame = Frame {
+            vertices: Vec::new(),
             snapshot: Arc::clone(&snapshot),
             width: 1,
             height: 1,
@@ -2969,6 +3324,7 @@ mod tests {
         assert_eq!(frame.edge_at(0, 0), edge, "the raw target is unchanged");
 
         let agreeing = Frame {
+            vertices: Vec::new(),
             snapshot,
             width: 1,
             height: 1,
@@ -3006,6 +3362,7 @@ mod tests {
         builder.add_mesh(&mesh).expect("packs");
         let snapshot = Arc::new(builder.build());
         let frame = Frame {
+            vertices: Vec::new(),
             snapshot,
             width: 1,
             height: 1,
