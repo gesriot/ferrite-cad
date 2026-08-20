@@ -2335,12 +2335,12 @@ pub struct Frame {
 }
 
 /// What one pixel turned out to be: a definition, its face and any topological
-/// edge rasterised over it.
+/// edge and vertex rasterised over it.
 ///
-/// All three together, because they were read from the same pixel of the same
+/// All four together, because they were read from the same pixel of the same
 /// frame and are only true of each other there. None is readable as a number
-/// and none is stored anywhere. The constructor below refuses a face or edge
-/// whose owner disagrees with the definition at that sample.
+/// and none is stored anywhere. The constructor below refuses a face, edge or
+/// vertex whose ownership or adjacency disagrees at that sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hit {
     definition: PickId,
@@ -2425,7 +2425,7 @@ impl Frame {
     }
 
     /// What was drawn at one pixel, which face of it and which topological edge
-    /// was rasterised over that surface.
+    /// and vertex were rasterised over that surface.
     ///
     /// Beside [`Self::pick_at`] rather than instead of it: what a click means
     /// is a settled question, and a hover asks a different one. Outside the
