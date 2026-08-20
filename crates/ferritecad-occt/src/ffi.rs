@@ -374,6 +374,34 @@ struct RawVertexBuffers {
     out_vertex_count: usize,
 }
 
+/// Every size the two-call tessellation protocol promises to reproduce.
+///
+/// Kept as one value so adding another caller-owned buffer cannot quietly add
+/// a count to the first pass without adding it to the second-pass check too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TessellationCounts {
+    positions: usize,
+    indices: usize,
+    faces: usize,
+    edge_segments: usize,
+    edges: usize,
+    vertex_occurrences: usize,
+    topological_vertices: usize,
+}
+
+fn require_reproducible_tessellation(
+    measured: TessellationCounts,
+    filled: TessellationCounts,
+) -> Result<()> {
+    if filled == measured {
+        return Ok(());
+    }
+    Err(CadError::kernel(format!(
+        "tessellating the same shape twice gave {measured:?} then {filled:?}; \
+         the mesh is not reproducible"
+    )))
+}
+
 impl RawVertexBuffers {
     /// Buffers that ask for the counts and receive no data.
     fn measuring() -> Self {
@@ -762,6 +790,15 @@ impl Session {
         let edges = measured.out_edge_count;
         let occurrences = measured_corners.out_occurrence_count;
         let corners = measured_corners.out_vertex_count;
+        let measured_counts = TessellationCounts {
+            positions: vertices,
+            indices,
+            faces,
+            edge_segments: segments,
+            edges,
+            vertex_occurrences: occurrences,
+            topological_vertices: corners,
+        };
 
         let coordinates = vertices
             .checked_mul(3)
@@ -849,17 +886,21 @@ impl Session {
 
         // A second mesher pass that produced different counts would mean the
         // triangulation is not stable, and the buffers above would be part
-        // filled with no way to tell which part.
-        if (got_vertices, got_indices, got_faces) != (vertices, indices, faces)
-            || (filled.out_segment_count, filled.out_edge_count) != (segments, edges)
-        {
-            return Err(CadError::kernel(format!(
-                "tessellating the same shape twice gave \
-                 {vertices}/{indices}/{faces}/{segments}/{edges} then \
-                 {got_vertices}/{got_indices}/{got_faces}/{}/{}; the mesh is not reproducible",
-                filled.out_segment_count, filled.out_edge_count
-            )));
-        }
+        // filled with no way to tell which part. Every caller-owned array is
+        // represented here, including the vertex association introduced after
+        // the original five-count check.
+        require_reproducible_tessellation(
+            measured_counts,
+            TessellationCounts {
+                positions: got_vertices,
+                indices: got_indices,
+                faces: got_faces,
+                edge_segments: filled.out_segment_count,
+                edges: filled.out_edge_count,
+                vertex_occurrences: filled_corners.out_occurrence_count,
+                topological_vertices: filled_corners.out_vertex_count,
+            },
+        )?;
         Ok(mesh)
     }
 
@@ -1028,6 +1069,37 @@ mod tests {
     use ferritecad_types::ErrorKind;
 
     use super::*;
+
+    #[test]
+    fn both_vertex_counts_belong_to_the_tessellations_two_call_promise() {
+        let measured = TessellationCounts {
+            positions: 24,
+            indices: 36,
+            faces: 6,
+            edge_segments: 24,
+            edges: 12,
+            vertex_occurrences: 24,
+            topological_vertices: 8,
+        };
+
+        require_reproducible_tessellation(measured, measured)
+            .expect("identical counts are reproducible");
+        for filled in [
+            TessellationCounts {
+                vertex_occurrences: 23,
+                ..measured
+            },
+            TessellationCounts {
+                topological_vertices: 7,
+                ..measured
+            },
+        ] {
+            let error = require_reproducible_tessellation(measured, filled)
+                .expect_err("neither vertex count may change between calls");
+            assert_eq!(error.kind(), ErrorKind::Kernel);
+            assert!(error.to_string().contains("not reproducible"), "{error}");
+        }
+    }
 
     fn rectangle_segments() -> [Segment; 4] {
         let line = |start_x, start_y, end_x, end_y| Segment {

@@ -1915,7 +1915,11 @@ FcOcctStatus fc_occt_tessellate(
                                  std::to_string(edge_segments.size() / 2) +
                                  " edge segments and " +
                                  std::to_string(edge_shapes.size()) +
-                                 " edges are needed");
+                                 " edges, " +
+                                 std::to_string(corner_occurrences.size()) +
+                                 " vertex occurrences and " +
+                                 std::to_string(corner_shapes.size()) +
+                                 " topological vertices are needed");
       return FC_OCCT_INVALID_INPUT;
     }
     if (out_positions == nullptr || out_normals == nullptr ||
