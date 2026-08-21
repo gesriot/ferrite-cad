@@ -45,8 +45,8 @@ into the application process.
 On 2026-08-20, `arrayref` 0.3.10 appeared in the registry without a
 corresponding commit in its official repository and added an unrelated
 dependency chain, while the previously clean compatible releases were yanked.
-FerriteCAD therefore patches that crate to the exact official 0.3.9 commit
-`f8d0299d863922db6c409d08098941e833b70d69`. The matching `allow-git` entry in
-`deny.toml` is limited to that repository; the revision itself remains fixed in
-`Cargo.toml`. Remove the patch only after the registry incident is resolved and
-the replacement source has been reviewed.
+FerriteCAD temporarily patched that crate to the exact official 0.3.9 commit
+`f8d0299d863922db6c409d08098941e833b70d69`. By 2026-08-21 the registry index no
+longer advertised 0.3.10 and 0.3.9 was available again, so the temporary git
+source and its narrow `allow-git` exception were removed. The lock file remains
+fixed to the reviewed 0.3.9 registry checksum.

@@ -51,11 +51,3 @@ missing_debug_implementations = "warn"
 # `expect` remains allowed for internal invariants; see CLAUDE.md 5.2.
 unwrap_used = "deny"
 panic = "warn"
-
-# arrayref 0.3.10 was published without a corresponding upstream commit and
-# added an unrelated dependency chain; the previously clean registry releases
-# were yanked at the same time. Pin the last reviewed upstream commit rather
-# than allowing Cargo to resolve that release. Remove this patch only after the
-# registry incident has been resolved and the replacement source reviewed.
-[patch.crates-io]
-arrayref = { git = "https://github.com/droundy/arrayref", rev = "f8d0299d863922db6c409d08098941e833b70d69" }
