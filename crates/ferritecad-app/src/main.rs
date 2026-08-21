@@ -5249,13 +5249,6 @@ mod tests {
         input
             .frame(picture.bounds().expect("somewhere"))
             .expect("frames");
-        input.handle(ViewportEvent::PointerMoved { x: 200.0, y: 200.0 }, false);
-        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
-        input.handle(ViewportEvent::PointerMoved { x: 260.0, y: 150.0 }, false);
-        input.handle(
-            ViewportEvent::PointerReleased(PointerButton::Primary),
-            false,
-        );
         let frame = renderer
             .render(
                 &prepared,
@@ -5282,23 +5275,54 @@ mod tests {
         );
 
         // Standing still over it asks about the corner.
+        input.handle(
+            ViewportEvent::PointerMoved {
+                x: x as f32,
+                y: y as f32,
+            },
+            false,
+        );
+        let idle = input.take_hover();
+        assert_eq!(idle, Hover::At(x as f32, y as f32));
         assert_eq!(
-            hover_request(None, false, Hover::At(x as f32, y as f32)),
+            hover_request(None, false, idle),
             HoverRequest::Pixel(x as f32, y as f32)
         );
 
         // A gesture under way asks nothing, at that very pixel. The reducer
         // reports `Cleared` while a drag runs, and the app turns that into
         // no question rather than into a question about whatever it crossed.
-        assert_eq!(
-            hover_request(None, false, Hover::Cleared),
-            HoverRequest::Clear
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Middle), false);
+        assert_eq!(input.take_hover(), Hover::Cleared);
+        input.handle(
+            ViewportEvent::PointerMoved {
+                x: x as f32,
+                y: y as f32,
+            },
+            false,
         );
+        let dragging = input.take_hover();
+        assert_eq!(dragging, Hover::Cleared, "a drag asked about the corner");
+        assert_eq!(hover_request(None, false, dragging), HoverRequest::Clear);
+        input.handle(ViewportEvent::PointerReleased(PointerButton::Middle), false);
 
         // And an event the interface claimed asks nothing either, however
         // certainly a corner is under the pointer.
+        input.handle(
+            ViewportEvent::PointerMoved {
+                x: x as f32,
+                y: y as f32,
+            },
+            true,
+        );
+        let claimed = input.take_hover();
         assert_eq!(
-            hover_request(None, true, Hover::At(x as f32, y as f32)),
+            claimed,
+            Hover::Cleared,
+            "a claimed move asked about the corner"
+        );
+        assert_eq!(
+            hover_request(None, true, claimed),
             HoverRequest::Clear,
             "a claimed event reached the model at a corner"
         );
