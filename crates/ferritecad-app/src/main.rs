@@ -5235,6 +5235,156 @@ mod tests {
     }
 
     #[test]
+    fn a_drag_and_a_claimed_event_never_ask_about_a_corner_that_is_really_there() {
+        let Some((_directory, scene)) = native_plate_with_named_edges() else {
+            return;
+        };
+        let mut renderer = renderer_or_skip!();
+        let picture = std::sync::Arc::new(scene.snapshot);
+        let prepared = renderer
+            .prepare(std::sync::Arc::clone(&picture))
+            .expect("uploads");
+        let mut input = ViewportInput::new();
+        input.resize(480, 480);
+        input
+            .frame(picture.bounds().expect("somewhere"))
+            .expect("frames");
+        input.handle(ViewportEvent::PointerMoved { x: 200.0, y: 200.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(ViewportEvent::PointerMoved { x: 260.0, y: 150.0 }, false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        let frame = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                Marked::Nothing,
+                Hovered::Nothing,
+                &Visibility::new(&picture),
+            )
+            .expect("draws");
+
+        // A pixel where a corner really is: the question this test is about is
+        // a live one, so refusing to ask it is a decision rather than an
+        // absence of anything to ask.
+        let (x, y) = (0..frame.height())
+            .flat_map(|y| (0..frame.width()).map(move |x| (x, y)))
+            .find(|(x, y)| {
+                frame.hit_at(*x, *y).vertex() != ferritecad_viewport::VertexPickId::NOTHING
+            })
+            .expect("the plate draws a corner");
+        let corner = hovered_at(frame.hit_at(x, y));
+        assert!(
+            matches!(corner, Hovered::Vertex(_)),
+            "this pixel must really be a corner, got {corner:?}"
+        );
+
+        // Standing still over it asks about the corner.
+        assert_eq!(
+            hover_request(None, false, Hover::At(x as f32, y as f32)),
+            HoverRequest::Pixel(x as f32, y as f32)
+        );
+
+        // A gesture under way asks nothing, at that very pixel. The reducer
+        // reports `Cleared` while a drag runs, and the app turns that into
+        // no question rather than into a question about whatever it crossed.
+        assert_eq!(
+            hover_request(None, false, Hover::Cleared),
+            HoverRequest::Clear
+        );
+
+        // And an event the interface claimed asks nothing either, however
+        // certainly a corner is under the pointer.
+        assert_eq!(
+            hover_request(None, true, Hover::At(x as f32, y as f32)),
+            HoverRequest::Clear,
+            "a claimed event reached the model at a corner"
+        );
+
+        // A list row still names a definition and can say nothing else.
+        assert_eq!(
+            hover_request(Some(0), false, Hover::Cleared),
+            HoverRequest::Row(0)
+        );
+        let by_row = picture.pick_of(0).map(Hovered::Definition);
+        assert!(
+            matches!(by_row, Some(Hovered::Definition(_))),
+            "a row must answer with a definition and never a corner"
+        );
+    }
+
+    #[test]
+    fn a_failed_open_keeps_a_corner_question_and_a_successful_one_forgets_it() {
+        let Some((_directory, loaded)) = native_plate_with_named_edges() else {
+            return;
+        };
+        let picture = loaded.snapshot;
+
+        // A real identity from the picture, not a fabricated raw value.
+        let corner = (0..picture.vertex_count())
+            .filter_map(|ordinal| picture.vertex_of(0, ordinal))
+            .next()
+            .expect("the plate's corners reach the picture");
+        let asked = Hovered::Vertex(corner);
+        assert_eq!(
+            asked.known_to(&picture),
+            asked,
+            "the question must be a live one before either load is tried"
+        );
+
+        let mut scene = LiveScene {
+            prepared: (),
+            catalogue: loaded.catalogue.clone(),
+            faces: loaded.faces.clone(),
+            edges: loaded.edges.clone(),
+            visibility: Visibility::new(&picture),
+            selection: Selection::Nothing,
+            hovered: asked,
+        };
+        let mut camera = ViewportInput::new();
+        camera.resize(800, 600);
+
+        // A load that failed changes nothing, the question included: the old
+        // picture is still on screen, so what the pointer was over is still
+        // true of it.
+        commit_scene(
+            &mut scene,
+            &mut camera,
+            Err(CadError::input("this is not a document")),
+        )
+        .expect_err("a failed load is reported");
+        assert_eq!(
+            scene.hovered, asked,
+            "a failed open lost the corner the pointer was over"
+        );
+
+        // A load that arrived replaces the picture, so a question about the old
+        // one is forgotten rather than carried onto geometry it never named.
+        let mut framed = ViewportInput::new();
+        framed.resize(640, 480);
+        commit_scene(
+            &mut scene,
+            &mut camera,
+            Ok((
+                framed,
+                (),
+                loaded.catalogue.clone(),
+                FaceNames::default(),
+                EdgeNames::default(),
+                Visibility::default(),
+            )),
+        )
+        .expect("a load that arrived commits");
+        assert_eq!(
+            scene.hovered,
+            Hovered::Nothing,
+            "a successful open kept a question about the picture it replaced"
+        );
+    }
+
+    #[test]
     fn what_a_load_hands_over_includes_the_names_of_its_edges() {
         let Some((_directory, loaded)) = native_plate_with_named_edges() else {
             return;

@@ -992,7 +992,16 @@ impl Renderer {
         let needs_lines = !self.line_surface_pipelines.contains_key(&format);
         let needs_marks = !self.edge_mark_surface_pipelines.contains_key(&format);
         let needs_corner_marks = !self.corner_mark_surface_pipelines.contains_key(&format);
-        if !needs_model && !needs_grid && !needs_lines && !needs_marks {
+        // Every one of the five, including the corner mark. Today the five maps
+        // move together - they are written only here and only after the single
+        // refusal check below, so either all the requested pipelines are
+        // published or none are - which makes leaving one out of this condition
+        // unreachable rather than wrong. It is named here anyway: the invariant
+        // that makes the omission harmless is not stated anywhere the compiler
+        // can see, and the next map added to this function would inherit the
+        // trap. `the_window_learns_every_pipeline_for_a_format_together` is
+        // what holds the invariant itself.
+        if !needs_model && !needs_grid && !needs_lines && !needs_marks && !needs_corner_marks {
             return Ok(());
         }
 
@@ -3373,6 +3382,184 @@ mod tests {
             plain,
             "the window and the readback disagree without a mark"
         );
+    }
+
+    #[test]
+    fn a_window_marks_the_same_corner_the_readback_marks() {
+        let mut renderer = match Renderer::new() {
+            Ok(renderer) => renderer,
+            Err(error) if error.kind() == ErrorKind::Unsupported => {
+                eprintln!("skipped: {error}");
+                return;
+            }
+            Err(error) => panic!("a renderer failed after adapter discovery: {error}"),
+        };
+
+        // Two faces of one definition with a real corner association, so there
+        // is a corner to mark rather than an empty frame to compare.
+        let shape = ShapeHandle::new(SessionId::new(), 9);
+        let mesh = Mesh {
+            positions: vec![
+                -6.0, 0.0, -6.0, 6.0, 0.0, -6.0, 6.0, 0.0, 0.0, -6.0, 0.0, 0.0, //
+                -6.0, 0.0, 0.0, 6.0, 0.0, 0.0, 6.0, 0.0, 6.0, -6.0, 0.0, 6.0,
+            ],
+            normals: [0.0, -1.0, 0.0].repeat(8),
+            indices: vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7],
+            faces: (0..2)
+                .map(|face| MeshFaceRange {
+                    face: SubShapeHandle::new(shape, SubShapeKind::Face, face),
+                    first_index: face as u32 * 6,
+                    index_count: 6,
+                })
+                .collect(),
+            edges: Some(ferritecad_kernel::MeshEdges {
+                segments: vec![3, 2, 4, 5],
+                ranges: vec![ferritecad_kernel::MeshEdgeRange {
+                    edge: SubShapeHandle::new(shape, SubShapeKind::Edge, 0),
+                    first_segment: 0,
+                    segment_count: 2,
+                }],
+            }),
+            // Position 3 and position 4 are the same model point, one copy in
+            // each face: one corner with two face-local occurrences.
+            topological_vertices: Some(ferritecad_kernel::MeshVertices {
+                occurrences: vec![3, 4],
+                ranges: vec![ferritecad_kernel::MeshVertexRange {
+                    vertex: SubShapeHandle::new(shape, SubShapeKind::Vertex, 0),
+                    first_occurrence: 0,
+                    occurrence_count: 2,
+                }],
+            }),
+        };
+        let mut builder = SnapshotBuilder::new();
+        let definition = builder.add_mesh(&mesh).expect("packs");
+        builder
+            .place(definition, None, &Transform::IDENTITY, [0.15, 0.5, 0.85])
+            .expect("places");
+        let snapshot = Arc::new(builder.build());
+        let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+        let visibility = Visibility::new(&snapshot);
+
+        // The picture's own identity, asked for rather than invented: a raw
+        // number would name whatever happened to occupy it.
+        let corner = snapshot.vertex_of(0, 0).expect("the picture numbers it");
+
+        for projection in [
+            ferritecad_viewport::Projection::Perspective,
+            ferritecad_viewport::Projection::Orthographic,
+        ] {
+            let mut camera = Camera::new();
+            camera.resize(192, 192);
+            camera.set_projection(projection);
+            camera
+                .frame(snapshot.bounds().expect("drawn"))
+                .expect("frames");
+
+            let plain = renderer
+                .render(
+                    &prepared,
+                    &camera,
+                    Marked::Nothing,
+                    Hovered::Nothing,
+                    &visibility,
+                )
+                .expect("draws")
+                .colour()
+                .to_vec();
+            let marked = renderer
+                .render(
+                    &prepared,
+                    &camera,
+                    Marked::Nothing,
+                    Hovered::Vertex(corner),
+                    &visibility,
+                )
+                .expect("draws")
+                .colour()
+                .to_vec();
+            // The comparison is worth making only if there is a mark in it.
+            assert_ne!(
+                plain, marked,
+                "{projection:?}: the readback drew no corner mark to compare"
+            );
+
+            assert_eq!(
+                window_colour_marked(
+                    &mut renderer,
+                    &prepared,
+                    &camera,
+                    Marked::Nothing,
+                    Hovered::Vertex(corner),
+                    &visibility,
+                ),
+                marked,
+                "{projection:?}: the window and the readback marked different pixels"
+            );
+            assert_eq!(
+                window_colour_marked(
+                    &mut renderer,
+                    &prepared,
+                    &camera,
+                    Marked::Nothing,
+                    Hovered::Nothing,
+                    &visibility,
+                ),
+                plain,
+                "{projection:?}: the window and the readback disagree without a mark"
+            );
+        }
+    }
+
+    #[test]
+    fn the_window_learns_every_pipeline_for_a_format_together() {
+        let mut renderer = match Renderer::new() {
+            Ok(renderer) => renderer,
+            Err(error) if error.kind() == ErrorKind::Unsupported => {
+                eprintln!("skipped: {error}");
+                return;
+            }
+            Err(error) => panic!("a renderer failed after adapter discovery: {error}"),
+        };
+
+        // What makes the early return in `ensure_surface_pipeline` safe is that
+        // the five maps move together: they are written only there, and only
+        // after one refusal check, so a format is either in all of them or in
+        // none. Asked directly here, because the compiler cannot see it and the
+        // early return would otherwise be free to drift out of step with them.
+        let format = COLOUR_FORMAT;
+        assert!(!renderer.surface_pipelines.contains_key(&format));
+        assert!(!renderer.corner_mark_surface_pipelines.contains_key(&format));
+
+        renderer
+            .ensure_surface_pipeline(format)
+            .expect("a window format this build draws into");
+
+        for (what, present) in [
+            ("model", renderer.surface_pipelines.contains_key(&format)),
+            (
+                "grid",
+                renderer.grid_surface_pipelines.contains_key(&format),
+            ),
+            (
+                "lines",
+                renderer.line_surface_pipelines.contains_key(&format),
+            ),
+            (
+                "edge marks",
+                renderer.edge_mark_surface_pipelines.contains_key(&format),
+            ),
+            (
+                "corner marks",
+                renderer.corner_mark_surface_pipelines.contains_key(&format),
+            ),
+        ] {
+            assert!(present, "the window learned no {what} pipeline");
+        }
+
+        // And asking again is a no-op rather than a rebuild.
+        let again = renderer.ensure_surface_pipeline(format);
+        assert!(again.is_ok());
+        assert!(renderer.corner_mark_surface_pipelines.contains_key(&format));
     }
 
     #[test]
