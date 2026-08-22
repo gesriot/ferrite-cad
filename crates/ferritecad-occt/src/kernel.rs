@@ -593,9 +593,16 @@ impl GeometryKernel for OcctKernel {
                     "{sub} does not belong to the shape being archived"
                 )));
             }
-            if !matches!(sub.kind(), SubShapeKind::Face | SubShapeKind::Edge) {
+            // Every kind the contract has a word for. `SubShapeKind` is
+            // non-exhaustive, so a kind added later is refused here rather
+            // than sent to a bridge whose archive has no way to report it
+            // back.
+            if !matches!(
+                sub.kind(),
+                SubShapeKind::Face | SubShapeKind::Edge | SubShapeKind::Vertex
+            ) {
                 return Err(CadError::kernel(format!(
-                    "{sub} is a {}, and this slice archives faces and edges",
+                    "{sub} is a {}, and this slice archives faces, edges and vertices",
                     sub.kind()
                 )));
             }
@@ -620,15 +627,20 @@ impl GeometryKernel for OcctKernel {
         let (raw_shape, raw_subs) = self.session.decode_shape_named(payload, &raw_slots)?;
 
         let shape = ShapeHandle::new(self.session_id, raw_shape);
+        // The kind each sub-shape actually came back as, read off the restored
+        // shape by the bridge and carried here unchanged. Not inferred from
+        // the slot's position, and not from what the entries beside it were:
+        // an archive mixes faces, edges and vertices, and either inference
+        // would hand a name geometry of the wrong sort.
         Ok((
             shape,
             raw_subs
                 .into_iter()
-                .map(|(id, is_edge)| {
-                    let kind = if is_edge {
-                        SubShapeKind::Edge
-                    } else {
-                        SubShapeKind::Face
+                .map(|(id, kind)| {
+                    let kind = match kind {
+                        ffi::RawSubShapeKind::Face => SubShapeKind::Face,
+                        ffi::RawSubShapeKind::Edge => SubShapeKind::Edge,
+                        ffi::RawSubShapeKind::Vertex => SubShapeKind::Vertex,
                     };
                     SubShapeHandle::new(shape, kind, id)
                 })

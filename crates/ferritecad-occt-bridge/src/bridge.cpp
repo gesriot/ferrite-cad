@@ -2186,23 +2186,25 @@ FcOcctStatus fc_occt_decode_shape_named(FcOcctSession *session,
     // the history of the operation that made them.
     record.decoded = true;
 
-    // Every entry after the root must be a face of that root, even if the
+    // Every entry after the root must be a sub-shape of that root, even if the
     // caller's table does not request it. A valid archive written above has no
     // unrelated padding entries, so accepting one would make the decoder a
-    // parser for a looser and undocumented format. Keep the root's own face
+    // parser for a looser and undocumented format. Keep the root's own
     // occurrence rather than the separately archived copy so orientation also
     // comes from the restored shape.
     std::vector<TopoDS_Shape> canonical(entries.size());
     canonical[0] = record.shape;
     for (size_t entry = 1; entry < entries.size(); ++entry) {
       const TopoDS_Shape &sub_shape = entries[entry];
-      // Faces and edges: an extrusion names both, and an archive that could
-      // carry only one of them would drop the other silently on the way back.
-      // Nothing else, because nothing else has a name to restore.
+      // Faces, edges and vertices: an extrusion names all three, and an
+      // archive that could carry only some of them would drop the rest
+      // silently on the way back. Nothing else, because nothing else has a
+      // name to restore, and a kind this list does not mention has no
+      // FcOcctSubShapeKind to be reported as.
       const TopAbs_ShapeEnum kind = sub_shape.ShapeType();
-      if (kind != TopAbs_FACE && kind != TopAbs_EDGE) {
+      if (kind != TopAbs_FACE && kind != TopAbs_EDGE && kind != TopAbs_VERTEX) {
         write_error(out_error, "archive entry " + std::to_string(entry) +
-                                   " is neither a face nor an edge");
+                                   " is not a face, an edge or a vertex");
         return FC_OCCT_INVALID_INPUT;
       }
 
@@ -2222,7 +2224,9 @@ FcOcctStatus fc_occt_decode_shape_named(FcOcctSession *session,
     }
 
     std::vector<uint64_t> resolved(slot_count, 0);
-    std::vector<int32_t> kinds(slot_count, FC_OCCT_SUB_SHAPE_FACE);
+    // Filled with a value no FcOcctSubShapeKind uses, so a slot this loop
+    // somehow failed to answer for cannot leave as a plausible face.
+    std::vector<int32_t> kinds(slot_count, -1);
     for (size_t i = 0; i < slot_count; ++i) {
       const uint32_t slot = slots[i];
       if (slot == 0) {
@@ -2239,11 +2243,29 @@ FcOcctStatus fc_occt_decode_shape_named(FcOcctSession *session,
       }
       resolved[i] = record.remember(canonical[slot]);
       // What it actually is, taken from the restored shape rather than
-      // assumed: an archive carries faces and edges, and a caller told the
-      // wrong kind would hand an edge back under a face's name.
-      kinds[i] = canonical[slot].ShapeType() == TopAbs_EDGE
-                     ? FC_OCCT_SUB_SHAPE_EDGE
-                     : FC_OCCT_SUB_SHAPE_FACE;
+      // assumed: an archive carries faces, edges and vertices alike, and a
+      // caller told the wrong kind would hand a vertex back under a face's
+      // name. Written out per kind rather than as "edge or else", which is how
+      // a third kind becomes silently the first.
+      switch (canonical[slot].ShapeType()) {
+      case TopAbs_FACE:
+        kinds[i] = FC_OCCT_SUB_SHAPE_FACE;
+        break;
+      case TopAbs_EDGE:
+        kinds[i] = FC_OCCT_SUB_SHAPE_EDGE;
+        break;
+      case TopAbs_VERTEX:
+        kinds[i] = FC_OCCT_SUB_SHAPE_VERTEX;
+        break;
+      default:
+        // Unreachable: the loop above refused every other kind before any
+        // shape was registered. Refused again rather than defaulted, because a
+        // default here is exactly the wrong name being handed back.
+        write_error(out_error, "slot " + std::to_string(slot) +
+                                   " restored something that is not a face, an "
+                                   "edge or a vertex");
+        return FC_OCCT_INVALID_INPUT;
+      }
     }
 
     const uint64_t id = session->next_shape++;

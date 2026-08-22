@@ -14,9 +14,10 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use crate::envelope::Envelope;
 use crate::graph::{Dependency, DependencyRole, evaluation_order};
 use crate::model::{
-    CORE_CAPABILITY, EXTRUDE_CAP_EDGE_CAPABILITY, EXTRUDE_SWEEP_EDGE_CAPABILITY, EntityKind,
-    ImportedDefinitionRef, ImportedStep, ImporterIdentity, ObjectPayload, STEP_SOURCE_FORMAT,
-    SemanticRole, TopologyRef, TopologyRefPayload,
+    CORE_CAPABILITY, EXTRUDE_CAP_EDGE_CAPABILITY, EXTRUDE_CAP_VERTEX_CAPABILITY,
+    EXTRUDE_SWEEP_EDGE_CAPABILITY, EntityKind, ImportedDefinitionRef, ImportedStep,
+    ImporterIdentity, ObjectPayload, STEP_SOURCE_FORMAT, SemanticRole, TopologyRef,
+    TopologyRefPayload,
 };
 use crate::schema::{
     self, CACHE_EXTENSION, DOCUMENT_APPLICATION_ID, FORMAT_VERSION, MINIMUM_READER_VERSION,
@@ -1343,6 +1344,9 @@ fn required_capabilities_of(role: &SemanticRole) -> Vec<String> {
     }
     if matches!(role, SemanticRole::ExtrudeSweepEdge { .. }) {
         names.push(EXTRUDE_SWEEP_EDGE_CAPABILITY.to_owned());
+    }
+    if matches!(role, SemanticRole::ExtrudeCapVertex { .. }) {
+        names.push(EXTRUDE_CAP_VERTEX_CAPABILITY.to_owned());
     }
     names
 }

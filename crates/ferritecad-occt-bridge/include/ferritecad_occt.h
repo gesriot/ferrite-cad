@@ -90,8 +90,11 @@ typedef int32_t (*FcOcctCancelFn)(void *context);
 
 /* What sort of sub-shape an archive restored.
  *
- * Reported rather than assumed. An archive carries faces and edges alike, and
- * a caller that guessed would hand back an edge under a face's name. */
+ * Reported rather than assumed. An archive carries faces, edges and vertices
+ * alike, and a caller that guessed would hand back a vertex under a face's
+ * name. These three are the whole vocabulary: fc_occt_decode_shape_named
+ * refuses an archive holding anything else rather than reporting a kind that
+ * is not on this list. */
 typedef int32_t FcOcctSubShapeKind;
 enum {
   FC_OCCT_SUB_SHAPE_FACE = 0,
@@ -567,8 +570,12 @@ FcOcctStatus fc_occt_encode_shape_named(
  *
  * `out_sub_shapes` receives one session-local identifier per requested slot
  * and must have room for `slot_count`, and `out_sub_kinds` receives what each
- * of them is. Slot 0 is the shape itself and is
- * refused here: it is not a sub-shape.
+ * of them actually is, as an FcOcctSubShapeKind read off the restored shape.
+ * Slot 0 is the shape itself and is refused here: it is not a sub-shape.
+ *
+ * Every entry of the archive is checked, including entries no slot asks for.
+ * An archive holding anything other than faces, edges and vertices of its own
+ * root is refused whole rather than read past.
  *
  * The restored shape still carries no history. This call returns the
  * sub-shapes the caller archived, and nothing about how they were made; a

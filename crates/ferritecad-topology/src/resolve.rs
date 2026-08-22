@@ -175,6 +175,44 @@ pub fn resolve(map: &TopologyMap, reference: &TopologyRef) -> Result<Vec<SubShap
             )
         }
 
+        SemanticRole::ExtrudeCapVertex { side, joint } => {
+            require_kind(reference, EntityKind::Vertex, "an extrusion cap vertex")?;
+            match reference.selection {
+                SelectionRule::Exact => {}
+                SelectionRule::AllDerivedFrom { .. } => {
+                    return Err(CadError::input(format!(
+                        "topology reference {} names the vertex where {joint} reaches a cap, \
+                         which is one point, but selects everything derived from an ancestor",
+                        reference.id
+                    )));
+                }
+                ref other => return Err(unknown_rule(reference, other)),
+            }
+
+            let Some(vertices) = map
+                .feature(reference.producer_feature)
+                .map(|names| names.cap_vertex(*side, *joint))
+            else {
+                return Err(CadError::topology(format!(
+                    "topology reference {} names geometry of a feature this rebuild produced \
+                     nothing for",
+                    reference.id
+                )));
+            };
+            let Some(vertices) = vertices else {
+                return Err(CadError::unsupported(format!(
+                    "topology reference {} names extrusion cap side {side:?}, which this build \
+                     does not understand",
+                    reference.id
+                )));
+            };
+            exactly_one(
+                reference,
+                vertices.collect(),
+                &format!("the vertex where {joint} reaches the {side:?} cap"),
+            )
+        }
+
         // A real role, and one this slice cannot answer. The kernel emits no
         // shape for a sketch on its own, so there is no edge handle to hand
         // back; inventing one would be a name with nothing behind it.

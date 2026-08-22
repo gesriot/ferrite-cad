@@ -32,6 +32,17 @@ pub struct FeatureNames {
     /// above: a kernel reporting more than one is recorded as it answered so
     /// the resolver can refuse instead of choosing.
     sweep_edges: BTreeMap<ProfileJoint, BTreeSet<SubShapeHandle>>,
+    /// The vertex where each corner of the profile reaches each cap, keyed by
+    /// the side and then by the pair of segments meeting there.
+    ///
+    /// Kept apart from the edges rather than folded in beside them. A vertex
+    /// and an edge are different sorts of geometry, and one map holding both
+    /// would let a name written as a corner be read back as the edge along it.
+    /// Sets for the same reason as everywhere above: a kernel that answered
+    /// twice is recorded as it answered, so the resolver refuses instead of
+    /// choosing.
+    start_cap_vertices: BTreeMap<ProfileJoint, BTreeSet<SubShapeHandle>>,
+    end_cap_vertices: BTreeMap<ProfileJoint, BTreeSet<SubShapeHandle>>,
 }
 
 impl FeatureNames {
@@ -115,6 +126,46 @@ impl FeatureNames {
         self.sweep_edges.keys().copied()
     }
 
+    /// The vertices where one corner of the profile reaches one known end of
+    /// the sweep, in identifier order.
+    ///
+    /// `None` means this build does not understand the requested side, which
+    /// again must not be read as "there is no such vertex": a future `CapSide`
+    /// folded into one of the two known ends would silently retarget the
+    /// reference to the other end of the same corner.
+    ///
+    /// An empty iterator means this rebuild named no vertex for that corner,
+    /// which is what a corner whose pair occurs twice honestly is.
+    pub fn cap_vertex(
+        &self,
+        side: CapSide,
+        joint: ProfileJoint,
+    ) -> Option<impl ExactSizeIterator<Item = SubShapeHandle> + '_> {
+        let vertices = match side {
+            CapSide::Start => &self.start_cap_vertices,
+            CapSide::End => &self.end_cap_vertices,
+            _ => return None,
+        };
+        Some(
+            vertices
+                .get(&joint)
+                .map(|set| set.iter())
+                .unwrap_or_default()
+                .copied(),
+        )
+    }
+
+    /// Every joint this feature named a cap vertex for, in identifier order,
+    /// on either side.
+    ///
+    /// The archive walks this so the order it writes names in is the same on
+    /// every machine and every run.
+    pub fn named_cap_vertex_joints(&self) -> impl ExactSizeIterator<Item = ProfileJoint> {
+        let mut joints: BTreeSet<ProfileJoint> = self.start_cap_vertices.keys().copied().collect();
+        joints.extend(self.end_cap_vertices.keys().copied());
+        joints.into_iter()
+    }
+
     /// Every profile segment this feature named a cap edge for, in identifier
     /// order, on either side.
     pub fn named_cap_edge_segments(&self) -> impl ExactSizeIterator<Item = StableEntityId> {
@@ -142,6 +193,8 @@ pub struct RestoredNames {
     pub start_cap_edges: BTreeMap<StableEntityId, Vec<SubShapeHandle>>,
     pub end_cap_edges: BTreeMap<StableEntityId, Vec<SubShapeHandle>>,
     pub sweep_edges: BTreeMap<ProfileJoint, Vec<SubShapeHandle>>,
+    pub start_cap_vertices: BTreeMap<ProfileJoint, Vec<SubShapeHandle>>,
+    pub end_cap_vertices: BTreeMap<ProfileJoint, Vec<SubShapeHandle>>,
 }
 
 /// What a whole rebuild produced, addressed by feature and role.
@@ -308,6 +361,82 @@ impl TopologyMap {
             names.sweep_edges.entry(*joint).or_default().insert(*edge);
         }
 
+        // The vertex each corner reaches on each cap, filed under the same
+        // pair that names the edge along it. The same three questions as the
+        // sweep edges above, asked again rather than assumed from them: a
+        // kernel may report a vertex for a corner it reported no edge for, and
+        // a pair that names no corner must not acquire a durable meaning
+        // through the other map.
+        let mut cornered: BTreeMap<SubShapeHandle, (CapSide, ProfileJoint)> = BTreeMap::new();
+        for (side, vertices, what) in [
+            (
+                CapSide::Start,
+                &result.start_cap_vertices,
+                "an extrusion start cap vertex",
+            ),
+            (
+                CapSide::End,
+                &result.end_cap_vertices,
+                "an extrusion end cap vertex",
+            ),
+        ] {
+            for (joint, vertex) in vertices {
+                for segment in joint.segments() {
+                    if !profile_segments.contains(&segment) {
+                        return Err(CadError::topology(format!(
+                            "feature {producer} reported {what} for {joint}, and segment \
+                             {segment} is not in the swept outer profile"
+                        )));
+                    }
+                }
+                match profile_joints.get(joint).copied() {
+                    None => {
+                        return Err(CadError::topology(format!(
+                            "feature {producer} reported {what} for {joint}, but its segments do \
+                             not meet in the swept outer profile"
+                        )));
+                    }
+                    Some(1) => {}
+                    Some(corners) => {
+                        // The two corners of a two-segment loop are different
+                        // points, and the pair naming both of them names
+                        // neither. Taking the first would be a durable name
+                        // for whichever the kernel happened to answer with.
+                        return Err(CadError::topology(format!(
+                            "feature {producer} reported {what} for {joint}, but the pair meets \
+                             at {corners} corners and names none of them"
+                        )));
+                    }
+                }
+                check_kind(*vertex, result.shape, producer, what, SubShapeKind::Vertex)?;
+                // One physical vertex carries one durable meaning. Two corners
+                // claiming it, or one corner claiming it on both caps, would
+                // be two references resolving to the same point.
+                if let Some((other_side, other_joint)) = cornered.insert(*vertex, (side, *joint))
+                    && (other_side != side || other_joint != *joint)
+                {
+                    return Err(CadError::topology(format!(
+                        "feature {producer} reported the {other_side:?} cap vertex of \
+                         {other_joint} and the {side:?} cap vertex of {joint} as the same vertex"
+                    )));
+                }
+                let into = match side {
+                    CapSide::Start => &mut names.start_cap_vertices,
+                    CapSide::End => &mut names.end_cap_vertices,
+                    // `CapSide` is non-exhaustive, and the loop above names
+                    // only the two ends this build knows. Unreachable, and
+                    // refused rather than filed under a guess.
+                    _ => {
+                        return Err(CadError::topology(format!(
+                            "feature {producer} reported {what} for cap side {side:?}, which this \
+                             build does not understand"
+                        )));
+                    }
+                };
+                into.entry(*joint).or_default().insert(*vertex);
+            }
+        }
+
         // Replacing rather than merging: a feature is rebuilt whole, and
         // merging would let a stale name from a previous attempt survive.
         self.features.insert(producer, names);
@@ -404,6 +533,44 @@ impl TopologyMap {
                     )));
                 }
                 names.sweep_edges.entry(*joint).or_default().insert(*edge);
+            }
+        }
+
+        // The cap vertices, on their own terms. A vertex cannot collide with a
+        // restored edge — `check_kind` has already separated them — so what is
+        // asked here is the question the kinds cannot answer: whether two
+        // corners, or the two ends of one corner, came back as one point.
+        let mut claimed_vertices: BTreeMap<SubShapeHandle, (CapSide, ProfileJoint)> =
+            BTreeMap::new();
+        for (side, vertices, into, what) in [
+            (
+                CapSide::Start,
+                &restored.start_cap_vertices,
+                &mut names.start_cap_vertices,
+                "a restored extrusion start cap vertex",
+            ),
+            (
+                CapSide::End,
+                &restored.end_cap_vertices,
+                &mut names.end_cap_vertices,
+                "a restored extrusion end cap vertex",
+            ),
+        ] {
+            for (joint, handles) in vertices {
+                for vertex in handles {
+                    check_kind(*vertex, shape, producer, what, SubShapeKind::Vertex)?;
+                    if let Some((other_side, other_joint)) =
+                        claimed_vertices.insert(*vertex, (side, *joint))
+                        && (other_side != side || other_joint != *joint)
+                    {
+                        return Err(CadError::topology(format!(
+                            "feature {producer} restored the {other_side:?} cap vertex of \
+                             {other_joint} and the {side:?} cap vertex of {joint} as the same \
+                             vertex"
+                        )));
+                    }
+                    into.entry(*joint).or_default().insert(*vertex);
+                }
             }
         }
 

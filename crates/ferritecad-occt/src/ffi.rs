@@ -32,8 +32,42 @@ const STATUS_INTERNAL: i32 = 6;
 pub(crate) const SEGMENT_LINE: i32 = 0;
 pub(crate) const SEGMENT_ARC: i32 = 1;
 
-/// Must match `FC_OCCT_SUB_SHAPE_EDGE` in `ferritecad_occt.h`.
+/// Must match the `FC_OCCT_SUB_SHAPE_*` constants in `ferritecad_occt.h`.
+const SUB_SHAPE_FACE: i32 = 0;
 const SUB_SHAPE_EDGE: i32 = 1;
+const SUB_SHAPE_VERTEX: i32 = 2;
+
+/// What the bridge said a restored sub-shape is.
+///
+/// Carried across the boundary as itself rather than collapsed into a flag.
+/// The bridge reads the kind off the restored shape; a wrapper that reduced
+/// three answers to two would decide the third one here, silently and wrongly,
+/// which is the whole failure the bridge reporting it exists to prevent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RawSubShapeKind {
+    Face,
+    Edge,
+    Vertex,
+}
+
+impl RawSubShapeKind {
+    /// Refuses an integer this build has no name for.
+    ///
+    /// Not a default. A kind added to the bridge and not to this list would
+    /// otherwise arrive as a face, and the caller would file a name against
+    /// geometry of a sort it never asked for.
+    fn from_raw(raw: i32, what: &str) -> Result<Self> {
+        match raw {
+            SUB_SHAPE_FACE => Ok(Self::Face),
+            SUB_SHAPE_EDGE => Ok(Self::Edge),
+            SUB_SHAPE_VERTEX => Ok(Self::Vertex),
+            unknown => Err(CadError::kernel(format!(
+                "{what}: the bridge reported sub-shape kind {unknown}, which this build does not \
+                 know; a kind it cannot name is not one it may guess"
+            ))),
+        }
+    }
+}
 
 #[repr(C)]
 struct RawSession {
@@ -1001,11 +1035,16 @@ impl Session {
     }
 
     /// Restores a shape and the sub-shapes named by their slots.
+    ///
+    /// The answers keep the order of `slots`, and each carries the kind the
+    /// bridge read off the restored shape. A failure returns before any
+    /// identifier is handed out, and the bridge registers no shape on a path
+    /// that fails, so there is nothing live for the caller to release.
     pub(crate) fn decode_shape_named(
         &mut self,
         bytes: &[u8],
         slots: &[u32],
-    ) -> Result<(u64, Vec<(u64, bool)>)> {
+    ) -> Result<(u64, Vec<(u64, RawSubShapeKind)>)> {
         let mut shape = 0u64;
         let mut resolved = vec![0u64; slots.len()];
         let mut kinds = vec![0i32; slots.len()];
@@ -1026,17 +1065,25 @@ impl Session {
                 &mut error,
             )
         };
-        interpret(status, &error, "restoring an archived shape")?;
-        // `true` for an edge, so the caller names each restored sub-shape what
-        // it is rather than what the archive's other entries happened to be.
-        Ok((
-            shape,
-            resolved
-                .into_iter()
-                .zip(kinds)
-                .map(|(id, kind)| (id, kind == SUB_SHAPE_EDGE))
-                .collect(),
-        ))
+        const WHAT: &str = "restoring an archived shape";
+        interpret(status, &error, WHAT)?;
+
+        // Each restored sub-shape is named what it is rather than what the
+        // archive's other entries happened to be, in the order asked for. An
+        // unknown integer fails the whole call: the shape the bridge just
+        // registered is released, because a decode that does not return a
+        // shape must not leave one behind.
+        let mut named = Vec::with_capacity(resolved.len());
+        for (id, kind) in resolved.into_iter().zip(kinds) {
+            match RawSubShapeKind::from_raw(kind, WHAT) {
+                Ok(kind) => named.push((id, kind)),
+                Err(refusal) => {
+                    self.release(shape);
+                    return Err(refusal);
+                }
+            }
+        }
+        Ok((shape, named))
     }
 
     pub(crate) fn release(&mut self, shape: u64) {
@@ -1101,6 +1148,34 @@ mod tests {
     use ferritecad_types::ErrorKind;
 
     use super::*;
+
+    #[test]
+    fn a_restored_sub_shape_keeps_the_kind_the_bridge_reported() {
+        for (raw, expected) in [
+            (SUB_SHAPE_FACE, RawSubShapeKind::Face),
+            (SUB_SHAPE_EDGE, RawSubShapeKind::Edge),
+            (SUB_SHAPE_VERTEX, RawSubShapeKind::Vertex),
+        ] {
+            assert_eq!(
+                RawSubShapeKind::from_raw(raw, "a test").expect("a kind this build knows"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn a_sub_shape_kind_this_build_does_not_know_is_refused_rather_than_defaulted() {
+        // The failure this guards is quiet: a bridge that grew a fourth kind
+        // and a wrapper that mapped everything unrecognised onto `Face` would
+        // hand a name geometry of a sort nobody asked for, and nothing further
+        // down could tell.
+        for unknown in [-1, 3, 4, i32::MAX, i32::MIN] {
+            let refusal = RawSubShapeKind::from_raw(unknown, "restoring an archived shape")
+                .expect_err("an unnamed kind is not a face");
+            assert_eq!(refusal.kind(), ErrorKind::Kernel);
+            assert!(refusal.to_string().contains("does not know"), "{refusal}");
+        }
+    }
 
     #[test]
     fn both_vertex_counts_belong_to_the_tessellations_two_call_promise() {

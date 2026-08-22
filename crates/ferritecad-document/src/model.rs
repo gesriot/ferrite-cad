@@ -49,6 +49,16 @@ pub const EXTRUDE_CAP_EDGE_CAPABILITY: &str = "topology.extrude-cap-edge.v1";
 /// is once more a vocabulary change and not a version bump.
 pub const EXTRUDE_SWEEP_EDGE_CAPABILITY: &str = "topology.extrude-sweep-edge.v1";
 
+/// The capability a stored [`SemanticRole::ExtrudeCapVertex`] depends on.
+///
+/// Again its own name. A reader that understands the edge running along a
+/// corner does not thereby understand the point where that corner meets a cap:
+/// the two roles select different geometry from the same pair of segments, and
+/// a reader told it understood both would rewrite references whose meaning it
+/// cannot reproduce. The envelope layout is unchanged once more, so this is a
+/// vocabulary change and not a version bump.
+pub const EXTRUDE_CAP_VERTEX_CAPABILITY: &str = "topology.extrude-cap-vertex.v1";
+
 /// The capability an [`ImportedStep`] object depends on.
 ///
 /// Declared separately from [`CORE_CAPABILITY`] so a reader that understands
@@ -476,6 +486,19 @@ pub enum SemanticRole {
     /// and it stays the same name when the profile is walked from a different
     /// starting segment or in the other direction.
     ExtrudeSweepEdge { joint: ProfileJoint },
+    /// The vertex where two adjacent profile segments reach one end of the
+    /// sweep.
+    ///
+    /// The corner and the cap together, and neither alone is a name: the pair
+    /// of segments says which of the profile's corners, and the side says
+    /// which of that corner's two ends. It is the same unordered pair the
+    /// sweep edge is named by, and it stays the same pair when the profile is
+    /// walked from another segment or in the other direction.
+    ///
+    /// A pair that meets at two corners names neither vertex. That is not a
+    /// gap to be filled by taking the first: the two are genuinely different
+    /// points, and nothing durable tells them apart.
+    ExtrudeCapVertex { side: CapSide, joint: ProfileJoint },
     /// A face introduced by filleting an identified edge.
     FilletFace { source_edge: StableEntityId },
 }
@@ -591,6 +614,23 @@ impl TopologyRef {
                 let [one, other] = joint.segments();
                 hasher
                     .str("extrude_sweep_edge")
+                    .bytes(&one.to_bytes())
+                    .bytes(&other.to_bytes());
+            }
+            SemanticRole::ExtrudeCapVertex { side, joint } => {
+                // Its own tag, then the side, then both segments of the
+                // canonical pair. Dropping the side would make the two ends of
+                // one corner one meaning, and dropping either segment would
+                // make two neighbouring corners one meaning; the tag keeps the
+                // whole from colliding with the sweep edge named by the same
+                // pair.
+                let [one, other] = joint.segments();
+                hasher
+                    .str("extrude_cap_vertex")
+                    .str(match side {
+                        CapSide::Start => "start",
+                        CapSide::End => "end",
+                    })
                     .bytes(&one.to_bytes())
                     .bytes(&other.to_bytes());
             }

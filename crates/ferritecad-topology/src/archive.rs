@@ -41,6 +41,10 @@ pub enum BoundName {
     EndCapEdge { profile_segment: StableEntityId },
     /// The edge running along the sweep where two profile segments meet.
     SweepEdge { joint: ProfileJoint },
+    /// The vertex where two profile segments reach the start of the sweep.
+    StartCapVertex { joint: ProfileJoint },
+    /// The same, at the end cap.
+    EndCapVertex { joint: ProfileJoint },
 }
 
 impl BoundName {
@@ -65,6 +69,19 @@ impl BoundName {
         }
     }
 
+    /// The cap-vertex name for a side this build understands.
+    ///
+    /// `None` for a future side, on the same terms as the two above. Folding
+    /// one into `Start` would archive a corner's far end under its near end's
+    /// name, which no later check could notice.
+    pub fn cap_vertex(side: CapSide, joint: ProfileJoint) -> Option<Self> {
+        match side {
+            CapSide::Start => Some(Self::StartCapVertex { joint }),
+            CapSide::End => Some(Self::EndCapVertex { joint }),
+            _ => None,
+        }
+    }
+
     /// What sort of geometry this name refers to.
     ///
     /// One statement, read when archiving and again when restoring, so a name
@@ -75,6 +92,7 @@ impl BoundName {
             Self::StartCapEdge { .. } | Self::EndCapEdge { .. } | Self::SweepEdge { .. } => {
                 SubShapeKind::Edge
             }
+            Self::StartCapVertex { .. } | Self::EndCapVertex { .. } => SubShapeKind::Vertex,
         }
     }
 }
@@ -248,6 +266,21 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
         }
     }
 
+    // The vertices where those same corners reach each cap, walked through the
+    // ordered joint set so the sequence is the same on every machine. A corner
+    // with no vertex on a side contributes nothing rather than an entry
+    // pointing nowhere.
+    for joint in names.named_cap_vertex_joints() {
+        for side in [CapSide::Start, CapSide::End] {
+            let Some(name) = BoundName::cap_vertex(side, joint) else {
+                continue;
+            };
+            for vertex in names.cap_vertex(side, joint).into_iter().flatten() {
+                wanted.push((name, vertex));
+            }
+        }
+    }
+
     // A side that raised several faces cannot be archived under one slot in
     // this slice; the family rule needs several, and one slot names one.
     let mut seen = BTreeSet::new();
@@ -340,6 +373,8 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
         let mut start_cap_edges: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
         let mut end_cap_edges: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
         let mut sweep_edges: BTreeMap<ProfileJoint, Vec<_>> = BTreeMap::new();
+        let mut start_cap_vertices: BTreeMap<ProfileJoint, Vec<_>> = BTreeMap::new();
+        let mut end_cap_vertices: BTreeMap<ProfileJoint, Vec<_>> = BTreeMap::new();
         let mut claimed = BTreeMap::new();
 
         for (name, face) in names.into_iter().zip(faces) {
@@ -379,6 +414,12 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                     end_cap_edges.entry(profile_segment).or_default().push(face)
                 }
                 BoundName::SweepEdge { joint } => sweep_edges.entry(joint).or_default().push(face),
+                BoundName::StartCapVertex { joint } => {
+                    start_cap_vertices.entry(joint).or_default().push(face)
+                }
+                BoundName::EndCapVertex { joint } => {
+                    end_cap_vertices.entry(joint).or_default().push(face)
+                }
             }
         }
 
@@ -392,6 +433,8 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 start_cap_edges,
                 end_cap_edges,
                 sweep_edges,
+                start_cap_vertices,
+                end_cap_vertices,
             },
         )
     })();

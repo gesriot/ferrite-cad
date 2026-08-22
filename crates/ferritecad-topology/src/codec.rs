@@ -66,6 +66,16 @@ const TAG_END_CAP_EDGE: u16 = 5;
 /// malformed rather than reading past it, so it cannot restore a partial set
 /// of names and believe it has them all; the entry is a cache and is rebuilt.
 const TAG_SWEEP_EDGE: u16 = 6;
+/// The vertices where those corners reach each cap. Two more tags, chosen next
+/// in sequence and never reused from the six above: an old entry outlives the
+/// build that wrote it, and a tag that changed meaning would re-point a stored
+/// name at different geometry rather than fail. Not a new format version
+/// either, for the reason the sweep edge was not: the layout of an entry is
+/// unchanged and only the vocabulary grew, so an older build refuses the whole
+/// entry as malformed and rebuilds the cache instead of restoring a partial
+/// set of names and believing it complete.
+const TAG_START_CAP_VERTEX: u16 = 7;
+const TAG_END_CAP_VERTEX: u16 = 8;
 
 impl ArchivedFeature {
     /// Writes the archive out as bytes.
@@ -111,6 +121,22 @@ impl ArchivedFeature {
                 }
                 BoundName::SweepEdge { joint } => {
                     payload.extend_from_slice(&TAG_SWEEP_EDGE.to_le_bytes());
+                    for segment in joint.segments() {
+                        payload.extend_from_slice(&segment.to_bytes());
+                    }
+                }
+                // The side is the tag, and both segments follow it. Writing
+                // one segment would make two neighbouring corners one stored
+                // name, and writing no side would make the two ends of one
+                // corner one stored name.
+                BoundName::StartCapVertex { joint } => {
+                    payload.extend_from_slice(&TAG_START_CAP_VERTEX.to_le_bytes());
+                    for segment in joint.segments() {
+                        payload.extend_from_slice(&segment.to_bytes());
+                    }
+                }
+                BoundName::EndCapVertex { joint } => {
+                    payload.extend_from_slice(&TAG_END_CAP_VERTEX.to_le_bytes());
                     for segment in joint.segments() {
                         payload.extend_from_slice(&segment.to_bytes());
                     }
@@ -205,6 +231,18 @@ impl ArchivedFeature {
                     profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
                 },
                 TAG_SWEEP_EDGE => BoundName::SweepEdge {
+                    joint: ProfileJoint::from_canonical([
+                        StableEntityId::from_bytes(reader.array("first profile segment")?)?,
+                        StableEntityId::from_bytes(reader.array("second profile segment")?)?,
+                    ])?,
+                },
+                TAG_START_CAP_VERTEX => BoundName::StartCapVertex {
+                    joint: ProfileJoint::from_canonical([
+                        StableEntityId::from_bytes(reader.array("first profile segment")?)?,
+                        StableEntityId::from_bytes(reader.array("second profile segment")?)?,
+                    ])?,
+                },
+                TAG_END_CAP_VERTEX => BoundName::EndCapVertex {
                     joint: ProfileJoint::from_canonical([
                         StableEntityId::from_bytes(reader.array("first profile segment")?)?,
                         StableEntityId::from_bytes(reader.array("second profile segment")?)?,
@@ -511,6 +549,174 @@ mod tests {
         reseal(&mut damaged);
 
         assert!(ArchivedFeature::decode(&damaged, producer, &kernel).is_err());
+    }
+
+    /// A joint of two fresh segments, in the order the canonical pair keeps.
+    fn a_joint() -> ProfileJoint {
+        ProfileJoint::new(StableEntityId::new(), StableEntityId::new()).expect("two segments")
+    }
+
+    /// An archive carrying a face, an edge and both ends of two corners.
+    fn with_cap_vertices() -> (ArchivedFeature, ObjectId, KernelIdentity, [ProfileJoint; 2]) {
+        let kernel = MockKernel::new();
+        let identity = kernel.identity().clone();
+        let blob = BrepBlob::new(identity.clone(), vec![7, 7, 7, 7]);
+        let hash = blob.content_hash();
+        let producer = ObjectId::new();
+        let joints = [a_joint(), a_joint()];
+
+        let archive = ArchivedFeature::from_parts(
+            producer,
+            blob,
+            hash,
+            [
+                (BoundName::StartCap, ArchiveSlot::new(1)),
+                (
+                    BoundName::SweepEdge { joint: joints[0] },
+                    ArchiveSlot::new(2),
+                ),
+                (
+                    BoundName::StartCapVertex { joint: joints[0] },
+                    ArchiveSlot::new(3),
+                ),
+                (
+                    BoundName::EndCapVertex { joint: joints[0] },
+                    ArchiveSlot::new(4),
+                ),
+                (
+                    BoundName::StartCapVertex { joint: joints[1] },
+                    ArchiveSlot::new(5),
+                ),
+                (
+                    BoundName::EndCapVertex { joint: joints[1] },
+                    ArchiveSlot::new(6),
+                ),
+            ],
+        )
+        .expect("a table of six distinct names");
+        (archive, producer, identity, joints)
+    }
+
+    #[test]
+    fn a_corner_name_survives_its_byte_form_with_its_side_and_both_segments() {
+        let (archive, producer, kernel, joints) = with_cap_vertices();
+        let bytes = archive.encode().expect("encodes");
+        let restored = ArchivedFeature::decode(&bytes, producer, &kernel).expect("reads back");
+        assert_eq!(restored, archive);
+
+        // Not merely equal as a whole: each corner came back under its own
+        // side and its own pair, which is what distinguishes the four vertex
+        // names from one another.
+        for (name, slot) in [
+            (BoundName::StartCapVertex { joint: joints[0] }, 3),
+            (BoundName::EndCapVertex { joint: joints[0] }, 4),
+            (BoundName::StartCapVertex { joint: joints[1] }, 5),
+            (BoundName::EndCapVertex { joint: joints[1] }, 6),
+        ] {
+            assert_eq!(
+                restored.slot(name).map(|s| s.index()),
+                Some(slot),
+                "{name:?} did not come back where it went in"
+            );
+        }
+        assert_eq!(restored.bindings().len(), 6);
+    }
+
+    #[test]
+    fn an_archive_of_corners_encodes_the_same_way_every_time() {
+        let (archive, producer, kernel, _) = with_cap_vertices();
+        let once = archive.encode().expect("encodes");
+        assert_eq!(once, archive.encode().expect("encodes"));
+
+        // And the order is the table's own, not the order the names were
+        // handed in: decoding and re-encoding produces the same bytes.
+        let restored = ArchivedFeature::decode(&once, producer, &kernel).expect("reads back");
+        assert_eq!(restored.encode().expect("encodes"), once);
+        let names: Vec<BoundName> = restored.bindings().map(|(name, _)| name).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "the table is written in name order");
+    }
+
+    #[test]
+    fn no_two_stored_names_share_a_tag() {
+        // Reusing a number would re-point every stored name written under the
+        // old meaning, silently, at geometry of a different sort. Listed
+        // explicitly so adding a tag that collides fails here rather than in a
+        // user's cache.
+        let tags = [
+            ("start cap", TAG_START_CAP),
+            ("end cap", TAG_END_CAP),
+            ("side", TAG_SIDE),
+            ("start cap edge", TAG_START_CAP_EDGE),
+            ("end cap edge", TAG_END_CAP_EDGE),
+            ("sweep edge", TAG_SWEEP_EDGE),
+            ("start cap vertex", TAG_START_CAP_VERTEX),
+            ("end cap vertex", TAG_END_CAP_VERTEX),
+        ];
+        for (index, (what, tag)) in tags.iter().enumerate() {
+            for (other_what, other) in &tags[index + 1..] {
+                assert_ne!(tag, other, "{what} and {other_what} share tag {tag}");
+            }
+        }
+        // The six that were already on disk keep the numbers they had.
+        assert_eq!(
+            [
+                TAG_START_CAP,
+                TAG_END_CAP,
+                TAG_SIDE,
+                TAG_START_CAP_EDGE,
+                TAG_END_CAP_EDGE,
+                TAG_SWEEP_EDGE
+            ],
+            [1, 2, 3, 4, 5, 6]
+        );
+        assert_eq!(FORMAT_VERSION, 1, "the layout of an entry is unchanged");
+    }
+
+    #[test]
+    fn an_archive_written_before_corners_were_named_still_reads_the_same() {
+        // The six older tags alone, exactly as a previous build wrote them.
+        // Adding a vocabulary must not change what an existing entry means.
+        let (archive, producer, kernel) = archived();
+        assert!(
+            archive.bindings().all(|(name, _)| !matches!(
+                name,
+                BoundName::StartCapVertex { .. } | BoundName::EndCapVertex { .. }
+            )),
+            "the mock names no corners, which is what makes this an old entry"
+        );
+        let bytes = archive.encode().expect("encodes");
+        let restored = ArchivedFeature::decode(&bytes, producer, &kernel).expect("reads back");
+        assert_eq!(restored, archive);
+        assert_eq!(restored.bindings().len(), archive.bindings().len());
+    }
+
+    #[test]
+    fn a_corner_written_with_its_segments_swapped_is_refused_rather_than_sorted() {
+        let (archive, producer, kernel, joints) = with_cap_vertices();
+        let bytes = archive.encode().expect("encodes");
+
+        // Find the first cap-vertex record and swap its two segments. The pair
+        // is canonical on the way in, so a reader that quietly re-sorted would
+        // accept a pair that was never written by this build.
+        let [one, other] = joints[0].segments();
+        let mut needle = TAG_START_CAP_VERTEX.to_le_bytes().to_vec();
+        needle.extend_from_slice(&one.to_bytes());
+        needle.extend_from_slice(&other.to_bytes());
+        let at = bytes
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .expect("the corner is written as its tag and both segments");
+
+        let mut damaged = bytes.clone();
+        damaged[at + 2..at + 18].copy_from_slice(&other.to_bytes());
+        damaged[at + 18..at + 34].copy_from_slice(&one.to_bytes());
+        reseal(&mut damaged);
+
+        let refusal = ArchivedFeature::decode(&damaged, producer, &kernel)
+            .expect_err("a swapped pair is not the pair that was written");
+        assert!(refusal.to_string().contains("canonical order"), "{refusal}");
     }
 
     fn reseal(bytes: &mut [u8]) {

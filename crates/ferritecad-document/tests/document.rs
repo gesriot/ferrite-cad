@@ -11,9 +11,10 @@
 
 use ferritecad_document::{
     Access, Body, CORE_CAPABILITY, CacheStore, CapSide, DatumPlane, Dependency, DependencyRole,
-    Document, EXTRUDE_CAP_EDGE_CAPABILITY, EXTRUDE_SWEEP_EDGE_CAPABILITY, EndCondition, EntityKind,
-    Envelope, Expression, Extrude, ObjectPayload, Point2, SelectionRule, SemanticRole, Sketch,
-    SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
+    Document, EXTRUDE_CAP_EDGE_CAPABILITY, EXTRUDE_CAP_VERTEX_CAPABILITY,
+    EXTRUDE_SWEEP_EDGE_CAPABILITY, EndCondition, EntityKind, Envelope, Expression, Extrude,
+    ObjectPayload, Point2, SelectionRule, SemanticRole, Sketch, SketchCurve, SketchGeometry,
+    SolidOperation, TopologyRef,
 };
 use ferritecad_types::{
     CadError, ContentHash, ErrorKind, ObjectId, ProfileJoint, Result, StableEntityId, Transform,
@@ -1128,4 +1129,294 @@ fn one_corner_has_one_meaning_and_one_stored_spelling() {
     let refusal = ciborium::from_reader::<ProfileJoint, _>(swapped.as_slice())
         .expect_err("a swapped stored pair is refused");
     assert!(refusal.to_string().contains("canonical order"), "{refusal}");
+}
+
+#[test]
+fn a_stored_corner_keeps_its_side_its_pair_and_its_own_capability() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let plate = populate(&mut document).expect("populates");
+    let joint =
+        ProfileJoint::new(plate.first_segment, StableEntityId::new()).expect("two segments");
+    let cap_vertex = StableEntityId::new();
+
+    document
+        .write(|w| {
+            w.put_topology_ref(&TopologyRef {
+                id: cap_vertex,
+                owner: plate.extrude,
+                producer_feature: plate.extrude,
+                expected_kind: EntityKind::Vertex,
+                output_role: SemanticRole::ExtrudeCapVertex {
+                    side: CapSide::End,
+                    joint,
+                },
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            })
+        })
+        .expect("stores the cap vertex reference");
+
+    let reopened = Document::open(&path).expect("opens");
+    assert!(
+        reopened.access().is_writable(),
+        "this build implements the capability it declares"
+    );
+    let refs = reopened.topology_refs().expect("reads");
+    let restored = refs
+        .iter()
+        .find(|stored| stored.id == cap_vertex)
+        .expect("the cap vertex reference is there");
+    assert_eq!(
+        restored.output_role,
+        SemanticRole::ExtrudeCapVertex {
+            side: CapSide::End,
+            joint,
+        },
+        "the side and both segments came back"
+    );
+    assert_eq!(restored.expected_kind, EntityKind::Vertex);
+
+    // Its own capability. A reader that understands the edge running along a
+    // corner does not thereby understand the point where it reaches a cap.
+    let conn = rusqlite::Connection::open(&path).expect("opens raw");
+    let stored: Vec<u8> = conn
+        .query_row(
+            "SELECT payload FROM topology_refs WHERE id = ?1",
+            [cap_vertex.to_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .expect("reads the envelope");
+    let envelope = Envelope::from_bytes(&stored).expect("decodes");
+    assert!(
+        envelope
+            .required_capabilities
+            .iter()
+            .any(|name| name == EXTRUDE_CAP_VERTEX_CAPABILITY)
+    );
+    for other in [EXTRUDE_SWEEP_EDGE_CAPABILITY, EXTRUDE_CAP_EDGE_CAPABILITY] {
+        assert!(
+            !envelope.required_capabilities.iter().any(|n| n == other),
+            "a cap vertex must not ask for the {other} contract"
+        );
+    }
+
+    // And nothing session-local reached the bytes. A handle is a slot index by
+    // another name, and one written down here is what silently retargets a
+    // reference after an upstream edit.
+    let text = String::from_utf8_lossy(&stored);
+    for forbidden in ["session#", "shape#", "vertex#", "SubShapeHandle", "PickId"] {
+        assert!(
+            !text.contains(forbidden),
+            "a stored corner mentions {forbidden}"
+        );
+    }
+    let debug = format!("{:?}", restored.output_role);
+    for forbidden in ["session", "shape#", "Handle", "PickId"] {
+        assert!(
+            !debug.contains(forbidden),
+            "the portable Debug of a corner mentions {forbidden}: {debug}"
+        );
+    }
+}
+
+#[test]
+fn a_cap_vertex_role_cannot_hide_the_capability_it_needs() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let plate = populate(&mut document).expect("populates");
+    let joint =
+        ProfileJoint::new(plate.first_segment, StableEntityId::new()).expect("two segments");
+    let cap_vertex = StableEntityId::new();
+    document
+        .write(|w| {
+            w.put_topology_ref(&TopologyRef {
+                id: cap_vertex,
+                owner: plate.extrude,
+                producer_feature: plate.extrude,
+                expected_kind: EntityKind::Vertex,
+                output_role: SemanticRole::ExtrudeCapVertex {
+                    side: CapSide::Start,
+                    joint,
+                },
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            })
+        })
+        .expect("stores the cap vertex reference");
+    document.close().expect("closes");
+
+    // Byte-consistent damage: the role is still a cap vertex, and the envelope
+    // declares only the older core capability. Trusting the declaration would
+    // grant write access to a reader that cannot reproduce the reference.
+    let conn = rusqlite::Connection::open(&path).expect("opens raw");
+    let stored: Vec<u8> = conn
+        .query_row(
+            "SELECT payload FROM topology_refs WHERE id = ?1",
+            [cap_vertex.to_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .expect("reads the envelope");
+    let mut envelope = Envelope::from_bytes(&stored).expect("decodes");
+    envelope.required_capabilities = vec![CORE_CAPABILITY.to_owned()];
+    let damaged = envelope.to_bytes().expect("re-encodes");
+    let damaged_hash = ContentHash::of_bytes(&damaged);
+    conn.execute(
+        "UPDATE topology_refs SET payload = ?1, payload_hash = ?2 WHERE id = ?3",
+        rusqlite::params![
+            damaged,
+            damaged_hash.as_bytes().as_slice(),
+            cap_vertex.to_bytes().as_slice()
+        ],
+    )
+    .expect("updates bytes and their integrity hash");
+    drop(conn);
+
+    let refusal = match Document::open(&path) {
+        Ok(_) => panic!("an under-declared cap-vertex role gained write access"),
+        Err(error) => error,
+    };
+    assert_eq!(refusal.kind(), ErrorKind::Input);
+    assert!(
+        refusal.to_string().contains(EXTRUDE_CAP_VERTEX_CAPABILITY),
+        "the refusal should name the missing contract, got: {refusal}"
+    );
+}
+
+#[test]
+fn one_corner_on_one_cap_has_one_meaning_and_one_stored_spelling() {
+    let feature = ObjectId::new();
+    let one = StableEntityId::new();
+    let other = StableEntityId::new();
+    // One reference identity throughout: what is under test is whether the
+    // side and the pair change the meaning, not whether two references differ.
+    let id = StableEntityId::new();
+    let reference = |side, joint| TopologyRef {
+        id,
+        owner: feature,
+        producer_feature: feature,
+        expected_kind: EntityKind::Vertex,
+        output_role: SemanticRole::ExtrudeCapVertex { side, joint },
+        selection: SelectionRule::Exact,
+        fallback_signature: None,
+    };
+
+    let forwards = ProfileJoint::new(one, other).expect("two segments");
+    let backwards = ProfileJoint::new(other, one).expect("two segments");
+
+    // Naming the pair the other way round is the same corner, and the stored
+    // meaning says so rather than producing a second name for one point.
+    assert_eq!(
+        reference(CapSide::Start, forwards).meaning_hash(),
+        reference(CapSide::Start, backwards).meaning_hash()
+    );
+
+    // The side is part of the meaning: the two ends of one corner are two
+    // points, and one hash for both would make them one reference.
+    assert_ne!(
+        reference(CapSide::Start, forwards).meaning_hash(),
+        reference(CapSide::End, forwards).meaning_hash()
+    );
+
+    // Both segments are part of it too: a corner sharing one segment with a
+    // neighbour is not that neighbour.
+    let neighbour = ProfileJoint::new(one, StableEntityId::new()).expect("two segments");
+    assert_ne!(
+        reference(CapSide::Start, forwards).meaning_hash(),
+        reference(CapSide::Start, neighbour).meaning_hash()
+    );
+
+    // And it is not the sweep edge named by the same pair. The two roles
+    // select different geometry and must not collide.
+    let mut edge = reference(CapSide::Start, forwards);
+    edge.expected_kind = EntityKind::Edge;
+    edge.output_role = SemanticRole::ExtrudeSweepEdge { joint: forwards };
+    assert_ne!(
+        reference(CapSide::Start, forwards).meaning_hash(),
+        edge.meaning_hash()
+    );
+
+    // Nor the cap edge of one of its segments, on the same cap.
+    let mut cap_edge = reference(CapSide::Start, forwards);
+    cap_edge.expected_kind = EntityKind::Edge;
+    cap_edge.output_role = SemanticRole::ExtrudeCapEdge {
+        side: CapSide::Start,
+        profile_segment: one,
+    };
+    assert_ne!(
+        reference(CapSide::Start, forwards).meaning_hash(),
+        cap_edge.meaning_hash()
+    );
+}
+
+#[test]
+fn a_corner_role_survives_being_written_down_as_itself() {
+    let joint = ProfileJoint::new(StableEntityId::new(), StableEntityId::new())
+        .expect("two different segments");
+    let encoded = |role: &SemanticRole| -> Vec<u8> {
+        let mut bytes = Vec::new();
+        ciborium::into_writer(role, &mut bytes).expect("serialises");
+        bytes
+    };
+
+    for side in [CapSide::Start, CapSide::End] {
+        let role = SemanticRole::ExtrudeCapVertex { side, joint };
+        let bytes = encoded(&role);
+        let back: SemanticRole = ciborium::from_reader(bytes.as_slice()).expect("deserialises");
+        assert_eq!(back, role);
+    }
+
+    // The two sides are not one another after a round trip either.
+    assert_ne!(
+        encoded(&SemanticRole::ExtrudeCapVertex {
+            side: CapSide::Start,
+            joint,
+        }),
+        encoded(&SemanticRole::ExtrudeCapVertex {
+            side: CapSide::End,
+            joint,
+        })
+    );
+}
+
+#[test]
+fn a_document_naming_no_corner_declares_exactly_what_it_did_before() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let plate = populate(&mut document).expect("populates");
+    let cap = StableEntityId::new();
+    document
+        .write(|w| {
+            w.put_topology_ref(&TopologyRef {
+                id: cap,
+                owner: plate.extrude,
+                producer_feature: plate.extrude,
+                expected_kind: EntityKind::Face,
+                output_role: SemanticRole::ExtrudeCap {
+                    side: CapSide::Start,
+                },
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            })
+        })
+        .expect("stores an ordinary cap reference");
+    document.close().expect("closes");
+
+    let conn = rusqlite::Connection::open(&path).expect("opens raw");
+    let stored: Vec<u8> = conn
+        .query_row(
+            "SELECT payload FROM topology_refs WHERE id = ?1",
+            [cap.to_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .expect("reads the envelope");
+    let envelope = Envelope::from_bytes(&stored).expect("decodes");
+    assert_eq!(
+        envelope.required_capabilities,
+        vec![CORE_CAPABILITY.to_owned()],
+        "a document that names no corner must not start asking for the corner contract"
+    );
+    drop(conn);
+
+    assert!(Document::open(&path).expect("opens").access().is_writable());
 }
