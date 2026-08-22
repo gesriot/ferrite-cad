@@ -1370,8 +1370,8 @@ mod tests {
             .expect_err("one vertex cannot be on both caps");
         assert!(both_caps.to_string().contains("both name"), "{both_caps}");
 
-        // And a cap vertex that is also named as a cap edge is refused, since
-        // the two would be one handle under two durable meanings.
+        // The same collision is refused when it arrives through two entries
+        // on one side rather than through the two side maps.
         let mut mixed = capped(shape, &[(corner, vertex)], &[]);
         mixed.start_cap_vertices.insert(joint(), vertex);
         assert!(mixed.validate().is_err());

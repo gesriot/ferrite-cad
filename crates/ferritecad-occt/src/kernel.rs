@@ -426,21 +426,32 @@ impl GeometryKernel for OcctKernel {
             let mut start_cap_vertices = BTreeMap::new();
             let mut end_cap_vertices = BTreeMap::new();
             for (index, joint) in joints.iter().enumerate() {
-                if seen.get(joint).copied().unwrap_or(0) != 1 {
-                    continue;
-                }
-                for (which, into) in [(0, &mut start_cap_vertices), (1, &mut end_cap_vertices)] {
+                // Read the positional answers before deciding whether the
+                // durable pair is unique. Otherwise the two corners of a
+                // two-segment loop would never cross the FFI boundary at all,
+                // and the bridge's promise to preserve the ambiguity would be
+                // decorative rather than consumed.
+                let mut on_caps = [None, None];
+                for (which, into) in [0_i32, 1].into_iter().zip(on_caps.iter_mut()) {
                     let mut named = self.session.cap_vertices(raw, index, which)?.into_iter();
-                    let Some(id) = named.next() else {
-                        continue;
-                    };
+                    *into = named.next();
                     if named.next().is_some() {
                         return Err(CadError::kernel(format!(
                             "the sweep named more than one cap vertex for {joint}, and there is \
                              no way to choose between them"
                         )));
                     }
-                    into.insert(*joint, SubShapeHandle::new(shape, SubShapeKind::Vertex, id));
+                }
+                if seen.get(joint).copied().unwrap_or(0) != 1 {
+                    continue;
+                }
+                if let Some(id) = on_caps[0] {
+                    start_cap_vertices
+                        .insert(*joint, SubShapeHandle::new(shape, SubShapeKind::Vertex, id));
+                }
+                if let Some(id) = on_caps[1] {
+                    end_cap_vertices
+                        .insert(*joint, SubShapeHandle::new(shape, SubShapeKind::Vertex, id));
                 }
             }
 
