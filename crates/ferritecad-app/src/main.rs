@@ -38,7 +38,7 @@ use ferritecad_kernel::{CancelToken, OperationContext, ProgressSink, Tessellatio
 use ferritecad_occt::OcctKernel;
 use ferritecad_scene::{
     CatalogueEntry, EdgeNames, FaceMeaning, FaceNames, LoadedScene, SceneItem, Selection,
-    snapshot_of,
+    VertexNames, snapshot_of,
 };
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
@@ -596,18 +596,26 @@ fn spawn_load(
 /// camera has already moved, the old model remains resident but may be framed
 /// completely out of view. Returning both candidates lets the event-loop
 /// thread commit them together after every fallible step has succeeded.
-fn prepare_load<P>(
-    current_input: &ViewportInput,
-    loaded: Result<LoadedScene>,
-    prepare: impl FnOnce(Arc<RenderSnapshot>) -> Result<P>,
-) -> Result<(
+/// Everything a prepared load hands to the event loop, in one name.
+///
+/// A tuple of seven because these are seven parts of one arrival that must be
+/// committed together; naming it is what keeps the signature readable now that
+/// the picture carries three kinds of durable name rather than two.
+type PreparedLoad<P> = (
     ViewportInput,
     P,
     Vec<CatalogueEntry>,
     FaceNames,
     EdgeNames,
+    VertexNames,
     Visibility,
-)> {
+);
+
+fn prepare_load<P>(
+    current_input: &ViewportInput,
+    loaded: Result<LoadedScene>,
+    prepare: impl FnOnce(Arc<RenderSnapshot>) -> Result<P>,
+) -> Result<PreparedLoad<P>> {
     let mut input = current_input.clone();
     let loaded = loaded?;
     let snapshot = input.accept_load(Ok(loaded.snapshot))?;
@@ -623,6 +631,7 @@ fn prepare_load<P>(
         loaded.catalogue,
         loaded.faces,
         loaded.edges,
+        loaded.vertices,
         visibility,
     ))
 }
@@ -728,6 +737,20 @@ struct LiveScene<P> {
     /// Beside `faces` and replaced with it, for the same reason: what a name
     /// means belongs to the picture it was read against.
     edges: EdgeNames,
+    /// And what it durably calls the topological vertices. Carried on the same
+    /// terms as the two above: a name read against one picture says nothing
+    /// about the next, so it is replaced whole rather than kept.
+    ///
+    /// Nothing in this build reads it. That is the honest state of the slice
+    /// that put it here: the names now survive the load and reach the window,
+    /// and what a corner is called becomes visible when choosing one does. The
+    /// exception is declared rather than avoided by wiring the field into
+    /// behaviour this slice deliberately does not add.
+    #[allow(
+        dead_code,
+        reason = "carried to the window here; read by the slice that selects a corner"
+    )]
+    vertices: VertexNames,
     /// Which definitions this window is drawing. Transient, bound to
     /// `prepared`, and reset with it: what is hidden is a state of looking at
     /// a document, not a fact about the document.
@@ -751,6 +774,7 @@ impl<P> LiveScene<P> {
         catalogue: Vec<CatalogueEntry>,
         faces: FaceNames,
         edges: EdgeNames,
+        vertices: VertexNames,
         visibility: Visibility,
     ) -> Self {
         Self {
@@ -758,6 +782,7 @@ impl<P> LiveScene<P> {
             catalogue,
             faces,
             edges,
+            vertices,
             visibility,
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
@@ -823,17 +848,10 @@ impl<P> LiveScene<P> {
 fn commit_scene<P>(
     scene: &mut LiveScene<P>,
     camera: &mut ViewportInput,
-    next: Result<(
-        ViewportInput,
-        P,
-        Vec<CatalogueEntry>,
-        FaceNames,
-        EdgeNames,
-        Visibility,
-    )>,
+    next: Result<PreparedLoad<P>>,
 ) -> Result<()> {
-    let (framed, prepared, catalogue, faces, edges, visibility) = next?;
-    *scene = LiveScene::new(prepared, catalogue, faces, edges, visibility);
+    let (framed, prepared, catalogue, faces, edges, vertices, visibility) = next?;
+    *scene = LiveScene::new(prepared, catalogue, faces, edges, vertices, visibility);
     *camera = framed;
     Ok(())
 }
@@ -2201,6 +2219,7 @@ impl App {
                 Vec::new(),
                 FaceNames::default(),
                 EdgeNames::default(),
+                VertexNames::default(),
                 Visibility::default(),
             ),
             egui,
@@ -2619,6 +2638,7 @@ mod tests {
         LoadedScene {
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             snapshot,
             catalogue: Vec::new(),
         }
@@ -2796,7 +2816,7 @@ mod tests {
         // call a document ready before the frame that put it there.
         let outcome = if loads.accepts(generation) {
             match prepare_load(input, result, |_| Ok(())) {
-                Ok((updated, (), _, _, _, _)) => {
+                Ok((updated, (), _, _, _, _, _)) => {
                     *input = updated;
                     Ok(())
                 }
@@ -3292,6 +3312,7 @@ mod tests {
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Hovered::Nothing,
@@ -3311,6 +3332,7 @@ mod tests {
             vec![a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::default(),
         );
         assert_eq!(replacement.selection, Selection::Nothing);
@@ -3330,6 +3352,7 @@ mod tests {
             catalogue: vec![mine.clone()],
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             // A real question about the picture that is still on screen, so
@@ -3373,6 +3396,7 @@ mod tests {
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Hovered::Nothing,
@@ -3393,6 +3417,7 @@ mod tests {
                 vec![arriving.clone()],
                 FaceNames::default(),
                 EdgeNames::default(),
+                VertexNames::default(),
                 Visibility::default(),
             )),
         )
@@ -3415,6 +3440,7 @@ mod tests {
             catalogue: vec![mine.clone()],
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(
                 picture
@@ -3446,6 +3472,7 @@ mod tests {
             catalogue: Vec::new(),
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: scene.selection,
             hovered: Hovered::Nothing,
@@ -3467,6 +3494,7 @@ mod tests {
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Hovered::Nothing,
@@ -3582,6 +3610,7 @@ mod tests {
             catalogue: entries.clone(),
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
@@ -3773,6 +3802,7 @@ mod tests {
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::new(&picture),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
@@ -3950,6 +3980,117 @@ mod tests {
         )
         .expect("the plate loads through Open CASCADE");
         Some((directory, scene))
+    }
+
+    /// The committed plate through the real kernel, with an exact durable name
+    /// for every corner where a profile joint reaches a cap.
+    ///
+    /// The corners come from `ProfileLoop::joints`, the same adjacency the
+    /// kernel and the topology map already share.
+    fn native_plate_with_named_cap_vertices() -> Option<(tempfile::TempDir, LoadedScene)> {
+        use ferritecad_document::{CapSide, Document, EntityKind, ObjectPayload, SelectionRule};
+
+        if !ferritecad_occt::is_available() {
+            eprintln!("skipped: this build has no Open CASCADE");
+            return None;
+        }
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("plate.fcad");
+        std::fs::copy(ferritecad_fixtures::plate_source(), &path).expect("copies the fixture");
+
+        let mut document = Document::open(&path).expect("opens the plate");
+        let objects = document.objects().expect("reads objects");
+        let sketch = objects
+            .iter()
+            .find_map(|object| match &object.payload {
+                ObjectPayload::Sketch(sketch) => Some(sketch.clone()),
+                _ => None,
+            })
+            .expect("the fixture has a sketch");
+        let datum = objects
+            .iter()
+            .find_map(|object| match &object.payload {
+                ObjectPayload::DatumPlane(datum) => Some(datum.clone()),
+                _ => None,
+            })
+            .expect("the fixture has a datum plane");
+        let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
+        let profile =
+            ferritecad_eval::profile_from_sketch(&sketch, plane).expect("builds a profile");
+
+        let stored = document.topology_refs().expect("reads");
+        let producer = stored
+            .iter()
+            .find_map(|reference| match &reference.output_role {
+                SemanticRole::ExtrudeSide { .. } => Some(reference.producer_feature),
+                _ => None,
+            })
+            .expect("the fixture names its swept faces");
+        let owner = stored[0].owner;
+        document
+            .write(|w| {
+                for joint in profile.outer().joints() {
+                    for side in [CapSide::Start, CapSide::End] {
+                        w.put_topology_ref(&ferritecad_document::TopologyRef {
+                            id: ferritecad_types::StableEntityId::new(),
+                            owner,
+                            producer_feature: producer,
+                            expected_kind: EntityKind::Vertex,
+                            output_role: SemanticRole::ExtrudeCapVertex { side, joint },
+                            selection: SelectionRule::Exact,
+                            fallback_signature: None,
+                        })?;
+                    }
+                }
+                Ok(())
+            })
+            .expect("stores the cap vertex references");
+        drop(document);
+
+        let mut kernel = OcctKernel::new().expect("opens a session");
+        let scene = snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel: &mut OcctKernel, bytes: &[u8]| kernel.import_step(bytes),
+            &ferritecad_kernel::TessellationParams::default(),
+            &ferritecad_kernel::OperationContext::default(),
+        )
+        .expect("the plate loads through Open CASCADE");
+        Some((directory, scene))
+    }
+
+    #[test]
+    fn what_a_load_hands_over_includes_the_names_of_its_corners() {
+        let Some((_directory, loaded)) = native_plate_with_named_cap_vertices() else {
+            return;
+        };
+        let picture = loaded.snapshot.clone();
+        // Everything the document names, before the load is prepared.
+        let before: Vec<(u32, usize)> = (0..picture.vertex_count())
+            .filter_map(|ordinal| picture.vertex_of(0, ordinal))
+            .map(|vertex| (vertex.to_raw(), loaded.vertices.of(vertex, &picture).len()))
+            .collect();
+        assert_eq!(
+            before.iter().filter(|(_, count)| *count > 0).count(),
+            8,
+            "the document names all eight corners of the plate"
+        );
+
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        // The route a real Open takes: everything fallible first, and the
+        // parts handed over together afterwards.
+        let (_framed, (), _catalogue, _faces, _edges, vertices, _visibility) =
+            prepare_load(&input, Ok(loaded), |_| Ok(())).expect("the load is prepared");
+
+        let after: Vec<(u32, usize)> = (0..picture.vertex_count())
+            .filter_map(|ordinal| picture.vertex_of(0, ordinal))
+            .map(|vertex| (vertex.to_raw(), vertices.of(vertex, &picture).len()))
+            .collect();
+        assert_eq!(
+            after, before,
+            "preparing a load dropped what the document calls its corners"
+        );
     }
 
     /// A copy of the committed plate with an exact name for every edge that
@@ -5193,6 +5334,7 @@ mod tests {
             catalogue: loaded.catalogue.clone(),
             faces: loaded.faces.clone(),
             edges: loaded.edges.clone(),
+            vertices: loaded.vertices.clone(),
             visibility: Visibility::new(&picture),
             selection: chosen.clone(),
             hovered: Hovered::Nothing,
@@ -5226,6 +5368,7 @@ mod tests {
                 loaded.catalogue.clone(),
                 FaceNames::default(),
                 EdgeNames::default(),
+                VertexNames::default(),
                 Visibility::default(),
             )),
         )
@@ -5363,6 +5506,7 @@ mod tests {
             catalogue: loaded.catalogue.clone(),
             faces: loaded.faces.clone(),
             edges: loaded.edges.clone(),
+            vertices: loaded.vertices.clone(),
             visibility: Visibility::new(&picture),
             selection: Selection::Nothing,
             hovered: asked,
@@ -5397,6 +5541,7 @@ mod tests {
                 loaded.catalogue.clone(),
                 FaceNames::default(),
                 EdgeNames::default(),
+                VertexNames::default(),
                 Visibility::default(),
             )),
         )
@@ -5424,7 +5569,7 @@ mod tests {
         input.resize(800, 600);
         // The route a real Open takes: everything fallible first, and the
         // parts handed over together afterwards.
-        let (_framed, (), _catalogue, _faces, edges, _visibility) =
+        let (_framed, (), _catalogue, _faces, edges, _vertices, _visibility) =
             prepare_load(&input, Ok(loaded), |_| Ok(())).expect("the load is prepared");
 
         assert_eq!(
@@ -5747,6 +5892,7 @@ mod tests {
             vec![a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(picture),
         );
         scene.selection =
@@ -5774,6 +5920,7 @@ mod tests {
             vec![a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         scene.selection =
@@ -5891,6 +6038,7 @@ mod tests {
             vec![a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -6029,6 +6177,7 @@ mod tests {
                 vec![a_body(), a_body()],
                 FaceNames::default(),
                 EdgeNames::default(),
+                VertexNames::default(),
                 Visibility::new(&next),
             )),
         )
@@ -6297,6 +6446,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -6391,6 +6541,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
 
@@ -6444,6 +6595,7 @@ mod tests {
             vec![a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(drawn).expect("has a row"));
@@ -6475,6 +6627,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -6512,6 +6665,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -6565,6 +6719,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -6655,6 +6810,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -6688,6 +6844,7 @@ mod tests {
                 vec![a_body(), a_body(), a_body()],
                 FaceNames::default(),
                 EdgeNames::default(),
+                VertexNames::default(),
                 Visibility::new(&next),
             )),
         )
@@ -6781,6 +6938,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -6891,6 +7049,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -7033,6 +7192,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -7073,6 +7233,7 @@ mod tests {
                 vec![a_body(), a_body(), a_body()],
                 FaceNames::default(),
                 EdgeNames::default(),
+                VertexNames::default(),
                 Visibility::new(&next),
             )),
         )
@@ -7147,6 +7308,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -7216,6 +7378,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -7322,6 +7485,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -7356,6 +7520,7 @@ mod tests {
                 vec![a_body(), a_body(), a_body()],
                 FaceNames::default(),
                 EdgeNames::default(),
+                VertexNames::default(),
                 Visibility::new(&next),
             )),
         )
@@ -7454,6 +7619,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -7528,6 +7694,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -7608,6 +7775,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -7689,6 +7857,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
@@ -7731,6 +7900,7 @@ mod tests {
                 vec![a_body(), a_body(), a_body()],
                 FaceNames::default(),
                 EdgeNames::default(),
+                VertexNames::default(),
                 Visibility::new(&next),
             )),
         )
@@ -7896,6 +8066,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -8136,6 +8307,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -8227,6 +8399,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -8332,6 +8505,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -8415,6 +8589,7 @@ mod tests {
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&picture),
         );
         let mut input = ViewportInput::new();
@@ -8511,6 +8686,7 @@ mod tests {
             Vec::new(),
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&snapshot),
         );
         scene.selection = Selection::Definition(front);
@@ -8714,6 +8890,7 @@ mod tests {
             vec![a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&scene.snapshot),
         );
         live.selection = chosen.clone();
@@ -8784,6 +8961,7 @@ mod tests {
             Vec::new(),
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&snapshot),
         );
         live.selection = Selection::Definition(marker);
@@ -9050,6 +9228,7 @@ mod tests {
             vec![a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&scene.snapshot),
         );
         live.selection = chosen;
@@ -9127,6 +9306,7 @@ mod tests {
             vec![a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(snapshot),
         );
 
@@ -9197,6 +9377,7 @@ mod tests {
             vec![a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(snapshot),
         );
         live.selection = chosen.clone();
@@ -9247,6 +9428,7 @@ mod tests {
             vec![a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::new(&scene.snapshot),
         );
         let mut input = ViewportInput::new();
@@ -9461,6 +9643,7 @@ mod tests {
             Vec::new(),
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::default(),
         );
         scene_with_face.selection = chosen;
@@ -9477,6 +9660,7 @@ mod tests {
             Vec::new(),
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::default(),
         );
         scene_with_part.selection = definition;
@@ -9499,6 +9683,7 @@ mod tests {
             vec![a_body()],
             FaceNames::default(),
             EdgeNames::default(),
+            VertexNames::default(),
             Visibility::default(),
         );
         live.selection = chosen.clone();
@@ -9528,6 +9713,7 @@ mod tests {
                 vec![a_body()],
                 FaceNames::default(),
                 EdgeNames::default(),
+                VertexNames::default(),
                 Visibility::default(),
             )),
         )
@@ -9620,6 +9806,7 @@ mod tests {
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Hovered::Nothing,
@@ -9671,6 +9858,7 @@ mod tests {
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Hovered::Definition(chosen),
@@ -9698,6 +9886,7 @@ mod tests {
                 vec![a_body()],
                 FaceNames::default(),
                 EdgeNames::default(),
+                VertexNames::default(),
                 Visibility::default(),
             )),
         )
@@ -9735,6 +9924,7 @@ mod tests {
             catalogue: entries.clone(),
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
@@ -9816,6 +10006,7 @@ mod tests {
             catalogue: vec![entry],
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
@@ -9838,6 +10029,7 @@ mod tests {
             catalogue: vec![a_body(), a_body()],
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
@@ -9870,6 +10062,7 @@ mod tests {
             catalogue: entries.clone(),
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(picture.pick_of(1).expect("the picture has that row")),
             hovered: Hovered::Nothing,
@@ -9921,6 +10114,7 @@ mod tests {
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(
                 picture.pick_of(mesh).expect("the picture has that row"),
@@ -9982,6 +10176,7 @@ mod tests {
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
@@ -10031,6 +10226,7 @@ mod tests {
             catalogue: vec![a_body(), a_body()],
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(
                 picture.pick_of(chosen).expect("the picture has that row"),
@@ -10094,6 +10290,7 @@ mod tests {
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(
                 picture.pick_of(only).expect("the picture has that row"),
@@ -10147,6 +10344,7 @@ mod tests {
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(picture.pick_of(0).expect("the picture has that row")),
             hovered: Hovered::Nothing,
@@ -10174,6 +10372,7 @@ mod tests {
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
@@ -10211,6 +10410,7 @@ mod tests {
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
             visibility: Visibility::default(),
             selection: Selection::Definition(
                 picture
@@ -10274,6 +10474,7 @@ mod tests {
                 catalogue: vec![entry.clone()],
                 faces: FaceNames::default(),
                 edges: EdgeNames::default(),
+                vertices: VertexNames::default(),
                 visibility: Visibility::default(),
                 selection: Selection::Definition(draw.pick),
                 hovered: Hovered::Nothing,

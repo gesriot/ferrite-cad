@@ -876,3 +876,916 @@ fn a_stale_or_foreign_edge_identity_names_no_sweep_edge() {
         "an edge identity this picture never issued was given a name"
     );
 }
+
+/// The plate, with an exact durable name for every corner where a profile
+/// joint reaches a cap.
+///
+/// The corners come from `ProfileLoop::joints`, the same adjacency the kernel
+/// and the topology map already share. Pairing the sketch curves here would be
+/// a second piece of arithmetic, free to disagree with the first.
+fn plate_with_named_cap_vertices(path: &std::path::Path) -> Vec<ferritecad_document::TopologyRef> {
+    use ferritecad_document::{
+        CapSide, Document, EntityKind, ObjectPayload, SelectionRule, SemanticRole,
+    };
+
+    std::fs::copy(ferritecad_fixtures::plate_source(), path).expect("copies the fixture");
+    let mut document = Document::open(path).expect("opens the plate");
+    let objects = document.objects().expect("reads objects");
+    let sketch = objects
+        .iter()
+        .find_map(|object| match &object.payload {
+            ObjectPayload::Sketch(sketch) => Some(sketch.clone()),
+            _ => None,
+        })
+        .expect("the fixture has a sketch");
+    let datum = objects
+        .iter()
+        .find_map(|object| match &object.payload {
+            ObjectPayload::DatumPlane(datum) => Some(datum.clone()),
+            _ => None,
+        })
+        .expect("the fixture has a datum plane");
+    let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
+    let profile = ferritecad_eval::profile_from_sketch(&sketch, plane).expect("builds a profile");
+
+    let stored = document.topology_refs().expect("reads");
+    let producer = stored
+        .iter()
+        .find_map(|reference| match &reference.output_role {
+            SemanticRole::ExtrudeSide { .. } => Some(reference.producer_feature),
+            _ => None,
+        })
+        .expect("the fixture names its swept faces");
+    let owner = stored[0].owner;
+
+    let mut written = Vec::new();
+    for joint in profile.outer().joints() {
+        for side in [CapSide::Start, CapSide::End] {
+            written.push(ferritecad_document::TopologyRef {
+                id: ferritecad_types::StableEntityId::new(),
+                owner,
+                producer_feature: producer,
+                expected_kind: EntityKind::Vertex,
+                output_role: SemanticRole::ExtrudeCapVertex { side, joint },
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            });
+        }
+    }
+    assert_eq!(written.len(), 8, "four corners, two caps each");
+    // The edge running along each corner, named too. It is what lets a corner
+    // be cross-examined in the document's own words: the vertex a joint names
+    // must end the edge that same joint names, and no other.
+    let mut edges = Vec::new();
+    for joint in profile.outer().joints() {
+        edges.push(ferritecad_document::TopologyRef {
+            id: ferritecad_types::StableEntityId::new(),
+            owner,
+            producer_feature: producer,
+            expected_kind: EntityKind::Edge,
+            output_role: SemanticRole::ExtrudeSweepEdge { joint },
+            selection: SelectionRule::Exact,
+            fallback_signature: None,
+        });
+    }
+    document
+        .write(|w| {
+            for reference in written.iter().chain(edges.iter()) {
+                w.put_topology_ref(reference)?;
+            }
+            Ok(())
+        })
+        .expect("stores the cap vertex references");
+    written
+}
+
+#[test]
+fn a_stored_cap_vertex_name_reaches_the_corner_of_the_picture_it_names() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("plate.fcad");
+    let written = plate_with_named_cap_vertices(&path);
+
+    let mut kernel = OcctKernel::new().expect("opens a kernel session");
+    let scene = snapshot_of(
+        &path,
+        &mut kernel,
+        no_imports,
+        &TessellationParams::default(),
+        &OperationContext::default(),
+    )
+    .expect("the plate loads");
+
+    // The picture already numbers the plate's eight corners; that half of the
+    // route was closed in 19M-1a and 19M-1b1.
+    assert_eq!(
+        scene.snapshot.vertex_count(),
+        8,
+        "the plate draws eight topological vertices"
+    );
+
+    // Every stored reference must be found at exactly one of this picture's
+    // corners, and no two references at the same one.
+    let mut found: std::collections::BTreeMap<u32, Vec<ferritecad_types::StableEntityId>> =
+        std::collections::BTreeMap::new();
+    for ordinal in 0..scene.snapshot.vertex_count() {
+        let vertex = scene
+            .snapshot
+            .vertex_of(0, ordinal)
+            .expect("the picture numbers this corner");
+        for meaning in scene.vertices.of(vertex, &scene.snapshot) {
+            found
+                .entry(vertex.to_raw())
+                .or_default()
+                .push(meaning.reference);
+        }
+    }
+
+    for reference in &written {
+        assert!(
+            found.values().any(|names| names.contains(&reference.id)),
+            "the stored name {} reached no corner of the picture",
+            reference.id
+        );
+    }
+    assert_eq!(found.len(), 8, "all eight corners of the plate are named");
+    for (vertex, names) in &found {
+        assert_eq!(
+            names.len(),
+            1,
+            "corner {vertex} carries {} names",
+            names.len()
+        );
+    }
+
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
+fn what_each_named_corner_is_called_is_what_the_document_stored() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+    use ferritecad_document::{CapSide, SemanticRole};
+
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("plate.fcad");
+    let written = plate_with_named_cap_vertices(&path);
+
+    let mut kernel = OcctKernel::new().expect("opens a kernel session");
+    let scene = snapshot_of(
+        &path,
+        &mut kernel,
+        no_imports,
+        &TessellationParams::default(),
+        &OperationContext::default(),
+    )
+    .expect("the plate loads");
+
+    // What each corner is called, keyed by the side and the joint the document
+    // actually wrote. A meaning rebuilt by reinterpreting the role would still
+    // be eight distinct pairs and would name the wrong end of the sweep.
+    let mut by_meaning: std::collections::BTreeMap<(bool, ferritecad_types::ProfileJoint), u32> =
+        std::collections::BTreeMap::new();
+    for ordinal in 0..scene.snapshot.vertex_count() {
+        let vertex = scene.snapshot.vertex_of(0, ordinal).expect("numbered");
+        for meaning in scene.vertices.of(vertex, &scene.snapshot) {
+            assert!(
+                matches!(meaning.output_role, SemanticRole::ExtrudeCapVertex { .. }),
+                "a corner was named with a role that is not a cap vertex"
+            );
+            let SemanticRole::ExtrudeCapVertex { side, joint } = &meaning.output_role else {
+                continue;
+            };
+            assert_eq!(
+                meaning.expected_kind,
+                ferritecad_document::EntityKind::Vertex
+            );
+
+            // The words the document stored, unaltered.
+            let stored = written
+                .iter()
+                .find(|reference| reference.id == meaning.reference)
+                .expect("every name here was one this test wrote");
+            assert_eq!(
+                meaning.output_role, stored.output_role,
+                "what the picture reports is not what the document stored"
+            );
+            assert_eq!(meaning.owner, stored.owner);
+            assert_eq!(meaning.producer_feature, stored.producer_feature);
+            assert_eq!(meaning.expected_kind, stored.expected_kind);
+            assert_eq!(meaning.selection, stored.selection);
+
+            let start = matches!(side, CapSide::Start);
+            assert!(
+                by_meaning
+                    .insert((start, *joint), vertex.to_raw())
+                    .is_none(),
+                "two corners answer to one stored meaning"
+            );
+        }
+    }
+    assert_eq!(by_meaning.len(), 8);
+
+    // Start and End of one joint are different corners, and two joints are
+    // different corners on one cap. Swapping the sides, or shifting a name to
+    // the neighbouring joint, would leave the count above intact and this
+    // failing.
+    let joints: std::collections::BTreeSet<ferritecad_types::ProfileJoint> =
+        by_meaning.keys().map(|(_, joint)| *joint).collect();
+    assert_eq!(joints.len(), 4, "the plate has four corners");
+    for joint in &joints {
+        let start = by_meaning[&(true, *joint)];
+        let end = by_meaning[&(false, *joint)];
+        assert_ne!(start, end, "{joint} named one corner on both caps");
+    }
+    for one in &joints {
+        for other in &joints {
+            if one == other {
+                continue;
+            }
+            for side in [true, false] {
+                assert_ne!(
+                    by_meaning[&(side, *one)],
+                    by_meaning[&(side, *other)],
+                    "two joints named the same corner on one cap"
+                );
+            }
+        }
+    }
+
+    // Every corner the picture draws is one of the eight, and each is drawn
+    // wherever its occurrences say without gaining a second identity.
+    let mut identities = std::collections::BTreeSet::new();
+    for ordinal in 0..scene.snapshot.vertex_count() {
+        let vertex = scene.snapshot.vertex_of(0, ordinal).expect("numbered");
+        let occurrences = scene
+            .snapshot
+            .occurrences_of_vertex(vertex)
+            .expect("a corner of this picture is drawn somewhere");
+        assert_eq!(
+            occurrences.len(),
+            3,
+            "three faces meet at a corner of a plate"
+        );
+        assert!(identities.insert(vertex.to_raw()));
+    }
+    assert_eq!(identities.len(), 8);
+
+    // And the part that makes the eight above more than eight distinct
+    // numbers: each named corner is examined against what the *document*
+    // calls the geometry around it. The cap the reference claims and the
+    // sweep edge of its own joint are both named in this picture too, so the
+    // whole check is durable name against durable name, joined through the
+    // picture's own topology. A reading that shifted every name one corner
+    // along, or swapped the two caps, would still produce eight distinct
+    // corners and would fail here.
+    let cap_of = |side: CapSide| -> ferritecad_viewport::FacePickId {
+        let mut found = None;
+        for ordinal in 0..scene.snapshot.face_count() {
+            let face = scene.snapshot.face_of(0, ordinal).expect("numbered");
+            for meaning in scene.faces.of(face, &scene.snapshot) {
+                if meaning.output_role == (SemanticRole::ExtrudeCap { side }) {
+                    assert!(found.is_none(), "two faces are called the {side:?} cap");
+                    found = Some(face);
+                }
+            }
+        }
+        assert!(found.is_some(), "the fixture names its {side:?} cap");
+        found.expect("checked just above")
+    };
+    let sweep_of = |joint: ferritecad_types::ProfileJoint| -> ferritecad_viewport::EdgePickId {
+        let mut found = None;
+        for ordinal in 0..scene.snapshot.edge_count() {
+            let edge = scene.snapshot.edge_of(0, ordinal).expect("numbered");
+            for meaning in scene.edges.of(edge, &scene.snapshot) {
+                if meaning.output_role == (SemanticRole::ExtrudeSweepEdge { joint }) {
+                    assert!(found.is_none(), "two edges are called the sweep of {joint}");
+                    found = Some(edge);
+                }
+            }
+        }
+        assert!(found.is_some(), "this test named the sweep edge of {joint}");
+        found.expect("checked just above")
+    };
+
+    let start_cap = cap_of(CapSide::Start);
+    let end_cap = cap_of(CapSide::End);
+    assert_ne!(start_cap, end_cap);
+
+    for ((start, joint), raw) in &by_meaning {
+        let vertex = ferritecad_viewport::VertexPickId::from_raw(*raw, &scene.snapshot);
+        let claimed = if *start { start_cap } else { end_cap };
+        let other = if *start { end_cap } else { start_cap };
+
+        assert!(
+            scene.snapshot.vertex_touches_face(vertex, claimed),
+            "the corner named for {joint} on the {} cap is not on that cap",
+            if *start { "start" } else { "end" }
+        );
+        assert!(
+            !scene.snapshot.vertex_touches_face(vertex, other),
+            "one corner cannot be on both caps of a plate"
+        );
+
+        // It ends the edge swept from its own joint, and no other joint's.
+        assert!(
+            scene.snapshot.vertex_ends_edge(vertex, sweep_of(*joint)),
+            "the corner named for {joint} does not end the edge swept from {joint}"
+        );
+        for (_, neighbour) in by_meaning.keys() {
+            if neighbour == joint {
+                continue;
+            }
+            assert!(
+                !scene
+                    .snapshot
+                    .vertex_ends_edge(vertex, sweep_of(*neighbour)),
+                "the corner named for {joint} ends the edge swept from {neighbour} instead"
+            );
+        }
+    }
+
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
+fn several_exact_names_for_one_corner_all_come_back_in_document_order() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+    use ferritecad_document::{CapSide, Document, EntityKind, SelectionRule, SemanticRole};
+
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("plate.fcad");
+    let written = plate_with_named_cap_vertices(&path);
+
+    // Two more exact references naming the very same corner, plus a family
+    // reference for it, which is not a name for one corner at all.
+    let first = written
+        .iter()
+        .find(|reference| {
+            matches!(
+                reference.output_role,
+                SemanticRole::ExtrudeCapVertex {
+                    side: CapSide::Start,
+                    ..
+                }
+            )
+        })
+        .expect("a start-cap corner was written")
+        .clone();
+    let (side, joint) = match first.output_role.clone() {
+        SemanticRole::ExtrudeCapVertex { side, joint } => (side, joint),
+        other => unreachable!("the reference just found is a cap vertex, not {other:?}"),
+    };
+
+    let mut extra = Vec::new();
+    for _ in 0..2 {
+        extra.push(ferritecad_document::TopologyRef {
+            id: ferritecad_types::StableEntityId::new(),
+            ..first.clone()
+        });
+    }
+    let family = ferritecad_document::TopologyRef {
+        id: ferritecad_types::StableEntityId::new(),
+        owner: first.owner,
+        producer_feature: first.producer_feature,
+        expected_kind: EntityKind::Vertex,
+        output_role: SemanticRole::ExtrudeCapVertex { side, joint },
+        selection: SelectionRule::AllDerivedFrom {
+            ancestor: joint.segments()[0],
+        },
+        fallback_signature: None,
+    };
+
+    let mut document = Document::open(&path).expect("opens the plate");
+    document
+        .write(|w| {
+            for reference in extra.iter().chain(std::iter::once(&family)) {
+                w.put_topology_ref(reference)?;
+            }
+            Ok(())
+        })
+        .expect("stores the extra references");
+    drop(document);
+
+    let mut kernel = OcctKernel::new().expect("opens a kernel session");
+    let scene = snapshot_of(
+        &path,
+        &mut kernel,
+        no_imports,
+        &TessellationParams::default(),
+        &OperationContext::default(),
+    )
+    .expect("the plate loads");
+
+    // The order the document stores its references in, so "document order" is
+    // read from the document rather than assumed.
+    let reopened = ferritecad_document::Document::open_read_only(&path).expect("reopens");
+    let order: Vec<ferritecad_types::StableEntityId> = reopened
+        .topology_refs()
+        .expect("reads")
+        .into_iter()
+        .map(|reference| reference.id)
+        .collect();
+
+    let mut found = None;
+    for ordinal in 0..scene.snapshot.vertex_count() {
+        let vertex = scene.snapshot.vertex_of(0, ordinal).expect("numbered");
+        let meanings = scene.vertices.of(vertex, &scene.snapshot);
+        if meanings.len() > 1 {
+            assert!(found.is_none(), "two corners carry several names");
+            found = Some((vertex, meanings.to_vec()));
+        }
+    }
+    let (_, meanings) = found.expect("one corner carries the three exact names");
+    assert_eq!(
+        meanings.len(),
+        3,
+        "all three exact names are kept, and the family reference is not one of them"
+    );
+    assert!(
+        !meanings
+            .iter()
+            .any(|meaning| meaning.reference == family.id),
+        "a family reference became the name of one corner"
+    );
+
+    let positions: Vec<usize> = meanings
+        .iter()
+        .map(|meaning| {
+            order
+                .iter()
+                .position(|id| *id == meaning.reference)
+                .expect("every name here is stored")
+        })
+        .collect();
+    let mut sorted = positions.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        positions, sorted,
+        "the names are not in the order the document stores them"
+    );
+
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
+fn reading_the_same_document_twice_names_the_same_corners() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("plate.fcad");
+    plate_with_named_cap_vertices(&path);
+
+    // What each corner is called, said without a transient identity: the two
+    // reads are different pictures and cannot compare pick values.
+    let read = || {
+        let mut kernel = OcctKernel::new().expect("opens a kernel session");
+        let scene = snapshot_of(
+            &path,
+            &mut kernel,
+            no_imports,
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("the plate loads");
+        let mut named: Vec<Vec<ferritecad_types::StableEntityId>> = Vec::new();
+        for ordinal in 0..scene.snapshot.vertex_count() {
+            let vertex = scene.snapshot.vertex_of(0, ordinal).expect("numbered");
+            named.push(
+                scene
+                    .vertices
+                    .of(vertex, &scene.snapshot)
+                    .iter()
+                    .map(|meaning| meaning.reference)
+                    .collect(),
+            );
+        }
+        assert_eq!(kernel.live_shape_count(), 0);
+        named
+    };
+
+    let first = read();
+    assert_eq!(first.len(), 8);
+    assert_eq!(
+        first.iter().filter(|names| !names.is_empty()).count(),
+        8,
+        "every corner is named on the first read"
+    );
+    assert_eq!(read(), first, "a second read named the corners differently");
+}
+
+#[test]
+fn nothing_transient_survives_into_what_a_corner_is_called() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("plate.fcad");
+    plate_with_named_cap_vertices(&path);
+
+    let mut kernel = OcctKernel::new().expect("opens a kernel session");
+    let scene = snapshot_of(
+        &path,
+        &mut kernel,
+        no_imports,
+        &TessellationParams::default(),
+        &OperationContext::default(),
+    )
+    .expect("the plate loads");
+
+    // A handle or a pick value that reached this text would be one edit away
+    // from being written into a document, and that is exactly the reference
+    // that silently retargets after an upstream change.
+    let debug = format!("{:?}", scene.vertices);
+    assert!(debug.contains("VertexNames"), "{debug}");
+    for forbidden in [
+        "session#",
+        "shape#",
+        "vertex#",
+        "face#",
+        "edge#",
+        "SubShapeHandle",
+        "ShapeHandle",
+        "SessionId",
+        "FacePickId",
+        "EdgePickId",
+        "VertexPickId",
+        "PickId",
+    ] {
+        assert!(
+            !debug.contains(forbidden),
+            "what a corner is called mentions {forbidden}"
+        );
+    }
+    // And it says something: an empty structure would pass the check above.
+    assert!(
+        debug.contains("ExtrudeCapVertex"),
+        "the corner names are absent from their own Debug: {debug}"
+    );
+
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
+fn a_load_that_names_corners_and_then_fails_leaves_no_shape_behind() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("plate.fcad");
+    plate_with_named_cap_vertices(&path);
+
+    let mut kernel = OcctKernel::new().expect("opens a kernel session");
+    // Success first, so the session has certainly held real solids while the
+    // corner names were being built.
+    snapshot_of(
+        &path,
+        &mut kernel,
+        no_imports,
+        &TessellationParams::default(),
+        &OperationContext::default(),
+    )
+    .expect("the plate loads");
+    assert_eq!(kernel.live_shape_count(), 0);
+
+    // And a cancelled load of the same named document.
+    let cancel = ferritecad_kernel::CancelToken::new();
+    cancel.cancel();
+    let error = snapshot_of(
+        &path,
+        &mut kernel,
+        no_imports,
+        &TessellationParams::default(),
+        &OperationContext::default().with_cancel(cancel),
+    )
+    .expect_err("a cancelled load must not produce a picture");
+    assert_eq!(error.kind(), ferritecad_types::ErrorKind::Cancellation);
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
+fn a_corner_the_document_does_not_name_carries_no_invented_name() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+    use ferritecad_document::{
+        CapSide, Document, EntityKind, ObjectPayload, SelectionRule, SemanticRole,
+    };
+
+    // Only the start cap is named, so the plate has four named corners and
+    // four the document says nothing about. "Named nothing" and "nothing is
+    // known" must not become the same answer.
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("plate.fcad");
+    std::fs::copy(ferritecad_fixtures::plate_source(), &path).expect("copies the fixture");
+
+    let mut document = Document::open(&path).expect("opens the plate");
+    let objects = document.objects().expect("reads objects");
+    let sketch = objects
+        .iter()
+        .find_map(|object| match &object.payload {
+            ObjectPayload::Sketch(sketch) => Some(sketch.clone()),
+            _ => None,
+        })
+        .expect("the fixture has a sketch");
+    let datum = objects
+        .iter()
+        .find_map(|object| match &object.payload {
+            ObjectPayload::DatumPlane(datum) => Some(datum.clone()),
+            _ => None,
+        })
+        .expect("the fixture has a datum plane");
+    let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
+    let profile = ferritecad_eval::profile_from_sketch(&sketch, plane).expect("builds a profile");
+    let stored = document.topology_refs().expect("reads");
+    let producer = stored
+        .iter()
+        .find_map(|reference| match &reference.output_role {
+            SemanticRole::ExtrudeSide { .. } => Some(reference.producer_feature),
+            _ => None,
+        })
+        .expect("the fixture names its swept faces");
+    let owner = stored[0].owner;
+    document
+        .write(|w| {
+            for joint in profile.outer().joints() {
+                w.put_topology_ref(&ferritecad_document::TopologyRef {
+                    id: ferritecad_types::StableEntityId::new(),
+                    owner,
+                    producer_feature: producer,
+                    expected_kind: EntityKind::Vertex,
+                    output_role: SemanticRole::ExtrudeCapVertex {
+                        side: CapSide::Start,
+                        joint,
+                    },
+                    selection: SelectionRule::Exact,
+                    fallback_signature: None,
+                })?;
+            }
+            Ok(())
+        })
+        .expect("stores four cap vertex references");
+    drop(document);
+
+    let mut kernel = OcctKernel::new().expect("opens a kernel session");
+    let scene = snapshot_of(
+        &path,
+        &mut kernel,
+        no_imports,
+        &TessellationParams::default(),
+        &OperationContext::default(),
+    )
+    .expect("the plate loads");
+
+    assert_eq!(scene.snapshot.vertex_count(), 8);
+    let named = (0..scene.snapshot.vertex_count())
+        .filter_map(|ordinal| scene.snapshot.vertex_of(0, ordinal))
+        .filter(|vertex| !scene.vertices.of(*vertex, &scene.snapshot).is_empty())
+        .count();
+    assert_eq!(
+        named, 4,
+        "four corners are named and four are not, and the four unnamed stay unnamed"
+    );
+
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
+fn a_profile_whose_pair_meets_twice_gets_no_invented_corner_name() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+    use ferritecad_document::{
+        Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, EntityKind,
+        Expression, Extrude, ObjectPayload, Point2, SelectionRule, SemanticRole, Sketch,
+        SketchCurve, SketchGeometry, SolidOperation,
+    };
+
+    // A lens: one arc and one line, so the single unordered pair of segments
+    // occurs at both corners and names neither. The solid has four corners and
+    // the picture numbers them; what must not happen is one of them acquiring
+    // a durable name the document cannot justify.
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("lens.fcad");
+    let mut document = Document::create(&path).expect("creates");
+
+    let plane = ferritecad_types::ObjectId::new();
+    let sketch = ferritecad_types::ObjectId::new();
+    let extrude = ferritecad_types::ObjectId::new();
+    let body = ferritecad_types::ObjectId::new();
+    let arc = ferritecad_types::StableEntityId::new();
+    let line = ferritecad_types::StableEntityId::new();
+
+    document
+        .write(|w| {
+            w.put_object(
+                plane,
+                None,
+                0,
+                Some("XY"),
+                &ObjectPayload::DatumPlane(DatumPlane {
+                    placement: ferritecad_types::Transform::IDENTITY,
+                }),
+            )?;
+            w.put_object(
+                sketch,
+                None,
+                1,
+                Some("Lens"),
+                &ObjectPayload::Sketch(Sketch {
+                    plane,
+                    curves: vec![
+                        SketchCurve {
+                            id: arc,
+                            construction: false,
+                            geometry: SketchGeometry::Arc {
+                                center: Point2::new(0.0, 0.0)?,
+                                radius: 10.0,
+                                start_angle: 0.0,
+                                end_angle: std::f64::consts::PI,
+                            },
+                        },
+                        SketchCurve {
+                            id: line,
+                            construction: false,
+                            geometry: SketchGeometry::Line {
+                                start: Point2::new(-10.0, 0.0)?,
+                                end: Point2::new(10.0, 0.0)?,
+                            },
+                        },
+                    ],
+                }),
+            )?;
+            w.add_dependency(Dependency {
+                dependent: sketch,
+                dependency: plane,
+                role: DependencyRole::Plane,
+            })?;
+            w.put_object(
+                extrude,
+                None,
+                2,
+                Some("Extrude1"),
+                &ObjectPayload::Extrude(Extrude {
+                    profile: sketch,
+                    end_condition: EndCondition::Blind {
+                        distance: Expression::constant(5.0)?,
+                    },
+                    reversed: false,
+                    operation: SolidOperation::NewBody,
+                    target_body: None,
+                }),
+            )?;
+            w.add_dependency(Dependency {
+                dependent: extrude,
+                dependency: sketch,
+                role: DependencyRole::Profile,
+            })?;
+            w.put_object(
+                body,
+                None,
+                3,
+                Some("Lens"),
+                &ObjectPayload::Body(Body {
+                    tip_feature: Some(extrude),
+                }),
+            )?;
+            w.add_dependency(Dependency {
+                dependent: body,
+                dependency: extrude,
+                role: DependencyRole::BodyTip,
+            })?;
+
+            // The one pair the profile has, on both caps. Each is a perfectly
+            // well formed reference; neither describes one corner.
+            let joint = ferritecad_types::ProfileJoint::new(arc, line)?;
+            for side in [CapSide::Start, CapSide::End] {
+                w.put_topology_ref(&ferritecad_document::TopologyRef {
+                    id: ferritecad_types::StableEntityId::new(),
+                    owner: extrude,
+                    producer_feature: extrude,
+                    expected_kind: EntityKind::Vertex,
+                    output_role: SemanticRole::ExtrudeCapVertex { side, joint },
+                    selection: SelectionRule::Exact,
+                    fallback_signature: None,
+                })?;
+            }
+            Ok(())
+        })
+        .expect("writes the lens");
+    document.close().expect("closes");
+
+    let mut kernel = OcctKernel::new().expect("opens a kernel session");
+    let scene = snapshot_of(
+        &path,
+        &mut kernel,
+        no_imports,
+        &TessellationParams::default(),
+        &OperationContext::default(),
+    )
+    .expect("the lens loads");
+
+    assert!(
+        scene.snapshot.vertex_count() > 0,
+        "the lens draws corners even though none of them can be named"
+    );
+    for ordinal in 0..scene.snapshot.vertex_count() {
+        let vertex = scene.snapshot.vertex_of(0, ordinal).expect("numbered");
+        assert!(
+            scene.vertices.of(vertex, &scene.snapshot).is_empty(),
+            "a corner of a two-segment loop was given a durable name"
+        );
+    }
+
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
+fn the_corners_of_an_imported_part_carry_no_durable_names() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+    use ferritecad_document::{Document, StepImportRequest};
+    use ferritecad_kernel::GeometryKernel;
+
+    // An imported part has corners the kernel identifies just as a native
+    // body's does. What it has no route to is a durable name: nothing in the
+    // document says what a vertex of a STEP file *is*, and inventing one is
+    // exactly the failure the whole naming layer exists to prevent.
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/step/canonical/01-single-part.step");
+    let bytes = std::fs::read(&source).expect("the corpus is committed");
+
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("imported.fcad");
+    let mut kernel = OcctKernel::new().expect("opens a kernel session");
+    let import = kernel.import_step(&bytes).expect("Open CASCADE reads it");
+    let identity = kernel.identity().clone();
+
+    let mut document = Document::create(&path).expect("creates");
+    document
+        .store_step_import(StepImportRequest {
+            object: ferritecad_types::ObjectId::new(),
+            name: Some("Part"),
+            source: &bytes,
+            source_name: Some("01-single-part.step"),
+            import: &import,
+            importer: &identity,
+        })
+        .expect("stores the import");
+    document.close().expect("closes");
+
+    // The shapes this test read to build the document are its own; the loader
+    // below reads the stored bytes again and owns what it makes.
+    if let ferritecad_exchange::Import::Imported { scene, .. } = &import {
+        for shape in scene.shapes() {
+            kernel.release(shape);
+        }
+    }
+    assert_eq!(kernel.live_shape_count(), 0);
+
+    let scene = snapshot_of(
+        &path,
+        &mut kernel,
+        |kernel: &mut OcctKernel, bytes: &[u8]| kernel.import_step(bytes),
+        &TessellationParams::default(),
+        &OperationContext::default(),
+    )
+    .expect("the imported part loads");
+
+    assert!(
+        scene.snapshot.vertex_count() > 0,
+        "the imported part draws corners"
+    );
+    for definition in 0..scene.snapshot.meshes().len() {
+        let mut ordinal = 0;
+        while let Some(vertex) = scene.snapshot.vertex_of(definition, ordinal) {
+            assert!(
+                scene.vertices.of(vertex, &scene.snapshot).is_empty(),
+                "a corner of an imported part was given a durable name it does not have"
+            );
+            ordinal += 1;
+        }
+    }
+
+    assert_eq!(kernel.live_shape_count(), 0);
+}

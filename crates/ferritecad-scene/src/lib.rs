@@ -50,7 +50,9 @@ use ferritecad_types::{
     CadError, CanonicalHasher, ContentHash, ImportedSourceId, ObjectId, Result, StableEntityId,
     Transform,
 };
-use ferritecad_viewport::{EdgePickId, FacePickId, PickId, RenderSnapshot, SnapshotBuilder};
+use ferritecad_viewport::{
+    EdgePickId, FacePickId, PickId, RenderSnapshot, SnapshotBuilder, VertexPickId,
+};
 use serde::{Deserialize, Serialize};
 
 /// A picture, and what each part of it is.
@@ -69,6 +71,8 @@ pub struct LoadedScene {
     pub faces: FaceNames,
     /// What it durably calls the topological edges of this picture.
     pub edges: EdgeNames,
+    /// What it durably calls the topological vertices of this picture.
+    pub vertices: VertexNames,
 }
 
 /// Every durable name this document has for the edges of one picture.
@@ -157,6 +161,9 @@ pub type FaceMeaning = PortableMeaning;
 /// What a document calls one edge. See [`PortableMeaning`].
 pub type EdgeMeaning = PortableMeaning;
 
+/// What a document calls one topological vertex. See [`PortableMeaning`].
+pub type VertexMeaning = PortableMeaning;
+
 impl PortableMeaning {
     fn of(reference: &TopologyRef) -> Self {
         Self {
@@ -176,6 +183,64 @@ impl PortableMeaning {
 struct BoundMeaning {
     meaning: PortableMeaning,
     identity: ContentHash,
+}
+
+/// Every durable name this document has for the topological vertices of one
+/// picture.
+///
+/// Built while the rebuild's topology map and the tessellation's vertex
+/// handles are both in hand, which is the only moment they can be joined, and
+/// holding neither afterwards. A corner nothing names has an empty list rather
+/// than an invented entry: a name that was not stored is not a name.
+///
+/// One entry per topological vertex, never per occurrence. A corner of a box
+/// is drawn three times, once for each face meeting there, and a plate placed
+/// twice is drawn twice again; all of those are one corner and answer to one
+/// identity with one list of names.
+#[derive(Clone, PartialEq)]
+pub struct VertexNames {
+    /// One pick from the snapshot whose semantic context produced this, used
+    /// only as a binding check and deliberately absent from `Debug`.
+    picture: PickId,
+    /// Indexed by the picture's own vertex identity, minus one.
+    by_vertex: Vec<Vec<VertexMeaning>>,
+}
+
+impl Default for VertexNames {
+    fn default() -> Self {
+        Self {
+            picture: PickId::NOTHING,
+            by_vertex: Vec::new(),
+        }
+    }
+}
+
+impl fmt::Debug for VertexNames {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VertexNames")
+            .field("by_vertex", &self.by_vertex)
+            .finish()
+    }
+}
+
+impl VertexNames {
+    /// What the document calls this topological vertex, or nothing.
+    ///
+    /// Answered through the picture that issued the corner, so a corner of a
+    /// picture that has been replaced names nothing here however plausible its
+    /// number looks.
+    pub fn of(&self, vertex: VertexPickId, snapshot: &RenderSnapshot) -> &[VertexMeaning] {
+        if snapshot.definition(self.picture).is_none()
+            || snapshot.definition_of_vertex(vertex).is_none()
+        {
+            return &[];
+        }
+        match (vertex.to_raw() as usize).checked_sub(1) {
+            Some(index) => self.by_vertex.get(index).map_or(&[], Vec::as_slice),
+            None => &[],
+        }
+    }
 }
 
 /// Every durable name this document has for the faces of one picture.
@@ -717,6 +782,10 @@ where
         // whose mesh carries no edge association contributes no entry at all,
         // which is what keeps "nothing is known" from becoming "named nothing".
         let mut edge_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = BTreeMap::new();
+        // And the same for the topological vertices. One entry per corner the
+        // kernel identified, never per occurrence: how often a corner is drawn
+        // is a fact about triangles, and what it is called is not.
+        let mut vertex_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = BTreeMap::new();
         let objects = document.objects()?;
 
         // Counted before anything is drawn, so each one can say what fraction
@@ -793,6 +862,31 @@ where
                                         .collect()
                                 })
                                 .unwrap_or_default();
+                            // The corners, joined the same way and for the
+                            // same reason. `range.vertex` is the handle the
+                            // kernel gave the topological vertex, and equality
+                            // with it is the only thing that says a stored name
+                            // and this corner are the same point. Not the
+                            // ordinal, not the coordinates, not which
+                            // occurrence came first and not how many there are:
+                            // one range is one corner however often it is drawn.
+                            let named_vertices: Vec<Vec<BoundMeaning>> = mesh
+                                .topological_vertices
+                                .as_ref()
+                                .map(|corners| {
+                                    corners
+                                        .ranges
+                                        .iter()
+                                        .map(|range| {
+                                            named
+                                                .iter()
+                                                .filter(|(handle, _)| *handle == range.vertex)
+                                                .map(|(_, meaning)| meaning.clone())
+                                                .collect::<Vec<BoundMeaning>>()
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
                             let named: Vec<Vec<BoundMeaning>> = mesh
                                 .faces
                                 .iter()
@@ -808,6 +902,14 @@ where
                             names.insert(definition, named);
                             if !named_edges.is_empty() {
                                 edge_named.insert(definition, named_edges);
+                            }
+                            // A mesh with no vertex association, and one whose
+                            // association is provably empty, both contribute
+                            // nothing. Either way this picture knows of no
+                            // corner here, which is not the same as knowing
+                            // there is a corner nobody named.
+                            if !named_vertices.is_empty() {
+                                vertex_named.insert(definition, named_vertices);
                             }
                             Ok(definition)
                         },
@@ -848,11 +950,16 @@ where
                 _ => continue,
             }
         }
-        builder.bind_identities_to(semantic_context_identity(&names, &edge_named))?;
+        builder.bind_identities_to(semantic_context_identity(
+            &names,
+            &edge_named,
+            &vertex_named,
+        ))?;
         let snapshot = builder.build();
         Ok(LoadedScene {
             faces: face_names(&snapshot, names)?,
             edges: edge_names(&snapshot, edge_named)?,
+            vertices: vertex_names(&snapshot, vertex_named)?,
             snapshot,
             catalogue: catalogue.finish(),
         })
@@ -925,26 +1032,69 @@ fn edge_names(
     })
 }
 
-/// The exact portable meaning assigned to every packed face and edge.
+/// Lays what each definition's corners are called out by the picture's own
+/// numbering.
+///
+/// The mirror of [`edge_names`], and asking the picture for the same reason:
+/// the numbering exists already, and computing it a second time here would be a
+/// second account that drifts the first time either changes.
+fn vertex_names(
+    snapshot: &RenderSnapshot,
+    named: BTreeMap<usize, Vec<Vec<BoundMeaning>>>,
+) -> Result<VertexNames> {
+    let mut by_vertex = vec![Vec::new(); snapshot.vertex_count()];
+    for (definition, per_ordinal) in named {
+        for (ordinal, bound) in per_ordinal.into_iter().enumerate() {
+            let vertex = snapshot.vertex_of(definition, ordinal).ok_or_else(|| {
+                CadError::topology(format!(
+                    "definition {definition} was packed with more vertices than the picture \
+                     numbered"
+                ))
+            })?;
+            let at = (vertex.to_raw() as usize).checked_sub(1).ok_or_else(|| {
+                CadError::topology("a vertex of a picture is never numbered zero")
+            })?;
+            by_vertex[at] = bound.into_iter().map(|named| named.meaning).collect();
+        }
+    }
+    Ok(VertexNames {
+        picture: snapshot.pick_of(0).unwrap_or(PickId::NOTHING),
+        by_vertex,
+    })
+}
+
+/// The exact portable meaning assigned to every packed face, edge and corner.
 ///
 /// One digest for the whole interpretation rather than one per kind. What
 /// binds a picture's transient identities is what the document says about it,
-/// and that is faces and edges together: moving one stored name from one face
-/// to another, or from one edge to another, must make every identity issued
-/// under the old reading stale, and so must adding an edge name to a picture
-/// whose triangles did not change.
+/// and that is faces, edges and corners together: moving one stored name from
+/// one face to another, from one edge to another, or from one corner to
+/// another, must make every identity issued under the old reading stale, and so
+/// must adding a corner name to a picture whose triangles did not change.
 ///
 /// Positions are hashed because they are what a name is attached to, and the
-/// two domains are separated explicitly so a face meaning and an edge meaning
-/// at the same position cannot produce the same digest. The viewport sees only
-/// the result.
+/// three domains are separated explicitly so a face meaning, an edge meaning
+/// and a vertex meaning at the same position cannot produce the same digest.
+/// The viewport sees only the result.
+///
+/// # Why the version moved to 2
+///
+/// This is a change to what the digest covers, not a fix to how it is
+/// computed. A build that hashed faces and edges only would give the same
+/// answer for two pictures that differ solely in what their corners are called,
+/// and the transient identities bound under the old reading would go on looking
+/// current. The version says the two readings are different readings rather
+/// than leaving them to collide. It is local to this digest: nothing durable is
+/// addressed by it, and [`RenderSnapshot`]'s own geometric algorithm version is
+/// untouched because the packing did not change.
 fn semantic_context_identity(
     faces: &BTreeMap<usize, Vec<Vec<BoundMeaning>>>,
     edges: &BTreeMap<usize, Vec<Vec<BoundMeaning>>>,
+    vertices: &BTreeMap<usize, Vec<Vec<BoundMeaning>>>,
 ) -> ContentHash {
     let mut hasher = CanonicalHasher::new("ferritecad.scene.semantic-context");
-    hasher.algorithm_version(1);
-    for (domain, named) in [("faces", faces), ("edges", edges)] {
+    hasher.algorithm_version(2);
+    for (domain, named) in [("faces", faces), ("edges", edges), ("vertices", vertices)] {
         hasher.field("domain").str(domain);
         hasher.field("definitions").u64(named.len() as u64);
         for (definition, positions) in named {
@@ -1211,10 +1361,23 @@ mod tests {
         }
     }
 
+    fn a_cap_vertex(side: ferritecad_document::CapSide) -> SemanticRole {
+        SemanticRole::ExtrudeCapVertex {
+            side,
+            joint: ferritecad_types::ProfileJoint::new(
+                StableEntityId::new(),
+                StableEntityId::new(),
+            )
+            .expect("two different segments"),
+        }
+    }
+
     #[test]
-    fn what_binds_a_picture_covers_its_edges_as_well_as_its_faces() {
+    fn what_binds_a_picture_covers_its_corners_as_well_as_its_edges_and_faces() {
         use ferritecad_document::CapSide;
 
+        // One meaning per domain, deliberately built from the same role shape
+        // so what tells the three apart is the domain and not the contents.
         let faces: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
             [(0usize, vec![vec![bound(a_cap_edge(CapSide::Start))]])]
                 .into_iter()
@@ -1223,31 +1386,72 @@ mod tests {
             [(0usize, vec![vec![bound(a_cap_edge(CapSide::End))]])]
                 .into_iter()
                 .collect();
+        let vertices: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+            [(0usize, vec![vec![bound(a_cap_vertex(CapSide::Start))]])]
+                .into_iter()
+                .collect();
         let nothing = BTreeMap::new();
 
-        let bare = semantic_context_identity(&nothing, &nothing);
-        let with_faces = semantic_context_identity(&faces, &nothing);
-        let with_edges = semantic_context_identity(&nothing, &edges);
-        let with_both = semantic_context_identity(&faces, &edges);
+        let of = |f: &BTreeMap<usize, Vec<Vec<BoundMeaning>>>,
+                  e: &BTreeMap<usize, Vec<Vec<BoundMeaning>>>,
+                  v: &BTreeMap<usize, Vec<Vec<BoundMeaning>>>| {
+            semantic_context_identity(f, e, v)
+        };
 
-        // Adding a name of either kind changes what the picture means, and the
-        // two are told apart: the same meaning filed as a face and as an edge
-        // are different interpretations of the same geometry.
+        let bare = of(&nothing, &nothing, &nothing);
+        let with_faces = of(&faces, &nothing, &nothing);
+        let with_edges = of(&nothing, &edges, &nothing);
+        let with_vertices = of(&nothing, &nothing, &vertices);
+        let with_all = of(&faces, &edges, &vertices);
+
+        // Adding a name of any kind changes what the picture means, and the
+        // three are told apart: one meaning filed as a face, as an edge and as
+        // a corner are three interpretations of the same geometry.
         for (what, digest) in [
             ("faces", with_faces),
             ("edges", with_edges),
-            ("both", with_both),
+            ("vertices", with_vertices),
+            ("all three", with_all),
         ] {
             assert_ne!(bare, digest, "adding {what} left the identity alone");
         }
-        assert_ne!(with_faces, with_edges, "the two domains are not separated");
-        assert_ne!(with_both, with_faces);
-        assert_ne!(with_both, with_edges);
+        for (one, other) in [
+            (with_faces, with_edges),
+            (with_faces, with_vertices),
+            (with_edges, with_vertices),
+        ] {
+            assert_ne!(one, other, "the three domains are not separated");
+        }
+        for domain in [with_faces, with_edges, with_vertices] {
+            assert_ne!(with_all, domain);
+        }
 
-        // And the position a name sits at is part of it. Both readings below
-        // have two edges and one name, so the counts are identical and only
-        // where the name sits differs: nothing but the position can tell them
-        // apart.
+        // Adding only corner names to a picture whose faces and edges are
+        // already named changes it too, which is the case a digest covering
+        // two domains would miss.
+        assert_ne!(
+            of(&faces, &edges, &nothing),
+            of(&faces, &edges, &vertices),
+            "naming the corners of an already-named picture left the identity alone"
+        );
+
+        // And the position a name sits at is part of it, in the new domain as
+        // in the old ones. Both readings below have two corners and one name,
+        // so the counts are identical and only where the name sits differs.
+        let one = vertices[&0][0].clone();
+        let first: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+            [(0usize, vec![one.clone(), Vec::new()])]
+                .into_iter()
+                .collect();
+        let second: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+            [(0usize, vec![Vec::new(), one])].into_iter().collect();
+        assert_ne!(
+            of(&nothing, &nothing, &first),
+            of(&nothing, &nothing, &second),
+            "moving a name to another corner left the identity alone"
+        );
+
+        // The same for edges, unchanged from before corners existed.
         let one = edges[&0][0].clone();
         let first: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
             [(0usize, vec![one.clone(), Vec::new()])]
@@ -1256,8 +1460,8 @@ mod tests {
         let second: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
             [(0usize, vec![Vec::new(), one])].into_iter().collect();
         assert_ne!(
-            semantic_context_identity(&nothing, &first),
-            semantic_context_identity(&nothing, &second),
+            of(&nothing, &first, &nothing),
+            of(&nothing, &second, &nothing),
             "moving a name to another edge left the identity alone"
         );
     }
@@ -1299,7 +1503,11 @@ mod tests {
             let named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
                 [(0usize, vec![vec![bound(role)]])].into_iter().collect();
             builder
-                .bind_identities_to(semantic_context_identity(&BTreeMap::new(), &named))
+                .bind_identities_to(semantic_context_identity(
+                    &BTreeMap::new(),
+                    &named,
+                    &BTreeMap::new(),
+                ))
                 .expect("binds");
             let snapshot = builder.build();
             let names = edge_names(&snapshot, named).expect("lays out");
@@ -1322,6 +1530,366 @@ mod tests {
         assert!(their_names.of(my_edge, &theirs).is_empty());
         // And a name table of one picture answers nothing about another.
         assert!(my_names.of(their_edge, &theirs).is_empty());
+    }
+
+    /// One triangle whose corners the kernel reports, or does not.
+    ///
+    /// `corners` is how many topological vertices the association claims;
+    /// `None` is a mesh with no association at all, which is a different
+    /// statement from an association that names nothing.
+    fn a_mesh_with_corners(shape: ShapeHandle, corners: Option<usize>) -> Mesh {
+        Mesh {
+            topological_vertices: corners.map(|count| ferritecad_kernel::MeshVertices {
+                occurrences: (0..count as u32).collect(),
+                ranges: (0..count)
+                    .map(|ordinal| ferritecad_kernel::MeshVertexRange {
+                        vertex: SubShapeHandle::new(
+                            shape,
+                            ferritecad_kernel::SubShapeKind::Vertex,
+                            ordinal as u64,
+                        ),
+                        first_occurrence: ordinal as u32,
+                        occurrence_count: 1,
+                    })
+                    .collect(),
+            }),
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: vec![0, 1, 2],
+            faces: vec![ferritecad_kernel::MeshFaceRange {
+                face: SubShapeHandle::new(shape, ferritecad_kernel::SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 3,
+            }],
+            edges: None,
+        }
+    }
+
+    #[test]
+    fn a_corner_name_of_another_picture_names_nothing_here() {
+        use ferritecad_document::CapSide;
+
+        let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
+        // Two pictures of the same geometry under different interpretations.
+        let picture = |role: SemanticRole| {
+            let mut builder = SnapshotBuilder::new();
+            let definition = builder
+                .add_mesh(&a_mesh_with_corners(shape, Some(1)))
+                .expect("packs");
+            builder
+                .place(definition, None, &Transform::IDENTITY, BODY_COLOUR)
+                .expect("places");
+            let named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+                [(0usize, vec![vec![bound(role)]])].into_iter().collect();
+            builder
+                .bind_identities_to(semantic_context_identity(
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &named,
+                ))
+                .expect("binds");
+            let snapshot = builder.build();
+            let names = vertex_names(&snapshot, named).expect("lays out");
+            (snapshot, names)
+        };
+
+        let (mine, my_names) = picture(a_cap_vertex(CapSide::Start));
+        let (theirs, their_names) = picture(a_cap_vertex(CapSide::End));
+
+        let my_corner = mine.vertex_of(0, 0).expect("numbered");
+        let their_corner = theirs.vertex_of(0, 0).expect("numbered");
+        assert_eq!(
+            my_corner.to_raw(),
+            their_corner.to_raw(),
+            "the same raw value"
+        );
+        assert_ne!(my_corner, their_corner, "and different pictures");
+
+        assert_eq!(my_names.of(my_corner, &mine).len(), 1);
+        assert_eq!(their_names.of(their_corner, &theirs).len(), 1);
+        // In range and from another picture: still nothing.
+        assert!(my_names.of(their_corner, &mine).is_empty());
+        assert!(their_names.of(my_corner, &theirs).is_empty());
+        // And a name table of one picture answers nothing about another.
+        assert!(my_names.of(their_corner, &theirs).is_empty());
+        // Nothing is nothing, in either picture.
+        assert!(my_names.of(VertexPickId::NOTHING, &mine).is_empty());
+    }
+
+    #[test]
+    fn a_mesh_that_names_no_corner_gets_no_invented_one() {
+        use ferritecad_document::CapSide;
+
+        let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
+        // No association at all, and an association that is provably empty.
+        // Both are "this picture knows of no corner here", and neither is "a
+        // corner nobody named".
+        for corners in [None, Some(0)] {
+            let mut builder = SnapshotBuilder::new();
+            let definition = builder
+                .add_mesh(&a_mesh_with_corners(shape, corners))
+                .expect("packs");
+            builder
+                .place(definition, None, &Transform::IDENTITY, BODY_COLOUR)
+                .expect("places");
+            builder
+                .bind_identities_to(semantic_context_identity(
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                ))
+                .expect("binds");
+            let snapshot = builder.build();
+            assert_eq!(
+                snapshot.vertex_count(),
+                0,
+                "{corners:?}: the picture numbered a corner nobody reported"
+            );
+            assert!(snapshot.vertex_of(0, 0).is_none(), "{corners:?}");
+
+            let names = vertex_names(&snapshot, BTreeMap::new()).expect("lays out");
+            assert!(
+                names.of(VertexPickId::NOTHING, &snapshot).is_empty(),
+                "{corners:?}"
+            );
+
+            // And a name table built for a picture that numbers no corner has
+            // nothing to hand back however it is asked.
+            let named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+                [(0usize, vec![vec![bound(a_cap_vertex(CapSide::Start))]])]
+                    .into_iter()
+                    .collect();
+            assert!(
+                vertex_names(&snapshot, named).is_err(),
+                "{corners:?}: a name was laid out against a corner the picture never numbered"
+            );
+        }
+    }
+
+    #[test]
+    fn a_corner_of_the_second_definition_is_not_the_second_corner_of_the_picture() {
+        use ferritecad_document::CapSide;
+
+        // Two definitions, three corners each. The second definition's first
+        // corner is the picture's fourth, so a table that used the ordinal as
+        // the picture-wide number would name the wrong one.
+        let first = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
+        let second = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 2);
+
+        let mut builder = SnapshotBuilder::new();
+        let one = builder
+            .add_mesh(&a_mesh_with_corners(first, Some(3)))
+            .expect("packs");
+        let other = builder
+            .add_mesh(&a_mesh_with_corners(second, Some(3)))
+            .expect("packs");
+        builder
+            .place(one, None, &Transform::IDENTITY, BODY_COLOUR)
+            .expect("places");
+        builder
+            .place(other, None, &Transform::IDENTITY, BODY_COLOUR)
+            .expect("places");
+
+        // Only the second definition's first corner is named.
+        let named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = [(
+            other,
+            vec![
+                vec![bound(a_cap_vertex(CapSide::Start))],
+                Vec::new(),
+                Vec::new(),
+            ],
+        )]
+        .into_iter()
+        .collect();
+        builder
+            .bind_identities_to(semantic_context_identity(
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &named,
+            ))
+            .expect("binds");
+        let snapshot = builder.build();
+        assert_eq!(snapshot.vertex_count(), 6);
+
+        let names = vertex_names(&snapshot, named).expect("lays out");
+        let theirs = snapshot.vertex_of(other, 0).expect("numbered");
+        assert_eq!(
+            theirs.to_raw(),
+            4,
+            "the second definition's first corner is the picture's fourth"
+        );
+        assert_eq!(names.of(theirs, &snapshot).len(), 1);
+        for ordinal in 0..3 {
+            let mine = snapshot.vertex_of(one, ordinal).expect("numbered");
+            assert!(
+                names.of(mine, &snapshot).is_empty(),
+                "corner {ordinal} of the first definition took the second's name"
+            );
+        }
+    }
+
+    #[test]
+    fn every_occurrence_and_every_placement_of_one_corner_is_one_name() {
+        use ferritecad_document::CapSide;
+
+        // One topological vertex drawn at three packed positions, in a
+        // definition placed twice. That is one corner, one identity and one
+        // list of names however many times it appears.
+        let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
+        let mesh = Mesh {
+            topological_vertices: Some(ferritecad_kernel::MeshVertices {
+                occurrences: vec![0, 1, 2],
+                ranges: vec![ferritecad_kernel::MeshVertexRange {
+                    vertex: SubShapeHandle::new(shape, ferritecad_kernel::SubShapeKind::Vertex, 0),
+                    first_occurrence: 0,
+                    occurrence_count: 3,
+                }],
+            }),
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: vec![0, 1, 2],
+            faces: vec![ferritecad_kernel::MeshFaceRange {
+                face: SubShapeHandle::new(shape, ferritecad_kernel::SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 3,
+            }],
+            edges: None,
+        };
+
+        let mut builder = SnapshotBuilder::new();
+        let definition = builder.add_mesh(&mesh).expect("packs");
+        for _ in 0..2 {
+            builder
+                .place(definition, None, &Transform::IDENTITY, BODY_COLOUR)
+                .expect("places");
+        }
+        let named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+            [(0usize, vec![vec![bound(a_cap_vertex(CapSide::Start))]])]
+                .into_iter()
+                .collect();
+        builder
+            .bind_identities_to(semantic_context_identity(
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &named,
+            ))
+            .expect("binds");
+        let snapshot = builder.build();
+
+        assert_eq!(
+            snapshot.vertex_count(),
+            1,
+            "three occurrences and two placements are still one corner"
+        );
+        assert_eq!(snapshot.draws().len(), 2);
+        let corner = snapshot.vertex_of(0, 0).expect("numbered");
+        assert_eq!(
+            snapshot.occurrences_of_vertex(corner).map(<[u32]>::len),
+            Some(3)
+        );
+        let names = vertex_names(&snapshot, named).expect("lays out");
+        assert_eq!(names.of(corner, &snapshot).len(), 1);
+    }
+
+    #[test]
+    fn naming_only_the_corners_makes_every_older_identity_stale() {
+        use ferritecad_document::CapSide;
+
+        // The same triangles, the same faces, the same edges and the same
+        // corners; only what the document calls one corner differs. Every
+        // identity the picture issues must change, because a face value, an
+        // edge value and a corner value carried over from the old reading
+        // would all now point into a picture that means something else.
+        let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
+        let mesh = Mesh {
+            topological_vertices: Some(ferritecad_kernel::MeshVertices {
+                occurrences: vec![0, 1],
+                ranges: (0..2)
+                    .map(|ordinal| ferritecad_kernel::MeshVertexRange {
+                        vertex: SubShapeHandle::new(
+                            shape,
+                            ferritecad_kernel::SubShapeKind::Vertex,
+                            ordinal,
+                        ),
+                        first_occurrence: ordinal as u32,
+                        occurrence_count: 1,
+                    })
+                    .collect(),
+            }),
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: vec![0, 1, 2],
+            faces: vec![ferritecad_kernel::MeshFaceRange {
+                face: SubShapeHandle::new(shape, ferritecad_kernel::SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 3,
+            }],
+            edges: Some(ferritecad_kernel::MeshEdges {
+                segments: vec![0, 1],
+                ranges: vec![ferritecad_kernel::MeshEdgeRange {
+                    edge: SubShapeHandle::new(shape, ferritecad_kernel::SubShapeKind::Edge, 0),
+                    first_segment: 0,
+                    segment_count: 1,
+                }],
+            }),
+        };
+
+        let faces: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+            [(0usize, vec![vec![bound(a_cap_edge(CapSide::Start))]])]
+                .into_iter()
+                .collect();
+        let edges: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+            [(0usize, vec![vec![bound(a_cap_edge(CapSide::End))]])]
+                .into_iter()
+                .collect();
+
+        let picture = |corner: SemanticRole| {
+            let mut builder = SnapshotBuilder::new();
+            let definition = builder.add_mesh(&mesh).expect("packs");
+            builder
+                .place(definition, None, &Transform::IDENTITY, BODY_COLOUR)
+                .expect("places");
+            let vertices: BTreeMap<usize, Vec<Vec<BoundMeaning>>> =
+                [(0usize, vec![vec![bound(corner)], Vec::new()])]
+                    .into_iter()
+                    .collect();
+            builder
+                .bind_identities_to(semantic_context_identity(&faces, &edges, &vertices))
+                .expect("binds");
+            builder.build()
+        };
+
+        let before = picture(a_cap_vertex(CapSide::Start));
+        let after = picture(a_cap_vertex(CapSide::End));
+
+        // The geometry really is identical, so nothing but the reading can be
+        // telling the two apart.
+        assert_eq!(before.meshes().len(), after.meshes().len());
+        assert_eq!(before.face_count(), after.face_count());
+        assert_eq!(before.edge_count(), after.edge_count());
+        assert_eq!(before.vertex_count(), after.vertex_count());
+
+        let old_face = before.face_of(0, 0).expect("numbered");
+        let old_edge = before.edge_of(0, 0).expect("numbered");
+        let old_corner = before.vertex_of(0, 0).expect("numbered");
+        assert!(
+            after.definition_of_face(old_face).is_none(),
+            "a face identity of the old reading still resolves"
+        );
+        assert!(
+            after.definition_of_edge(old_edge).is_none(),
+            "an edge identity of the old reading still resolves"
+        );
+        assert!(
+            after.definition_of_vertex(old_corner).is_none(),
+            "a corner identity of the old reading still resolves"
+        );
+
+        // And each still resolves in the picture that issued it, so the
+        // refusals above are about the reading and not about the values.
+        assert!(before.definition_of_face(old_face).is_some());
+        assert!(before.definition_of_edge(old_edge).is_some());
+        assert!(before.definition_of_vertex(old_corner).is_some());
     }
 
     #[test]
@@ -1355,6 +1923,24 @@ mod tests {
                 .of(EdgePickId::NOTHING, &scene.snapshot)
                 .is_empty()
         );
+
+        // The same for the corners, and asked through the loader rather than
+        // through `vertex_names` directly: a picture nobody associated must
+        // come out of a real load with nothing invented, not merely out of the
+        // layout function.
+        assert_eq!(
+            scene.snapshot.vertex_count(),
+            0,
+            "the mock named no topological vertex, so the picture numbers none"
+        );
+        assert!(scene.snapshot.vertex_of(0, 0).is_none());
+        assert!(
+            scene
+                .vertices
+                .of(VertexPickId::NOTHING, &scene.snapshot)
+                .is_empty()
+        );
+
         // And the faces are still named exactly as before this slice.
         assert!(
             scene.snapshot.face_count() > 0,
@@ -1427,7 +2013,11 @@ mod tests {
         .into_iter()
         .collect();
         builder
-            .bind_identities_to(semantic_context_identity(&face_named, &edge_named))
+            .bind_identities_to(semantic_context_identity(
+                &face_named,
+                &edge_named,
+                &BTreeMap::new(),
+            ))
             .expect("binds");
         let snapshot = builder.build();
         let faces = face_names(&snapshot, face_named).expect("lays out");
@@ -1568,7 +2158,11 @@ mod tests {
         .into_iter()
         .collect();
         builder
-            .bind_identities_to(semantic_context_identity(&BTreeMap::new(), &named))
+            .bind_identities_to(semantic_context_identity(
+                &BTreeMap::new(),
+                &named,
+                &BTreeMap::new(),
+            ))
             .expect("binds");
         let snapshot = builder.build();
         assert_eq!(snapshot.edge_count(), 4);
@@ -1624,6 +2218,7 @@ mod tests {
                 .expect("places");
             builder
                 .bind_identities_to(semantic_context_identity(
+                    &BTreeMap::new(),
                     &BTreeMap::new(),
                     &BTreeMap::new(),
                 ))
