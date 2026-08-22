@@ -43,14 +43,18 @@
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepTools.hxx>
+#include <BinTools.hxx>
+#include <BinTools_FormatVersion.hxx>
 #include <GProp_GProps.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
+#include <TopoDS_Iterator.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Wire.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
@@ -1201,6 +1205,115 @@ void Step9_CapVertices(StepResult& r)
   r.pass = true;
 }
 
+// Step 10: can the named-shape archive carry vertices without changing their
+// identity?
+//
+// This mirrors the shape layout written by fc_occt_encode_shape_named: the
+// root first, followed by every requested sub-shape in caller order. The
+// decoder does not accept vertices yet; this measurement establishes whether
+// BinTools preserves enough information for that decoder extension to be
+// honest, or whether the 19M-2a2 design has to stop.
+void Step10_NamedVertexArchive(StepResult& r)
+{
+  const TopoDS_Shape solid = BRepPrimAPI_MakeBox(60.0, 40.0, 10.0).Shape();
+  TopTools_IndexedMapOfShape vertices;
+  TopExp::MapShapes(solid, TopAbs_VERTEX, vertices);
+  if (vertices.Extent() != 8) {
+    r.detail = "the box has " + std::to_string(vertices.Extent()) +
+               " vertices instead of eight";
+    return;
+  }
+
+  BRep_Builder builder;
+  TopoDS_Compound archive;
+  builder.MakeCompound(archive);
+  builder.Add(archive, solid);
+  for (int index = 1; index <= vertices.Extent(); ++index) {
+    builder.Add(archive, vertices(index));
+  }
+
+  std::ostringstream output(std::ios::out | std::ios::binary);
+  BinTools::Write(archive, output, false, false,
+                  BinTools_FormatVersion_CURRENT);
+  if (!output.good() || output.str().empty()) {
+    r.detail = "BinTools wrote no named-shape archive";
+    return;
+  }
+  const std::string bytes = output.str();
+
+  std::istringstream input(bytes, std::ios::in | std::ios::binary);
+  TopoDS_Shape restored;
+  BinTools::Read(restored, input);
+  if (restored.IsNull() || restored.ShapeType() != TopAbs_COMPOUND) {
+    r.detail = "the named-shape archive did not restore as a compound";
+    return;
+  }
+  if (input.peek() != std::char_traits<char>::eof()) {
+    r.detail = "the named-shape archive has trailing bytes";
+    return;
+  }
+
+  std::vector<TopoDS_Shape> entries;
+  for (TopoDS_Iterator it(restored); it.More(); it.Next()) {
+    entries.push_back(it.Value());
+  }
+  const size_t expected_entries = static_cast<size_t>(vertices.Extent()) + 1;
+  if (entries.size() != expected_entries) {
+    r.detail = "the archive restored " + std::to_string(entries.size()) +
+               " children instead of " + std::to_string(expected_entries);
+    return;
+  }
+
+  const TopoDS_Shape& root = entries[0];
+  TopTools_IndexedMapOfShape restored_vertices;
+  TopExp::MapShapes(root, TopAbs_VERTEX, restored_vertices);
+  if (restored_vertices.Extent() != vertices.Extent()) {
+    r.detail = "the restored root has " +
+               std::to_string(restored_vertices.Extent()) +
+               " vertices instead of " + std::to_string(vertices.Extent());
+    return;
+  }
+
+  std::set<int> distinct;
+  for (size_t entry = 1; entry < entries.size(); ++entry) {
+    const TopoDS_Shape& named = entries[entry];
+    if (named.ShapeType() != TopAbs_VERTEX) {
+      r.detail = "archive entry " + std::to_string(entry) +
+                 " did not restore as a vertex";
+      return;
+    }
+
+    int canonical = 0;
+    for (TopExp_Explorer it(root, TopAbs_VERTEX); it.More(); it.Next()) {
+      if (it.Current().IsSame(named)) {
+        canonical = restored_vertices.FindIndex(it.Current());
+        break;
+      }
+    }
+    if (canonical == 0) {
+      r.detail = "archive entry " + std::to_string(entry) +
+                 " is not a vertex of the restored root";
+      return;
+    }
+    if (!distinct.insert(canonical).second) {
+      r.detail = "archive entry " + std::to_string(entry) +
+                 " collapsed onto an earlier named vertex";
+      return;
+    }
+  }
+
+  if (distinct.size() != static_cast<size_t>(vertices.Extent())) {
+    r.detail = "the archive preserved only " + std::to_string(distinct.size()) +
+               " of " + std::to_string(vertices.Extent()) +
+               " named vertex identities";
+    return;
+  }
+
+  r.detail = "vertices=8 children=9 distinct=8 archive_bytes=" +
+             std::to_string(bytes.size());
+  r.pass = true;
+}
+
 int main(int argc, char** argv)
 {
   // First line: OCCT version.
@@ -1219,7 +1332,7 @@ int main(int argc, char** argv)
   SharedGeom geom;
   StepMeta step_meta;
   std::vector<StepResult> results;
-  results.reserve(8);
+  results.reserve(10);
 
   results.push_back(RunStep(1, "box_volume", [&](StepResult& r) {
     Step1_BoxVolume(r, geom);
@@ -1252,6 +1365,9 @@ int main(int argc, char** argv)
   }));
   results.push_back(RunStep(9, "cap_vertices", [&](StepResult& r) {
     Step9_CapVertices(r);
+  }));
+  results.push_back(RunStep(10, "vertex_archive", [&](StepResult& r) {
+    Step10_NamedVertexArchive(r);
   }));
 
   // Summary table.
