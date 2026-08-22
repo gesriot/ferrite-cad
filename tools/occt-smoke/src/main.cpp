@@ -13,6 +13,7 @@
 #include <random>
 #include <sstream>
 #include <stdexcept>
+#include <map>
 #include <set>
 #include <string>
 #include <utility>
@@ -34,6 +35,8 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
+#include <GC_MakeArcOfCircle.hxx>
+#include <Poly_PolygonOnTriangulation.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
@@ -854,114 +857,213 @@ void Step8_Tessellate(StepResult& r, const SharedGeom& geom)
 // joint occurs at two corners - a two-segment loop - still yields two distinct
 // positional vertices per side here, which is precisely why the ambiguity has
 // to be resolved above this layer and not below it.
+// A point no profile uses, marking a segment as straight.
+const gp_Pnt kStraight(1.0e30, 1.0e30, 1.0e30);
+
 struct CornerProbe {
   const char* name;
   std::vector<gp_Pnt> corners;  // in profile order
+  // One entry per segment: a point the arc passes through, or kStraight.
+  // Empty means every segment is a line.
+  std::vector<gp_Pnt> through;
   double base;
   double top;
 };
 
+// Builds the profile the way the bridge does: corner vertices made once and
+// shared, so the history is asked about the very vertex two segments meet at.
+bool BuildSweep(const CornerProbe& probe, std::vector<TopoDS_Vertex>& corners,
+                std::vector<TopoDS_Edge>& edges, TopoDS_Shape& solid,
+                BRepPrimAPI_MakePrism*& out_prism, std::string& why)
+{
+  const size_t n = probe.corners.size();
+  corners.clear();
+  edges.clear();
+  for (const gp_Pnt& at : probe.corners) {
+    corners.push_back(BRepBuilderAPI_MakeVertex(
+      gp_Pnt(at.X(), at.Y(), at.Z() + probe.base)));
+  }
+
+  BRepBuilderAPI_MakeWire wire;
+  for (size_t i = 0; i < n; ++i) {
+    const bool curved = i < probe.through.size() &&
+                        probe.through[i].X() < 1.0e29;
+    TopoDS_Edge edge;
+    if (curved) {
+      const gp_Pnt mid(probe.through[i].X(), probe.through[i].Y(),
+                       probe.through[i].Z() + probe.base);
+      GC_MakeArcOfCircle arc(BRep_Tool::Pnt(corners[i]), mid,
+                             BRep_Tool::Pnt(corners[(i + 1) % n]));
+      if (!arc.IsDone()) {
+        why = std::string(probe.name) + ": segment " + std::to_string(i) +
+              " describes no arc";
+        return false;
+      }
+      BRepBuilderAPI_MakeEdge maker(arc.Value(), corners[i],
+                                    corners[(i + 1) % n]);
+      if (!maker.IsDone()) {
+        why = std::string(probe.name) + ": an arc edge failed";
+        return false;
+      }
+      edge = maker.Edge();
+    } else {
+      BRepBuilderAPI_MakeEdge maker(corners[i], corners[(i + 1) % n]);
+      if (!maker.IsDone()) {
+        why = std::string(probe.name) + ": a straight edge failed";
+        return false;
+      }
+      edge = maker.Edge();
+    }
+    edges.push_back(edge);
+    wire.Add(edge);
+  }
+  if (!wire.IsDone()) {
+    why = std::string(probe.name) + ": the profile is not a closed wire";
+    return false;
+  }
+  BRepBuilderAPI_MakeFace face(wire.Wire());
+  if (!face.IsDone()) {
+    why = std::string(probe.name) + ": the profile bounds no face";
+    return false;
+  }
+  out_prism = new BRepPrimAPI_MakePrism(
+    face.Face(), gp_Vec(0.0, 0.0, probe.top - probe.base));
+  out_prism->Build();
+  if (!out_prism->IsDone()) {
+    why = std::string(probe.name) + ": the sweep produced no solid";
+    return false;
+  }
+  solid = out_prism->Shape();
+  return true;
+}
+
+// Which vertices of a solid the tessellation reaches, by the 19M-1a rule: an
+// edge polyline on a meshed face begins and ends at that edge's own two
+// topological ends. Handle equality throughout; no coordinate takes part.
+std::set<int> TessellatedVertices(const TopoDS_Shape& solid,
+                                  const TopTools_IndexedMapOfShape& vertices)
+{
+  BRepMesh_IncrementalMesh mesher(solid, 0.1, Standard_False, 0.5,
+                                  Standard_True);
+  mesher.Perform();
+  std::set<int> reached;
+  for (TopExp_Explorer ft(solid, TopAbs_FACE); ft.More(); ft.Next()) {
+    const TopoDS_Face face = TopoDS::Face(ft.Current());
+    TopLoc_Location loc;
+    const Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
+    if (tri.IsNull()) {
+      continue;
+    }
+    for (TopExp_Explorer et(face, TopAbs_EDGE); et.More(); et.Next()) {
+      const TopoDS_Edge edge = TopoDS::Edge(et.Current());
+      const Handle(Poly_PolygonOnTriangulation) poly =
+        BRep_Tool::PolygonOnTriangulation(edge, tri, loc);
+      if (poly.IsNull()) {
+        continue;
+      }
+      TopoDS_Vertex first_end;
+      TopoDS_Vertex last_end;
+      TopExp::Vertices(TopoDS::Edge(edge.Oriented(TopAbs_FORWARD)), first_end,
+                       last_end);
+      if (!first_end.IsNull()) {
+        reached.insert(vertices.FindIndex(first_end));
+      }
+      if (!last_end.IsNull()) {
+        reached.insert(vertices.FindIndex(last_end));
+      }
+    }
+  }
+  return reached;
+}
+
 void Step9_CapVertices(StepResult& r)
 {
+  // The arc profile of the measurement: two straight segments and one arc
+  // closing the loop, so a joint between two lines and a joint against a curve
+  // are both present. The lens is the ambiguous case: two segments meeting at
+  // two corners, whose one unordered pair can name neither of them.
+  const gp_Pnt S = kStraight;
   const std::vector<CornerProbe> probes = {
     {"plate blind",
      {gp_Pnt(0, 0, 0), gp_Pnt(60, 0, 0), gp_Pnt(60, 40, 0), gp_Pnt(0, 40, 0)},
-     0.0, 10.0},
+     {}, 0.0, 10.0},
     {"plate reversed",
      {gp_Pnt(0, 0, 0), gp_Pnt(60, 0, 0), gp_Pnt(60, 40, 0), gp_Pnt(0, 40, 0)},
-     0.0, -10.0},
+     {}, 0.0, -10.0},
     {"plate symmetric",
      {gp_Pnt(0, 0, 0), gp_Pnt(60, 0, 0), gp_Pnt(60, 40, 0), gp_Pnt(0, 40, 0)},
-     -5.0, 5.0},
+     {}, -5.0, 5.0},
     {"triangle blind",
      {gp_Pnt(0, 0, 0), gp_Pnt(30, 0, 0), gp_Pnt(10, 25, 0)},
-     0.0, 10.0},
+     {}, 0.0, 10.0},
+    {"arc profile blind",
+     {gp_Pnt(0, 0, 0), gp_Pnt(30, 0, 0), gp_Pnt(30, 20, 0)},
+     {S, S, gp_Pnt(5, 25, 0)}, 0.0, 10.0},
+    {"arc profile symmetric",
+     {gp_Pnt(0, 0, 0), gp_Pnt(30, 0, 0), gp_Pnt(30, 20, 0)},
+     {S, S, gp_Pnt(5, 25, 0)}, -5.0, 5.0},
+    {"two-segment lens",
+     {gp_Pnt(0, 0, 0), gp_Pnt(30, 0, 0)},
+     {S, gp_Pnt(15, 15, 0)}, 0.0, 10.0},
   };
 
   int checked = 0;
   for (const CornerProbe& probe : probes) {
     const size_t n = probe.corners.size();
-
-    // Corner vertices built once and shared, exactly as the bridge does: the
-    // shared vertex is what the history is asked about.
     std::vector<TopoDS_Vertex> corners;
-    corners.reserve(n);
-    for (const gp_Pnt& at : probe.corners) {
-      corners.push_back(BRepBuilderAPI_MakeVertex(
-        gp_Pnt(at.X(), at.Y(), at.Z() + probe.base)));
-    }
-
-    BRepBuilderAPI_MakeWire wire;
     std::vector<TopoDS_Edge> edges;
-    for (size_t i = 0; i < n; ++i) {
-      BRepBuilderAPI_MakeEdge edge(corners[i], corners[(i + 1) % n]);
-      if (!edge.IsDone()) {
-        r.detail = std::string(probe.name) + ": an edge of the profile failed";
-        return;
-      }
-      edges.push_back(edge.Edge());
-      wire.Add(edge.Edge());
-    }
-    if (!wire.IsDone()) {
-      r.detail = std::string(probe.name) + ": the profile is not a closed wire";
+    TopoDS_Shape solid;
+    BRepPrimAPI_MakePrism* prism = nullptr;
+    std::string why;
+    if (!BuildSweep(probe, corners, edges, solid, prism, why)) {
+      delete prism;
+      r.detail = why;
       return;
     }
-    BRepBuilderAPI_MakeFace face(wire.Wire());
-    if (!face.IsDone()) {
-      r.detail = std::string(probe.name) + ": the profile bounds no face";
-      return;
-    }
-
-    BRepPrimAPI_MakePrism prism(face.Face(),
-                                gp_Vec(0.0, 0.0, probe.top - probe.base));
-    prism.Build();
-    if (!prism.IsDone()) {
-      r.detail = std::string(probe.name) + ": the sweep produced no solid";
-      return;
-    }
-    const TopoDS_Shape solid = prism.Shape();
 
     TopTools_IndexedMapOfShape solid_vertices;
     TopExp::MapShapes(solid, TopAbs_VERTEX, solid_vertices);
+    const std::set<int> reached = TessellatedVertices(solid, solid_vertices);
 
     std::set<int> claimed;
     for (size_t j = 0; j < n; ++j) {
-      // The edge this corner swept, for the endpoint check below.
       TopoDS_Shape swept;
       const NCollection_List<TopoDS_Shape>& generated =
-        prism.Generated(corners[j]);
+        prism->Generated(corners[j]);
       if (generated.Extent() == 1 &&
           generated.First().ShapeType() == TopAbs_EDGE) {
         swept = generated.First();
       }
 
       for (int side = 0; side < 2; ++side) {
-        const TopoDS_Shape got = side == 0 ? prism.FirstShape(corners[j])
-                                           : prism.LastShape(corners[j]);
+        const TopoDS_Shape got = side == 0 ? prism->FirstShape(corners[j])
+                                           : prism->LastShape(corners[j]);
         const std::string where = std::string(probe.name) + " corner " +
                                   std::to_string(j) +
                                   (side == 0 ? " start" : " end");
         if (got.IsNull()) {
+          delete prism;
           r.detail = where + ": the prism named no vertex";
           return;
         }
         if (got.ShapeType() != TopAbs_VERTEX) {
+          delete prism;
           r.detail = where + ": the prism named something that is not a vertex";
           return;
         }
         const int which = solid_vertices.FindIndex(got);
         if (which == 0) {
+          delete prism;
           r.detail = where + ": the named vertex is not in the finished solid";
           return;
         }
-        // Distinct: no two (corner, side) pairs may land on one vertex.
         if (!claimed.insert(which).second) {
+          delete prism;
           r.detail = where + ": two corners named one vertex";
           return;
         }
-        // On the cap it is claimed for.
         const TopoDS_Shape cap =
-          side == 0 ? prism.FirstShape() : prism.LastShape();
+          side == 0 ? prism->FirstShape() : prism->LastShape();
         bool on_cap = false;
         if (!cap.IsNull()) {
           for (TopExp_Explorer it(cap, TopAbs_VERTEX); it.More(); it.Next()) {
@@ -972,11 +1074,12 @@ void Step9_CapVertices(StepResult& r)
           }
         }
         if (!on_cap) {
+          delete prism;
           r.detail = where + ": the named vertex is not on that cap";
           return;
         }
-        // An end of the edge this same corner swept.
         if (swept.IsNull()) {
+          delete prism;
           r.detail = where + ": this corner swept no edge to check against";
           return;
         }
@@ -988,23 +1091,113 @@ void Step9_CapVertices(StepResult& r)
         const bool ends = (!first_end.IsNull() && first_end.IsSame(got)) ||
                           (!last_end.IsNull() && last_end.IsSame(got));
         if (!ends) {
+          delete prism;
           r.detail = where + ": the named vertex does not end this corner's edge";
+          return;
+        }
+        // Reached by the tessellation association, by handle identity.
+        if (reached.find(which) == reached.end()) {
+          delete prism;
+          r.detail = where + ": the named vertex is never reached by the mesh";
           return;
         }
         ++checked;
       }
     }
     if (claimed.size() != n * 2) {
+      delete prism;
       r.detail = std::string(probe.name) + ": expected " +
                  std::to_string(n * 2) + " distinct cap vertices, found " +
                  std::to_string(claimed.size());
+      return;
+    }
+
+    // The naming rule this measurement exists to justify. A corner is named by
+    // the unordered pair of the segments meeting there. With two segments both
+    // corners carry the same pair, so the kernel's four distinct vertices are
+    // still two unnameable pairs, and that is stated here rather than assumed
+    // by whatever reads this next.
+    const size_t distinct_pairs = n == 2 ? 1 : n;
+    if (n == 2) {
+      if (claimed.size() != 4 || distinct_pairs != 1) {
+        delete prism;
+        r.detail = std::string(probe.name) +
+                   ": the lens must give four positional vertices under one "
+                   "unordered pair";
+        return;
+      }
+    } else if (distinct_pairs != n) {
+      delete prism;
+      r.detail = std::string(probe.name) + ": a corner pair repeats unexpectedly";
+      return;
+    }
+    delete prism;
+  }
+
+  // Traversal independence: the plate rebuilt from each starting segment must
+  // put the same cap vertex at the corner defined by the same two segments.
+  // Compared by the segment-defined meaning, never by position in the loop.
+  {
+    const std::vector<gp_Pnt> square = {gp_Pnt(0, 0, 0), gp_Pnt(60, 0, 0),
+                                        gp_Pnt(60, 40, 0), gp_Pnt(0, 40, 0)};
+    std::map<std::string, std::pair<gp_Pnt, gp_Pnt>> by_meaning;
+    for (size_t start = 0; start < square.size(); ++start) {
+      CornerProbe rolled{"plate rolled", {}, {}, 0.0, 10.0};
+      for (size_t i = 0; i < square.size(); ++i) {
+        rolled.corners.push_back(square[(start + i) % square.size()]);
+      }
+      std::vector<TopoDS_Vertex> corners;
+      std::vector<TopoDS_Edge> edges;
+      TopoDS_Shape solid;
+      BRepPrimAPI_MakePrism* prism = nullptr;
+      std::string why;
+      if (!BuildSweep(rolled, corners, edges, solid, prism, why)) {
+        delete prism;
+        r.detail = why;
+        return;
+      }
+      for (size_t j = 0; j < corners.size(); ++j) {
+        // The corner where segment (j-1) meets segment j, named by the two
+        // original segment numbers rather than by where they now sit.
+        const size_t before =
+          (start + j + square.size() - 1) % square.size();
+        const size_t at = (start + j) % square.size();
+        const std::string meaning =
+          std::to_string(std::min(before, at)) + "-" +
+          std::to_string(std::max(before, at));
+        const TopoDS_Shape s0 = prism->FirstShape(corners[j]);
+        const TopoDS_Shape s1 = prism->LastShape(corners[j]);
+        if (s0.IsNull() || s1.IsNull()) {
+          delete prism;
+          r.detail = "rolled plate: a corner lost its cap vertices";
+          return;
+        }
+        const gp_Pnt a = BRep_Tool::Pnt(TopoDS::Vertex(s0));
+        const gp_Pnt b = BRep_Tool::Pnt(TopoDS::Vertex(s1));
+        auto seen = by_meaning.find(meaning);
+        if (seen == by_meaning.end()) {
+          by_meaning.emplace(meaning, std::make_pair(a, b));
+        } else if (!seen->second.first.IsEqual(a, 1.0e-7) ||
+                   !seen->second.second.IsEqual(b, 1.0e-7)) {
+          delete prism;
+          r.detail = "rolled plate: corner " + meaning +
+                     " moved when the loop started elsewhere";
+          return;
+        }
+      }
+      delete prism;
+    }
+    if (by_meaning.size() != 4) {
+      r.detail = "rolled plate: expected four corner meanings, found " +
+                 std::to_string(by_meaning.size());
       return;
     }
   }
 
   r.detail = "checked " + std::to_string(checked) +
              " (corner, side) associations across " +
-             std::to_string(probes.size()) + " sweeps";
+             std::to_string(probes.size()) +
+             " sweeps, plus traversal independence";
   r.pass = true;
 }
 
