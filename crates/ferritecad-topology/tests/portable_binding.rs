@@ -946,6 +946,8 @@ fn a_joint_naming_a_segment_the_profile_never_had_is_refused_when_recorded() {
     // a caller with a hand-built result can.
     let stranger = ProfileJoint::new(labels[0], StableEntityId::new()).expect("two segments");
     let mut result = ExtrudeResult {
+        start_cap_vertices: BTreeMap::new(),
+        end_cap_vertices: BTreeMap::new(),
         shape,
         history: History::new(),
         start_cap: Vec::new(),
@@ -988,6 +990,8 @@ fn two_profile_segments_that_do_not_meet_cannot_name_a_sweep_edge() {
     let joint = ProfileJoint::new(fixture.segments[0], fixture.segments[2])
         .expect("two different segments");
     let result = ExtrudeResult {
+        start_cap_vertices: BTreeMap::new(),
+        end_cap_vertices: BTreeMap::new(),
         shape,
         history: History::new(),
         start_cap: Vec::new(),
@@ -1023,6 +1027,8 @@ fn a_segment_pair_that_meets_twice_names_neither_sweep_edge() {
     let shape = ShapeHandle::new(SessionId::new(), 1);
     let joint = ProfileJoint::new(first, second).expect("two different segments");
     let result = ExtrudeResult {
+        start_cap_vertices: BTreeMap::new(),
+        end_cap_vertices: BTreeMap::new(),
         shape,
         history: History::new(),
         start_cap: Vec::new(),

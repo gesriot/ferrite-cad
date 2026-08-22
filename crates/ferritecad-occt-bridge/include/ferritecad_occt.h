@@ -272,6 +272,39 @@ FcOcctStatus fc_occt_extrude_sweep_edges(FcOcctSession *session, uint64_t shape,
                                          FcOcctError *out_error)
     FC_OCCT_NOEXCEPT;
 
+/*
+ * The vertex one corner of the profile reaches on one cap.
+ *
+ * `joint_index` counts corners the way the segments are counted, exactly as
+ * fc_occt_extrude_sweep_edges does: corner `j` is where segment `j - 1` meets
+ * segment `j`. `which` is 0 for the start cap and 1 for the end cap.
+ *
+ * Positional on purpose. Whether the unordered pair of segments meeting at a
+ * corner names that corner uniquely is not a question this layer can answer: a
+ * loop of two segments has one such pair at both of its corners. Keying these
+ * answers by the pair here would merge them before the caller could see the
+ * ambiguity, so the pairing is left to the caller and the answers are reported
+ * per corner.
+ *
+ * Everything the algorithm recorded at that corner comes back, so a count
+ * other than one is reported rather than trimmed. A vertex outside the
+ * finished solid is refused when the shape is built, not passed on.
+ *
+ * The association is BRepPrimAPI_MakePrism's own FirstShape and LastShape of
+ * the shared corner vertex, and was measured before it was relied on. See
+ * tools/occt-smoke step 9, which the pin workflow runs on Linux, macOS and
+ * Windows: over seven sweeps and forty-six positional answers, every one was a
+ * TopoDS_VERTEX in the solid by IsSame, on the cap claimed for it, ending the
+ * edge swept from the same corner, and reached by the tessellation
+ * association.
+ */
+FcOcctStatus fc_occt_extrude_cap_vertices(FcOcctSession *session,
+                                          uint64_t shape, size_t joint_index,
+                                          int32_t which, uint64_t *out_ids,
+                                          size_t capacity, size_t *out_count,
+                                          FcOcctError *out_error)
+    FC_OCCT_NOEXCEPT;
+
 /* The cap faces. `which` is 0 for the start cap and 1 for the end cap. */
 FcOcctStatus fc_occt_extrude_cap_faces(FcOcctSession *session, uint64_t shape,
                                        int32_t which, uint64_t *out_ids,

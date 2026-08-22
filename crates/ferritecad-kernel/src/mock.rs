@@ -327,6 +327,8 @@ impl GeometryKernel for MockKernel {
 
         context.progress().report(1.0);
         Ok(ExtrudeResult {
+            start_cap_vertices: BTreeMap::new(),
+            end_cap_vertices: BTreeMap::new(),
             shape,
             history,
             start_cap: vec![self.face(shape, start_cap_index)],

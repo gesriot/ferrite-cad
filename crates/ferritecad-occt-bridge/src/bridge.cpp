@@ -125,6 +125,13 @@ struct ShapeRecord {
   /// the loop, which is the corner the shared vertex `corners[j]` sits at.
   /// Empty for a corner that swept none.
   std::vector<std::vector<uint64_t>> sweep_edges;
+  /// The vertex each corner of the profile reaches on each cap, indexed by
+  /// joint. Positional, exactly as `sweep_edges` is: whether the pair of
+  /// segments meeting at a corner names that corner uniquely is a question the
+  /// Rust side answers, and keying these by the pair here would silently merge
+  /// the two corners of a two-segment loop before anyone could notice.
+  std::vector<std::vector<uint64_t>> start_cap_vertices;
+  std::vector<std::vector<uint64_t>> end_cap_vertices;
   /// Identifier to sub-shape. The identifiers mean nothing outside this
   /// session, which is exactly what the Rust side promises about them.
   std::vector<TopoDS_Shape> sub_shapes;
@@ -653,6 +660,45 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
       }
     }
 
+    // Where each corner of the profile lands on each cap.
+    //
+    // `FirstShape(corner)` is the vertex at the base of the sweep and
+    // `LastShape(corner)` the one at the top, asked of the very vertex the two
+    // adjacent input edges share. Measured on 7.9.3 by `tools/occt-smoke` step
+    // 9, which the pin workflow runs on Linux, macOS and Windows: over seven
+    // sweeps and forty-six positional answers, every one was a `TopoDS_VERTEX`
+    // belonging to the solid by `IsSame`, lying on the cap it is claimed for,
+    // ending the edge swept from that same corner, and reached by the
+    // tessellation association.
+    //
+    // Everything the algorithm answered is reported, so a count other than one
+    // reaches the caller instead of being trimmed to fit. A vertex outside the
+    // finished solid is refused rather than passed on: it would name geometry
+    // this shape does not have.
+    record.start_cap_vertices.resize(segment_count);
+    record.end_cap_vertices.resize(segment_count);
+    TopTools_IndexedMapOfShape solid_vertices;
+    TopExp::MapShapes(record.shape, TopAbs_VERTEX, solid_vertices);
+    for (size_t j = 0; j < segment_count; ++j) {
+      for (int side = 0; side < 2; ++side) {
+        const TopoDS_Shape landed = side == 0 ? prism.FirstShape(corners[j])
+                                              : prism.LastShape(corners[j]);
+        if (landed.IsNull() || landed.ShapeType() != TopAbs_VERTEX) {
+          continue;
+        }
+        if (solid_vertices.FindIndex(landed) == 0) {
+          BRepTools::Clean(record.shape);
+          write_error(out_error,
+                      "the sweep named a cap vertex that is not in the "
+                      "finished solid");
+          return FC_OCCT_KERNEL;
+        }
+        std::vector<uint64_t> &into =
+            side == 0 ? record.start_cap_vertices[j] : record.end_cap_vertices[j];
+        into.push_back(record.remember(landed));
+      }
+    }
+
     // The caps are generated from no input at all — the sweep creates them —
     // so history cannot name them and the algorithm reports them apart.
     // Measured on 7.9.3: both are a TopoDS_Face.
@@ -798,6 +844,46 @@ FcOcctStatus fc_occt_extrude_sweep_edges(FcOcctSession *session, uint64_t shape,
       return FC_OCCT_INVALID_INPUT;
     }
     return copy_ids(joints[joint_index], out_ids, capacity, out_count,
+                    out_error);
+  });
+}
+
+FcOcctStatus fc_occt_extrude_cap_vertices(FcOcctSession *session, uint64_t shape,
+                                          size_t joint_index, int32_t which,
+                                          uint64_t *out_ids, size_t capacity,
+                                          size_t *out_count,
+                                          FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr) {
+      write_error(out_error, "no session");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    if (found->second.decoded) {
+      write_error(out_error,
+                  "shape " + std::to_string(shape) +
+                      " was decoded from a cache blob, which carries geometry "
+                      "but no history; rebuild it to name its cap vertices");
+      return FC_OCCT_UNSUPPORTED;
+    }
+    if (which != 0 && which != 1) {
+      write_error(out_error, "cap selector must be 0 or 1");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const std::vector<std::vector<uint64_t>> &sides =
+        which == 0 ? found->second.start_cap_vertices
+                   : found->second.end_cap_vertices;
+    if (joint_index >= sides.size()) {
+      write_error(out_error, "joint " + std::to_string(joint_index) +
+                                 " is outside the profile");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    return copy_ids(sides[joint_index], out_ids, capacity, out_count,
                     out_error);
   });
 }

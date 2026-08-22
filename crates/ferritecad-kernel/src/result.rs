@@ -138,6 +138,22 @@ pub struct ExtrudeResult {
     /// One edge per joint, and the map says so, for the same reason the cap
     /// edges do. A corner that produced none is absent.
     pub sweep_edges: BTreeMap<ProfileJoint, SubShapeHandle>,
+    /// The vertex where one profile joint reaches the start cap.
+    ///
+    /// Keyed by the joint, on the same terms as the sweep edges: a corner is
+    /// the pair of segments meeting there and nothing positional. Only a joint
+    /// that occurs once in the profile appears here. A loop of two segments has
+    /// one unordered pair at two corners, and the kernel distinguishes those
+    /// two vertices perfectly well; the *name* cannot, so neither is filed.
+    ///
+    /// Measured before it was relied on. See `tools/occt-smoke` step 9, which
+    /// the pin workflow runs on all three platforms: for each positional corner
+    /// and each side the prism names exactly one vertex, in the solid by
+    /// `IsSame`, on the cap it is claimed for, ending that corner's swept edge,
+    /// and reached by the tessellation association.
+    pub start_cap_vertices: BTreeMap<ProfileJoint, SubShapeHandle>,
+    /// The same, where the joint reaches the end cap.
+    pub end_cap_vertices: BTreeMap<ProfileJoint, SubShapeHandle>,
 }
 
 impl ExtrudeResult {
@@ -214,6 +230,39 @@ impl ExtrudeResult {
                 return Err(CadError::kernel(format!(
                     "the sweep edges of {other} and of {joint} both name {edge}"
                 )));
+            }
+        }
+
+        // The cap vertices, on the same terms. One physical vertex carries one
+        // meaning: two joints naming it, or one joint naming it on both caps,
+        // would be two durable references resolving to the same point.
+        let mut cornered: BTreeMap<SubShapeHandle, (&str, ProfileJoint)> = BTreeMap::new();
+        for (side, vertices) in [
+            ("start", &self.start_cap_vertices),
+            ("end", &self.end_cap_vertices),
+        ] {
+            for (joint, vertex) in vertices {
+                if vertex.shape() != self.shape {
+                    return Err(CadError::kernel(format!(
+                        "the {side} cap vertex named for {joint} is {vertex}, which belongs to \
+                         another shape than {}",
+                        self.shape
+                    )));
+                }
+                if vertex.kind() != SubShapeKind::Vertex {
+                    return Err(CadError::kernel(format!(
+                        "the {side} cap vertex named for {joint} is {vertex}, which is a {}",
+                        vertex.kind()
+                    )));
+                }
+                if let Some((other_side, other_joint)) = cornered.insert(*vertex, (side, *joint))
+                    && (other_side != side || other_joint != *joint)
+                {
+                    return Err(CadError::kernel(format!(
+                        "the {other_side} cap vertex of {other_joint} and the {side} cap vertex \
+                         of {joint} both name {vertex}"
+                    )));
+                }
             }
         }
         Ok(())
@@ -1151,6 +1200,8 @@ mod tests {
     /// An extrusion result naming one cap edge for one segment.
     fn swept(shape: ShapeHandle, named: &[(StableEntityId, SubShapeHandle)]) -> ExtrudeResult {
         ExtrudeResult {
+            start_cap_vertices: BTreeMap::new(),
+            end_cap_vertices: BTreeMap::new(),
             shape,
             history: History::new(),
             start_cap: Vec::new(),
@@ -1164,6 +1215,8 @@ mod tests {
     /// An extrusion result naming one edge along the sweep for one joint.
     fn along(shape: ShapeHandle, named: &[(ProfileJoint, SubShapeHandle)]) -> ExtrudeResult {
         ExtrudeResult {
+            start_cap_vertices: BTreeMap::new(),
+            end_cap_vertices: BTreeMap::new(),
             shape,
             history: History::new(),
             start_cap: Vec::new(),
@@ -1239,6 +1292,89 @@ mod tests {
                 .contains("named both as the start cap edge"),
             "{refusal}"
         );
+    }
+
+    /// An extrusion result naming cap vertices for joints.
+    fn capped(
+        shape: ShapeHandle,
+        start: &[(ProfileJoint, SubShapeHandle)],
+        end: &[(ProfileJoint, SubShapeHandle)],
+    ) -> ExtrudeResult {
+        ExtrudeResult {
+            shape,
+            history: History::new(),
+            start_cap: Vec::new(),
+            end_cap: Vec::new(),
+            start_cap_edges: BTreeMap::new(),
+            end_cap_edges: BTreeMap::new(),
+            sweep_edges: BTreeMap::new(),
+            start_cap_vertices: start.iter().copied().collect(),
+            end_cap_vertices: end.iter().copied().collect(),
+        }
+    }
+
+    #[test]
+    fn a_cap_vertex_of_another_shape_or_of_the_wrong_kind_is_refused() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let stranger = ShapeHandle::new(SessionId::new(), 0);
+        let corner = joint();
+
+        assert!(
+            capped(
+                shape,
+                &[(corner, SubShapeHandle::new(shape, SubShapeKind::Vertex, 0))],
+                &[]
+            )
+            .validate()
+            .is_ok()
+        );
+
+        let elsewhere = capped(
+            shape,
+            &[(
+                corner,
+                SubShapeHandle::new(stranger, SubShapeKind::Vertex, 0),
+            )],
+            &[],
+        )
+        .validate()
+        .expect_err("a vertex of another shape is not this feature's");
+        assert!(
+            elsewhere.to_string().contains("belongs to another shape"),
+            "{elsewhere}"
+        );
+
+        let edge = capped(
+            shape,
+            &[(corner, SubShapeHandle::new(shape, SubShapeKind::Edge, 0))],
+            &[],
+        )
+        .validate()
+        .expect_err("a cap vertex is never an edge");
+        assert!(edge.to_string().contains("which is a edge"), "{edge}");
+    }
+
+    #[test]
+    fn one_vertex_cannot_answer_to_two_joints_or_to_both_caps() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let vertex = SubShapeHandle::new(shape, SubShapeKind::Vertex, 5);
+
+        let two_joints = capped(shape, &[(joint(), vertex), (joint(), vertex)], &[])
+            .validate()
+            .expect_err("one vertex cannot be two corners");
+        assert!(two_joints.to_string().contains("both name"), "{two_joints}");
+
+        let corner = joint();
+        let both_caps = capped(shape, &[(corner, vertex)], &[(corner, vertex)])
+            .validate()
+            .expect_err("one vertex cannot be on both caps");
+        assert!(both_caps.to_string().contains("both name"), "{both_caps}");
+
+        // And a cap vertex that is also named as a cap edge is refused, since
+        // the two would be one handle under two durable meanings.
+        let mut mixed = capped(shape, &[(corner, vertex)], &[]);
+        mixed.start_cap_vertices.insert(joint(), vertex);
+        assert!(mixed.validate().is_err());
     }
 
     #[test]

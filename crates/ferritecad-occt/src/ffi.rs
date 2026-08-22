@@ -149,6 +149,16 @@ unsafe extern "C" {
         out_count: *mut usize,
         out_error: *mut RawError,
     ) -> i32;
+    fn fc_occt_extrude_cap_vertices(
+        session: *mut RawSession,
+        shape: u64,
+        joint_index: usize,
+        which: i32,
+        out_ids: *mut u64,
+        capacity: usize,
+        out_count: *mut usize,
+        out_error: *mut RawError,
+    ) -> i32;
     fn fc_occt_extrude_cap_faces(
         session: *mut RawSession,
         shape: u64,
@@ -526,6 +536,28 @@ impl Session {
             |s, ids, cap, count, err| {
                 // SAFETY: pointers are valid for the call; see `collect_ids`.
                 unsafe { fc_occt_extrude_sweep_edges(s, shape, joint_index, ids, cap, count, err) }
+            },
+        )
+    }
+
+    /// The vertex one corner of the profile reaches on one cap.
+    ///
+    /// Positional, as the bridge reports it. Everything recorded at that
+    /// corner comes back, so a count other than one is the caller's to refuse
+    /// rather than something quietly trimmed here.
+    pub(crate) fn cap_vertices(
+        &mut self,
+        shape: u64,
+        joint_index: usize,
+        which: i32,
+    ) -> Result<Vec<u64>> {
+        self.collect_ids(
+            "reading the vertex where a profile corner reaches a cap",
+            |s, ids, cap, count, err| {
+                // SAFETY: pointers are valid for the call; see `collect_ids`.
+                unsafe {
+                    fc_occt_extrude_cap_vertices(s, shape, joint_index, which, ids, cap, count, err)
+                }
             },
         )
     }

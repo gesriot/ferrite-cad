@@ -418,7 +418,35 @@ impl GeometryKernel for OcctKernel {
                 sweep_edges.insert(*joint, SubShapeHandle::new(shape, SubShapeKind::Edge, id));
             }
 
+            // Where each corner of the profile reaches each cap, filed under
+            // the same pair and by the same rule. The occurrence count above
+            // is consulted before anything is filed: a map that merely
+            // overwrote on insert would turn the two corners of a two-segment
+            // loop into one entry and call the ambiguity resolved.
+            let mut start_cap_vertices = BTreeMap::new();
+            let mut end_cap_vertices = BTreeMap::new();
+            for (index, joint) in joints.iter().enumerate() {
+                if seen.get(joint).copied().unwrap_or(0) != 1 {
+                    continue;
+                }
+                for (which, into) in [(0, &mut start_cap_vertices), (1, &mut end_cap_vertices)] {
+                    let mut named = self.session.cap_vertices(raw, index, which)?.into_iter();
+                    let Some(id) = named.next() else {
+                        continue;
+                    };
+                    if named.next().is_some() {
+                        return Err(CadError::kernel(format!(
+                            "the sweep named more than one cap vertex for {joint}, and there is \
+                             no way to choose between them"
+                        )));
+                    }
+                    into.insert(*joint, SubShapeHandle::new(shape, SubShapeKind::Vertex, id));
+                }
+            }
+
             let result = ExtrudeResult {
+                start_cap_vertices,
+                end_cap_vertices,
                 shape,
                 history,
                 start_cap,
