@@ -134,11 +134,11 @@ impl EdgeNames {
 /// a stored [`TopologyRef`] says, minus the geometric fallback, which is a hint
 /// for a person and never an identity.
 ///
-/// One type for a face and for an edge. What a document stores about either is
-/// the same six fields, and two structures would be two places for the same
-/// rule to drift; which kind is meant is already in `expected_kind` and in the
-/// role. [`FaceMeaning`] and [`EdgeMeaning`] name it where a reader expects one
-/// or the other.
+/// One type for a face, an edge and a vertex. What a document stores about any
+/// of them is the same six fields, and three structures would be three places
+/// for the same rule to drift; which kind is meant is already in
+/// `expected_kind` and in the role. [`FaceMeaning`], [`EdgeMeaning`] and
+/// [`VertexMeaning`] name it where a reader expects one kind in particular.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PortableMeaning {
     /// The stored reference itself.
@@ -741,7 +741,8 @@ where
         // Every stored reference that names exactly one entity of this rebuild,
         // paired with the handle it named. Resolved once, in the order the
         // document stores its references, so what an entity is called does not
-        // depend on the order faces or edges happen to be tessellated in.
+        // depend on the order faces, edges or vertices happen to be tessellated
+        // in.
         //
         // A reference that resolves to several entities is not a name for
         // whichever one was clicked, so it is not here; one that resolves to
