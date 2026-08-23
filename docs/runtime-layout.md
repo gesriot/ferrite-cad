@@ -1,10 +1,12 @@
 <!-- SPDX-License-Identifier: MIT -->
 # The runtime closure of a FerriteCAD release
 
-**Status:** measured on macOS locally and on Linux, macOS and Windows by the
-[combined runtime layout](../.github/workflows/runtime-layout.yml) workflow. A
-candidate layout has been chosen and started from a clean environment. Nothing
-here is a release, and no packager exists yet: that is section 21A-2b2b.
+**Status:** measured on Linux, macOS and Windows by the
+[combined runtime layout](../.github/workflows/runtime-layout.yml) workflow in
+[run 32666664382](https://github.com/gesriot/ferrite-cad/actions/runs/32666664382),
+which is where every number below comes from. A candidate layout has been chosen
+and started from a clean environment on all three. Nothing here is a release, and
+no packager exists yet: that is section 21A-2b2b.
 
 ## Why this needed its own slice
 
@@ -60,18 +62,24 @@ Measured by [`tools/runtime-closure.sh`](../tools/runtime-closure.sh), which
 walks the graph with the platform's own inspector, resolves each edge the way
 the loader would, and classifies every member.
 
-On macOS, against pinned Open CASCADE 8.0.1 and pinned planegcs:
+Against pinned Open CASCADE 8.0.1 and pinned planegcs, on all three platforms:
 
-| | `ferritecad-viewer` | `ferritecad` |
-| --- | --- | --- |
-| Open CASCADE toolkits | 50 (70 597 936 bytes) | 50 (70 597 936 bytes) |
-| planegcs | 1 (613 920 bytes) | 0 |
-| System libraries | 17 | 10 |
-| Unaccounted for | 0 | 0 |
-| Total to ship | 51 files, 71 211 856 bytes | 50 files, 70 597 936 bytes |
+| | Linux | macOS | Windows |
+| --- | --- | --- | --- |
+| Open CASCADE toolkits | 26 (66 178 968 bytes) | 50 (71 888 848 bytes) | 23 (36 045 312 bytes) |
+| planegcs | 1 (813 848 bytes) | 1 (636 384 bytes) | 1 (495 616 bytes) |
+| Unaccounted for | 0 | 0 | 0 |
+| Viewer must ship | 27 files, 66 992 816 bytes | 51 files, 72 525 232 bytes | 24 files, 36 540 928 bytes |
+| Command line tool must ship | 26 files, 66 178 968 bytes | 50 files, 71 888 848 bytes | 23 files, 36 045 312 bytes |
+| Whole staged layout | 29 files, 101 537 685 bytes | 53 files, 92 084 448 bytes | 26 files, 56 749 568 bytes |
 
-The executables themselves are 14 701 040 and 4 514 464 bytes, so a staged
-layout carrying both is 53 files and 91 349 952 bytes.
+The executables are 21 678 408 and 5 277 312 bytes on Linux, 14 668 192 and
+4 465 088 on macOS, 16 098 304 and 4 110 336 on Windows. Neither carries a run
+path on any platform, which is the finding the whole slice started from.
+
+The spread between the platforms is not noise. macOS has to ship every one of
+the fifty toolkits and the other two ship roughly half, for the reason given
+below, and that alone is thirty-five megabytes of difference.
 
 Three findings are worth stating separately.
 
@@ -83,16 +91,22 @@ machine reports four unaccounted-for libraries: `libfreetype`, `libpng16`,
 why the product closure has none of them. No Qt and no FreeCAD runtime appears
 in either closure.
 
-**Every shipped library is named directly by the executables on macOS.** The
-transitive half of the closure holds only two system frameworks, `IOKit` and
-`OpenGL`, reached through other system frameworks. This is a consequence of
-`ferritecad-occt`'s build script handing the linker every toolkit the bridge
-reports: Mach-O records all of them whether or not a symbol is used from each. A
-linker defaulting to `--as-needed` drops the ones that are not, and the same
-closure then has a transitive half, so this is expected to differ on Linux. The
-clean environment check records which case each platform is in rather than
-assuming, so a platform that loses its transitive half is visible in the
-comparison instead of silently equivalent.
+**Whether the closure has a transitive half at all is a platform difference,
+and it was measured rather than assumed.** On macOS every shipped library is
+named directly by both executables: the transitive half holds only two system
+frameworks, `IOKit` and `OpenGL`, reached through other system frameworks. That
+is a consequence of `ferritecad-occt`'s build script handing the linker every
+toolkit the bridge reports, and of Mach-O recording all of them whether or not a
+symbol is used from each. Linux splits the same closure thirteen direct and
+thirteen transitive, and Windows eleven and twelve, because `--as-needed` and the
+import table drop what is not used. That is also why those two ship about half as
+many toolkits.
+
+The clean environment check therefore hides a transitive toolkit where one
+exists and a directly named one where none does, and records which it was:
+`reach=transitive` on Linux and Windows, `reach=direct-only` on macOS. A platform
+that quietly lost its transitive half would show up in the comparison rather than
+passing as equivalent.
 
 **The versioned name is the one that has to be carried.** Pinned Open CASCADE
 installs a chain, `libTKernel.dylib` to `libTKernel.8.0.dylib` to
@@ -120,7 +134,8 @@ Classified by where they resolve rather than by a list of names, because a name
 list is a list somebody has to remember to extend. On macOS that means the
 frameworks and dylibs under `/usr/lib` and `/System/Library`, which have no file
 on disk at all: they live in the dyld shared cache, so asking whether the file
-exists would report the entire operating system as missing. On Linux it means
+exists would report the entire operating system as missing, and why the macOS
+system total below is seventeen files of zero bytes. On Linux it means
 what resolves under `/lib`, `/lib64`, `/usr/lib` or `/usr/lib64`, plus the
 virtual DSO and the program interpreter. On Windows it means System32, SysWOW64,
 WinSxS and the API set names the loader redirects, for which no file exists
