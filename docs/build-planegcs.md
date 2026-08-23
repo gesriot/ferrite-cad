@@ -14,6 +14,11 @@ loader layout at the same time, and that is §21A-2b2. A run of the application
 against a build tree finds the library through the loader's search path, which
 is an unbundled run and is not evidence about a package.
 
+§21A-2b2a has since measured what such a release would have to carry and run a
+candidate layout with both build trees taken away; the numbers and the layout
+are in [runtime-layout.md](runtime-layout.md). The packager itself is still to
+come.
+
 Nothing above the loading is integrated either. No document stores a
 constraint, no feature reads one, and no interface draws one.
 

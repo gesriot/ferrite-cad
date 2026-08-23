@@ -1,0 +1,779 @@
+# SPDX-License-Identifier: MIT
+name: combined runtime layout
+
+# Builds the real FerriteCAD application against pinned Open CASCADE and pinned
+# planegcs at the same time, measures what the two of them need at run time, and
+# tries to move the result out of both build trees.
+#
+# Two proofs already exist and neither of them is this one. The OCCT pin builds
+# and exercises pinned Open CASCADE, but every downstream executable it launches
+# is found by a build-tree loader environment. The planegcs pin builds the real
+# viewer against planegcs, but with no Open CASCADE linked at all. No run has
+# ever produced a product executable carrying both and then taken both build
+# trees away, so the layout of a release is not a thing anybody knows yet.
+#
+# This workflow measures it. It is not a packager and does not produce a
+# release: what it stages goes into the runner's temporary directory, carries no
+# version and no archive, and is deleted with the runner. §21A-2b2b is the
+# packager, and it is meant to be written against the numbers this produces.
+#
+# The measurement is only worth having if it cannot be satisfied by the machine
+# it ran on, so the smoke test runs with LD_LIBRARY_PATH and DYLD_LIBRARY_PATH
+# emptied, with the Open CASCADE and planegcs install directories renamed away,
+# and with every staged file checked for their names. A run that passes because
+# the build tree was still there would look exactly like a run that passed.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/runtime-closure.sh'
+      - 'tools/stage-runtime-layout.sh'
+      - 'tools/check-staged-layout.sh'
+      - 'tools/build-planegcs.sh'
+      - 'tools/planegcs/**'
+      - 'crates/ferritecad-app/**'
+      - 'crates/ferritecad-cli/**'
+      - 'crates/ferritecad-occt/**'
+      - 'crates/ferritecad-occt-bridge/**'
+      - 'crates/ferritecad-sketch-solver/**'
+      - '.github/workflows/runtime-layout.yml'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # The pin, copied from docs/build-occt.md. The commit is the authoritative
+  # one; the digest covers the one download of a tarball GitHub generates on
+  # demand. Written out rather than taken as a dispatch input, because this
+  # workflow is not choosing a version - it is measuring the one that was
+  # chosen, and a run that measured some other version would answer a question
+  # nobody asked.
+  OCCT_COMMIT: b8f597c677811d1f9f4d8a97f5ae2825c0353a42
+  OCCT_SHA256: dba62b81078dd43cec23feba89432be301582341001edad1b93342ad8bda35ea
+  # The same pinned Eigen the planegcs pin compiles against, for the same
+  # reason: three runners must build planegcs against one version of the
+  # headers, so a disagreement between them is about the platform.
+  EIGEN_VERSION: 3.4.0
+  EIGEN_SHA256: 8586084f71f9bde545ee7fa6d00288b264a2b7ac3607b974e54d13e7162c1c72
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux
+            planegcs_library: libplanegcs.so
+            cmake_extra: ''
+          - os: macos-latest
+            name: macos
+            planegcs_library: libplanegcs.dylib
+            cmake_extra: ''
+          - os: windows-latest
+            name: windows
+            planegcs_library: planegcs.dll
+            # MinGW is on PATH on the runners, and CMake would otherwise pick
+            # it over MSVC once Ninja is the generator.
+            cmake_extra: -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+
+    defaults:
+      run:
+        # One shell everywhere, so the steps are the same text on all three
+        # platforms and a difference in behaviour is a real difference.
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install the tools each platform needs
+        run: |
+          set -euxo pipefail
+          case '${{ matrix.name }}' in
+            linux)
+              sudo apt-get update
+              # X11 and GL headers because XCAF links the visualisation
+              # toolkits whether or not FerriteCAD opens an Open CASCADE
+              # viewer; Boost because planegcs needs it; patchelf because a
+              # relocatable ELF layout is a run path this workflow has to set.
+              sudo apt-get install -y --no-install-recommends \
+                ninja-build patchelf \
+                libx11-dev libxext-dev libxmu-dev libxi-dev \
+                libgl1-mesa-dev libglu1-mesa-dev \
+                libboost-graph-dev libboost-math-dev
+              ;;
+            macos)
+              brew install ninja boost
+              ;;
+            windows)
+              choco install ninja -y --no-progress
+              vcpkg install boost-graph:x64-windows boost-math:x64-windows
+              ;;
+          esac
+
+      - name: Locate MSVC
+        if: matrix.name == 'windows'
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+          if not defined VSPATH (
+            echo ::error::vswhere found no Visual Studio with the C++ toolset
+            exit /b 1
+          )
+          echo Visual Studio at %VSPATH%
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          set > vcvars-env.txt
+
+      - name: Export the MSVC environment
+        if: matrix.name == 'windows'
+        run: |
+          set -euo pipefail
+          # An allow-list rather than the whole vcvars environment: exporting
+          # all of it publishes around fifty names, one of which is the generic
+          # `Platform`, and Windows environment variables are case-insensitive.
+          # docs/build-occt.md records what that cost the OCCT workflow.
+          grep -Ei '^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir|VCToolsVersion|VSINSTALLDIR|WindowsSdkDir|WindowsSDKVersion|UCRTVersion|UniversalCRTSdkDir)=' \
+            vcvars-env.txt >> "$GITHUB_ENV"
+          install_dir="$(grep -i '^VCToolsInstallDir=' vcvars-env.txt | head -1 | cut -d= -f2-)"
+          rm -f vcvars-env.txt
+          if [ -z "$install_dir" ]; then
+            echo "::error::vcvars did not say where the MSVC tools are"
+            exit 1
+          fi
+
+          # Git Bash injects its own /usr/bin at the front of PATH whenever a
+          # shell starts, and /usr/bin holds a GNU `link.exe` that has nothing
+          # to do with linking programs. cmake records the compiler's full path
+          # at configure time and is unaffected; rustc invokes link.exe by name
+          # and gets the wrong one. Naming the linker outright stops depending
+          # on the order of a PATH this shell rewrites.
+          tools="$(cygpath -u "$install_dir")bin/Hostx64/x64"
+          if [ ! -x "$tools/link.exe" ]; then
+            echo "::error::no MSVC link.exe under $tools"
+            exit 1
+          fi
+          {
+            echo "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$(cygpath -w "$tools/link.exe")"
+            # dumpbin is reached the same way and for the same reason: it is
+            # what reads the import table, and a measurement that cannot run
+            # its own inspector must say so rather than conclude anything.
+            echo "FCAD_MSVC_BIN=$tools"
+          } >> "$GITHUB_ENV"
+
+      # ---------------------------------------------------------------------
+      # Open CASCADE, from the pin.
+      # ---------------------------------------------------------------------
+
+      - name: Restore a cached Open CASCADE build
+        id: occt-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: vendor/install
+          # Keyed on the pinned commit, so a changed pin cannot silently reuse
+          # the previous kernel. Deliberately not the OCCT pin workflow's own
+          # key: that cache carries records this workflow does not write, and
+          # sharing the name would let one workflow hand the other an install
+          # it considers incomplete.
+          key: occt-layout-${{ env.OCCT_COMMIT }}-${{ matrix.name }}-${{ runner.arch }}-v1
+
+      - name: Build pinned Open CASCADE
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+          curl -fsSL --retry 3 -o occt.tar.gz \
+            "https://github.com/Open-Cascade-SAS/OCCT/archive/${OCCT_COMMIT}.tar.gz"
+          case '${{ matrix.name }}' in
+            macos) actual="$(shasum -a 256 occt.tar.gz | cut -d' ' -f1)" ;;
+            *)     actual="$(sha256sum occt.tar.gz | cut -d' ' -f1)" ;;
+          esac
+          if [ "$actual" != "$OCCT_SHA256" ]; then
+            echo "::error::Open CASCADE archive digest ${actual}, the pin says ${OCCT_SHA256}"
+            exit 1
+          fi
+          mkdir -p occt
+          tar -xzf occt.tar.gz -C occt --strip-components=1
+
+          # These flags are docs/build-occt.md's, character for character, and
+          # they are why the closure below has no FreeType and no TBB in it. A
+          # measurement taken against a differently configured kernel would be
+          # a measurement of some other product.
+          cmake -S occt -B occt-build -G Ninja ${{ matrix.cmake_extra }} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_LIBRARY_TYPE=Shared \
+            -DBUILD_MODULE_Draw=OFF \
+            -DUSE_TK=OFF -DUSE_TCL=OFF -DUSE_FREETYPE=OFF -DUSE_VTK=OFF \
+            -DBUILD_DOC_Overview=OFF \
+            -DCMAKE_INSTALL_PREFIX="$PWD/vendor/install"
+
+          # Read back rather than trusted: an unknown option is only a warning
+          # to CMake, and a static Open CASCADE would change the licence
+          # position of the whole product.
+          value="$(sed -n 's/^BUILD_LIBRARY_TYPE:[^=]*=//p' occt-build/CMakeCache.txt)"
+          if [ "$value" != "Shared" ]; then
+            echo "::error::Open CASCADE configured with BUILD_LIBRARY_TYPE=${value:-<unset>}"
+            exit 1
+          fi
+
+          cmake --build occt-build --parallel
+          cmake --install occt-build
+
+      - name: Save the fresh Open CASCADE build
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: vendor/install
+          key: occt-layout-${{ env.OCCT_COMMIT }}-${{ matrix.name }}-${{ runner.arch }}-v1
+
+      - name: Say where Open CASCADE is
+        id: occt
+        run: |
+          set -euo pipefail
+          config="$(find vendor/install -name 'OpenCASCADEConfig.cmake' -print -quit)"
+          if [ -z "$config" ]; then
+            echo "::error::no OpenCASCADEConfig.cmake under vendor/install"
+            find vendor/install -maxdepth 3 -type d | head -40
+            exit 1
+          fi
+          config_dir="$(cd "$(dirname "$config")" && pwd)"
+
+          case '${{ matrix.name }}' in
+            windows) pattern='TKernel.dll' ;;
+            macos)   pattern='libTKernel*.dylib' ;;
+            *)       pattern='libTKernel.so*' ;;
+          esac
+          lib="$(find vendor/install -name "$pattern" -print -quit)"
+          if [ -z "$lib" ]; then
+            echo "::error::no shared TKernel under vendor/install; this is not a shared build"
+            exit 1
+          fi
+          lib_dir="$(cd "$(dirname "$lib")" && pwd)"
+
+          # The libraries and the CMake package can live in different places on
+          # Windows, where the DLLs are installed to bin/ and the import
+          # libraries to lib/. The closure is about the DLLs.
+          case '${{ matrix.name }}' in
+            windows)
+              dll="$(find vendor/install -name 'TKernel.dll' -print -quit)"
+              lib_dir="$(cd "$(dirname "$dll")" && pwd)"
+              ;;
+          esac
+
+          {
+            echo "config_dir=$config_dir"
+            echo "lib_dir=$lib_dir"
+          } >> "$GITHUB_OUTPUT"
+          echo "config: $config_dir"
+          echo "libs:   $lib_dir"
+
+      # ---------------------------------------------------------------------
+      # planegcs, from its own pin.
+      # ---------------------------------------------------------------------
+
+      - name: Fetch the pinned Eigen headers
+        run: |
+          set -euo pipefail
+          url="https://gitlab.com/libeigen/eigen/-/archive/${EIGEN_VERSION}/eigen-${EIGEN_VERSION}.tar.gz"
+          curl -sSL -o eigen.tar.gz "$url"
+          if command -v sha256sum >/dev/null 2>&1; then
+            actual="$(sha256sum eigen.tar.gz | cut -d' ' -f1)"
+          else
+            actual="$(shasum -a 256 eigen.tar.gz | cut -d' ' -f1)"
+          fi
+          if [ "$actual" != "$EIGEN_SHA256" ]; then
+            echo "::error::Eigen ${EIGEN_VERSION} digest ${actual}, expected ${EIGEN_SHA256}"
+            exit 1
+          fi
+          mkdir -p eigen
+          tar xzf eigen.tar.gz -C eigen --strip-components=1
+          # Native spelling on Windows: these reach cmake and cargo, which are
+          # native programs, and /d/a/... is a directory that does not exist to
+          # them.
+          if [ '${{ matrix.name }}' = windows ]; then
+            echo "FCAD_EIGEN_INCLUDE=$(cygpath -w "$PWD/eigen")" >> "$GITHUB_ENV"
+          else
+            echo "FCAD_EIGEN_INCLUDE=$PWD/eigen" >> "$GITHUB_ENV"
+          fi
+
+      - name: Say where Boost is
+        run: |
+          set -euo pipefail
+          case '${{ matrix.name }}' in
+            linux)   boost=/usr/include ;;
+            macos)   boost="$(brew --prefix)/include" ;;
+            windows) boost="$(cygpath -u "$VCPKG_INSTALLATION_ROOT")/installed/x64-windows/include" ;;
+          esac
+          if [ ! -d "$boost/boost" ]; then
+            echo "::error::no boost/ under $boost"
+            exit 1
+          fi
+          if [ '${{ matrix.name }}' = windows ]; then
+            echo "FCAD_BOOST_INCLUDE=$(cygpath -w "$boost")" >> "$GITHUB_ENV"
+          else
+            echo "FCAD_BOOST_INCLUDE=$boost" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build pinned planegcs
+        run: |
+          set -euxo pipefail
+          tools/build-planegcs.sh "$PWD/vendor/planegcs"
+          if [ '${{ matrix.name }}' = windows ]; then
+            echo "FCAD_PLANEGCS_DIR=$(cygpath -w "$PWD/vendor/planegcs")" >> "$GITHUB_ENV"
+          else
+            echo "FCAD_PLANEGCS_DIR=$PWD/vendor/planegcs" >> "$GITHUB_ENV"
+          fi
+
+      - name: Require both components to be replaceable shared libraries
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          out="$PWD/vendor/planegcs"
+          libs="${{ steps.occt.outputs.lib_dir }}"
+
+          # The licence position of this whole slice rests on both components
+          # being shared and replaceable. A static one would pass every timing
+          # and every exit code below and would be a different product.
+          # `file -L` everywhere a toolkit is named: the install is a chain of
+          # symlinks, and `file` on a link reports a link rather than what it
+          # points at, which would fail this check for the wrong reason.
+          case '${{ matrix.name }}' in
+            linux)
+              file -L "$out/${{ matrix.planegcs_library }}" | grep -q 'shared object' \
+                || fail 'planegcs is not a shared object'
+              file -L "$(find "$libs" -name 'libTKernel.so*' -print -quit)" \
+                | grep -q 'shared object' \
+                || fail 'Open CASCADE is not a shared object' ;;
+            macos)
+              file -L "$out/${{ matrix.planegcs_library }}" \
+                | grep -q 'dynamically linked shared library' \
+                || fail 'planegcs is not a dynamic library'
+              file -L "$(find "$libs" -name 'libTKernel*.dylib' -print -quit)" \
+                | grep -q 'dynamically linked shared library' \
+                || fail 'Open CASCADE is not a dynamic library' ;;
+            windows)
+              "$FCAD_MSVC_BIN/dumpbin.exe" //HEADERS \
+                "$(cygpath -w "$out/${{ matrix.planegcs_library }}")" \
+                | grep -q 'DLL' || fail 'planegcs is not a DLL'
+              "$FCAD_MSVC_BIN/dumpbin.exe" //HEADERS "$(cygpath -w "$libs/TKernel.dll")" \
+                | grep -q 'DLL' || fail 'Open CASCADE is not a DLL' ;;
+          esac
+          echo "both components are shared libraries a package could replace"
+
+      # ---------------------------------------------------------------------
+      # The combined build. This is the first one there has ever been.
+      # ---------------------------------------------------------------------
+
+      - name: Build the real application and the command line tool against both
+        id: build
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+        run: |
+          set -euo pipefail
+          # Required on both counts, so that a kernel or a solver that failed to
+          # link stops the build rather than producing an executable that would
+          # go on to measure a smaller closure and call it the answer.
+          if ! cargo build --release --features planegcs \
+            -p ferritecad-app --bin ferritecad-viewer \
+            -p ferritecad-cli --bin ferritecad \
+            --message-format=json > build.json; then
+            echo "::group::the same build, in words"
+            cargo build --release --features planegcs \
+              -p ferritecad-app --bin ferritecad-viewer \
+              -p ferritecad-cli --bin ferritecad || true
+            echo "::endgroup::"
+            echo "::error::the product did not build against both pinned components"
+            exit 1
+          fi
+
+          find_binary() {
+            jq -r --arg name "$1" 'select(.reason == "compiler-artifact")
+                                   | select(.target.name == $name)
+                                   | select(.target.kind | index("bin"))
+                                   | .executable // empty' build.json \
+              | tr -d '\r' | tail -1
+          }
+          viewer="$(find_binary ferritecad-viewer)"
+          cli="$(find_binary ferritecad)"
+          [ -n "$viewer" ] || { echo "::error::cargo did not say where ferritecad-viewer is"; exit 1; }
+          [ -n "$cli" ] || { echo "::error::cargo did not say where ferritecad is"; exit 1; }
+
+          readable() {
+            if [ '${{ matrix.name }}' = windows ]; then cygpath -u "$1"; else printf '%s' "$1"; fi
+          }
+          viewer_readable="$(readable "$viewer")"
+          cli_readable="$(readable "$cli")"
+          [ -f "$viewer_readable" ] || { echo "::error::no file at $viewer"; exit 1; }
+          [ -f "$cli_readable" ] || { echo "::error::no file at $cli"; exit 1; }
+
+          {
+            echo "viewer=$viewer_readable"
+            echo "cli=$cli_readable"
+          } >> "$GITHUB_OUTPUT"
+          echo "viewer $viewer_readable ($(wc -c < "$viewer_readable") bytes)"
+          echo "cli    $cli_readable ($(wc -c < "$cli_readable") bytes)"
+
+      - name: Require the viewer to be the application and not a test executable
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+        run: |
+          set -euo pipefail
+          # Every test executable cargo would produce for these two packages,
+          # taken from cargo rather than from a list of names somebody has to
+          # remember to extend. Everything after this step is a statement about
+          # the program a person runs, and it would look exactly the same if it
+          # were about a test harness.
+          cargo test --release --features planegcs \
+            -p ferritecad-app -p ferritecad-cli --no-run --message-format=json \
+            > tests.json
+          # `.profile.test`, not `.target.test`. The second is a property of the
+          # target definition: a bin has unit tests, so cargo reports it as
+          # testable, and under `--no-run` it emits two artifacts for that bin
+          # - the test harness under deps/, and the ordinary executable. Asking
+          # the wrong one puts `target/release/ferritecad-viewer` in this list
+          # and makes the comparison below reject the application for being
+          # itself. `.profile.test` is a property of the compilation and names
+          # only the harnesses, including the viewer's own, which is precisely
+          # the executable that could be mistaken for the application.
+          jq -r 'select(.reason == "compiler-artifact")
+                 | select(.profile.test == true)
+                 | .executable // empty' tests.json | tr -d '\r' \
+            | LC_ALL=C sort -u > test-binaries.txt
+          if [ ! -s test-binaries.txt ]; then
+            echo "::error::no test executable was built, so the comparison below is vacuous"
+            exit 1
+          fi
+
+          for binary in '${{ steps.build.outputs.viewer }}' '${{ steps.build.outputs.cli }}'; do
+            native="$binary"
+            if [ '${{ matrix.name }}' = windows ]; then native="$(cygpath -w "$binary")"; fi
+            if grep -Fxq "$native" test-binaries.txt || grep -Fxq "$binary" test-binaries.txt; then
+              echo "::error::${binary} is one of the test executables, not the application"
+              exit 1
+            fi
+            case "$(basename "$binary")" in
+              ferritecad-viewer | ferritecad-viewer.exe | ferritecad | ferritecad.exe) ;;
+              *) echo "::error::${binary} is not a product binary"; exit 1 ;;
+            esac
+          done
+          echo "$(wc -l < test-binaries.txt) test executable(s) exist, and neither product"
+          echo "binary is one of them"
+
+      - name: Require the application to import both runtime component families
+        run: |
+          set -euo pipefail
+          viewer='${{ steps.build.outputs.viewer }}'
+          cli='${{ steps.build.outputs.cli }}'
+
+          imports() {
+            case '${{ matrix.name }}' in
+              linux)   ldd "$1" > "$2" 2>&1 || true ;;
+              macos)   otool -L "$1" > "$2" 2>&1 || true ;;
+              windows) "$FCAD_MSVC_BIN/dumpbin.exe" //DEPENDENTS \
+                         "$(cygpath -w "$1")" > "$2" 2>&1 || true ;;
+            esac
+            # Kept whole and printed. An inspector that failed and a binary
+            # that names nothing look identical once the output is thrown away,
+            # and the first of those is a broken gate rather than a finding.
+            sed -n '1,20p' "$2"
+            if [ ! -s "$2" ]; then
+              echo "::error::the import table of $1 could not be read"
+              exit 1
+            fi
+          }
+
+          echo "== ferritecad-viewer"
+          imports "$viewer" viewer-imports.txt
+          grep -iq 'planegcs\.\(so\|dylib\|dll\)' viewer-imports.txt \
+            || { echo "::error::the application does not import planegcs"; exit 1; }
+          grep -iqE 'libTK|TK[A-Za-z0-9]*\.dll' viewer-imports.txt \
+            || { echo "::error::the application does not import any Open CASCADE toolkit"; exit 1; }
+
+          echo "== ferritecad"
+          imports "$cli" cli-imports.txt
+          grep -iqE 'libTK|TK[A-Za-z0-9]*\.dll' cli-imports.txt \
+            || { echo "::error::the command line tool does not import Open CASCADE"; exit 1; }
+
+          echo "the application imports planegcs and Open CASCADE; the command line tool"
+          echo "imports Open CASCADE"
+
+      # ---------------------------------------------------------------------
+      # The measurement.
+      # ---------------------------------------------------------------------
+
+      - name: Measure the runtime closure of both product binaries
+        run: |
+          set -euo pipefail
+          for pair in 'viewer:${{ steps.build.outputs.viewer }}' \
+                      'cli:${{ steps.build.outputs.cli }}'; do
+            label="${pair%%:*}"
+            binary="${pair#*:}"
+            tools/runtime-closure.sh --platform '${{ matrix.name }}' --label "$label" \
+              --binary "$binary" \
+              --search '${{ steps.occt.outputs.lib_dir }}' \
+              --search "$PWD/vendor/planegcs" \
+              --output "closure-${label}.txt"
+          done
+
+      - name: Refuse a closure with anything nobody has accounted for in it
+        run: |
+          set -euo pipefail
+          # The stop conditions of §21A-2b2a, asked of the measurement rather
+          # than of anyone's memory. An unknown non-system library is a licence
+          # question and a packaging question at once; Qt or a FreeCAD runtime
+          # would mean the sketch solver had dragged an application framework in
+          # behind it.
+          if grep -h '^dep .* unexpected ' closure-*.txt; then
+            echo "::error::the runtime closure holds libraries nobody has accounted for"
+            exit 1
+          fi
+          if grep -hiE '^dep .*(libQt|Qt[0-9]|libFreeCAD|FreeCAD.*\.(so|dylib|dll))' closure-*.txt; then
+            echo "::error::the closure carries a Qt or FreeCAD runtime dependency"
+            exit 1
+          fi
+
+          # And that it is a measurement at all. A report with no Open CASCADE
+          # in it, or no planegcs, is one of the two proofs that already
+          # existed rather than the one this workflow is for.
+          grep -q '^dep viewer .* planegcs ' closure-viewer.txt \
+            || { echo "::error::the application closure carries no planegcs"; exit 1; }
+          grep -q '^dep viewer .* occt ' closure-viewer.txt \
+            || { echo "::error::the application closure carries no Open CASCADE"; exit 1; }
+          grep -q '^dep cli .* occt ' closure-cli.txt \
+            || { echo "::error::the command line closure carries no Open CASCADE"; exit 1; }
+
+          echo "--- what the two binaries need ---"
+          grep -h '^total ' closure-*.txt
+
+      # ---------------------------------------------------------------------
+      # The candidate layout, and running it with everything taken away.
+      # ---------------------------------------------------------------------
+
+      - name: Stage the candidate relocatable layout
+        id: stage
+        run: |
+          set -euo pipefail
+          # Into the runner's temporary directory, and named as what it is.
+          # Nothing here is a release: no version, no archive, no signature
+          # anyone should rely on, and it is deleted with the runner.
+          staging="${RUNNER_TEMP}/ferritecad-layout"
+          tools/stage-runtime-layout.sh --platform '${{ matrix.name }}' \
+            --staging "$staging" \
+            --occt-lib-dir '${{ steps.occt.outputs.lib_dir }}' \
+            --planegcs-dir "$PWD/vendor/planegcs" \
+            --closure closure-viewer.txt --closure closure-cli.txt \
+            --executable '${{ steps.build.outputs.viewer }}' \
+            --executable '${{ steps.build.outputs.cli }}' \
+            | tee layout-${{ matrix.name }}.txt
+          echo "staging=$staging" >> "$GITHUB_OUTPUT"
+
+      - name: Take the build trees away and start the package
+        env:
+          FCAD_STAGING: ${{ steps.stage.outputs.staging }}
+        run: |
+          set -euo pipefail
+          occt_libs='${{ steps.occt.outputs.lib_dir }}'
+          occt_install="$PWD/vendor/install"
+          planegcs="$PWD/vendor/planegcs"
+
+          # A copy of a committed fixture, so the rebuild has a real document to
+          # cross the Open CASCADE boundary with and the committed one cannot be
+          # what changes.
+          document="${RUNNER_TEMP}/plate.fcad"
+          cp crates/ferritecad-fixtures/plate/plate.fcad "$document"
+
+          # Renamed rather than deleted: a run that fails should leave the
+          # evidence where it can be looked at, and the step that follows puts
+          # them back.
+          mv "$occt_install" "${occt_install}.away"
+          mv "$planegcs" "${planegcs}.away"
+
+          # Windows has no run path, so PATH is the loader's search list and
+          # emptying the environment means emptying that. Everything the shell
+          # itself needs stays; the build directories do not.
+          filtered="$PATH"
+          if [ '${{ matrix.name }}' = windows ]; then
+            filtered="$(printf '%s' "$PATH" | tr ':' '\n' \
+              | grep -v -F "$(cygpath -u "$occt_libs")" \
+              | grep -v -F 'vendor/planegcs' | paste -sd: -)"
+          fi
+
+          status=0
+          env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
+            PATH="$filtered" \
+            tools/check-staged-layout.sh --platform '${{ matrix.name }}' \
+              --staging "$FCAD_STAGING" --document "$document" \
+              --forbidden "$occt_install" --forbidden "$planegcs" \
+              --forbidden "$occt_libs" \
+              --output "staged-facts-${{ matrix.name }}.txt" || status=$?
+
+          mv "${occt_install}.away" "$occt_install"
+          mv "${planegcs}.away" "$planegcs"
+
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the staged layout did not run from a clean environment"
+            exit "$status"
+          fi
+
+      - name: Write the measurement report
+        run: |
+          set -euo pipefail
+          {
+            echo "combined runtime layout, ${{ matrix.name }}"
+            echo
+            echo "runner        ${{ matrix.os }} / ${RUNNER_ARCH}"
+            echo "rustc         $(rustc --version)"
+            echo "occt commit   ${OCCT_COMMIT}"
+            echo "occt cache    ${{ steps.occt-cache.outputs.cache-hit == 'true' && 'reused' || 'built in this run' }}"
+            echo
+            cat vendor/planegcs/PROVENANCE.txt
+            echo
+            cat layout-${{ matrix.name }}.txt
+            echo
+            cat closure-viewer.txt
+            echo
+            cat closure-cli.txt
+          } > "runtime-layout-${{ matrix.name }}.txt"
+          cat "runtime-layout-${{ matrix.name }}.txt"
+
+      - name: Keep the summary for the platforms to be compared on
+        run: |
+          set -euo pipefail
+          # Meaning, not sizes. The three platforms carry different libraries
+          # under different names and cannot be diffed against each other; what
+          # they must agree about is that the combined build happened, that
+          # both families are in the closure, that nothing unaccounted for is,
+          # and that the package started with the build trees gone.
+          {
+            awk -v p='${{ matrix.name }}' '
+                $1 == "dep" && $4 == "planegcs" { planegcs++ }
+                $1 == "dep" && $4 == "occt" { occt++ }
+                END {
+                    printf "combined %s viewer-imports-planegcs=%d\n", p, planegcs + 0
+                    printf "combined %s viewer-imports-occt=%d\n", p, occt + 0
+                }' closure-viewer.txt
+            awk -v p='${{ matrix.name }}' '
+                $1 == "dep" && $4 == "occt" { occt++ }
+                END { printf "combined %s cli-imports-occt=%d\n", p, occt + 0 }' closure-cli.txt
+            awk -v p='${{ matrix.name }}' '
+                $1 == "dep" && $4 == "unexpected" { n++ }
+                END { printf "combined %s unexpected=%d\n", p, n + 0 }' \
+                closure-viewer.txt closure-cli.txt
+            sed 's/^/staged /' "staged-facts-${{ matrix.name }}.txt"
+          } | LC_ALL=C sort > "summary-${{ matrix.name }}.txt"
+          cat "summary-${{ matrix.name }}.txt"
+
+      - name: Upload the measurement
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-layout-${{ matrix.name }}
+          path: |
+            runtime-layout-${{ matrix.name }}.txt
+            closure-viewer.txt
+            closure-cli.txt
+            layout-${{ matrix.name }}.txt
+            staged-facts-${{ matrix.name }}.txt
+          # Uploaded even when the job failed, which is when the closure and
+          # the layout are most worth reading. A run that stopped before
+          # producing them must not have its real failure replaced by an
+          # upload that found nothing.
+          if-no-files-found: warn
+
+      - name: Upload the summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-layout-summary-${{ matrix.name }}
+          path: summary-${{ matrix.name }}.txt
+          if-no-files-found: error
+
+  compare:
+    name: Compare what the three platforms measured
+    needs: measure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download every summary
+        uses: actions/download-artifact@v4
+        with:
+          pattern: runtime-layout-summary-*
+          path: summaries
+
+      - name: Require a combined measurement on all three platforms
+        run: |
+          set -euo pipefail
+          count="$(find summaries -name 'summary-*.txt' | wc -l)"
+          if [ "$count" -ne 3 ]; then
+            echo "::error::expected three platform summaries, found ${count}"
+            find summaries -type f | sed 's/^/  /'
+            exit 1
+          fi
+
+          # Named rather than counted. Three files agreeing about nothing in
+          # particular is what a count buys; these are the facts the slice is
+          # about, and every platform has to carry every one of them.
+          missing=0
+          for platform in linux macos windows; do
+            summary="summaries/runtime-layout-summary-${platform}/summary-${platform}.txt"
+            if [ ! -f "$summary" ]; then
+              echo "::error::${platform} produced no summary, so the comparison has a hole in it"
+              missing=$((missing + 1))
+              continue
+            fi
+            echo "== ${platform}"
+            cat "$summary"
+
+            require() {
+              if ! grep -q "$1" "$summary"; then
+                echo "::error::${platform}: ${2}"
+                missing=$((missing + 1))
+              fi
+            }
+            # Both component families, on both product binaries. A summary
+            # missing one of these is one of the two proofs that already
+            # existed being reported as the new one.
+            require '^combined .* viewer-imports-planegcs=[1-9]' \
+              'the application closure carries no planegcs'
+            require '^combined .* viewer-imports-occt=[1-9]' \
+              'the application closure carries no Open CASCADE'
+            require '^combined .* cli-imports-occt=[1-9]' \
+              'the command line closure carries no Open CASCADE'
+            require '^combined .* unexpected=0' \
+              'the closure holds libraries nobody has accounted for'
+            # And that the package really ran with the build trees gone.
+            require '^staged clean-environment forbidden-directories-present=0' \
+              'the build trees were still there when the package was started'
+            require '^staged clean-environment staged-files-naming-build-tree=0' \
+              'a staged file still names a directory that is gone'
+            require '^staged staged viewer solver-info exit=0 answer=available' \
+              'the staged application did not answer about its solver'
+            require '^staged staged viewer provenance-from-staged-library=true' \
+              'the staged application did not repeat the staged library'
+            require '^staged staged cli rebuild-cold exit=0 kernel=occt' \
+              'the staged command line tool did not cross the Open CASCADE boundary'
+            require '^staged staged cli document-unchanged=true' \
+              'the rebuild changed the document it was diagnosing'
+            require '^staged staged viewer hidden-planegcs started=false' \
+              'the staged application ran with planegcs taken away'
+            require '^staged staged cli hidden-occt-toolkit started=false' \
+              'the staged command line tool ran with a toolkit taken away'
+            require '^staged staged both restored=true' \
+              'the package was never shown to work again after the libraries came back'
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+          echo "all three platforms performed the combined build, measured both component"
+          echo "families, found nothing unaccounted for, and started the staged layout with"
+          echo "the build trees taken away"

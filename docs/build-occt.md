@@ -176,6 +176,12 @@ search path (or apply an equivalent, verified loader layout) and test the
 result from a clean environment. That release property is not established by
 the pin workflow alone.
 
+It is measured by the [combined runtime layout](../.github/workflows/runtime-layout.yml)
+workflow, which builds the real product against pinned Open CASCADE and pinned
+planegcs at the same time and starts the result with both build trees renamed
+away. What it found, and the candidate layout it ran, are in
+[runtime-layout.md](runtime-layout.md).
+
 ### macOS
 
 Toolchain: Apple Clang from Xcode Command Line Tools.
@@ -195,6 +201,10 @@ build, not after:
   place the libraries there, and verify the result from a clean environment.
   A future OCCT package that
   reintroduces absolute install names must be rewritten during packaging.
+  Both halves of that have now been done and run in
+  [runtime-layout.md](runtime-layout.md), which also records that editing the
+  load commands makes an ad-hoc re-signature necessary before an arm64 image
+  will start at all.
 - `ferritecad-occt` adds the raw install directory as an RPATH to its own test
   executables, but Cargo does not propagate that package-local link argument
   to downstream binaries. The pin workflow therefore sets
