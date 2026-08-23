@@ -28,16 +28,11 @@ struct Globals {
     hovered_edge: u32,
     // Which topological edge has been chosen, or zero.
     selected_edge: u32,
-    // Two scalars of padding, spelled out. The matrix above gives this struct
-    // sixteen-byte alignment, so WGSL rounds its size up to a multiple of
-    // sixteen; without these the Rust type would be 88 bytes and this one 96.
-    // Both are 96, and Rust asserts it.
-    // The size of what is being drawn into, in pixels. Occupies the two
-    // scalars that used to pad this struct, so its size is unchanged: the
-    // matrix above gives it sixteen-byte alignment, and Rust asserts 96.
+    // The size of what is being drawn into, in pixels.
     viewport: vec2<f32>,
-    // Which topological vertex the pointer is over, or zero. A question only:
-    // a corner has no durable name, so there is no chosen counterpart.
+    // Which topological vertex the pointer is over, or zero. A question only
+    // in the current renderer contract; durable names exist one layer up, but
+    // no chosen vertex reaches this uniform yet.
     hovered_vertex: u32,
     // Three scalars of padding, spelled out, so both sides are 112 bytes.
     padding_0: u32,

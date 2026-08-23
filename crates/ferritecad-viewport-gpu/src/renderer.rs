@@ -125,35 +125,19 @@ struct GlobalsUniform {
     /// The topological edge the pointer is over, or zero.
     hovered_edge: u32,
     /// The topological edge that has been chosen, or zero.
-    ///
-    /// (See below: the two scalars that used to pad this struct now carry the
-    /// viewport size, so the size is unchanged.)
-    ///
-    /// Taken from the padding that was already there rather than added to the
-    /// end: the struct stays ninety-six bytes, and the assertion below is what
-    /// says so on both sides rather than a backend's willingness to forgive.
     selected_edge: u32,
     /// Two scalars, written down rather than left to a compiler.
     ///
     /// The size of what is being drawn into, in pixels.
     ///
-    /// Taken from the two scalars that used to pad this struct, so the size is
-    /// exactly what it was. The vertex identity pass needs it to turn a radius
-    /// in pixels into an offset in clip space, and taking it from the uniform
-    /// the camera already fills is what keeps that arithmetic on the same
-    /// projection as the picture rather than beside it.
-    ///
-    /// A `mat4x4` gives this struct sixteen-byte alignment in WGSL, so its
-    /// size is rounded up to a multiple of sixteen there. Six `u32` after the
-    /// matrix is 88 bytes in Rust and 96 in WGSL, and a uniform binding whose
-    /// size disagrees with the shader's view of it is a mismatch one backend
-    /// may forgive and another will not. Filling to 96 on both sides makes the
-    /// agreement explicit, and the assertion below makes it checked.
+    /// The vertex identity pass needs it to turn a radius in pixels into an
+    /// offset in clip space, and taking it from the uniform the camera already
+    /// fills keeps that arithmetic on the same projection as the picture.
     viewport: [f32; 2],
     /// The topological vertex the pointer is over, or zero.
     ///
-    /// A question only: a corner has no durable name, so there is no
-    /// `selected_vertex` beside this.
+    /// A question only in the current renderer contract. Durable corner names
+    /// exist one layer up, but no selected vertex reaches this uniform yet.
     hovered_vertex: u32,
     /// Three scalars of padding, spelled out. Adding the field above took the
     /// struct past ninety-six, and WGSL rounds a sixteen-byte-aligned struct up
@@ -161,7 +145,7 @@ struct GlobalsUniform {
     padding: [u32; 3],
 }
 
-// Ninety-six bytes, matching `Globals` in `shader.wgsl` exactly. A change to
+// One hundred and twelve bytes, matching `Globals` in `shader.wgsl` exactly. A change to
 // either that forgets the other stops the build here rather than at whichever
 // driver notices first.
 const _: () = assert!(std::mem::size_of::<GlobalsUniform>() == 112);
