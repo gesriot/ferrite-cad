@@ -56,14 +56,16 @@ use crate::{
 /// native diagnosis produced them, so three platforms diagnosing one sketch
 /// report one list. Anything the caller did not issue — a gesture's own pin —
 /// is dropped rather than given a number it never asked for.
-fn caller_ids(prepared: &Prepared, stored: &[usize]) -> Vec<ConstraintId> {
-    let mut ids: Vec<ConstraintId> = stored
-        .iter()
-        .filter_map(|&index| prepared.caller_id(index))
-        .collect();
+fn caller_ids(prepared: &Prepared, stored: &[usize]) -> Result<Vec<ConstraintId>, SolverError> {
+    let mut ids = Vec::with_capacity(stored.len());
+    for &index in stored {
+        if let Some(id) = prepared.caller_id(index)? {
+            ids.push(id);
+        }
+    }
     ids.sort_unstable();
     ids.dedup();
-    ids
+    Ok(ids)
 }
 
 /// What a diagnosed system is, before anyone decides what to say about it.
@@ -87,6 +89,7 @@ mod linked {
     /// implementation detail of a library that may renumber them, and none of
     /// them reaches a caller of this crate.
     pub(super) const STATUS_SUCCESS: i32 = 0;
+    pub(super) const STATUS_NOT_CONVERGED: i32 = 1;
     pub(super) const STATUS_CONVERGED: i32 = 2;
 
     /// Constraint kinds, stable by number because they cross an ABI.
@@ -235,6 +238,19 @@ mod linked {
             Err(failure.into())
         }
     }
+
+    /// Whether the native solver applied a solution.
+    ///
+    /// Non-convergence is a geometric answer. A negative ABI status or an
+    /// unknown value is a broken native call and must remain an error rather
+    /// than being reported as a sketch that merely did not converge.
+    pub(super) fn solve_applied(status: i32) -> Result<bool, SolverError> {
+        match status {
+            STATUS_SUCCESS | STATUS_CONVERGED => Ok(true),
+            STATUS_NOT_CONVERGED => Ok(false),
+            _ => Err(NativeFailure::Refused.into()),
+        }
+    }
 }
 
 /// A native system, owned.
@@ -352,8 +368,8 @@ impl Session {
         };
         Ok(Diagnosed {
             degrees_of_freedom: usize::try_from(dofs.max(0)).unwrap_or(0),
-            conflicting: caller_ids(&self.prepared, &stored(&blamed[..conflicting])?),
-            redundant: caller_ids(&self.prepared, &stored(&blamed[conflicting..])?),
+            conflicting: caller_ids(&self.prepared, &stored(&blamed[..conflicting])?)?,
+            redundant: caller_ids(&self.prepared, &stored(&blamed[conflicting..])?)?,
         })
     }
 
@@ -366,10 +382,10 @@ impl Session {
     }
 
     /// Solves, and answers whether an acceptable native solution was applied.
-    fn solve(&mut self) -> bool {
+    fn solve(&mut self) -> Result<bool, SolverError> {
         // SAFETY: the session is live for the whole call.
         let status = unsafe { linked::fc_gcs_session_solve(self.raw) };
-        matches!(status, linked::STATUS_SUCCESS | linked::STATUS_CONVERGED)
+        linked::solve_applied(status)
     }
 
     /// Moves a stored pin, in the native system and in the copy the answer
@@ -402,7 +418,7 @@ impl Session {
     /// No positions leave this function unless every constraint the caller
     /// wrote is satisfied.
     fn solve_and_judge(&mut self, diagnosed: &Diagnosed) -> Result<Outcome, SolverError> {
-        if !self.solve() {
+        if !self.solve()? {
             // Nothing is read out of the session. planegcs leaves the state
             // alone when it fails outright, but the point is that this path
             // cannot publish one either way.
@@ -676,5 +692,45 @@ mod tests {
         impl<T: ?Sized> AmbiguousIfSync<()> for T {}
         impl<T: ?Sized + Sync> AmbiguousIfSync<Yes> for T {}
         <Drag as AmbiguousIfSync<_>>::check();
+    }
+
+    #[cfg(planegcs_linked)]
+    #[test]
+    fn a_native_failure_is_not_reported_as_geometric_non_convergence() {
+        assert_eq!(linked::solve_applied(linked::STATUS_SUCCESS), Ok(true));
+        assert_eq!(linked::solve_applied(linked::STATUS_CONVERGED), Ok(true));
+        assert_eq!(
+            linked::solve_applied(linked::STATUS_NOT_CONVERGED),
+            Ok(false)
+        );
+        for status in [-4, -3, -2, -1, 3, i32::MAX] {
+            assert_eq!(
+                linked::solve_applied(status),
+                Err(SolverError::Native(crate::NativeFailure::Refused)),
+                "native status {status} was mistaken for a sketch that did not converge"
+            );
+        }
+    }
+
+    #[test]
+    fn an_out_of_range_native_tag_is_not_silently_lost() {
+        let mut sketch = Sketch::new();
+        sketch.add_point(PointId(7), 0.0, 0.0).add_constraint(
+            ConstraintId(91),
+            crate::Constraint::Fixed {
+                point: PointId(7),
+                x: 0.0,
+                y: 0.0,
+            },
+        );
+        let mut prepared = Prepared::new(&sketch, None).expect("the sketch is valid");
+
+        assert_eq!(caller_ids(&prepared, &[0]), Ok(vec![ConstraintId(91)]));
+        let pin = prepared.pin(PointId(7)).expect("the point can be dragged");
+        assert_eq!(caller_ids(&prepared, &[pin]), Ok(Vec::new()));
+        assert_eq!(
+            caller_ids(&prepared, &[pin + 1]),
+            Err(SolverError::Native(crate::NativeFailure::CouldNotDiagnose))
+        );
     }
 }

@@ -284,9 +284,9 @@ pub enum Outcome {
     /// published after a refusal is the one failure mode that turns a solver
     /// error into a wrong drawing.
     ///
-    /// `worst_residual` is `None` when planegcs refused outright and left no
-    /// state to measure. Reporting an infinity there would be quoting a
-    /// measurement that was never taken.
+    /// `worst_residual` is `None` when the native solver reported ordinary
+    /// non-convergence and no state was read. An ABI error or native exception
+    /// is a [`crate::SolverError`], not this geometric outcome.
     DidNotConverge { worst_residual: Option<f64> },
 }
 

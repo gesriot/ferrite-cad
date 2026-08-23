@@ -91,13 +91,18 @@ struct Session {
 extern "C" FcGcsSession *fc_gcs_session_create(
     const double *start, size_t point_count, const FcGcsConstraint *constraints,
     size_t constraint_count) noexcept {
-  if (start == nullptr || (constraint_count > 0 && constraints == nullptr)) {
+  if ((point_count > 0 && start == nullptr) ||
+      (constraint_count > 0 && constraints == nullptr)) {
     return nullptr;
   }
-  ++native_sessions;
   try {
     auto session = std::make_unique<Session>();
-    session->state.assign(start, start + point_count * 2);
+    // Rust's empty Vec has a non-null, aligned dangling pointer. It is legal
+    // to pass as an empty slice but is not a C++ array iterator, so do not do
+    // pointer arithmetic on it when the sketch has no points.
+    if (point_count > 0) {
+      session->state.assign(start, start + point_count * 2);
+    }
     session->points.reserve(point_count);
     session->parameters.reserve(point_count * 2);
     session->values.reserve(constraint_count * 2);
@@ -180,6 +185,9 @@ extern "C" FcGcsSession *fc_gcs_session_create(
     }
 
     session->system.declareUnknowns(session->parameters);
+    // Count systems that were actually built, not failed attempts that
+    // returned null before a caller could own them.
+    ++native_sessions;
     ++native_live_sessions;
     return reinterpret_cast<FcGcsSession *>(session.release());
   } catch (...) {

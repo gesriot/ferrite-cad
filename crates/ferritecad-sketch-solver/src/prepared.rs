@@ -145,8 +145,19 @@ impl Prepared {
     /// A gesture's own pin is stored past the end of `caller_ids` and answers
     /// `None`: it is this crate's constraint, not the caller's, and naming it
     /// in a diagnosis would invent an identifier the caller never issued.
-    pub(crate) fn caller_id(&self, stored: usize) -> Option<ConstraintId> {
-        self.caller_ids.get(stored).copied()
+    pub(crate) fn caller_id(&self, stored: usize) -> Result<Option<ConstraintId>, SolverError> {
+        if let Some(id) = self.caller_ids.get(stored).copied() {
+            return Ok(Some(id));
+        }
+        if stored < self.constraints.len() {
+            // A gesture's pin is a real stored constraint but has no caller
+            // identity. It is the only answer that may be omitted.
+            return Ok(None);
+        }
+        // A replaceable library returning a tag outside the system it was
+        // given is not a diagnosis with one less fact. Treat it as a broken
+        // native answer rather than silently losing the blamed constraint.
+        Err(crate::NativeFailure::CouldNotDiagnose.into())
     }
 
     /// Appends a pin holding `point` where the state currently has it, and
