@@ -541,15 +541,18 @@ fn selection_at(
     snapshot: &RenderSnapshot,
     faces: &FaceNames,
     edges: &EdgeNames,
+    vertices: &VertexNames,
 ) -> Selection {
-    // All three answers about one pixel, from one frame, decided together.
+    // All four answers about one pixel, from one frame, decided together.
     Selection::at(
         hit.definition(),
         hit.face(),
         hit.edge(),
+        hit.vertex(),
         snapshot,
         faces,
         edges,
+        vertices,
     )
 }
 
@@ -741,15 +744,8 @@ struct LiveScene<P> {
     /// terms as the two above: a name read against one picture says nothing
     /// about the next, so it is replaced whole rather than kept.
     ///
-    /// Nothing in this build reads it. That is the honest state of the slice
-    /// that put it here: the names now survive the load and reach the window,
-    /// and what a corner is called becomes visible when choosing one does. The
-    /// exception is declared rather than avoided by wiring the field into
-    /// behaviour this slice deliberately does not add.
-    #[allow(
-        dead_code,
-        reason = "carried to the window here; read by the slice that selects a corner"
-    )]
+    /// What makes a corner selectable as a corner rather than as the edge,
+    /// face or part beneath it.
     vertices: VertexNames,
     /// Which definitions this window is drawing. Transient, bound to
     /// `prepared`, and reset with it: what is hidden is a state of looking at
@@ -1229,18 +1225,20 @@ fn hover_request(row: Option<usize>, interface_has_pointer: bool, question: Hove
 struct Words {
     identities: Vec<String>,
     faces: Vec<TopologyWords>,
-    /// The same six terms for a chosen edge. One type, two lists: what is
+    /// The same six terms for a chosen edge. One type, three lists: what is
     /// chosen is one thing, so only one of these is ever non-empty.
     edges: Vec<TopologyWords>,
+    /// And for a chosen topological vertex, on the same terms.
+    vertices: Vec<TopologyWords>,
 }
 
 /// One durable name, in the words a person reads.
 ///
 /// Portable terms only. There is no field here for an ordinal, a mesh index, a
 /// handle, a session or a transient identity, because there is nothing true to
-/// put in one: what names a face or an edge is the reference the document
-/// stores. One type for both, because the document stores the same six terms
-/// about either.
+/// put in one: what names a face, an edge or a corner is the reference the
+/// document stores. One type for all three, because the document stores the
+/// same six terms about any of them.
 struct TopologyWords {
     reference: String,
     owner: String,
@@ -1270,10 +1268,17 @@ fn words_of(
         Selection::Edge(edge) if known => edge.meanings().iter().map(topology_words).collect(),
         _ => Vec::new(),
     };
+    let vertices = match selection {
+        Selection::Vertex(vertex) if known => {
+            vertex.meanings().iter().map(topology_words).collect()
+        }
+        _ => Vec::new(),
+    };
     Words {
         identities: identities_of(catalogue),
         faces,
         edges,
+        vertices,
     }
 }
 
@@ -1328,6 +1333,28 @@ fn describe_role(role: &SemanticRole) -> String {
             CapSide::End => format!("End cap edge of profile segment {profile_segment}"),
             other => format!("{other:?} cap edge of profile segment {profile_segment}"),
         },
+        SemanticRole::ExtrudeCapVertex { side, joint } => {
+            // Both segments and which end, because neither alone names one
+            // point: the pair says which corner of the profile, and the side
+            // says which of that corner's two ends. In the joint's own
+            // canonical order, which is what makes the same corner read the
+            // same way however the profile was walked.
+            let [one, another] = joint.segments();
+            match side {
+                // `CapSide` is non-exhaustive, and a side this build has no
+                // words for is said the way the cap faces and cap edges beside
+                // it say one: the side alone, never the whole role.
+                CapSide::Start => {
+                    format!("Start cap vertex at the joint of profile segments {one} and {another}")
+                }
+                CapSide::End => {
+                    format!("End cap vertex at the joint of profile segments {one} and {another}")
+                }
+                unknown => format!(
+                    "{unknown:?} cap vertex at the joint of profile segments {one} and {another}"
+                ),
+            }
+        }
         SemanticRole::ExtrudeSweepEdge { joint } => {
             // Both segments, in the order the joint keeps them, which is the
             // canonical one. Naming one of the two would describe a corner by
@@ -1365,6 +1392,7 @@ fn inspected<'a>(
     identities: &'a [String],
     faces: &'a [ferritecad_ui::TopologyName<'a>],
     edges: &'a [ferritecad_ui::TopologyName<'a>],
+    vertices: &'a [ferritecad_ui::TopologyName<'a>],
     snapshot: &RenderSnapshot,
 ) -> Option<Selected<'a>> {
     let definition = selection.owning_definition(snapshot)?;
@@ -1383,6 +1411,14 @@ fn inspected<'a>(
             name,
             object,
             names: edges,
+        }),
+        // A corner, on the same terms and for the same reason: only a native
+        // body has durable corner names, so a corner of an imported definition
+        // is never chosen as a corner and never reaches here.
+        (Selection::Vertex(_), Selected::Body { name, object }) => Some(Selected::Vertex {
+            name,
+            object,
+            names: vertices,
         }),
         // An imported definition has no durable face names, so a face of one
         // is never chosen as a face and never reaches here.
@@ -1850,6 +1886,7 @@ impl App {
                     live.scene.prepared.snapshot(),
                     &live.scene.faces,
                     &live.scene.edges,
+                    &live.scene.vertices,
                 );
                 if chosen != live.scene.selection {
                     live.scene.selection = chosen;
@@ -2267,6 +2304,8 @@ impl Live {
             words.faces.iter().map(topology_name).collect();
         let edge_names: Vec<ferritecad_ui::TopologyName<'_>> =
             words.edges.iter().map(topology_name).collect();
+        let vertex_names: Vec<ferritecad_ui::TopologyName<'_>> =
+            words.vertices.iter().map(topology_name).collect();
         // One answer for both sides of the choice: the row a list marks and
         // the facts an inspector shows come from the same resolution.
         let (definitions, chosen_row) = scene.view(&words.identities, scene.prepared.snapshot());
@@ -2281,6 +2320,7 @@ impl Live {
             &words.identities,
             &face_names,
             &edge_names,
+            &vertex_names,
             scene.prepared.snapshot(),
         );
 
@@ -3989,6 +4029,14 @@ mod tests {
     /// The corners come from `ProfileLoop::joints`, the same adjacency the
     /// kernel and the topology map already share.
     fn native_plate_with_named_cap_vertices() -> Option<(tempfile::TempDir, LoadedScene)> {
+        native_plate_with_named_cap_vertices_beside(0)
+    }
+
+    /// The same plate with `neighbours` further bodies beside it, so an
+    /// operation that acts on one definition has another to leave alone.
+    fn native_plate_with_named_cap_vertices_beside(
+        neighbours: usize,
+    ) -> Option<(tempfile::TempDir, LoadedScene)> {
         use ferritecad_document::{CapSide, Document, EntityKind, ObjectPayload, SelectionRule};
 
         if !ferritecad_occt::is_available() {
@@ -3998,6 +4046,9 @@ mod tests {
         let directory = tempfile::tempdir().expect("a temporary directory is available");
         let path = directory.path().join("plate.fcad");
         std::fs::copy(ferritecad_fixtures::plate_source(), &path).expect("copies the fixture");
+        if neighbours > 0 {
+            add_extra_bodies(&path, neighbours);
+        }
 
         let mut document = Document::open(&path).expect("opens the plate");
         let objects = document.objects().expect("reads objects");
@@ -4300,7 +4351,13 @@ mod tests {
             .expect("the plate draws an edge the document names along the sweep");
 
         // The click chooses that edge, not the face under it and not the part.
-        let chosen = selection_at(plain.hit_at(x, y), &picture, &scene.faces, &scene.edges);
+        let chosen = selection_at(
+            plain.hit_at(x, y),
+            &picture,
+            &scene.faces,
+            &scene.edges,
+            &scene.vertices,
+        );
         let Selection::Edge(selected) = &chosen else {
             panic!("clicking an edge along the sweep chose {chosen:?} instead of the edge");
         };
@@ -4541,6 +4598,141 @@ mod tests {
         );
     }
 
+    /// A pixel of the committed plate that the frame is coherent about, whose
+    /// corner the document names exactly.
+    ///
+    /// Coherence comes from `Hit`, never from the raw vertex target: that one
+    /// reaches past the surface on purpose. The name comes from the picture's
+    /// own `VertexNames`, so a corner nothing names is not offered here.
+    fn named_corner_pixel(
+        frame: &ferritecad_viewport_gpu::Frame,
+        scene: &LoadedScene,
+        picture: &RenderSnapshot,
+    ) -> Option<(u32, u32, ferritecad_viewport::VertexPickId)> {
+        (0..frame.height())
+            .flat_map(|y| (0..frame.width()).map(move |x| (x, y)))
+            .find_map(|(x, y)| {
+                let corner = frame.hit_at(x, y).vertex();
+                (corner != ferritecad_viewport::VertexPickId::NOTHING
+                    && !scene.vertices.of(corner, picture).is_empty())
+                .then_some((x, y, corner))
+            })
+    }
+
+    #[test]
+    fn clicking_a_named_corner_of_the_committed_plate_chooses_that_corner() {
+        // The whole route: the committed plate copied into a document this
+        // test owns, eight exact `ExtrudeCapVertex` references written into
+        // it, the real Open CASCADE loader, a `RenderSnapshot`, an orbit to a
+        // usable view, a coherent pixel of a named corner, the hit, the
+        // application's own selection decision, a second real frame, and the
+        // inspector.
+        let Some((_directory, scene)) = native_plate_with_named_cap_vertices() else {
+            return;
+        };
+        let mut renderer = renderer_or_skip!();
+        let picture = std::sync::Arc::new(scene.snapshot.clone());
+        let prepared = renderer
+            .prepare(std::sync::Arc::clone(&picture))
+            .expect("uploads");
+        let mut input = ViewportInput::new();
+        input.resize(480, 480);
+        input
+            .frame(picture.bounds().expect("somewhere"))
+            .expect("frames");
+        // Off the axis, so the corners are not all on the silhouette.
+        input.handle(ViewportEvent::PointerMoved { x: 200.0, y: 200.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(ViewportEvent::PointerMoved { x: 260.0, y: 150.0 }, false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+        let visibility = Visibility::new(&picture);
+        let plain = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                Marked::Nothing,
+                Hovered::Nothing,
+                &visibility,
+            )
+            .expect("draws");
+
+        let (x, y, corner) = named_corner_pixel(&plain, &scene, &picture).expect(
+            "the plate draws a corner the picture is coherent about and the document names",
+        );
+
+        // The click must choose that corner, not the edge, face or part
+        // beneath it.
+        let chosen = selection_at(
+            plain.hit_at(x, y),
+            &picture,
+            &scene.faces,
+            &scene.edges,
+            &scene.vertices,
+        );
+        let ferritecad_scene::Selection::Vertex(selected) = &chosen else {
+            panic!("clicking a named corner at {x},{y} chose {chosen:?}");
+        };
+        assert_eq!(selected.vertex(), corner);
+        assert_eq!(selected.definition(), plain.hit_at(x, y).definition());
+        assert_eq!(selected.meanings(), scene.vertices.of(corner, &picture));
+        assert_eq!(
+            chosen.marked(),
+            ferritecad_viewport::Marked::Vertex(corner),
+            "what the renderer is told to mark is not the chosen corner"
+        );
+
+        // And the second frame must show it, differently from the plain
+        // picture.
+        let marked = renderer
+            .render(
+                &prepared,
+                input.camera(),
+                chosen.marked(),
+                Hovered::Nothing,
+                &visibility,
+            )
+            .expect("draws");
+        let changed = (0..plain.height())
+            .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+            .filter(|(x, y)| plain.colour_at(*x, *y) != marked.colour_at(*x, *y))
+            .count();
+        assert!(changed > 0, "choosing a corner changed no pixel");
+
+        // And the inspector must describe it as a corner, in the document's
+        // own words.
+        let identities = identities_of(&scene.catalogue);
+        let words = words_of(&chosen, &scene.catalogue, &picture);
+        let vertices: Vec<ferritecad_ui::TopologyName<'_>> =
+            words.vertices.iter().map(topology_name).collect();
+        let described = inspected(
+            &chosen,
+            &scene.catalogue,
+            &identities,
+            &[],
+            &[],
+            &vertices,
+            &picture,
+        )
+        .expect("the inspector describes what is chosen");
+        let rows = described.rows();
+        assert_eq!(
+            rows.iter()
+                .find(|(label, _)| *label == "Kind")
+                .map(|(_, value)| value.as_str()),
+            Some("Vertex"),
+            "the inspector calls a chosen corner something else: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|(label, value)| *label == "Role"
+                && (value.starts_with("Start cap vertex at the joint of profile segments ")
+                    || value.starts_with("End cap vertex at the joint of profile segments "))),
+            "the inspector does not say what the corner is: {rows:?}"
+        );
+    }
+
     #[test]
     fn clicking_a_named_edge_of_the_committed_plate_chooses_that_edge() {
         let Some((_directory, scene)) = native_plate_with_named_edges() else {
@@ -4591,7 +4783,13 @@ mod tests {
             .expect("the plate draws an edge the document names");
 
         // The click must choose that edge, and not the face beneath it.
-        let chosen = selection_at(plain.hit_at(x, y), &picture, &scene.faces, &scene.edges);
+        let chosen = selection_at(
+            plain.hit_at(x, y),
+            &picture,
+            &scene.faces,
+            &scene.edges,
+            &scene.vertices,
+        );
         let Selection::Edge(selected) = &chosen else {
             panic!("clicking a named edge chose {chosen:?} instead of the edge");
         };
@@ -4692,7 +4890,13 @@ mod tests {
             .expect("the plate draws an edge the document names at a cap");
 
         // The click still chooses that edge, not the face under it.
-        let chosen = selection_at(plain.hit_at(x, y), &picture, &scene.faces, &scene.edges);
+        let chosen = selection_at(
+            plain.hit_at(x, y),
+            &picture,
+            &scene.faces,
+            &scene.edges,
+            &scene.vertices,
+        );
         let Selection::Edge(selected) = &chosen else {
             panic!("clicking a named cap edge chose {chosen:?} instead of the edge");
         };
@@ -4775,6 +4979,7 @@ mod tests {
             &words.identities,
             &[],
             &names,
+            &[],
             &picture,
         )
         .expect("the chosen cap edge reaches the inspector");
@@ -4987,7 +5192,16 @@ mod tests {
         // Select through a face the edge actually bounds, and hand the result
         // through the same conversion the live inspector uses.
         let (definition, face, edge) = edge_with_bounding_face(&picture, edge);
-        let chosen = Selection::at(definition, face, edge, &picture, &scene.faces, &scene.edges);
+        let chosen = Selection::at(
+            definition,
+            face,
+            edge,
+            ferritecad_viewport::VertexPickId::NOTHING,
+            &picture,
+            &scene.faces,
+            &scene.edges,
+            &ferritecad_scene::VertexNames::default(),
+        );
         let Selection::Edge(selected) = &chosen else {
             panic!("the triply named cap edge was not selected as an edge: {chosen:?}");
         };
@@ -5000,6 +5214,7 @@ mod tests {
             &words.identities,
             &[],
             &names,
+            &[],
             &picture,
         )
         .expect("the triply named edge reaches the inspector");
@@ -5092,7 +5307,16 @@ mod tests {
         let (definition, face, edge) = named_sweep_edge(&scene);
         let picture = scene.snapshot;
 
-        let chosen = Selection::at(definition, face, edge, &picture, &scene.faces, &scene.edges);
+        let chosen = Selection::at(
+            definition,
+            face,
+            edge,
+            ferritecad_viewport::VertexPickId::NOTHING,
+            &picture,
+            &scene.faces,
+            &scene.edges,
+            &ferritecad_scene::VertexNames::default(),
+        );
         let Selection::Edge(selected) = &chosen else {
             panic!("a named sweep edge was not chosen as an edge: {chosen:?}");
         };
@@ -5120,9 +5344,11 @@ mod tests {
             definition,
             face,
             EdgePickId::NOTHING,
+            ferritecad_viewport::VertexPickId::NOTHING,
             &picture,
             &scene.faces,
             &scene.edges,
+            &ferritecad_scene::VertexNames::default(),
         );
         assert!(
             matches!(without_edge, Selection::Face(_)),
@@ -5153,6 +5379,605 @@ mod tests {
         }
     }
 
+    /// One corner of a loaded plate the document names exactly, with a face it
+    /// touches and an edge it ends.
+    ///
+    /// Every part read out of the picture's own packed partitions, so nothing
+    /// here depends on an ordinal lining up with anything.
+    fn named_cap_vertex(
+        scene: &LoadedScene,
+    ) -> (
+        PickId,
+        FacePickId,
+        EdgePickId,
+        ferritecad_viewport::VertexPickId,
+    ) {
+        let picture = &scene.snapshot;
+        let definition = picture.pick_of(0).expect("the plate is drawn");
+        let vertex = (0..picture.vertex_count())
+            .filter_map(|ordinal| picture.vertex_of(0, ordinal))
+            .find(|vertex| !scene.vertices.of(*vertex, picture).is_empty())
+            .expect("the document names a corner of the plate");
+        let face = (0..picture.face_count())
+            .filter_map(|ordinal| picture.face_of(0, ordinal))
+            .find(|face| picture.vertex_touches_face(vertex, *face))
+            .expect("the corner touches a face of the picture");
+        let edge = (0..picture.edge_count())
+            .filter_map(|ordinal| picture.edge_of(0, ordinal))
+            .find(|edge| picture.vertex_ends_edge(vertex, *edge))
+            .expect("the corner ends an edge of the picture");
+        (definition, face, edge, vertex)
+    }
+
+    #[test]
+    fn a_chosen_corner_is_framed_hidden_and_described_as_its_own_thing() {
+        let Some((_directory, scene)) = native_plate_with_named_cap_vertices() else {
+            return;
+        };
+        let (definition, face, edge, vertex) = named_cap_vertex(&scene);
+        let picture = scene.snapshot.clone();
+
+        let chosen = Selection::at(
+            definition,
+            face,
+            edge,
+            vertex,
+            &picture,
+            &scene.faces,
+            &scene.edges,
+            &scene.vertices,
+        );
+        assert!(matches!(chosen, Selection::Vertex(_)), "{chosen:?}");
+
+        // Framed on the corner itself, not on the edge, the face or the part.
+        let where_it_is = chosen
+            .bounds(&picture)
+            .expect("a chosen corner is somewhere in the picture");
+        assert_eq!(Some(where_it_is), picture.bounds_of_vertex(vertex));
+        assert_ne!(Some(where_it_is), picture.bounds_of(definition));
+        assert_ne!(Some(where_it_is), picture.bounds_of_face(face));
+        assert_ne!(Some(where_it_is), picture.bounds_of_edge(edge));
+
+        // And the camera really uses it: framing what is chosen is framing
+        // that extent and nothing wider.
+        let mut input = ViewportInput::new();
+        input.resize(480, 480);
+        let mut scene_state = LiveScene::new(
+            (),
+            scene.catalogue.clone(),
+            scene.faces.clone(),
+            scene.edges.clone(),
+            scene.vertices.clone(),
+            Visibility::new(&picture),
+        );
+        scene_state.selection = chosen.clone();
+        assert!(
+            frame_selection(&scene_state, &picture, &mut input).expect("frames"),
+            "framing a chosen corner moved nothing"
+        );
+        let on_the_corner = *input.camera();
+        let mut wider = ViewportInput::new();
+        wider.resize(480, 480);
+        wider
+            .frame_extent(picture.bounds_of(definition))
+            .expect("frames the part");
+        assert_ne!(
+            format!("{:?}", on_the_corner.view_projection()),
+            format!("{:?}", wider.camera().view_projection()),
+            "framing a corner framed the whole part"
+        );
+
+        // Hiding and isolating act on the part the corner belongs to.
+        let mut visibility = Visibility::new(&picture);
+        assert!(visibility.can_hide(chosen.marked(), &picture));
+        assert!(visibility.hide(chosen.marked(), &picture));
+        assert!(!visibility.shows(0, &picture));
+
+        // A list row still chooses the definition and never the corner.
+        let by_row = Selection::definition(definition, &picture);
+        assert!(matches!(by_row, Selection::Definition(_)), "{by_row:?}");
+    }
+
+    #[test]
+    fn the_inspector_names_a_chosen_corner_by_its_cap_and_both_of_its_segments() {
+        let Some((_directory, scene)) = native_plate_with_named_cap_vertices() else {
+            return;
+        };
+        let (definition, face, edge, vertex) = named_cap_vertex(&scene);
+        let picture = scene.snapshot.clone();
+        let chosen = Selection::at(
+            definition,
+            face,
+            edge,
+            vertex,
+            &picture,
+            &scene.faces,
+            &scene.edges,
+            &scene.vertices,
+        );
+        assert!(matches!(chosen, Selection::Vertex(_)), "{chosen:?}");
+
+        // Every stored name, in the document's own order, one sentence each.
+        let words = words_of(&chosen, &scene.catalogue, &picture);
+        assert!(words.faces.is_empty(), "a corner was described as a face");
+        assert!(words.edges.is_empty(), "a corner was described as an edge");
+        let stored = scene.vertices.of(vertex, &picture);
+        assert_eq!(
+            words.vertices.len(),
+            stored.len(),
+            "the inspector dropped a stored name"
+        );
+        let expected: Vec<String> = stored
+            .iter()
+            .map(|meaning| describe_role(&meaning.output_role))
+            .collect();
+        let said: Vec<String> = words
+            .vertices
+            .iter()
+            .map(|words| words.role.clone())
+            .collect();
+        assert_eq!(said, expected, "the inspector reordered the stored names");
+
+        let names: Vec<ferritecad_ui::TopologyName<'_>> =
+            words.vertices.iter().map(topology_name).collect();
+        let described = inspected(
+            &chosen,
+            &scene.catalogue,
+            &words.identities,
+            &[],
+            &[],
+            &names,
+            &picture,
+        )
+        .expect("a corner of a native body is described");
+        let rows = described.rows();
+        assert_eq!(
+            rows.first().map(|(key, value)| (*key, value.as_str())),
+            Some(("Kind", "Vertex"))
+        );
+
+        // The wording is exact: which cap, and both segments of the joint in
+        // the order the joint keeps them, which is the canonical one.
+        let roles: Vec<&str> = rows
+            .iter()
+            .filter(|(key, _)| *key == "Role")
+            .map(|(_, value)| value.as_str())
+            .collect();
+        assert_eq!(roles.len(), stored.len(), "one sentence per stored name");
+        for (sentence, meaning) in roles.iter().zip(stored) {
+            let ferritecad_document::SemanticRole::ExtrudeCapVertex { side, joint } =
+                &meaning.output_role
+            else {
+                panic!("a corner of the plate is named by something else: {meaning:?}");
+            };
+            let [one, another] = joint.segments();
+            let wanted = match side {
+                CapSide::Start => {
+                    format!("Start cap vertex at the joint of profile segments {one} and {another}")
+                }
+                CapSide::End => {
+                    format!("End cap vertex at the joint of profile segments {one} and {another}")
+                }
+                other => panic!("this fixture stores no {other:?} cap"),
+            };
+            assert_eq!(*sentence, wanted);
+        }
+
+        // The document's own identifiers reach the rows that carry them.
+        for meaning in stored {
+            for (key, value) in [
+                ("Reference", meaning.reference.to_string()),
+                ("Owner", meaning.owner.to_string()),
+                ("Feature", meaning.producer_feature.to_string()),
+                ("Entity", meaning.expected_kind.as_str().to_owned()),
+                ("Rule", "Exactly this one".to_owned()),
+            ] {
+                assert!(
+                    rows.iter().any(|(k, v)| *k == key && *v == value),
+                    "the inspector lost {key} = {value}: {rows:?}"
+                );
+            }
+        }
+
+        // And nothing transient or kernel-side reaches any row.
+        for (_, value) in &rows {
+            for forbidden in [
+                "session#",
+                "shape#",
+                "face#",
+                "edge#",
+                "vertex#",
+                "VertexPickId",
+                "EdgePickId",
+                "FacePickId",
+                "PickId",
+                "SubShapeHandle",
+                "ShapeHandle",
+                "SessionId",
+                "ProfileJoint",
+                "ExtrudeCapVertex",
+                "StableEntityId(",
+                ".fcad",
+            ] {
+                assert!(
+                    !value.contains(forbidden),
+                    "the inspector printed {forbidden}: {value}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn several_stored_corner_names_of_one_corner_are_said_one_each_in_order() {
+        use ferritecad_document::{Document, EntityKind, ObjectPayload, SelectionRule};
+
+        if !ferritecad_occt::is_available() {
+            eprintln!("skipped: this build has no Open CASCADE");
+            return;
+        }
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("plate.fcad");
+        std::fs::copy(ferritecad_fixtures::plate_source(), &path).expect("copies the fixture");
+
+        // One cap corner named three times over, which a document may hold:
+        // two objects can both name the same corner.
+        let mut document = Document::open(&path).expect("opens the plate");
+        let objects = document.objects().expect("reads objects");
+        let sketch = objects
+            .iter()
+            .find_map(|object| match &object.payload {
+                ObjectPayload::Sketch(sketch) => Some(sketch.clone()),
+                _ => None,
+            })
+            .expect("the fixture has a sketch");
+        let datum = objects
+            .iter()
+            .find_map(|object| match &object.payload {
+                ObjectPayload::DatumPlane(datum) => Some(datum.clone()),
+                _ => None,
+            })
+            .expect("the fixture has a datum plane");
+        let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
+        let profile =
+            ferritecad_eval::profile_from_sketch(&sketch, plane).expect("builds a profile");
+        let joint = profile
+            .outer()
+            .joints()
+            .next()
+            .expect("the plate has corners");
+
+        let stored = document.topology_refs().expect("reads");
+        let producer = stored
+            .iter()
+            .find_map(|reference| match &reference.output_role {
+                SemanticRole::ExtrudeSide { .. } => Some(reference.producer_feature),
+                _ => None,
+            })
+            .expect("the fixture names its swept faces");
+        let owner = stored[0].owner;
+        let mut written = Vec::new();
+        for _ in 0..3 {
+            written.push(ferritecad_document::TopologyRef {
+                id: ferritecad_types::StableEntityId::new(),
+                owner,
+                producer_feature: producer,
+                expected_kind: EntityKind::Vertex,
+                output_role: SemanticRole::ExtrudeCapVertex {
+                    side: CapSide::Start,
+                    joint,
+                },
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            });
+        }
+        document
+            .write(|w| {
+                for reference in &written {
+                    w.put_topology_ref(reference)?;
+                }
+                Ok(())
+            })
+            .expect("stores the cap vertex references");
+        drop(document);
+
+        let mut kernel = OcctKernel::new().expect("opens a session");
+        let scene = snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel: &mut OcctKernel, bytes: &[u8]| kernel.import_step(bytes),
+            &ferritecad_kernel::TessellationParams::default(),
+            &ferritecad_kernel::OperationContext::default(),
+        )
+        .expect("the plate loads through Open CASCADE");
+        let picture = scene.snapshot.clone();
+
+        let vertex = (0..picture.vertex_count())
+            .filter_map(|ordinal| picture.vertex_of(0, ordinal))
+            .find(|vertex| scene.vertices.of(*vertex, &picture).len() == 3)
+            .expect("one corner carries the three stored names");
+        let definition = picture.pick_of(0).expect("drawn");
+        let face = (0..picture.face_count())
+            .filter_map(|ordinal| picture.face_of(0, ordinal))
+            .find(|face| picture.vertex_touches_face(vertex, *face))
+            .expect("the corner touches a face of the picture");
+        let chosen = Selection::at(
+            definition,
+            face,
+            EdgePickId::NOTHING,
+            vertex,
+            &picture,
+            &scene.faces,
+            &scene.edges,
+            &scene.vertices,
+        );
+        let Selection::Vertex(selected) = &chosen else {
+            panic!("the triply named corner was not selected as a corner: {chosen:?}");
+        };
+        assert_eq!(selected.meanings().len(), 3);
+
+        // The order the document stores its references in, read from the
+        // document rather than assumed.
+        let reopened = Document::open_read_only(&path).expect("reopens");
+        let order: Vec<ferritecad_types::StableEntityId> = reopened
+            .topology_refs()
+            .expect("reads")
+            .into_iter()
+            .map(|reference| reference.id)
+            .collect();
+
+        let words = words_of(&chosen, &scene.catalogue, &picture);
+        let names: Vec<ferritecad_ui::TopologyName<'_>> =
+            words.vertices.iter().map(topology_name).collect();
+        let described = inspected(
+            &chosen,
+            &scene.catalogue,
+            &words.identities,
+            &[],
+            &[],
+            &names,
+            &picture,
+        )
+        .expect("the triply named corner reaches the inspector");
+        let rows = described.rows();
+
+        // Three sentences, one per stored name, in the order the document
+        // stores them.
+        let references: Vec<&str> = rows
+            .iter()
+            .filter(|(key, _)| *key == "Reference")
+            .map(|(_, value)| value.as_str())
+            .collect();
+        assert_eq!(references.len(), 3, "the inspector dropped a stored name");
+        let positions: Vec<usize> = references
+            .iter()
+            .map(|shown| {
+                order
+                    .iter()
+                    .position(|id| id.to_string() == *shown)
+                    .expect("every name shown is stored")
+            })
+            .collect();
+        let mut sorted = positions.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            positions, sorted,
+            "the inspector reordered the stored names: {positions:?}"
+        );
+        let expected: Vec<String> = selected
+            .meanings()
+            .iter()
+            .map(|meaning| meaning.reference.to_string())
+            .collect();
+        assert_eq!(
+            references, expected,
+            "the inspector reordered what it was given"
+        );
+
+        let roles: Vec<&str> = rows
+            .iter()
+            .filter(|(key, _)| *key == "Role")
+            .map(|(_, value)| value.as_str())
+            .collect();
+        assert_eq!(roles.len(), 3, "one sentence per stored name");
+        let [one, another] = joint.segments();
+        for sentence in &roles {
+            assert_eq!(
+                *sentence,
+                format!("Start cap vertex at the joint of profile segments {one} and {another}")
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_open_keeps_a_chosen_corner_and_a_successful_one_forgets_it() {
+        let Some((_directory, loaded)) = native_plate_with_named_cap_vertices() else {
+            return;
+        };
+        let (definition, face, edge, vertex) = named_cap_vertex(&loaded);
+        let picture = loaded.snapshot.clone();
+        let chosen = Selection::at(
+            definition,
+            face,
+            edge,
+            vertex,
+            &picture,
+            &loaded.faces,
+            &loaded.edges,
+            &loaded.vertices,
+        );
+        assert!(matches!(chosen, Selection::Vertex(_)), "{chosen:?}");
+
+        let mut scene = LiveScene {
+            prepared: (),
+            catalogue: loaded.catalogue.clone(),
+            faces: loaded.faces.clone(),
+            edges: loaded.edges.clone(),
+            vertices: loaded.vertices.clone(),
+            visibility: Visibility::new(&picture),
+            selection: chosen.clone(),
+            hovered: Hovered::Vertex(vertex),
+        };
+        let mut camera = ViewportInput::new();
+        camera.resize(800, 600);
+
+        // A load that failed changes nothing, including the corner names it
+        // would need to describe what is chosen.
+        commit_scene(
+            &mut scene,
+            &mut camera,
+            Err(CadError::input("this is not a document")),
+        )
+        .expect_err("a failed load is reported");
+        assert_eq!(scene.selection, chosen, "a failed open lost the choice");
+        assert_eq!(scene.hovered, Hovered::Vertex(vertex));
+        assert!(
+            !scene.vertices.of(vertex, &picture).is_empty(),
+            "a failed open lost the corner names"
+        );
+
+        // A load that arrived replaces all of it, choice included.
+        let mut framed = ViewportInput::new();
+        framed.resize(640, 480);
+        commit_scene(
+            &mut scene,
+            &mut camera,
+            Ok((
+                framed,
+                (),
+                loaded.catalogue.clone(),
+                FaceNames::default(),
+                EdgeNames::default(),
+                VertexNames::default(),
+                Visibility::default(),
+            )),
+        )
+        .expect("a load that arrived commits");
+        assert_eq!(scene.selection, Selection::Nothing);
+        assert_eq!(scene.hovered, Hovered::Nothing);
+        assert!(scene.vertices.of(vertex, &picture).is_empty());
+    }
+
+    #[test]
+    fn hiding_a_chosen_corner_forgets_it_and_isolating_keeps_it() {
+        let Some((_directory, loaded)) = native_plate_with_named_cap_vertices_beside(1) else {
+            return;
+        };
+        let (definition, face, edge, vertex) = named_cap_vertex(&loaded);
+        let picture = loaded.snapshot.clone();
+        let chosen = Selection::at(
+            definition,
+            face,
+            edge,
+            vertex,
+            &picture,
+            &loaded.faces,
+            &loaded.edges,
+            &loaded.vertices,
+        );
+        assert!(matches!(chosen, Selection::Vertex(_)), "{chosen:?}");
+        let owner = chosen
+            .owning_definition(&picture)
+            .expect("the corner belongs to a definition of this picture");
+
+        // Isolate keeps the corner chosen exactly as that corner, and takes
+        // the other body off screen.
+        let mut scene = LiveScene {
+            prepared: (),
+            catalogue: loaded.catalogue.clone(),
+            faces: loaded.faces.clone(),
+            edges: loaded.edges.clone(),
+            vertices: loaded.vertices.clone(),
+            visibility: Visibility::new(&picture),
+            selection: chosen.clone(),
+            hovered: Hovered::Vertex(vertex),
+        };
+        let mut input = ViewportInput::new();
+        input.resize(480, 480);
+        let camera_before = format!("{:?}", input.camera().view_projection());
+        assert!(can_isolate_selection(&scene, &picture));
+        assert!(isolate_selected(
+            &mut scene.visibility,
+            &scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input,
+        ));
+        assert_eq!(scene.selection, chosen, "isolating changed the choice");
+        assert!(scene.visibility.shows(owner, &picture));
+        for other in 0..picture.meshes().len() {
+            if other != owner {
+                assert!(
+                    !scene.visibility.shows(other, &picture),
+                    "isolating left definition {other} on screen"
+                );
+            }
+        }
+        assert_eq!(
+            camera_before,
+            format!("{:?}", input.camera().view_projection()),
+            "isolating moved the camera"
+        );
+
+        // Undo puts the other body back and leaves the choice alone.
+        assert!(undo_visibility(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input,
+        ));
+        for definition in 0..picture.meshes().len() {
+            assert!(scene.visibility.shows(definition, &picture));
+        }
+        assert_eq!(scene.selection, chosen, "undo changed the choice");
+
+        // Hide takes the corner's own definition off screen and forgets the
+        // choice with it.
+        assert!(can_hide_selection(&scene, &picture));
+        assert!(hide_selected(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input,
+        ));
+        assert!(!scene.visibility.shows(owner, &picture));
+        assert_eq!(scene.selection, Selection::Nothing);
+        assert_eq!(scene.hovered, Hovered::Nothing);
+        assert_eq!(
+            camera_before,
+            format!("{:?}", input.camera().view_projection()),
+            "hiding moved the camera"
+        );
+
+        // Undoing the hide draws the definition again. The choice does not
+        // come back: it was forgotten when what it was on stopped being drawn.
+        assert!(undo_visibility(
+            &mut scene.visibility,
+            &mut scene.selection,
+            &mut scene.hovered,
+            &picture,
+            &mut input,
+        ));
+        assert!(scene.visibility.shows(owner, &picture));
+        assert_eq!(scene.selection, Selection::Nothing);
+
+        // A corner of a picture that is not this one changes nothing at all.
+        let Some((_other_directory, elsewhere)) = native_plate_with_named_cap_vertices() else {
+            return;
+        };
+        let foreign = ferritecad_viewport::Marked::Vertex(
+            elsewhere.snapshot.vertex_of(0, 0).expect("numbered"),
+        );
+        let mut untouched = Visibility::new(&picture);
+        assert!(!untouched.can_hide(foreign, &picture));
+        assert!(!untouched.hide(foreign, &picture));
+        assert!(!untouched.isolate(foreign, &picture));
+        for definition in 0..picture.meshes().len() {
+            assert!(untouched.shows(definition, &picture));
+        }
+    }
+
     #[test]
     fn a_chosen_edge_is_framed_hidden_and_described_as_its_own_thing() {
         let Some((_directory, scene)) = native_plate_with_named_edges() else {
@@ -5161,7 +5986,16 @@ mod tests {
         let (definition, face, edge) = named_cap_edge(&scene);
         let picture = scene.snapshot;
 
-        let chosen = Selection::at(definition, face, edge, &picture, &scene.faces, &scene.edges);
+        let chosen = Selection::at(
+            definition,
+            face,
+            edge,
+            ferritecad_viewport::VertexPickId::NOTHING,
+            &picture,
+            &scene.faces,
+            &scene.edges,
+            &ferritecad_scene::VertexNames::default(),
+        );
         assert!(matches!(chosen, Selection::Edge(_)), "{chosen:?}");
 
         // Framed on the edge itself, not on the face or the part.
@@ -5196,6 +6030,7 @@ mod tests {
             &words.identities,
             &[],
             &names,
+            &[],
             &picture,
         )
         .expect("an edge of a native body is described");
@@ -5236,7 +6071,16 @@ mod tests {
         };
         let (definition, face, edge) = named_sweep_edge(&scene);
         let picture = scene.snapshot;
-        let chosen = Selection::at(definition, face, edge, &picture, &scene.faces, &scene.edges);
+        let chosen = Selection::at(
+            definition,
+            face,
+            edge,
+            ferritecad_viewport::VertexPickId::NOTHING,
+            &picture,
+            &scene.faces,
+            &scene.edges,
+            &ferritecad_scene::VertexNames::default(),
+        );
 
         // The two segments the stored name is actually made of.
         let joints: Vec<[ferritecad_types::StableEntityId; 2]> = scene
@@ -5259,6 +6103,7 @@ mod tests {
             &words.identities,
             &[],
             &names,
+            &[],
             &picture,
         )
         .expect("an edge of a native body is described");
@@ -5325,9 +6170,11 @@ mod tests {
             definition,
             face,
             edge,
+            ferritecad_viewport::VertexPickId::NOTHING,
             &picture,
             &loaded.faces,
             &loaded.edges,
+            &ferritecad_scene::VertexNames::default(),
         );
 
         let mut scene = LiveScene {
@@ -6276,19 +7123,19 @@ mod tests {
     /// The plate brings durable face names, so a face can really be chosen;
     /// the others are what make hiding and undoing something that changes the
     /// picture. Written into a copy, never into the checkout.
-    fn plate_and_more_bodies(extra: usize) -> (tempfile::TempDir, LoadedScene) {
+    /// Writes `extra` further extruded bodies into a copy of the plate.
+    ///
+    /// Separate from the loaders below because both a mock load and a real
+    /// Open CASCADE one want the same document, and writing it twice would be
+    /// two documents that drift.
+    fn add_extra_bodies(path: &std::path::Path, extra: usize) {
         use ferritecad_document::{
             Body, Dependency, DependencyRole, EndCondition, Expression, Extrude, ObjectPayload,
             Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation,
         };
-        use ferritecad_kernel::mock::MockKernel;
         use ferritecad_types::ObjectId;
 
-        let directory = tempfile::tempdir().expect("a temporary directory is available");
-        let path = directory.path().join("plate.fcad");
-        std::fs::copy(ferritecad_fixtures::plate_source(), &path).expect("copies the fixture");
-
-        let mut document = ferritecad_document::Document::open(&path).expect("opens");
+        let mut document = ferritecad_document::Document::open(path).expect("opens");
         let plane = document
             .objects()
             .expect("reads objects")
@@ -6373,6 +7220,16 @@ mod tests {
             })
             .expect("writes the extra bodies");
         drop(document);
+    }
+
+    fn plate_and_more_bodies(extra: usize) -> (tempfile::TempDir, LoadedScene) {
+        use ferritecad_kernel::mock::MockKernel;
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("plate.fcad");
+        std::fs::copy(ferritecad_fixtures::plate_source(), &path).expect("copies the fixture");
+
+        add_extra_bodies(&path, extra);
 
         let scene = snapshot_of(
             &path,
@@ -6404,9 +7261,11 @@ mod tests {
             snapshot.pick_of(0).expect("drawn"),
             face,
             EdgePickId::NOTHING,
+            ferritecad_viewport::VertexPickId::NOTHING,
             snapshot,
             &scene.faces,
             &EdgeNames::default(),
+            &ferritecad_scene::VertexNames::default(),
         );
         let Selection::Face(before) = &chosen else {
             panic!("the plate's face is not named: {chosen:?}");
@@ -6460,9 +7319,11 @@ mod tests {
             picture.pick_of(1).expect("drawn"),
             face,
             EdgePickId::NOTHING,
+            ferritecad_viewport::VertexPickId::NOTHING,
             &picture,
             &FaceNames::default(),
             &EdgeNames::default(),
+            &ferritecad_scene::VertexNames::default(),
         );
         // With no durable names this falls back to the definition, so the face
         // case is stated with the transient mark the renderer is given.
@@ -7003,9 +7864,11 @@ mod tests {
             snapshot.pick_of(0).expect("drawn"),
             face,
             EdgePickId::NOTHING,
+            ferritecad_viewport::VertexPickId::NOTHING,
             snapshot,
             &scene.faces,
             &EdgeNames::default(),
+            &ferritecad_scene::VertexNames::default(),
         );
         let Selection::Face(before) = &chosen else {
             panic!("the plate's face is not named: {chosen:?}");
@@ -7253,9 +8116,11 @@ mod tests {
             snapshot.pick_of(0).expect("drawn"),
             face,
             EdgePickId::NOTHING,
+            ferritecad_viewport::VertexPickId::NOTHING,
             snapshot,
             &scene.faces,
             &EdgeNames::default(),
+            &ferritecad_scene::VertexNames::default(),
         );
         let Selection::Face(before) = &chosen else {
             panic!("the plate's face is not named: {chosen:?}");
@@ -7927,9 +8792,11 @@ mod tests {
             snapshot.pick_of(0).expect("drawn"),
             face,
             EdgePickId::NOTHING,
+            ferritecad_viewport::VertexPickId::NOTHING,
             snapshot,
             &scene.faces,
             &EdgeNames::default(),
+            &ferritecad_scene::VertexNames::default(),
         );
         let Selection::Face(before) = &chosen else {
             panic!("the plate's face is not named: {chosen:?}");
@@ -8215,9 +9082,11 @@ mod tests {
             snapshot.pick_of(0).expect("drawn"),
             face,
             EdgePickId::NOTHING,
+            ferritecad_viewport::VertexPickId::NOTHING,
             snapshot,
             &scene.faces,
             &EdgeNames::default(),
+            &ferritecad_scene::VertexNames::default(),
         );
         let Selection::Face(named) = &chosen else {
             panic!("the plate's face is not named: {chosen:?}");
@@ -8795,7 +9664,7 @@ mod tests {
 
         // The defect: this face is named by the document, so clicking it must
         // choose the face and not merely the body it is part of.
-        let chosen = selection_at(hit, &snapshot, &scene.faces, &scene.edges);
+        let chosen = selection_at(hit, &snapshot, &scene.faces, &scene.edges, &scene.vertices);
         let Selection::Face(face) = &chosen else {
             panic!("clicking a named face of the plate chose {chosen:?}");
         };
@@ -8842,6 +9711,7 @@ mod tests {
             &words.identities,
             &face_names,
             &edge_names,
+            &[],
             &snapshot,
         )
         .expect("a chosen face is described");
@@ -8866,9 +9736,11 @@ mod tests {
             pick,
             face,
             EdgePickId::NOTHING,
+            ferritecad_viewport::VertexPickId::NOTHING,
             &scene.snapshot,
             &scene.faces,
             &EdgeNames::default(),
+            &ferritecad_scene::VertexNames::default(),
         );
         assert!(
             matches!(chosen, Selection::Face(_)),
@@ -9736,9 +10608,11 @@ mod tests {
                 pick,
                 stale,
                 EdgePickId::NOTHING,
+                ferritecad_viewport::VertexPickId::NOTHING,
                 &picture,
                 &FaceNames::default(),
                 &EdgeNames::default(),
+                &ferritecad_scene::VertexNames::default(),
             ),
             Selection::Definition(pick),
             "a face of the replaced picture attached itself to the new one"
@@ -9759,6 +10633,7 @@ mod tests {
             &words.identities,
             &face_names,
             &edge_names,
+            &[],
             &scene.snapshot,
         )
         .expect("a chosen face is described");
@@ -9784,6 +10659,7 @@ mod tests {
             &words.identities,
             &face_names,
             &edge_names,
+            &[],
             &scene.snapshot,
         )
         .expect("a chosen definition is described");

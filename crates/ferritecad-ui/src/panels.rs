@@ -103,6 +103,20 @@ pub enum Selected<'a> {
         /// the document stores them.
         names: &'a [TopologyName<'a>],
     },
+    /// One topological vertex of a native body, named exactly by the
+    /// document.
+    ///
+    /// Only durable terms reach here, exactly as for a face and an edge: a
+    /// corner the document does not name is not selectable as a corner at all.
+    Vertex {
+        /// What the body is called, if the document called it anything.
+        name: Option<&'a str>,
+        /// The identifier the document stores for the body.
+        object: &'a str,
+        /// Every stored reference that names exactly this corner, in the order
+        /// the document stores them.
+        names: &'a [TopologyName<'a>],
+    },
     /// A definition inside a file this document imported.
     Imported {
         name: Option<&'a str>,
@@ -122,9 +136,10 @@ pub enum Selected<'a> {
 /// module deals in text: a panel that could name a `SemanticRole` would be a
 /// panel that knows what a document is.
 ///
-/// One type for a face and for an edge. What a document stores about either is
-/// the same six terms, and two structures would be two formats to keep in
-/// step; which kind is meant is already in `expected_kind` and in the role.
+/// One type for a face, an edge and a vertex. What a document stores about any
+/// of them is the same six terms, and three structures would be three formats
+/// to keep in step; which kind is meant is already in `expected_kind` and in
+/// the role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TopologyName<'a> {
     /// The identifier the document stores for the reference itself.
@@ -147,11 +162,14 @@ pub type FaceName<'a> = TopologyName<'a>;
 /// What a document calls one edge. See [`TopologyName`].
 pub type EdgeName<'a> = TopologyName<'a>;
 
+/// What a document calls one topological vertex. See [`TopologyName`].
+pub type VertexName<'a> = TopologyName<'a>;
+
 /// Every stored name, in the order the document stores them.
 ///
-/// One statement for a face and for an edge: what the document says about
-/// either is the same six terms, and two copies of this loop would be two
-/// formats to keep in step.
+/// One statement for a face, an edge and a vertex: what the document says
+/// about any of them is the same six terms, and three copies of this loop
+/// would be three formats to keep in step.
 fn push_names(rows: &mut Vec<(&'static str, String)>, names: &[TopologyName<'_>]) {
     for name in names {
         rows.push(("Reference", name.reference.to_owned()));
@@ -203,6 +221,18 @@ impl Selected<'_> {
                 rows.push(("Object", (*object).to_owned()));
                 push_names(&mut rows, names);
             }
+            Self::Vertex {
+                name,
+                object,
+                names,
+            } => {
+                rows.push(("Kind", "Vertex".to_owned()));
+                if let Some(name) = name {
+                    rows.push(("Body", (*name).to_owned()));
+                }
+                rows.push(("Object", (*object).to_owned()));
+                push_names(&mut rows, names);
+            }
             Self::Imported {
                 name,
                 source_file,
@@ -241,10 +271,12 @@ impl Selected<'_> {
                 Some(name) => format!("{name} · {object}"),
                 None => format!("Body · {object}"),
             },
-            // A list of definitions holds no faces and no edges, so this is
-            // what either would be called if one ever reached a row: the body
-            // it is part of, said the same way.
-            Self::Face { name, object, .. } | Self::Edge { name, object, .. } => match name {
+            // A list of definitions holds no faces, edges or corners, so this
+            // is what any of them would be called if one ever reached a row:
+            // the body it is part of, said the same way.
+            Self::Face { name, object, .. }
+            | Self::Edge { name, object, .. }
+            | Self::Vertex { name, object, .. } => match name {
                 Some(name) => format!("{name} · {object}"),
                 None => format!("Body · {object}"),
             },
@@ -960,6 +992,94 @@ mod tests {
                 "a face inspector said {word}: {shown}"
             );
         }
+    }
+
+    fn a_vertex() -> Selected<'static> {
+        Selected::Vertex {
+            name: Some("Plate"),
+            object: "018f2b7c-0000-7000-8000-000000000001",
+            names: &[
+                VertexName {
+                    reference: "018f2b7c-0000-7000-8000-0000000000c1",
+                    owner: "018f2b7c-0000-7000-8000-000000000001",
+                    producer_feature: "018f2b7c-0000-7000-8000-000000000002",
+                    expected_kind: "vertex",
+                    role: "Start cap vertex at the joint of profile segments A and B",
+                    rule: "Exactly this one",
+                },
+                VertexName {
+                    reference: "018f2b7c-0000-7000-8000-0000000000c2",
+                    owner: "018f2b7c-0000-7000-8000-000000000001",
+                    producer_feature: "018f2b7c-0000-7000-8000-000000000002",
+                    expected_kind: "vertex",
+                    role: "End cap vertex at the joint of profile segments A and B",
+                    rule: "Exactly this one",
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn the_inspector_says_what_a_corner_is_in_the_document_s_own_terms() {
+        let rows = a_vertex().rows();
+        let value = |label: &str| {
+            rows.iter()
+                .find(|(name, _)| *name == label)
+                .map(|(_, value)| value.as_str())
+        };
+
+        assert_eq!(value("Kind"), Some("Vertex"));
+        assert_eq!(value("Body"), Some("Plate"));
+        assert_eq!(
+            value("Reference"),
+            Some("018f2b7c-0000-7000-8000-0000000000c1")
+        );
+
+        // Both stored names, in the order they were given, one sentence each.
+        let roles: Vec<&str> = rows
+            .iter()
+            .filter(|(label, _)| *label == "Role")
+            .map(|(_, value)| value.as_str())
+            .collect();
+        assert_eq!(
+            roles,
+            [
+                "Start cap vertex at the joint of profile segments A and B",
+                "End cap vertex at the joint of profile segments A and B",
+            ]
+        );
+        let references: Vec<&str> = rows
+            .iter()
+            .filter(|(label, _)| *label == "Reference")
+            .map(|(_, value)| value.as_str())
+            .collect();
+        assert_eq!(
+            references,
+            [
+                "018f2b7c-0000-7000-8000-0000000000c1",
+                "018f2b7c-0000-7000-8000-0000000000c2",
+            ],
+            "the inspector reordered or dropped a stored name"
+        );
+
+        // Everything shown is something the document stores.
+        let shown = rows
+            .iter()
+            .map(|(label, value)| format!("{label} {value}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        for word in TRANSIENT {
+            assert!(
+                !shown.contains(word),
+                "a corner inspector said {word}: {shown}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_corner_in_a_list_of_definitions_is_summarised_as_its_body() {
+        assert_eq!(a_vertex().summary(), body().summary());
     }
 
     #[test]

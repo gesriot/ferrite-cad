@@ -4720,6 +4720,159 @@ fn corner_of(snapshot: &ferritecad_viewport::RenderSnapshot, raw: u32) -> Vertex
 }
 
 #[test]
+fn a_corner_is_framed_where_it_is_drawn_and_nowhere_else() {
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    // One corner drawn at two of the triangle's positions, so the extent has
+    // to cover both occurrences; the third position is a corner of its own.
+    let mut builder = SnapshotBuilder::new();
+    let definition = builder
+        .add_mesh(&cornered(shape, vec![0, 1, 2], &[2, 1]))
+        .expect("packs");
+    // The same definition placed twice, ten apart.
+    for x in [0.0, 10.0] {
+        builder
+            .place(definition, None, &moved(x, 0.0, 0.0), [0.5, 0.5, 0.5])
+            .expect("places");
+    }
+    let snapshot = builder.build();
+
+    let corner = snapshot.vertex_of(definition, 0).expect("numbered");
+    let (low, high) = snapshot
+        .bounds_of_vertex(corner)
+        .expect("the corner is somewhere");
+
+    // Both occurrences: the triangle's positions 0 and 1 are (0,0,0) and
+    // (1,0,0), so the extent spans x from 0 to 1 within one placement.
+    // Both placements: the definition is drawn at x = 0 and x = 10, so the
+    // whole extent runs from 0 to 11.
+    assert!(
+        low[0] <= 1e-6 && high[0] >= 11.0 - 1e-6,
+        "{low:?} {high:?}: a corner was framed in one occurrence or one placement"
+    );
+
+    // The other corner is somewhere else, and neither is the whole part.
+    let other = snapshot.vertex_of(definition, 1).expect("numbered");
+    assert_ne!(snapshot.bounds_of_vertex(other), Some((low, high)));
+    let whole = snapshot
+        .bounds_of(snapshot.pick_of(0).expect("drawn"))
+        .expect("somewhere");
+    assert_ne!(
+        (low, high),
+        whole,
+        "a corner was framed as the whole definition"
+    );
+    assert_ne!(
+        (low, high),
+        snapshot
+            .bounds_of_face(snapshot.face_of(0, 0).expect("numbered"))
+            .expect("somewhere"),
+        "a corner was framed as the face it touches"
+    );
+
+    // A picture that draws a definition nowhere frames none of its corners.
+    let mut nowhere = SnapshotBuilder::new();
+    let unplaced = nowhere
+        .add_mesh(&cornered(shape, vec![0, 1, 2], &[2, 1]))
+        .expect("packs");
+    let nowhere = nowhere.build();
+    assert_eq!(
+        nowhere.bounds_of_vertex(ferritecad_viewport::VertexPickId::from_raw(1, &nowhere)),
+        None,
+        "a corner of a definition placed nowhere was framed somewhere"
+    );
+    let _ = unplaced;
+
+    // And nothing of another picture, or of no picture, is anywhere.
+    let elsewhere = {
+        let mut builder = SnapshotBuilder::new();
+        let definition = builder
+            .add_mesh(&cornered(shape, vec![0, 1, 2], &[2, 1]))
+            .expect("packs");
+        builder
+            .place(definition, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+            .expect("places");
+        builder.build()
+    };
+    assert_eq!(
+        snapshot.bounds_of_vertex(elsewhere.vertex_of(0, 0).expect("numbered")),
+        None
+    );
+    assert_eq!(snapshot.bounds_of_vertex(VertexPickId::NOTHING), None);
+}
+
+#[test]
+fn a_mark_on_a_corner_belongs_to_the_definition_that_owns_it() {
+    let shape = ShapeHandle::new(SessionId::new(), 1);
+    let mut builder = SnapshotBuilder::new();
+    let first = builder
+        .add_mesh(&cornered(shape, vec![0, 1, 2], &[1, 1, 1]))
+        .expect("packs");
+    let second = builder
+        .add_mesh(&cornered(shape, vec![0, 1, 2], &[1, 1, 1]))
+        .expect("packs");
+    for (definition, x) in [(first, 0.0), (second, 10.0)] {
+        builder
+            .place(definition, None, &moved(x, 0.0, 0.0), [0.5, 0.5, 0.5])
+            .expect("places");
+    }
+    let snapshot = builder.build();
+
+    let corner = snapshot.vertex_of(0, 0).expect("numbered");
+    let mark = Marked::Vertex(corner);
+
+    assert_eq!(mark.known_to(&snapshot), mark);
+    assert_eq!(snapshot.definition_of_vertex(corner), Some(0));
+
+    // Hiding through a corner hides the part it belongs to, exactly as hiding
+    // through a face or an edge does: what is hidden is a definition.
+    let mut visibility = Visibility::new(&snapshot);
+    assert!(visibility.can_hide(mark, &snapshot));
+    assert!(visibility.hide(mark, &snapshot));
+    assert!(!visibility.shows(0, &snapshot));
+    assert!(visibility.shows(1, &snapshot), "and only that one");
+
+    // Show, isolate and undo all answer for the same definition.
+    assert!(visibility.can_show(mark, &snapshot));
+    assert!(visibility.show(mark, &snapshot));
+    assert!(visibility.shows(0, &snapshot));
+    assert!(visibility.can_isolate(mark, &snapshot));
+    assert!(visibility.isolate(mark, &snapshot));
+    assert!(visibility.shows(0, &snapshot));
+    assert!(!visibility.shows(1, &snapshot));
+    assert!(visibility.can_undo(&snapshot));
+    assert!(visibility.undo(&snapshot));
+    assert!(visibility.shows(1, &snapshot));
+
+    // A corner of the second definition acts on the second definition.
+    let theirs = Marked::Vertex(snapshot.vertex_of(1, 0).expect("numbered"));
+    let mut other = Visibility::new(&snapshot);
+    assert!(other.hide(theirs, &snapshot));
+    assert!(other.shows(0, &snapshot), "the wrong owner was hidden");
+    assert!(!other.shows(1, &snapshot));
+
+    // A mark of another picture marks nothing at all.
+    let elsewhere = {
+        let mut builder = SnapshotBuilder::new();
+        let definition = builder
+            .add_mesh(&cornered(shape, vec![0, 1, 2], &[1, 1, 1]))
+            .expect("packs");
+        builder
+            .place(definition, None, &Transform::IDENTITY, [0.5, 0.5, 0.5])
+            .expect("places");
+        builder.build()
+    };
+    let foreign = Marked::Vertex(elsewhere.vertex_of(0, 0).expect("numbered"));
+    assert_eq!(foreign.known_to(&snapshot), Marked::Nothing);
+    let mut untouched = Visibility::new(&snapshot);
+    assert!(!untouched.can_hide(foreign, &snapshot));
+    assert!(!untouched.hide(foreign, &snapshot));
+    assert!(!untouched.hide(Marked::Vertex(VertexPickId::NOTHING), &snapshot));
+    assert!(!untouched.can_isolate(foreign, &snapshot));
+    assert!(!untouched.isolate(foreign, &snapshot));
+    assert!(untouched.shows(0, &snapshot) && untouched.shows(1, &snapshot));
+}
+
+#[test]
 fn a_definition_nothing_is_known_about_differs_from_one_proven_to_have_no_corner() {
     let shape = ShapeHandle::new(SessionId::new(), 1);
 

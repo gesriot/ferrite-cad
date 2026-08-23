@@ -298,11 +298,11 @@ impl FaceNames {
 
 /// What is chosen in one picture, as one state.
 ///
-/// Four states, not a collection of fields that can disagree. A face or edge
-/// selection carries the subshape, the definition it belongs to and what the
-/// document calls it, all decided together by [`Selection::at`]; the fields
-/// are private, so a caller cannot assemble a subshape beside a definition it
-/// does not belong to.
+/// Five states, not a collection of fields that can disagree. A face, edge or
+/// vertex selection carries the subshape, the definition it belongs to and
+/// what the document calls it, all decided together by [`Selection::at`]; the
+/// fields are private, so a caller cannot assemble a subshape beside a
+/// definition it does not belong to.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum Selection {
     #[default]
@@ -310,6 +310,46 @@ pub enum Selection {
     Definition(PickId),
     Face(SelectedFace),
     Edge(SelectedEdge),
+    Vertex(SelectedVertex),
+}
+
+/// One chosen topological vertex: which corner, of what, and what it is
+/// called.
+///
+/// Private fields, exactly as [`SelectedFace`] and [`SelectedEdge`] have them,
+/// and for the same reason: a caller outside this crate cannot put together a
+/// corner that belongs to one definition beside a definition it does not
+/// belong to, or a corner with no durable name at all. [`Selection::at`]
+/// decides all three together or produces no vertex.
+///
+/// The identity is transient and the meanings are portable, which is the whole
+/// arrangement: what is chosen right now is a number only this picture can
+/// read, and what it *is* survives the picture entirely.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectedVertex {
+    vertex: VertexPickId,
+    definition: PickId,
+    meanings: Vec<VertexMeaning>,
+}
+
+impl SelectedVertex {
+    /// The transient identity of the corner, for this picture only.
+    pub fn vertex(&self) -> VertexPickId {
+        self.vertex
+    }
+
+    /// The definition it belongs to, in this picture.
+    pub fn definition(&self) -> PickId {
+        self.definition
+    }
+
+    /// Every stored reference that resolves exactly to this corner, in the
+    /// order the document stores them. All of them, for the reason a face and
+    /// an edge keep all of theirs: choosing the first would present storage
+    /// order as a decision about which name is right.
+    pub fn meanings(&self) -> &[VertexMeaning] {
+        &self.meanings
+    }
 }
 
 /// One chosen topological edge: which edge, of what, and what it is called.
@@ -377,25 +417,67 @@ impl SelectedFace {
 impl Selection {
     /// What a click on one pixel chooses.
     ///
-    /// An edge is chosen only when it is coherent with the definition and
-    /// face read from the same pixel and the document has an exact durable
-    /// name for it. Otherwise an exactly named face is chosen. An imported or
-    /// unnamed subshape, and one whose references select a family, falls back
-    /// to the most specific thing the document can say honestly. Nothing that
-    /// resolves in this picture chooses nothing.
+    /// Most particular first: an exactly named corner, then an exactly named
+    /// edge, then an exactly named face, then the definition, then nothing.
+    /// Each is chosen only when it is coherent with everything else read from
+    /// the same pixel and the document has an exact durable name for it. An
+    /// imported or unnamed subshape, and one whose references select a family,
+    /// falls back to the most specific thing the document can say honestly.
+    /// Nothing that resolves in this picture chooses nothing.
+    // Four identities read from one pixel, the picture that issued them, and
+    // what the document calls each of the three kinds. They are one decision
+    // about one sample, and a struct built at the single call site would hide
+    // the count rather than reduce it.
+    #[expect(clippy::too_many_arguments, reason = "see above")]
     pub fn at(
         definition: PickId,
         face: FacePickId,
         edge: EdgePickId,
+        vertex: VertexPickId,
         snapshot: &RenderSnapshot,
         names: &FaceNames,
         edges: &EdgeNames,
+        vertices: &VertexNames,
     ) -> Self {
-        // Most particular first, and only where the document can say what the
-        // thing is. An edge the document names beats a face it also names,
-        // because a person who aimed at a line meant the line; an edge nobody
-        // named is not a lesser edge, it is not a choice at all, and falls
-        // through to whatever this picture can honestly say instead.
+        // The corner first, because a person who aimed at a point meant the
+        // point rather than the line or the surface it sits on. It is a choice
+        // only where the document names it exactly and where every other
+        // answer about this pixel agrees that the corner is there: the corner
+        // must belong to the definition under the sample, must touch the face
+        // under it where the sample has one, and must be an end of the edge
+        // under it where the sample has one. Adjacency is read out of the
+        // packed partitions, never from ordinals, coordinates, traversal
+        // positions or occurrence indices.
+        //
+        // Both are stated as "where the sample has one" because that is what
+        // the pixel reports. A hit that answers about a corner always answers
+        // about the face it touches as well, so on that route both hold; the
+        // conditional form is what keeps this honest for any other caller
+        // rather than silently requiring a face the pixel never claimed.
+        //
+        // An aperture reaches a few pixels past the point it is drawn for, so
+        // without those checks a corner would be selectable over the neighbour
+        // it merely overlaps.
+        let vertex_owner = snapshot.definition_of_vertex(vertex);
+        let vertex_meanings = vertices.of(vertex, snapshot);
+        if !vertex_meanings.is_empty()
+            && vertex_owner.is_some()
+            && vertex_owner == snapshot.definition(definition)
+            && (face == FacePickId::NOTHING || snapshot.vertex_touches_face(vertex, face))
+            && (edge == EdgePickId::NOTHING || snapshot.vertex_ends_edge(vertex, edge))
+        {
+            return Self::Vertex(SelectedVertex {
+                vertex,
+                definition,
+                meanings: vertex_meanings.to_vec(),
+            });
+        }
+
+        // Then the edge, and only where the document can say what the thing
+        // is. An edge the document names beats a face it also names, because a
+        // person who aimed at a line meant the line; an edge nobody named is
+        // not a lesser edge, it is not a choice at all, and falls through to
+        // whatever this picture can honestly say instead.
         let edge_owner = snapshot.definition_of_edge(edge);
         let edge_meanings = edges.of(edge, snapshot);
         if !edge_meanings.is_empty()
@@ -444,6 +526,7 @@ impl Selection {
             Self::Definition(pick) => snapshot.definition(*pick),
             Self::Face(chosen) => snapshot.definition(chosen.definition),
             Self::Edge(chosen) => snapshot.definition(chosen.definition),
+            Self::Vertex(chosen) => snapshot.definition(chosen.definition),
         }
     }
 
@@ -454,20 +537,22 @@ impl Selection {
             Self::Definition(pick) => ferritecad_viewport::Marked::Definition(*pick),
             Self::Face(chosen) => ferritecad_viewport::Marked::Face(chosen.face),
             Self::Edge(chosen) => ferritecad_viewport::Marked::Edge(chosen.edge),
+            Self::Vertex(chosen) => ferritecad_viewport::Marked::Vertex(chosen.vertex),
         }
     }
 
     /// Where what is chosen is, in every placement of it.
     ///
-    /// A face is its own triangles, an edge its own segments, and a definition
-    /// all of it. One question, answered by the picture that issued the
-    /// choice.
+    /// A face is its own triangles, an edge its own segments, a corner its own
+    /// occurrences, and a definition all of it. One question, answered by the
+    /// picture that issued the choice.
     pub fn bounds(&self, snapshot: &RenderSnapshot) -> Option<([f32; 3], [f32; 3])> {
         match self {
             Self::Nothing => None,
             Self::Definition(pick) => snapshot.bounds_of(*pick),
             Self::Face(chosen) => snapshot.bounds_of_face(chosen.face),
             Self::Edge(chosen) => snapshot.bounds_of_edge(chosen.edge),
+            Self::Vertex(chosen) => snapshot.bounds_of_vertex(chosen.vertex),
         }
     }
 }
@@ -2026,6 +2111,462 @@ mod tests {
         (snapshot, faces, edges)
     }
 
+    /// A picture with two faces, two edges and three corners, of which two
+    /// carry exact durable names.
+    ///
+    /// Corner 0 is drawn twice - once in each face, as a corner two faces meet
+    /// at is - touches both faces, ends the first edge and not the second, and
+    /// carries three stored names. Corner 1 is unnamed on purpose. Corner 2
+    /// touches only the second face, ends no edge, and carries one name, which
+    /// is what lets a corner be offered against a face it does not touch.
+    ///
+    /// The definition is placed twice so extents have both occurrences and
+    /// both placements to cover.
+    fn a_named_vertex() -> (RenderSnapshot, FaceNames, EdgeNames, VertexNames) {
+        use ferritecad_document::CapSide;
+
+        let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
+        let mesh = Mesh {
+            // Positions 0 and 3 are one model point drawn in both faces.
+            positions: vec![
+                0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 2.0,
+                1.0, 0.0,
+            ],
+            normals: vec![
+                0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0,
+                0.0, 1.0,
+            ],
+            indices: vec![0, 1, 2, 3, 4, 5],
+            faces: (0..2)
+                .map(|ordinal| ferritecad_kernel::MeshFaceRange {
+                    face: SubShapeHandle::new(
+                        shape,
+                        ferritecad_kernel::SubShapeKind::Face,
+                        ordinal,
+                    ),
+                    first_index: ordinal as u32 * 3,
+                    index_count: 3,
+                })
+                .collect(),
+            edges: Some(ferritecad_kernel::MeshEdges {
+                segments: vec![0, 1, 1, 2],
+                ranges: (0..2)
+                    .map(|ordinal| ferritecad_kernel::MeshEdgeRange {
+                        edge: SubShapeHandle::new(
+                            shape,
+                            ferritecad_kernel::SubShapeKind::Edge,
+                            ordinal,
+                        ),
+                        first_segment: ordinal as u32,
+                        segment_count: 1,
+                    })
+                    .collect(),
+            }),
+            topological_vertices: Some(ferritecad_kernel::MeshVertices {
+                occurrences: vec![0, 3, 2, 5],
+                ranges: vec![
+                    ferritecad_kernel::MeshVertexRange {
+                        vertex: SubShapeHandle::new(
+                            shape,
+                            ferritecad_kernel::SubShapeKind::Vertex,
+                            0,
+                        ),
+                        first_occurrence: 0,
+                        occurrence_count: 2,
+                    },
+                    ferritecad_kernel::MeshVertexRange {
+                        vertex: SubShapeHandle::new(
+                            shape,
+                            ferritecad_kernel::SubShapeKind::Vertex,
+                            1,
+                        ),
+                        first_occurrence: 2,
+                        occurrence_count: 1,
+                    },
+                    ferritecad_kernel::MeshVertexRange {
+                        vertex: SubShapeHandle::new(
+                            shape,
+                            ferritecad_kernel::SubShapeKind::Vertex,
+                            2,
+                        ),
+                        first_occurrence: 3,
+                        occurrence_count: 1,
+                    },
+                ],
+            }),
+        };
+
+        let mut builder = SnapshotBuilder::new();
+        let definition = builder.add_mesh(&mesh).expect("packs");
+        for x in [0.0, 10.0] {
+            builder
+                .place(
+                    definition,
+                    None,
+                    &Transform::from_translation(
+                        ferritecad_types::Vec3::new(x, 0.0, 0.0).expect("finite"),
+                    )
+                    .expect("finite"),
+                    BODY_COLOUR,
+                )
+                .expect("places");
+        }
+        // Three stored names for the first corner, none for the second, one
+        // for the third.
+        let three: Vec<BoundMeaning> = (0..3)
+            .map(|_| bound(a_cap_vertex(CapSide::Start)))
+            .collect();
+        let vertex_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = [(
+            definition,
+            vec![three, Vec::new(), vec![bound(a_cap_vertex(CapSide::End))]],
+        )]
+        .into_iter()
+        .collect();
+        let edge_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = [(
+            definition,
+            vec![vec![bound(a_cap_edge(CapSide::Start))], Vec::new()],
+        )]
+        .into_iter()
+        .collect();
+        let face_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = [(
+            definition,
+            vec![vec![bound(a_cap_edge(CapSide::End))], Vec::new()],
+        )]
+        .into_iter()
+        .collect();
+        builder
+            .bind_identities_to(semantic_context_identity(
+                &face_named,
+                &edge_named,
+                &vertex_named,
+            ))
+            .expect("binds");
+        let snapshot = builder.build();
+        let faces = face_names(&snapshot, face_named).expect("lays out");
+        let edges = edge_names(&snapshot, edge_named).expect("lays out");
+        let vertices = vertex_names(&snapshot, vertex_named).expect("lays out");
+        (snapshot, faces, edges, vertices)
+    }
+
+    #[test]
+    fn a_named_corner_is_chosen_before_the_edge_and_the_face_it_lies_on() {
+        let (snapshot, faces, edges, vertices) = a_named_vertex();
+        let definition = snapshot.pick_of(0).expect("drawn");
+        let face = snapshot.face_of(0, 0).expect("numbered");
+        let edge = snapshot.edge_of(0, 0).expect("numbered");
+        let named = snapshot.vertex_of(0, 0).expect("numbered");
+        let unnamed = snapshot.vertex_of(0, 1).expect("numbered");
+        assert!(
+            !faces.of(face, &snapshot).is_empty() && !edges.of(edge, &snapshot).is_empty(),
+            "the edge and the face beneath the corner are named too"
+        );
+        assert!(snapshot.vertex_touches_face(named, face));
+        assert!(snapshot.vertex_ends_edge(named, edge));
+
+        // The corner wins over both.
+        let chosen = Selection::at(
+            definition, face, edge, named, &snapshot, &faces, &edges, &vertices,
+        );
+        let Selection::Vertex(corner) = &chosen else {
+            panic!("a named corner did not win over a named edge and face: {chosen:?}")
+        };
+        assert_eq!(corner.vertex(), named);
+        assert_eq!(corner.definition(), definition);
+        // All three names, in the order they were stored.
+        assert_eq!(corner.meanings().len(), 3);
+        assert_eq!(corner.meanings(), vertices.of(named, &snapshot));
+        // And the three answers about one choice agree.
+        assert_eq!(chosen.marked(), ferritecad_viewport::Marked::Vertex(named));
+        assert_eq!(chosen.owning_definition(&snapshot), Some(0));
+        assert_eq!(chosen.bounds(&snapshot), snapshot.bounds_of_vertex(named));
+        assert_ne!(chosen.bounds(&snapshot), snapshot.bounds_of_edge(edge));
+        assert_ne!(chosen.bounds(&snapshot), snapshot.bounds_of_face(face));
+        assert_ne!(chosen.bounds(&snapshot), snapshot.bounds_of(definition));
+
+        // A corner nobody named is not a lesser corner; it is not a choice,
+        // and the named edge beneath it is.
+        assert!(snapshot.vertex_ends_edge(unnamed, snapshot.edge_of(0, 1).expect("numbered")));
+        let fallback = Selection::at(
+            definition, face, edge, unnamed, &snapshot, &faces, &edges, &vertices,
+        );
+        assert!(
+            matches!(fallback, Selection::Edge(_)),
+            "an unnamed corner chose {fallback:?}"
+        );
+        // With no named edge under it either, the named face.
+        let onto_face = Selection::at(
+            definition,
+            face,
+            snapshot.edge_of(0, 1).expect("numbered"),
+            unnamed,
+            &snapshot,
+            &faces,
+            &edges,
+            &vertices,
+        );
+        assert!(
+            matches!(onto_face, Selection::Face(_)),
+            "an unnamed corner over an unnamed edge chose {onto_face:?}"
+        );
+        // And with nothing named at all, the part.
+        let bare = Selection::at(
+            definition,
+            face,
+            snapshot.edge_of(0, 1).expect("numbered"),
+            unnamed,
+            &snapshot,
+            &FaceNames::default(),
+            &edges,
+            &vertices,
+        );
+        assert!(matches!(bare, Selection::Definition(_)), "{bare:?}");
+        // A named corner with no names in hand falls through the same way,
+        // which is what an imported or family-named corner produces.
+        let nameless = Selection::at(
+            definition,
+            face,
+            edge,
+            named,
+            &snapshot,
+            &faces,
+            &edges,
+            &VertexNames::default(),
+        );
+        assert!(
+            matches!(nameless, Selection::Edge(_)),
+            "a corner with no durable name chose {nameless:?}"
+        );
+    }
+
+    #[test]
+    fn a_corner_that_contradicts_its_pixel_chooses_no_corner() {
+        let (snapshot, faces, edges, vertices) = a_named_vertex();
+        let definition = snapshot.pick_of(0).expect("drawn");
+        let face = snapshot.face_of(0, 0).expect("numbered");
+        let other_face = snapshot.face_of(0, 1).expect("numbered");
+        let edge = snapshot.edge_of(0, 0).expect("numbered");
+        let other_edge = snapshot.edge_of(0, 1).expect("numbered");
+        let named = snapshot.vertex_of(0, 0).expect("numbered");
+        // The third corner is named and touches only the second face.
+        let elsewhere = snapshot.vertex_of(0, 2).expect("numbered");
+        assert!(!vertices.of(elsewhere, &snapshot).is_empty());
+        assert!(!snapshot.vertex_touches_face(elsewhere, face));
+        assert!(!snapshot.vertex_ends_edge(named, other_edge));
+
+        // A second picture whose raw values are in range here.
+        let (other, _, _, other_vertices) = a_named_vertex();
+        let foreign = other.vertex_of(0, 0).expect("numbered");
+        assert_eq!(foreign.to_raw(), named.to_raw(), "the same raw value");
+        assert!(
+            !other_vertices.of(foreign, &other).is_empty(),
+            "and named in its own picture"
+        );
+
+        for (what, definition, face, edge, vertex) in [
+            (
+                "a corner of another picture",
+                definition,
+                face,
+                edge,
+                foreign,
+            ),
+            (
+                "nothing at all",
+                definition,
+                face,
+                edge,
+                VertexPickId::NOTHING,
+            ),
+            (
+                "a definition of nothing",
+                PickId::NOTHING,
+                face,
+                edge,
+                named,
+            ),
+            (
+                "a corner that does not touch the pixel's face",
+                definition,
+                face,
+                EdgePickId::NOTHING,
+                elsewhere,
+            ),
+            (
+                "a corner that does not end the pixel's edge",
+                definition,
+                face,
+                other_edge,
+                named,
+            ),
+        ] {
+            let chosen = Selection::at(
+                definition, face, edge, vertex, &snapshot, &faces, &edges, &vertices,
+            );
+            assert!(
+                !matches!(chosen, Selection::Vertex(_)),
+                "{what} assembled a corner: {chosen:?}"
+            );
+        }
+
+        // The third corner is chosen where the pixel really is on its face.
+        let honest = Selection::at(
+            definition,
+            other_face,
+            EdgePickId::NOTHING,
+            elsewhere,
+            &snapshot,
+            &faces,
+            &edges,
+            &vertices,
+        );
+        assert!(
+            matches!(honest, Selection::Vertex(_)),
+            "a coherent corner was refused: {honest:?}"
+        );
+    }
+
+    #[test]
+    fn a_corner_of_the_second_definition_is_chosen_by_the_pictures_numbering() {
+        use ferritecad_document::CapSide;
+
+        // Two definitions, the first with three corners and the second with
+        // one. The second definition's only corner is the picture's fourth, so
+        // a rule using the ordinal within the definition would choose the
+        // first definition's first corner instead.
+        let (first_snapshot, ..) = a_named_vertex();
+        let _ = first_snapshot;
+
+        let shape = ShapeHandle::new(ferritecad_kernel::SessionId::new(), 1);
+        let mesh = |corners: usize| Mesh {
+            positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            normals: vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            indices: vec![0, 1, 2],
+            faces: vec![ferritecad_kernel::MeshFaceRange {
+                face: SubShapeHandle::new(shape, ferritecad_kernel::SubShapeKind::Face, 0),
+                first_index: 0,
+                index_count: 3,
+            }],
+            edges: None,
+            topological_vertices: Some(ferritecad_kernel::MeshVertices {
+                occurrences: (0..corners as u32).collect(),
+                ranges: (0..corners)
+                    .map(|ordinal| ferritecad_kernel::MeshVertexRange {
+                        vertex: SubShapeHandle::new(
+                            shape,
+                            ferritecad_kernel::SubShapeKind::Vertex,
+                            ordinal as u64,
+                        ),
+                        first_occurrence: ordinal as u32,
+                        occurrence_count: 1,
+                    })
+                    .collect(),
+            }),
+        };
+
+        let mut builder = SnapshotBuilder::new();
+        let first = builder.add_mesh(&mesh(3)).expect("packs");
+        let second = builder.add_mesh(&mesh(1)).expect("packs");
+        for definition in [first, second] {
+            builder
+                .place(definition, None, &Transform::IDENTITY, BODY_COLOUR)
+                .expect("places");
+        }
+        let named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = [
+            (first, vec![Vec::new(), Vec::new(), Vec::new()]),
+            (second, vec![vec![bound(a_cap_vertex(CapSide::End))]]),
+        ]
+        .into_iter()
+        .collect();
+        builder
+            .bind_identities_to(semantic_context_identity(
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &named,
+            ))
+            .expect("binds");
+        let snapshot = builder.build();
+        assert_eq!(snapshot.vertex_count(), 4);
+
+        let vertices = vertex_names(&snapshot, named).expect("lays out");
+        let theirs = snapshot.vertex_of(second, 0).expect("numbered");
+        let their_face = snapshot.face_of(second, 0).expect("numbered");
+        let their_pick = snapshot.pick_of(second).expect("drawn");
+        let chosen = Selection::at(
+            their_pick,
+            their_face,
+            EdgePickId::NOTHING,
+            theirs,
+            &snapshot,
+            &FaceNames::default(),
+            &EdgeNames::default(),
+            &vertices,
+        );
+        let Selection::Vertex(corner) = &chosen else {
+            panic!("the second definition's corner was not chosen: {chosen:?}")
+        };
+        assert_eq!(corner.vertex(), theirs);
+        assert_eq!(chosen.owning_definition(&snapshot), Some(second));
+
+        // And the first definition's corners are not chooseable through it.
+        for ordinal in 0..3 {
+            let mine = snapshot.vertex_of(first, ordinal).expect("numbered");
+            assert!(
+                vertices.of(mine, &snapshot).is_empty(),
+                "a name landed on the first definition's corner {ordinal}"
+            );
+        }
+    }
+
+    #[test]
+    fn what_a_chosen_corner_is_cannot_be_taken_apart_or_reassembled() {
+        let (snapshot, faces, edges, vertices) = a_named_vertex();
+        let definition = snapshot.pick_of(0).expect("drawn");
+        let face = snapshot.face_of(0, 0).expect("numbered");
+        let edge = snapshot.edge_of(0, 0).expect("numbered");
+        let named = snapshot.vertex_of(0, 0).expect("numbered");
+        let chosen = Selection::at(
+            definition, face, edge, named, &snapshot, &faces, &edges, &vertices,
+        );
+        let Selection::Vertex(corner) = &chosen else {
+            panic!("{chosen:?}")
+        };
+
+        // The three parts are one decision: the corner really belongs to the
+        // definition beside it, and the meanings really are that corner's.
+        assert_eq!(
+            snapshot.definition_of_vertex(corner.vertex()),
+            snapshot.definition(corner.definition()),
+            "a chosen corner and its definition disagree"
+        );
+        assert_eq!(corner.meanings(), vertices.of(corner.vertex(), &snapshot));
+        assert!(!corner.meanings().is_empty());
+
+        // There is no way to build one out of parts that disagree: the fields
+        // are private and `Selection::at` is the only constructor. That is a
+        // property of the type rather than of a run, so what is checked here
+        // is that the only route refuses every incoherent tuple - which is
+        // what `a_corner_that_contradicts_its_pixel_chooses_no_corner` states
+        // case by case.
+        //
+        // What is transient stays out of what it is called: a portable meaning
+        // holds no identity of this picture.
+        let shown = format!("{:?}", corner.meanings());
+        for leak in [
+            "VertexPickId",
+            "FacePickId",
+            "EdgePickId",
+            "PickId",
+            "SubShapeHandle",
+            "ShapeHandle",
+            "SessionId",
+        ] {
+            assert!(
+                !shown.contains(leak),
+                "{leak} reached what a corner is called"
+            );
+        }
+    }
+
     #[test]
     fn a_named_edge_is_chosen_before_the_face_it_lies_on() {
         let (snapshot, faces, edges) = a_named_edge();
@@ -2039,7 +2580,16 @@ mod tests {
         );
 
         // The edge wins.
-        let chosen = Selection::at(definition, face, named, &snapshot, &faces, &edges);
+        let chosen = Selection::at(
+            definition,
+            face,
+            named,
+            VertexPickId::NOTHING,
+            &snapshot,
+            &faces,
+            &edges,
+            &VertexNames::default(),
+        );
         let Selection::Edge(edge) = &chosen else {
             panic!("a named edge did not win over a named face: {chosen:?}")
         };
@@ -2055,7 +2605,16 @@ mod tests {
 
         // An edge nobody named is not a lesser edge; it is not a choice, and
         // the named face beneath it is.
-        let fallback = Selection::at(definition, face, unnamed, &snapshot, &faces, &edges);
+        let fallback = Selection::at(
+            definition,
+            face,
+            unnamed,
+            VertexPickId::NOTHING,
+            &snapshot,
+            &faces,
+            &edges,
+            &VertexNames::default(),
+        );
         assert!(
             matches!(fallback, Selection::Face(_)),
             "an unnamed edge chose {fallback:?}"
@@ -2065,9 +2624,11 @@ mod tests {
             definition,
             face,
             unnamed,
+            VertexPickId::NOTHING,
             &snapshot,
             &FaceNames::default(),
             &edges,
+            &VertexNames::default(),
         );
         assert!(matches!(bare, Selection::Definition(_)), "{bare:?}");
     }
@@ -2101,7 +2662,16 @@ mod tests {
                 named,
             ),
         ] {
-            let chosen = Selection::at(definition, face, edge, &snapshot, &faces, &edges);
+            let chosen = Selection::at(
+                definition,
+                face,
+                edge,
+                VertexPickId::NOTHING,
+                &snapshot,
+                &faces,
+                &edges,
+                &VertexNames::default(),
+            );
             assert!(
                 !matches!(chosen, Selection::Edge(_)),
                 "{what} assembled an edge: {chosen:?}"
@@ -4674,9 +5244,11 @@ mod tests {
             pick,
             named,
             EdgePickId::NOTHING,
+            VertexPickId::NOTHING,
             snapshot,
             &scene.faces,
             &EdgeNames::default(),
+            &VertexNames::default(),
         );
         let Selection::Face(face) = &chosen else {
             panic!("a named face was not chosen as a face: {chosen:?}");
@@ -4693,9 +5265,11 @@ mod tests {
                 PickId::NOTHING,
                 FacePickId::NOTHING,
                 EdgePickId::NOTHING,
+                VertexPickId::NOTHING,
                 snapshot,
                 &scene.faces,
-                &EdgeNames::default()
+                &EdgeNames::default(),
+                &VertexNames::default()
             ),
             Selection::Nothing
         );
@@ -4720,9 +5294,11 @@ mod tests {
                 pick,
                 face,
                 EdgePickId::NOTHING,
+                VertexPickId::NOTHING,
                 snapshot,
                 &scene.faces,
-                &EdgeNames::default()
+                &EdgeNames::default(),
+                &VertexNames::default()
             ),
             Selection::Definition(pick)
         );
@@ -4756,9 +5332,11 @@ mod tests {
                 pick,
                 face,
                 EdgePickId::NOTHING,
+                VertexPickId::NOTHING,
                 snapshot,
                 &scene.faces,
-                &EdgeNames::default()
+                &EdgeNames::default(),
+                &VertexNames::default()
             ),
             Selection::Definition(pick),
             "an imported face has no durable name and must not be chosen as one"
@@ -4787,9 +5365,11 @@ mod tests {
                 pick,
                 stale,
                 EdgePickId::NOTHING,
+                VertexPickId::NOTHING,
                 snapshot,
                 &scene.faces,
-                &EdgeNames::default()
+                &EdgeNames::default(),
+                &VertexNames::default()
             ),
             Selection::Definition(pick),
             "a face from another picture must not attach itself to this one"
@@ -4799,9 +5379,11 @@ mod tests {
                 PickId::NOTHING,
                 stale,
                 EdgePickId::NOTHING,
+                VertexPickId::NOTHING,
                 snapshot,
                 &scene.faces,
-                &EdgeNames::default()
+                &EdgeNames::default(),
+                &VertexNames::default()
             ),
             Selection::Nothing
         );
@@ -4923,9 +5505,11 @@ mod tests {
                 pick,
                 face,
                 EdgePickId::NOTHING,
+                VertexPickId::NOTHING,
                 &unnamed.snapshot,
                 &named.faces,
                 &EdgeNames::default(),
+                &VertexNames::default(),
             ),
             Selection::Definition(pick),
             "a face the current document does not name became selectable as a face"

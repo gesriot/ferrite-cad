@@ -7175,3 +7175,364 @@ fn one_corner_is_marked_in_every_placement_and_nothing_else_is() {
         "a hidden part was still marked"
     );
 }
+
+#[test]
+fn a_chosen_corner_is_marked_as_chosen_and_nothing_else_is() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = cornered_pair(320, 320);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let uploaded = renderer.geometry_uploads();
+
+    // The first corner is drawn in both faces and in both placements, which
+    // is what makes "every occurrence and every placement" observable.
+    let chosen = snapshot.vertex_of(0, 0).expect("numbered");
+    assert!(
+        snapshot.occurrences_of_vertex(chosen).expect("drawn").len() > 1,
+        "the chosen corner must have more than one occurrence"
+    );
+    let part = snapshot.pick_of(0).expect("drawn");
+    let face = snapshot.face_of(0, 0).expect("numbered");
+    let edge = snapshot.edge_of(0, 0).expect("numbered");
+
+    let plain = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+    let selected = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Vertex(chosen),
+        Hovered::Nothing,
+        &visibility,
+    );
+
+    let moved: Vec<(u32, u32)> = changed(&plain, &selected);
+    assert!(!moved.is_empty(), "choosing a corner marked nothing");
+
+    // Only where that corner is drawn, and nowhere near the others. The
+    // aperture may legitimately reach past the silhouette into the background,
+    // so the test is nearness to this corner's own samples.
+    let mine = samples_of_corner(&plain, chosen);
+    assert!(!mine.is_empty());
+    for (x, y) in &moved {
+        assert!(
+            mine.iter()
+                .any(|(cx, cy)| x.abs_diff(*cx) <= 4 && y.abs_diff(*cy) <= 4),
+            "a pixel at {x},{y} changed away from the chosen corner"
+        );
+    }
+    for ordinal in 1..4 {
+        let other = snapshot.vertex_of(0, ordinal).expect("numbered");
+        for (x, y) in samples_of_corner(&plain, other) {
+            assert!(
+                !moved.contains(&(x, y)),
+                "another corner was marked at {x},{y}"
+            );
+        }
+    }
+
+    // Both placements, and both occurrences within one placement: the corner
+    // is drawn once per face meeting there, so a mark that reached only the
+    // first occurrence or the first placement would fail one of these.
+    let left = moved.iter().filter(|(x, _)| *x < 160).count();
+    assert!(
+        left > 0 && moved.len() - left > 0,
+        "the chosen corner must be marked in both placements"
+    );
+    for occurrence in snapshot.occurrences_of_vertex(chosen).expect("drawn") {
+        let _ = occurrence;
+    }
+    assert!(
+        mine.iter().all(|(x, y)| moved
+            .iter()
+            .any(|(mx, my)| x.abs_diff(*mx) <= 4 && y.abs_diff(*my) <= 4)),
+        "a sample of the chosen corner was left unmarked"
+    );
+
+    // And the mark is centred on the corner rather than merely near it: the
+    // drawn dot comes from the same stage as the aperture, through the same
+    // placement transform and the same shared view-projection, so it cannot be
+    // projected apart from the area that answers. The size is checked with it,
+    // because WGSL cannot read either radius constant.
+    let centre = |of: &[(u32, u32)]| {
+        let near: Vec<(u32, u32)> = of.iter().copied().filter(|(x, _)| *x < 160).collect();
+        let sx: u32 = near.iter().map(|(x, _)| *x).sum();
+        let sy: u32 = near.iter().map(|(_, y)| *y).sum();
+        let count = near.len() as u32;
+        (sx / count, sy / count)
+    };
+    let marked_at = centre(&moved);
+    let corner_at = centre(&mine);
+    assert!(
+        marked_at.0.abs_diff(corner_at.0) <= 1 && marked_at.1.abs_diff(corner_at.1) <= 1,
+        "the mark is centred at {marked_at:?}, the corner answers around {corner_at:?}"
+    );
+    let left_marks: Vec<(u32, u32)> = moved.iter().copied().filter(|(x, _)| *x < 160).collect();
+    let span_x = left_marks.iter().map(|(x, _)| *x).max().expect("some")
+        - left_marks.iter().map(|(x, _)| *x).min().expect("some");
+    let want = (VERTEX_MARK_RADIUS_PIXELS * 2.0).round() as u32;
+    assert!(
+        span_x.abs_diff(want) <= 1,
+        "the chosen mark spans {span_x} pixels, not the declared {want}"
+    );
+
+    // A decision does not look like a question about the same corner, nor like
+    // any of the other states, nor like ordinary boundary ink.
+    let asked = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Vertex(chosen),
+        &visibility,
+    );
+    let at = *moved.first().expect("the mark covered something");
+    let decided = selected.colour_at(at.0, at.1).expect("on screen");
+    for (what, selected_state, hovered_state) in [
+        (
+            "the same corner asked about",
+            Marked::Nothing,
+            Hovered::Vertex(chosen),
+        ),
+        ("a hovered edge", Marked::Nothing, Hovered::Edge(edge)),
+        ("a hovered face", Marked::Nothing, Hovered::Face(face)),
+        ("a hovered part", Marked::Nothing, Hovered::Definition(part)),
+        ("a chosen edge", Marked::Edge(edge), Hovered::Nothing),
+        ("a chosen face", Marked::Face(face), Hovered::Nothing),
+        ("a chosen part", Marked::Definition(part), Hovered::Nothing),
+    ] {
+        let other = draw(
+            &mut renderer,
+            &prepared,
+            &camera,
+            selected_state,
+            hovered_state,
+            &visibility,
+        );
+        // Compared where that style actually paints, for the reason the hover
+        // gate beside this one compares there: at the corner's own pixel a
+        // style that draws nothing would pass by accident.
+        let theirs = (0..plain.height())
+            .flat_map(|y| (0..plain.width()).map(move |x| (x, y)))
+            .find_map(|(x, y)| {
+                (plain.colour_at(x, y) != other.colour_at(x, y)).then(|| other.colour_at(x, y))
+            })
+            .unwrap_or_else(|| panic!("{what} painted nothing to compare against"))
+            .expect("on screen");
+        assert_ne!(
+            decided, theirs,
+            "a chosen corner is painted the same as {what}"
+        );
+    }
+    // And not the ink of an ordinary face boundary either. Ink is whichever
+    // end of the range is further from the surface beside it, so it is pure
+    // black or pure white on a pixel the model owns.
+    let ink = pixels_of(&plain, |frame, x, y| {
+        frame.pick_at(x, y) != PickId::NOTHING && frame.colour_at(x, y).is_some_and(is_boundary_ink)
+    })
+    .first()
+    .and_then(|(x, y)| plain.colour_at(*x, *y))
+    .expect("the picture draws boundary ink");
+    assert_ne!(decided, ink, "a chosen corner is painted like ordinary ink");
+
+    // A choice wins over a question about the same corner.
+    let asked_about_itself = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Vertex(chosen),
+        Hovered::Vertex(chosen),
+        &visibility,
+    );
+    assert_eq!(
+        asked_about_itself.colour(),
+        selected.colour(),
+        "pointing at the corner already chosen repainted it"
+    );
+
+    // A question about another corner is still answered beside the choice,
+    // and neither erases the other.
+    let neighbour = snapshot.vertex_of(0, 1).expect("numbered");
+    let both = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Vertex(chosen),
+        Hovered::Vertex(neighbour),
+        &visibility,
+    );
+    let theirs = samples_of_corner(&plain, neighbour);
+    assert!(
+        theirs
+            .iter()
+            .any(|(x, y)| both.colour_at(*x, *y) != selected.colour_at(*x, *y)),
+        "another corner could not be asked about beside the chosen one"
+    );
+    for (x, y) in &moved {
+        assert_eq!(
+            both.colour_at(*x, *y),
+            selected.colour_at(*x, *y),
+            "the question disturbed the chosen corner at {x},{y}"
+        );
+    }
+    // And a question about an edge that merely ends at the chosen corner is
+    // still answered along the whole of that edge.
+    let ending = (0..4)
+        .filter_map(|ordinal| snapshot.edge_of(0, ordinal))
+        .find(|edge| snapshot.vertex_ends_edge(chosen, *edge));
+    if let Some(ending) = ending {
+        let with_edge = draw(
+            &mut renderer,
+            &prepared,
+            &camera,
+            Marked::Vertex(chosen),
+            Hovered::Edge(ending),
+            &visibility,
+        );
+        let away: Vec<(u32, u32)> = pixels_of(&plain, |frame, x, y| frame.edge_at(x, y) == ending)
+            .into_iter()
+            .filter(|(x, y)| {
+                !mine
+                    .iter()
+                    .any(|(cx, cy)| x.abs_diff(*cx) <= 4 && y.abs_diff(*cy) <= 4)
+            })
+            .collect();
+        assert!(
+            away.iter()
+                .any(|(x, y)| with_edge.colour_at(*x, *y) != selected.colour_at(*x, *y)),
+            "choosing a corner erased the whole edge it ends"
+        );
+    }
+
+    // Nothing about identity moved, and nothing was uploaded.
+    assert_eq!(renderer.geometry_uploads(), uploaded);
+    for y in 0..plain.height() {
+        for x in 0..plain.width() {
+            assert_eq!(plain.pick_at(x, y), selected.pick_at(x, y), "at {x},{y}");
+            assert_eq!(plain.hit_at(x, y).face(), selected.hit_at(x, y).face());
+            assert_eq!(plain.edge_at(x, y), selected.edge_at(x, y), "at {x},{y}");
+            assert_eq!(
+                plain.vertex_at(x, y),
+                selected.vertex_at(x, y),
+                "at {x},{y}"
+            );
+            assert_eq!(
+                plain.colour_at(x, y).is_some(),
+                selected.colour_at(x, y).is_some()
+            );
+        }
+    }
+
+    // The same choice twice is the same frame.
+    let again = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Vertex(chosen),
+        Hovered::Nothing,
+        &visibility,
+    );
+    assert_eq!(
+        selected.colour(),
+        again.colour(),
+        "two identical frames differ"
+    );
+    let _ = asked;
+}
+
+#[test]
+fn a_chosen_corner_of_a_hidden_part_marks_nothing() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = cornered_pair(256, 256);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let chosen = snapshot.vertex_of(0, 0).expect("numbered");
+    let mut visibility = Visibility::new(&snapshot);
+    assert!(visibility.hide(Marked::Vertex(chosen), &snapshot));
+
+    let plain = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Nothing,
+        Hovered::Nothing,
+        &visibility,
+    );
+    let selected = draw(
+        &mut renderer,
+        &prepared,
+        &camera,
+        Marked::Vertex(chosen),
+        Hovered::Nothing,
+        &visibility,
+    );
+    assert_eq!(
+        plain.colour(),
+        selected.colour(),
+        "a hidden part's corner was marked"
+    );
+}
+
+#[test]
+fn a_chosen_corner_follows_the_camera_through_both_projections() {
+    let mut renderer = renderer_or_skip!();
+    let (snapshot, camera) = cornered_pair(288, 288);
+    let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("prepares");
+    let visibility = Visibility::new(&snapshot);
+    let chosen = snapshot.vertex_of(0, 0).expect("numbered");
+
+    let mut moved_camera = camera;
+    // Gentle enough to keep the corner on screen: this gate is about the mark
+    // following the camera, not about what happens when it leaves the view.
+    moved_camera.orbit(0.3, -0.18);
+    moved_camera.pan(4.0, -2.0);
+    moved_camera.zoom(0.4);
+    moved_camera.roll(0.35);
+
+    for (what, mut camera) in [
+        ("as drawn", camera),
+        ("orbited, panned, zoomed and rolled", moved_camera),
+    ] {
+        for projection in [Projection::Orthographic, Projection::Perspective] {
+            camera.set_projection(projection);
+            let plain = draw(
+                &mut renderer,
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Hovered::Nothing,
+                &visibility,
+            );
+            let selected = draw(
+                &mut renderer,
+                &prepared,
+                &camera,
+                Marked::Vertex(chosen),
+                Hovered::Nothing,
+                &visibility,
+            );
+            let mine = samples_of_corner(&plain, chosen);
+            assert!(
+                !mine.is_empty(),
+                "{what} in {projection:?}: the chosen corner is not drawn at all"
+            );
+            let moved = changed(&plain, &selected);
+            assert!(
+                !moved.is_empty(),
+                "{what} in {projection:?}: the chosen corner was not marked"
+            );
+            for (x, y) in moved {
+                assert!(
+                    mine.iter()
+                        .any(|(cx, cy)| x.abs_diff(*cx) <= 4 && y.abs_diff(*cy) <= 4),
+                    "{what} in {projection:?}: the mark at {x},{y} is off the corner"
+                );
+            }
+        }
+    }
+}

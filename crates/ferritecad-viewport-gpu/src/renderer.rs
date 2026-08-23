@@ -135,14 +135,19 @@ struct GlobalsUniform {
     /// fills keeps that arithmetic on the same projection as the picture.
     viewport: [f32; 2],
     /// The topological vertex the pointer is over, or zero.
-    ///
-    /// A question only in the current renderer contract. Durable corner names
-    /// exist one layer up, but no selected vertex reaches this uniform yet.
     hovered_vertex: u32,
-    /// Three scalars of padding, spelled out. Adding the field above took the
-    /// struct past ninety-six, and WGSL rounds a sixteen-byte-aligned struct up
-    /// to a multiple of sixteen; both sides are 112 and the assertion checks it.
-    padding: [u32; 3],
+    /// The topological vertex that has been chosen, or zero.
+    ///
+    /// Taken out of the padding beside it rather than appended: the struct was
+    /// already rounded up to 112 bytes, so a chosen corner costs nothing here
+    /// and neither side's layout moves. Kept apart from `hovered_vertex`
+    /// because a choice and a question about one corner are two states and are
+    /// drawn differently.
+    selected_vertex: u32,
+    /// Two scalars of padding, spelled out. WGSL rounds a sixteen-byte-aligned
+    /// struct up to a multiple of sixteen; both sides are 112 and the
+    /// assertion checks it.
+    padding: [u32; 2],
 }
 
 // One hundred and twelve bytes, matching `Globals` in `shader.wgsl` exactly. A change to
@@ -541,6 +546,13 @@ impl Renderer {
         // never told to mark one.
         let marked_edge =
             Self::marked_edge(snapshot, selected, hovered).map_or(0, |edge| edge.to_raw());
+        // The corner rules, asked here for the same reason: a question the
+        // choice already covers is not written into the uniform at all, so the
+        // shader cannot mark it however the passes are arranged.
+        let hovered_vertex =
+            Self::marked_vertex(snapshot, selected, hovered).map_or(0, |vertex| vertex.to_raw());
+        let selected_vertex =
+            Self::chosen_vertex(snapshot, selected).map_or(0, |vertex| vertex.to_raw());
         let (selected, selected_face, selected_edge) = match selected.known_to(snapshot) {
             Marked::Nothing => (
                 PickId::NOTHING.to_raw(),
@@ -562,10 +574,14 @@ impl Renderer {
                 FacePickId::NOTHING.to_raw(),
                 edge.to_raw(),
             ),
-        };
-        let hovered_vertex = match hovered.known_to(snapshot) {
-            Hovered::Vertex(vertex) => vertex.to_raw(),
-            _ => VertexPickId::NOTHING.to_raw(),
+            // A chosen corner uses its dedicated field above rather than any
+            // of the definition, face and edge fields in this tuple: choosing
+            // a corner chooses that corner and not the line or part it is on.
+            Marked::Vertex(_) => (
+                PickId::NOTHING.to_raw(),
+                FacePickId::NOTHING.to_raw(),
+                EdgePickId::NOTHING.to_raw(),
+            ),
         };
         let (hovered, hovered_face, hovered_edge) = match hovered.known_to(snapshot) {
             Hovered::Nothing => (
@@ -588,7 +604,7 @@ impl Renderer {
                 FacePickId::NOTHING.to_raw(),
                 marked_edge,
             ),
-            // A vertex uses its dedicated field above rather than any of the
+            // A vertex uses its dedicated fields above rather than any of the
             // definition, face and edge fields in this tuple.
             Hovered::Vertex(_) => (
                 PickId::NOTHING.to_raw(),
@@ -609,7 +625,8 @@ impl Renderer {
                 selected_edge,
                 viewport,
                 hovered_vertex,
-                padding: [0; 3],
+                selected_vertex,
+                padding: [0; 2],
             }),
         );
     }
@@ -742,9 +759,11 @@ impl Renderer {
                 Self::draw_edges(&mut pass, prepared, visibility, self.draw_stride);
             }
 
-            // And the corner under the pointer, by the same rule and from the
-            // same stream the readback uses.
-            if Self::marked_vertex(prepared.snapshot(), selected, hovered).is_some() {
+            // And the chosen corner and the one under the pointer, by the same
+            // rule and from the same stream the readback uses.
+            if Self::marked_vertex(prepared.snapshot(), selected, hovered).is_some()
+                || Self::chosen_vertex(prepared.snapshot(), selected).is_some()
+            {
                 let corner_pipeline = self
                     .corner_mark_surface_pipelines
                     .get(&format)
@@ -933,6 +952,10 @@ impl Renderer {
             .then_some(vertex),
             Marked::Face(face) => (!snapshot.vertex_touches_face(vertex, face)).then_some(vertex),
             Marked::Edge(edge) => (!snapshot.vertex_ends_edge(vertex, edge)).then_some(vertex),
+            // A chosen corner covers exactly itself. Pointing at the corner
+            // that is already chosen asks nothing new; pointing at any other
+            // corner is still a question worth answering.
+            Marked::Vertex(chosen) => (chosen != vertex).then_some(vertex),
         }
     }
 
@@ -954,6 +977,11 @@ impl Renderer {
             // not asked again in another colour. A question about a different
             // edge of the same part is still worth answering.
             Marked::Edge(chosen) => (chosen != edge).then_some(edge),
+            // A chosen corner is a point, and an edge is a line. The two
+            // overlap in at most the corner's own few pixels, so a question
+            // about an edge that merely ends at the chosen corner is still
+            // answered along the whole of that edge.
+            Marked::Vertex(_) => Some(edge),
         }
     }
 
@@ -961,6 +989,18 @@ impl Renderer {
     fn chosen_edge(snapshot: &RenderSnapshot, selected: Marked) -> Option<EdgePickId> {
         match selected.known_to(snapshot) {
             Marked::Edge(edge) => Some(edge),
+            _ => None,
+        }
+    }
+
+    /// Which topological vertex, if any, this frame draws as chosen.
+    ///
+    /// Resolved against the picture about to be drawn, exactly as the chosen
+    /// edge is: a corner of another picture, or of one that has been replaced,
+    /// is chosen nowhere here.
+    fn chosen_vertex(snapshot: &RenderSnapshot, selected: Marked) -> Option<VertexPickId> {
+        match selected.known_to(snapshot) {
+            Marked::Vertex(vertex) => Some(vertex),
             _ => None,
         }
     }
@@ -1422,8 +1462,11 @@ impl Renderer {
             Self::draw_edges(&mut pass, prepared, visibility, self.draw_stride);
         }
 
-        if Self::marked_vertex(prepared.snapshot(), selected, hovered).is_some() {
-            // The corner under the pointer, over the picture and nothing else.
+        if Self::marked_vertex(prepared.snapshot(), selected, hovered).is_some()
+            || Self::chosen_vertex(prepared.snapshot(), selected).is_some()
+        {
+            // The chosen corner and the one under the pointer, over the
+            // picture and nothing else.
             // Its own pass with the colour and depth loaded, so marking a
             // corner cannot change what any pixel *is*. Skipped entirely when
             // there is no corner to mark, so a picture with no question in it
@@ -3450,35 +3493,47 @@ mod tests {
                 .expect("draws")
                 .colour()
                 .to_vec();
-            let marked = renderer
-                .render(
-                    &prepared,
-                    &camera,
-                    Marked::Nothing,
-                    Hovered::Vertex(corner),
-                    &visibility,
-                )
-                .expect("draws")
-                .colour()
-                .to_vec();
-            // The comparison is worth making only if there is a mark in it.
+            // A question about the corner and a choice of it, each drawn on
+            // both paths. Both states, because a window that learned to draw
+            // one and not the other would look right in every gate that asked
+            // about a pointer only.
+            let mut seen: Vec<Vec<u8>> = Vec::new();
+            for (what, selected, hovered) in [
+                ("asked about", Marked::Nothing, Hovered::Vertex(corner)),
+                ("chosen", Marked::Vertex(corner), Hovered::Nothing),
+            ] {
+                let marked = renderer
+                    .render(&prepared, &camera, selected, hovered, &visibility)
+                    .expect("draws")
+                    .colour()
+                    .to_vec();
+                // The comparison is worth making only if there is a mark in it.
+                assert_ne!(
+                    plain, marked,
+                    "{projection:?}: the readback drew no {what} corner mark to compare"
+                );
+
+                assert_eq!(
+                    window_colour_marked(
+                        &mut renderer,
+                        &prepared,
+                        &camera,
+                        selected,
+                        hovered,
+                        &visibility,
+                    ),
+                    marked,
+                    "{projection:?}: the window and the readback marked the {what} corner                      differently"
+                );
+                seen.push(marked);
+            }
+            // And the two states are not one state: a window drawing both the
+            // same way would pass every comparison above.
             assert_ne!(
-                plain, marked,
-                "{projection:?}: the readback drew no corner mark to compare"
+                seen[0], seen[1],
+                "{projection:?}: a chosen corner is drawn exactly as a question about one"
             );
 
-            assert_eq!(
-                window_colour_marked(
-                    &mut renderer,
-                    &prepared,
-                    &camera,
-                    Marked::Nothing,
-                    Hovered::Vertex(corner),
-                    &visibility,
-                ),
-                marked,
-                "{projection:?}: the window and the readback marked different pixels"
-            );
             assert_eq!(
                 window_colour_marked(
                     &mut renderer,

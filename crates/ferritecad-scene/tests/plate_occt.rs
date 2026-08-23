@@ -1787,5 +1787,30 @@ fn the_corners_of_an_imported_part_carry_no_durable_names() {
         }
     }
 
+    // And a click on one of those corners falls through to the definition,
+    // which is the most particular thing this document can say honestly about
+    // an imported part.
+    let pick = scene.snapshot.pick_of(0).expect("the import is drawn");
+    let vertex = scene.snapshot.vertex_of(0, 0).expect("numbered");
+    let face = (0..scene.snapshot.face_count())
+        .filter_map(|ordinal| scene.snapshot.face_of(0, ordinal))
+        .find(|face| scene.snapshot.vertex_touches_face(vertex, *face))
+        .expect("the corner touches a face of the picture");
+    let chosen = ferritecad_scene::Selection::at(
+        pick,
+        face,
+        ferritecad_viewport::EdgePickId::NOTHING,
+        vertex,
+        &scene.snapshot,
+        &scene.faces,
+        &scene.edges,
+        &scene.vertices,
+    );
+    assert_eq!(
+        chosen,
+        ferritecad_scene::Selection::Definition(pick),
+        "an imported corner has no durable name and must not be chosen as one"
+    );
+
     assert_eq!(kernel.live_shape_count(), 0);
 }

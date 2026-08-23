@@ -22,6 +22,6 @@ mod panels;
 pub use input::{Hover, PointerButton, ViewportEvent, ViewportInput};
 pub use panels::{
     Activity, Chosen, EdgeName, FRAME_ALL_KEY, FRAME_KEY, FaceName, HIDE_KEY, ISOLATE_KEY,
-    PROJECTION_KEY, RowVisibility, Rows, SHOW_ALL_KEY, Selected, TopologyName, VIEWS,
+    PROJECTION_KEY, RowVisibility, Rows, SHOW_ALL_KEY, Selected, TopologyName, VIEWS, VertexName,
     definitions_panel, selection_inspector, toolbar,
 };

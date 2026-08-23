@@ -51,10 +51,10 @@ it in portable terms. Clicking a face of a native body the document has a
 durable name for selects that face, and the inspector says what the document
 calls it: which feature made it, what it is – the end cap of that extrusion, the
 side raised from that sketch segment – and how the reference selects it.
-Clicking geometry for which the document has neither an exact edge name nor an
-exact face name selects its definition, which is the honest answer: imported
-faces and edges have no durable names, so neither has a subshape identity this
-document could store. Selecting a part selects every placement of it, and
+Clicking geometry for which the document has neither an exact corner name, nor
+an exact edge name, nor an exact face name selects its definition, which is the
+honest answer: imported corners, edges and faces have no durable names, so none
+of them has a subshape identity this document could store. Selecting a part selects every placement of it, and
 selecting a face marks that face in every placement, because a click names what
 a thing is and never the place it happened to land on.
 Moving the pointer over the model asks what is under it, and the answer is as
@@ -64,13 +64,29 @@ vertex is marked, in every placement of the part. A corner is a point and
 covers no pixel of its own, so it answers within a small square around where it
 is drawn; that square is a hit area, and the dot you see is deliberately a
 little smaller than it. Pointing at a corner is a question and nothing more.
-The corner has no durable name in this build, so it cannot be selected, and
-clicking there still chooses the most particular thing the document can name:
-the edge if it is named, otherwise the face, otherwise the part. The question
-lasts only as long as the picture on screen and is forgotten when a new one
-arrives. Where two corners are drawn close enough that their squares overlap,
-one answer is kept for that pixel, decided the same way every time by drawing
-order; nothing here resolves between several candidates.
+The question lasts only as long as the picture on screen and is forgotten when
+a new one arrives. Where two corners are drawn close enough that their squares
+overlap, one answer is kept for that pixel, decided the same way every time by
+drawing order; nothing here resolves between several candidates.
+Clicking a marked corner selects that corner, but only when the document has an
+exact durable name for it. On a native body that means the point where two
+adjacent sketch segments reach one end of an extrusion; the inspector then says
+what the document calls it, in the same portable terms it uses for a face and
+an edge, and shows every stored name rather than picking one. It names the cap
+and both segments of the joint – "Start cap vertex at the joint of profile
+segments A and B" – because either half alone would name four corners of a
+plate instead of one. A chosen corner is marked in every placement of its part
+and is drawn differently from a mere question about the same point, so a
+decision cannot be mistaken for one; a question about the edge that merely ends
+there is still answered along the whole of that edge. A corner nobody named is
+not a lesser corner, it is not a choice: clicking one chooses the most
+particular thing the document can name instead – the edge if it is named,
+otherwise the face, otherwise the part – and a corner of an imported definition
+always selects the definition, because an imported corner is a corner of
+nothing this document could store.
+`Frame selected` brings the chosen corner itself into view rather than the edge,
+the face or the part it belongs to, and `Hide selected` and `Isolate selected`
+act on the part that owns it.
 Off a corner, over a line where two faces of a native body
 meet, that one topological edge is marked, in every placement of the part and
 along the whole of it, including the part of it each of the two faces drew for

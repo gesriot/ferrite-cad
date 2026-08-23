@@ -30,14 +30,14 @@ struct Globals {
     selected_edge: u32,
     // The size of what is being drawn into, in pixels.
     viewport: vec2<f32>,
-    // Which topological vertex the pointer is over, or zero. A question only
-    // in the current renderer contract; durable names exist one layer up, but
-    // no chosen vertex reaches this uniform yet.
+    // Which topological vertex the pointer is over, or zero.
     hovered_vertex: u32,
-    // Three scalars of padding, spelled out, so both sides are 112 bytes.
+    // Which topological vertex has been chosen, or zero. Taken out of the
+    // padding beside it, so neither side's 112 bytes moved.
+    selected_vertex: u32,
+    // Two scalars of padding, spelled out, so both sides are 112 bytes.
     padding_0: u32,
     padding_1: u32,
-    padding_2: u32,
 };
 
 struct Draw {
@@ -319,7 +319,8 @@ fn fragment_corner(in: CornerOut) -> @location(0) u32 {
     return in.vertex;
 }
 
-// The one topological vertex under the pointer, drawn over the picture.
+// The chosen topological vertex and the one under the pointer, drawn over the
+// picture.
 //
 // The same stream the identity pass uses, so nothing is built or uploaded to
 // mark a corner, and the same expansion, so the mark cannot drift from the
@@ -347,23 +348,39 @@ fn vertex_corner_mark(
     return out;
 }
 
-// What the corner under the pointer is drawn in.
+// What a marked corner is drawn in.
 //
-// A cool, fully saturated mark, taken to the end of the range opposite this
-// part's own material so it is visible on a part of any colour, and then
-// carried almost all the way to that accent. Every other question and choice
-// in the picture goes towards a warm accent or a cool one at half strength;
-// this is the only thing drawn at nearly full strength towards cyan, which is
-// what tells a corner apart from a hovered edge, a hovered face, a chosen
-// edge, a chosen face and a chosen part.
+// Two states, and they must not be mistakeable for each other or for anything
+// else in the picture. Both start at the end of the range opposite this part's
+// own material, which is what makes either visible on a part of any colour,
+// and both are then carried almost all the way to a fully saturated accent.
+//
+// The question goes to cyan and the choice to magenta, so they differ in hue
+// and not merely in strength. Every other question and choice in the picture
+// moves a fill achromatically or carries a line towards a warm accent at half
+// strength or a cool one at 0.85; nothing else is drawn at nearly full
+// strength towards either of these two, which is what tells a corner apart
+// from a hovered edge, a hovered face, a chosen edge, a chosen face, a chosen
+// part and ordinary boundary ink.
+//
+// The choice is tested first, so where a question and a choice fall on one
+// corner the choice is what is seen. That case is already refused a layer up -
+// the uniform never carries a question the choice covers - and the order here
+// is what makes the rule true of this shader on its own as well.
 @fragment
 fn fragment_corner_mark(in: CornerOut) -> @location(0) vec4<f32> {
-    if (globals.hovered_vertex == 0u || in.vertex != globals.hovered_vertex) {
+    let chosen = globals.selected_vertex != 0u && in.vertex == globals.selected_vertex;
+    let asked = globals.hovered_vertex != 0u && in.vertex == globals.hovered_vertex;
+    if (!chosen && !asked) {
         discard;
     }
     let ink = marked_colour(draw.colour.rgb, 1.0);
-    let asked = vec3<f32>(0.0, 1.0, 0.85);
-    return vec4<f32>(mix(ink, asked, 0.92), draw.colour.a);
+    if (chosen) {
+        let decided = vec3<f32>(1.0, 0.15, 0.85);
+        return vec4<f32>(mix(ink, decided, 0.92), draw.colour.a);
+    }
+    let question = vec3<f32>(0.0, 1.0, 0.85);
+    return vec4<f32>(mix(ink, question, 0.92), draw.colour.a);
 }
 
 // The one topological edge under the pointer, drawn over the picture.

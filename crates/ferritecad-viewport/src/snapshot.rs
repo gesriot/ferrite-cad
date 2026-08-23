@@ -572,15 +572,14 @@ impl VertexPickId {
 
 /// What one chosen mark on the picture is on, transiently.
 ///
-/// Four states rather than several optional identities, because a definition,
-/// one of its faces and one of its edges are different things to draw and must
-/// not be told apart by whichever fields happen to be set. Nothing here is a
-/// row number or a face or edge ordinal: every non-empty arm carries an
-/// identity bound to the picture that issued it.
+/// Five states rather than several optional identities, because a definition,
+/// one of its faces, one of its edges and one of its corners are different
+/// things to draw and must not be told apart by whichever fields happen to be
+/// set. Nothing here is a row number or a face, edge or vertex ordinal: every
+/// non-empty arm carries an identity bound to the picture that issued it.
 ///
 /// Deliberately only what is chosen. [`Hovered`] is a separate type because a
-/// question and a choice have different precedence and lifetimes; it can also
-/// ask about a vertex that this selection type cannot yet carry.
+/// question and a choice have different precedence and lifetimes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Marked {
     #[default]
@@ -594,6 +593,13 @@ pub enum Marked {
     /// A choice rather than a question: an edge reaches this type only once
     /// the document has a durable name for it, which is decided a layer up.
     Edge(EdgePickId),
+    /// One topological vertex, as only a pixel inside its aperture can say.
+    ///
+    /// A choice on the same terms as an edge: a corner reaches this type only
+    /// once the document has a durable name for it, which is decided a layer
+    /// up. Numbered per definition, so every placement and every face-local
+    /// occurrence of one corner carries this one identity.
+    Vertex(VertexPickId),
 }
 
 impl Marked {
@@ -618,6 +624,10 @@ impl Marked {
                 Some(_) => self,
                 None => Self::Nothing,
             },
+            Self::Vertex(vertex) => match snapshot.definition_of_vertex(vertex) {
+                Some(_) => self,
+                None => Self::Nothing,
+            },
         }
     }
 }
@@ -626,10 +636,10 @@ impl Marked {
 ///
 /// A type of its own rather than a second use of [`Marked`]. That separation
 /// is the point: `Marked` is what a person has *chosen*, while this is the
-/// short-lived answer to a pointer question. A question also has the
-/// additional vertex arm below. Sharing one type would let question and
-/// choice flow through the same APIs and blur their different precedence and
-/// invalidation rules.
+/// short-lived answer to a pointer question. The two now carry the same five
+/// arms, and that is exactly why they must stay apart: sharing one type would
+/// let question and choice flow through the same APIs and blur their different
+/// precedence and invalidation rules.
 ///
 /// Every arm carries an identity bound to the picture that issued it, exactly
 /// as [`Marked`] does, and none of them is a row number, a face ordinal or an
@@ -646,10 +656,6 @@ pub enum Hovered {
     /// One topological edge, as a pixel of a line can say.
     Edge(EdgePickId),
     /// One topological vertex, as a pixel inside its aperture can say.
-    ///
-    /// A question only in this build. Durable corner names now reach the live
-    /// scene, but selection does not consume them yet, so nothing in this arm
-    /// reaches [`Marked`].
     Vertex(VertexPickId),
 }
 
@@ -981,6 +987,7 @@ impl Visibility {
             Marked::Definition(pick) => snapshot.definition(pick),
             Marked::Face(face) => snapshot.definition_of_face(face),
             Marked::Edge(edge) => snapshot.definition_of_edge(edge),
+            Marked::Vertex(vertex) => snapshot.definition_of_vertex(vertex),
         }
     }
 
@@ -1400,6 +1407,47 @@ impl RenderSnapshot {
         for item in self.items.iter().filter(|item| item.mesh == definition) {
             for vertex in segments {
                 let at = *vertex as usize * VERTEX_FLOATS;
+                let Some(position) = mesh.vertices.get(at..at + 3) else {
+                    continue;
+                };
+                extent.grow(apply(
+                    &item.transform,
+                    [position[0], position[1], position[2]],
+                ));
+            }
+        }
+        extent.bounds()
+    }
+
+    /// Where one topological vertex of one definition is, in every placement.
+    ///
+    /// Every packed occurrence of the corner and nothing else: not the edges
+    /// it ends, not the faces it touches and not the part it belongs to. A
+    /// corner of a box is drawn once per face meeting there and all of those
+    /// are the same point, so the extent is a point when the placement is one
+    /// and spans the placements when there are several. Every placement, for
+    /// the reason a face's and an edge's bounds cover every placement - a
+    /// corner belongs to a definition, so it is wherever that definition
+    /// appears.
+    ///
+    /// The same [`Extent`] the rest of the framing uses, so a camera framed on
+    /// a corner and one framed on a part are answering the same question in
+    /// the same arithmetic.
+    ///
+    /// A corner of another picture, of a replaced one, one whose occurrences
+    /// are not there, and one whose definition is placed nowhere is nowhere
+    /// rather than at the origin.
+    pub fn bounds_of_vertex(&self, vertex: VertexPickId) -> Option<([f32; 3], [f32; 3])> {
+        let definition = self.definition_of_vertex(vertex)?;
+        let occurrences = self.occurrences_of_vertex(vertex)?;
+        if occurrences.is_empty() {
+            return None;
+        }
+        let mesh = &self.meshes[definition];
+        let mut extent = Extent::default();
+        for item in self.items.iter().filter(|item| item.mesh == definition) {
+            for occurrence in occurrences {
+                let at = *occurrence as usize * VERTEX_FLOATS;
                 let Some(position) = mesh.vertices.get(at..at + 3) else {
                     continue;
                 };
