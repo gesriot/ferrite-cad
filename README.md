@@ -54,9 +54,10 @@ side raised from that sketch segment – and how the reference selects it.
 Clicking geometry for which the document has neither an exact corner name, nor
 an exact edge name, nor an exact face name selects its definition, which is the
 honest answer: imported corners, edges and faces have no durable names, so none
-of them has a subshape identity this document could store. Selecting a part selects every placement of it, and
-selecting a face marks that face in every placement, because a click names what
-a thing is and never the place it happened to land on.
+of them has a subshape identity this document could store. Selecting a part
+selects every placement of it, and selecting a named face, edge or corner marks
+that subshape in every placement, because a click names what a thing is and
+never the place it happened to land on.
 Moving the pointer over the model asks what is under it, and the answer is as
 particular as the picture can be. The most particular thing is a corner: where
 the faces and edges of a native body meet at one point, that one topological

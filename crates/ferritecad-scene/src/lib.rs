@@ -511,7 +511,7 @@ impl Selection {
     /// The definition a pick names, or nothing.
     ///
     /// What a list row chooses, and what a click on something with no durable
-    /// face or edge name falls back to.
+    /// vertex, edge or face name falls back to.
     pub fn definition(pick: PickId, snapshot: &RenderSnapshot) -> Self {
         match snapshot.definition(pick) {
             Some(_) => Self::Definition(pick),

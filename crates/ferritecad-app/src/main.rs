@@ -528,10 +528,10 @@ fn finish_answer(
 
 /// What a click on one pixel chooses.
 ///
-/// All three identities of the pixel are read from one frame and decided
+/// All four identities of the pixel are read from one frame and decided
 /// together, by the scene, which is the only place that knows what the
-/// document calls a face or edge and is therefore the only place that can
-/// decide.
+/// document calls a face, edge or vertex and is therefore the only place that
+/// can decide.
 ///
 /// A pixel that names nothing chooses nothing: clicking the background is how
 /// a person unchooses, and a pick left over from a document that has since
@@ -1384,8 +1384,8 @@ fn describe_rule(rule: &SelectionRule) -> String {
 ///
 /// One resolution for both halves of the interface: the row a list marks and
 /// the facts shown beside it come from the same selection, so they cannot
-/// describe different things. A chosen face is described as a face; anything
-/// else is described as the definition it is.
+/// describe different things. A chosen face, edge or vertex is described as
+/// that exact kind; a definition is described as the definition it is.
 fn inspected<'a>(
     selection: &Selection,
     catalogue: &'a [CatalogueEntry],
@@ -2096,9 +2096,9 @@ impl App {
     /// Reads one pixel and all four answers about it.
     ///
     /// The definition, face, edge and vertex come from one pixel of one frame,
-    /// so they cannot describe different geometry. The current click decision
-    /// consumes the three kinds it can select; the coherent vertex remains a
-    /// hover-only answer here.
+    /// so they cannot describe different geometry. The click and hover
+    /// decisions consume the same coherent answers with their own precedence
+    /// and lifetime rules.
     fn hit_at(live: &mut Live, camera: &Camera, x: f32, y: f32) -> Result<Hit> {
         let (Ok(x), Ok(y)) = (
             u32::try_from(x.round() as i64),
