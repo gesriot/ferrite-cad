@@ -160,7 +160,34 @@ jobs:
           # docs/build-occt.md records what that cost the OCCT workflow.
           grep -Ei '^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir|VCToolsVersion|VSINSTALLDIR|WindowsSdkDir|WindowsSDKVersion|UCRTVersion|UniversalCRTSdkDir)=' \
             vcvars-env.txt >> "$GITHUB_ENV"
+          # Read from the file, not from the environment: what this step
+          # appends to GITHUB_ENV reaches the next step, not this one.
+          install_dir="$(grep -i '^VCToolsInstallDir=' vcvars-env.txt | head -1 | cut -d= -f2-)"
           rm -f vcvars-env.txt
+          if [ -z "$install_dir" ]; then
+            echo "::error::vcvars did not say where the MSVC tools are"
+            exit 1
+          fi
+
+          # Git Bash injects its own /usr/bin at the front of PATH whenever a
+          # shell starts, whatever this workflow put there, and /usr/bin holds
+          # a GNU `link.exe` that has nothing to do with linking programs.
+          # cmake is unaffected because it records the compiler's full path at
+          # configure time; rustc invokes link.exe by name and gets the wrong
+          # one, and says so as "linking with `link.exe` failed" with no
+          # further explanation. docs/build-occt.md's workflow puts the MSVC
+          # tools back in front inside every step that runs cargo. Naming the
+          # linker outright is the same fix without the repetition, and it
+          # stops depending on the order of a PATH this shell rewrites.
+          tools="$(cygpath -u "$install_dir")bin/Hostx64/x64"
+          if [ ! -x "$tools/link.exe" ]; then
+            echo "::error::no MSVC link.exe under $tools"
+            exit 1
+          fi
+          {
+            echo "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$(cygpath -w "$tools/link.exe")"
+          } >> "$GITHUB_ENV"
+          echo "rustc will link with $tools/link.exe"
 
       - name: Build planegcs from the pinned release
         run: |
