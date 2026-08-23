@@ -186,6 +186,10 @@ jobs:
           fi
           {
             echo "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$(cygpath -w "$tools/link.exe")"
+            # dumpbin is reached the same way and for the same reason. It is
+            # what reads the import table, and a gate that cannot run its own
+            # inspector must say so rather than conclude anything.
+            echo "FCAD_MSVC_BIN=$tools"
           } >> "$GITHUB_ENV"
           echo "rustc will link with $tools/link.exe"
 
@@ -293,25 +297,35 @@ jobs:
       - name: Require the test process to depend on the shared library
         run: |
           set -euo pipefail
+          if [ '${{ matrix.name }}' = windows ] && [ ! -x "$FCAD_MSVC_BIN/dumpbin.exe" ]; then
+            echo "::error::no dumpbin under $FCAD_MSVC_BIN, so the import table cannot be read"
+            exit 1
+          fi
+
           found=0
           while IFS= read -r binary; do
             [ -n "$binary" ] || continue
             echo "== $binary"
+            # Kept whole and printed. An inspector that fails and a binary that
+            # names nothing look identical once the output is thrown away, and
+            # the first of those is a broken gate rather than a finding.
             case '${{ matrix.name }}' in
-              linux)
-                ldd "$binary" | grep -i 'libplanegcs\.so' || continue ;;
-              macos)
-                otool -L "$binary" | grep -i 'libplanegcs\.dylib' || continue ;;
+              linux)   ldd "$binary" > deps.txt 2>&1 || true ;;
+              macos)   otool -L "$binary" > deps.txt 2>&1 || true ;;
               windows)
                 # `//DEPENDENTS` rather than `/DEPENDENTS`: MSYS rewrites a
                 # leading slash into a Windows path, and doubling it is the
-                # escape that survives. An import-table entry is the proof the
-                # DLL is loaded rather than copied in: a statically linked
-                # planegcs would name nothing here.
-                dumpbin //DEPENDENTS "$(cygpath -w "$binary")" \
-                  | grep -i 'planegcs\.dll' || continue ;;
+                # escape that survives.
+                "$FCAD_MSVC_BIN/dumpbin.exe" //DEPENDENTS \
+                  "$(cygpath -w "$binary")" > deps.txt 2>&1 || true ;;
             esac
-            found=$((found + 1))
+            sed -n '1,60p' deps.txt
+
+            # An import-table entry is the proof the library is loaded rather
+            # than copied in: a statically linked planegcs would name nothing.
+            if grep -iq 'planegcs\.\(so\|dylib\|dll\)' deps.txt; then
+              found=$((found + 1))
+            fi
           done < binaries.txt
           if [ "$found" -eq 0 ]; then
             echo "::error::no test executable names planegcs at run time, so nothing here \
