@@ -336,14 +336,19 @@ extern "C" int32_t fc_gcs_session_solve(FcGcsSession *handle) noexcept {
 
 extern "C" int32_t fc_gcs_session_state(const FcGcsSession *handle, double *out,
                                         size_t count) noexcept {
-  if (handle == nullptr || out == nullptr) {
+  if (handle == nullptr || (count > 0 && out == nullptr)) {
     return FC_GCS_INVALID_INPUT;
   }
   const Session *session = reinterpret_cast<const Session *>(handle);
   if (count != session->state.size()) {
     return FC_GCS_INVALID_INPUT;
   }
-  std::memcpy(out, session->state.data(), count * sizeof(double));
+  // An empty vector may return null from data(). No bytes need copying, so do
+  // not make the zero-point contract depend on a C library accepting a null
+  // pointer for a zero-length memcpy.
+  if (count > 0) {
+    std::memcpy(out, session->state.data(), count * sizeof(double));
+  }
   return FC_GCS_SUCCESS;
 }
 

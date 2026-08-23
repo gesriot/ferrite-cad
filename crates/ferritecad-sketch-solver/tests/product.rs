@@ -129,6 +129,23 @@ fn solved(sketch: &Sketch) -> solver::Solution {
     }
 }
 
+#[test]
+fn an_empty_sketch_crosses_the_native_boundary_without_inventing_state() {
+    solver_or_skip!();
+    let sketch = Sketch::new();
+
+    let diagnosis = solver::diagnose(&sketch).expect("an empty system can be analysed");
+    assert_eq!(diagnosis.degrees_of_freedom(), 0);
+    assert!(diagnosis.conflicting().is_empty());
+    assert!(diagnosis.redundant().is_empty());
+
+    let solution = solved(&sketch);
+    assert_eq!(solution.degrees_of_freedom(), 0);
+    assert!(solution.positions().is_empty());
+    assert!(solution.redundant().is_empty());
+    assert_eq!(solution.worst_residual(), 0.0);
+}
+
 fn at(solution: &solver::Solution, point: PointId) -> (f64, f64) {
     let position = solution
         .position(point)
