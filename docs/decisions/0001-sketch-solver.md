@@ -57,11 +57,13 @@ by having solved a similar problem once.
 shared library to ship and to package on three platforms, and the same
 obligation to let users replace it.
 
-That cost is now paid rather than estimated. All three platforms build the
-pinned planegcs from a digest-checked archive and run the lab through the real
-shared library, Windows included, producing a DLL and an import library and
-never a static copy; the recipe, the file-by-file ownership and the
-replacement path are in [build-planegcs.md](../build-planegcs.md). What
+That cost is now paid rather than estimated, in
+[run 32643458969](https://github.com/gesriot/ferrite-cad/actions/runs/32643458969):
+all three platforms build the pinned planegcs from a digest-checked archive
+and run the lab through the real shared library, Windows included, producing a
+DLL and an import library and never a static copy. The recipe, the
+file-by-file ownership and the replacement path are in
+[build-planegcs.md](../build-planegcs.md). What
 remains open is packaging it into a FerriteCAD release, which is a different
 question from being able to build and replace it.
 

@@ -84,11 +84,15 @@ assumed.
 
 ## What is produced, per platform
 
-| Platform | Library | Import library | Compiler in the pin run |
+| Platform | Library | Import library | Compiler in [run 32643458969](https://github.com/gesriot/ferrite-cad/actions/runs/32643458969) |
 | --- | --- | --- | --- |
-| Linux | `libplanegcs.so` | not applicable | GNU C++ |
-| macOS | `libplanegcs.dylib`, install name `@rpath/libplanegcs.dylib` | not applicable | AppleClang |
-| Windows | `planegcs.dll` | `planegcs.lib` | MSVC |
+| Linux | `libplanegcs.so` | not applicable | GNU C++, ubuntu-latest X64 |
+| macOS | `libplanegcs.dylib`, install name `@rpath/libplanegcs.dylib` | not applicable | AppleClang, macos-latest ARM64 |
+| Windows | `planegcs.dll` | `planegcs.lib` | MSVC 19.51.36256, windows-latest X64 |
+
+That run also recorded Eigen 3.4.0 by digest on all three, Boost 1_91 from
+vcpkg on Windows and from the platform packages elsewhere, and the three
+platforms agreeing over 43 semantic facts.
 
 The import library is linker metadata. It carries no planegcs implementation;
 what it does is let somebody relink against a library they replaced. Windows
