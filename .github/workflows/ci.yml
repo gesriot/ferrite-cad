@@ -48,7 +48,61 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace --all-targets
+
+      # A passive trap, armed before the tests and touching nothing about how
+      # they run. Windows has twice killed a test process with
+      # STATUS_ACCESS_VIOLATION and no Rust panic, and a rerun passed both
+      # times, so the evidence disappeared with the process. Four probe rounds
+      # failed to reproduce it on demand, so the next natural occurrence is the
+      # next chance to see a stack. This only asks Windows to write a dump if a
+      # process dies; it does not retry, skip, serialise or reconfigure
+      # anything.
+      - name: Arm Windows crash dumps
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'crashdumps'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps'
+          New-Item -Path $key -Force | Out-Null
+          Set-ItemProperty -Path $key -Name DumpFolder -Value $dir -Type ExpandString
+          Set-ItemProperty -Path $key -Name DumpCount -Value 10 -Type DWord
+          # 2 is a full dump, which is what makes a stack readable afterwards.
+          Set-ItemProperty -Path $key -Name DumpType -Value 2 -Type DWord
+
       - run: cargo test --workspace
+
+      # Only when something already failed, and only on the platform the trap
+      # is set on. A green run prints nothing and uploads nothing.
+      - name: Whether Windows left a crash dump
+        if: failure() && matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'crashdumps'
+          $dumps = Get-ChildItem $dir -Filter *.dmp -ErrorAction SilentlyContinue
+          if (-not $dumps) {
+            "no crash dump was written, so this failure was not a process death"
+            exit 0
+          }
+          $cdb = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe' `
+            -ErrorAction SilentlyContinue
+          foreach ($d in $dumps) {
+            "=== $($d.Name) ($($d.Length) bytes) ==="
+            if ($cdb) {
+              & $cdb.FullName -z $d.FullName -c '.ecxr; k 40; ~*k 20; q' 2>&1 |
+                Select-Object -First 400
+            } else {
+              "cdb is not on this image; the dump is uploaded as an artefact instead"
+            }
+          }
+
+      - name: Keep any Windows crash dump
+        if: failure() && matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-crashdumps
+          path: ${{ runner.temp }}/crashdumps
+          if-no-files-found: ignore
 
       # The document format must behave identically on every platform, so the
       # command-line path is exercised rather than only the library tests.
