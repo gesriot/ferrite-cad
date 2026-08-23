@@ -304,8 +304,22 @@ jobs:
 
           found=0
           while IFS= read -r binary; do
+            # A carriage return survives every echo unchanged and every open
+            # not at all, which is how a path can be printed correctly and
+            # still not be found.
+            binary="$(printf '%s' "$binary" | tr -d '\r')"
             [ -n "$binary" ] || continue
-            echo "== $binary"
+
+            readable="$binary"
+            if [ '${{ matrix.name }}' = windows ]; then
+              readable="$(cygpath -u "$binary")"
+            fi
+            if [ ! -f "$readable" ]; then
+              echo "::error::cargo named $binary, and there is no such file"
+              find "$(dirname "$readable")" -maxdepth 1 -name '*.exe' | head -20
+              exit 1
+            fi
+            echo "== $binary ($(wc -c < "$readable") bytes)"
             # Kept whole and printed. An inspector that fails and a binary that
             # names nothing look identical once the output is thrown away, and
             # the first of those is a broken gate rather than a finding.
