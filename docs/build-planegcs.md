@@ -84,7 +84,7 @@ assumed.
 
 ## What is produced, per platform
 
-| Platform | Library | Import library | Compiler in [run 32643458969](https://github.com/gesriot/ferrite-cad/actions/runs/32643458969) |
+| Platform | Library | Import library | Compiler in [run 32644085475](https://github.com/gesriot/ferrite-cad/actions/runs/32644085475) |
 | --- | --- | --- | --- |
 | Linux | `libplanegcs.so` | not applicable | GNU C++, ubuntu-latest X64 |
 | macOS | `libplanegcs.dylib`, install name `@rpath/libplanegcs.dylib` | not applicable | AppleClang, macos-latest ARM64 |

@@ -175,7 +175,7 @@ fn link_planegcs() -> Result<(), String> {
 fn build_bridge(tree: &Path) -> Result<String, String> {
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
     let build = out.join("bridge-build");
-    let source = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets it))"))
+    let source = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets it"))
         .join("planegcs-bridge");
 
     // No -G: the platform default is whichever toolchain is installed, which

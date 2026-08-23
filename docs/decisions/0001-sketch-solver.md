@@ -58,7 +58,7 @@ shared library to ship and to package on three platforms, and the same
 obligation to let users replace it.
 
 That cost is now paid rather than estimated, in
-[run 32643458969](https://github.com/gesriot/ferrite-cad/actions/runs/32643458969):
+[run 32644085475](https://github.com/gesriot/ferrite-cad/actions/runs/32644085475):
 all three platforms build the pinned planegcs from a digest-checked archive
 and run the lab through the real shared library, Windows included, producing a
 DLL and an import library and never a static copy. The recipe, the
