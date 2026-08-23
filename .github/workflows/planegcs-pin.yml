@@ -651,6 +651,29 @@ jobs:
           esac
           echo "an unbundled application run reaches $out through the loader"
 
+      - name: Run the application's own gate through the real library
+        env:
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          # The log is parsed below. Colour escapes immediately before `ok`
+          # would make an executed gate indistinguishable from an absent one.
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          # Run this before the direct command below. The gate owns a deadline
+          # and kills and reaps a child that entered an event loop; without
+          # this order the direct command could wait forever on macOS or
+          # Windows before the deadline gate ever got a turn.
+          cargo test --release -p ferritecad-app --features planegcs \
+            --test solver_info -- --nocapture --test-threads=1 2>&1 | tee app-test.txt
+          grep -qF \
+            'test the_viewer_says_which_sketch_solver_it_has_and_opens_nothing ... ok' \
+            app-test.txt \
+            || { echo "::error::the application process gate did not run and pass"; exit 1; }
+          grep -qF \
+            'test a_required_build_answers_with_the_library_it_loaded ... ok' \
+            app-test.txt \
+            || { echo "::error::the required linked-application gate did not run and pass"; exit 1; }
+
       - name: Ask the real application which sketch solver it has
         run: |
           set -euo pipefail
@@ -696,20 +719,6 @@ jobs:
           echo "app solver-info exit=0 answer=available" > app-facts.txt
           echo "app solver-info provenance=${named}" >> app-facts.txt
           echo "the application loaded ${expected}"
-
-      - name: Run the application's own gate through the real library
-        env:
-          FERRITECAD_REQUIRE_PLANEGCS: '1'
-        run: |
-          set -euo pipefail
-          # The same command, held to a deadline. A diagnostic that opened a
-          # window would sit in an event loop rather than fail, and on the two
-          # platforms that have a window server that is the difference between
-          # answering before the window and answering after it.
-          cargo test --release -p ferritecad-app --features planegcs \
-            --test solver_info -- --nocapture --test-threads=1 2>&1 | tee app-test.txt
-          grep -qF 'test the_viewer_says_which_sketch_solver_it_has_and_opens_nothing ...' \
-            app-test.txt || { echo "::error::the application gate did not run"; exit 1; }
 
       - name: Require a substituted library to be named in its own words
         run: |

@@ -92,11 +92,23 @@ fn run(arguments: &[&str]) -> Answer {
         .expect("a spawned child can be asked whether it has finished")
         .is_none()
     {
-        assert!(
-            Instant::now() < deadline,
-            "ferritecad-viewer {arguments:?} did not answer within {DEADLINE:?}, so it opened \
-             something and waited"
-        );
+        if Instant::now() >= deadline {
+            // Dropping Child does not stop it. Kill and reap it before the
+            // assertion fails, or the very regression this gate is for leaves
+            // an orphaned viewer waiting behind the rest of the test run.
+            child
+                .kill()
+                .expect("a viewer that did not answer can be stopped");
+            let output = child
+                .wait_with_output()
+                .expect("the stopped viewer can be reaped");
+            panic!(
+                "ferritecad-viewer {arguments:?} did not answer within {DEADLINE:?}, so it \
+                 opened something and waited\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
 
