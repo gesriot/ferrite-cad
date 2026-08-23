@@ -15,6 +15,14 @@ name: planegcs pin
 # that the product path — not the bench's own arithmetic — is what answered,
 # that the three platforms agree about what the solver concluded, and that the
 # licence obligations were packaged rather than promised.
+#
+# Since §21A-2b1 it also records that the application itself loads the library:
+# the real `ferritecad-viewer` imports it, finds it through the loader's search
+# path, answers `--solver-info` with what that library said about itself, and
+# is stopped by the system loader when it is taken away. That is a statement
+# about loading and not about packaging. A relocatable release that needs no
+# such environment is §21A-2b2, and it has to lay Open CASCADE out at the same
+# time; nothing here is evidence for it.
 
 on:
   workflow_dispatch:
@@ -22,6 +30,7 @@ on:
     paths:
       - 'tools/planegcs/**'
       - 'tools/build-planegcs.sh'
+      - 'crates/ferritecad-app/**'
       - 'crates/ferritecad-sketch-solver/**'
       - 'crates/ferritecad-solver-lab/**'
       - 'tools/check-solver-ownership.sh'
@@ -511,6 +520,282 @@ jobs:
             || { echo "::error::the product solver did not open the pinned library"; exit 1; }
           echo "every planegcs gate ran, on both the product path and the bench"
 
+      - name: Build the real application against planegcs
+        env:
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+        run: |
+          set -euo pipefail
+          # The application, and not one of the test executables above. Every
+          # step before this one is a statement about the solver crate and the
+          # bench; this is the first about the program a person actually runs.
+          if ! cargo build --release -p ferritecad-app --bin ferritecad-viewer \
+            --features planegcs --message-format=json > build-app.json; then
+            echo "::group::the same build, in words"
+            cargo build --release -p ferritecad-app --bin ferritecad-viewer \
+              --features planegcs || true
+            echo "::endgroup::"
+            echo "::error::the application did not build against planegcs"
+            exit 1
+          fi
+          viewer="$(jq -r 'select(.reason == "compiler-artifact")
+                           | select(.target.name == "ferritecad-viewer")
+                           | select(.target.kind | index("bin"))
+                           | .executable // empty' build-app.json | tail -1)"
+          viewer="$(printf '%s' "$viewer" | tr -d '\r')"
+          if [ -z "$viewer" ]; then
+            echo "::error::cargo did not say where it put ferritecad-viewer"
+            exit 1
+          fi
+          # Not a test binary wearing the name. A run that proved something
+          # about one of those would look exactly like this one from here on.
+          if grep -Fxq "$viewer" binaries.txt; then
+            echo "::error::$viewer is one of the test executables, not the application"
+            exit 1
+          fi
+          readable="$viewer"
+          if [ '${{ matrix.name }}' = windows ]; then
+            readable="$(cygpath -u "$viewer")"
+          fi
+          if [ ! -f "$readable" ]; then
+            echo "::error::cargo named $viewer, and there is no such file"
+            exit 1
+          fi
+          case "$(basename "$readable")" in
+            ferritecad-viewer|ferritecad-viewer.exe) ;;
+            *) echo "::error::$viewer is not the application binary"; exit 1 ;;
+          esac
+          {
+            echo "FCAD_VIEWER=$viewer"
+            echo "FCAD_VIEWER_READABLE=$readable"
+          } >> "$GITHUB_ENV"
+          echo "the application is $viewer ($(wc -c < "$readable") bytes)"
+
+      - name: Require the application binary to import the shared library
+        run: |
+          set -euo pipefail
+          case '${{ matrix.name }}' in
+            linux)   ldd "$FCAD_VIEWER" > app-deps.txt 2>&1 || true ;;
+            macos)   otool -L "$FCAD_VIEWER" > app-deps.txt 2>&1 || true ;;
+            windows)
+              "$FCAD_MSVC_BIN/dumpbin.exe" //DEPENDENTS \
+                "$(cygpath -w "$FCAD_VIEWER")" > app-deps.txt 2>&1 || true ;;
+          esac
+          # Kept whole and printed, for the same reason the test binaries are:
+          # an inspector that failed and a binary that names nothing look
+          # identical once the output is thrown away.
+          sed -n '1,60p' app-deps.txt
+          if ! grep -iq 'planegcs\.\(so\|dylib\|dll\)' app-deps.txt; then
+            echo "::error::the application does not name ${{ matrix.library }} at run time, \
+            so nothing it says about a solver is a statement about planegcs"
+            exit 1
+          fi
+          echo "the application imports ${{ matrix.library }}"
+
+      - name: Require an unbundled application run to find the library by the loader
+        run: |
+          set -euo pipefail
+          out="$PWD/vendor/planegcs"
+          # An unbundled run, and named as one. The application is a dependent
+          # of the solver crate, and cargo passes a link library up but not a
+          # link argument, so this binary carries no run path of its own: it
+          # finds planegcs through the loader's search path, which this workflow
+          # sets. That is a statement about loading and about nothing else.
+          #
+          # The absence of a build-tree run path is asserted rather than
+          # assumed, because if one appeared this gate would go on passing while
+          # having stopped saying anything about the loader environment - and a
+          # run path into a build directory is not evidence about a package.
+          case '${{ matrix.name }}' in
+            linux)
+              if readelf -d "$FCAD_VIEWER" | grep -E 'RUNPATH|RPATH' | grep -F "$out"; then
+                echo "::error::the application carries a run path into the build tree, so this \
+                run says nothing about the loader environment"
+                exit 1
+              fi
+              case ":${LD_LIBRARY_PATH:-}:" in
+                *":$out:"*) echo "LD_LIBRARY_PATH reaches $out" ;;
+                *) echo "::error::LD_LIBRARY_PATH does not hold $out"; exit 1 ;;
+              esac ;;
+            macos)
+              if otool -l "$FCAD_VIEWER_READABLE" | grep -A2 LC_RPATH | grep -F "$out"; then
+                echo "::error::the application carries a run path into the build tree, so this \
+                run says nothing about the loader environment"
+                exit 1
+              fi
+              case ":${DYLD_LIBRARY_PATH:-}:" in
+                *":$out:"*) echo "DYLD_LIBRARY_PATH reaches $out" ;;
+                *) echo "::error::DYLD_LIBRARY_PATH does not hold $out"; exit 1 ;;
+              esac ;;
+            windows)
+              # No run path exists on this platform at all; the loader searches
+              # the directory of the executable and then PATH. The executable's
+              # own directory is a cargo target directory and holds no DLL.
+              if [ -f "$(dirname "$FCAD_VIEWER_READABLE")/${{ matrix.library }}" ]; then
+                echo "::error::a copy of ${{ matrix.library }} sits beside the application, so \
+                this run says nothing about the loader environment"
+                exit 1
+              fi
+              reachable=0
+              IFS=':' read -ra entries <<< "$PATH"
+              for entry in "${entries[@]}"; do
+                if [ -f "$entry/${{ matrix.library }}" ]; then
+                  echo "found ${{ matrix.library }} in $entry"
+                  reachable=1
+                  break
+                fi
+              done
+              if [ "$reachable" -eq 0 ]; then
+                echo "::error::no entry of PATH holds ${{ matrix.library }}"
+                exit 1
+              fi ;;
+          esac
+          echo "an unbundled application run reaches $out through the loader"
+
+      - name: Ask the real application which sketch solver it has
+        run: |
+          set -euo pipefail
+          # This command opens nothing, and on Linux there is no display for it
+          # to open anything with, so a diagnostic that had reached winit could
+          # not start at all. On the two platforms that do have a window server
+          # the same property is held to a deadline by the application's own
+          # gate in the step below: a window would wait rather than answer.
+          set +e
+          "$FCAD_VIEWER_READABLE" --solver-info > app.txt 2> app-err.txt
+          status=$?
+          set -e
+          echo "exit ${status}"
+          cat app.txt app-err.txt
+
+          if [ "$status" -ne 0 ]; then
+            echo "::error::ferritecad-viewer --solver-info exited ${status}; a required build \
+            must have a solver, and must not answer a question about one by failing"
+            exit 1
+          fi
+          grep -qx 'sketch solver: available' app.txt \
+            || { echo "::error::the application did not say it has a solver"; exit 1; }
+          if [ -s app-err.txt ]; then
+            echo "::error::--solver-info wrote to stderr, so it did more than answer"
+            exit 1
+          fi
+          if grep -qi 'skip' app.txt; then
+            echo "::error::the application skipped something instead of answering"
+            exit 1
+          fi
+
+          # The words the library gave, compared against the delivery rather
+          # than against anything the application carries. That the two agree is
+          # only half the claim; the substitution step below is what shows the
+          # application was reading the library and not itself.
+          expected="$(grep -m1 '^provenance' vendor/planegcs/PROVENANCE.txt \
+            | sed 's/^provenance *//')"
+          named="$(grep -m1 '^provenance: ' app.txt | sed 's/^provenance: //')"
+          if [ "$named" != "$expected" ]; then
+            echo "::error::the application named '${named}' and the pinned delivery is '${expected}'"
+            exit 1
+          fi
+          echo "app solver-info exit=0 answer=available" > app-facts.txt
+          echo "app solver-info provenance=${named}" >> app-facts.txt
+          echo "the application loaded ${expected}"
+
+      - name: Run the application's own gate through the real library
+        env:
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+        run: |
+          set -euo pipefail
+          # The same command, held to a deadline. A diagnostic that opened a
+          # window would sit in an event loop rather than fail, and on the two
+          # platforms that have a window server that is the difference between
+          # answering before the window and answering after it.
+          cargo test --release -p ferritecad-app --features planegcs \
+            --test solver_info -- --nocapture --test-threads=1 2>&1 | tee app-test.txt
+          grep -qF 'test the_viewer_says_which_sketch_solver_it_has_and_opens_nothing ...' \
+            app-test.txt || { echo "::error::the application gate did not run"; exit 1; }
+
+      - name: Require a substituted library to be named in its own words
+        run: |
+          set -euo pipefail
+          out="$PWD/vendor/planegcs"
+          native() {
+            if [ '${{ matrix.name }}' = windows ]; then cygpath -m "$1"; else printf '%s' "$1"; fi
+          }
+          # A real, compatible library built from the same sources and the same
+          # definition, saying something else about itself. An application that
+          # printed a provenance of its own would go on printing the pinned one
+          # here, and every other gate in this workflow would still pass.
+          fake='planegcs from somewhere else, archive SHA-256 0000000000000000000000000000000000000000000000000000000000000000'
+          alt="$PWD/vendor/planegcs-alt"
+          rm -rf "$alt"
+          cmake -S "$(native "$PWD/tools/planegcs")" -B "$(native "$alt")" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFCAD_PLANEGCS_TREE="$(native "$out/tree")" \
+            -DFCAD_EIGEN_INCLUDE="$FCAD_EIGEN_INCLUDE" \
+            -DFCAD_BOOST_INCLUDE="$FCAD_BOOST_INCLUDE" \
+            -DFCAD_PLANEGCS_PROVENANCE="$fake"
+          cmake --build "$(native "$alt")" --config Release
+          built="$(grep '^library=' "$alt/planegcs-build-info-Release.txt" | cut -d= -f2-)"
+          if [ '${{ matrix.name }}' = windows ]; then
+            built="$(cygpath -u "$built")"
+          fi
+          [ -f "$built" ] || { echo "::error::the substituted library was not built"; exit 1; }
+
+          # Swapped in place, so the loader finds it exactly where it found the
+          # pinned one and nothing else about the run changes. The import
+          # library is linker metadata and stays as it is.
+          mv "$out/${{ matrix.library }}" "$out/pinned-${{ matrix.library }}"
+          cp "$built" "$out/${{ matrix.library }}"
+          set +e
+          "$FCAD_VIEWER_READABLE" --solver-info > substituted.txt 2>&1
+          status=$?
+          set -e
+          mv -f "$out/pinned-${{ matrix.library }}" "$out/${{ matrix.library }}"
+          cat substituted.txt
+
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the application would not run against a compatible library"
+            exit 1
+          fi
+          if ! grep -qF "provenance: ${fake}" substituted.txt; then
+            echo "::error::the application did not repeat the substituted library's own words, \
+            so what it prints is its own and not the library's"
+            exit 1
+          fi
+          if grep -qF 'FreeCAD 1.0.1' substituted.txt; then
+            echo "::error::the application named the pinned release beside a library that is \
+            not it"
+            exit 1
+          fi
+          echo "app substituted-library said-its-own-provenance=true" >> app-facts.txt
+          echo "a substituted library is named in its own words"
+
+      - name: Require a hidden library to stop the linked application
+        run: |
+          set -euo pipefail
+          out="$PWD/vendor/planegcs"
+          # Two states that must not be confused. A build that never linked
+          # planegcs reaches main and answers a typed Unavailable; this one is
+          # already linked, and the system loader stops it before main, so it
+          # cannot answer anything. Both are required, and this is the second.
+          mv "$out/${{ matrix.library }}" "$out/hidden-${{ matrix.library }}"
+          set +e
+          "$FCAD_VIEWER_READABLE" --solver-info > hidden-app.txt 2>&1
+          status=$?
+          set -e
+          mv "$out/hidden-${{ matrix.library }}" "$out/${{ matrix.library }}"
+          echo "exit ${status}"
+          head -5 hidden-app.txt
+
+          if [ "$status" -eq 0 ]; then
+            echo "::error::the application ran with ${{ matrix.library }} moved away"
+            exit 1
+          fi
+          if grep -q 'sketch solver:' hidden-app.txt; then
+            echo "::error::a linked application answered a question about the solver with \
+            no library to load; it must be stopped by the loader, not fall back to anything"
+            exit 1
+          fi
+          echo "app hidden-library started=false answered=false" >> app-facts.txt
+          echo "with the library hidden the linked application does not start"
+
       - name: Keep the semantic summary for the platforms to be compared on
         run: |
           set -euo pipefail
@@ -523,17 +808,21 @@ jobs:
           {
             grep '^product ' product.txt || true
             grep '^semantic ' lab.txt || true
+            grep '^app ' app-facts.txt || true
           } | LC_ALL=C sort > summary.txt
           if [ ! -s summary.txt ]; then
             echo "::error::the run printed no semantic summary"
             exit 1
           fi
-          # Both halves have to be in it. A file with only one would still
-          # compare equal across three platforms and would say half as much.
+          # All three parts have to be in it. A file with only some would
+          # still compare equal across three platforms and would say less than
+          # it appears to.
           grep -q '^product ' summary.txt \
             || { echo "::error::the summary carries no product result"; exit 1; }
           grep -q '^semantic ' summary.txt \
             || { echo "::error::the summary carries no bench result"; exit 1; }
+          grep -q '^app ' summary.txt \
+            || { echo "::error::the summary carries no application result"; exit 1; }
           wc -l < summary.txt
 
       - name: Write the pin report
@@ -673,6 +962,24 @@ jobs:
           # one coordinate and not one microsecond: three machines will not
           # produce identical doubles and must not be asked to.
           reference="summaries/planegcs-summary-linux/summary.txt"
+          # Every platform has to have made the application statement, not two
+          # of them plus a third that only ran the solver. Checked per file
+          # rather than on the reference alone, because a summary missing the
+          # line would be caught by the diff below only if the reference had it.
+          for summary in summaries/planegcs-summary-*/summary.txt; do
+            grep -q '^app solver-info exit=0 answer=available' "$summary" \
+              || { echo "::error::${summary} carries no application result, so the \
+              application was not shown to load planegcs on that platform"; exit 1; }
+          done
+          # And that the solver and bench facts the earlier slices established
+          # are all still there. A floor, so this fails when one is dropped and
+          # not when one is added.
+          facts="$(grep -c '^\(product\|semantic\) ' "$reference" || true)"
+          if [ "$facts" -lt 49 ]; then
+            echo "::error::the summary carries ${facts} solver and bench facts, and 49 were \
+            established before the application joined them"
+            exit 1
+          fi
           for platform in macos windows; do
             other="summaries/planegcs-summary-${platform}/summary.txt"
             if ! diff -u "$reference" "$other"; then

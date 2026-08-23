@@ -5,9 +5,17 @@ planegcs is FerriteCAD's sketch solver, chosen in
 built as a shared library that whoever receives a build can replace with their
 own. Nothing of it is compiled into a FerriteCAD binary.
 
-Nothing in the FerriteCAD application loads it yet. This page is about the
-component, the crate that owns it and the bench that measures it, not about a
-release.
+Since §21A-2b1 the FerriteCAD application can load it. Built with the feature
+on, `ferritecad-viewer` links the shared library, and
+`ferritecad-viewer --solver-info` answers with what that library says about
+itself. What has not been done is packaging: there is no relocatable release
+that carries planegcs, because laying one out has to solve Open CASCADE's
+loader layout at the same time, and that is §21A-2b2. A run of the application
+against a build tree finds the library through the loader's search path, which
+is an unbundled run and is not evidence about a package.
+
+Nothing above the loading is integrated either. No document stores a
+constraint, no feature reads one, and no interface draws one.
 
 ```
 tools/build-planegcs.sh [output-directory]      # default ./vendor/planegcs
@@ -15,6 +23,13 @@ FCAD_PLANEGCS_DIR=<output> cargo test -p ferritecad-sketch-solver \
     --features planegcs -- --nocapture
 FCAD_PLANEGCS_DIR=<output> cargo test -p ferritecad-solver-lab \
     --features planegcs -- --nocapture
+
+# The application, and the question it can answer about itself. The library
+# is found by the loader, so name <output> in LD_LIBRARY_PATH on Linux,
+# DYLD_LIBRARY_PATH on macOS or PATH on Windows.
+FCAD_PLANEGCS_DIR=<output> cargo build -p ferritecad-app \
+    --bin ferritecad-viewer --features planegcs
+target/debug/ferritecad-viewer --solver-info
 ```
 
 On Windows, run it from a shell that has already seen `vcvars64.bat`, so cmake
@@ -145,10 +160,13 @@ planegcs's API reaches Rust.
 - That run path reaches the **product crate's own** binaries and not a
   dependent's: cargo propagates a link *library* to the crates above but not a
   link *argument*, and the build script belongs to `ferritecad-sketch-solver`.
-  So the bench, which is such a dependent, finds the library the way a shipped
-  application will — through the loader's search path. The pin workflow sets
+  The bench and `ferritecad-app` are both such dependents, and both find the
+  library through the loader's search path. The pin workflow sets
   `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH` or `PATH` accordingly, on all three
-  platforms rather than on Windows alone.
+  platforms rather than on Windows alone. For the application that is an
+  unbundled run, and the pin workflow requires it to carry no run path into the
+  build tree, so what is being shown is the loader environment and not
+  something a package would inherit.
 - The library, not the shim, answers `fc_planegcs_provenance()`. A string
   compiled into the shim would go on saying "FreeCAD 1.0.1" beside a library
   built from anything at all.
@@ -159,6 +177,12 @@ planegcs's API reaches Rust.
   released exactly once. All three return the same coordinates either way, so
   `fc_gcs_native_solves`, `fc_gcs_native_sessions` and
   `fc_gcs_native_live_sessions` are what make them checkable.
+- The application reaches all of this through `ferritecad-sketch-solver` and
+  through nothing else. `ferritecad-app` has no build script, no `extern "C"`,
+  no constraint mapping and no copy of the contract; its `planegcs` feature is
+  forwarded to the solver crate rather than deciding anything, and
+  `tools/check-solver-ownership.sh` fails ordinary CI if any of that comes back
+  or if the application gains a dependency on the bench.
 - There is **one** way to solve through the shim. The earlier one-shot
   `fc_gcs_solve` is gone: it built a system and mapped every constraint a
   second time, and two copies of that mapping is two places for it to be

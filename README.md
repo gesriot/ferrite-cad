@@ -252,6 +252,28 @@ durable answer the document has: an exact named native edge first, otherwise a
 named native face, otherwise its definition. Opening another document is the
 only editing operation there is.
 
+## Which sketch solver this build has
+
+```sh
+cargo run -p ferritecad-app --bin ferritecad-viewer -- --solver-info
+```
+
+Answers and exits. It opens no window, reads no document and starts neither
+Open CASCADE nor a graphics device, so it can be asked on a machine that has
+neither a display nor a GPU.
+
+An ordinary build has no sketch solver in it. planegcs is LGPL-2.0-or-later,
+is built separately and is off by default, so the answer is a typed refusal
+and the exit code is `3`. A build that linked it exits `0` and prints what the
+loaded library says it is, which is the library's own answer and not a string
+this program carries. A command line this viewer cannot act on still exits
+`2`, as it always did.
+
+This says which component is loaded. It does not say that sketches are
+constrained: no document stores a constraint, no feature reads one, and no
+release packages planegcs. Building and replacing the library is
+[docs/build-planegcs.md](docs/build-planegcs.md).
+
 ## How a document is put together
 
 A document is one SQLite file, `part.fcad`. It holds only what cannot be

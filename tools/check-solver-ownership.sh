@@ -5,13 +5,16 @@
 #
 # `ferritecad-sketch-solver` holds the contract, the FFI, the MIT bridge, the
 # build detection and the native session's lifetime. `ferritecad-solver-lab` is
-# a client of it and holds none of those. The direction matters both ways: a
-# bench with its own copy of the boundary would be measuring a second
-# implementation and reporting it as the product's, and a product that could
-# reach into the bench could be handed the reference solver's answer.
+# a client of it and holds none of those, and since 21A-2b1 so is
+# `ferritecad-app`. The direction matters every way: a bench with its own copy
+# of the boundary would be measuring a second implementation and reporting it
+# as the product's; a product that could reach into the bench could be handed
+# the reference solver's answer; and an application with its own link detection
+# would hold a second opinion about whether there is a solver at all, free to
+# disagree with the one the product crate reached.
 #
 # Checked mechanically because the copy that comes back is the one nobody is
-# looking at, and because both halves keep compiling either way.
+# looking at, and because every half keeps compiling either way.
 #
 # Run from the repository root:
 #   tools/check-solver-ownership.sh
@@ -20,6 +23,7 @@ set -euo pipefail
 
 readonly PRODUCT='crates/ferritecad-sketch-solver'
 readonly LAB='crates/ferritecad-solver-lab'
+readonly APP='crates/ferritecad-app'
 
 problems=0
 fail() {
@@ -57,6 +61,38 @@ if grep -rqn 'ferritecad_solver_lab' "${PRODUCT}/src" "${PRODUCT}/tests"; then
     fail "${PRODUCT} names the bench; the product path must not reach it"
 fi
 
+# The application reaches planegcs through the product crate, and only so.
+#
+# It has a real diagnostic command now, `ferritecad-viewer --solver-info`, and
+# that is exactly why these hold: a binary that can answer a question about the
+# solver is a binary somebody could be tempted to teach the answer to.
+grep -Eq '^[[:space:]]*ferritecad-sketch-solver[[:space:]]*[=.]' "${APP}/Cargo.toml" \
+    || fail "${APP} does not depend on ${PRODUCT}, so it is not on the product path"
+grep -Fq 'ferritecad-sketch-solver/planegcs' "${APP}/Cargo.toml" \
+    || fail "${APP} does not forward the planegcs feature to ${PRODUCT}, so an application \
+built to link the library would not link one"
+
+if grep -Eqn '^[[:space:]]*ferritecad-solver-lab[[:space:]]*[=.]' "${APP}/Cargo.toml"; then
+    fail "${APP} depends on ${LAB}; the application must never be able to reach the bench"
+fi
+if grep -rqn 'ferritecad_solver_lab' "${APP}/src" "${APP}/tests"; then
+    grep -rn 'ferritecad_solver_lab' "${APP}/src" "${APP}/tests" >&2
+    fail "${APP} names the bench; the reference solver is not a fallback"
+fi
+
+# And it holds no copy of the boundary of its own.
+[ -e "${APP}/build.rs" ] \
+    && fail "${APP}/build.rs exists; build and link detection belongs to ${PRODUCT}"
+[ -d "${APP}/planegcs-bridge" ] \
+    && fail "${APP}/planegcs-bridge exists; the C bridge belongs to ${PRODUCT}"
+
+for forbidden in 'extern "C"' 'unsafe' 'fc_gcs_' 'link_name' '#[link'; do
+    if grep -rqnF "${forbidden}" "${APP}/src" "${APP}/tests"; then
+        grep -rnF "${forbidden}" "${APP}/src" "${APP}/tests" >&2
+        fail "${APP} contains ${forbidden}; the FFI and its lifetime belong to ${PRODUCT}"
+    fi
+done
+
 # The bridge and the build detection are where they are said to be.
 for required in \
     "${PRODUCT}/build.rs" \
@@ -73,4 +109,4 @@ if [ "${problems}" -gt 0 ]; then
     exit 1
 fi
 
-echo "solver ownership: ${PRODUCT} owns the boundary, ${LAB} is a client of it"
+echo "solver ownership: ${PRODUCT} owns the boundary; ${LAB} and ${APP} are clients of it"

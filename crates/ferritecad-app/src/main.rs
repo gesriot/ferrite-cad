@@ -27,7 +27,7 @@
 //! its own thread and comes back as one more event. The window opens on an
 //! empty scene and gains the model when the model is ready.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
@@ -57,14 +57,22 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 fn main() -> Result<()> {
-    let document = match document_argument(std::env::args_os().skip(1)) {
-        Ok(document) => document,
+    let request = match request(std::env::args_os().skip(1)) {
+        Ok(request) => request,
         Err(error) => {
             // Printed rather than returned: an error out of `main` is shown in
             // its debug form, and a usage line is for a person to read.
             eprintln!("{error}");
-            std::process::exit(2);
+            std::process::exit(EXIT_USAGE);
         }
+    };
+    let document = match request {
+        // Answered here and gone, before this binary does anything else. No
+        // event loop, no window, no surface, no document and no Open CASCADE
+        // session: which solver a build has must be answerable on a machine
+        // with no display and no GPU, by somebody who is not opening a model.
+        Request::SolverInfo => std::process::exit(solver_info()),
+        Request::Document(document) => document,
     };
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
@@ -82,14 +90,86 @@ fn main() -> Result<()> {
         .map_err(|error| ferritecad_types::CadError::rendering_because("running the window", error))
 }
 
+/// Exit code for a command line this viewer cannot act on.
+const EXIT_USAGE: i32 = 2;
+
+/// Exit code for `--solver-info` on a build that has no sketch solver.
+///
+/// Distinct from both of the others, and stable. Nothing went wrong with the
+/// command, so this is not a failure; and there is no solver, so it is not
+/// success either. A script has to be able to tell "this build can solve a
+/// sketch" from "this build cannot" from "you typed it wrong" without reading
+/// prose, and none of the three may be described as one of the others.
+const EXIT_NO_SOLVER: i32 = 3;
+
+/// What the command line asked this binary to do.
+///
+/// Two commands, not a command with options: `--solver-info` answers a
+/// question about the build and opens nothing, and a document opens a window.
+/// Nothing takes both.
+#[derive(Debug, PartialEq, Eq)]
+enum Request {
+    /// Open this document in a window.
+    Document(PathBuf),
+    /// Say which sketch solver this build has, and exit.
+    SolverInfo,
+}
+
+/// The name of the diagnostic command, spelled once.
+const SOLVER_INFO: &str = "--solver-info";
+
+const USAGE: &str = "usage: ferritecad-viewer <file.fcad>, or ferritecad-viewer --solver-info";
+
+/// Which of the two commands was typed.
+///
+/// `--solver-info` is recognised only as the whole command and only first: it
+/// is not an option that modifies opening a document, and a line that names
+/// both a document and this flag has asked for two different things.
+fn request(arguments: impl Iterator<Item = OsString>) -> Result<Request> {
+    let mut arguments = arguments.peekable();
+    if arguments.peek().map(OsString::as_os_str) == Some(OsStr::new(SOLVER_INFO)) {
+        arguments.next();
+        if arguments.next().is_some() {
+            return Err(CadError::input(format!(
+                "{USAGE}; {SOLVER_INFO} takes no arguments"
+            )));
+        }
+        return Ok(Request::SolverInfo);
+    }
+    document_argument(arguments).map(Request::Document)
+}
+
+/// Says which sketch solver this build has, and answers with an exit code.
+///
+/// Routing and formatting, and deliberately no arithmetic of its own. Whether
+/// there is a solver, and what the library behind it is, are
+/// `ferritecad-sketch-solver`'s answers; a provenance string spelled out here
+/// would go on saying what it said when it was written, beside a library built
+/// from anything at all.
+fn solver_info() -> i32 {
+    match ferritecad_sketch_solver::provenance() {
+        Ok(provenance) => {
+            println!("sketch solver: available");
+            println!("provenance: {provenance}");
+            0
+        }
+        // The typed refusal, forwarded and not paraphrased. A sentence written
+        // here would be free to go on saying what it said when it was written,
+        // after the crate that owns the answer had changed its mind.
+        Err(unavailable) => {
+            println!("sketch solver: unavailable");
+            println!("{unavailable}");
+            EXIT_NO_SOLVER
+        }
+    }
+}
+
 /// The document to look at, from the command line.
 ///
 /// One argument and no options: a viewer that guessed which of several files
 /// was meant, or opened the current directory, would be doing something the
 /// user did not ask for with a file they may not have meant.
 fn document_argument(arguments: impl Iterator<Item = OsString>) -> Result<PathBuf> {
-    const USAGE: &str = "usage: ferritecad-viewer <file.fcad>";
-
     let mut arguments = arguments;
     let Some(path) = arguments.next() else {
         return Err(CadError::input(USAGE));
@@ -11542,6 +11622,47 @@ mod tests {
             None,
             "a timer was installed while an earlier frame was queued"
         );
+    }
+
+    #[test]
+    fn the_two_commands_are_told_apart() {
+        assert_eq!(
+            request([SOLVER_INFO.into()].into_iter()).expect("the diagnostic is a command"),
+            Request::SolverInfo
+        );
+        assert_eq!(
+            request(["part.fcad".into()].into_iter()).expect("a document is still a document"),
+            Request::Document(PathBuf::from("part.fcad"))
+        );
+
+        // Not an option that modifies opening a document. A line naming both a
+        // document and this flag has asked for two different things, and doing
+        // either of them would be doing half of what was asked.
+        for line in [
+            [SOLVER_INFO, "part.fcad"],
+            [SOLVER_INFO, SOLVER_INFO],
+            ["part.fcad", SOLVER_INFO],
+        ] {
+            let refused = request(line.iter().map(OsString::from))
+                .expect_err("two requests on one line are not one request");
+            assert!(refused.to_string().contains("usage"), "{line:?}: {refused}");
+        }
+
+        // And everything the document route refused, it still refuses. The
+        // flag is recognised as itself and not as a prefix or a spelling.
+        assert!(request(std::iter::empty()).is_err());
+        for flag in [
+            "--help",
+            "-h",
+            "--version",
+            "--solver-Info",
+            "--solver-info=1",
+        ] {
+            assert!(
+                request([OsString::from(flag)].into_iter()).is_err(),
+                "{flag} was taken for a command"
+            );
+        }
     }
 
     #[test]

@@ -700,6 +700,7 @@ dependencies = [
  "ferritecad-kernel",
  "ferritecad-occt",
  "ferritecad-scene",
+ "ferritecad-sketch-solver",
  "ferritecad-types",
  "ferritecad-ui",
  "ferritecad-viewport",

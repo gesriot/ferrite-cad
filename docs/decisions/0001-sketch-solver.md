@@ -72,14 +72,18 @@ DLL and an import library and never a static copy. The recipe, the
 file-by-file ownership and the replacement path are in
 [build-planegcs.md](../build-planegcs.md). What
 remains open is packaging it into a FerriteCAD release, which is a different
-question from being able to build and replace it.
+question from being able to build and replace it, and a different question
+again from being able to load it: since §21A-2b1 the application does load it,
+through the loader's search path against a build tree, which is not a package.
 
 ## What this does not decide
 
 - **Nothing is integrated.** No document type, no interface, no feature reads
   a constraint yet. This says which solver the sketcher will be built on, not
-  that it has been. Being buildable on three platforms does not change that:
-  the application does not load planegcs and does not ship it.
+  that it has been. Being buildable on three platforms does not change that,
+  and neither does §21A-2b1: the application can now link the library and say
+  which one it loaded, and that is a statement about a component, not about a
+  sketch. It still does not ship planegcs.
 - **Sparsity is unresolved.** The local LM is dense and cubic per iteration.
   planegcs's diagnosis and solver paths have not been characterized at larger
   scale, and its sparse options have not been exercised here.

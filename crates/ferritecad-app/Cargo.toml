@@ -25,6 +25,7 @@ ferritecad-document.workspace = true
 ferritecad-kernel.workspace = true
 ferritecad-occt.workspace = true
 ferritecad-scene.workspace = true
+ferritecad-sketch-solver.workspace = true
 ferritecad-types.workspace = true
 ferritecad-ui.workspace = true
 ferritecad-viewport.workspace = true
@@ -49,6 +50,14 @@ egui-winit = { version = "0.36", default-features = false }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
 wgpu = "=30.0.0"
 winit = { version = "0.30", default-features = false, features = ["x11", "wayland", "rwh_06"] }
+
+# Forwarded, never re-decided. Whether there is a planegcs to load is
+# `ferritecad-sketch-solver`'s question, and this crate has no opinion of its
+# own to offer: a second build/link detection here would be a second answer,
+# free to disagree with the first, and the disagreement would be invisible
+# because both halves would go on compiling.
+[features]
+planegcs = ["ferritecad-sketch-solver/planegcs"]
 
 # Only the tests read a document from disk: the committed plate is what an
 # end-to-end gate needs to click a face the document actually names.
