@@ -10,7 +10,7 @@ so what you are reading describes this build and not a general case.
 | Path | What it is | Licence |
 | --- | --- | --- |
 | `@LIBRARY@` | the planegcs shared library, built for @PLATFORM@ | LGPL-2.0-or-later |
-| `@IMPORT_LIBRARY@` | linker metadata for the library above, needed to relink against it on Windows and containing no planegcs implementation | LGPL-2.0-or-later |
+| `@IMPORT_LIBRARY@` | linker metadata for the library above, on Windows only, where it is what a relink reads. It carries no planegcs implementation | LGPL-2.0-or-later |
 | `tree/App/planegcs/` | the complete corresponding source, byte-identical to the release | LGPL-2.0-or-later |
 | `tree/boost_graph_adjacency_list.hpp` | from the same release, byte-identical | LGPL-2.0-or-later |
 | `LICENSE-FreeCAD-LGPL-2.0-or-later.txt` | the full licence text, from the same release | |

@@ -54,7 +54,18 @@ case "${host_os}" in
     exit 1 ;;
 esac
 
-OUT="${1:-$(pwd)/vendor/planegcs}"
+# A Windows shell hands out both spellings of a path, and the two halves of
+# this script want different ones: the tests below are POSIX, cmake is a native
+# program. Neither conversion is guesswork about which one arrived, so both
+# directions are explicit.
+posix() {
+  if [ "${platform}" = "Windows" ]; then cygpath -u "$1"; else printf '%s' "$1"; fi
+}
+native() {
+  if [ "${platform}" = "Windows" ]; then cygpath -m "$1"; else printf '%s' "$1"; fi
+}
+
+OUT="$(posix "${1:-$(pwd)/vendor/planegcs}")"
 mkdir -p "${OUT}"
 OUT="$(cd "${OUT}" && pwd)"
 WORK="${OUT}/work"
@@ -100,13 +111,13 @@ cp "${definition}/glue/FCConfig.h" "${tree}/"
 cp "${definition}/glue/Base/Console.h" "${tree}/Base/"
 cp "${definition}/glue/provenance.cpp" "${tree}/glue/"
 
-eigen="${FCAD_EIGEN_INCLUDE:-}"
+eigen="$([ -n "${FCAD_EIGEN_INCLUDE:-}" ] && posix "${FCAD_EIGEN_INCLUDE}" || true)"
 if [ -z "${eigen}" ]; then
   for candidate in /opt/homebrew/include/eigen3 /usr/local/include/eigen3 /usr/include/eigen3; do
     [ -d "${candidate}/Eigen" ] && eigen="${candidate}" && break
   done
 fi
-boost="${FCAD_BOOST_INCLUDE:-}"
+boost="$([ -n "${FCAD_BOOST_INCLUDE:-}" ] && posix "${FCAD_BOOST_INCLUDE}" || true)"
 if [ -z "${boost}" ]; then
   for candidate in /opt/homebrew/include /usr/local/include /usr/include; do
     [ -d "${candidate}/boost" ] && boost="${candidate}" && break
@@ -126,11 +137,6 @@ echo "boost ${boost}"
 # What the library will answer when the lab asks it what it is. Built from the
 # pin, so it cannot say 1.0.1 beside a library made from something else.
 provenance="planegcs from FreeCAD ${FREECAD_TAG}, archive SHA-256 ${FREECAD_SHA256}"
-
-# cmake on Windows is a native program and does not understand /c/... paths.
-native() {
-  if [ "${platform}" = "Windows" ]; then cygpath -m "$1"; else printf '%s' "$1"; fi
-}
 
 build="${OUT}/build"
 rm -rf "${build}"
@@ -196,7 +202,7 @@ sed -e "s|@TAG@|${FREECAD_TAG}|g" \
     -e "s|@PLATFORM@|${platform}|g" \
     -e "s|@COMPILER@|${compiler}|g" \
     -e "s|@LIBRARY@|${library_name}|g" \
-    -e "s|@IMPORT_LIBRARY@|${import_library_name:-planegcs.lib, on Windows only}|g" \
+    -e "s|@IMPORT_LIBRARY@|${import_library_name:-planegcs.lib}|g" \
     -e "s|@PROVENANCE@|${provenance}|g" \
     "${definition}/DELIVERY.md.in" > "${OUT}/REPLACING.md"
 
@@ -206,4 +212,4 @@ if grep -q '@[A-Z_]*@' "${OUT}/REPLACING.md"; then
 fi
 
 echo "built ${OUT}/${library_name}"
-echo "run:  FCAD_PLANEGCS_DIR=${OUT} cargo test -p ferritecad-solver-lab --features planegcs -- --nocapture"
+echo "run:  FCAD_PLANEGCS_DIR=$(native "${OUT}") cargo test -p ferritecad-solver-lab --features planegcs -- --nocapture"

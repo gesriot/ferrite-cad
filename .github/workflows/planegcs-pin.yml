@@ -104,7 +104,15 @@ jobs:
           fi
           mkdir -p eigen
           tar xzf eigen.tar.gz -C eigen --strip-components=1
-          echo "FCAD_EIGEN_INCLUDE=$PWD/eigen" >> "$GITHUB_ENV"
+          # Native spelling on Windows. These reach cmake and cargo, which are
+          # native programs: /d/a/... is a directory that does not exist to
+          # them, and the failure it produces says the library is missing
+          # rather than that the path was written for a different shell.
+          if [ '${{ matrix.name }}' = windows ]; then
+            echo "FCAD_EIGEN_INCLUDE=$(cygpath -w "$PWD/eigen")" >> "$GITHUB_ENV"
+          else
+            echo "FCAD_EIGEN_INCLUDE=$PWD/eigen" >> "$GITHUB_ENV"
+          fi
 
       - name: Say where Boost is
         run: |
@@ -118,7 +126,11 @@ jobs:
             echo "::error::no boost/ under $boost"
             exit 1
           fi
-          echo "FCAD_BOOST_INCLUDE=$boost" >> "$GITHUB_ENV"
+          if [ '${{ matrix.name }}' = windows ]; then
+            echo "FCAD_BOOST_INCLUDE=$(cygpath -w "$boost")" >> "$GITHUB_ENV"
+          else
+            echo "FCAD_BOOST_INCLUDE=$boost" >> "$GITHUB_ENV"
+          fi
           # Recorded rather than assumed: the pin is on planegcs, and which
           # Boost each platform brought is part of what produced this build.
           version="$(grep -m1 'define BOOST_LIB_VERSION' "$boost/boost/version.hpp" \
@@ -154,7 +166,11 @@ jobs:
         run: |
           set -euxo pipefail
           tools/build-planegcs.sh "$PWD/vendor/planegcs"
-          echo "FCAD_PLANEGCS_DIR=$PWD/vendor/planegcs" >> "$GITHUB_ENV"
+          if [ '${{ matrix.name }}' = windows ]; then
+            echo "FCAD_PLANEGCS_DIR=$(cygpath -w "$PWD/vendor/planegcs")" >> "$GITHUB_ENV"
+          else
+            echo "FCAD_PLANEGCS_DIR=$PWD/vendor/planegcs" >> "$GITHUB_ENV"
+          fi
 
       - name: Put the library where the Windows loader looks
         if: matrix.name == 'windows'
@@ -225,8 +241,17 @@ jobs:
           # --no-run first so the executables can be inspected before they are
           # run: the licence position rests on planegcs being dynamic, and that
           # is checked against the artefact rather than assumed from the flags.
-          cargo test --release -p ferritecad-solver-lab --features planegcs \
-            --no-run --message-format=json > build.json
+          if ! cargo test --release -p ferritecad-solver-lab --features planegcs \
+            --no-run --message-format=json > build.json; then
+            echo "::group::the same build, in words"
+            # --message-format=json put the build script's own explanation in
+            # build.json, where the step could not see it and reported only
+            # that something had not compiled. Ask again, plainly.
+            cargo test --release -p ferritecad-solver-lab --features planegcs --no-run || true
+            echo "::endgroup::"
+            echo "::error::the lab did not build against planegcs"
+            exit 1
+          fi
           # Every executable the run will launch, taken from cargo rather than
           # from a list of names somebody has to remember to extend.
           jq -r 'select(.reason == "compiler-artifact")
@@ -280,11 +305,23 @@ jobs:
               otool -l "$(head -1 binaries.txt)" | grep -A2 LC_RPATH | grep -F "$out" \
                 || { echo "::error::the binary carries no run path to $out"; exit 1; } ;;
             windows)
-              case ";$PATH;" in
-                *";$out;"*) ;;
-                *) echo "::error::$out is not on PATH, so the loader cannot find the DLL"
-                   exit 1 ;;
-              esac ;;
+              # Whether some entry of PATH really holds the DLL. Comparing the
+              # directory as a string would compare spellings: this shell and
+              # the runner disagree about how to write a Windows path, and the
+              # loader cares about neither.
+              reachable=0
+              IFS=':' read -ra entries <<< "$PATH"
+              for entry in "${entries[@]}"; do
+                if [ -f "$entry/${{ matrix.library }}" ]; then
+                  echo "found ${{ matrix.library }} in $entry"
+                  reachable=1
+                  break
+                fi
+              done
+              if [ "$reachable" -eq 0 ]; then
+                echo "::error::no entry of PATH holds ${{ matrix.library }}"
+                exit 1
+              fi ;;
           esac
           echo "the loader can reach $out"
 
@@ -441,6 +478,11 @@ jobs:
           rm -rf "$empty"
           mkdir -p "$empty"
           cp -R "$out/tree" "$empty/tree"
+          # Spelled the way the build script will read it, so what fails is the
+          # missing library and not a path written for the wrong shell.
+          if [ '${{ matrix.name }}' = windows ]; then
+            empty="$(cygpath -w "$empty")"
+          fi
           if FCAD_PLANEGCS_DIR="$empty" cargo test --release \
             -p ferritecad-solver-lab --features planegcs --no-run > empty.txt 2>&1; then
             echo "::error::require mode built a lab with no library to link"
