@@ -116,8 +116,24 @@ int32_t fc_gcs_session_solve(FcGcsSession *session) FC_GCS_NOEXCEPT;
 int32_t fc_gcs_session_state(const FcGcsSession *session, double *out,
                              size_t count) FC_GCS_NOEXCEPT;
 
-/* The planegcs version this shim was built against, for the record. */
+/* Which planegcs this is, asked of the shared library rather than of this
+ * shim, so that the answer identifies the library that was actually loaded. */
 const char *fc_gcs_provenance(void) FC_GCS_NOEXCEPT;
+
+/* How much work has actually crossed this boundary on the calling thread.
+ *
+ * Diagnostic, and the only way two claims the bench makes can be checked
+ * rather than believed: that a result attributed to planegcs came from
+ * planegcs and not from the reference implementation, and that a gesture used
+ * one native system rather than rebuilding it fifty times. Both are invisible
+ * in the numbers - a rebuilt system returns the same coordinates - and a bench
+ * that cannot tell is a bench that will one day be wrong and look right.
+ *
+ * Per thread, not per process: the test harness runs each test on its own
+ * thread, and a process-wide counter would be a race dressed as a measurement.
+ */
+uint64_t fc_gcs_native_solves(void) FC_GCS_NOEXCEPT;
+uint64_t fc_gcs_native_sessions(void) FC_GCS_NOEXCEPT;
 
 #ifdef __cplusplus
 }

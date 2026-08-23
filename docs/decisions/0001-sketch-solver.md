@@ -55,14 +55,22 @@ by having solved a similar problem once.
 
 **What it costs.** A C++ build dependency (Eigen and Boost headers), a second
 shared library to ship and to package on three platforms, and the same
-obligation to let users replace it. The Windows and Linux paths for building
-it are not yet exercised in CI – that is real, open work, not a reason against.
+obligation to let users replace it.
+
+That cost is now paid rather than estimated. All three platforms build the
+pinned planegcs from a digest-checked archive and run the lab through the real
+shared library, Windows included, producing a DLL and an import library and
+never a static copy; the recipe, the file-by-file ownership and the
+replacement path are in [build-planegcs.md](../build-planegcs.md). What
+remains open is packaging it into a FerriteCAD release, which is a different
+question from being able to build and replace it.
 
 ## What this does not decide
 
 - **Nothing is integrated.** No document type, no interface, no feature reads
   a constraint yet. This says which solver the sketcher will be built on, not
-  that it has been.
+  that it has been. Being buildable on three platforms does not change that:
+  the application does not load planegcs and does not ship it.
 - **Sparsity is unresolved.** The local LM is dense and cubic per iteration.
   planegcs's diagnosis and solver paths have not been characterized at larger
   scale, and its sparse options have not been exercised here.

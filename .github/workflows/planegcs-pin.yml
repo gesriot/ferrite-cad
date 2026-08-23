@@ -1,0 +1,487 @@
+# SPDX-License-Identifier: MIT
+name: planegcs pin
+
+# Builds the pinned planegcs from source on all three product platforms and
+# runs the solver lab through the real shared library on each.
+#
+# Deliberately not part of CI, for the same reason the OCCT pin workflow is
+# not: ordinary builds must keep working on a machine that has never built
+# planegcs, and they do, by saying the candidate is unavailable. This is where
+# saying that is forbidden.
+#
+# The deliverable is not "it compiled". It is a record that the library was
+# built from a checked archive, that the test process really depended on it,
+# that the three platforms agree about what the solver did, and that the
+# licence obligations were packaged rather than promised.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tools/planegcs/**'
+      - 'tools/build-planegcs.sh'
+      - 'crates/ferritecad-solver-lab/**'
+      - '.github/workflows/planegcs-pin.yml'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned rather than taken from the platform, so that three runners compile
+  # planegcs against one version of the headers and a disagreement between them
+  # is about the platform. Header-only, MPL-2.0, and not redistributed here.
+  EIGEN_VERSION: 3.4.0
+  EIGEN_SHA256: 8586084f71f9bde545ee7fa6d00288b264a2b7ac3607b974e54d13e7162c1c72
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pin:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux
+            library: libplanegcs.so
+          - os: macos-latest
+            name: macos
+            library: libplanegcs.dylib
+          - os: windows-latest
+            name: windows
+            library: planegcs.dll
+
+    defaults:
+      run:
+        # One shell everywhere, so the steps are the same text on all three
+        # platforms and a difference in behaviour is a real difference.
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install the Boost headers planegcs needs
+        run: |
+          set -euxo pipefail
+          case '${{ matrix.name }}' in
+            linux)
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends \
+                libboost-graph-dev libboost-math-dev
+              ;;
+            macos)
+              brew install boost
+              ;;
+            windows)
+              # Header-only in everything planegcs uses, but vcpkg is how a
+              # Windows machine gets them, and it is what the record should
+              # say a Windows build needs.
+              vcpkg install boost-graph:x64-windows boost-math:x64-windows
+              ;;
+          esac
+
+      - name: Fetch the pinned Eigen headers
+        run: |
+          set -euo pipefail
+          url="https://gitlab.com/libeigen/eigen/-/archive/${EIGEN_VERSION}/eigen-${EIGEN_VERSION}.tar.gz"
+          curl -sSL -o eigen.tar.gz "$url"
+          if command -v sha256sum >/dev/null 2>&1; then
+            actual="$(sha256sum eigen.tar.gz | cut -d' ' -f1)"
+          else
+            actual="$(shasum -a 256 eigen.tar.gz | cut -d' ' -f1)"
+          fi
+          if [ "$actual" != "$EIGEN_SHA256" ]; then
+            echo "::error::Eigen ${EIGEN_VERSION} digest ${actual}, expected ${EIGEN_SHA256}"
+            exit 1
+          fi
+          mkdir -p eigen
+          tar xzf eigen.tar.gz -C eigen --strip-components=1
+          echo "FCAD_EIGEN_INCLUDE=$PWD/eigen" >> "$GITHUB_ENV"
+
+      - name: Say where Boost is
+        run: |
+          set -euo pipefail
+          case '${{ matrix.name }}' in
+            linux)   boost=/usr/include ;;
+            macos)   boost="$(brew --prefix)/include" ;;
+            windows) boost="$(cygpath -u "$VCPKG_INSTALLATION_ROOT")/installed/x64-windows/include" ;;
+          esac
+          if [ ! -d "$boost/boost" ]; then
+            echo "::error::no boost/ under $boost"
+            exit 1
+          fi
+          echo "FCAD_BOOST_INCLUDE=$boost" >> "$GITHUB_ENV"
+          # Recorded rather than assumed: the pin is on planegcs, and which
+          # Boost each platform brought is part of what produced this build.
+          version="$(grep -m1 'define BOOST_LIB_VERSION' "$boost/boost/version.hpp" \
+            | tr -d '"' | awk '{print $3}')"
+          echo "FCAD_BOOST_VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Locate MSVC
+        if: matrix.name == 'windows'
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+          if not defined VSPATH (
+            echo ::error::vswhere found no Visual Studio with the C++ toolset
+            exit /b 1
+          )
+          echo Visual Studio at %VSPATH%
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          set > vcvars-env.txt
+
+      - name: Export the MSVC environment
+        if: matrix.name == 'windows'
+        run: |
+          set -euo pipefail
+          # An allow-list, not the whole vcvars environment: exporting all of it
+          # publishes around fifty names, one of which is the generic
+          # `Platform`, and Windows environment variables are case-insensitive.
+          # docs/build-occt.md records what that cost the OCCT workflow.
+          grep -Ei '^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir|VCToolsVersion|VSINSTALLDIR|WindowsSdkDir|WindowsSDKVersion|UCRTVersion|UniversalCRTSdkDir)=' \
+            vcvars-env.txt >> "$GITHUB_ENV"
+          rm -f vcvars-env.txt
+
+      - name: Build planegcs from the pinned release
+        run: |
+          set -euxo pipefail
+          tools/build-planegcs.sh "$PWD/vendor/planegcs"
+          echo "FCAD_PLANEGCS_DIR=$PWD/vendor/planegcs" >> "$GITHUB_ENV"
+
+      - name: Put the library where the Windows loader looks
+        if: matrix.name == 'windows'
+        run: |
+          set -euo pipefail
+          # Windows has no RPATH: the loader searches the executable's own
+          # directory and then PATH. This is the "otherwise discoverable" half
+          # of the gate, and the step below checks it took.
+          cygpath -w "$PWD/vendor/planegcs" >> "$GITHUB_PATH"
+
+      - name: Require a shared library, its licence and a way to replace it
+        run: |
+          set -euo pipefail
+          out="$PWD/vendor/planegcs"
+          fail() { echo "::error::$1"; exit 1; }
+
+          # Everything the licence position promises has to be in the directory
+          # that is handed over, not in a plan to assemble one at release.
+          [ -f "$out/${{ matrix.library }}" ] || fail "no ${{ matrix.library }}"
+          [ -s "$out/LICENSE-FreeCAD-LGPL-2.0-or-later.txt" ] \
+            || fail "the LGPL text is missing or empty"
+          grep -q 'GNU LIBRARY GENERAL PUBLIC LICENSE' \
+            "$out/LICENSE-FreeCAD-LGPL-2.0-or-later.txt" \
+            || fail "the licence text beside the library is not the LGPL"
+          [ -f "$out/PROVENANCE.txt" ] || fail "no provenance record"
+          grep -q 'checked before extraction' "$out/PROVENANCE.txt" \
+            || fail "the provenance does not say the archive was checked"
+          [ -f "$out/REPLACING.md" ] || fail "no replacement instructions"
+          grep -q 'Replacing it' "$out/REPLACING.md" \
+            || fail "the delivery says nothing about replacing the library"
+          grep -q 'FCAD_PLANEGCS_TREE' "$out/REPLACING.md" \
+            || fail "the delivery gives no way to rebuild the library"
+          grep -q 'MIT' "$out/REPLACING.md" \
+            || fail "the delivery does not identify FerriteCAD's own glue"
+
+          # Complete corresponding source, beside the binary that came from it.
+          for source in Constraints.cpp GCS.cpp Geo.cpp qp_eq.cpp SubSystem.cpp GCS.h; do
+            [ -f "$out/tree/App/planegcs/$source" ] || fail "no source for $source"
+          done
+
+          if [ '${{ matrix.name }}' = windows ]; then
+            # Linker metadata, and the only reason it is here: without it
+            # nobody can relink against a library they replaced.
+            [ -f "$out/planegcs.lib" ] || fail "no import library to relink through"
+          fi
+
+          # A DLL that is really a static archive renamed would pass every
+          # check above. Ask the file itself what it is.
+          case '${{ matrix.name }}' in
+            linux)
+              file "$out/${{ matrix.library }}" | grep -q 'shared object' \
+                || fail "the delivered library is not a shared object" ;;
+            macos)
+              file "$out/${{ matrix.library }}" | grep -q 'dynamically linked shared library' \
+                || fail "the delivered library is not a dynamic library" ;;
+            windows)
+              dumpbin //HEADERS "$(cygpath -w "$out/${{ matrix.library }}")" \
+                | grep -q 'DLL' || fail "the delivered library is not a DLL" ;;
+          esac
+          echo "the delivery carries the library, its source, its licence and how to replace it"
+
+      - name: Build the lab, refusing to build one without planegcs
+        id: build
+        env:
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+        run: |
+          set -euo pipefail
+          # --no-run first so the executables can be inspected before they are
+          # run: the licence position rests on planegcs being dynamic, and that
+          # is checked against the artefact rather than assumed from the flags.
+          cargo test --release -p ferritecad-solver-lab --features planegcs \
+            --no-run --message-format=json > build.json
+          # Every executable the run will launch, taken from cargo rather than
+          # from a list of names somebody has to remember to extend.
+          jq -r 'select(.reason == "compiler-artifact")
+                 | select(.target.test == true)
+                 | .executable // empty' build.json | sort -u > binaries.txt
+          if [ ! -s binaries.txt ]; then
+            echo "::error::the lab produced no test executable"
+            exit 1
+          fi
+          cat binaries.txt
+
+      - name: Require the test process to depend on the shared library
+        run: |
+          set -euo pipefail
+          found=0
+          while IFS= read -r binary; do
+            [ -n "$binary" ] || continue
+            echo "== $binary"
+            case '${{ matrix.name }}' in
+              linux)
+                ldd "$binary" | grep -i 'libplanegcs\.so' || continue ;;
+              macos)
+                otool -L "$binary" | grep -i 'libplanegcs\.dylib' || continue ;;
+              windows)
+                # `//DEPENDENTS` rather than `/DEPENDENTS`: MSYS rewrites a
+                # leading slash into a Windows path, and doubling it is the
+                # escape that survives. An import-table entry is the proof the
+                # DLL is loaded rather than copied in: a statically linked
+                # planegcs would name nothing here.
+                dumpbin //DEPENDENTS "$(cygpath -w "$binary")" \
+                  | grep -i 'planegcs\.dll' || continue ;;
+            esac
+            found=$((found + 1))
+          done < binaries.txt
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no test executable names planegcs at run time, so nothing here \
+            is a statement about planegcs"
+            exit 1
+          fi
+          echo "$found test executable(s) name the planegcs shared library"
+
+      - name: Require the library to be discoverable by the test process
+        run: |
+          set -euo pipefail
+          out="$PWD/vendor/planegcs"
+          case '${{ matrix.name }}' in
+            linux)
+              readelf -d "$(head -1 binaries.txt)" | grep -E 'RUNPATH|RPATH' | grep -F "$out" \
+                || { echo "::error::the binary carries no run path to $out"; exit 1; } ;;
+            macos)
+              otool -l "$(head -1 binaries.txt)" | grep -A2 LC_RPATH | grep -F "$out" \
+                || { echo "::error::the binary carries no run path to $out"; exit 1; } ;;
+            windows)
+              case ";$PATH;" in
+                *";$out;"*) ;;
+                *) echo "::error::$out is not on PATH, so the loader cannot find the DLL"
+                   exit 1 ;;
+              esac ;;
+          esac
+          echo "the loader can reach $out"
+
+      - name: Run the lab through the real library
+        env:
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+        run: |
+          set -euo pipefail
+          # --nocapture because the tables and the summary are the point, and
+          # --test-threads=1 because the timings are reported even though they
+          # gate nothing.
+          cargo test --release -p ferritecad-solver-lab --features planegcs \
+            -- --nocapture --test-threads=1 2>&1 | tee lab.txt
+
+      - name: Refuse a run that skipped, or that ran no planegcs gate
+        run: |
+          set -euo pipefail
+          if grep -q 'skipped: this build did not link planegcs' lab.txt; then
+            echo "::error::a gate skipped itself under FERRITECAD_REQUIRE_PLANEGCS=1"
+            exit 1
+          fi
+
+          # Named rather than counted. A count is satisfied by any five tests,
+          # including five that never call into the library; these are the
+          # gates that only exist when planegcs is linked, and every one of
+          # them has to have run and passed.
+          missing=0
+          for gate in \
+            'against_planegcs::both_solvers_agree_about_the_geometry' \
+            'against_planegcs::both_solvers_agree_about_what_is_wrong_with_a_sketch' \
+            'against_planegcs::the_library_the_lab_loaded_is_the_pinned_one' \
+            'planegcs::tests::a_persistent_session_enforces_its_lifecycle_and_moves_only_a_fixed_target' \
+            'planegcs::tests::an_invalid_point_index_is_refused_at_the_abi_boundary'
+          do
+            if ! grep -qF "test ${gate} ..." lab.txt; then
+              echo "::error::the planegcs gate ${gate} did not run"
+              missing=$((missing + 1))
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+          # And the comparison really had two candidates in it, rather than one
+          # that passes on its own.
+          grep -q 'planegcs-dogleg' lab.txt \
+            || { echo "::error::no planegcs result appears in the comparison"; exit 1; }
+          grep -qF 'second candidate: planegcs from FreeCAD 1.0.1' lab.txt \
+            || { echo "::error::the library did not identify itself as the pinned planegcs"; exit 1; }
+          echo "five planegcs gates ran, and the comparison had two candidates"
+
+      - name: Keep the semantic summary for the platforms to be compared on
+        run: |
+          set -euo pipefail
+          grep '^semantic ' lab.txt | LC_ALL=C sort > summary.txt
+          if [ ! -s summary.txt ]; then
+            echo "::error::the run printed no semantic summary"
+            exit 1
+          fi
+          wc -l < summary.txt
+
+      - name: Write the pin report
+        run: |
+          set -euo pipefail
+          {
+            echo "planegcs pin, ${{ matrix.name }}"
+            echo
+            echo "runner      ${{ matrix.os }} / $(uname -m) / ${RUNNER_ARCH}"
+            echo "eigen       ${EIGEN_VERSION} (sha256 ${EIGEN_SHA256})"
+            echo "boost       ${FCAD_BOOST_VERSION}"
+            echo "rustc       $(rustc --version)"
+            echo
+            cat vendor/planegcs/PROVENANCE.txt
+          } | tee planegcs-pin-${{ matrix.name }}.txt
+
+      - name: Upload the delivery and the record
+        uses: actions/upload-artifact@v4
+        with:
+          name: planegcs-${{ matrix.name }}
+          # The library the tests actually loaded, its complete corresponding
+          # source, the full licence text, the provenance with its checked
+          # digest and the replacement instructions. Not the build tree: that
+          # is a by-product, and the sources are what the licence is about.
+          path: |
+            vendor/planegcs/${{ matrix.library }}
+            vendor/planegcs/planegcs.lib
+            vendor/planegcs/tree/**
+            vendor/planegcs/LICENSE-FreeCAD-LGPL-2.0-or-later.txt
+            vendor/planegcs/PROVENANCE.txt
+            vendor/planegcs/REPLACING.md
+            planegcs-pin-${{ matrix.name }}.txt
+          if-no-files-found: error
+
+      - name: Upload the semantic summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: planegcs-summary-${{ matrix.name }}
+          path: summary.txt
+          if-no-files-found: error
+
+      - name: Require an unchecked archive to stop before anything is extracted
+        run: |
+          set -euo pipefail
+          # The digest is only worth having if a wrong one refuses. Planted
+          # rather than argued: the script is given a directory whose cached
+          # archive is not the release, and must neither extract nor build.
+          probe="$PWD/vendor/planegcs-tampered"
+          # From nothing every time. A directory left over from an earlier run
+          # would make this step report on that run's leavings, which is how a
+          # gate starts passing for the wrong reason.
+          rm -rf "$probe"
+          mkdir -p "$probe/work"
+          printf 'not the release' > "$probe/work/freecad-1.0.1.tar.gz"
+          if tools/build-planegcs.sh "$probe" > tampered.txt 2>&1; then
+            echo "::error::a tampered archive built anyway"
+            exit 1
+          fi
+          # Whether anything was extracted comes first. A script that refuses
+          # for some later reason has still already unpacked somebody else's
+          # bytes, and that is the property being asserted, not the wording.
+          if [ -e "$probe/tree" ]; then
+            echo "::error::the archive was extracted before its digest was checked"
+            exit 1
+          fi
+          grep -q 'checksum mismatch' tampered.txt \
+            || { echo "::error::the refusal was not about the checksum"; cat tampered.txt; exit 1; }
+          echo "an unchecked archive stops before extraction"
+
+      - name: Require a hidden library to fail rather than skip
+        env:
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+        run: |
+          set -euo pipefail
+          out="$PWD/vendor/planegcs"
+
+          # Run time first, on the binary that has already passed: the process
+          # must not start without the file it named in its import table.
+          binary="$(grep measure binaries.txt | head -1)"
+          if [ '${{ matrix.name }}' = windows ]; then
+            # cargo reports a Windows path; this shell needs its own spelling.
+            binary="$(cygpath -u "$binary")"
+          fi
+          mv "$out/${{ matrix.library }}" "$out/hidden-${{ matrix.library }}"
+          if "$binary" --test-threads=1 > hidden.txt 2>&1; then
+            mv "$out/hidden-${{ matrix.library }}" "$out/${{ matrix.library }}"
+            echo "::error::the tests ran with the shared library moved away"
+            exit 1
+          fi
+          echo "with the library hidden, the test process does not start:"
+          head -5 hidden.txt
+          mv "$out/hidden-${{ matrix.library }}" "$out/${{ matrix.library }}"
+
+          # And build time, through a directory that never had one. A changed
+          # FCAD_PLANEGCS_DIR is what makes cargo run the build script again.
+          empty="$PWD/vendor/planegcs-empty"
+          rm -rf "$empty"
+          mkdir -p "$empty"
+          cp -R "$out/tree" "$empty/tree"
+          if FCAD_PLANEGCS_DIR="$empty" cargo test --release \
+            -p ferritecad-solver-lab --features planegcs --no-run > empty.txt 2>&1; then
+            echo "::error::require mode built a lab with no library to link"
+            exit 1
+          fi
+          grep -q 'FERRITECAD_REQUIRE_PLANEGCS=1 was set' empty.txt \
+            || { echo "::error::the build failed for some other reason"; tail -20 empty.txt; exit 1; }
+          echo "require mode refuses a build with no library"
+
+  agree:
+    name: Compare what the three platforms concluded
+    needs: pin
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download every summary
+        uses: actions/download-artifact@v4
+        with:
+          pattern: planegcs-summary-*
+          path: summaries
+
+      - name: Require one semantic result on all three platforms
+        run: |
+          set -euo pipefail
+          count="$(find summaries -name summary.txt | wc -l)"
+          if [ "$count" -ne 3 ]; then
+            echo "::error::expected three summaries, found ${count}"
+            exit 1
+          fi
+
+          # Meaning, not digits. The three files hold equation counts, degrees
+          # of freedom, redundancy, which constraints were blamed, whether each
+          # sketch converged or was refused, and which library answered. Not
+          # one coordinate and not one microsecond: three machines will not
+          # produce identical doubles and must not be asked to.
+          reference="summaries/planegcs-summary-linux/summary.txt"
+          for platform in macos windows; do
+            other="summaries/planegcs-summary-${platform}/summary.txt"
+            if ! diff -u "$reference" "$other"; then
+              echo "::error::linux and ${platform} disagree about what the solver did"
+              exit 1
+            fi
+          done
+          echo "the three platforms agree, over $(wc -l < "$reference") facts:"
+          cat "$reference"

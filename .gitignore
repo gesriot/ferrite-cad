@@ -16,6 +16,9 @@
 /vendor/occt
 /vendor/install
 
+# Local planegcs build tree and delivery (see docs/build-planegcs.md)
+/vendor/planegcs
+
 # CMake build trees (tools/occt-smoke and others)
 /build/
 

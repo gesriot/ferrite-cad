@@ -6,6 +6,7 @@
 #include "planegcs_shim.h"
 
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <exception>
 #include <memory>
@@ -34,6 +35,11 @@ GCS::Line line_of(const std::vector<GCS::Point> &points, int32_t a, int32_t b) {
 GCS::Line line(Sketch &sketch, int32_t a, int32_t b) {
   return line_of(sketch.points, a, b);
 }
+
+// Counted where the crossing happens, so the count is of crossings and not of
+// intentions. See the header for why these exist and why they are per thread.
+thread_local uint64_t native_solves = 0;
+thread_local uint64_t native_sessions = 0;
 
 bool is_point(size_t point_count, int32_t index) {
   return index >= 0 && static_cast<size_t>(index) < point_count;
@@ -79,6 +85,7 @@ extern "C" int32_t fc_gcs_solve(double *state, size_t point_count,
   if (state == nullptr || (constraint_count > 0 && constraints == nullptr)) {
     return FC_GCS_INVALID_INPUT;
   }
+  ++native_solves;
 
   try {
     Sketch sketch;
@@ -231,6 +238,7 @@ extern "C" FcGcsSession *fc_gcs_session_create(
   if (start == nullptr || (constraint_count > 0 && constraints == nullptr)) {
     return nullptr;
   }
+  ++native_sessions;
   try {
     auto session = std::make_unique<Session>();
     session->state.assign(start, start + point_count * 2);
@@ -435,6 +443,7 @@ extern "C" int32_t fc_gcs_session_solve(FcGcsSession *handle) noexcept {
     if (!session->prepared) {
       return FC_GCS_INVALID_INPUT;
     }
+    ++native_solves;
     const int status = session->system.solve();
     if (status == GCS::Failed || status == GCS::SuccessfulSolutionInvalid) {
       return FC_GCS_NOT_CONVERGED;
@@ -461,6 +470,21 @@ extern "C" int32_t fc_gcs_session_state(const FcGcsSession *handle, double *out,
   return FC_GCS_SUCCESS;
 }
 
+// Answered by the shared library, not by this shim.
+//
+// A string compiled in here would go on saying "FreeCAD 1.0.1" beside a
+// library built from anything at all, which is exactly the substitution the
+// packaging gate exists to catch. Asking the library means the answer arrives
+// through the same dynamic link everything else does, and a library that
+// cannot answer does not load.
+extern "C" const char *fc_planegcs_provenance(void);
+
 extern "C" const char *fc_gcs_provenance(void) noexcept {
-  return "planegcs from FreeCAD 1.0.1";
+  return fc_planegcs_provenance();
+}
+
+extern "C" uint64_t fc_gcs_native_solves(void) noexcept { return native_solves; }
+
+extern "C" uint64_t fc_gcs_native_sessions(void) noexcept {
+  return native_sessions;
 }

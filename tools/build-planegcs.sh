@@ -1,41 +1,69 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 #
-# Builds FreeCAD's planegcs as a shared library for the solver bench.
+# Builds FreeCAD's planegcs as a replaceable shared library, on Linux, macOS
+# and Windows alike, and packages it with what its licence obliges a sender to
+# hand over.
 #
 # planegcs is LGPL-2.0-or-later, so it is linked dynamically and the library
-# this produces can be replaced by the user with their own build. Nothing of
-# it is compiled into a FerriteCAD binary. See THIRD_PARTY_LICENSES.md.
+# this produces can be replaced by the user with their own build. Nothing of it
+# is compiled into a FerriteCAD binary. See docs/build-planegcs.md for the
+# whole statement and THIRD_PARTY_LICENSES.md for the terms.
 #
 # The LGPL sources are used byte-identical. The only files added beside them
-# are FerriteCAD's own build glue, marked as such.
+# are FerriteCAD's own build glue from tools/planegcs/glue, marked as such.
 #
 #   tools/build-planegcs.sh [output-directory]
 #
-# Then: FCAD_PLANEGCS_DIR=<output> cargo test -p ferritecad-solver-lab --features planegcs
+# On Windows run it from a shell that has already seen vcvars, so that cmake
+# finds MSVC's cl.exe. Then:
+#
+#   FCAD_PLANEGCS_DIR=<output> cargo test -p ferritecad-solver-lab \
+#       --features planegcs
 
 set -euo pipefail
 
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+definition="${here}/planegcs"
+
+# shellcheck source=tools/planegcs/pin.env
+. "${definition}/pin.env"
+
+FREECAD_TAG="${FCAD_PLANEGCS_FREECAD_TAG}"
+FREECAD_SHA256="${FCAD_PLANEGCS_ARCHIVE_SHA256}"
+ARCHIVE_URL="https://github.com/FreeCAD/FreeCAD/archive/refs/tags/${FREECAD_TAG}.tar.gz"
+
 host_os="$(uname -s)"
 case "${host_os}" in
-  Darwin|Linux) ;;
+  Darwin)
+    platform="macOS"
+    library_name="libplanegcs.dylib"
+    import_library_name="" ;;
+  Linux)
+    platform="Linux"
+    library_name="libplanegcs.so"
+    import_library_name="" ;;
+  MINGW*|MSYS*|CYGWIN*)
+    platform="Windows"
+    library_name="planegcs.dll"
+    # Linker metadata only. It carries no planegcs implementation; what it does
+    # is let somebody relink against a library they replaced.
+    import_library_name="planegcs.lib" ;;
   *)
-    echo "this helper currently supports macOS and Linux only" >&2
+    echo "unsupported host ${host_os}" >&2
     exit 1 ;;
 esac
 
-FREECAD_TAG="1.0.1"
-FREECAD_SHA256="f62bc07c477544eff62b6ab0fc3bb63fa7f1e6f94763c51b0049507842d444f3"
-
 OUT="${1:-$(pwd)/vendor/planegcs}"
+mkdir -p "${OUT}"
+OUT="$(cd "${OUT}" && pwd)"
 WORK="${OUT}/work"
 mkdir -p "${WORK}"
 
 archive="${WORK}/freecad-${FREECAD_TAG}.tar.gz"
 if [ ! -f "${archive}" ]; then
   echo "fetching FreeCAD ${FREECAD_TAG}"
-  curl -sSL -o "${archive}" \
-    "https://github.com/FreeCAD/FreeCAD/archive/refs/tags/${FREECAD_TAG}.tar.gz"
+  curl -sSL -o "${archive}" "${ARCHIVE_URL}"
 fi
 
 # Verified before anything is extracted, let alone compiled.
@@ -62,41 +90,15 @@ tar xzf "${archive}" -C "${WORK}" \
 cp "${WORK}/FreeCAD-${FREECAD_TAG}/src/Mod/Sketcher/App/planegcs/"* "${tree}/App/planegcs/"
 cp "${WORK}/FreeCAD-${FREECAD_TAG}/src/boost_graph_adjacency_list.hpp" "${tree}/"
 
-# FerriteCAD's own glue. planegcs includes "../../SketcherGlobal.h" for one
-# export macro; FreeCAD's own version reaches FCGlobal.h and from there into
-# Qt, none of which a solver needs.
-cat > "${tree}/SketcherGlobal.h" <<'GLUE'
-// SPDX-License-Identifier: MIT
-#pragma once
-#define SketcherExport
-GLUE
-
-# FreeCAD's FCConfig.h is a build-system product full of Qt and platform
-# probes. planegcs needs none of it, only for the include to resolve.
-cat > "${tree}/FCConfig.h" <<'GLUE'
-// SPDX-License-Identifier: MIT
-#pragma once
-GLUE
-
-mkdir -p "${tree}/Base"
-cat > "${tree}/Base/Console.h" <<'GLUE'
-// SPDX-License-Identifier: MIT
-// Enough of FreeCAD's console for planegcs to build outside FreeCAD. It uses
-// two printf-style calls; both are silent here, because writing to a terminal
-// inside a timed region would measure the terminal.
-#pragma once
-namespace Base {
-class ConsoleSingleton {
-public:
-    void Log(const char*, ...) {}
-    void Warning(const char*, ...) {}
-};
-inline ConsoleSingleton& Console() {
-    static ConsoleSingleton instance;
-    return instance;
-}
-}  // namespace Base
-GLUE
+# FerriteCAD's own glue, copied rather than generated. Written out here as
+# heredocs it could not be reviewed, licence-checked or diffed like the rest of
+# the repository; as files it can be, and the tree that is handed to somebody
+# else builds without needing the rest of the checkout.
+mkdir -p "${tree}/Base" "${tree}/glue"
+cp "${definition}/glue/SketcherGlobal.h" "${tree}/"
+cp "${definition}/glue/FCConfig.h" "${tree}/"
+cp "${definition}/glue/Base/Console.h" "${tree}/Base/"
+cp "${definition}/glue/provenance.cpp" "${tree}/glue/"
 
 eigen="${FCAD_EIGEN_INCLUDE:-}"
 if [ -z "${eigen}" ]; then
@@ -114,50 +116,94 @@ if [ ! -d "${eigen}/Eigen" ]; then
   echo "Eigen headers not found; set FCAD_EIGEN_INCLUDE" >&2
   exit 1
 fi
-if [ -z "${boost}" ]; then
+if [ ! -d "${boost}/boost" ]; then
   echo "Boost headers not found; set FCAD_BOOST_INCLUDE" >&2
   exit 1
 fi
 echo "eigen ${eigen}"
 echo "boost ${boost}"
 
+# What the library will answer when the lab asks it what it is. Built from the
+# pin, so it cannot say 1.0.1 beside a library made from something else.
+provenance="planegcs from FreeCAD ${FREECAD_TAG}, archive SHA-256 ${FREECAD_SHA256}"
+
+# cmake on Windows is a native program and does not understand /c/... paths.
+native() {
+  if [ "${platform}" = "Windows" ]; then cygpath -m "$1"; else printf '%s' "$1"; fi
+}
+
 build="${OUT}/build"
 rm -rf "${build}"
-mkdir -p "${build}"
-for source in "${tree}/App/planegcs/"*.cpp; do
-  echo "  compiling $(basename "${source}")"
-  "${CXX:-c++}" -std=c++17 -O2 -fPIC -w -c "${source}" \
-    -I"${tree}/App/planegcs" -I"${tree}" -I"${eigen}" -I"${boost}" \
-    -o "${build}/$(basename "${source%.cpp}").o"
-done
 
-case "${host_os}" in
-  Darwin)
-    "${CXX:-c++}" -dynamiclib -o "${OUT}/libplanegcs.dylib" "${build}"/*.o \
-      -install_name "@rpath/libplanegcs.dylib"
-    library="${OUT}/libplanegcs.dylib" ;;
-  Linux)
-    "${CXX:-c++}" -shared -o "${OUT}/libplanegcs.so" "${build}"/*.o
-    library="${OUT}/libplanegcs.so" ;;
-esac
+# No -G. The platform default is whichever toolchain is installed, which is
+# what docs/build-occt.md paid to learn: naming a Visual Studio release here
+# breaks on the next one.
+cmake -S "$(native "${definition}")" -B "$(native "${build}")" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DFCAD_PLANEGCS_TREE="$(native "${tree}")" \
+  -DFCAD_EIGEN_INCLUDE="$(native "${eigen}")" \
+  -DFCAD_BOOST_INCLUDE="$(native "${boost}")" \
+  -DFCAD_PLANEGCS_PROVENANCE="${provenance}"
+cmake --build "$(native "${build}")" --config Release
+
+info="${build}/planegcs-build-info-Release.txt"
+if [ ! -f "${info}" ]; then
+  echo "the build reported nothing about itself; expected ${info}" >&2
+  exit 1
+fi
+read_info() { grep "^$1=" "${info}" | head -1 | cut -d= -f2-; }
+
+built_library="$(read_info library)"
+built_linker_file="$(read_info linker_file)"
+target_type="$(read_info target_type)"
+compiler="$(read_info cxx_compiler_id) $(read_info cxx_compiler_version)"
+
+# Refused here as well as in the CMake, because this is the file somebody edits
+# when a platform will not link and the licence position is the thing that
+# quietly gives way.
+if [ "${target_type}" != "SHARED_LIBRARY" ]; then
+  echo "planegcs was built as ${target_type}, which the licence position forbids" >&2
+  exit 1
+fi
+
+cp "${built_library}" "${OUT}/${library_name}"
+if [ -n "${import_library_name}" ]; then
+  if [ "${built_linker_file}" = "${built_library}" ]; then
+    echo "Windows produced no import library, so nothing could relink" >&2
+    exit 1
+  fi
+  cp "${built_linker_file}" "${OUT}/${import_library_name}"
+fi
 
 # The licence travels with the library, not as an afterthought at release.
 cp "${WORK}/FreeCAD-${FREECAD_TAG}/LICENSE" \
   "${OUT}/LICENSE-FreeCAD-LGPL-2.0-or-later.txt"
-cat > "${OUT}/README.txt" <<NOTICE
-This directory contains a build of planegcs from FreeCAD ${FREECAD_TAG}
-(https://github.com/FreeCAD/FreeCAD), archive SHA-256 ${FREECAD_SHA256}.
 
-planegcs is licensed under the GNU Library General Public License, version 2
-or (at your option) any later version. It is built here as a shared library so
-it can be replaced: rebuild it from the sources in ./tree and put the result
-in its place. The complete licence text is beside this notice in
-LICENSE-FreeCAD-LGPL-2.0-or-later.txt.
-
-The sources under ./tree/App/planegcs are byte-identical to the release. The
-files ./tree/SketcherGlobal.h, ./tree/FCConfig.h and ./tree/Base/Console.h are
-FerriteCAD's own build glue and are MIT.
+cat > "${OUT}/PROVENANCE.txt" <<NOTICE
+planegcs from FreeCAD ${FREECAD_TAG}
+archive      ${ARCHIVE_URL}
+sha256       ${FREECAD_SHA256}  (checked before extraction)
+platform     ${platform}
+compiler     ${compiler}
+library      ${library_name}
+import       ${import_library_name:-none on this platform}
+provenance   ${provenance}
 NOTICE
 
-echo "built ${library}"
+sed -e "s|@TAG@|${FREECAD_TAG}|g" \
+    -e "s|@SHA256@|${FREECAD_SHA256}|g" \
+    -e "s|@ARCHIVE_URL@|${ARCHIVE_URL}|g" \
+    -e "s|@PLATFORM@|${platform}|g" \
+    -e "s|@COMPILER@|${compiler}|g" \
+    -e "s|@LIBRARY@|${library_name}|g" \
+    -e "s|@IMPORT_LIBRARY@|${import_library_name:-planegcs.lib, on Windows only}|g" \
+    -e "s|@PROVENANCE@|${provenance}|g" \
+    "${definition}/DELIVERY.md.in" > "${OUT}/REPLACING.md"
+
+if grep -q '@[A-Z_]*@' "${OUT}/REPLACING.md"; then
+  echo "the delivery notice still has unfilled placeholders" >&2
+  exit 1
+fi
+
+echo "built ${OUT}/${library_name}"
 echo "run:  FCAD_PLANEGCS_DIR=${OUT} cargo test -p ferritecad-solver-lab --features planegcs -- --nocapture"

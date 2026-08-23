@@ -77,9 +77,13 @@ headers, because FreeCAD's own versions reach into Qt and its build system.
 The build output carries FreeCAD's complete licence text beside the library.
 Recorded in THIRD_PARTY_LICENSES.md.
 
-The helper currently builds on macOS and Linux; the linked path has been
-exercised locally on macOS. Unlike OCCT, it is not in the three-platform pin
-workflow and has no native Windows build path yet.
+It builds on Linux, macOS and Windows through one committed cmake definition,
+and the [`planegcs pin`](../.github/workflows/planegcs-pin.yml) workflow runs
+this comparison through the real shared library on all three. That run refuses
+to skip: `FERRITECAD_REQUIRE_PLANEGCS=1` makes an absent library a build
+failure, the test process is checked against its own import table for a
+dependency on planegcs, and the three platforms have to agree about what the
+solver concluded. See [build-planegcs.md](build-planegcs.md).
 
 ```
 FCAD_PLANEGCS_DIR=<dir> cargo test --release -p ferritecad-solver-lab \
@@ -171,7 +175,7 @@ them.
 ### What remains open
 
 Both candidates are dense and cubic per iteration, and sparsity is untouched.
-The planegcs build is exercised on macOS only; Linux is supported by the
-helper script and Windows is not attempted. And nothing here is integrated
-with a document or an interface, which is deliberate: this was a comparison,
-and it is over.
+Nothing here is integrated with a document or an interface, which is
+deliberate: this was a comparison, and it is over. What the three-platform run
+established is that the chosen dependency can be built, linked, exercised and
+replaced, not that anything ships it.

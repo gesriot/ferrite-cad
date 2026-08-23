@@ -64,19 +64,73 @@ unsafe extern "C" {
     ) -> i32;
 
     fn fc_gcs_provenance() -> *const c_char;
+
+    fn fc_gcs_native_solves() -> u64;
+    fn fc_gcs_native_sessions() -> u64;
 }
 
-/// Which planegcs this was built against, for the record.
+/// What the loaded shared library says it is.
+///
+/// The answer travels the same dynamic link as everything else: the string
+/// lives in the library, not in the shim, so a library swapped for another
+/// after the tests were written says so instead of being described by them.
 pub fn provenance() -> String {
     #[cfg(planegcs_linked)]
     {
-        // SAFETY: the shim returns a pointer to a string literal with static
+        // SAFETY: the shim forwards a pointer to a string literal with static
         // lifetime and no interior nul beyond its terminator.
         let raw = unsafe { std::ffi::CStr::from_ptr(fc_gcs_provenance()) };
         raw.to_string_lossy().into_owned()
     }
     #[cfg(not(planegcs_linked))]
     "planegcs was not linked into this build".to_owned()
+}
+
+/// What the pin says the library should answer.
+///
+/// Compiled in from `tools/planegcs/pin.env`, which is also what the build
+/// script bakes into the library, so the two cannot drift.
+pub fn expected_provenance() -> &'static str {
+    env!("FCAD_PLANEGCS_EXPECTED_PROVENANCE")
+}
+
+/// How many solves have crossed into planegcs on this thread.
+///
+/// What makes "planegcs solved it" a checkable claim rather than a label. A
+/// candidate quietly delegating to the reference implementation returns the
+/// same shape of answer and leaves this untouched.
+pub fn native_solves() -> u64 {
+    #[cfg(planegcs_linked)]
+    // SAFETY: reads a thread-local counter in the shim; no arguments, no
+    // pointers, and the value is a plain integer.
+    unsafe {
+        fc_gcs_native_solves()
+    }
+    #[cfg(not(planegcs_linked))]
+    0
+}
+
+/// How many native systems have been built on this thread.
+///
+/// A drag is meant to build one and nudge it. Rebuilding it every step
+/// produces the same coordinates, so nothing about the geometry would say so.
+pub fn native_sessions() -> u64 {
+    #[cfg(planegcs_linked)]
+    // SAFETY: as above.
+    unsafe {
+        fc_gcs_native_sessions()
+    }
+    #[cfg(not(planegcs_linked))]
+    0
+}
+
+/// Whether this run refuses to treat an absent planegcs as a skipped candidate.
+///
+/// Read at run time rather than compiled in: the build script already fails
+/// the build under the same variable, so by the time a test asks, the only
+/// thing left to enforce is that no gate quietly returns early.
+pub fn is_required() -> bool {
+    std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref() == Ok("1")
 }
 
 /// Calls the shim, or reports that there is nothing to call.

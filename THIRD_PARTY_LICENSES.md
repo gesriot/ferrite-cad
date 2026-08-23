@@ -76,19 +76,32 @@ and carry its own terms before entering the graph.
   it and can be replaced.
 - **Source:** FreeCAD 1.0.1, `src/Mod/Sketcher/App/planegcs`, archive SHA-256
   `f62bc07c477544eff62b6ab0fc3bb63fa7f1e6f94763c51b0049507842d444f3`
-- **Modifications:** none. The sources are used byte-identical. Three headers
-  beside them – `SketcherGlobal.h`, `FCConfig.h` and `Base/Console.h` – are
-  FerriteCAD's own MIT build glue, written because FreeCAD's versions reach
-  into Qt and its build system, and marked as such.
+- **Modifications:** none. The sources are used byte-identical. Four files
+  beside them – `SketcherGlobal.h`, `FCConfig.h`, `Base/Console.h` and
+  `provenance.cpp`, committed in `tools/planegcs/glue` – are FerriteCAD's own
+  MIT build glue, written because FreeCAD's versions reach into Qt and its
+  build system, and each says so in its first lines. The Windows export
+  problem is solved in FerriteCAD's `SketcherGlobal.h` using the same
+  `dllexport`/`dllimport` mechanism FreeCAD's own header uses, so no LGPL
+  source is edited to make a DLL.
 - **Replacing it:** `tools/build-planegcs.sh` fetches the pinned release,
   verifies the checksum before extracting anything, and builds the shared
-  library. The build directory carries FreeCAD's complete `LICENSE` text
-  beside the library. Point `FCAD_PLANEGCS_DIR` at your own build instead.
+  library. Beside it the script writes the complete corresponding source,
+  FreeCAD's full `LICENSE` text, the provenance with its checked digest, and
+  `REPLACING.md`, which says how to rebuild or substitute the library and
+  which files are FerriteCAD's. Point `FCAD_PLANEGCS_DIR` at your own build
+  instead. Full statement in [`docs/build-planegcs.md`](docs/build-planegcs.md).
 - **Off by default:** the `planegcs` cargo feature. Ordinary builds and CI do
-  not compile or link it.
-- **Platform coverage:** the linked lab path is currently implemented and
-  locally exercised on macOS; the helper also supports Linux. It is not part
-  of the three-platform pin workflow and has no native Windows build path yet.
+  not compile or link it, and say the candidate is unavailable rather than
+  fetching anything.
+- **Platform coverage:** built and exercised through the real shared library
+  on Linux, macOS and Windows by the `planegcs pin` workflow, which requires
+  `FERRITECAD_REQUIRE_PLANEGCS=1` so a run cannot pass by skipping. Windows
+  produces `planegcs.dll` with `planegcs.lib` as linker metadata; a static
+  planegcs is refused by the build definition on every platform.
+- **Not shipped:** no FerriteCAD application loads or packages planegcs today.
+  What exists is a verified buildable component, the bench that measures it,
+  and the delivery the obligations would apply to.
 
 ### Eigen and Boost
 

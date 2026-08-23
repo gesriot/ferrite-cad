@@ -1,0 +1,82 @@
+# planegcs, as delivered
+
+This directory is a build of planegcs from FreeCAD @TAG@ and everything the
+licence obliges the sender to hand over with it. `tools/build-planegcs.sh`
+filled the version, digest, platform and compiler in when the build was made,
+so what you are reading describes this build and not a general case.
+
+## What is here
+
+| Path | What it is | Licence |
+| --- | --- | --- |
+| `@LIBRARY@` | the planegcs shared library, built for @PLATFORM@ | LGPL-2.0-or-later |
+| `@IMPORT_LIBRARY@` | linker metadata for the library above, needed to relink against it on Windows and containing no planegcs implementation | LGPL-2.0-or-later |
+| `tree/App/planegcs/` | the complete corresponding source, byte-identical to the release | LGPL-2.0-or-later |
+| `tree/boost_graph_adjacency_list.hpp` | from the same release, byte-identical | LGPL-2.0-or-later |
+| `LICENSE-FreeCAD-LGPL-2.0-or-later.txt` | the full licence text, from the same release | |
+| `tree/SketcherGlobal.h`, `tree/FCConfig.h`, `tree/Base/Console.h`, `tree/glue/provenance.cpp` | FerriteCAD's build glue | MIT |
+| `PROVENANCE.txt` | the release, its checked digest and the compiler that built this | MIT |
+| `REPLACING.md` | this file | MIT |
+
+**The glue is FerriteCAD's, not FreeCAD's.** Four small files are written by
+this project so planegcs builds outside FreeCAD: an export macro, an empty
+build-configuration header, a silent console, and the function that returns
+the provenance string. They are MIT and say so in their first lines. Nothing
+under `tree/App/planegcs/` is touched.
+
+## Provenance
+
+- source: FreeCAD @TAG@, `src/Mod/Sketcher/App/planegcs`
+- archive: `@ARCHIVE_URL@`
+- archive SHA-256: `@SHA256@`, verified before anything was extracted
+- built on: @PLATFORM@ with @COMPILER@
+- the library answers `@PROVENANCE@` when asked what it is
+
+## Replacing it
+
+planegcs is linked dynamically for exactly this reason. Nothing of it is
+compiled into a FerriteCAD binary, so you can put your own build in its place
+without rebuilding anything of FerriteCAD's.
+
+Rebuild from the source beside this file:
+
+```
+cmake -S <ferritecad>/tools/planegcs -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DFCAD_PLANEGCS_TREE=$PWD/tree \
+  -DFCAD_EIGEN_INCLUDE=<dir containing Eigen/> \
+  -DFCAD_BOOST_INCLUDE=<dir containing boost/> \
+  -DFCAD_PLANEGCS_PROVENANCE='@PROVENANCE@'
+cmake --build build --config Release
+```
+
+Or build it any other way you like, from these sources or from a newer
+planegcs. What has to hold is the file name and the C++ interface:
+
+- the file must be called `@LIBRARY@` and sit where this one sits;
+- it must export the `GCS::` classes declared in `tree/App/planegcs/GCS.h`,
+  `Geo.h` and `Constraints.h`, compiled by a toolchain that agrees with
+  FerriteCAD's about the C++ ABI and the C runtime;
+- on Windows it must also produce `@IMPORT_LIBRARY@`, which is what a relink
+  reads;
+- it must export `fc_planegcs_provenance()` returning a string that says which
+  planegcs it is. `tree/glue/provenance.cpp` is that function; compile it in.
+  Nothing loads a library that cannot answer, which is deliberate: it is what
+  stops a swapped library from going unnoticed.
+
+Then relink or rerun:
+
+```
+FCAD_PLANEGCS_DIR=<this directory> cargo test -p ferritecad-solver-lab \
+  --features planegcs -- --nocapture
+```
+
+Eigen and Boost are needed as headers only, at build time, and are not part of
+this delivery. Eigen is MPL-2.0 and Boost is under the Boost Software Licence.
+
+## What this delivery is not
+
+A FerriteCAD release. Nothing in the FerriteCAD application loads planegcs
+today. This is the component and the bench that measures it, packaged with the
+obligations that would apply if it were shipped, so that the obligations are
+tested rather than promised.

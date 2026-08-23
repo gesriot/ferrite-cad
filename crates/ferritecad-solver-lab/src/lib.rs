@@ -34,8 +34,10 @@ pub use linalg::Matrix;
 pub use lm::{DoesNothing, LevenbergMarquardt};
 #[cfg(feature = "planegcs")]
 pub use planegcs::{
-    Planegcs, blame_with_planegcs, drag_with_planegcs, is_available as planegcs_available,
-    provenance as planegcs_provenance,
+    Planegcs, blame_with_planegcs, drag_with_planegcs,
+    expected_provenance as planegcs_expected_provenance, is_available as planegcs_available,
+    is_required as planegcs_required, native_sessions as planegcs_native_sessions,
+    native_solves as planegcs_native_solves, provenance as planegcs_provenance,
 };
 
 use std::time::Duration;

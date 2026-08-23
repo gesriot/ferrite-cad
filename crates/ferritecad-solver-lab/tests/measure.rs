@@ -39,13 +39,35 @@ fn candidates() -> Vec<Box<dyn Solver>> {
     all
 }
 
+/// Whether the optional candidate is here.
+///
+/// One gate for every site that asks, because the answer is not simply "is it
+/// linked". A run told `FERRITECAD_REQUIRE_PLANEGCS=1` exists to prove that
+/// planegcs works, and the way such a run fails is by quietly becoming a run
+/// of the reference implementation that passes. So the absence is a failure
+/// there and a printed skip everywhere else, and the printed skip is what the
+/// workflow greps for.
+#[cfg(feature = "planegcs")]
+fn planegcs_ready() -> bool {
+    if ferritecad_solver_lab::planegcs_available() {
+        return true;
+    }
+    assert!(
+        !ferritecad_solver_lab::planegcs_required(),
+        "FERRITECAD_REQUIRE_PLANEGCS=1 was set, so no gate may skip: this build linked no \
+         planegcs, and a comparison with one candidate is not a comparison"
+    );
+    eprintln!("skipped: this build did not link planegcs");
+    false
+}
+
 /// The candidates that are only there in some builds.
 ///
 /// Written as two whole functions rather than a conditional push, so the list
 /// above reads and compiles the same way whether or not the feature is on.
 #[cfg(feature = "planegcs")]
 fn optional() -> Vec<Box<dyn Solver>> {
-    if ferritecad_solver_lab::planegcs_available() {
+    if planegcs_ready() {
         vec![Box::new(ferritecad_solver_lab::Planegcs)]
     } else {
         Vec::new()
@@ -267,6 +289,117 @@ fn dragging_a_corner_keeps_the_sketch_together() {
     );
 }
 
+/// One summary per run, in facts that a floating-point unit cannot disagree
+/// about.
+///
+/// Three platforms will not produce identical doubles and must not be asked
+/// to: the same solve on the same source can land a few ulp apart and be
+/// equally right. What has to match is the meaning – how many equations, how
+/// much freedom is left, what was blamed, whether it converged, which library
+/// answered – so that is what is printed, as integers and booleans, and the
+/// pin workflow requires the three files to be the same file.
+///
+/// Timings are deliberately absent. They are reported by the tables above and
+/// are not a gate anywhere: there is no recorded hardware profile, and a
+/// runner that is busy is not a solver that is slow.
+#[test]
+fn a_semantic_summary_is_printed_for_cross_platform_comparison() {
+    let mut lines = Vec::new();
+
+    for solver in candidates() {
+        for problem in suite() {
+            let diagnosis = problem.diagnose(1e-9);
+            let outcome = solver.solve(&problem, &problem.start);
+            lines.push(format!(
+                "semantic solve candidate={} problem={} eq={} unk={} dof={} redundant={} \
+                 converged={}",
+                solver.name(),
+                problem.name,
+                problem.equations(),
+                problem.unknowns(),
+                diagnosis.degrees_of_freedom,
+                diagnosis.redundant,
+                outcome.converged,
+            ));
+        }
+    }
+
+    for kind in IMPOSSIBLE {
+        let sketch = problem(kind, 0);
+        lines.push(format!(
+            "semantic impossible problem={} lm_refused={}",
+            sketch.name,
+            !LevenbergMarquardt::default()
+                .solve(&sketch, &sketch.start)
+                .converged,
+        ));
+        #[cfg(feature = "planegcs")]
+        if planegcs_ready() {
+            lines.push(format!(
+                "semantic impossible problem={} planegcs_refused={}",
+                sketch.name,
+                !ferritecad_solver_lab::Planegcs
+                    .solve(&sketch, &sketch.start)
+                    .converged,
+            ));
+        }
+    }
+
+    for kind in [Corpus::Rectangle, Corpus::Overconstrained] {
+        let sketch = problem(kind, 0);
+        lines.push(format!(
+            "semantic blame problem={} lm={:?}",
+            sketch.name,
+            blame(&sketch).constraints
+        ));
+        #[cfg(feature = "planegcs")]
+        if planegcs_ready() {
+            let native = ferritecad_solver_lab::blame_with_planegcs(&sketch)
+                .expect("a linked planegcs diagnoses");
+            lines.push(format!(
+                "semantic blame problem={} planegcs={:?}",
+                sketch.name, native.constraints
+            ));
+        }
+    }
+
+    let sketch = problem(Corpus::Underconstrained, 0);
+    let gesture = Drag::diagonal(Point(0), 50);
+    let mine = drag_with_lm(&sketch, &gesture);
+    lines.push(format!(
+        "semantic drag candidate={} steps={} converged={} follows={}",
+        mine.candidate,
+        mine.steps.len(),
+        mine.all_steps_converged,
+        mine.worst_follow_error < 1e-6,
+    ));
+    #[cfg(feature = "planegcs")]
+    if planegcs_ready() {
+        let theirs = ferritecad_solver_lab::drag_with_planegcs(&sketch, &gesture)
+            .expect("a linked planegcs drags");
+        lines.push(format!(
+            "semantic drag candidate={} steps={} converged={} follows={}",
+            theirs.candidate,
+            theirs.steps.len(),
+            theirs.all_steps_converged,
+            theirs.worst_follow_error < 1e-6,
+        ));
+    }
+
+    #[cfg(feature = "planegcs")]
+    if planegcs_ready() {
+        lines.push(format!(
+            "semantic provenance={}",
+            ferritecad_solver_lab::planegcs_provenance()
+        ));
+    }
+
+    // The leading newline is not decoration: the harness writes "test <name>
+    // ... " without one, and the first summary line would otherwise arrive
+    // with that prefix attached and be dropped by whatever reads them.
+    eprintln!("\n{}", lines.join("\n"));
+}
+
 #[test]
 fn the_largest_sketch_in_the_corpus_is_the_size_the_decision_was_framed_around() {
     let mut largest = 0;
@@ -283,13 +416,14 @@ fn the_largest_sketch_in_the_corpus_is_the_size_the_decision_was_framed_around()
 #[cfg(feature = "planegcs")]
 mod against_planegcs {
     use super::*;
-    use ferritecad_solver_lab::{Planegcs, planegcs_available, planegcs_provenance};
+    use ferritecad_solver_lab::{
+        Planegcs, planegcs_expected_provenance, planegcs_native_solves, planegcs_provenance,
+    };
 
-    /// Skips the caller when this build has the feature but not the library.
+    /// Leaves the caller when this build has the feature but not the library.
     macro_rules! planegcs_or_skip {
         () => {
-            if !planegcs_available() {
-                eprintln!("skipped: this build did not link planegcs");
+            if !planegcs_ready() {
                 return;
             }
         };
@@ -351,10 +485,40 @@ mod against_planegcs {
     }
 
     #[test]
-    fn planegcs_says_which_planegcs_it_is() {
+    fn the_library_the_lab_loaded_is_the_pinned_one() {
         planegcs_or_skip!();
+        // Asked of the shared library, answered by a string compiled into it
+        // from tools/planegcs/pin.env, and compared against the same file read
+        // by this crate's build script. A library swapped for another after
+        // these gates were written fails here rather than being described by
+        // them, which is what makes the rest of them statements about planegcs
+        // at all.
         let provenance = planegcs_provenance();
-        assert!(provenance.contains("FreeCAD"), "{provenance}");
+        assert_eq!(
+            provenance,
+            planegcs_expected_provenance(),
+            "the library that was loaded is not the pinned one"
+        );
+        assert!(
+            provenance.contains("planegcs from FreeCAD 1.0.1"),
+            "the pin no longer names the release the decision was made on: {provenance}"
+        );
+
+        // And the candidate that carries planegcs's name really goes there.
+        // Every other gate compares numbers, and a candidate that quietly
+        // handed the problem to the reference implementation would clear all
+        // of them while the table said planegcs: same residuals, same
+        // diagnosis, same refusals, and a decision made on nothing.
+        let sketch = problem(Corpus::Rectangle, 0);
+        let before = planegcs_native_solves();
+        let outcome = Planegcs.solve(&sketch, &sketch.start);
+        assert!(outcome.converged);
+        assert_eq!(
+            planegcs_native_solves(),
+            before + 1,
+            "the planegcs candidate returned an answer without asking planegcs"
+        );
+
         eprintln!("second candidate: {provenance}");
     }
 }
@@ -384,9 +548,20 @@ fn a_drag_is_measured_the_same_way_for_every_candidate() {
     lines.push(mine.line());
 
     #[cfg(feature = "planegcs")]
-    if ferritecad_solver_lab::planegcs_available() {
+    if planegcs_ready() {
+        // One native system for the whole gesture, which is the thing being
+        // measured. Rebuilding it per step returns the same coordinates at a
+        // different price, so the geometry cannot report it and the timings
+        // are not a gate; the count is.
+        let systems_before = ferritecad_solver_lab::planegcs_native_sessions();
         let theirs = ferritecad_solver_lab::drag_with_planegcs(&sketch, &gesture)
             .expect("a linked planegcs drag must not disappear as an unavailable candidate");
+        assert_eq!(
+            ferritecad_solver_lab::planegcs_native_sessions(),
+            systems_before + 1,
+            "a gesture of {} steps built more than one native system",
+            gesture.targets.len()
+        );
         assert!(theirs.all_steps_converged, "planegcs failed a drag step");
         assert!(
             theirs.worst_residual <= COMPARISON_RESIDUAL_LIMIT,
@@ -434,7 +609,7 @@ fn a_sketch_that_cannot_be_satisfied_is_not_reported_as_solved() {
         );
 
         #[cfg(feature = "planegcs")]
-        if ferritecad_solver_lab::planegcs_available() {
+        if planegcs_ready() {
             let theirs = ferritecad_solver_lab::Planegcs.solve(&sketch, &sketch.start);
             assert!(
                 !theirs.converged,
@@ -481,7 +656,7 @@ fn a_conflict_names_the_constraints_a_person_should_look_at() {
     eprintln!("conflict message: {sentence}");
 
     #[cfg(feature = "planegcs")]
-    if ferritecad_solver_lab::planegcs_available() {
+    if planegcs_ready() {
         let native = ferritecad_solver_lab::blame_with_planegcs(&repeated)
             .expect("linked planegcs must return its diagnosed tags");
         assert!(
@@ -505,7 +680,7 @@ fn a_conflict_names_the_constraints_a_person_should_look_at() {
     assert!(blame(&problem(Corpus::Rectangle, 0)).constraints.is_empty());
 
     #[cfg(feature = "planegcs")]
-    if ferritecad_solver_lab::planegcs_available() {
+    if planegcs_ready() {
         assert!(
             ferritecad_solver_lab::blame_with_planegcs(&problem(Corpus::Rectangle, 0))
                 .expect("linked diagnosis")
