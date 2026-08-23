@@ -49,11 +49,11 @@ fn candidates() -> Vec<Box<dyn Solver>> {
 /// workflow greps for.
 #[cfg(feature = "planegcs")]
 fn planegcs_ready() -> bool {
-    if ferritecad_solver_lab::planegcs_available() {
+    if ferritecad_solver_lab::planegcs::is_available() {
         return true;
     }
     assert!(
-        !ferritecad_solver_lab::planegcs_required(),
+        !ferritecad_solver_lab::planegcs::is_required(),
         "FERRITECAD_REQUIRE_PLANEGCS=1 was set, so no gate may skip: this build linked no \
          planegcs, and a comparison with one candidate is not a comparison"
     );
@@ -390,7 +390,8 @@ fn a_semantic_summary_is_printed_for_cross_platform_comparison() {
     if planegcs_ready() {
         lines.push(format!(
             "semantic provenance={}",
-            ferritecad_solver_lab::planegcs_provenance()
+            ferritecad_solver_lab::planegcs::provenance()
+                .expect("an available solver identifies its library")
         ));
     }
 
@@ -416,8 +417,9 @@ fn the_largest_sketch_in_the_corpus_is_the_size_the_decision_was_framed_around()
 #[cfg(feature = "planegcs")]
 mod against_planegcs {
     use super::*;
-    use ferritecad_solver_lab::{
-        Planegcs, planegcs_expected_provenance, planegcs_native_solves, planegcs_provenance,
+    use ferritecad_solver_lab::Planegcs;
+    use ferritecad_solver_lab::planegcs::{
+        expected_provenance, native_solves, provenance as loaded_provenance,
     };
 
     /// Leaves the caller when this build has the feature but not the library.
@@ -467,7 +469,9 @@ mod against_planegcs {
     fn both_solvers_agree_about_what_is_wrong_with_a_sketch() {
         planegcs_or_skip!();
         let loose = problem(Corpus::Underconstrained, 0);
-        let (theirs, conflicting, redundant) = Planegcs.diagnose(&loose);
+        let (theirs, conflicting, redundant) = Planegcs
+            .diagnose(&loose)
+            .expect("a linked planegcs diagnoses");
         let mine = loose.diagnose(1e-9);
         assert_eq!(
             mine.degrees_of_freedom, theirs.degrees_of_freedom,
@@ -476,7 +480,9 @@ mod against_planegcs {
         assert!(!conflicting && !redundant);
 
         let repeated = problem(Corpus::Overconstrained, 0);
-        let (_, conflicting, redundant) = Planegcs.diagnose(&repeated);
+        let (_, conflicting, redundant) = Planegcs
+            .diagnose(&repeated)
+            .expect("a linked planegcs diagnoses");
         assert!(
             redundant || conflicting,
             "planegcs did not notice a constraint stated twice"
@@ -493,10 +499,10 @@ mod against_planegcs {
         // these gates were written fails here rather than being described by
         // them, which is what makes the rest of them statements about planegcs
         // at all.
-        let provenance = planegcs_provenance();
+        let provenance = loaded_provenance().expect("an available solver identifies its library");
         assert_eq!(
             provenance,
-            planegcs_expected_provenance(),
+            expected_provenance(),
             "the library that was loaded is not the pinned one"
         );
         assert!(
@@ -510,11 +516,11 @@ mod against_planegcs {
         // of them while the table said planegcs: same residuals, same
         // diagnosis, same refusals, and a decision made on nothing.
         let sketch = problem(Corpus::Rectangle, 0);
-        let before = planegcs_native_solves();
+        let before = native_solves();
         let outcome = Planegcs.solve(&sketch, &sketch.start);
         assert!(outcome.converged);
         assert_eq!(
-            planegcs_native_solves(),
+            native_solves(),
             before + 1,
             "the planegcs candidate returned an answer without asking planegcs"
         );
@@ -553,11 +559,11 @@ fn a_drag_is_measured_the_same_way_for_every_candidate() {
         // measured. Rebuilding it per step returns the same coordinates at a
         // different price, so the geometry cannot report it and the timings
         // are not a gate; the count is.
-        let systems_before = ferritecad_solver_lab::planegcs_native_sessions();
+        let systems_before = ferritecad_solver_lab::planegcs::native_sessions();
         let theirs = ferritecad_solver_lab::drag_with_planegcs(&sketch, &gesture)
             .expect("a linked planegcs drag must not disappear as an unavailable candidate");
         assert_eq!(
-            ferritecad_solver_lab::planegcs_native_sessions(),
+            ferritecad_solver_lab::planegcs::native_sessions(),
             systems_before + 1,
             "a gesture of {} steps built more than one native system",
             gesture.targets.len()

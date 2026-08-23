@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "ferritecad-sketch-solver"
+description = "FerriteCAD's sketch constraint solver: the product contract, and the planegcs behind it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# The one owner of the solver contract, the FFI, the MIT bridge, the build
+# detection and the native session's lifetime. `ferritecad-solver-lab` is a
+# client of this crate; nothing here points back at it, because a bench that
+# could reach into the product path would stop being able to measure it.
+[dependencies]
+# The public boundary reports which point, which constraint and which of them
+# was not finite. A stringly-typed error would erase exactly the identifiers a
+# caller needs to act on, so the error is a typed enum, per CLAUDE.md 5.2.
+thiserror = "2"
+
+# planegcs is LGPL-2.0-or-later and off by default. Turning it on needs a
+# shared library built by tools/build-planegcs.sh and pointed at with
+# FCAD_PLANEGCS_DIR; it is never compiled into a FerriteCAD binary. Without it
+# this crate still builds, and every entry point answers Unavailable.
+[features]
+planegcs = []
+
+[lints]
+workspace = true

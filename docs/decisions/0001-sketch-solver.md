@@ -9,6 +9,13 @@ Levenberg–Marquardt implementation in `crates/ferritecad-solver-lab` stays as
 a reference: it is what the bench compares against, and what would be built on
 if the decision were ever revisited.
 
+Since §21A-2a the product side of that decision has an address:
+`crates/ferritecad-sketch-solver` owns the contract, the FFI, the MIT bridge,
+the build detection and the native session's lifetime. The bench is a client of
+it and keeps no copy of the boundary, so the reference implementation and the
+corpus stay independent of the chosen path — which is what makes the last
+section of this document true rather than hopeful.
+
 ## What the comparison found
 
 Both candidates were asked the same questions through one interface, over a
@@ -76,14 +83,19 @@ question from being able to build and replace it.
 - **Sparsity is unresolved.** The local LM is dense and cubic per iteration.
   planegcs's diagnosis and solver paths have not been characterized at larger
   scale, and its sparse options have not been exercised here.
-- **Conflict messages are a sketch of one.** Naming the constraints is done;
-  saying it in a way a person acts on, in an interface, is not.
+- **Conflict messages are a sketch of one.** Naming the constraints is done —
+  in the caller's own identifiers, and since §21A-2a for contradictory
+  dimensions too, which used to come back as "the solver could not answer"
+  because the shim read planegcs's negative degree-of-freedom count as a
+  failure rather than as over-constraint. Saying it in a way a person acts on,
+  in an interface, is not done.
 
 ## Reversing it
 
 The `Solver` interface is the architectural seam, not the whole cost: the
-chosen path also has a C ABI, feature mapping, a build and a package. The
-neutral corpus and reference LM remain independent of those pieces, so a
-replacement can be measured against the same gate. If the LGPL obligation
+chosen path also has a C ABI, feature mapping, a build and a package. Those
+pieces are now in one crate rather than scattered, which is what a replacement
+would have to replace; the neutral corpus and reference LM live outside it and
+remain independent, so a replacement can be measured against the same gate. If the LGPL obligation
 becomes unacceptable, or planegcs proves wrong in a way this corpus could not
 show, the reference implementation is still there and still passing.

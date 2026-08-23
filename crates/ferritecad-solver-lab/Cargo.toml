@@ -12,16 +12,24 @@ authors.workspace = true
 # document or UI depends on it.
 publish = false
 
-# Deliberately nothing. A comparison of solvers must not be shaped by what a
-# linear algebra crate happens to make easy, and the numerics needed here fit
-# in a few hundred lines that can be read.
+# No linear algebra crate, deliberately: a comparison of solvers must not be
+# shaped by what a library happens to make easy, and the numerics needed here
+# fit in a few hundred lines that can be read.
+#
+# The one dependency is the product solver, and the direction matters. The lab
+# is a client of it; it holds no shim, no build script, no C ABI and no
+# constraint mapping of its own. A bench with its own copy of the boundary
+# would be measuring a second implementation and reporting it as the
+# product's.
 [dependencies]
+ferritecad-sketch-solver.workspace = true
 
 # planegcs is LGPL-2.0-or-later and off by default. Turning it on needs a
 # shared library built by tools/build-planegcs.sh and pointed at with
-# FCAD_PLANEGCS_DIR; it is never compiled into a FerriteCAD binary.
+# FCAD_PLANEGCS_DIR; it is never compiled into a FerriteCAD binary. The feature
+# forwards to the product crate, which owns the detection.
 [features]
-planegcs = []
+planegcs = ["ferritecad-sketch-solver/planegcs"]
 
 [lints]
 workspace = true

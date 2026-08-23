@@ -2,7 +2,8 @@
 name: planegcs pin
 
 # Builds the pinned planegcs from source on all three product platforms and
-# runs the solver lab through the real shared library on each.
+# runs the product sketch solver, and the bench that measures it, through the
+# real shared library on each.
 #
 # Deliberately not part of CI, for the same reason the OCCT pin workflow is
 # not: ordinary builds must keep working on a machine that has never built
@@ -11,7 +12,8 @@ name: planegcs pin
 #
 # The deliverable is not "it compiled". It is a record that the library was
 # built from a checked archive, that the test process really depended on it,
-# that the three platforms agree about what the solver did, and that the
+# that the product path — not the bench's own arithmetic — is what answered,
+# that the three platforms agree about what the solver concluded, and that the
 # licence obligations were packaged rather than promised.
 
 on:
@@ -20,7 +22,9 @@ on:
     paths:
       - 'tools/planegcs/**'
       - 'tools/build-planegcs.sh'
+      - 'crates/ferritecad-sketch-solver/**'
       - 'crates/ferritecad-solver-lab/**'
+      - 'tools/check-solver-ownership.sh'
       - '.github/workflows/planegcs-pin.yml'
 
 permissions:
@@ -67,6 +71,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      - name: Require one owner of the solver boundary
+        run: tools/check-solver-ownership.sh
 
       - name: Install the Boost headers planegcs needs
         run: |
@@ -203,14 +210,21 @@ jobs:
             echo "FCAD_PLANEGCS_DIR=$PWD/vendor/planegcs" >> "$GITHUB_ENV"
           fi
 
-      - name: Put the library where the Windows loader looks
-        if: matrix.name == 'windows'
+      - name: Put the library where the loader looks
         run: |
           set -euo pipefail
-          # Windows has no RPATH: the loader searches the executable's own
-          # directory and then PATH. This is the "otherwise discoverable" half
-          # of the gate, and the step below checks it took.
-          cygpath -w "$PWD/vendor/planegcs" >> "$GITHUB_PATH"
+          # Every platform, not only Windows, and the reason is where the build
+          # script now lives. It belongs to ferritecad-sketch-solver, so the run
+          # path it emits reaches that crate's own test binaries and not a
+          # dependent's: cargo does not propagate a link argument to the crates
+          # above. The bench is such a dependent, and it finds the library the
+          # way a shipped application will - by the loader's search path.
+          out="$PWD/vendor/planegcs"
+          case '${{ matrix.name }}' in
+            linux)   echo "LD_LIBRARY_PATH=$out" >> "$GITHUB_ENV" ;;
+            macos)   echo "DYLD_LIBRARY_PATH=$out" >> "$GITHUB_ENV" ;;
+            windows) cygpath -w "$out" >> "$GITHUB_PATH" ;;
+          esac
 
       - name: Require a shared library, its licence and a way to replace it
         run: |
@@ -263,7 +277,7 @@ jobs:
           esac
           echo "the delivery carries the library, its source, its licence and how to replace it"
 
-      - name: Build the lab, refusing to build one without planegcs
+      - name: Build the product solver and the lab, refusing a build without planegcs
         id: build
         env:
           FERRITECAD_REQUIRE_PLANEGCS: '1'
@@ -272,26 +286,40 @@ jobs:
           # --no-run first so the executables can be inspected before they are
           # run: the licence position rests on planegcs being dynamic, and that
           # is checked against the artefact rather than assumed from the flags.
-          if ! cargo test --release -p ferritecad-solver-lab --features planegcs \
-            --no-run --message-format=json > build.json; then
-            echo "::group::the same build, in words"
-            # --message-format=json put the build script's own explanation in
-            # build.json, where the step could not see it and reported only
-            # that something had not compiled. Ask again, plainly.
-            cargo test --release -p ferritecad-solver-lab --features planegcs --no-run || true
-            echo "::endgroup::"
-            echo "::error::the lab did not build against planegcs"
-            exit 1
-          fi
-          # Every executable the run will launch, taken from cargo rather than
-          # from a list of names somebody has to remember to extend.
-          jq -r 'select(.reason == "compiler-artifact")
-                 | select(.target.test == true)
-                 | .executable // empty' build.json | sort -u > binaries.txt
+          #
+          # Both packages, because they answer different questions. The product
+          # crate is what an application will call; the lab is what measures it
+          # and what holds the corpus the decision was made on.
+          : > binaries.txt
+          for package in ferritecad-sketch-solver ferritecad-solver-lab; do
+            if ! cargo test --release -p "$package" --features planegcs \
+              --no-run --message-format=json > "build-${package}.json"; then
+              echo "::group::the same build, in words"
+              # --message-format=json put the build script's own explanation in
+              # the json, where the step could not see it and reported only that
+              # something had not compiled. Ask again, plainly.
+              cargo test --release -p "$package" --features planegcs --no-run || true
+              echo "::endgroup::"
+              echo "::error::${package} did not build against planegcs"
+              exit 1
+            fi
+            # Every executable the run will launch, taken from cargo rather than
+            # from a list of names somebody has to remember to extend.
+            jq -r 'select(.reason == "compiler-artifact")
+                   | select(.target.test == true)
+                   | .executable // empty' "build-${package}.json" >> binaries.txt
+          done
+          LC_ALL=C sort -u -o binaries.txt binaries.txt
           if [ ! -s binaries.txt ]; then
-            echo "::error::the lab produced no test executable"
+            echo "::error::the build produced no test executable"
             exit 1
           fi
+          # The product crate's own gates must be among them. A run that built
+          # only the bench would prove nothing about the path an application
+          # takes, and would look exactly like this one.
+          grep -Eq '[/\\](product|boundary)-[0-9a-f]+(\.exe)?$' binaries.txt \
+            || { echo "::error::the product solver's own gates were not built"; \
+                 cat binaries.txt; exit 1; }
           cat binaries.txt
 
       - name: Require the test process to depend on the shared library
@@ -352,13 +380,32 @@ jobs:
         run: |
           set -euo pipefail
           out="$PWD/vendor/planegcs"
+          # The product crate's own binaries are the ones its build script
+          # linked, so they are the ones that carry a run path. A dependent's
+          # binary is linked by a different cargo invocation and finds the
+          # library through the loader's search path, which the step above set
+          # and which the case below checks.
+          own="$(grep -E '[/\\](product|boundary)-[0-9a-f]+(\.exe)?$' binaries.txt | head -1)"
+          own="$(printf '%s' "$own" | tr -d '\r')"
+          if [ -z "$own" ]; then
+            echo "::error::no product-solver test binary to inspect"
+            exit 1
+          fi
           case '${{ matrix.name }}' in
             linux)
-              readelf -d "$(head -1 binaries.txt)" | grep -E 'RUNPATH|RPATH' | grep -F "$out" \
-                || { echo "::error::the binary carries no run path to $out"; exit 1; } ;;
+              readelf -d "$own" | grep -E 'RUNPATH|RPATH' | grep -F "$out" \
+                || { echo "::error::$own carries no run path to $out"; exit 1; }
+              case ":${LD_LIBRARY_PATH:-}:" in
+                *":$out:"*) echo "LD_LIBRARY_PATH reaches $out" ;;
+                *) echo "::error::LD_LIBRARY_PATH does not hold $out"; exit 1 ;;
+              esac ;;
             macos)
-              otool -l "$(head -1 binaries.txt)" | grep -A2 LC_RPATH | grep -F "$out" \
-                || { echo "::error::the binary carries no run path to $out"; exit 1; } ;;
+              otool -l "$own" | grep -A2 LC_RPATH | grep -F "$out" \
+                || { echo "::error::$own carries no run path to $out"; exit 1; }
+              case ":${DYLD_LIBRARY_PATH:-}:" in
+                *":$out:"*) echo "DYLD_LIBRARY_PATH reaches $out" ;;
+                *) echo "::error::DYLD_LIBRARY_PATH does not hold $out"; exit 1 ;;
+              esac ;;
             windows)
               # Whether some entry of PATH really holds the DLL. Comparing the
               # directory as a string would compare spellings: this shell and
@@ -380,6 +427,16 @@ jobs:
           esac
           echo "the loader can reach $out"
 
+      - name: Run the product solver through the real library
+        env:
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+        run: |
+          set -euo pipefail
+          # The path an application will take, exercised first and on its own,
+          # so a failure here is not confused with one in the bench.
+          cargo test --release -p ferritecad-sketch-solver --features planegcs \
+            -- --nocapture --test-threads=1 2>&1 | tee product.txt
+
       - name: Run the lab through the real library
         env:
           FERRITECAD_REQUIRE_PLANEGCS: '1'
@@ -394,27 +451,53 @@ jobs:
       - name: Refuse a run that skipped, or that ran no planegcs gate
         run: |
           set -euo pipefail
-          if grep -q 'skipped: this build did not link planegcs' lab.txt; then
-            echo "::error::a gate skipped itself under FERRITECAD_REQUIRE_PLANEGCS=1"
-            exit 1
-          fi
+          for skip in \
+            'skipped: this build did not link planegcs' \
+            'skipped: this build has no sketch solver'
+          do
+            if grep -qF "$skip" product.txt lab.txt; then
+              echo "::error::a gate skipped itself under FERRITECAD_REQUIRE_PLANEGCS=1"
+              exit 1
+            fi
+          done
 
-          # Named rather than counted. A count is satisfied by any five tests,
-          # including five that never call into the library; these are the
-          # gates that only exist when planegcs is linked, and every one of
-          # them has to have run and passed.
+          # Named rather than counted. A count is satisfied by any number of
+          # tests, including ones that never call into the library; these are
+          # the gates that only mean something when planegcs is linked, and
+          # every one of them has to have run and passed.
           missing=0
+          check() {
+            if ! grep -qF "test $2 ..." "$1"; then
+              echo "::error::the planegcs gate $2 did not run"
+              missing=$((missing + 1))
+            fi
+          }
+
+          # The product path: what an application will call.
+          for gate in \
+            'a_required_build_opens_the_product_solver_and_the_pinned_library_answers' \
+            'the_product_path_asks_planegcs_rather_than_answering_for_it' \
+            'every_one_of_the_eight_constraint_types_crosses_the_product_boundary' \
+            'a_solved_rectangle_is_actually_a_rectangle' \
+            'a_sketch_with_freedom_left_solves_and_says_how_much' \
+            'a_constraint_said_twice_is_redundant_and_still_solves' \
+            'a_conflict_is_reported_in_the_callers_own_sparse_identifiers' \
+            'a_native_tag_is_never_returned_as_a_storage_position' \
+            'caller_identifiers_survive_a_permuted_store' \
+            'a_sketch_that_cannot_be_satisfied_publishes_nothing' \
+            'a_gesture_holds_one_native_system_and_moves_the_point_it_was_given' \
+            'a_native_system_is_released_exactly_once'
+          do
+            check product.txt "$gate"
+          done
+
+          # The bench: that the corpus still passes through the product path.
           for gate in \
             'against_planegcs::both_solvers_agree_about_the_geometry' \
             'against_planegcs::both_solvers_agree_about_what_is_wrong_with_a_sketch' \
-            'against_planegcs::the_library_the_lab_loaded_is_the_pinned_one' \
-            'planegcs::tests::a_persistent_session_enforces_its_lifecycle_and_moves_only_a_fixed_target' \
-            'planegcs::tests::an_invalid_point_index_is_refused_at_the_abi_boundary'
+            'against_planegcs::the_library_the_lab_loaded_is_the_pinned_one'
           do
-            if ! grep -qF "test ${gate} ..." lab.txt; then
-              echo "::error::the planegcs gate ${gate} did not run"
-              missing=$((missing + 1))
-            fi
+            check lab.txt "$gate"
           done
           [ "$missing" -eq 0 ] || exit 1
 
@@ -424,16 +507,33 @@ jobs:
             || { echo "::error::no planegcs result appears in the comparison"; exit 1; }
           grep -qF 'second candidate: planegcs from FreeCAD 1.0.1' lab.txt \
             || { echo "::error::the library did not identify itself as the pinned planegcs"; exit 1; }
-          echo "five planegcs gates ran, and the comparison had two candidates"
+          grep -qF 'product sketch solver: planegcs from FreeCAD 1.0.1' product.txt \
+            || { echo "::error::the product solver did not open the pinned library"; exit 1; }
+          echo "every planegcs gate ran, on both the product path and the bench"
 
       - name: Keep the semantic summary for the platforms to be compared on
         run: |
           set -euo pipefail
-          grep '^semantic ' lab.txt | LC_ALL=C sort > summary.txt
+          # Both halves: what the product contract concluded, and what the
+          # bench concluded over the corpus the decision was made on. Meaning
+          # only - counts, degrees of freedom, which constraints were blamed in
+          # the caller's own numbering, whether each sketch converged or was
+          # refused, and which library answered. Not one coordinate and not one
+          # microsecond.
+          {
+            grep '^product ' product.txt || true
+            grep '^semantic ' lab.txt || true
+          } | LC_ALL=C sort > summary.txt
           if [ ! -s summary.txt ]; then
             echo "::error::the run printed no semantic summary"
             exit 1
           fi
+          # Both halves have to be in it. A file with only one would still
+          # compare equal across three platforms and would say half as much.
+          grep -q '^product ' summary.txt \
+            || { echo "::error::the summary carries no product result"; exit 1; }
+          grep -q '^semantic ' summary.txt \
+            || { echo "::error::the summary carries no bench result"; exit 1; }
           wc -l < summary.txt
 
       - name: Write the pin report
@@ -512,7 +612,7 @@ jobs:
 
           # Run time first, on the binary that has already passed: the process
           # must not start without the file it named in its import table.
-          binary="$(grep measure binaries.txt | head -1)"
+          binary="$(grep -E '[/\\](product|boundary)-[0-9a-f]+(\.exe)?$' binaries.txt | head -1)"
           if [ '${{ matrix.name }}' = windows ]; then
             # cargo reports a Windows path; this shell needs its own spelling.
             binary="$(cygpath -u "$binary")"
@@ -539,7 +639,7 @@ jobs:
             empty="$(cygpath -w "$empty")"
           fi
           if FCAD_PLANEGCS_DIR="$empty" cargo test --release \
-            -p ferritecad-solver-lab --features planegcs --no-run > empty.txt 2>&1; then
+            -p ferritecad-sketch-solver --features planegcs --no-run > empty.txt 2>&1; then
             echo "::error::require mode built a lab with no library to link"
             exit 1
           fi

@@ -21,7 +21,12 @@ extern "C" {
 #define FC_GCS_NOEXCEPT
 #endif
 
-/* Return statuses. Only SUCCESS and CONVERGED contain an applied solution. */
+/* Return statuses. Only SUCCESS and CONVERGED contain an applied solution.
+ *
+ * These are this shim's numbers, not planegcs's, and they do not reach a
+ * caller of ferritecad-sketch-solver: the Rust side turns them into named
+ * situations, because a status number is a fact about a library version
+ * rather than about a sketch. */
 enum {
   FC_GCS_SUCCESS = 0,
   FC_GCS_NOT_CONVERGED = 1,
@@ -55,19 +60,6 @@ typedef struct FcGcsConstraint {
   double value2;
 } FcGcsConstraint;
 
-/* Solves, and reports what planegcs made of the system.
- *
- * `state` is 2 doubles per point, read as the starting guess and written with
- * the solution. Returns FC_GCS_SUCCESS or FC_GCS_CONVERGED only when an
- * acceptable native solution was applied; all other statuses are failures.
- * The diagnosis out-parameters are filled when they can be.
- */
-int32_t fc_gcs_solve(double *state, size_t point_count,
-                     const FcGcsConstraint *constraints,
-                     size_t constraint_count, int32_t *out_dofs,
-                     int32_t *out_has_conflicting, int32_t *out_has_redundant,
-                     int32_t *out_iterations) FC_GCS_NOEXCEPT;
-
 /* A system built once and solved many times.
  *
  * Dragging is not a sequence of unrelated solves: the sketch is set up once
@@ -91,6 +83,11 @@ void fc_gcs_session_destroy(FcGcsSession *session) FC_GCS_NOEXCEPT;
  * redundant ones, up to `capacity`; `out_blamed_count` is how many there were
  * in total, which may exceed the capacity. Indices are into the array the
  * session was built from, so a caller can name the constraint a person wrote.
+ *
+ * The two groups are written in that order and counted separately, and the
+ * caller splits them on `out_conflicting_count`. They are different findings:
+ * a redundant sketch still solves, and telling somebody their drawing is
+ * impossible when a constraint is merely repeated is the wrong sentence.
  */
 int32_t fc_gcs_session_diagnose(FcGcsSession *session, int32_t *out_dofs,
                                 int32_t *out_conflicting_count,
@@ -134,6 +131,14 @@ const char *fc_gcs_provenance(void) FC_GCS_NOEXCEPT;
  */
 uint64_t fc_gcs_native_solves(void) FC_GCS_NOEXCEPT;
 uint64_t fc_gcs_native_sessions(void) FC_GCS_NOEXCEPT;
+
+/* Sessions created minus sessions destroyed, on the calling thread.
+ *
+ * A session that was never released and one that was released twice are both
+ * invisible in a result: the coordinates are the same either way, and the
+ * second is a double free that may not fault until much later. This is what
+ * lets a gate say the lifetime was right rather than assume it. */
+uint64_t fc_gcs_native_live_sessions(void) FC_GCS_NOEXCEPT;
 
 #ifdef __cplusplus
 }

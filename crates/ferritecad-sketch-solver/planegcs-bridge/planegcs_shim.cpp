@@ -16,14 +16,6 @@
 
 namespace {
 
-/// The points, held as planegcs wants them: pointers into one parameter block.
-struct Sketch {
-  std::vector<double *> parameters;
-  std::vector<GCS::Point> points;
-  // Constraint values planegcs takes by pointer, kept alive for the solve.
-  std::vector<double> values;
-};
-
 /// A line between two of a sketch's points, by index.
 GCS::Line line_of(const std::vector<GCS::Point> &points, int32_t a, int32_t b) {
   GCS::Line result;
@@ -32,14 +24,14 @@ GCS::Line line_of(const std::vector<GCS::Point> &points, int32_t a, int32_t b) {
   return result;
 }
 
-GCS::Line line(Sketch &sketch, int32_t a, int32_t b) {
-  return line_of(sketch.points, a, b);
-}
-
 // Counted where the crossing happens, so the count is of crossings and not of
 // intentions. See the header for why these exist and why they are per thread.
 thread_local uint64_t native_solves = 0;
 thread_local uint64_t native_sessions = 0;
+// Incremented on creation and decremented on destruction, so a session that
+// was never released and one that was released twice are both visible from
+// outside. Neither shows up in a coordinate.
+thread_local uint64_t native_live_sessions = 0;
 
 bool is_point(size_t point_count, int32_t index) {
   return index >= 0 && static_cast<size_t>(index) < point_count;
@@ -75,142 +67,6 @@ bool has_valid_points(const FcGcsConstraint &constraint,
 }
 
 }  // namespace
-
-extern "C" int32_t fc_gcs_solve(double *state, size_t point_count,
-                                const FcGcsConstraint *constraints,
-                                size_t constraint_count, int32_t *out_dofs,
-                                int32_t *out_has_conflicting,
-                                int32_t *out_has_redundant,
-                                int32_t *out_iterations) noexcept {
-  if (state == nullptr || (constraint_count > 0 && constraints == nullptr)) {
-    return FC_GCS_INVALID_INPUT;
-  }
-  ++native_solves;
-
-  try {
-    Sketch sketch;
-    sketch.points.reserve(point_count);
-    sketch.parameters.reserve(point_count * 2);
-    // Reserved once: planegcs holds pointers into this, and a reallocation
-    // would leave it reading freed memory.
-    sketch.values.reserve(constraint_count * 2);
-
-    for (size_t i = 0; i < point_count; ++i) {
-      GCS::Point point;
-      point.x = &state[i * 2];
-      point.y = &state[i * 2 + 1];
-      sketch.points.push_back(point);
-      sketch.parameters.push_back(point.x);
-      sketch.parameters.push_back(point.y);
-    }
-
-    GCS::System system;
-    for (size_t i = 0; i < constraint_count; ++i) {
-      const FcGcsConstraint &c = constraints[i];
-      if (!has_valid_points(c, point_count)) {
-        return c.kind < FC_GCS_COINCIDENT || c.kind > FC_GCS_PARALLEL
-                   ? FC_GCS_UNKNOWN_CONSTRAINT
-                   : FC_GCS_INVALID_INPUT;
-      }
-      const int tag = static_cast<int>(i) + 1;
-
-      switch (c.kind) {
-        case FC_GCS_COINCIDENT:
-          system.addConstraintP2PCoincident(sketch.points[c.points[0]],
-                                            sketch.points[c.points[1]], tag);
-          break;
-        case FC_GCS_FIXED: {
-          sketch.values.push_back(c.value);
-          double *x = &sketch.values.back();
-          sketch.values.push_back(c.value2);
-          double *y = &sketch.values.back();
-          system.addConstraintCoordinateX(sketch.points[c.points[0]], x, tag);
-          system.addConstraintCoordinateY(sketch.points[c.points[0]], y, tag);
-          break;
-        }
-        case FC_GCS_DISTANCE: {
-          sketch.values.push_back(c.value);
-          system.addConstraintP2PDistance(sketch.points[c.points[0]],
-                                          sketch.points[c.points[1]],
-                                          &sketch.values.back(), tag);
-          break;
-        }
-        case FC_GCS_HORIZONTAL:
-          system.addConstraintHorizontal(sketch.points[c.points[0]],
-                                         sketch.points[c.points[1]], tag);
-          break;
-        case FC_GCS_VERTICAL:
-          system.addConstraintVertical(sketch.points[c.points[0]],
-                                       sketch.points[c.points[1]], tag);
-          break;
-        case FC_GCS_EQUAL_LENGTH: {
-          GCS::Line a = line(sketch, c.points[0], c.points[1]);
-          GCS::Line b = line(sketch, c.points[2], c.points[3]);
-          system.addConstraintEqualLength(a, b, tag);
-          break;
-        }
-        case FC_GCS_PERPENDICULAR:
-          system.addConstraintPerpendicular(
-              sketch.points[c.points[0]], sketch.points[c.points[1]],
-              sketch.points[c.points[2]], sketch.points[c.points[3]], tag);
-          break;
-        case FC_GCS_PARALLEL: {
-          GCS::Line a = line(sketch, c.points[0], c.points[1]);
-          GCS::Line b = line(sketch, c.points[2], c.points[3]);
-          system.addConstraintParallel(a, b, tag);
-          break;
-        }
-        default:
-          return FC_GCS_UNKNOWN_CONSTRAINT;
-      }
-    }
-
-    system.declareUnknowns(sketch.parameters);
-
-    // Asked before solving, which is when a person wants to be told that
-    // their sketch is over-constrained. Doing this before initSolution() is
-    // significant: initSolution() diagnoses an undiagnosed system itself, so
-    // the reverse order would run the same rank analysis twice.
-    if (system.diagnose() < 0) {
-      return FC_GCS_NOT_CONVERGED;
-    }
-    if (out_dofs != nullptr) {
-      *out_dofs = static_cast<int32_t>(system.dofsNumber());
-    }
-    if (out_has_conflicting != nullptr) {
-      *out_has_conflicting = system.hasConflicting() ? 1 : 0;
-    }
-    if (out_has_redundant != nullptr) {
-      *out_has_redundant = system.hasRedundant() ? 1 : 0;
-    }
-
-    // Diagnosis is already cached, so this captures the reference and
-    // partitions the system without repeating the rank analysis.
-    system.initSolution();
-
-    const int status = system.solve();
-    if (out_iterations != nullptr) {
-      // planegcs does not report an iteration count through this path.
-      *out_iterations = -1;
-    }
-
-    // Success zeroes the error function; Converged minimises it, which is the
-    // honest answer for a system that cannot be satisfied exactly. Both are
-    // solutions and both must be written back — an earlier version of this
-    // shim returned on Converged without applying, and every sketch with a
-    // redundant constraint came back untouched and looked like a solver
-    // failure. Only Failed leaves the state alone.
-    if (status != GCS::Success && status != GCS::Converged) {
-      return FC_GCS_NOT_CONVERGED;
-    }
-    system.applySolution();
-    return status == GCS::Success ? FC_GCS_SUCCESS : FC_GCS_CONVERGED;
-  } catch (const std::exception &) {
-    return FC_GCS_STD_EXCEPTION;
-  } catch (...) {
-    return FC_GCS_UNKNOWN_EXCEPTION;
-  }
-}
 
 namespace {
 
@@ -324,6 +180,7 @@ extern "C" FcGcsSession *fc_gcs_session_create(
     }
 
     session->system.declareUnknowns(session->parameters);
+    ++native_live_sessions;
     return reinterpret_cast<FcGcsSession *>(session.release());
   } catch (...) {
     return nullptr;
@@ -331,6 +188,10 @@ extern "C" FcGcsSession *fc_gcs_session_create(
 }
 
 extern "C" void fc_gcs_session_destroy(FcGcsSession *session) noexcept {
+  if (session == nullptr) {
+    return;
+  }
+  --native_live_sessions;
   delete reinterpret_cast<Session *>(session);
 }
 
@@ -347,9 +208,17 @@ extern "C" int32_t fc_gcs_session_diagnose(
       return FC_GCS_INVALID_INPUT;
     }
     if (!session->diagnosed) {
-      if (session->system.diagnose() < 0) {
-        return FC_GCS_NOT_CONVERGED;
-      }
+      // The return value is the degree-of-freedom count, and it is allowed to
+      // be negative: planegcs computes it as parameters minus non-redundant
+      // constraints, so an over-constrained sketch reports fewer than zero.
+      // Reading that as a failure - which this shim used to do - threw away
+      // the conflicting tags for exactly the sketches whose conflict a person
+      // most needs named, and reported them as a solver that would not answer.
+      //
+      // A diagnosis is unusable only when no unknowns were declared, and
+      // fc_gcs_session_create always declares them before this can be called,
+      // so there is no such case to distinguish here.
+      session->system.diagnose();
       session->diagnosed = true;
     }
 
@@ -487,4 +356,8 @@ extern "C" uint64_t fc_gcs_native_solves(void) noexcept { return native_solves; 
 
 extern "C" uint64_t fc_gcs_native_sessions(void) noexcept {
   return native_sessions;
+}
+
+extern "C" uint64_t fc_gcs_native_live_sessions(void) noexcept {
+  return native_live_sessions;
 }

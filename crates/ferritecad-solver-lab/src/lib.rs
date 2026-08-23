@@ -26,19 +26,27 @@ mod drag;
 mod linalg;
 mod lm;
 #[cfg(feature = "planegcs")]
-mod planegcs;
+mod product;
 
 pub use corpus::{Corpus, IMPOSSIBLE, problem};
 pub use drag::{Drag, DragTimings, drag_with_lm};
 pub use linalg::Matrix;
 pub use lm::{DoesNothing, LevenbergMarquardt};
 #[cfg(feature = "planegcs")]
-pub use planegcs::{
-    Planegcs, blame_with_planegcs, drag_with_planegcs,
-    expected_provenance as planegcs_expected_provenance, is_available as planegcs_available,
-    is_required as planegcs_required, native_sessions as planegcs_native_sessions,
-    native_solves as planegcs_native_solves, provenance as planegcs_provenance,
-};
+pub use product::{Planegcs, blame_with_planegcs, drag_with_planegcs};
+
+/// What the product solver says about itself, forwarded so the bench's tables
+/// can name the library that answered them.
+///
+/// Forwarded rather than reimplemented: there is one owner of the planegcs
+/// boundary, and it is not this crate.
+#[cfg(feature = "planegcs")]
+pub mod planegcs {
+    pub use ferritecad_sketch_solver::{
+        expected_provenance, is_available, is_required, native_live_sessions, native_sessions,
+        native_solves, provenance,
+    };
+}
 
 use std::time::Duration;
 

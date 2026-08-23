@@ -830,8 +830,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferritecad-sketch-solver"
+version = "0.0.1"
+dependencies = [
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "ferritecad-solver-lab"
 version = "0.0.1"
+dependencies = [
+ "ferritecad-sketch-solver",
+]
 
 [[package]]
 name = "ferritecad-topology"

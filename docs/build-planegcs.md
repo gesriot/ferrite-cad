@@ -6,10 +6,13 @@ built as a shared library that whoever receives a build can replace with their
 own. Nothing of it is compiled into a FerriteCAD binary.
 
 Nothing in the FerriteCAD application loads it yet. This page is about the
-component and the bench that measures it, not about a release.
+component, the crate that owns it and the bench that measures it, not about a
+release.
 
 ```
 tools/build-planegcs.sh [output-directory]      # default ./vendor/planegcs
+FCAD_PLANEGCS_DIR=<output> cargo test -p ferritecad-sketch-solver \
+    --features planegcs -- --nocapture
 FCAD_PLANEGCS_DIR=<output> cargo test -p ferritecad-solver-lab \
     --features planegcs -- --nocapture
 ```
@@ -56,8 +59,8 @@ versions reach into Qt and its build system:
 | `Base/Console.h` | two printf-style calls, silent here, because writing to a terminal inside a timed region measures the terminal |
 | `provenance.cpp` | the function that says which planegcs this is |
 
-**FerriteCAD's own, MIT, in the lab.**
-[`crates/ferritecad-solver-lab/planegcs-bridge/`](../crates/ferritecad-solver-lab/planegcs-bridge)
+**FerriteCAD's own, MIT, in the product crate.**
+[`crates/ferritecad-sketch-solver/planegcs-bridge/`](../crates/ferritecad-sketch-solver/planegcs-bridge)
 is the flat C boundary and holds no planegcs types.
 
 Nothing under `App/planegcs/` is edited. The Windows export problem is solved
@@ -108,7 +111,26 @@ the checked digest, the platform and the compiler, and a `REPLACING.md`
 generated from
 [`tools/planegcs/DELIVERY.md.in`](../tools/planegcs/DELIVERY.md.in).
 
-## How the lab links to it
+## Who owns what
+
+One crate owns the whole boundary:
+[`ferritecad-sketch-solver`](../crates/ferritecad-sketch-solver). It holds the
+contract a caller states a sketch in, the Rust FFI, the MIT bridge, the
+build-time detection and required mode, and the lifetime of the native session.
+
+`ferritecad-solver-lab` is a *client* of it. It keeps the neutral corpus and
+the reference Levenberg–Marquardt implementation, and it reaches planegcs only
+by calling the product crate — no shim, no build script, no C ABI, no
+constraint mapping of its own.
+
+The direction matters both ways, and
+[`tools/check-solver-ownership.sh`](../tools/check-solver-ownership.sh) checks
+it on every ordinary CI run. A bench holding its own copy of the boundary would
+be measuring a second implementation and reporting it as the product's; a
+product able to reach into the bench could be handed the reference solver's
+answer and nothing in the numbers would say so.
+
+## How the crates link to it
 
 The boundary is a flat C ABI, declared in `planegcs_shim.h`. Nothing of
 planegcs's API reaches Rust.
@@ -119,16 +141,28 @@ planegcs's API reaches Rust.
   DLL to be findable at run time, for nothing.
 - planegcs stays **dynamic** beside it. The build script emits
   `rustc-link-lib=dylib=planegcs`, plus an `-Wl,-rpath` to the build directory
-  on Linux and macOS. Windows has no run path and searches the executable's
-  directory and then `PATH`, which the pin workflow sets.
+  on Linux and macOS.
+- That run path reaches the **product crate's own** binaries and not a
+  dependent's: cargo propagates a link *library* to the crates above but not a
+  link *argument*, and the build script belongs to `ferritecad-sketch-solver`.
+  So the bench, which is such a dependent, finds the library the way a shipped
+  application will — through the loader's search path. The pin workflow sets
+  `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH` or `PATH` accordingly, on all three
+  platforms rather than on Windows alone.
 - The library, not the shim, answers `fc_planegcs_provenance()`. A string
   compiled into the shim would go on saying "FreeCAD 1.0.1" beside a library
   built from anything at all.
-- The shim counts the crossings, per thread. Two claims the bench makes are
-  otherwise unobservable: that a result attributed to planegcs came from
-  planegcs rather than from the reference implementation, and that a gesture
-  used one native system rather than rebuilding it every step. Both return the
-  same coordinates either way.
+- The shim counts the crossings, per thread. Three claims are otherwise
+  unobservable: that a result attributed to planegcs came from planegcs rather
+  than from arithmetic of our own, that a gesture used one native system rather
+  than rebuilding it every sample, and that every session that was created was
+  released exactly once. All three return the same coordinates either way, so
+  `fc_gcs_native_solves`, `fc_gcs_native_sessions` and
+  `fc_gcs_native_live_sessions` are what make them checkable.
+- There is **one** way to solve through the shim. The earlier one-shot
+  `fc_gcs_solve` is gone: it built a system and mapped every constraint a
+  second time, and two copies of that mapping is two places for it to be
+  wrong.
 
 ## Off by default, and loudly
 
@@ -141,6 +175,15 @@ and stays green, without reaching the network.
 feature, no library, no import library, an unloadable library. The
 [pin workflow](../.github/workflows/planegcs-pin.yml) sets it, because a run
 whose job is to prove planegcs works cannot pass by not having it.
+
+Without a library the product crate still compiles, and every entry point
+answers a typed `Unavailable` — not a skipped test, not a panic, and never a
+quiet substitution of some other arithmetic. What it does *not* stop doing is
+checking the sketch: an unknown point reference, a repeated identifier, a
+coordinate that is not a number or a starting state of the wrong shape are
+refused for what they are, in a build that has no solver to refuse them for any
+other reason. Those gates therefore run in ordinary CI on all three platforms,
+where there is no library at all.
 
 ## Replacing it
 

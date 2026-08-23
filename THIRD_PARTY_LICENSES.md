@@ -68,12 +68,15 @@ and carry its own terms before entering the graph.
 
 - **Licence:** GNU Library General Public License, version 2 or (at your
   option) any later version
-- **Used for:** a second candidate in the sketch solver comparison
-  (`crates/ferritecad-solver-lab`). Not part of any shipped application today.
+- **Used for:** FerriteCAD's sketch constraint solver, behind the product
+  contract in `crates/ferritecad-sketch-solver`, and the second candidate in
+  the comparison that chose it (`crates/ferritecad-solver-lab`, a client of
+  that crate). Not part of any shipped application today.
 - **Linking:** dynamic. The shim
-  (`crates/ferritecad-solver-lab/planegcs-bridge`) is FerriteCAD's own MIT code
-  and holds no planegcs types; planegcs itself is a shared library built beside
-  it and can be replaced.
+  (`crates/ferritecad-sketch-solver/planegcs-bridge`) is FerriteCAD's own MIT
+  code and holds no planegcs types; planegcs itself is a shared library built
+  beside it and can be replaced. One crate owns that boundary, and
+  `tools/check-solver-ownership.sh` keeps a second copy of it from appearing.
 - **Source:** FreeCAD 1.0.1, `src/Mod/Sketcher/App/planegcs`, archive SHA-256
   `f62bc07c477544eff62b6ab0fc3bb63fa7f1e6f94763c51b0049507842d444f3`
 - **Modifications:** none. The sources are used byte-identical. Four files
@@ -96,12 +99,15 @@ and carry its own terms before entering the graph.
   fetching anything.
 - **Platform coverage:** built and exercised through the real shared library
   on Linux, macOS and Windows by the `planegcs pin` workflow, which requires
-  `FERRITECAD_REQUIRE_PLANEGCS=1` so a run cannot pass by skipping. Windows
-  produces `planegcs.dll` with `planegcs.lib` as linker metadata; a static
-  planegcs is refused by the build definition on every platform.
+  `FERRITECAD_REQUIRE_PLANEGCS=1` so a run cannot pass by skipping, and which
+  runs both the product solver's own gates and the bench. Windows produces
+  `planegcs.dll` with `planegcs.lib` as linker metadata; a static planegcs is
+  refused by the build definition on every platform.
 - **Not shipped:** no FerriteCAD application loads or packages planegcs today.
-  What exists is a verified buildable component, the bench that measures it,
-  and the delivery the obligations would apply to.
+  What exists is a verified buildable component, the product contract in front
+  of it, the bench that measures it, and the delivery the obligations would
+  apply to. A build without the library still compiles and answers a typed
+  "unavailable"; packaging and loading it from the application are §21A-2b.
 
 ### Eigen and Boost
 
