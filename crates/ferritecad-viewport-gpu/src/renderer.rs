@@ -604,8 +604,8 @@ impl Renderer {
                 FacePickId::NOTHING.to_raw(),
                 marked_edge,
             ),
-            // Not drawn yet: this build marks no topological vertex, so a
-            // question about one lights nothing.
+            // A vertex uses its dedicated field above rather than any of the
+            // definition, face and edge fields in this tuple.
             Hovered::Vertex(_) => (
                 PickId::NOTHING.to_raw(),
                 FacePickId::NOTHING.to_raw(),

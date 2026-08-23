@@ -760,10 +760,10 @@ struct LiveScene<P> {
     /// arrangement in which they describe different things.
     selection: Selection,
     /// What the pointer is over, which is a question and not a decision. Also
-    /// issued by `prepared`, also transient, and written down nowhere. Four
+    /// issued by `prepared`, also transient, and written down nowhere. Five
     /// states rather than one identity, because a list row can name only a
-    /// definition while a pixel can name a definition, a face or an edge, and
-    /// those are different things to show.
+    /// definition while a pixel can name a definition, face, edge or vertex,
+    /// and those are different things to show.
     hovered: Hovered,
 }
 
@@ -1141,11 +1141,12 @@ fn frame_scene(
 
 /// What one pixel of the model is a question about.
 ///
-/// Most specific first, and from one hit rather than three reads: an edge is a
-/// line a person aimed at, a face is the surface behind it, and a definition
-/// is what is left when the picture cannot say which face. Every arm comes
-/// from the same pixel of the same frame, so the answer cannot describe one
-/// thing and be resolved against another.
+/// Most specific first, and from one hit rather than separate reads: a vertex
+/// is the corner a person aimed at, an edge is the line beneath it, a face is
+/// the surface behind that, and a definition is what is left when the picture
+/// cannot say which subshape. Every arm comes from the same pixel of the same
+/// frame, so the answer cannot describe one thing and be resolved against
+/// another.
 ///
 /// The edge arm is already coherent: [`Hit::edge`] gives nothing where the
 /// edge target and the definition target disagree, which is exactly the outer
@@ -1176,9 +1177,9 @@ fn hovered_at(hit: Hit) -> Hovered {
 ///
 /// Answered through the picture that is on screen, so a question about a
 /// picture that has been replaced marks nothing, whether it names a
-/// definition, face or edge. Returns whether the answer differs from the one
-/// already showing: pointing at the same thing again is not a reason to draw
-/// the same picture twice.
+/// definition, face, edge or vertex. Returns whether the answer differs from
+/// the one already showing: pointing at the same thing again is not a reason
+/// to draw the same picture twice.
 ///
 /// Given the one field it may change and nothing else, so pointing at
 /// something cannot choose it however this is called.
@@ -2016,8 +2017,8 @@ impl App {
 
         let answer = match hover_request(row, interface_has_pointer, question) {
             // The list said which one, which needs no pixel read at all. A row
-            // names a definition and can say nothing about a face or edge: a
-            // list of definitions has neither in it.
+            // names a definition and can say nothing about a face, edge or
+            // vertex: a list of definitions has none of them in it.
             HoverRequest::Row(row) => live
                 .scene
                 .prepared
@@ -2026,8 +2027,8 @@ impl App {
                 .map(Hovered::Definition),
             HoverRequest::Pixel(x, y) => {
                 // One offscreen frame, and only because the pointer moved. A
-                // pixel is the only thing that knows which face or edge it
-                // came from.
+                // pixel is the only thing that knows which face, edge or
+                // vertex it came from.
                 match Self::hit_at(live, self.input.camera(), x, y) {
                     Ok(hit) => Some(hovered_at(hit)),
                     Err(error) => {
@@ -2055,12 +2056,12 @@ impl App {
         }
     }
 
-    /// Reads one pixel and all three answers about it.
+    /// Reads one pixel and all four answers about it.
     ///
-    /// The definition, face and edge come from one pixel of one frame, so they
-    /// cannot describe different geometry. The click decision reads the same
-    /// three identities from that [`Hit`] and lets the scene accept an edge
-    /// only when the document can name it durably.
+    /// The definition, face, edge and vertex come from one pixel of one frame,
+    /// so they cannot describe different geometry. The current click decision
+    /// consumes the three kinds it can select; the coherent vertex remains a
+    /// hover-only answer here.
     fn hit_at(live: &mut Live, camera: &Camera, x: f32, y: f32) -> Result<Hit> {
         let (Ok(x), Ok(y)) = (
             u32::try_from(x.round() as i64),

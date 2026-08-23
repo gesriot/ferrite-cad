@@ -578,9 +578,9 @@ impl VertexPickId {
 /// row number or a face or edge ordinal: every non-empty arm carries an
 /// identity bound to the picture that issued it.
 ///
-/// Deliberately only what is chosen. [`Hovered`] has the same shape but is a
-/// separate type because a question and a choice have different precedence
-/// and lifetimes.
+/// Deliberately only what is chosen. [`Hovered`] is a separate type because a
+/// question and a choice have different precedence and lifetimes; it can also
+/// ask about a vertex that this selection type cannot yet carry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Marked {
     #[default]
@@ -624,11 +624,12 @@ impl Marked {
 
 /// What one mark on the picture is a question about, transiently.
 ///
-/// A type of its own even though it has the same four states as [`Marked`].
-/// That separation is the point: `Marked` is what a person has *chosen*, while
-/// this is the short-lived answer to a pointer question. Sharing one type
-/// would let question and choice flow through the same APIs and blur their
-/// different precedence and invalidation rules.
+/// A type of its own rather than a second use of [`Marked`]. That separation
+/// is the point: `Marked` is what a person has *chosen*, while this is the
+/// short-lived answer to a pointer question. A question also has the
+/// additional vertex arm below. Sharing one type would let question and
+/// choice flow through the same APIs and blur their different precedence and
+/// invalidation rules.
 ///
 /// Every arm carries an identity bound to the picture that issued it, exactly
 /// as [`Marked`] does, and none of them is a row number, a face ordinal or an
@@ -646,10 +647,9 @@ pub enum Hovered {
     Edge(EdgePickId),
     /// One topological vertex, as a pixel inside its aperture can say.
     ///
-    /// A question only. A corner has no durable name in this build, so nothing
-    /// here reaches [`Marked`]: pointing at one says what it is for as long as
-    /// the picture is on screen, and choosing still answers with the most
-    /// specific durable thing the document can name.
+    /// A question only in this build. Durable corner names now reach the live
+    /// scene, but selection does not consume them yet, so nothing in this arm
+    /// reaches [`Marked`].
     Vertex(VertexPickId),
 }
 
@@ -658,7 +658,7 @@ impl Hovered {
     ///
     /// An identity of another picture, of a picture that has been replaced, or
     /// of nothing at all is [`Nothing`][Self::Nothing] here. The same rule
-    /// [`Marked::known_to`] applies to the same four arms, so a stale answer
+    /// [`Marked::known_to`] applies to all five arms, so a stale answer
     /// cannot mark anything through either type.
     pub fn known_to(self, snapshot: &RenderSnapshot) -> Self {
         match self {
@@ -684,7 +684,7 @@ impl Hovered {
 
     /// Which definition this question is about, if any.
     ///
-    /// One resolution for all four arms, so a renderer deciding what to draw
+    /// One resolution for all five arms, so a renderer deciding what to draw
     /// and a reducer deciding what to forget cannot disagree about which part
     /// of the picture a question concerns.
     pub fn definition(self, snapshot: &RenderSnapshot) -> Option<usize> {
