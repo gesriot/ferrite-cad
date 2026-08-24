@@ -76,7 +76,9 @@ this delivery. Eigen is MPL-2.0 and Boost is under the Boost Software Licence.
 
 ## What this delivery is not
 
-A FerriteCAD release. Nothing in the FerriteCAD application loads planegcs
-today. This is the component and the bench that measures it, packaged with the
-obligations that would apply if it were shipped, so that the obligations are
-tested rather than promised.
+A FerriteCAD release. With its `planegcs` feature enabled,
+`ferritecad-viewer` can load this shared library and report its provenance, but
+no released FerriteCAD package carries it yet. This directory is the component
+delivery used by that build and by the solver gates, packaged with the
+obligations a future release inherits so those obligations are tested rather
+than promised.
