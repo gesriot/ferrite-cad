@@ -38,6 +38,13 @@ jobs:
       # if a second copy appears, so this is checked rather than remembered.
       - run: tools/check-solver-ownership.sh
 
+      # And one file owns planegcs's native build inputs. A second copy of a
+      # version or a digest, or a Boost taken from a package manager, keeps
+      # every workflow green while making the release input a property of a
+      # runner image, so it is checked here rather than in the workflow that
+      # would inherit it.
+      - run: tools/check-planegcs-pins.sh
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

@@ -42,20 +42,31 @@ finds MSVC's `cl.exe`.
 
 ## The pin
 
-One file, [`tools/planegcs/pin.env`](../tools/planegcs/pin.env):
+One file, [`tools/planegcs/pin.env`](../tools/planegcs/pin.env), owns the
+version, the archive URL and the SHA-256 of all three native inputs:
 
-| | |
-| --- | --- |
-| source | FreeCAD 1.0.1, `src/Mod/Sketcher/App/planegcs` |
-| archive | `https://github.com/FreeCAD/FreeCAD/archive/refs/tags/1.0.1.tar.gz` |
-| SHA-256 | `f62bc07c477544eff62b6ab0fc3bb63fa7f1e6f94763c51b0049507842d444f3` |
+| | Version | Archive | SHA-256 |
+| --- | --- | --- | --- |
+| planegcs | FreeCAD 1.0.1, `src/Mod/Sketcher/App/planegcs` | `https://github.com/FreeCAD/FreeCAD/archive/refs/tags/1.0.1.tar.gz` | `f62bc07c477544eff62b6ab0fc3bb63fa7f1e6f94763c51b0049507842d444f3` |
+| Eigen | 3.4.0 | `https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz` | `8586084f71f9bde545ee7fa6d00288b264a2b7ac3607b974e54d13e7162c1c72` |
+| Boost | 1.91.0 | `https://archives.boost.io/release/1.91.0/source/boost_1_91_0.tar.gz` | `5734305f40a76c30f951c9abd409a45a2a19fb546efe4162119250bbe4d3a463` |
 
-The digest is checked before anything is extracted, not after. The same file
-is read three times: by the build script that fetches the release, by the
-provenance string compiled into the library, and by the lab's build script,
-which compiles in what the library is expected to answer. A version number
-kept in three places drifts, and the copy that drifts is the one nobody is
-looking at.
+Every digest is checked before anything is extracted, not after, and all three
+are checked before any of them is unpacked, so a wrong one stops the build with
+nobody's bytes on disk. A cached archive is checked again on every run: an
+archive fetched once and trusted thereafter is an archive somebody can replace
+between the two runs.
+
+The same file is read four times: by the build script that fetches the three
+releases, by the provenance string compiled into the library, by the lab's
+build script, which compiles in what the library is expected to answer, and by
+[`tools/check-planegcs-delivery.sh`](../tools/check-planegcs-delivery.sh),
+which checks a finished delivery against it. A version number kept in several
+places drifts, and the copy that drifts is the one nobody is looking at, so
+[`tools/check-planegcs-pins.sh`](../tools/check-planegcs-pins.sh) runs in
+ordinary CI and fails if a second copy appears in anything that runs, if a
+workflow installs Eigen or Boost from a package manager, or if the component
+artifact stops carrying the source, licence and provenance files.
 
 ## Which files are whose
 
@@ -90,25 +101,55 @@ touches already carries the macro upstream.
 
 ## Eigen and Boost
 
-Both are needed as headers only at build time, and the helper currently copies
-neither source tree into its output. That output is therefore not yet a
-release-compliance bundle: Eigen is MPL-2.0 code compiled into the library,
-and a release must identify and make its exact Source Code Form available.
-Boost is under the Boost Software Licence and its machine-executable object
-code exception applies to the shared library, but the build version still has
-to be known to provenance and the SBOM.
+Both are needed as headers only at build time, and `tools/build-planegcs.sh`
+fetches both itself, by the digests above and by nothing else.
 
-| | Headers used | Where the build finds them |
+| | Headers used | Where the build gets them |
 | --- | --- | --- |
-| Eigen | `Eigen/Core`, `Dense`, `OrderingMethods`, `QR`, `Sparse` | `FCAD_EIGEN_INCLUDE`, else `/opt/homebrew/include/eigen3`, `/usr/local/include/eigen3`, `/usr/include/eigen3` |
-| Boost | `boost/graph/adjacency_list.hpp`, `connected_components.hpp`, `graph_concepts.hpp`, `boost/math/constants/constants.hpp` | `FCAD_BOOST_INCLUDE`, else `/opt/homebrew/include`, `/usr/local/include`, `/usr/include` |
+| Eigen | `Eigen/Core`, `Dense`, `OrderingMethods`, `QR`, `Sparse` | the pinned archive, unpacked into `sources/eigen-3.4.0/` inside the delivery and compiled from there |
+| Boost | `boost/graph/adjacency_list.hpp`, `connected_components.hpp`, `graph_concepts.hpp`, `boost/math/constants/constants.hpp` | the pinned archive, unpacked into the helper's work directory |
 
-The pin workflow supplies a pinned Eigen 3.4.0 by digest to all three
-platforms, so that a disagreement between them is about the platform. Boost
-comes from each platform's package manager and the version it brought is
-recorded in the run. The script itself accepts whatever a machine has: planegcs
-1.0.1 builds against Eigen 3.4 and Eigen 5, and that was measured rather than
-assumed.
+There is deliberately no environment variable that redirects either one, and no
+system include directory is consulted. `FCAD_EIGEN_INCLUDE` and
+`FCAD_BOOST_INCLUDE` are cmake arguments now and nothing else; the pin workflow
+sets both to empty decoy directories over the production build, so a helper
+that read them again would stop at configure time rather than deliver a library
+compiled against something nobody recorded. For an experimental build against
+your own headers, drive
+[`tools/planegcs/CMakeLists.txt`](../tools/planegcs/CMakeLists.txt) directly.
+
+**The Eigen tree the library is compiled from is the Eigen tree the delivery
+carries.** It is unpacked straight into `sources/eigen-3.4.0/` and cmake is
+pointed at that directory, rather than at a scratch copy that is later
+duplicated into the output. cmake reports which include directories it was
+configured with in `planegcs-build-info-Release.txt`, and the helper refuses a
+build whose Eigen or Boost is not the one it laid out, so the file somebody
+edits to make a platform compile cannot quietly change what a recipient is
+given.
+
+**What Eigen's licence is here, measured rather than assumed.** Eigen is
+primarily MPL-2.0 and its own `COPYING.README` says some files are under BSD or
+LGPL. The compile closure of the five planegcs translation units on macOS is
+262 Eigen files: 253 carry the MPL-2.0 header, seven carry no per-file notice
+and fall under the project's MPL-2.0 default,
+`Core/arch/Default/BFloat16.h` is Apache-2.0 from TensorFlow and
+`Core/util/MKL_support.h` is BSD-3-Clause from Intel. No LGPL file is in it.
+Cross-checked with Eigen's own mechanism: the same build with
+`-DEIGEN_MPL2_ONLY`, which is a compilation error on any LGPL include, compiles
+clean. The whole source tree is delivered regardless, `COPYING.*` files and
+all, so the obligation is discharged without the measurement having to be
+right.
+
+**Boost 1.91.0 was checked before it was pinned.** The official
+`archives.boost.io` release archive matches the SHA-256 that the publisher's
+own `boost_1_91_0.tar.gz.json` records. Its `boost/` tree holds every header
+planegcs reaches, pre-generated: nothing in the release distribution has to be
+produced by Boost's build system first, `boost/version.hpp` included, which is
+what makes one archive usable unchanged on all three platforms. The compile
+closure is 1098 Boost files and every one of them references the Boost Software
+License; none is under anything else. The longest relative path in the header
+tree is 89 characters, which is why unpacking it on Windows does not run into
+`MAX_PATH`.
 
 ## What is produced, per platform
 
@@ -120,7 +161,11 @@ assumed.
 
 That run also recorded Eigen 3.4.0 by digest on all three, Boost 1_91 from
 vcpkg on Windows and from the platform packages elsewhere, and the three
-platforms agreeing over 43 semantic facts.
+platforms agreeing over 43 semantic facts. Since §21A-2b2b0a Eigen and Boost
+both come from the pin instead, and the summary the three platforms are
+compared on carries the version and digest of all three inputs, so a platform
+that built against something else is a difference rather than a detail in a
+log.
 
 The import library is linker metadata. It carries no planegcs implementation;
 what it does is let somebody relink against a library they replaced. Windows
@@ -130,17 +175,35 @@ refuses a build that is not a shared library. Both refusals exist because this
 file is what somebody edits when a platform will not link, and the licence
 position is the thing that quietly gives way.
 
-Beside the library the script writes the complete corresponding FreeCAD source
-(`tree/`), FreeCAD's full `LICENSE`, a `PROVENANCE.txt` recording the release,
-the checked digest, the platform and the compiler, and a `REPLACING.md`
-generated from
-[`tools/planegcs/DELIVERY.md.in`](../tools/planegcs/DELIVERY.md.in).
+Beside the library the script writes:
 
-It does not yet record or carry the Eigen source that was compiled into the
-library, and it does not record the Boost version. The compliance-input slice
-defined by
-[`ADR 0002`](decisions/0002-release-compliance-artifacts.md) must close those
-gaps before this output can be consumed by the FerriteCAD packager.
+- `tree/`, the complete corresponding FreeCAD source, and FreeCAD's full
+  `LICENSE` as `LICENSE-FreeCAD-LGPL-2.0-or-later.txt`;
+- `sources/eigen-3.4.0/`, the exact Eigen source the library was compiled
+  against, and that source's `COPYING.MPL2` as `LICENSE-Eigen-MPL-2.0.txt`;
+- `LICENSE-Boost-BSL-1.0.txt`, taken from the checked Boost archive. Boost's
+  headers are not delivered: the licence excepts machine-executable object code
+  generated by a source language processor from carrying its notice, and the
+  shared library is that. The version and the digest are recorded anyway, which
+  is an inventory decision and not a claim that the exception requires it;
+- `PROVENANCE.txt`, recording the version, archive URL and checked digest of
+  all three inputs beside the platform and the compiler;
+- `REPLACING.md`, generated from
+  [`tools/planegcs/DELIVERY.md.in`](../tools/planegcs/DELIVERY.md.in).
+
+[`tools/check-planegcs-delivery.sh`](../tools/check-planegcs-delivery.sh) is
+what says that is true of a finished directory rather than of this paragraph.
+It checks the three archives the helper left behind again, re-extracts Eigen
+from its own archive and requires the delivered source to be byte-identical to
+it, requires the MPL text to be that source's `COPYING.MPL2` and the Boost text
+to be the archive's `LICENSE_1_0.txt`, and requires `PROVENANCE.txt` and
+`REPLACING.md` to name the version, URL and digest of every input. Both pin
+workflows run it.
+
+What is still missing before this output can be consumed by a FerriteCAD
+packager is not native: the notices for the Rust dependency graph and the SBOM,
+recorded in
+[`ADR 0002`](decisions/0002-release-compliance-artifacts.md).
 
 ## Who owns what
 

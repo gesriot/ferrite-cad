@@ -129,7 +129,11 @@ set_target_properties(planegcs PROPERTIES
 )
 
 # What the driver script needs and cannot work out for itself: where the files
-# landed under this generator, and which compiler actually produced them.
+# landed under this generator, which compiler actually produced them, and which
+# Eigen and Boost this build was really configured against. The last two are
+# reported rather than assumed because the driver delivers the Eigen source it
+# compiled, and a build that read its headers from somewhere else would hand
+# over a source tree that is not the one inside the library.
 # $<TARGET_LINKER_FILE> is the import library on Windows and the shared object
 # itself everywhere else, which is exactly the distinction the Rust link needs.
 #
@@ -144,5 +148,7 @@ target_type=${_planegcs_type}
 generator=${CMAKE_GENERATOR}
 cxx_compiler_id=${CMAKE_CXX_COMPILER_ID}
 cxx_compiler_version=${CMAKE_CXX_COMPILER_VERSION}
+eigen_include=${FCAD_EIGEN_INCLUDE}
+boost_include=${FCAD_BOOST_INCLUDE}
 provenance=${FCAD_PLANEGCS_PROVENANCE}
 ")

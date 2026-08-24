@@ -15,8 +15,12 @@ name: planegcs pin
 # that the product path — not the bench's own arithmetic — is what answered,
 # that the three platforms agree about what the solver concluded, and that the
 # FreeCAD source, licence and replacement material were packaged rather than
-# promised. The Eigen, Boost, Rust-notice and SBOM release inputs remain the
-# explicit compliance slice before the product packager.
+# promised. Since §21A-2b2b0a that record also covers the library's own native
+# build inputs: Eigen and Boost are fetched by the digests in
+# tools/planegcs/pin.env rather than by whatever the runner image brought, the
+# Eigen source compiled into the library is delivered with it, and all three
+# platforms are compared on the identities they built from. The Rust notices
+# and the SBOM remain the compliance work before the product packager.
 #
 # Since §21A-2b1 it also records that the application itself loads the library:
 # the real `ferritecad-viewer` imports it, finds it through the loader's search
@@ -43,11 +47,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Pinned rather than taken from the platform, so that three runners compile
-  # planegcs against one version of the headers and a disagreement between them
-  # is about the platform. Header-only, MPL-2.0, and not redistributed here.
-  EIGEN_VERSION: 3.4.0
-  EIGEN_SHA256: 8586084f71f9bde545ee7fa6d00288b264a2b7ac3607b974e54d13e7162c1c72
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -86,74 +85,20 @@ jobs:
       - name: Require one owner of the solver boundary
         run: tools/check-solver-ownership.sh
 
-      - name: Install the Boost headers planegcs needs
-        run: |
-          set -euxo pipefail
-          case '${{ matrix.name }}' in
-            linux)
-              sudo apt-get update
-              sudo apt-get install -y --no-install-recommends \
-                libboost-graph-dev libboost-math-dev
-              ;;
-            macos)
-              brew install boost
-              ;;
-            windows)
-              # Header-only in everything planegcs uses, but vcpkg is how a
-              # Windows machine gets them, and it is what the record should
-              # say a Windows build needs.
-              vcpkg install boost-graph:x64-windows boost-math:x64-windows
-              ;;
-          esac
+      - name: Require one owner of the native build inputs
+        run: tools/check-planegcs-pins.sh
 
-      - name: Fetch the pinned Eigen headers
+      - name: Read the pin
         run: |
           set -euo pipefail
-          url="https://gitlab.com/libeigen/eigen/-/archive/${EIGEN_VERSION}/eigen-${EIGEN_VERSION}.tar.gz"
-          curl -sSL -o eigen.tar.gz "$url"
-          if command -v sha256sum >/dev/null 2>&1; then
-            actual="$(sha256sum eigen.tar.gz | cut -d' ' -f1)"
-          else
-            actual="$(shasum -a 256 eigen.tar.gz | cut -d' ' -f1)"
-          fi
-          if [ "$actual" != "$EIGEN_SHA256" ]; then
-            echo "::error::Eigen ${EIGEN_VERSION} digest ${actual}, expected ${EIGEN_SHA256}"
-            exit 1
-          fi
-          mkdir -p eigen
-          tar xzf eigen.tar.gz -C eigen --strip-components=1
-          # Native spelling on Windows. These reach cmake and cargo, which are
-          # native programs: /d/a/... is a directory that does not exist to
-          # them, and the failure it produces says the library is missing
-          # rather than that the path was written for a different shell.
-          if [ '${{ matrix.name }}' = windows ]; then
-            echo "FCAD_EIGEN_INCLUDE=$(cygpath -w "$PWD/eigen")" >> "$GITHUB_ENV"
-          else
-            echo "FCAD_EIGEN_INCLUDE=$PWD/eigen" >> "$GITHUB_ENV"
-          fi
-
-      - name: Say where Boost is
-        run: |
-          set -euo pipefail
-          case '${{ matrix.name }}' in
-            linux)   boost=/usr/include ;;
-            macos)   boost="$(brew --prefix)/include" ;;
-            windows) boost="$(cygpath -u "$VCPKG_INSTALLATION_ROOT")/installed/x64-windows/include" ;;
-          esac
-          if [ ! -d "$boost/boost" ]; then
-            echo "::error::no boost/ under $boost"
-            exit 1
-          fi
-          if [ '${{ matrix.name }}' = windows ]; then
-            echo "FCAD_BOOST_INCLUDE=$(cygpath -w "$boost")" >> "$GITHUB_ENV"
-          else
-            echo "FCAD_BOOST_INCLUDE=$boost" >> "$GITHUB_ENV"
-          fi
-          # Recorded rather than assumed: the pin is on planegcs, and which
-          # Boost each platform brought is part of what produced this build.
-          version="$(grep -m1 'define BOOST_LIB_VERSION' "$boost/boost/version.hpp" \
-            | tr -d '"' | awk '{print $3}')"
-          echo "FCAD_BOOST_VERSION=${version}" >> "$GITHUB_ENV"
+          # The whole pin, into the environment, so the steps below name
+          # versions without holding a second copy of one. Nothing here decides
+          # what the library is built against: tools/build-planegcs.sh reads
+          # this same file itself and fetches Eigen and Boost by digest. What
+          # these values are for is naming directories the helper has already
+          # laid out, and printing what the run used.
+          grep -E '^FCAD_PLANEGCS_' tools/planegcs/pin.env >> "$GITHUB_ENV"
+          grep -E '^FCAD_PLANEGCS_' tools/planegcs/pin.env
 
       - name: Locate MSVC
         if: matrix.name == 'windows'
@@ -214,6 +159,23 @@ jobs:
       - name: Build planegcs from the pinned release
         run: |
           set -euxo pipefail
+          # Two things are being said by this step, and the second is why the
+          # environment below is here.
+          #
+          # No Eigen and no Boost were installed on this runner. Nothing above
+          # ran apt, brew or vcpkg for either, so a build that reached for a
+          # system include directory would find nothing at all: that the build
+          # succeeds is the evidence that the release path does not read one.
+          #
+          # And FCAD_EIGEN_INCLUDE and FCAD_BOOST_INCLUDE are set, to two empty
+          # directories. They are what used to redirect this helper. If it read
+          # either of them again, cmake would stop at configure time saying
+          # there is no Eigen/ under the decoy, so every gate that follows is
+          # about a delivery built in the presence of that environment rather
+          # than about one that was never offered it.
+          mkdir -p "$RUNNER_TEMP/decoy-eigen" "$RUNNER_TEMP/decoy-boost"
+          export FCAD_EIGEN_INCLUDE="$RUNNER_TEMP/decoy-eigen"
+          export FCAD_BOOST_INCLUDE="$RUNNER_TEMP/decoy-boost"
           tools/build-planegcs.sh "$PWD/vendor/planegcs"
           if [ '${{ matrix.name }}' = windows ]; then
             echo "FCAD_PLANEGCS_DIR=$(cygpath -w "$PWD/vendor/planegcs")" >> "$GITHUB_ENV"
@@ -287,6 +249,9 @@ jobs:
                 | grep -q 'DLL' || fail "the delivered library is not a DLL" ;;
           esac
           echo "the delivery carries the library, its source, its licence and how to replace it"
+
+      - name: Require the delivery to carry its own native build inputs
+        run: tools/check-planegcs-delivery.sh "$PWD/vendor/planegcs"
 
       - name: Build the product solver and the lab, refusing a build without planegcs
         id: build
@@ -736,11 +701,15 @@ jobs:
           fake='planegcs from somewhere else, archive SHA-256 0000000000000000000000000000000000000000000000000000000000000000'
           alt="$PWD/vendor/planegcs-alt"
           rm -rf "$alt"
+          # The same inputs the pinned library was built from, named through
+          # the delivery the helper laid out rather than through an environment
+          # somebody could point elsewhere. A substituted library compiled
+          # against different headers would be testing two things at once.
           cmake -S "$(native "$PWD/tools/planegcs")" -B "$(native "$alt")" \
             -DCMAKE_BUILD_TYPE=Release \
             -DFCAD_PLANEGCS_TREE="$(native "$out/tree")" \
-            -DFCAD_EIGEN_INCLUDE="$FCAD_EIGEN_INCLUDE" \
-            -DFCAD_BOOST_INCLUDE="$FCAD_BOOST_INCLUDE" \
+            -DFCAD_EIGEN_INCLUDE="$(native "$out/sources/eigen-${FCAD_PLANEGCS_EIGEN_VERSION}")" \
+            -DFCAD_BOOST_INCLUDE="$(native "$out/work/boost")" \
             -DFCAD_PLANEGCS_PROVENANCE="$fake"
           cmake --build "$(native "$alt")" --config Release
           built="$(grep '^library=' "$alt/planegcs-build-info-Release.txt" | cut -d= -f2-)"
@@ -820,6 +789,13 @@ jobs:
             grep '^product ' product.txt || true
             grep '^semantic ' lab.txt || true
             grep '^app ' app-facts.txt || true
+            # And which FreeCAD, Eigen and Boost this platform built against,
+            # read out of the delivery rather than out of this workflow's
+            # environment. Three platforms that pin one set of inputs and one
+            # that quietly used something else look identical in every other
+            # line of this file.
+            awk '$1 ~ /^(freecad|eigen|boost)$/ && ($2 == "version" || $2 == "sha256") \
+                 { printf "input %s %s=%s\n", $1, $2, $3 }' vendor/planegcs/PROVENANCE.txt
           } | LC_ALL=C sort > summary.txt
           if [ ! -s summary.txt ]; then
             echo "::error::the run printed no semantic summary"
@@ -834,6 +810,11 @@ jobs:
             || { echo "::error::the summary carries no bench result"; exit 1; }
           grep -q '^app ' summary.txt \
             || { echo "::error::the summary carries no application result"; exit 1; }
+          for input in freecad eigen boost; do
+            grep -q "^input ${input} sha256=" summary.txt \
+              || { echo "::error::the summary does not say which ${input} this platform \
+              built against"; exit 1; }
+          done
           wc -l < summary.txt
 
       - name: Write the pin report
@@ -843,8 +824,6 @@ jobs:
             echo "planegcs pin, ${{ matrix.name }}"
             echo
             echo "runner      ${{ matrix.os }} / $(uname -m) / ${RUNNER_ARCH}"
-            echo "eigen       ${EIGEN_VERSION} (sha256 ${EIGEN_SHA256})"
-            echo "boost       ${FCAD_BOOST_VERSION}"
             echo "rustc       $(rustc --version)"
             echo
             cat vendor/planegcs/PROVENANCE.txt
@@ -855,14 +834,18 @@ jobs:
         with:
           name: planegcs-${{ matrix.name }}
           # The library the tests actually loaded, its corresponding FreeCAD
-          # source, the FreeCAD licence text, provenance and replacement
-          # instructions. This component artifact is not the product release
-          # compliance bundle; ADR 0002 records the remaining inputs.
+          # source, the Eigen source compiled into it, all three licence texts,
+          # provenance and replacement instructions. This component artifact is
+          # not a FerriteCAD release: ADR 0002 records the Rust notices and the
+          # SBOM that a release still has to add.
           path: |
             vendor/planegcs/${{ matrix.library }}
             vendor/planegcs/planegcs.lib
             vendor/planegcs/tree/**
+            vendor/planegcs/sources/**
             vendor/planegcs/LICENSE-FreeCAD-LGPL-2.0-or-later.txt
+            vendor/planegcs/LICENSE-Eigen-MPL-2.0.txt
+            vendor/planegcs/LICENSE-Boost-BSL-1.0.txt
             vendor/planegcs/PROVENANCE.txt
             vendor/planegcs/REPLACING.md
             planegcs-pin-${{ matrix.name }}.txt
@@ -878,30 +861,57 @@ jobs:
       - name: Require an unchecked archive to stop before anything is extracted
         run: |
           set -euo pipefail
-          # The digest is only worth having if a wrong one refuses. Planted
-          # rather than argued: the script is given a directory whose cached
-          # archive is not the release, and must neither extract nor build.
+          # The digest is only worth having if a wrong one refuses, and there
+          # are three of them now. Planted rather than argued: the script is
+          # given a directory whose cached archive is not what the pin says,
+          # once per input, and must neither extract nor build any of them.
+          #
+          # Cached, deliberately. The archives are already there, so what each
+          # probe shows is that a second run checks what a first run left
+          # behind: an archive fetched once and trusted thereafter is an
+          # archive somebody can replace between the two.
+          real="$PWD/vendor/planegcs/work"
           probe="$PWD/vendor/planegcs-tampered"
-          # From nothing every time. A directory left over from an earlier run
-          # would make this step report on that run's leavings, which is how a
-          # gate starts passing for the wrong reason.
+          freecad="freecad-${FCAD_PLANEGCS_FREECAD_TAG}.tar.gz"
+          eigen="eigen-${FCAD_PLANEGCS_EIGEN_VERSION}.tar.gz"
+          boost="boost-${FCAD_PLANEGCS_BOOST_VERSION}.tar.gz"
+
+          for target in "$freecad" "$eigen" "$boost"; do
+            # From nothing every time. A directory left over from an earlier
+            # probe would make this step report on that probe's leavings, which
+            # is how a gate starts passing for the wrong reason.
+            rm -rf "$probe"
+            mkdir -p "$probe/work"
+            # Every archive but the one under test is the real, checked one, so
+            # the refusal cannot be about a download that did not happen.
+            for archive in "$freecad" "$eigen" "$boost"; do
+              if [ "$archive" = "$target" ]; then
+                printf 'not the release' > "$probe/work/$archive"
+              else
+                cp "$real/$archive" "$probe/work/$archive"
+              fi
+            done
+
+            if tools/build-planegcs.sh "$probe" > "tampered-${target}.txt" 2>&1; then
+              echo "::error::a tampered ${target} built anyway"
+              exit 1
+            fi
+            # Whether anything was extracted comes first. A script that refuses
+            # for some later reason has still already unpacked somebody else's
+            # bytes, and that is the property being asserted, not the wording.
+            for unpacked in tree sources build work/boost; do
+              if [ -e "$probe/$unpacked" ]; then
+                echo "::error::${target} was tampered with and $probe/$unpacked exists, so \
+                something was extracted or configured before the digests were checked"
+                exit 1
+              fi
+            done
+            grep -q "checksum mismatch for .*${target}" "tampered-${target}.txt" \
+              || { echo "::error::the refusal was not about ${target}'s checksum"; \
+                   cat "tampered-${target}.txt"; exit 1; }
+            echo "a tampered ${target} stops before extraction"
+          done
           rm -rf "$probe"
-          mkdir -p "$probe/work"
-          printf 'not the release' > "$probe/work/freecad-1.0.1.tar.gz"
-          if tools/build-planegcs.sh "$probe" > tampered.txt 2>&1; then
-            echo "::error::a tampered archive built anyway"
-            exit 1
-          fi
-          # Whether anything was extracted comes first. A script that refuses
-          # for some later reason has still already unpacked somebody else's
-          # bytes, and that is the property being asserted, not the wording.
-          if [ -e "$probe/tree" ]; then
-            echo "::error::the archive was extracted before its digest was checked"
-            exit 1
-          fi
-          grep -q 'checksum mismatch' tampered.txt \
-            || { echo "::error::the refusal was not about the checksum"; cat tampered.txt; exit 1; }
-          echo "an unchecked archive stops before extraction"
 
       - name: Require a hidden library to fail rather than skip
         env:
@@ -981,6 +991,15 @@ jobs:
             grep -q '^app solver-info exit=0 answer=available' "$summary" \
               || { echo "::error::${summary} carries no application result, so the \
               application was not shown to load planegcs on that platform"; exit 1; }
+            # And that it said which inputs it built from. The diff below
+            # compares these three platforms line for line, so a summary that
+            # simply left the identities out would compare equal to two that
+            # named different ones.
+            for input in freecad eigen boost; do
+              grep -q "^input ${input} sha256=" "$summary" \
+                || { echo "::error::${summary} does not name the ${input} that platform \
+                built against"; exit 1; }
+            done
           done
           # And that the solver and bench facts the earlier slices established
           # are all still there. A floor, so this fails when one is dropped and

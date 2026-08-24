@@ -56,11 +56,6 @@ env:
   # nobody asked.
   OCCT_COMMIT: b8f597c677811d1f9f4d8a97f5ae2825c0353a42
   OCCT_SHA256: dba62b81078dd43cec23feba89432be301582341001edad1b93342ad8bda35ea
-  # The same pinned Eigen the planegcs pin compiles against, for the same
-  # reason: three runners must build planegcs against one version of the
-  # headers, so a disagreement between them is about the platform.
-  EIGEN_VERSION: 3.4.0
-  EIGEN_SHA256: 8586084f71f9bde545ee7fa6d00288b264a2b7ac3607b974e54d13e7162c1c72
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -109,20 +104,21 @@ jobs:
               sudo apt-get update
               # X11 and GL headers because XCAF links the visualisation
               # toolkits whether or not FerriteCAD opens an Open CASCADE
-              # viewer; Boost because planegcs needs it; patchelf because a
-              # relocatable ELF layout is a run path this workflow has to set.
+              # viewer; patchelf because a relocatable ELF layout is a run path
+              # this workflow has to set. No Eigen and no Boost: planegcs is
+              # built against the source tools/planegcs/pin.env names, and a
+              # header directory installed here would be a second answer to
+              # what the release was compiled from.
               sudo apt-get install -y --no-install-recommends \
                 ninja-build patchelf \
                 libx11-dev libxext-dev libxmu-dev libxi-dev \
-                libgl1-mesa-dev libglu1-mesa-dev \
-                libboost-graph-dev libboost-math-dev
+                libgl1-mesa-dev libglu1-mesa-dev
               ;;
             macos)
-              brew install ninja boost
+              brew install ninja
               ;;
             windows)
               choco install ninja -y --no-progress
-              vcpkg install boost-graph:x64-windows boost-math:x64-windows
               ;;
           esac
 
@@ -284,58 +280,25 @@ jobs:
       # planegcs, from its own pin.
       # ---------------------------------------------------------------------
 
-      - name: Fetch the pinned Eigen headers
-        run: |
-          set -euo pipefail
-          url="https://gitlab.com/libeigen/eigen/-/archive/${EIGEN_VERSION}/eigen-${EIGEN_VERSION}.tar.gz"
-          curl -sSL -o eigen.tar.gz "$url"
-          if command -v sha256sum >/dev/null 2>&1; then
-            actual="$(sha256sum eigen.tar.gz | cut -d' ' -f1)"
-          else
-            actual="$(shasum -a 256 eigen.tar.gz | cut -d' ' -f1)"
-          fi
-          if [ "$actual" != "$EIGEN_SHA256" ]; then
-            echo "::error::Eigen ${EIGEN_VERSION} digest ${actual}, expected ${EIGEN_SHA256}"
-            exit 1
-          fi
-          mkdir -p eigen
-          tar xzf eigen.tar.gz -C eigen --strip-components=1
-          # Native spelling on Windows: these reach cmake and cargo, which are
-          # native programs, and /d/a/... is a directory that does not exist to
-          # them.
-          if [ '${{ matrix.name }}' = windows ]; then
-            echo "FCAD_EIGEN_INCLUDE=$(cygpath -w "$PWD/eigen")" >> "$GITHUB_ENV"
-          else
-            echo "FCAD_EIGEN_INCLUDE=$PWD/eigen" >> "$GITHUB_ENV"
-          fi
-
-      - name: Say where Boost is
-        run: |
-          set -euo pipefail
-          case '${{ matrix.name }}' in
-            linux)   boost=/usr/include ;;
-            macos)   boost="$(brew --prefix)/include" ;;
-            windows) boost="$(cygpath -u "$VCPKG_INSTALLATION_ROOT")/installed/x64-windows/include" ;;
-          esac
-          if [ ! -d "$boost/boost" ]; then
-            echo "::error::no boost/ under $boost"
-            exit 1
-          fi
-          if [ '${{ matrix.name }}' = windows ]; then
-            echo "FCAD_BOOST_INCLUDE=$(cygpath -w "$boost")" >> "$GITHUB_ENV"
-          else
-            echo "FCAD_BOOST_INCLUDE=$boost" >> "$GITHUB_ENV"
-          fi
+      - name: Require one owner of the native build inputs
+        run: tools/check-planegcs-pins.sh
 
       - name: Build pinned planegcs
         run: |
           set -euxo pipefail
+          # Eigen and Boost come with it, by digest, from tools/planegcs/pin.env.
+          # Neither was installed on this runner, so what the closure below
+          # measures is a library built from checked source rather than from
+          # whatever the image happened to carry.
           tools/build-planegcs.sh "$PWD/vendor/planegcs"
           if [ '${{ matrix.name }}' = windows ]; then
             echo "FCAD_PLANEGCS_DIR=$(cygpath -w "$PWD/vendor/planegcs")" >> "$GITHUB_ENV"
           else
             echo "FCAD_PLANEGCS_DIR=$PWD/vendor/planegcs" >> "$GITHUB_ENV"
           fi
+
+      - name: Require the planegcs delivery to carry its own native build inputs
+        run: tools/check-planegcs-delivery.sh "$PWD/vendor/planegcs"
 
       - name: Require both components to be replaceable shared libraries
         run: |

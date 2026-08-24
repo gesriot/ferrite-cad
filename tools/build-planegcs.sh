@@ -13,6 +13,15 @@
 # The LGPL sources are used byte-identical. The only files added beside them
 # are FerriteCAD's own build glue from tools/planegcs/glue, marked as such.
 #
+# Eigen and Boost are fetched here too, by the digests in tools/planegcs/pin.env
+# and by nothing else. They used to be whatever headers the machine happened to
+# have, which is fine for an experiment and is not a release input: Eigen's
+# MPL-2.0 code is compiled into the library, so the exact source has to travel
+# with it, and a version discovered on a runner cannot be named in provenance
+# before the build that discovers it. There is deliberately no environment
+# variable that redirects either one - for an experimental build against your
+# own headers, drive tools/planegcs/CMakeLists.txt directly.
+#
 #   tools/build-planegcs.sh [output-directory]
 #
 # On Windows run it from a shell that has already seen vcvars, so that cmake
@@ -31,7 +40,15 @@ definition="${here}/planegcs"
 
 FREECAD_TAG="${FCAD_PLANEGCS_FREECAD_TAG}"
 FREECAD_SHA256="${FCAD_PLANEGCS_ARCHIVE_SHA256}"
-ARCHIVE_URL="https://github.com/FreeCAD/FreeCAD/archive/refs/tags/${FREECAD_TAG}.tar.gz"
+ARCHIVE_URL="${FCAD_PLANEGCS_FREECAD_URL}"
+EIGEN_VERSION="${FCAD_PLANEGCS_EIGEN_VERSION}"
+EIGEN_URL="${FCAD_PLANEGCS_EIGEN_URL}"
+EIGEN_SHA256="${FCAD_PLANEGCS_EIGEN_SHA256}"
+BOOST_VERSION="${FCAD_PLANEGCS_BOOST_VERSION}"
+BOOST_URL="${FCAD_PLANEGCS_BOOST_URL}"
+BOOST_SHA256="${FCAD_PLANEGCS_BOOST_SHA256}"
+# What the Boost archive calls its own top directory.
+BOOST_PREFIX="boost_$(printf '%s' "${BOOST_VERSION}" | tr . _)"
 
 host_os="$(uname -s)"
 case "${host_os}" in
@@ -71,25 +88,43 @@ OUT="$(cd "${OUT}" && pwd)"
 WORK="${OUT}/work"
 mkdir -p "${WORK}"
 
-archive="${WORK}/freecad-${FREECAD_TAG}.tar.gz"
-if [ ! -f "${archive}" ]; then
-  echo "fetching FreeCAD ${FREECAD_TAG}"
-  curl -sSL -o "${archive}" "${ARCHIVE_URL}"
-fi
+digest_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
 
-# Verified before anything is extracted, let alone compiled.
-if command -v sha256sum >/dev/null 2>&1; then
-  actual="$(sha256sum "${archive}" | cut -d' ' -f1)"
-else
-  actual="$(shasum -a 256 "${archive}" | cut -d' ' -f1)"
-fi
-if [ "${actual}" != "${FREECAD_SHA256}" ]; then
-  echo "checksum mismatch for ${archive}" >&2
-  echo "  expected ${FREECAD_SHA256}" >&2
-  echo "  actual   ${actual}" >&2
-  exit 1
-fi
-echo "checksum ok"
+# Fetched if it is not here, and verified whether or not it was: a cached
+# archive is an archive somebody could have replaced since it was fetched, and
+# the check is worth exactly as much as the times it is skipped.
+#
+# All three are done before anything is extracted, so a wrong digest on any one
+# of them stops the build with nobody's bytes unpacked.
+fetch_verified() {
+  local archive="$1" url="$2" expected="$3" what="$4" actual
+  if [ ! -f "${archive}" ]; then
+    echo "fetching ${what}"
+    curl -sSL -o "${archive}" "${url}"
+  fi
+  actual="$(digest_of "${archive}")"
+  if [ "${actual}" != "${expected}" ]; then
+    echo "checksum mismatch for ${archive}" >&2
+    echo "  expected ${expected}" >&2
+    echo "  actual   ${actual}" >&2
+    exit 1
+  fi
+  echo "checksum ok ${what}"
+}
+
+archive="${WORK}/freecad-${FREECAD_TAG}.tar.gz"
+eigen_archive="${WORK}/eigen-${EIGEN_VERSION}.tar.gz"
+boost_archive="${WORK}/boost-${BOOST_VERSION}.tar.gz"
+
+fetch_verified "${archive}" "${ARCHIVE_URL}" "${FREECAD_SHA256}" "FreeCAD ${FREECAD_TAG}"
+fetch_verified "${eigen_archive}" "${EIGEN_URL}" "${EIGEN_SHA256}" "Eigen ${EIGEN_VERSION}"
+fetch_verified "${boost_archive}" "${BOOST_URL}" "${BOOST_SHA256}" "Boost ${BOOST_VERSION}"
 
 tree="${OUT}/tree"
 rm -rf "${tree}"
@@ -111,24 +146,32 @@ cp "${definition}/glue/FCConfig.h" "${tree}/"
 cp "${definition}/glue/Base/Console.h" "${tree}/Base/"
 cp "${definition}/glue/provenance.cpp" "${tree}/glue/"
 
-eigen="$([ -n "${FCAD_EIGEN_INCLUDE:-}" ] && posix "${FCAD_EIGEN_INCLUDE}" || true)"
-if [ -z "${eigen}" ]; then
-  for candidate in /opt/homebrew/include/eigen3 /usr/local/include/eigen3 /usr/include/eigen3; do
-    [ -d "${candidate}/Eigen" ] && eigen="${candidate}" && break
-  done
-fi
-boost="$([ -n "${FCAD_BOOST_INCLUDE:-}" ] && posix "${FCAD_BOOST_INCLUDE}" || true)"
-if [ -z "${boost}" ]; then
-  for candidate in /opt/homebrew/include /usr/local/include /usr/include; do
-    [ -d "${candidate}/boost" ] && boost="${candidate}" && break
-  done
-fi
+# Into the delivery, and compiled from there. Not into a scratch directory
+# followed by a copy: two Eigen trees is one Eigen tree too many, and the
+# question a recipient of an MPL-2.0 binary asks is about the source that
+# produced it, not about a source that resembles it.
+eigen="${OUT}/sources/eigen-${EIGEN_VERSION}"
+rm -rf "${OUT}/sources"
+mkdir -p "${eigen}"
+tar xzf "${eigen_archive}" -C "${eigen}" --strip-components=1
+
+# Boost is headers here and stays in the work directory: the object-code
+# exception means the shared library carries no source or notice obligation
+# from it, and 180 megabytes of headers in a component artifact would be an
+# obligation nobody has. The licence text and the checked digest do travel.
+boost="${WORK}/boost"
+rm -rf "${boost}"
+mkdir -p "${boost}"
+tar xzf "${boost_archive}" -C "${boost}" --strip-components=1 \
+  "${BOOST_PREFIX}/boost" \
+  "${BOOST_PREFIX}/LICENSE_1_0.txt"
+
 if [ ! -d "${eigen}/Eigen" ]; then
-  echo "Eigen headers not found; set FCAD_EIGEN_INCLUDE" >&2
+  echo "the Eigen archive did not unpack an Eigen/ directory into ${eigen}" >&2
   exit 1
 fi
 if [ ! -d "${boost}/boost" ]; then
-  echo "Boost headers not found; set FCAD_BOOST_INCLUDE" >&2
+  echo "the Boost archive did not unpack a boost/ directory into ${boost}" >&2
   exit 1
 fi
 echo "eigen ${eigen}"
@@ -164,6 +207,29 @@ built_linker_file="$(read_info linker_file)"
 target_type="$(read_info target_type)"
 compiler="$(read_info cxx_compiler_id) $(read_info cxx_compiler_version)"
 
+# Asked of the configured build rather than of the lines above, because those
+# lines are what somebody edits to make a platform compile and the include
+# directory is where that edit would land. Compared as directories and not as
+# text: a Windows shell and cmake spell the same directory differently, and a
+# gate that failed on the spelling would be turned off within the week.
+same_directory() {
+  local a b
+  a="$(posix "$1")"
+  b="$(posix "$2")"
+  [ -d "${a}" ] && [ -d "${b}" ] || return 1
+  [ "$(cd "${a}" && pwd -P)" = "$(cd "${b}" && pwd -P)" ]
+}
+if ! same_directory "$(read_info eigen_include)" "${eigen}"; then
+  echo "the library was compiled against Eigen in $(read_info eigen_include), and the source \
+delivered beside it is ${eigen}" >&2
+  exit 1
+fi
+if ! same_directory "$(read_info boost_include)" "${boost}"; then
+  echo "the library was compiled against Boost in $(read_info boost_include), and the checked \
+Boost is ${boost}" >&2
+  exit 1
+fi
+
 # Refused here as well as in the CMake, because this is the file somebody edits
 # when a platform will not link and the licence position is the thing that
 # quietly gives way.
@@ -181,14 +247,27 @@ if [ -n "${import_library_name}" ]; then
   cp "${built_linker_file}" "${OUT}/${import_library_name}"
 fi
 
-# The licence travels with the library, not as an afterthought at release.
+# The licences travel with the library, not as an afterthought at release, and
+# each comes out of the archive it belongs to rather than from a copy committed
+# here that could disagree with the source that was actually built.
 cp "${WORK}/FreeCAD-${FREECAD_TAG}/LICENSE" \
   "${OUT}/LICENSE-FreeCAD-LGPL-2.0-or-later.txt"
+cp "${eigen}/COPYING.MPL2" "${OUT}/LICENSE-Eigen-MPL-2.0.txt"
+cp "${boost}/LICENSE_1_0.txt" "${OUT}/LICENSE-Boost-BSL-1.0.txt"
 
 cat > "${OUT}/PROVENANCE.txt" <<NOTICE
 planegcs from FreeCAD ${FREECAD_TAG}
-archive      ${ARCHIVE_URL}
-sha256       ${FREECAD_SHA256}  (checked before extraction)
+
+freecad version   ${FREECAD_TAG}
+freecad archive   ${ARCHIVE_URL}
+freecad sha256    ${FREECAD_SHA256}  (checked before extraction)
+eigen version     ${EIGEN_VERSION}
+eigen archive     ${EIGEN_URL}
+eigen sha256      ${EIGEN_SHA256}  (checked before extraction)
+boost version     ${BOOST_VERSION}
+boost archive     ${BOOST_URL}
+boost sha256      ${BOOST_SHA256}  (checked before extraction)
+
 platform     ${platform}
 compiler     ${compiler}
 library      ${library_name}
@@ -199,6 +278,12 @@ NOTICE
 sed -e "s|@TAG@|${FREECAD_TAG}|g" \
     -e "s|@SHA256@|${FREECAD_SHA256}|g" \
     -e "s|@ARCHIVE_URL@|${ARCHIVE_URL}|g" \
+    -e "s|@EIGEN_VERSION@|${EIGEN_VERSION}|g" \
+    -e "s|@EIGEN_URL@|${EIGEN_URL}|g" \
+    -e "s|@EIGEN_SHA256@|${EIGEN_SHA256}|g" \
+    -e "s|@BOOST_VERSION@|${BOOST_VERSION}|g" \
+    -e "s|@BOOST_URL@|${BOOST_URL}|g" \
+    -e "s|@BOOST_SHA256@|${BOOST_SHA256}|g" \
     -e "s|@PLATFORM@|${platform}|g" \
     -e "s|@COMPILER@|${compiler}|g" \
     -e "s|@LIBRARY@|${library_name}|g" \
@@ -206,7 +291,10 @@ sed -e "s|@TAG@|${FREECAD_TAG}|g" \
     -e "s|@PROVENANCE@|${provenance}|g" \
     "${definition}/DELIVERY.md.in" > "${OUT}/REPLACING.md"
 
-if grep -q '@[A-Z_]*@' "${OUT}/REPLACING.md"; then
+# The digits are in the class deliberately. Without them @SHA256@ goes through
+# this check untouched, which is the one placeholder whose survival reads as a
+# digest rather than as a mistake.
+if grep -q '@[A-Z0-9_]*@' "${OUT}/REPLACING.md"; then
   echo "the delivery notice still has unfilled placeholders" >&2
   exit 1
 fi
