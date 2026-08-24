@@ -113,12 +113,24 @@ and carry its own terms before entering the graph.
 ### Eigen and Boost
 
 planegcs needs both at build time. Eigen is MPL-2.0 and Boost is under the
-Boost Software License; both are permissive and both are header-only for what
-planegcs uses, so neither adds an obligation beyond attribution. They are
-found on the system rather than vendored.
+Boost Software License. Both are header-only for what planegcs uses, but that
+does not make their release provenance optional. Eigen code is compiled into
+the shared library, and an executable-form distribution must say how to
+obtain the corresponding MPL-2.0 Source Code Form. Boost's licence expressly
+excepts machine-executable object code from carrying its notice.
+
+The current build helper can find these headers on the system and therefore
+does not establish a release input. No FerriteCAD release package exists yet.
+Before one can carry planegcs, the release path must use one checked version
+and digest of each dependency on all three platforms, record both in the SBOM
+and provenance, and include the MPL text and exact Eigen source. The accepted
+policy and the boundary between notices and SBOM are recorded in
+[`docs/decisions/0002-release-compliance-artifacts.md`](docs/decisions/0002-release-compliance-artifacts.md).
 
 ## Rust dependencies
 
 `cargo deny check licenses` runs in CI over the whole dependency tree against
 the allow-list in `deny.toml`. A crate whose licence is not on that list fails
-the build rather than arriving unnoticed.
+the build rather than arriving unnoticed. This is an admission check, not a
+notice generator. The release notice and SBOM policy is recorded in
+[`docs/decisions/0002-release-compliance-artifacts.md`](docs/decisions/0002-release-compliance-artifacts.md).

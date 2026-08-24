@@ -14,7 +14,9 @@ name: planegcs pin
 # built from a checked archive, that the test process really depended on it,
 # that the product path — not the bench's own arithmetic — is what answered,
 # that the three platforms agree about what the solver concluded, and that the
-# licence obligations were packaged rather than promised.
+# FreeCAD source, licence and replacement material were packaged rather than
+# promised. The Eigen, Boost, Rust-notice and SBOM release inputs remain the
+# explicit compliance slice before the product packager.
 #
 # Since §21A-2b1 it also records that the application itself loads the library:
 # the real `ferritecad-viewer` imports it, finds it through the loader's search
@@ -852,10 +854,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: planegcs-${{ matrix.name }}
-          # The library the tests actually loaded, its complete corresponding
-          # source, the full licence text, the provenance with its checked
-          # digest and the replacement instructions. Not the build tree: that
-          # is a by-product, and the sources are what the licence is about.
+          # The library the tests actually loaded, its corresponding FreeCAD
+          # source, the FreeCAD licence text, provenance and replacement
+          # instructions. This component artifact is not the product release
+          # compliance bundle; ADR 0002 records the remaining inputs.
           path: |
             vendor/planegcs/${{ matrix.library }}
             vendor/planegcs/planegcs.lib

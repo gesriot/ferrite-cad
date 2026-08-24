@@ -1,9 +1,12 @@
 # planegcs, as delivered
 
-This directory is a build of planegcs from FreeCAD @TAG@ and everything the
-licence obliges the sender to hand over with it. `tools/build-planegcs.sh`
-filled the version, digest, platform and compiler in when the build was made,
-so what you are reading describes this build and not a general case.
+This directory is a build of planegcs from FreeCAD @TAG@ and the FreeCAD
+source, licence and replacement material that the current helper packages
+with it. `tools/build-planegcs.sh` filled the version, digest, platform and
+compiler in when the build was made, so what you are reading describes this
+build and not a general case. This is not yet a complete release-compliance
+bundle: the helper does not identify or carry the Eigen source compiled into
+the library, and it does not identify Boost.
 
 ## What is here
 
@@ -71,14 +74,21 @@ FCAD_PLANEGCS_DIR=<this directory> cargo test -p ferritecad-solver-lab \
   --features planegcs -- --nocapture
 ```
 
-Eigen and Boost are needed as headers only, at build time, and are not part of
-this delivery. Eigen is MPL-2.0 and Boost is under the Boost Software Licence.
+Eigen and Boost are needed as headers only at build time, and their source
+trees are not part of this delivery. Eigen is MPL-2.0 code compiled into the
+library, so a release carrying this library must identify the exact source,
+make it available and carry the MPL notice. Boost is under the Boost Software
+Licence; its machine-executable object-code exception applies, but its checked
+version still belongs in release provenance and the SBOM. This component
+output cannot be used as a FerriteCAD release input until those gaps are
+closed.
 
 ## What this delivery is not
 
 A FerriteCAD release. With its `planegcs` feature enabled,
 `ferritecad-viewer` can load this shared library and report its provenance, but
 no released FerriteCAD package carries it yet. This directory is the component
-delivery used by that build and by the solver gates, packaged with the
-obligations a future release inherits so those obligations are tested rather
-than promised.
+delivery used by that build and by the solver gates. The FreeCAD LGPL portion
+is packaged and tested here; the Eigen, Boost, Rust-notice and SBOM work that a
+future release inherits remains an explicit gate rather than a promise that
+this directory has already fulfilled it.

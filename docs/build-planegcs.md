@@ -90,8 +90,13 @@ touches already carries the macro upstream.
 
 ## Eigen and Boost
 
-Both are needed as headers only, at build time, and neither is redistributed
-here. Eigen is MPL-2.0 and Boost is under the Boost Software Licence.
+Both are needed as headers only at build time, and the helper currently copies
+neither source tree into its output. That output is therefore not yet a
+release-compliance bundle: Eigen is MPL-2.0 code compiled into the library,
+and a release must identify and make its exact Source Code Form available.
+Boost is under the Boost Software Licence and its machine-executable object
+code exception applies to the shared library, but the build version still has
+to be known to provenance and the SBOM.
 
 | | Headers used | Where the build finds them |
 | --- | --- | --- |
@@ -125,11 +130,17 @@ refuses a build that is not a shared library. Both refusals exist because this
 file is what somebody edits when a platform will not link, and the licence
 position is the thing that quietly gives way.
 
-Beside the library the script writes the complete corresponding source
+Beside the library the script writes the complete corresponding FreeCAD source
 (`tree/`), FreeCAD's full `LICENSE`, a `PROVENANCE.txt` recording the release,
 the checked digest, the platform and the compiler, and a `REPLACING.md`
 generated from
 [`tools/planegcs/DELIVERY.md.in`](../tools/planegcs/DELIVERY.md.in).
+
+It does not yet record or carry the Eigen source that was compiled into the
+library, and it does not record the Boost version. The compliance-input slice
+defined by
+[`ADR 0002`](decisions/0002-release-compliance-artifacts.md) must close those
+gaps before this output can be consumed by the FerriteCAD packager.
 
 ## Who owns what
 
@@ -140,7 +151,7 @@ build-time detection and required mode, and the lifetime of the native session.
 
 `ferritecad-solver-lab` is a *client* of it. It keeps the neutral corpus and
 the reference Levenberg–Marquardt implementation, and it reaches planegcs only
-by calling the product crate — no shim, no build script, no C ABI, no
+by calling the product crate: no shim, no build script, no C ABI, no
 constraint mapping of its own.
 
 The direction matters both ways, and
@@ -206,7 +217,7 @@ feature, no library, no import library, an unloadable library. The
 whose job is to prove planegcs works cannot pass by not having it.
 
 Without a library the product crate still compiles, and every entry point
-answers a typed `Unavailable` — not a skipped test, not a panic, and never a
+answers a typed `Unavailable`: not a skipped test, not a panic, and never a
 quiet substitution of some other arithmetic. What it does *not* stop doing is
 checking the sketch: an unknown point reference, a repeated identifier, a
 coordinate that is not a number or a starting state of the wrong shape are
