@@ -5,17 +5,17 @@
 #
 # planegcs is compiled against Eigen and Boost. Eigen is MPL-2.0 code that ends
 # up inside the shared library, so a package carrying that library owes its
-# recipient the exact Source Code Form and the MPL text. Boost's object-code
-# exception means the library alone owes nothing, but which Boost produced the
-# build is still part of what the release has to be able to say, and the short
-# licence text is carried as a deliberate inventory choice. ADR 0002 records
-# both decisions.
+# recipient the exact Source Code Form and the MPL text. The component artifact
+# also keeps the exact Boost headers because its documented FCAD_PLANEGCS_DIR
+# path compiles FerriteCAD's MIT shim from them. A future runtime-only product
+# package may omit those headers under Boost's object-code exception. ADR 0002
+# records that distinction.
 #
 # The delivery is checked against the archives it was built from rather than
 # against wording anyone could write beside it: the helper leaves those
 # archives in the output's work directory, this re-verifies their digests, and
-# the Eigen source and both licence texts are compared with what comes back out
-# of them.
+# the Eigen source, Boost header tree and both licence texts are compared with
+# what comes back out of them.
 #
 #   tools/check-planegcs-delivery.sh <delivery-directory>
 
@@ -56,6 +56,7 @@ trap 'rm -rf "${scratch}"' EXIT
 
 work="${out}/work"
 eigen_tree="${out}/sources/eigen-${FCAD_PLANEGCS_EIGEN_VERSION}"
+boost_tree="${out}/build-inputs/boost"
 boost_prefix="boost_$(printf '%s' "${FCAD_PLANEGCS_BOOST_VERSION}" | tr . _)"
 
 # The archives the helper checked and kept. Re-verified here rather than taken
@@ -107,14 +108,29 @@ elif ! cmp -s "${mpl}" "${eigen_tree}/COPYING.MPL2"; then
     fail "${mpl} is not the MPL text in the Eigen source it was built from"
 fi
 
-# Boost's whole source is not delivered - the object-code exception is why -
-# so the text is checked against the archive rather than against a sibling.
+# The exact Boost input consumed by both the library and the shim. This is the
+# ready-to-use header tree from the release archive, not the whole Boost source
+# distribution and not a system installation.
 bsl="${out}/LICENSE-Boost-BSL-1.0.txt"
+if [ ! -d "${boost_tree}" ]; then
+    fail "${boost_tree} is missing; the component delivery cannot compile its shim"
+elif verified_archive "${boost_archive}" "${FCAD_PLANEGCS_BOOST_SHA256}" "Boost headers"; then
+    mkdir -p "${scratch}/boost"
+    tar xzf "${boost_archive}" -C "${scratch}/boost" --strip-components=1 \
+        "${boost_prefix}/boost" \
+        "${boost_prefix}/LICENSE_1_0.txt"
+    if ! diff -r "${scratch}/boost" "${boost_tree}" > "${scratch}/boost.diff" 2>&1; then
+        head -20 "${scratch}/boost.diff" >&2
+        fail "the delivered Boost header tree is not the checked archive's"
+    fi
+fi
 if [ ! -s "${bsl}" ]; then
     fail "${bsl} is missing or empty"
-elif verified_archive "${boost_archive}" "${FCAD_PLANEGCS_BOOST_SHA256}" "Boost licence"; then
-    tar xzf "${boost_archive}" -C "${scratch}" "${boost_prefix}/LICENSE_1_0.txt"
-    if ! cmp -s "${bsl}" "${scratch}/${boost_prefix}/LICENSE_1_0.txt"; then
+elif [ ! -f "${boost_tree}/LICENSE_1_0.txt" ]; then
+    fail "${boost_tree}/LICENSE_1_0.txt is missing, so the Boost text beside the library \
+answers to nothing"
+else
+    if ! cmp -s "${bsl}" "${boost_tree}/LICENSE_1_0.txt"; then
         fail "${bsl} is not the licence text in the checked Boost archive"
     fi
 fi
@@ -158,6 +174,6 @@ docs/decisions/0002-release-compliance-artifacts.md" >&2
     exit 1
 fi
 
-echo "planegcs delivery: the Eigen source is the checked archive's, both licence texts come \
-from the archives they belong to, and FreeCAD, Eigen and Boost are each named with a version, \
-a URL and a digest"
+echo "planegcs delivery: the Eigen source and Boost header tree are the checked archives', \
+both licence texts come from those inputs, and FreeCAD, Eigen and Boost are each named with \
+a version, a URL and a digest"

@@ -192,6 +192,7 @@ uploaded="$(awk '
 ' .github/workflows/planegcs-pin.yml)"
 for required in \
     'vendor/planegcs/sources/' \
+    'vendor/planegcs/build-inputs/' \
     'vendor/planegcs/LICENSE-Eigen-MPL-2.0.txt' \
     'vendor/planegcs/LICENSE-Boost-BSL-1.0.txt' \
     'vendor/planegcs/LICENSE-FreeCAD-LGPL-2.0-or-later.txt' \
@@ -220,4 +221,4 @@ fi
 
 echo "planegcs pins: ${PIN} owns FreeCAD ${freecad_tag}, Eigen ${eigen_version} and Boost \
 ${boost_version}, nothing that runs holds a second copy, and the component artifact carries \
-the source, licence and provenance files"
+the source, build-input, licence and provenance files"

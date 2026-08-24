@@ -42,7 +42,9 @@ endforeach()
 
 # planegcs uses Eigen's dense and sparse solvers and Boost's graph and math
 # headers. Both are header-only for everything used here, which is why neither
-# is a link dependency and neither adds an obligation beyond attribution.
+# is a link dependency. Their source and notice treatment is a separate
+# distribution question, recorded in ADR 0002 and enforced by the delivery
+# checker rather than inferred from how CMake links them.
 if(NOT IS_DIRECTORY "${FCAD_EIGEN_INCLUDE}/Eigen")
   message(FATAL_ERROR "no Eigen/ under ${FCAD_EIGEN_INCLUDE}")
 endif()

@@ -880,15 +880,17 @@ jobs:
         with:
           name: planegcs-${{ matrix.name }}
           # The library the tests actually loaded, its corresponding FreeCAD
-          # source, the Eigen source compiled into it, all three licence texts,
-          # provenance and replacement instructions. This component artifact is
-          # not a FerriteCAD release: ADR 0002 records the Rust notices and the
-          # SBOM that a release still has to add.
+          # source, the Eigen source and Boost headers consumed by its two
+          # native compilation units, all three licence texts, provenance and
+          # replacement instructions. This component artifact is not a
+          # FerriteCAD release: ADR 0002 records the Rust notices and the SBOM
+          # that a release still has to add.
           path: |
             vendor/planegcs/${{ matrix.library }}
             vendor/planegcs/planegcs.lib
             vendor/planegcs/tree/**
             vendor/planegcs/sources/**
+            vendor/planegcs/build-inputs/**
             vendor/planegcs/LICENSE-FreeCAD-LGPL-2.0-or-later.txt
             vendor/planegcs/LICENSE-Eigen-MPL-2.0.txt
             vendor/planegcs/LICENSE-Boost-BSL-1.0.txt

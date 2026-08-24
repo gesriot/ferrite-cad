@@ -45,7 +45,10 @@ generated shared library does not acquire a source or notice obligation from
 Boost. FerriteCAD still records the checked Boost version in provenance and
 the SBOM, and includes the short Boost Software License text. This is a
 deliberate inventory and review choice, not a claim that the exception
-requires the text.
+requires the text. The rebuildable planegcs component artifact additionally
+carries the checked Boost header tree because FerriteCAD's MIT shim compiles
+against it. A later runtime-only product package may omit that build input;
+the two artifacts make different promises and are checked separately.
 
 ## Scope of the next slices
 
