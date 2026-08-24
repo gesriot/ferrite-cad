@@ -155,12 +155,20 @@ rm -rf "${OUT}/sources"
 mkdir -p "${eigen}"
 tar xzf "${eigen_archive}" -C "${eigen}" --strip-components=1
 
-# Boost is headers here and stays in the work directory: the object-code
-# exception means the shared library carries no source or notice obligation
-# from it, and 180 megabytes of headers in a component artifact would be an
-# obligation nobody has. The licence text and the checked digest do travel.
-boost="${WORK}/boost"
-rm -rf "${boost}"
+# Boost's headers are not part of the delivery: the object-code exception
+# means the shared library carries no source or notice obligation from it, and
+# 180 megabytes of headers in a component artifact would be an obligation
+# nobody has. The licence text and the checked digest do travel.
+#
+# They are not in the work directory either, because something else needs them.
+# The MIT shim in ferritecad-sketch-solver compiles the same planegcs headers,
+# so it needs the same Eigen and the same Boost: those headers template on
+# Eigen types that cross the shim's boundary, and a shim built against another
+# Eigen agrees with the library about nothing but the function names. Its build
+# script reads them from here, so this is a name a delivery keeps rather than
+# scratch somebody is entitled to sweep.
+boost="${OUT}/build-inputs/boost"
+rm -rf "${OUT}/build-inputs"
 mkdir -p "${boost}"
 tar xzf "${boost_archive}" -C "${boost}" --strip-components=1 \
   "${BOOST_PREFIX}/boost" \

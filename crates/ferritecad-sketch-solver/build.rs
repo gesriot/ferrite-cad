@@ -29,8 +29,6 @@ fn main() {
     println!("cargo:rerun-if-changed=planegcs-bridge");
     println!("cargo:rerun-if-changed=../../tools/planegcs/pin.env");
     println!("cargo:rerun-if-env-changed=FCAD_PLANEGCS_DIR");
-    println!("cargo:rerun-if-env-changed=FCAD_EIGEN_INCLUDE");
-    println!("cargo:rerun-if-env-changed=FCAD_BOOST_INCLUDE");
     println!("cargo:rerun-if-env-changed=FERRITECAD_REQUIRE_PLANEGCS");
     println!("cargo::rustc-check-cfg=cfg(planegcs_linked)");
 
@@ -75,11 +73,28 @@ fn main() {
 /// drift apart: both are this file, read once by the build that makes the
 /// library and once by the build that uses it.
 fn expected_provenance() -> Result<String, String> {
+    let values = pin()?;
+    let tag = values
+        .get("FCAD_PLANEGCS_FREECAD_TAG")
+        .ok_or("no FCAD_PLANEGCS_FREECAD_TAG in the pin")?;
+    let digest = values
+        .get("FCAD_PLANEGCS_ARCHIVE_SHA256")
+        .ok_or("no FCAD_PLANEGCS_ARCHIVE_SHA256 in the pin")?;
+    // The same sentence tools/build-planegcs.sh compiles into the library.
+    Ok(format!(
+        "planegcs from FreeCAD {tag}, archive SHA-256 {digest}"
+    ))
+}
+
+/// `tools/planegcs/pin.env`, which is a shell file of bare assignments and is
+/// read as one here so that the version this crate compiles against and the
+/// version the helper fetched cannot be two different numbers.
+fn pin() -> Result<BTreeMap<String, String>, String> {
     let manifest =
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").map_err(|error| error.to_string())?);
-    let pin = manifest.join("../../tools/planegcs/pin.env");
-    let text = std::fs::read_to_string(&pin)
-        .map_err(|error| format!("cannot read {}: {error}", pin.display()))?;
+    let path = manifest.join("../../tools/planegcs/pin.env");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
 
     let mut values = BTreeMap::new();
     for line in text.lines() {
@@ -91,17 +106,14 @@ fn expected_provenance() -> Result<String, String> {
             values.insert(name.trim().to_owned(), value.trim().to_owned());
         }
     }
+    Ok(values)
+}
 
-    let tag = values
-        .get("FCAD_PLANEGCS_FREECAD_TAG")
-        .ok_or("no FCAD_PLANEGCS_FREECAD_TAG in the pin")?;
-    let digest = values
-        .get("FCAD_PLANEGCS_ARCHIVE_SHA256")
-        .ok_or("no FCAD_PLANEGCS_ARCHIVE_SHA256 in the pin")?;
-    // The same sentence tools/build-planegcs.sh compiles into the library.
-    Ok(format!(
-        "planegcs from FreeCAD {tag}, archive SHA-256 {digest}"
-    ))
+fn pin_value(name: &str) -> Result<String, String> {
+    pin()?
+        .get(name)
+        .cloned()
+        .ok_or_else(|| format!("no {name} in the pin"))
 }
 
 fn link_planegcs() -> Result<(), String> {
@@ -143,7 +155,7 @@ fn link_planegcs() -> Result<(), String> {
         ));
     }
 
-    let bridge = build_bridge(&tree)?;
+    let bridge = build_bridge(&planegcs, &tree)?;
 
     // The shim is static and ends up inside the Rust test binary; planegcs
     // stays dynamic beside it, which is the whole point.
@@ -172,7 +184,16 @@ fn link_planegcs() -> Result<(), String> {
 }
 
 /// Compiles the shim, through the same cmake path the OCCT bridge uses.
-fn build_bridge(tree: &Path) -> Result<String, String> {
+///
+/// Against the delivery's own Eigen and Boost, and against nothing else. This
+/// used to take `FCAD_EIGEN_INCLUDE` from the environment and otherwise pick
+/// whichever `eigen3` a machine happened to have, which was a second answer to
+/// a question `tools/planegcs/pin.env` already answers. It is not only a
+/// provenance question: `GCS.h` templates on Eigen types that cross this
+/// shim's boundary into the shared library, so a shim compiled against a
+/// different Eigen agrees with that library about the function names and
+/// nothing underneath them.
+fn build_bridge(planegcs: &Path, tree: &Path) -> Result<String, String> {
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
     let build = out.join("bridge-build");
     let source = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets it"))
@@ -188,29 +209,27 @@ fn build_bridge(tree: &Path) -> Result<String, String> {
         .arg(&build)
         .arg("-DCMAKE_BUILD_TYPE=Release")
         .arg(format!("-DFCAD_PLANEGCS_TREE={}", tree.display()));
-    for (name, candidates) in [
+    let eigen_version = pin_value("FCAD_PLANEGCS_EIGEN_VERSION")?;
+    for (name, directory, marker) in [
         (
             "FCAD_EIGEN_INCLUDE",
-            [
-                "/opt/homebrew/include/eigen3",
-                "/usr/local/include/eigen3",
-                "/usr/include/eigen3",
-            ],
+            planegcs.join(format!("sources/eigen-{eigen_version}")),
+            "Eigen",
         ),
         (
             "FCAD_BOOST_INCLUDE",
-            [
-                "/opt/homebrew/include",
-                "/usr/local/include",
-                "/usr/include",
-            ],
+            planegcs.join("build-inputs/boost"),
+            "boost",
         ),
     ] {
-        if let Some(path) = std::env::var_os(name) {
-            configure.arg(format!("-D{name}={}", PathBuf::from(path).display()));
-        } else if let Some(found) = candidates.iter().find(|c| Path::new(c).exists()) {
-            configure.arg(format!("-D{name}={found}"));
+        if !directory.join(marker).is_dir() {
+            return Err(format!(
+                "{} has no {marker}/, so the shim cannot be compiled against the same headers \
+                 as the library beside it. Rebuild the delivery with tools/build-planegcs.sh.",
+                directory.display()
+            ));
         }
+        configure.arg(format!("-D{name}={}", directory.display()));
     }
     run(configure, "configuring the planegcs shim")?;
 

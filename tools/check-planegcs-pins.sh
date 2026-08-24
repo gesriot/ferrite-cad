@@ -133,10 +133,51 @@ if grep -rnE 'FCAD_(EIGEN|BOOST)_INCLUDE=.*GITHUB_ENV' .github/workflows > /dev/
     fail "a workflow exports FCAD_EIGEN_INCLUDE or FCAD_BOOST_INCLUDE; the delivery helper \
 derives both from ${PIN}"
 fi
-if grep -nE '\$\{?FCAD_(EIGEN|BOOST)_INCLUDE' tools/build-planegcs.sh > /dev/null; then
-    grep -nE '\$\{?FCAD_(EIGEN|BOOST)_INCLUDE' tools/build-planegcs.sh >&2
-    fail "tools/build-planegcs.sh reads FCAD_EIGEN_INCLUDE or FCAD_BOOST_INCLUDE; the \
-production delivery must not be redirectable by an environment variable"
+#
+# Both places, not one. The MIT shim in ferritecad-sketch-solver compiles the
+# same planegcs headers as the library, so it needs the same Eigen and the same
+# Boost, and its build script held its own copy of the fallback this rule is
+# about. Two copies of a rule is one place for it to come back.
+readonly REDIRECTABLE=(
+    'tools/build-planegcs.sh'
+    'crates/ferritecad-sketch-solver/build.rs'
+)
+for source in "${REDIRECTABLE[@]}"; do
+    if grep -nE '\$\{?FCAD_(EIGEN|BOOST)_INCLUDE|var(_os)?\("FCAD_(EIGEN|BOOST)_INCLUDE' \
+        "${source}" > /dev/null; then
+        grep -nE '\$\{?FCAD_(EIGEN|BOOST)_INCLUDE|var(_os)?\("FCAD_(EIGEN|BOOST)_INCLUDE' \
+            "${source}" >&2
+        fail "${source} reads FCAD_EIGEN_INCLUDE or FCAD_BOOST_INCLUDE; neither the delivery \
+nor the shim may be redirected by an environment variable"
+    fi
+    # And no system include directory, which is the same rule wearing a
+    # different hat: a header tree discovered on a machine is a build input
+    # nobody recorded.
+    if grep -nE '/(opt/homebrew|usr/local|usr)/include' "${source}" > /dev/null; then
+        grep -nE '/(opt/homebrew|usr/local|usr)/include' "${source}" >&2
+        fail "${source} names a system include directory; planegcs and its shim are compiled \
+against the source ${PIN} pins"
+    fi
+done
+
+# Which environment the shim's build script may read at all, by name.
+#
+# Naming the two forbidden variables was not enough, and a mutation showed it:
+# the loop that configures the shim has the variable's name in a local, so
+# `env::var_os(name)` reintroduces the redirect without either spelling
+# appearing anywhere. Nothing about that is exotic - it is the shortest way to
+# write it. So the rule is the other way round: every environment read in this
+# build script names one of these, spelled out, and a read whose argument is
+# not a literal from the list is refused whatever it turns out to say.
+readonly BUILD_SCRIPT='crates/ferritecad-sketch-solver/build.rs'
+readonly ALLOWED_ENV='CARGO_MANIFEST_DIR|CARGO_CFG_TARGET_OS|CARGO_FEATURE_PLANEGCS|OUT_DIR|FCAD_PLANEGCS_DIR|FERRITECAD_REQUIRE_PLANEGCS'
+reads="$(grep -coE 'env::var(_os)?\(' "${BUILD_SCRIPT}" || true)"
+allowed="$(grep -coE "env::var(_os)?\\(\"(${ALLOWED_ENV})\"\\)" "${BUILD_SCRIPT}" || true)"
+if [ "${reads}" != "${allowed}" ]; then
+    grep -nE 'env::var(_os)?\(' "${BUILD_SCRIPT}" >&2
+    fail "${BUILD_SCRIPT} reads the environment somewhere this does not recognise: \
+${reads} read(s), ${allowed} of them naming one of ${ALLOWED_ENV}. What the shim is compiled \
+against comes from ${PIN} and from the delivery, not from a variable"
 fi
 
 # What the component artifact has to carry. The upload names paths, and a path

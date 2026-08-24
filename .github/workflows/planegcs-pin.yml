@@ -298,6 +298,52 @@ jobs:
                  cat binaries.txt; exit 1; }
           cat binaries.txt
 
+      - name: Require the shim to have been compiled against the delivered headers
+        run: |
+          set -euo pipefail
+          out="$PWD/vendor/planegcs"
+          # Asked of the shim's configured build, not of the build script that
+          # configured it. The shim includes the same planegcs headers as the
+          # library and they template on Eigen types that cross its boundary,
+          # so a shim compiled against a different Eigen agrees with the
+          # library about the function names and nothing underneath them. That
+          # is invisible in every other gate here: it links, it loads, and it
+          # answers.
+          # Every cache cargo left for the crate that owns the shim, not the
+          # first one found: a run that configured it more than once must not
+          # be able to pass on whichever copy happened to be listed first.
+          # Scoped to ferritecad-sketch-solver because that crate owns the
+          # bridge, which tools/check-solver-ownership.sh is what keeps true;
+          # a bridge-build under any other crate is not the shim under test.
+          find target/release/build \
+            -path '*/ferritecad-sketch-solver-*/out/bridge-build/CMakeCache.txt' > caches.txt
+          [ -s caches.txt ] || { echo "::error::the shim left no cmake cache to read"; exit 1; }
+          while IFS= read -r cache; do
+            echo "== $cache"
+            for pair in \
+              "FCAD_EIGEN_INCLUDE:$out/sources/eigen-${FCAD_PLANEGCS_EIGEN_VERSION}" \
+              "FCAD_BOOST_INCLUDE:$out/build-inputs/boost"
+            do
+              name="${pair%%:*}"
+              want="${pair#*:}"
+              got="$(grep -m1 "^${name}:PATH=" "$cache" | cut -d= -f2-)"
+              if [ '${{ matrix.name }}' = windows ]; then
+                got="$(cygpath -u "$got")"
+                want="$(cygpath -u "$want")"
+              fi
+              if [ ! -d "$got" ] || [ ! -d "$want" ]; then
+                echo "::error::${name} is '${got}' and the delivery's is '${want}'"
+                exit 1
+              fi
+              if [ "$(cd "$got" && pwd -P)" != "$(cd "$want" && pwd -P)" ]; then
+                echo "::error::the shim was compiled with ${name}=${got}, and the library \
+                beside it was built from ${want}"
+                exit 1
+              fi
+              echo "  ${name} is the delivery's"
+            done
+          done < caches.txt
+
       - name: Require the test process to depend on the shared library
         run: |
           set -euo pipefail
@@ -709,7 +755,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DFCAD_PLANEGCS_TREE="$(native "$out/tree")" \
             -DFCAD_EIGEN_INCLUDE="$(native "$out/sources/eigen-${FCAD_PLANEGCS_EIGEN_VERSION}")" \
-            -DFCAD_BOOST_INCLUDE="$(native "$out/work/boost")" \
+            -DFCAD_BOOST_INCLUDE="$(native "$out/build-inputs/boost")" \
             -DFCAD_PLANEGCS_PROVENANCE="$fake"
           cmake --build "$(native "$alt")" --config Release
           built="$(grep '^library=' "$alt/planegcs-build-info-Release.txt" | cut -d= -f2-)"
@@ -899,7 +945,7 @@ jobs:
             # Whether anything was extracted comes first. A script that refuses
             # for some later reason has still already unpacked somebody else's
             # bytes, and that is the property being asserted, not the wording.
-            for unpacked in tree sources build work/boost; do
+            for unpacked in tree sources build build-inputs; do
               if [ -e "$probe/$unpacked" ]; then
                 echo "::error::${target} was tampered with and $probe/$unpacked exists, so \
                 something was extracted or configured before the digests were checked"

@@ -107,7 +107,17 @@ fetches both itself, by the digests above and by nothing else.
 | | Headers used | Where the build gets them |
 | --- | --- | --- |
 | Eigen | `Eigen/Core`, `Dense`, `OrderingMethods`, `QR`, `Sparse` | the pinned archive, unpacked into `sources/eigen-3.4.0/` inside the delivery and compiled from there |
-| Boost | `boost/graph/adjacency_list.hpp`, `connected_components.hpp`, `graph_concepts.hpp`, `boost/math/constants/constants.hpp` | the pinned archive, unpacked into the helper's work directory |
+| Boost | `boost/graph/adjacency_list.hpp`, `connected_components.hpp`, `graph_concepts.hpp`, `boost/math/constants/constants.hpp` | the pinned archive, unpacked into `build-inputs/boost/` beside the delivery |
+
+**The shim is compiled against the same two.** The MIT bridge in
+`ferritecad-sketch-solver` includes the same planegcs headers, so its build
+script takes Eigen from `sources/eigen-3.4.0/` and Boost from
+`build-inputs/boost/` inside whatever `FCAD_PLANEGCS_DIR` names. That is not
+only a provenance question: `GCS.h` templates on Eigen types that cross the
+shim's boundary into the shared library, and a shim built against a different
+Eigen agrees with that library about the function names and nothing underneath
+them. It is also why the Boost headers sit under a name a delivery keeps rather
+than in the helper's work directory.
 
 There is deliberately no environment variable that redirects either one, and no
 system include directory is consulted. `FCAD_EIGEN_INCLUDE` and
