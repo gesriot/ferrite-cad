@@ -27,16 +27,20 @@ on:
   workflow_dispatch:
   push:
     paths:
+      # Any workspace input can change a product binary or its native runtime
+      # closure. Keeping a hand-written subset of crates here would let a
+      # dependency, feature or linker change leave the last measurement green
+      # without measuring the product that main now builds.
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'crates/**'
       - 'tools/runtime-closure.sh'
       - 'tools/stage-runtime-layout.sh'
       - 'tools/check-staged-layout.sh'
       - 'tools/build-planegcs.sh'
       - 'tools/planegcs/**'
-      - 'crates/ferritecad-app/**'
-      - 'crates/ferritecad-cli/**'
-      - 'crates/ferritecad-occt/**'
-      - 'crates/ferritecad-occt-bridge/**'
-      - 'crates/ferritecad-sketch-solver/**'
       - '.github/workflows/runtime-layout.yml'
 
 permissions:

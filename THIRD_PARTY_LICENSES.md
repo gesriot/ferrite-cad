@@ -103,11 +103,12 @@ and carry its own terms before entering the graph.
   runs both the product solver's own gates and the bench. Windows produces
   `planegcs.dll` with `planegcs.lib` as linker metadata; a static planegcs is
   refused by the build definition on every platform.
-- **Not shipped:** no FerriteCAD application loads or packages planegcs today.
-  What exists is a verified buildable component, the product contract in front
-  of it, the bench that measures it, and the delivery the obligations would
-  apply to. A build without the library still compiles and answers a typed
-  "unavailable"; packaging and loading it from the application are §21A-2b.
+- **Not shipped:** no FerriteCAD release packages planegcs today. With the
+  `planegcs` feature enabled, `ferritecad-viewer` does load the shared library
+  and reports its own provenance through `--solver-info`; an ordinary build
+  still compiles without it and answers a typed "unavailable". The combined
+  runtime layout has been measured on all three platforms, but the packager is
+  still §21A-2b2b.
 
 ### Eigen and Boost
 

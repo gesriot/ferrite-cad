@@ -265,4 +265,3 @@ done
 find "$staging" -type f -print0 | xargs -0 wc -c \
     | awk '$2 != "total" { files++; bytes += $1 }
            END { printf "staged-total files=%d bytes=%d\n", files, bytes }'
-
