@@ -166,7 +166,11 @@ run_cyclonedx() { # target
     # Found by generating from a copy of the tree that was not a git checkout:
     # the first spelling of this asked git, and git answered "not a repository"
     # into a discarded stream, so the check passed by doing nothing.
-    stray="$(find . -name '*_bin.cdx.json' -not -path './target/*' | sort | tr '\n' ' ')"
+    # `-prune` rather than `-not -path`: the latter still descends into the
+    # build directory, and on a repository with a warm target/ that turned a
+    # four second gate into a several minute one.
+    stray="$(find . \( -path ./target -o -path ./.git \) -prune -o \
+                  -name '*_bin.cdx.json' -print | sort | tr '\n' ' ')"
     [ -z "$stray" ] || sbom_die \
         "cargo-cyclonedx described binaries that tools/notices/lib.sh does not name: $stray"
 }
@@ -209,6 +213,12 @@ generate() { # target output
                  | @tsv' \
         | sbom_strip_cr | sort -u > "$work/paths.tsv"
 
+    # A real file, not a process substitution. jq on Windows is a native
+    # binary and the shell running this is MSYS, so `<(...)` hands it a
+    # /proc/<pid>/fd path it cannot open. Measured on the first three-host run:
+    # `Bad JSON in --slurpfile boms /proc/799/fd/63`.
+    cat "$work"/bom-*.json > "$work/boms.json"
+
     jq -n -S \
         --rawfile nodes "$work/nodes.txt" \
         --rawfile edges "$work/edges.tsv" \
@@ -216,7 +226,7 @@ generate() { # target output
         --rawfile lock "$work/lock.tsv" \
         --rawfile paths "$work/paths.tsv" \
         --rawfile risk "$SBOM_RISK_TSV" \
-        --slurpfile boms <(cat "$work"/bom-*.json) \
+        --slurpfile boms "$work/boms.json" \
         --arg target "$target" \
         --arg ns "$SBOM_NS" \
         --arg spec "$CYCLONEDX_SPEC_VERSION" \
