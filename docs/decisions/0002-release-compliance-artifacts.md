@@ -62,11 +62,14 @@ generation and the ordinary gate read the committed payload and never contact a
 git host.
 
 Where the publisher has published no licence text anywhere, the package goes on
-a closed, exhaustive allowlist that records only what can be checked, keeps its
-two evidence classes apart, and never claims a text was recovered. The list may
-not grow without a decision, a networked gate refuses a row whose upstream has
-since published a text, and the removal conditions are recorded with the slice
-in the implementation plan.
+a closed, exhaustive blocker inventory that records only what can be checked,
+keeps its two evidence classes apart, and never claims a text was recovered.
+This is not a compliance exception. The ordinary gate may verify an incomplete
+inventory, but its `--release-ready` mode refuses every non-empty blocker set,
+and a future packager must use that mode. The list may not grow without a
+decision, a networked gate refuses a row whose upstream has since published a
+text, and the removal conditions are recorded with the slice in the
+implementation plan.
 
 `cargo-deny` remains the admission gate. It answers whether a dependency's
 licence expression is allowed; it does not generate notices and is not an
@@ -105,5 +108,5 @@ asset component. It does not create a FerriteCAD release archive.
 
 Only after that slice is green on all three product platforms may the
 packager consume the measured runtime layout. A package is refused if notices
-or the SBOM are missing, stale, non-deterministic, or disagree with the files
-actually staged.
+or the SBOM are missing, stale, non-deterministic, disagree with the files
+actually staged, or contain an unresolved licence-text blocker.

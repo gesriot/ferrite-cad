@@ -1,8 +1,14 @@
 # Third-party Rust notices for FerriteCAD on aarch64-apple-darwin
 
+> [!CAUTION]
+> **RELEASE BLOCKED for this target.** 11 package(s) below have no
+> publisher-supplied licence text or copyright notice. This file is an
+> auditable inventory of that unresolved state, not a distributable notice set.
+
 FerriteCAD ships two executables. This file lists every third-party Rust
 package linked into either of them on this target, the licence FerriteCAD
-takes that package under, and the text of that licence.
+takes that package under, and either its established licence text or its
+explicit unresolved status.
 
 This file is generated and must not be edited by hand.
 `tools/check-rust-notices.sh` regenerates it and refuses any difference.
@@ -3896,7 +3902,7 @@ the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-## Packages whose publisher shipped no licence text
+## Unresolved packages that block release
 
 For the packages below no copyright notice was published: not in the crate
 archive, and not in the upstream repository at the commit the crate was
@@ -3918,7 +3924,8 @@ the licence applies and its terms are fixed, not because they were found in the
 package.
 
 This list is closed and exhaustive. A package that is not named here and has no
-established licence text fails generation.
+established licence text fails generation. A non-empty list also makes this
+target unready for release; it is not a compliance exception.
 
 - `block2` 0.6.2, `MIT`, declared in the published manifest as `license = "MIT"`, and covered by the statement at `https://github.com/madsmtm/objc2` `b4167b582b2f75f9a1be75495c41b765344fd03c` `LICENSE.md`.
 - `dispatch` 0.2.0, `MIT`, declared in the published manifest as `license = "MIT"`. No upstream statement exists.

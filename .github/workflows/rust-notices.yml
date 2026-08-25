@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: MIT
 name: rust notices
 
-# The ordinary CI job proves the notices are not stale on one host. Two things
-# it cannot prove run here: that a fixed target hashes the same whichever host
-# generated it, and that the licence texts this repository carries for crates
-# that publish none are still what upstream publishes.
+# The ordinary CI job proves the notice inventory is not stale on one host.
+# A green inventory job is not release readiness when a target says RELEASE
+# BLOCKED. Two additional facts run here: that a fixed target hashes the same
+# whichever host generated it, and that the licence texts this repository
+# carries for crates that publish none are still what upstream publishes.
 on:
   push:
     branches: [main]

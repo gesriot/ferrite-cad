@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 #
-# The ordinary, offline gate over the committed Rust notices.
+# The ordinary, offline gate over the committed Rust notice inventory.
 #
 # `cargo-deny` answers whether a licence expression may be admitted. It writes
 # no notice and cannot be read as one, so a package assembled from a green
@@ -26,6 +26,11 @@
 #
 # Run from the repository root:
 #   tools/check-rust-notices.sh
+#   tools/check-rust-notices.sh --release-ready
+#
+# The default validates that the inventory is accurate, including an explicit
+# blocker when a publisher supplied no licence text. `--release-ready` applies
+# the stricter package boundary and refuses any such blocker.
 
 set -euo pipefail
 
@@ -33,6 +38,14 @@ NOTICE_TOOL='check-rust-notices'
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tools/notices/lib.sh
 . tools/notices/lib.sh
+
+release_ready=0
+case "${1:-}" in
+    '') ;;
+    --release-ready) release_ready=1 ;;
+    *) echo "$NOTICE_TOOL: unknown argument '$1'" >&2; exit 2 ;;
+esac
+[ "$#" -le 1 ] || { echo "$NOTICE_TOOL: too many arguments" >&2; exit 2; }
 
 checks=0
 failures=0
@@ -126,6 +139,7 @@ tr -d '\r' < Cargo.lock | awk '
 cargo metadata --locked --format-version 1 --no-deps 2>/dev/null \
     | jq -r '.packages[].name' | tr -d '\r' | sort -u > "$work/workspace-names.txt"
 
+declared_in_product=0
 for target in "${NOTICE_TARGETS[@]}"; do
     committed="$NOTICE_DIR/NOTICE-$target.md"
     [ -s "$committed" ] || continue
@@ -139,6 +153,19 @@ for target in "${NOTICE_TARGETS[@]}"; do
     claimed="$(sed -n 's/^- third-party packages: //p' "$committed" | head -1)"
     if [ "$rows" = "$claimed" ] && [ "$rows" -gt 0 ]; then pass; else
         fail "$committed says $claimed packages and lists $rows"
+    fi
+
+    declared_rows="$(awk -F'\t' '$6 == "declared only, see below" { n++ } END { print n + 0 }' \
+        "$work/rows-$target.tsv")"
+    if [ "$declared_rows" -gt 0 ]; then
+        declared_in_product=$((declared_in_product + declared_rows))
+        if grep -qF '**RELEASE BLOCKED for this target.**' "$committed"; then pass; else
+            fail "$committed has $declared_rows unresolved package(s) but does not block release"
+        fi
+    elif grep -qF '**RELEASE BLOCKED for this target.**' "$committed"; then
+        fail "$committed claims release is blocked although it has no unresolved package"
+    else
+        pass
     fi
 
     # A notice for one binary only would still look like a notice, so both are
@@ -283,11 +310,19 @@ while IFS=$'\t' read -r _source name version checksum _lic decl terms srepo scom
 done < "$NOTICE_DECLARED_TSV"
 want "$([ "$bad" = 0 ] && echo 0 || echo 1)" "$NOTICE_DECLARED_TSV has $bad broken binding(s)"
 
-# The allowlist is closed: it is meant to shrink, and it may not grow without
-# someone changing this number on purpose.
+# The blocker inventory is closed: it is meant to shrink, and it may not grow
+# without someone changing this number on purpose.
 readonly DECLARED_ONLY_BUDGET=11
 if [ "$declared_count" -le "$DECLARED_ONLY_BUDGET" ]; then pass; else
-    fail "$declared_count packages claim declared-only treatment but the closed allowlist is $DECLARED_ONLY_BUDGET; a new one needs a decision, not a row"
+    fail "$declared_count packages need declared-only recording but the closed blocker budget is $DECLARED_ONLY_BUDGET; a new one needs a decision, not a row"
+fi
+
+if [ "$release_ready" = 1 ]; then
+    if [ "$declared_in_product" -eq 0 ]; then
+        pass
+    else
+        fail "$declared_in_product unresolved package occurrence(s) remain in the product notices; release is blocked"
+    fi
 fi
 
 # Every committed payload must be referenced, and every reference must exist.
@@ -300,8 +335,8 @@ for f in "$NOTICE_TEXT_DIR"/*.txt; do
 done
 want "$([ "$orphans" = 0 ] && echo 0 || echo 1)" "$orphans committed licence text(s) are unreferenced"
 
-# The declared-only packages named in each notice must be exactly the allowlist
-# entries that apply to that target, and no others.
+# The declared-only packages named in each notice must be exactly the blocker
+# inventory entries that apply to that target, and no others.
 awk -F'\t' 'substr($1,1,1) != "#" && NF > 1 { printf "%s %s\n", $2, $3 }' \
     "$NOTICE_DECLARED_TSV" | sort -u > "$work/allowlist.txt"
 for target in "${NOTICE_TARGETS[@]}"; do
@@ -327,4 +362,8 @@ if [ "$checks" -lt 30 ]; then
     exit 1
 fi
 
-echo "$NOTICE_TOOL: $checks checks passed over ${#NOTICE_TARGETS[@]} targets"
+if [ "$release_ready" = 1 ]; then
+    echo "$NOTICE_TOOL: $checks release-readiness checks passed over ${#NOTICE_TARGETS[@]} targets"
+else
+    echo "$NOTICE_TOOL: $checks inventory checks passed over ${#NOTICE_TARGETS[@]} targets"
+fi

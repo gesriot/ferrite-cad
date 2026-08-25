@@ -134,10 +134,10 @@ jobs:
           cargo run --quiet -p ferritecad-cli -- clear-cache part.fcad
 
   # cargo-deny answers whether a licence may be admitted. It writes no notice,
-  # so a package built from a green supply-chain job would ship none. This is
-  # the other half: the committed notices are regenerated from the pinned tool
-  # and the committed policy, and any drift from the lock file, the product
-  # manifests, the feature set, the election policy or the payload fails here.
+  # so a package built from a green supply-chain job would ship none. This job
+  # validates the committed notice inventory from the pinned tool and policy.
+  # It is not release readiness: a future packager must invoke the same gate
+  # with --release-ready, which currently refuses the macOS blocker set.
   notices:
     runs-on: ubuntu-latest
     steps:

@@ -156,8 +156,9 @@ workflow installs either from a package manager or holds a second copy of a
 pinned value. The accepted policy and the boundary between notices and SBOM
 are recorded in
 [`docs/decisions/0002-release-compliance-artifacts.md`](docs/decisions/0002-release-compliance-artifacts.md),
-which lists the SBOM as the remaining work before a package can carry any of
-this. The Rust notices exist and are described below.
+which lists the SBOM and the unresolved macOS licence-text blockers as work
+remaining before a package can carry any of this. The Rust notice inventories
+exist and are described below.
 
 ## Rust dependencies
 
@@ -168,14 +169,14 @@ the allow-list in `deny.toml`. A crate whose licence is not on that list fails
 the build rather than arriving unnoticed. That is an admission check: it writes
 no notice, and a package assembled from a green run of it would carry none.
 
-The notices themselves are in [`licences/rust/`](licences/rust), one file per
+The notice inventories are in [`licences/rust/`](licences/rust), one file per
 product target, each the union of the two shipped binaries: `ferritecad-viewer`
 with the `planegcs` feature and `ferritecad`. They list every third-party
 package linked into either one, with its version, its registry checksum, the
 licence FerriteCAD elects under the priority order in
-[`tools/notices/about.toml`](tools/notices/about.toml), and that licence's
-text. Dev-dependencies are excluded, so the solver bench and the fixtures are
-not in them.
+[`tools/notices/about.toml`](tools/notices/about.toml), and either that
+licence's established text or an explicit unresolved status. Dev-dependencies
+are excluded, so the solver bench and the fixtures are not in them.
 
 They are generated and must not be edited: `tools/check-rust-notices.sh`
 regenerates every target twice and refuses any difference, and checks the
@@ -184,8 +185,11 @@ Where a publisher ships no licence text in the crate, the text comes from the
 upstream repository at the commit the crate records, committed under
 [`tools/notices/texts/`](tools/notices/texts) and bound by SHA-256, so ordinary
 builds and gates never contact a git host. Where a publisher has published no
-text anywhere, the package is on a closed allowlist that says exactly that and
-claims nothing more.
+text anywhere, the package is on a closed blocker inventory that says exactly
+that and claims nothing more. Such a row is not permission to distribute it:
+`tools/check-rust-notices.sh --release-ready` refuses a product graph
+containing any of them. The current macOS graph has eleven blockers, so no
+FerriteCAD macOS package is release-ready.
 
 Native components are not in these files. Open CASCADE, planegcs, Eigen, Boost
 and the fonts are described above, and the machine-readable inventory that

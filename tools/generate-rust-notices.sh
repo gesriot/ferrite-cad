@@ -17,11 +17,13 @@
 # tools/notices/upstream-texts.tsv. tools/refresh-notice-texts.sh is the only
 # script allowed online, and it is what produces that payload.
 #
-# A package whose licence text cannot be established is a refusal. Asked for a
-# licence it recognised no file for, cargo-about substitutes a canonical SPDX
-# template that still reads `Copyright (c) <year> <copyright holders>`, and it
-# says so only at debug level, so a notice built without this check would carry
-# unfilled placeholders and look finished.
+# A package whose licence text cannot be established is a release blocker.
+# Asked for a licence it recognised no file for, cargo-about substitutes a
+# canonical SPDX template that still reads `Copyright (c) <year> <copyright
+# holders>`, and it says so only at debug level, so a notice built without this
+# check would carry unfilled placeholders and look finished. The generator may
+# record such a blocker so it can be audited; it may not call the target ready
+# to distribute.
 #
 # Usage:
 #   tools/generate-rust-notices.sh                         # all three targets
@@ -441,7 +443,7 @@ resolve_texts() {
 # shellcheck disable=SC2016
 render_notice() {
     local target="$1" output="$2"
-    local packages texts root name manifest features
+    local packages texts declared_packages root name manifest features
 
     # One line per package identity: the licences in force, joined with AND
     # because cargo-about lists every licence an expression actually requires.
@@ -465,6 +467,7 @@ render_notice() {
     ' "$work/lock.tsv" "$work/pkgs.tsv" "$work/elected.tsv" > "$work/table.md"
 
     packages="$(wc -l < "$work/elected.tsv" | tr -d ' ')"
+    declared_packages="$(cut -f1-3 "$work/declared.tsv" | sort -u | wc -l | tr -d ' ')"
 
     # Distinct licence texts, each carried once and pointed at by every package
     # it covers.
@@ -476,10 +479,18 @@ render_notice() {
 
     {
         printf '# Third-party Rust notices for FerriteCAD on %s\n\n' "$target"
+        if [ "$declared_packages" -gt 0 ]; then
+            printf '> [!CAUTION]\n'
+            printf '> **RELEASE BLOCKED for this target.** %s package(s) below have no\n' \
+                "$declared_packages"
+            printf '> publisher-supplied licence text or copyright notice. This file is an\n'
+            printf '> auditable inventory of that unresolved state, not a distributable notice set.\n\n'
+        fi
         cat <<'PREAMBLE'
 FerriteCAD ships two executables. This file lists every third-party Rust
 package linked into either of them on this target, the licence FerriteCAD
-takes that package under, and the text of that licence.
+takes that package under, and either its established licence text or its
+explicit unresolved status.
 
 This file is generated and must not be edited by hand.
 `tools/check-rust-notices.sh` regenerates it and refuses any difference.
@@ -544,7 +555,7 @@ KINDS
 
         if [ -s "$work/declared.tsv" ]; then
             cat <<'DECLARED'
-## Packages whose publisher shipped no licence text
+## Unresolved packages that block release
 
 For the packages below no copyright notice was published: not in the crate
 archive, and not in the upstream repository at the commit the crate was
@@ -566,7 +577,8 @@ the licence applies and its terms are fixed, not because they were found in the
 package.
 
 This list is closed and exhaustive. A package that is not named here and has no
-established licence text fails generation.
+established licence text fails generation. A non-empty list also makes this
+target unready for release; it is not a compliance exception.
 
 DECLARED
             local dname dversion did ddecl drepo dcommit dpath

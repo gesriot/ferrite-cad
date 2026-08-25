@@ -2,7 +2,8 @@
 
 FerriteCAD ships two executables. This file lists every third-party Rust
 package linked into either of them on this target, the licence FerriteCAD
-takes that package under, and the text of that licence.
+takes that package under, and either its established licence text or its
+explicit unresolved status.
 
 This file is generated and must not be edited by hand.
 `tools/check-rust-notices.sh` regenerates it and refuses any difference.
