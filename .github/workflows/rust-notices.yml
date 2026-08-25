@@ -1,0 +1,143 @@
+# SPDX-License-Identifier: MIT
+name: rust notices
+
+# The ordinary CI job proves the notices are not stale on one host. Two things
+# it cannot prove run here: that a fixed target hashes the same whichever host
+# generated it, and that the licence texts this repository carries for crates
+# that publish none are still what upstream publishes.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - crates/ferritecad-app/Cargo.toml
+      - crates/ferritecad-cli/Cargo.toml
+      - deny.toml
+      - .gitattributes
+      - licences/rust/**
+      - tools/notices/**
+      - tools/generate-rust-notices.sh
+      - tools/check-rust-notices.sh
+      - tools/check-notice-ownership.sh
+      - tools/check-notice-upstream.sh
+      - tools/notice-digests.sh
+      - .github/workflows/rust-notices.yml
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Each host generates all three fixed-target notices, not only its own. The
+  # target is an argument, not a property of the machine, and that is the claim
+  # being tested.
+  digests:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install the pinned notice generator
+        run: |
+          set -euo pipefail
+          . tools/notices/pin.env
+          cargo install cargo-about --version "$CARGO_ABOUT_VERSION" --locked --features cli
+
+      - run: cargo fetch --locked
+
+      # The same gate the ordinary CI job runs, here on three hosts.
+      - run: tools/check-rust-notices.sh
+
+      - name: What this host generated
+        run: tools/notice-digests.sh | tee "digests-${{ matrix.os }}.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notice-digests-${{ matrix.os }}
+          path: digests-${{ matrix.os }}.txt
+          if-no-files-found: error
+
+  # Three files that all said nothing would compare equal, so the comparison
+  # requires the lines it is about to compare to be there.
+  compare:
+    needs: digests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: notice-digests-*
+          path: digests
+          merge-multiple: true
+
+      - name: Every host must have generated the same bytes for each target
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(digests/digests-*.txt)
+          if [ "${#files[@]}" -ne 3 ]; then
+            echo "::error::expected three host summaries, found ${#files[@]}"
+            exit 1
+          fi
+
+          # The lines that must exist before equality means anything.
+          for f in "${files[@]}"; do
+            for kind in tool policy payload notice; do
+              grep -q "^$kind	" "$f" || {
+                echo "::error::$f carries no '$kind' line"; exit 1; }
+            done
+            n="$(grep -c '^notice	' "$f")"
+            if [ "$n" -ne 3 ]; then
+              echo "::error::$f reports $n notices, not three"
+              exit 1
+            fi
+          done
+
+          # Tool, policy and payload identity is shared by all three targets,
+          # so it must be identical on all three hosts. Notice digests differ
+          # between targets and must not differ between hosts.
+          first="${files[0]}"
+          status=0
+          for f in "${files[@]:1}"; do
+            if ! diff -u "$first" "$f"; then
+              echo "::error::$(basename "$f") disagrees with $(basename "$first")"
+              status=1
+            fi
+          done
+          [ "$status" = 0 ] || exit 1
+
+          echo "the three hosts agree, line for line:"
+          cat "$first"
+
+  # Needs network on purpose, and is the only job that does. It re-fetches every
+  # committed licence text from the repository and commit it is bound to, and
+  # refuses a declared-only row whose upstream has since published a text.
+  upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # `cargo fetch` downloads the archives; the check reads each crate's own
+      # .cargo_vcs_info.json, which only exists once they are unpacked.
+      - run: cargo fetch --locked
+      - run: cargo metadata --locked --format-version 1 > /dev/null
+      # cargo-about is not installed here: this job checks the payload against
+      # upstream and never generates a notice.
+      - run: tools/check-notice-upstream.sh

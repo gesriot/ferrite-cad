@@ -45,6 +45,12 @@ jobs:
       # would inherit it.
       - run: tools/check-planegcs-pins.sh
 
+      # And one file owns the notice generator's identity and the roots the
+      # notices are taken from. This needs no toolchain and no network, so it
+      # rides along here rather than waiting for the job that runs the
+      # generator.
+      - run: tools/check-notice-ownership.sh
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -126,6 +132,36 @@ jobs:
           cargo run --quiet -p ferritecad-cli -- inspect part.fcad
           cargo run --quiet -p ferritecad-cli -- dump-graph part.fcad --format dot
           cargo run --quiet -p ferritecad-cli -- clear-cache part.fcad
+
+  # cargo-deny answers whether a licence may be admitted. It writes no notice,
+  # so a package built from a green supply-chain job would ship none. This is
+  # the other half: the committed notices are regenerated from the pinned tool
+  # and the committed policy, and any drift from the lock file, the product
+  # manifests, the feature set, the election policy or the payload fails here.
+  notices:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The version comes from the pin and is not repeated here;
+      # tools/check-notice-ownership.sh refuses a second copy of it. RUSTFLAGS
+      # is cleared for the install only: the repository denies warnings in its
+      # own code, and a warning inside a third-party build tool is not a reason
+      # to be unable to install it.
+      - name: Install the pinned notice generator
+        env:
+          RUSTFLAGS: ''
+        run: |
+          set -euo pipefail
+          . tools/notices/pin.env
+          cargo install cargo-about --version "$CARGO_ABOUT_VERSION" --locked --features cli
+
+      # The generator runs cargo `--frozen`, so the sources have to be present
+      # before it starts.
+      - run: cargo fetch --locked
+      - run: tools/check-rust-notices.sh
 
   # Licences and advisories gate the merge, so a dependency cannot arrive
   # first and be justified afterwards.

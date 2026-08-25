@@ -156,13 +156,39 @@ workflow installs either from a package manager or holds a second copy of a
 pinned value. The accepted policy and the boundary between notices and SBOM
 are recorded in
 [`docs/decisions/0002-release-compliance-artifacts.md`](docs/decisions/0002-release-compliance-artifacts.md),
-which still lists the Rust notices and the SBOM as the work before a package
-can carry any of this.
+which lists the SBOM as the remaining work before a package can carry any of
+this. The Rust notices exist and are described below.
 
 ## Rust dependencies
 
+Two separate things, and neither substitutes for the other.
+
 `cargo deny check licenses` runs in CI over the whole dependency tree against
 the allow-list in `deny.toml`. A crate whose licence is not on that list fails
-the build rather than arriving unnoticed. This is an admission check, not a
-notice generator. The release notice and SBOM policy is recorded in
-[`docs/decisions/0002-release-compliance-artifacts.md`](docs/decisions/0002-release-compliance-artifacts.md).
+the build rather than arriving unnoticed. That is an admission check: it writes
+no notice, and a package assembled from a green run of it would carry none.
+
+The notices themselves are in [`licences/rust/`](licences/rust), one file per
+product target, each the union of the two shipped binaries: `ferritecad-viewer`
+with the `planegcs` feature and `ferritecad`. They list every third-party
+package linked into either one, with its version, its registry checksum, the
+licence FerriteCAD elects under the priority order in
+[`tools/notices/about.toml`](tools/notices/about.toml), and that licence's
+text. Dev-dependencies are excluded, so the solver bench and the fixtures are
+not in them.
+
+They are generated and must not be edited: `tools/check-rust-notices.sh`
+regenerates every target twice and refuses any difference, and checks the
+result against `Cargo.lock` and an independently resolved dependency graph.
+Where a publisher ships no licence text in the crate, the text comes from the
+upstream repository at the commit the crate records, committed under
+[`tools/notices/texts/`](tools/notices/texts) and bound by SHA-256, so ordinary
+builds and gates never contact a git host. Where a publisher has published no
+text anywhere, the package is on a closed allowlist that says exactly that and
+claims nothing more.
+
+Native components are not in these files. Open CASCADE, planegcs, Eigen, Boost
+and the fonts are described above, and the machine-readable inventory that
+covers all of them together is the SBOM recorded in
+[`docs/decisions/0002-release-compliance-artifacts.md`](docs/decisions/0002-release-compliance-artifacts.md),
+which is not built yet.

@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: MIT
+#
+# Licence texts for packages that publish none inside the crate archive.
+#
+# Some publishers ship no LICENSE file in the .crate at all. cargo-about answers
+# that by substituting a canonical SPDX template whose copyright line is still
+# the literal placeholder `Copyright (c) <year> <copyright holders>`, at debug
+# level, so the result looks like a finished notice. FerriteCAD refuses that
+# substitution and takes the text from the upstream repository instead, at the
+# exact commit the crate records in its own .cargo_vcs_info.json.
+#
+# Every row binds one package identity to one text through facts that can all be
+# rechecked offline:
+#
+#   * the registry checksum must equal the one Cargo.lock pins;
+#   * the vcs commit must equal the one inside the published crate;
+#   * the payload under tools/notices/texts/ must hash to text_sha256.
+#
+# tools/refresh-notice-texts.sh is what writes this file, and it is the only
+# script that goes online. tools/generate-rust-notices.sh only reads it, and
+# runs cargo `--frozen`, so an ordinary build and an ordinary gate never contact
+# a git host.
+#
+# Fields, tab separated:
+#   source  name  version  registry_checksum  licence  repository  vcs_commit  repo_path  text_sha256
+registry+https://github.com/rust-lang/crates.io-index	accesskit	0.24.1	d3b7f7f85a7e5f68090000ed7622545829afd484d210358702ae4cb97dd0c320	MIT	https://github.com/AccessKit/accesskit	a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969	LICENSE-MIT	23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3
+registry+https://github.com/rust-lang/crates.io-index	block2	0.5.1	2c132eebf10f5cad5289222520a4a058514204aed6d791f1cf4fe8088b82d15f	MIT	https://github.com/madsmtm/objc2	4fc083f1c6d6784577e38b0ee8dbd344481e2fd2	LICENSE.txt	e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5
+registry+https://github.com/rust-lang/crates.io-index	ecolor	0.36.1	fc883f505d446814c0226bef4b64564b9adb9966fc00c88c57ce6d827dd152d6	MIT	https://github.com/emilk/egui	4c1f2fae95475a40e524884ebb298bcb1714b08e	LICENSE-MIT	95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c
+registry+https://github.com/rust-lang/crates.io-index	egui	0.36.1	c977ac91dfaa651633fd9722e4ce9ccb32cda4c748b89a5cb57e504036e37c13	MIT	https://github.com/emilk/egui	4c1f2fae95475a40e524884ebb298bcb1714b08e	LICENSE-MIT	95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c
+registry+https://github.com/rust-lang/crates.io-index	egui-wgpu	0.36.1	2fc362cc6bc8c1d7169c9cb0e7741ff1e03063681373d6e55cc3b25fd21213f3	MIT	https://github.com/emilk/egui	4c1f2fae95475a40e524884ebb298bcb1714b08e	LICENSE-MIT	95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c
+registry+https://github.com/rust-lang/crates.io-index	egui-winit	0.36.1	9327fc8edef2c57db9bcbcacc82c8a4b1e8cc64cd41a67db4419dcf643d88c83	MIT	https://github.com/emilk/egui	4c1f2fae95475a40e524884ebb298bcb1714b08e	LICENSE-MIT	95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c
+registry+https://github.com/rust-lang/crates.io-index	emath	0.36.1	dce03cf1604f74515830012c29991beb0b58f69e4e43f5afe22fa7afed65ccd5	MIT	https://github.com/emilk/egui	4c1f2fae95475a40e524884ebb298bcb1714b08e	LICENSE-MIT	95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c
+registry+https://github.com/rust-lang/crates.io-index	epaint	0.36.1	11863a6b2b7823010c1090ddf4706947bdda46766742def0673195cbf7ff4a73	MIT	https://github.com/emilk/egui	4c1f2fae95475a40e524884ebb298bcb1714b08e	LICENSE-MIT	95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c
+registry+https://github.com/rust-lang/crates.io-index	gl_generator	0.14.0	1a95dfc23a2b4a9a2f5ab41d194f8bfda3cabec42af4e39f08c339eb2a0c124d	Apache-2.0	https://github.com/brendanzab/gl-rs	ea503e8d5fb6d73c6030e6191ce738cd3bf3433e	LICENSE	cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30
+registry+https://github.com/rust-lang/crates.io-index	khronos_api	3.1.0	e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc	Apache-2.0	https://github.com/brendanzab/gl-rs	f150967b1c44ae888e6676f93f639ebc82771bdc	LICENSE	cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30
+registry+https://github.com/rust-lang/crates.io-index	objc-sys	0.3.5	cdb91bdd390c7ce1a8607f35f3ca7151b65afc0ff5ff3b34fa350f7d7c7e4310	MIT	https://github.com/madsmtm/objc2	4fc083f1c6d6784577e38b0ee8dbd344481e2fd2	LICENSE.txt	e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5
+registry+https://github.com/rust-lang/crates.io-index	objc2	0.5.2	46a785d4eeff09c14c487497c162e92766fbb3e4059a71840cecc03d9a50b804	MIT	https://github.com/madsmtm/objc2	4fc083f1c6d6784577e38b0ee8dbd344481e2fd2	LICENSE.txt	e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5
+registry+https://github.com/rust-lang/crates.io-index	objc2-app-kit	0.2.2	e4e89ad9e3d7d297152b17d39ed92cd50ca8063a89a9fa569046d41568891eff	MIT	https://github.com/madsmtm/objc2	e282618be4c3a3b9542957e0c8540e9588472ce8	LICENSE.txt	e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5
+registry+https://github.com/rust-lang/crates.io-index	objc2-foundation	0.2.2	0ee638a5da3799329310ad4cfa62fbf045d5f56e3ef5ba4149e7452dcf89d5a8	MIT	https://github.com/madsmtm/objc2	e282618be4c3a3b9542957e0c8540e9588472ce8	LICENSE.txt	e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5
+registry+https://github.com/rust-lang/crates.io-index	profiling	1.0.18	3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5	MIT	https://github.com/aclysma/profiling	8271551172eb6fa4cba47369aedd93790c623df9	LICENSE-MIT	c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333
+registry+https://github.com/rust-lang/crates.io-index	spirv	0.4.0+sdk-1.4.341.0	d9571ea910ebd84c86af4b3ed27f9dbdc6ad06f17c5f96146b2b671e2976744f	Apache-2.0	https://github.com/gfx-rs/rspirv	8afc3d0ac8e158128cd1410bb2e4b4c26ab11bb4	LICENSE	cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30

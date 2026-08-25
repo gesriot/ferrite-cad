@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MIT
+#
+# The Rust notices and the licence texts under them are digest-bound: their
+# SHA-256 is recorded in tools/notices/*.tsv and rechecked on every platform.
+#
+# Windows runners check out with core.autocrlf enabled by default, which would
+# rewrite every line ending and change every digest, so these paths are kept
+# byte for byte as committed.
+#
+# They also quote upstream licence texts verbatim, and some of those carry
+# trailing whitespace. Reformatting them would be editing someone else's
+# licence, so the whitespace checks are off for these paths rather than the
+# text being cleaned up.
+licences/rust/*.md      -text -whitespace
+tools/notices/texts/*   -text -whitespace
+tools/notices/*.tsv     -text

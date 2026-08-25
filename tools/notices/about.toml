@@ -1,0 +1,170 @@
+# SPDX-License-Identifier: MIT
+#
+# The licence election for FerriteCAD's two shipped Rust binaries.
+#
+# This file is the policy half of ADR 0002. `cargo-deny` decides whether a
+# licence expression may enter the graph at all; this decides which term of an
+# accepted expression FerriteCAD actually takes, and therefore which text the
+# notice must carry.
+#
+# `accepted` is in priority order and the order is the decision:
+#
+#   * MIT before Apache-2.0. Both are acceptable; MIT is the project's own
+#     licence and the shorter obligation, so a dual-licensed crate is taken
+#     under MIT.
+#   * No GPL, AGPL or LGPL identifier appears here at all. `self_cell` is
+#     published as `Apache-2.0 OR GPL-2.0-only`; because GPL-2.0-only is not
+#     accepted the expression is satisfied by Apache-2.0, and the GPL term is
+#     never elected. A crate whose only term were GPL-family would not be
+#     satisfied by this list and would fail generation rather than pass quietly.
+#   * An expression this list cannot satisfy is a refusal, not a skip:
+#     tools/generate-rust-notices.sh passes --fail.
+#
+# The per-crate `clarify` blocks below are not exceptions to that policy. Each
+# names a licence file that the published crate really does ship but that
+# askalono did not recognise at the pinned threshold, and binds it by SHA-256
+# so the text cannot change under the clarification. Crates that publish no
+# licence file at all are not clarified here; they are in
+# tools/notices/upstream-texts.tsv, which binds an upstream file to the exact
+# commit the crate was published from.
+#
+# Dev-dependencies are excluded because they are in neither shipped binary.
+# Build-dependencies are kept: they are not linked into the product, but they
+# are part of producing it, and over-reporting them costs a listing while
+# under-reporting them would need an argument this project has not made.
+
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "MPL-2.0",
+]
+
+ignore-build-dependencies = false
+ignore-dev-dependencies = true
+ignore-transitive-dependencies = false
+
+# Font licences, not general software licences, scoped to the one crate whose
+# four embedded font files were reviewed. This mirrors the exception already in
+# deny.toml; both permit bundling and require their terms to travel with the
+# font, so the notice carries them verbatim.
+[epaint_default_fonts]
+accepted = ["OFL-1.1", "Ubuntu-font-1.0"]
+
+# --- Licence files the published crate ships but askalono did not match -----
+#
+# Every checksum below is over a file inside the published crate, so nothing
+# here depends on a network fetch or on an upstream repository still existing.
+
+# lower-case, hyphenated file name; one identical text across the family
+[windows.clarify]
+license = "MIT"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+# lower-case, hyphenated file name; one identical text across the family
+[windows-collections.clarify]
+license = "MIT"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+# lower-case, hyphenated file name; one identical text across the family
+[windows-core.clarify]
+license = "MIT"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+# lower-case, hyphenated file name; one identical text across the family
+[windows-future.clarify]
+license = "MIT"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+# lower-case, hyphenated file name; one identical text across the family
+[windows-implement.clarify]
+license = "MIT"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+# lower-case, hyphenated file name; one identical text across the family
+[windows-interface.clarify]
+license = "MIT"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+# lower-case, hyphenated file name; one identical text across the family
+[windows-link.clarify]
+license = "MIT"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+# lower-case, hyphenated file name; one identical text across the family
+[windows-numerics.clarify]
+license = "MIT"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+# lower-case, hyphenated file name; one identical text across the family
+[windows-result.clarify]
+license = "MIT"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+# lower-case, hyphenated file name; one identical text across the family
+[windows-strings.clarify]
+license = "MIT"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+# lower-case, hyphenated file name; one identical text across the family
+[windows-sys.clarify]
+license = "MIT"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+# lower-case, hyphenated file name; one identical text across the family
+[windows-targets.clarify]
+license = "MIT"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+# lower-case, hyphenated file name; one identical text across the family
+[windows-threading.clarify]
+license = "MIT"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+# lower-case, hyphenated file name; one identical text across the family
+[windows_x86_64_msvc.clarify]
+license = "MIT"
+files = [{ path = "license-mit", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+# three MIT texts concatenated in one file
+[type-map.clarify]
+license = "MIT"
+files = [{ path = "LICENSE-MIT", checksum = "b47fb719a40d9ef9c8e3be525c41ce129c46d613cfc96a91bddd7c19dcebf7a1" }]
+
+# MIT text behind a preamble and section separators
+[libm.clarify]
+license = "MIT"
+files = [{ path = "LICENSE.txt", checksum = "3823dda7cf046602f4b4e77ec8e227863dc4736037cc85bb33d9f19febe16bb7" }]
+
+# underscore in the file name
+[blake3.clarify]
+license = "Apache-2.0"
+files = [{ path = "LICENSE_A2", checksum = "00fcc7a934ddbc9ece2a7cc063ac788e284b703b1d705ccbba72d462aa97921e" }]
+
+# Apache text without the appendix
+[constant_time_eq.clarify]
+license = "Apache-2.0"
+files = [{ path = "LICENSE-APACHE", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" }]
+
+# Apache-2.0 AND MIT: both terms are required, so both texts are bound.
+# The MIT term covers the libm-derived code vendored into the crate.
+[dpi.clarify]
+license = "Apache-2.0 AND MIT"
+files = [
+    { path = "LICENSE", checksum = "6dc0e068dcf3a5bc8e054205b85b7720e1d49265bbc64bf515d2cf79197df69a", license = "Apache-2.0" },
+    { path = "LICENSE-LIBM-MIT", checksum = "9eff396a99bafd208e7126602420d6864f6066c08b84485a5b032320a9c01997", license = "MIT" },
+]
+
+# The crate carries its real licence beside a vendored REUSE tree whose
+# LICENSES/MIT.txt is the unfilled MIT template. Both were detected as MIT, so
+# the notice quoted a text with no copyright notice in it. Naming the real file
+# drops the template.
+[wayland-protocols-plasma.clarify]
+license = "MIT"
+files = [{ path = "LICENSE.txt", checksum = "1cb6f4dee8c649f175736380495f0af0c753c87f22d50931692968bb24bf2161" }]
