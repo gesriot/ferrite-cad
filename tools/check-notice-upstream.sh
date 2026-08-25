@@ -94,9 +94,9 @@ while IFS=$'\t' read -r _source name version _ck licence _decl _terms srepo scom
     repo="$(sed -n 's/^repository = "\(.*\)"$/\1/p' "$src/Cargo.toml" | head -1)"
     if [ -z "$repo" ]; then continue; fi
     slug="$(notice_github_slug "$repo")" || continue
-    commit="$(jq -r '.git.sha1 // ""' "$src/.cargo_vcs_info.json" 2>/dev/null || true)"
+    commit="$(jq -r '.git.sha1 // ""' "$src/.cargo_vcs_info.json" 2>/dev/null | tr -d '\r' || true)"
     [ -n "$commit" ] || continue
-    subdir="$(jq -r '.path_in_vcs // ""' "$src/.cargo_vcs_info.json" 2>/dev/null || true)"
+    subdir="$(jq -r '.path_in_vcs // ""' "$src/.cargo_vcs_info.json" 2>/dev/null | tr -d '\r' || true)"
     if found="$(notice_find_upstream_text "$slug" "$commit" "$subdir" "$licence" "$work/fetched")"; then
         fail "$name $version is on the declared-only allowlist, but $slug@$commit now serves the $licence text at $found; bind it with tools/refresh-notice-texts.sh and drop the row"
     fi

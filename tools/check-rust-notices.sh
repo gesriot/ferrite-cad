@@ -113,16 +113,18 @@ done
 # generator that agreed with itself about the wrong thing still fails here.
 # ---------------------------------------------------------------------------
 
-awk '
+# See the note in tools/generate-rust-notices.sh: Windows checks out Cargo.lock
+# with CRLF and the git for Windows jq writes CRLF.
+tr -d '\r' < Cargo.lock | awk '
     /^\[\[package\]\]$/ { name=""; version=""; next }
     /^name = /     { name=$3;     gsub(/"/, "", name) }
     /^version = /  { version=$3;  gsub(/"/, "", version) }
     /^checksum = / { checksum=$3; gsub(/"/, "", checksum)
                      printf "%s\t%s\t%s\n", name, version, checksum }
-' Cargo.lock | sort > "$work/lock.tsv"
+' | sort > "$work/lock.tsv"
 
 cargo metadata --locked --format-version 1 --no-deps 2>/dev/null \
-    | jq -r '.packages[].name' | sort -u > "$work/workspace-names.txt"
+    | jq -r '.packages[].name' | tr -d '\r' | sort -u > "$work/workspace-names.txt"
 
 for target in "${NOTICE_TARGETS[@]}"; do
     committed="$NOTICE_DIR/NOTICE-$target.md"

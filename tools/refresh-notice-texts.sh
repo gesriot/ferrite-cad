@@ -73,10 +73,10 @@ while IFS=$'\t' read -r name version source id checksum; do
         printf '%s\t%s\t%s\t%s\trepository %s is not a github project\n' \
             "$name" "$version" "$id" "$checksum" "$repo" >> "$work/nothing.tsv"; continue; }
 
-    commit="$(jq -r '.git.sha1 // ""' "$src/.cargo_vcs_info.json" 2>/dev/null || true)"
+    commit="$(jq -r '.git.sha1 // ""' "$src/.cargo_vcs_info.json" 2>/dev/null | tr -d '\r' || true)"
     [ -n "$commit" ] || { printf '%s\t%s\t%s\t%s\tthe published crate records no vcs commit\n' \
         "$name" "$version" "$id" "$checksum" >> "$work/nothing.tsv"; continue; }
-    subdir="$(jq -r '.path_in_vcs // ""' "$src/.cargo_vcs_info.json" 2>/dev/null || true)"
+    subdir="$(jq -r '.path_in_vcs // ""' "$src/.cargo_vcs_info.json" 2>/dev/null | tr -d '\r' || true)"
 
     found="$(notice_find_upstream_text "$slug" "$commit" "$subdir" "$id" "$work/candidate")" || found=''
 

@@ -66,7 +66,12 @@ trap 'rm -rf "$work"' EXIT
 
 # The registry checksum of every locked package. The lock file is the only
 # place that knows it; cargo-about's model does not carry it.
-awk '
+# `tr -d` on the way in, and after every jq below. A Windows runner checks out
+# Cargo.lock with CRLF, and the jq build shipped with git for Windows writes
+# CRLF too, so a checksum or a base64 field would arrive with a carriage return
+# welded to its end. That is how the first Windows run failed: `base64: invalid
+# input`, on a string that was valid base64 followed by one \r.
+tr -d '\r' < Cargo.lock | awk '
     /^\[\[package\]\]$/ { name=""; version=""; source=""; next }
     /^name = /     { name=$3;     gsub(/"/, "", name) }
     /^version = /  { version=$3;  gsub(/"/, "", version) }
@@ -74,12 +79,12 @@ awk '
     /^checksum = / { checksum=$3; gsub(/"/, "", checksum)
                      if (name != "" && source != "")
                          printf "%s\t%s\t%s\t%s\n", name, version, source, checksum }
-' Cargo.lock | sort > "$work/lock.tsv"
+' | sort > "$work/lock.tsv"
 
 # The workspace's own crates are not third party. Taken from cargo rather than
 # from a list here, so a new member cannot be forgotten into the notice.
 cargo metadata --locked --format-version 1 --no-deps 2>/dev/null \
-    | jq -r '.packages[].name' | sort -u > "$work/workspace-names.txt"
+    | jq -r '.packages[].name' | tr -d '\r' | sort -u > "$work/workspace-names.txt"
 
 # Registry source directory of an unpacked crate, needed to re-check the facts
 # a committed mapping is bound to.
@@ -137,13 +142,13 @@ collect_graph() {
             | [ .crate.name, .crate.version, .crate.source, $l.id,
                 (if $l.source_path == null then "FALLBACK" else "FILE" end),
                 ($l.text | @base64) ]
-            | @tsv' "$work/about-$name.json" | sort -u > "$work/rows-$name.tsv"
+            | @tsv' "$work/about-$name.json" | tr -d '\r' | sort -u > "$work/rows-$name.tsv"
 
         jq -r '
             .crates[]
             | select(.package.source != null)
             | [ .package.name, .package.version, .package.source, .license ]
-            | @tsv' "$work/about-$name.json" | sort -u > "$work/pkgs-$name.tsv"
+            | @tsv' "$work/about-$name.json" | tr -d '\r' | sort -u > "$work/pkgs-$name.tsv"
 
         [ -s "$work/rows-$name.tsv" ] || notice_die \
             "cargo-about returned no third-party package for $name on $target"
@@ -220,42 +225,60 @@ union_graph() {
 # ---------------------------------------------------------------------------
 
 oracle_graph() {
-    local target="$1" root name manifest features
+    local target="$1" root name manifest features kind
     local -a tree
 
-    : > "$work/oracle-raw.txt"
-    for root in "${NOTICE_ROOTS[@]}"; do
-        name="${root%%|*}"
-        manifest="${root#*|}"; manifest="${manifest%%|*}"
-        features="${root##*|}"
+    # Two answers from cargo, because one of them cannot be had.
+    #
+    # krates filters every edge by the target triple, build edges included, so
+    # what cargo-about measured is a function of the target alone. cargo does
+    # not work that way: build dependencies are compiled for the machine doing
+    # the building, so `cargo tree -e normal,build --target X` answers partly
+    # about the host. Measured: on a macOS host the aarch64-apple-darwin graph
+    # is 153 packages either way, and on a Linux host cargo additionally
+    # reports cpufeatures 0.3.0, which blake3 takes only on x86.
+    #
+    # So cargo is asked for a bound in each direction instead:
+    #
+    #   normal        every package actually linked into the two binaries,
+    #                 filtered by target cfg only, and therefore the same on
+    #                 every host. Nothing here may be missing from the notice.
+    #   normal,build  everything cargo can reach at all on this host. Nothing
+    #                 outside this may appear in the notice.
+    for kind in normal normal,build; do
+        : > "$work/oracle-raw.txt"
+        for root in "${NOTICE_ROOTS[@]}"; do
+            name="${root%%|*}"
+            manifest="${root#*|}"; manifest="${manifest%%|*}"
+            features="${root##*|}"
 
-        # `normal,build` is one argument to cargo, not two array elements.
-        # shellcheck disable=SC2054
-        tree=(cargo tree --locked --target "$target" -e normal,build
-              --prefix none --format '{p}'
-              --manifest-path "$manifest")
-        if [ -n "$features" ]; then
-            tree+=(--features "$features")
-        fi
-        "${tree[@]}" >> "$work/oracle-raw.txt" 2>/dev/null \
-            || notice_die "cargo tree failed for $name on $target"
+            # `normal` and `normal,build` are one argument to cargo.
+            # shellcheck disable=SC2054
+            tree=(cargo tree --locked --target "$target" -e "$kind"
+                  --prefix none --format '{p}'
+                  --manifest-path "$manifest")
+            if [ -n "$features" ]; then
+                tree+=(--features "$features")
+            fi
+            "${tree[@]}" 2>/dev/null | tr -d '\r' >> "$work/oracle-raw.txt" \
+                || notice_die "cargo tree failed for $name on $target"
+        done
+
+        sed -e 's/ (\*)$//' -e 's/ (proc-macro)$//' \
+            -e 's/^\([^ ][^ ]*\) v\([^ ][^ ]*\).*$/\1\t\2/' "$work/oracle-raw.txt" \
+            | awk -F'\t' 'NF == 2' \
+            | awk -F'\t' 'NR==FNR { ws[$0]=1; next } !($1 in ws)' \
+                "$work/workspace-names.txt" - \
+            | sort -u > "$work/oracle-${kind//,/-}.tsv"
     done
-
-    sed -e 's/ (\*)$//' -e 's/ (proc-macro)$//' \
-        -e 's/^\([^ ][^ ]*\) v\([^ ][^ ]*\).*$/\1\t\2/' "$work/oracle-raw.txt" \
-        | awk -F'\t' 'NF == 2' \
-        | awk -F'\t' 'NR==FNR { ws[$0]=1; next } !($1 in ws)' \
-            "$work/workspace-names.txt" - \
-        | sort -u > "$work/oracle.tsv"
 
     cut -f1,2 "$work/pkgs.tsv" | sort -u > "$work/measured.tsv"
 
-    if ! diff -q "$work/oracle.tsv" "$work/measured.tsv" >/dev/null; then
-        echo "$NOTICE_TOOL: cargo-about and cargo disagree about the $target product graph:" >&2
-        # Reporting the difference must not be what ends the run: the line
-        # after this is the one that says what the difference means.
-        diff --label 'cargo tree' --label 'cargo-about' -u "$work/oracle.tsv" "$work/measured.tsv" >&2 || true
-        notice_die "the notice would not describe the packages cargo actually builds"
+    if comm -23 "$work/oracle-normal.tsv" "$work/measured.tsv" | grep . >&2; then
+        notice_die "the $target notice is missing packages that cargo links into the two binaries"
+    fi
+    if comm -13 "$work/oracle-normal-build.tsv" "$work/measured.tsv" | grep . >&2; then
+        notice_die "the $target notice names packages that cargo does not reach from the two binaries"
     fi
 }
 
@@ -313,7 +336,7 @@ resolve_texts() {
 
             src="$(crate_src_dir "$name" "$version")" || notice_die \
                 "$name $version is not unpacked; run cargo fetch before generating notices"
-            vcs="$(jq -r '.git.sha1 // ""' "$src/.cargo_vcs_info.json" 2>/dev/null || true)"
+            vcs="$(jq -r '.git.sha1 // ""' "$src/.cargo_vcs_info.json" 2>/dev/null | tr -d '\r' || true)"
             [ "$vcs" = "$commit" ] || notice_die \
                 "upstream-texts.tsv binds $name $version to commit $commit but the published crate records ${vcs:-<none>}"
 
@@ -362,7 +385,7 @@ resolve_texts() {
             # The stronger of the two evidence classes: a file the copyright
             # holder publishes at the same commit the crate was published from.
             if [ "$srepo" != '-' ]; then
-                vcs="$(jq -r '.git.sha1 // ""' "$src/.cargo_vcs_info.json" 2>/dev/null || true)"
+                vcs="$(jq -r '.git.sha1 // ""' "$src/.cargo_vcs_info.json" 2>/dev/null | tr -d '\r' || true)"
                 [ "$vcs" = "$scommit" ] || notice_die \
                     "declared-only.tsv binds the $name $version statement to commit $scommit but the published crate records ${vcs:-<none>}"
                 payload="$NOTICE_TEXT_DIR/$sdigest.txt"
