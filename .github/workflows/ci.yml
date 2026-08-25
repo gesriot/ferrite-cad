@@ -162,6 +162,32 @@ jobs:
       - run: cargo fetch --locked
       - run: tools/check-rust-notices.sh
 
+  # The Rust half of the product SBOM. A fragment, and it says so in its own
+  # metadata: the native and asset merge is a later slice. This job proves the
+  # checked-in fragments are neither stale nor host-specific and that an
+  # independent oracle agrees about their composition. ADR 0003 keeps recorded
+  # licence risk out of the exit code.
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The versions come from the pin and are not repeated here. RUSTFLAGS is
+      # cleared for the installs only, for the same reason as the notices job.
+      - name: Install the pinned SBOM tools
+        env:
+          RUSTFLAGS: ''
+        run: |
+          set -euo pipefail
+          . tools/sbom/pin.env
+          cargo install cargo-cyclonedx --version "$CARGO_CYCLONEDX_VERSION" --locked
+          cargo install jsonschema-cli --version "$JSONSCHEMA_CLI_VERSION" --locked
+
+      - run: cargo fetch --locked
+      - run: tools/check-rust-sbom.sh
+
   # Security advisories, dependency bans and source policy remain gates.
   # Licence policy is still reported, but ADR 0003 makes it advisory so an
   # unresolved or newly disallowed expression cannot stop product work.

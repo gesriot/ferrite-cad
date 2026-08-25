@@ -18,3 +18,12 @@
 licences/rust/*.md      -text -whitespace
 tools/notices/*         -text
 tools/notices/texts/*   -text -whitespace
+
+# The Rust SBOM fragments are compared byte for byte between two runs and
+# between three hosts, and the CycloneDX schema files under tools/sbom/schema
+# are bound by the SHA-256 recorded in tools/sbom/pin.env. A Windows checkout
+# that rewrote their line endings would change every one of those answers
+# without changing anything about the product.
+sbom/rust/*.cdx.json    -text
+tools/sbom/*            -text
+tools/sbom/schema/*     -text

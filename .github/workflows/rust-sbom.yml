@@ -1,0 +1,147 @@
+# SPDX-License-Identifier: MIT
+name: rust sbom
+
+# The ordinary CI job proves the Rust fragments are not stale on one host. This
+# workflow additionally proves that a fixed target hashes the same whichever
+# host generated it, which is the claim a reproducible SBOM actually makes.
+#
+# Nothing here researches a licence. ADR 0003 makes unresolved licence evidence
+# a recorded risk rather than a gate, so components marked KNOWN LICENCE RISK
+# are counted and printed and never change an exit code.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - crates/ferritecad-app/Cargo.toml
+      - crates/ferritecad-cli/Cargo.toml
+      - deny.toml
+      - .gitattributes
+      - sbom/**
+      - tools/sbom/**
+      - tools/generate-rust-sbom.sh
+      - tools/check-rust-sbom.sh
+      - tools/sbom-digests.sh
+      - tools/notices/lib.sh
+      - .github/workflows/rust-sbom.yml
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Each host generates all three fixed-target fragments, not only its own. The
+  # target is an argument, not a property of the machine, and that is the claim
+  # being tested.
+  fragments:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The versions come from the pin and are not repeated here. RUSTFLAGS is
+      # cleared for the installs only: this repository denies warnings in its
+      # own code, and a warning inside a third-party tool is not a reason to be
+      # unable to install it.
+      - name: Install the pinned SBOM tools
+        env:
+          RUSTFLAGS: ''
+        run: |
+          set -euo pipefail
+          . tools/sbom/pin.env
+          cargo install cargo-cyclonedx --version "$CARGO_CYCLONEDX_VERSION" --locked
+          cargo install jsonschema-cli --version "$JSONSCHEMA_CLI_VERSION" --locked
+
+      # The generator runs cargo `--locked`, so the sources have to be present
+      # before it starts.
+      - run: cargo fetch --locked
+
+      # The same gate the ordinary CI job runs, here on three hosts. It checks
+      # the schema, the absence of host data, two consecutive runs and the
+      # independent oracle for every target.
+      - run: tools/check-rust-sbom.sh
+
+      - name: What this host generated
+        env:
+          SBOM_KEEP_DIR: fragments
+        run: tools/sbom-digests.sh | tee "digests-${{ matrix.os }}.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-digests-${{ matrix.os }}
+          path: digests-${{ matrix.os }}.txt
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-sbom-fragments-${{ matrix.os }}
+          path: fragments/*.cdx.json
+          if-no-files-found: error
+
+  # Three files that all said nothing would compare equal, so the comparison
+  # requires the lines it is about to compare to be there.
+  compare:
+    needs: fragments
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sbom-digests-*
+          path: digests
+          merge-multiple: true
+
+      - name: Every host must have generated the same bytes for each target
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(digests/digests-*.txt)
+          if [ "${#files[@]}" -ne 3 ]; then
+            echo "::error::expected three host summaries, found ${#files[@]}"
+            exit 1
+          fi
+
+          # The lines that must exist before equality means anything.
+          for f in "${files[@]}"; do
+            for kind in tool schema policy fragment; do
+              grep -q "^$kind	" "$f" || {
+                echo "::error::$f carries no '$kind' line"; exit 1; }
+            done
+            n="$(grep -c '^fragment	' "$f")"
+            if [ "$n" -ne 3 ]; then
+              echo "::error::$f reports $n fragments, not three"
+              exit 1
+            fi
+          done
+
+          # Tool, schema and pin identity is shared by all three targets, so it
+          # must be identical on all three hosts. Fragment digests differ
+          # between targets and must not differ between hosts.
+          first="${files[0]}"
+          status=0
+          for f in "${files[@]:1}"; do
+            if ! diff -u "$first" "$f"; then
+              echo "::error::$(basename "$f") disagrees with $(basename "$first")"
+              status=1
+            fi
+          done
+          [ "$status" = 0 ] || exit 1
+
+          echo "the three hosts agree, line for line:"
+          cat "$first"
