@@ -2,10 +2,9 @@
 name: rust notices
 
 # The ordinary CI job proves the notice inventory is not stale on one host.
-# A green inventory job is not release readiness when a target says RELEASE
-# BLOCKED. Two additional facts run here: that a fixed target hashes the same
-# whichever host generated it, and that the licence texts this repository
-# carries for crates that publish none are still what upstream publishes.
+# This workflow additionally proves that a fixed target hashes the same
+# whichever host generated it. ADR 0003 ended proactive upstream licence
+# monitoring; the committed evidence remains checksum-bound and auditable.
 on:
   push:
     branches: [main]
@@ -22,7 +21,6 @@ on:
       - tools/generate-rust-notices.sh
       - tools/check-rust-notices.sh
       - tools/check-notice-ownership.sh
-      - tools/check-notice-upstream.sh
       - tools/notice-digests.sh
       - .github/workflows/rust-notices.yml
   workflow_dispatch:
@@ -125,20 +123,3 @@ jobs:
 
           echo "the three hosts agree, line for line:"
           cat "$first"
-
-  # Needs network on purpose, and is the only job that does. It re-fetches every
-  # committed licence text from the repository and commit it is bound to, and
-  # refuses a declared-only row whose upstream has since published a text.
-  upstream:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      # `cargo fetch` downloads the archives; the check reads each crate's own
-      # .cargo_vcs_info.json, which only exists once they are unpacked.
-      - run: cargo fetch --locked
-      - run: cargo metadata --locked --format-version 1 > /dev/null
-      # cargo-about is not installed here: this job checks the payload against
-      # upstream and never generates a notice.
-      - run: tools/check-notice-upstream.sh

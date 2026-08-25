@@ -29,8 +29,10 @@
 #   tools/check-rust-notices.sh --release-ready
 #
 # The default validates that the inventory is accurate, including an explicit
-# blocker when a publisher supplied no licence text. `--release-ready` applies
-# the stricter package boundary and refuses any such blocker.
+# known-risk entry when a publisher supplied no licence text. `--release-ready`
+# is retained for compatibility with the future packager and checks the same
+# facts at that boundary. Under ADR 0003, it does not turn a known risk into a
+# release refusal and is not legal clearance.
 
 set -euo pipefail
 
@@ -159,11 +161,11 @@ for target in "${NOTICE_TARGETS[@]}"; do
         "$work/rows-$target.tsv")"
     if [ "$declared_rows" -gt 0 ]; then
         declared_in_product=$((declared_in_product + declared_rows))
-        if grep -qF '**RELEASE BLOCKED for this target.**' "$committed"; then pass; else
-            fail "$committed has $declared_rows unresolved package(s) but does not block release"
+        if grep -qF '**KNOWN LICENCE RISK for this target.**' "$committed"; then pass; else
+            fail "$committed has $declared_rows unresolved package(s) but does not disclose the known risk"
         fi
-    elif grep -qF '**RELEASE BLOCKED for this target.**' "$committed"; then
-        fail "$committed claims release is blocked although it has no unresolved package"
+    elif grep -qF '**KNOWN LICENCE RISK for this target.**' "$committed"; then
+        fail "$committed claims a known licence risk although it has no unresolved package"
     else
         pass
     fi
@@ -310,18 +312,18 @@ while IFS=$'\t' read -r _source name version checksum _lic decl terms srepo scom
 done < "$NOTICE_DECLARED_TSV"
 want "$([ "$bad" = 0 ] && echo 0 || echo 1)" "$NOTICE_DECLARED_TSV has $bad broken binding(s)"
 
-# The blocker inventory is closed: it is meant to shrink, and it may not grow
-# without someone changing this number on purpose.
-readonly DECLARED_ONLY_BUDGET=11
-if [ "$declared_count" -le "$DECLARED_ONLY_BUDGET" ]; then pass; else
-    fail "$declared_count packages need declared-only recording but the closed blocker budget is $DECLARED_ONLY_BUDGET; a new one needs a decision, not a row"
+# The known-risk inventory is closed so it cannot grow invisibly. Increasing
+# this number records a new fact; ADR 0003 already says the fact is non-blocking
+# and no separate licence decision is required.
+readonly KNOWN_RISK_BUDGET=11
+if [ "$declared_count" -le "$KNOWN_RISK_BUDGET" ]; then pass; else
+    fail "$declared_count packages need declared-only recording but the checked inventory contains $KNOWN_RISK_BUDGET; update the inventory explicitly"
 fi
 
 if [ "$release_ready" = 1 ]; then
-    if [ "$declared_in_product" -eq 0 ]; then
-        pass
-    else
-        fail "$declared_in_product unresolved package occurrence(s) remain in the product notices; release is blocked"
+    pass
+    if [ "$declared_in_product" -gt 0 ]; then
+        echo "$NOTICE_TOOL: note: $declared_in_product unresolved package occurrence(s) are accepted known risks under ADR 0003" >&2
     fi
 fi
 
@@ -363,7 +365,7 @@ if [ "$checks" -lt 30 ]; then
 fi
 
 if [ "$release_ready" = 1 ]; then
-    echo "$NOTICE_TOOL: $checks release-readiness checks passed over ${#NOTICE_TARGETS[@]} targets"
+    echo "$NOTICE_TOOL: $checks package-boundary inventory checks passed over ${#NOTICE_TARGETS[@]} targets"
 else
     echo "$NOTICE_TOOL: $checks inventory checks passed over ${#NOTICE_TARGETS[@]} targets"
 fi

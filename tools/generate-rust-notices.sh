@@ -17,7 +17,7 @@
 # tools/notices/upstream-texts.tsv. tools/refresh-notice-texts.sh is the only
 # script allowed online, and it is what produces that payload.
 #
-# A package whose licence text cannot be established is a release blocker.
+# A package whose licence text cannot be established is a known licence risk.
 # Asked for a licence it recognised no file for, cargo-about substitutes a
 # canonical SPDX template that still reads `Copyright (c) <year> <copyright
 # holders>`, and it says so only at debug level, so a notice built without this
@@ -481,10 +481,11 @@ render_notice() {
         printf '# Third-party Rust notices for FerriteCAD on %s\n\n' "$target"
         if [ "$declared_packages" -gt 0 ]; then
             printf '> [!CAUTION]\n'
-            printf '> **RELEASE BLOCKED for this target.** %s package(s) below have no\n' \
+            printf '> **KNOWN LICENCE RISK for this target.** %s package(s) below have no\n' \
                 "$declared_packages"
             printf '> publisher-supplied licence text or copyright notice. This file is an\n'
-            printf '> auditable inventory of that unresolved state, not a distributable notice set.\n\n'
+            printf '> auditable inventory of that unresolved state. ADR 0003 accepts this risk\n'
+            printf '> for delivery; this notice is not legal clearance.\n\n'
         fi
         cat <<'PREAMBLE'
 FerriteCAD ships two executables. This file lists every third-party Rust
@@ -555,7 +556,7 @@ KINDS
 
         if [ -s "$work/declared.tsv" ]; then
             cat <<'DECLARED'
-## Unresolved packages that block release
+## Packages with unresolved licence evidence
 
 For the packages below no copyright notice was published: not in the crate
 archive, and not in the upstream repository at the commit the crate was
@@ -577,8 +578,10 @@ the licence applies and its terms are fixed, not because they were found in the
 package.
 
 This list is closed and exhaustive. A package that is not named here and has no
-established licence text fails generation. A non-empty list also makes this
-target unready for release; it is not a compliance exception.
+established licence text fails generation so the inventory cannot silently
+omit it. Under ADR 0003, a non-empty list is a known accepted risk rather than
+a release gate. This record is not legal advice or an assertion that the
+missing evidence is harmless.
 
 DECLARED
             local dname dversion did ddecl drepo dcommit dpath

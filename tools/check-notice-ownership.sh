@@ -116,12 +116,12 @@ for root in "${NOTICE_ROOTS[@]}"; do
     fi
 done
 
-# --- the targets must be the ones cargo-deny already admits ----------------
+# --- the targets must be the ones the dependency policy already describes --
 
 for target in "${NOTICE_TARGETS[@]}"; do
     check
     grep -qF "\"$target\"" deny.toml || fail \
-        "notices are generated for $target but deny.toml does not admit licences for it"
+        "notices are generated for $target but deny.toml does not describe it"
 done
 
 if [ "$failures" -gt 0 ]; then

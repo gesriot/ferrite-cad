@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 #
-# The closed inventory of release blockers whose publisher shipped no licence
-# text at all, anywhere: not in the crate archive, and not in the upstream
-# repository at the commit the crate was published from.
+# The closed inventory of known licence risks whose publisher shipped no
+# licence text at all, anywhere: not in the crate archive, and not in the
+# upstream repository at the commit the crate was published from.
 #
 # A row here says only what can be checked. The crate archive that Cargo.lock
 # pins declares a licence in its own manifest, and for most rows the publisher
@@ -24,13 +24,12 @@
 #     wording matches the declared field. The ten objc2-family packages share
 #     one such statement.
 #
-# These rows are evidence, not accepted compliance exceptions. The inventory
-# gate may reproduce them, but `tools/check-rust-notices.sh --release-ready`
-# refuses every non-empty product set. The list is exhaustive and closed. A
-# twelfth package needing this treatment, or any change to a pinned registry
-# checksum, commit or digest, fails the gate rather than joining the list
-# quietly. Shrinking it to zero is required for release; the removal conditions
-# are recorded in docs/implementation-plan.md.
+# These rows are evidence, not recovered licence texts. ADR 0003 accepts the
+# unresolved risk and makes it non-blocking. The list remains exhaustive and
+# closed so a twelfth package, or a change to a pinned registry checksum,
+# commit or digest, must be recorded deliberately rather than joining the
+# product invisibly. `tools/check-rust-notices.sh --release-ready` checks this
+# representation but does not give legal clearance.
 #
 # Fields, tab separated:
 #   source  name  version  registry_checksum  licence  manifest_declaration

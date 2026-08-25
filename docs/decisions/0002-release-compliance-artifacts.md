@@ -1,8 +1,8 @@
 # 2. Release notices use cargo-about and the SBOM is CycloneDX JSON
 
-**Status:** accepted. This is an engineering policy, not legal advice; the
-first public binary release still requires the legal review already called
-for by the project RFC.
+**Status:** accepted, as amended by
+[ADR 0003](0003-licence-risk-is-advisory.md). This is an engineering policy,
+not legal advice.
 
 ## What was decided
 
@@ -62,19 +62,19 @@ generation and the ordinary gate read the committed payload and never contact a
 git host.
 
 Where the publisher has published no licence text anywhere, the package goes on
-a closed, exhaustive blocker inventory that records only what can be checked,
-keeps its two evidence classes apart, and never claims a text was recovered.
-This is not a compliance exception. The ordinary gate may verify an incomplete
-inventory, but its `--release-ready` mode refuses every non-empty blocker set,
-and a future packager must use that mode. The list may not grow without a
-decision, a networked gate refuses a row whose upstream has since published a
-text, and the removal conditions are recorded with the slice in the
-implementation plan.
+a closed, exhaustive known-risk inventory that records only what can be
+checked, keeps its two evidence classes apart, and never claims a text was
+recovered. Under ADR 0003 a non-empty inventory is not a release blocker.
+`--release-ready` is retained as a compatibility spelling for checking that the
+published risk inventory is accurate; it is not legal clearance. New entries
+must be recorded explicitly rather than omitted, but they do not need a new
+licence decision.
 
-`cargo-deny` remains the admission gate. It answers whether a dependency's
-licence expression is allowed; it does not generate notices and is not an
-SBOM. The notice generator must agree with its policy, but neither tool is a
-substitute for the other.
+`cargo-deny` remains the dependency-policy tool. Its advisory licence check
+answers whether an expression matches the recorded allow-list; its advisories,
+bans and sources checks remain merge gates. It does not generate notices and
+is not an SBOM. The notice generator must agree with its election policy, but
+neither tool is a substitute for the other.
 
 ## Native build inputs
 
@@ -106,7 +106,7 @@ self-describing, commits the `cargo-about` election and template, and proves a
 CycloneDX generator can account for both Rust binaries plus every native and
 asset component. It does not create a FerriteCAD release archive.
 
-Only after that slice is green on all three product platforms may the
-packager consume the measured runtime layout. A package is refused if notices
-or the SBOM are missing, stale, non-deterministic, disagree with the files
-actually staged, or contain an unresolved licence-text blocker.
+Only after that slice is green on all three product platforms may the packager
+consume the measured runtime layout. A package is refused if notices or the
+SBOM are missing, stale, non-deterministic or disagree with the files actually
+staged. An accurately recorded unresolved licence risk is not a refusal.
