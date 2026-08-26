@@ -37,3 +37,8 @@ tools/sbom/schema/*     -text
 sbom/native/*.json      -text
 tools/native/*          -text
 tools/occt/*            -text
+
+# These two repository assets are hashed by the native/assets inventory and
+# embedded into the viewer byte for byte. They must keep the repository bytes
+# on Windows rather than being rewritten by core.autocrlf.
+crates/ferritecad-viewport-gpu/src/*.wgsl -text

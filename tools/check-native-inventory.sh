@@ -368,7 +368,20 @@ if [ -z "$staging" ]; then
     while IFS=$'\t' read -r id location crate path sha bytes; do
         check
         case "$location" in
-            repository) file="$path" ;;
+            repository)
+                file="$path"
+                # Repository assets are embedded byte for byte. A Windows
+                # checkout must not rewrite their LF bytes through
+                # core.autocrlf after the inventory has pinned their digest.
+                check
+                text_attr="$(git check-attr text -- "$path" | native_strip_cr \
+                    | sed 's/.*: //')"
+                eol_attr="$(git check-attr eol -- "$path" | native_strip_cr \
+                    | sed 's/.*: //')"
+                if [ "$text_attr" != unset ] && [ "$eol_attr" != lf ]; then
+                    fail "$id can be rewritten by core.autocrlf; set -text or eol=lf for $path"
+                fi
+                ;;
             crate)
                 dir="$(awk -F'\t' -v k="$crate" '$1 == k { print $2 }' "$work/packages.tsv")"
                 if [ -z "$dir" ]; then
