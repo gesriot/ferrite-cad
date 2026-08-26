@@ -680,7 +680,8 @@ if [ -n "$staging" ]; then
                     dir="$(awk -F'\t' -v k="$crate" '$1 == k { print $2 }' "$work/packages.tsv")"
                     file="$dir/$path" ;;
             esac
-            printf '%s\t%s\t%s\n' "$id" "$file" "$embedded" >> "$work/probe.tsv"
+            printf '%s\t%s\t%s\n' "$id" "$(native_path "$file")" "$embedded" \
+                >> "$work/probe.tsv"
         done < <(jq -r '(.components // [])[] | select(.role == "embedded-asset")
                         | [.id, .asset.location, (.asset.crate // "-"), .asset.path,
                            .asset.sha256, (.embeddedIn | join(","))] | @tsv' "$inventory" \
@@ -690,12 +691,18 @@ if [ -n "$staging" ]; then
         for entry in "${binaries[@]}"; do
             name="${entry%%:*}"; file="${entry#*:}"
             [ -f "$file" ] || native_die "no such binary: $file"
-            printf '%s\t%s\n' "$name" "$file" >> "$work/binaries.tsv"
+            printf '%s\t%s\n' "$name" "$(native_path "$file")" >> "$work/binaries.tsv"
         done
 
+        # `|| probe_status=$?` rather than `|| fail`, and the status read
+        # inside the `||`. An earlier spelling asked `$?` on the next line,
+        # where it was the status of `fail` and therefore always zero: the run
+        # that found this reported the probe as broken and then printed the
+        # line that says every asset was where it should be.
         check
+        probe_status=0
         python3 - "$work/probe.tsv" "$work/binaries.tsv" > "$work/probe.out" 2>&1 <<'PY' \
-            || fail 'the asset probe could not run'
+            || probe_status=$?
 import sys
 
 probe, binaries = sys.argv[1], sys.argv[2]
@@ -730,10 +737,9 @@ for line in open(probe):
             print(f"{ident}: {name} {'yes' if present else 'no'} (as declared)")
 sys.exit(1 if bad else 0)
 PY
-        status=$?
-        grep -v '(as declared)$' "$work/probe.out" | sed 's/^/  /' >&2 || true
-        if [ "$status" -ne 0 ]; then
-            fail 'an embedded asset is not where the inventory says it is'
+        if [ "$probe_status" -ne 0 ]; then
+            fail 'the asset probe did not agree with the inventory:'
+            sed 's/^/  /' "$work/probe.out" >&2
         else
             echo "$NATIVE_TOOL: every declared asset is inside the binary that claims it and outside the one that does not"
         fi

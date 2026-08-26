@@ -150,6 +150,25 @@ native_require_jq() {
     command -v jq >/dev/null 2>&1 || native_die 'jq is not installed'
 }
 
+# A path a native Windows program can open.
+#
+# The shell running this on Windows is MSYS and spells the checkout
+# /d/a/ferrite-cad/...; a program that is not an MSYS program cannot open that
+# name, and the failure is a missing file rather than a bad path. This is the
+# third time the boundary between the two has cost this repository something:
+# jq could not read a process substitution, jq wrote CRLF to stdout, and now
+# Python could not open a binary the shell had just checked was there.
+#
+# `-m` rather than `-w`: forward slashes, so the answer can travel through a
+# tab separated file without a backslash being read as an escape.
+native_path() { # path
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -m "$1"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
 # jq on Windows opens stdout in text mode and writes CRLF. A digest taken over
 # those bytes is a different digest for a reason that has nothing to do with
 # the product, so every jq result written to a file goes through here. The
