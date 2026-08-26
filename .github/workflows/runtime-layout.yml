@@ -41,6 +41,18 @@ on:
       - 'tools/check-staged-layout.sh'
       - 'tools/build-planegcs.sh'
       - 'tools/planegcs/**'
+      # And everything the native/assets inventory is checked against. This
+      # workflow is the only thing that stages a layout, so it is the only
+      # thing that can check the file boundary; leaving these out let a change
+      # to the gate itself land with the last measurement still green. That is
+      # not hypothetical - the fix for the Windows asset probe did exactly
+      # that and had to be dispatched by hand.
+      - 'tools/check-native-inventory.sh'
+      - 'tools/generate-native-inventory.sh'
+      - 'tools/native/**'
+      - 'tools/occt/**'
+      - 'tools/notices/lib.sh'
+      - 'sbom/native/**'
       - '.github/workflows/runtime-layout.yml'
 
 permissions:
