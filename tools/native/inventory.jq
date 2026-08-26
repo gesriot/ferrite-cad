@@ -121,10 +121,17 @@ def die($msg): ($msg | halt_error(1));
     fileModel: "one-component-with-file-inventory"
   } as $planegcs
 
-# The Windows import library. It is produced by the same build, it is part of
-# the planegcs component delivery, and it is not a runtime file: it carries no
-# planegcs implementation and the staged layout does not hold it. Written down
-# because a build artifact nobody names is a build artifact somebody ships.
+# The Windows import library. It is not a runtime file: it carries no planegcs
+# implementation and the staged layout does not hold it. Written down because a
+# build artifact nobody names is a build artifact somebody ships.
+#
+# Which way it points was measured rather than assumed, and the first spelling
+# of this had it backwards. `planegcs.lib` is produced by the planegcs build -
+# tools/build-planegcs.sh emits it beside planegcs.dll on Windows and nowhere
+# else - and it is consumed by the Windows linker on behalf of the one crate
+# that links planegcs, whose build.rs refuses to link without it. So planegcs
+# produces it and the crate consumes it; calling it a build input of planegcs
+# would say planegcs is built from it, which is the opposite of what happens.
 | {
     id: ("native+planegcs-import-library@" + $planegcs_tag),
     name: "planegcs import library",
@@ -135,7 +142,8 @@ def die($msg): ($msg | halt_error(1));
       "linker metadata only. It lets somebody relink against a planegcs they replaced; it holds no planegcs code and the staged Windows layout does not carry it.",
     targets: [$triple_by_platform["windows"]],
     artifactFilename: "planegcs.lib",
-    buildInputOf: [("native+planegcs@" + $planegcs_tag)],
+    producedBy: ("native+planegcs@" + $planegcs_tag),
+    buildInputOf: [$importlib_consumer],
     source: {
       kind: "built-from",
       tag: $planegcs_tag,

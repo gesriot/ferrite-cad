@@ -324,11 +324,12 @@
     {
       "artifactFilename": "planegcs.lib",
       "buildInputOf": [
-        "native+planegcs@1.0.1"
+        "path+crates/ferritecad-sketch-solver#ferritecad-sketch-solver@0.0.1"
       ],
       "id": "native+planegcs-import-library@1.0.1",
       "name": "planegcs import library",
       "notAStagedRuntimeFile": "linker metadata only. It lets somebody relink against a planegcs they replaced; it holds no planegcs code and the staged Windows layout does not carry it.",
+      "producedBy": "native+planegcs@1.0.1",
       "role": "build-input",
       "source": {
         "kind": "built-from",

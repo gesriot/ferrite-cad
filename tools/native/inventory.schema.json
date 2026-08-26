@@ -299,7 +299,16 @@
                 "type": "array",
                 "minItems": 1,
                 "uniqueItems": true,
-                "items": { "type": "string", "pattern": "^native\\+" }
+                "items": {
+                  "type": "string",
+                  "pattern": "^(native|path|registry|git)\\+",
+                  "description": "What consumes this input while it is being built. A native component of this inventory, or the bom-ref of the Rust component whose build reads it: the Windows import library is read by a Rust crate's linker and by nothing native, and a pattern that could not say so forced the relationship to be recorded backwards."
+                }
+              },
+              "producedBy": {
+                "type": "string",
+                "pattern": "^native\\+",
+                "description": "The component whose build emits this file. Present only where the input is itself a build artifact rather than a fetched source tree."
               },
               "artifactFilename": { "$ref": "#/definitions/filename" },
               "source": { "$ref": "#/definitions/source" }

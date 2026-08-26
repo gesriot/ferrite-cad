@@ -10,6 +10,15 @@
 # a different root, feature or target than the one the release builds is a
 # description of a product nobody ships, and it would go on looking correct.
 
+# Sourced more than once by anything that needs both the SBOM definitions and
+# the native inventory definitions, because each of those files reads this one.
+# Every constant below is readonly, so a second pass would be a fatal
+# reassignment rather than a harmless second copy of the same value.
+if [ -n "${NOTICE_LIB_SOURCED:-}" ]; then
+    return 0
+fi
+NOTICE_LIB_SOURCED=1
+
 # The two shipped binaries, the manifests they are built from, and the features
 # the release turns on. This is the same selection .github/workflows/runtime-
 # layout.yml builds, and tools/check-notice-ownership.sh refuses a workflow or

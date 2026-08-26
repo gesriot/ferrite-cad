@@ -513,6 +513,105 @@ if [ -z "$staging" ]; then
         fail 'a component that is not a runtime component declares staged filenames'
     fi
 
+    # ---------------------------------------------------------------------
+    # Which way a build input points.
+    # ---------------------------------------------------------------------
+    #
+    # This is the one relationship in the document whose direction is not
+    # obvious, and the first inventory got it wrong: the Windows import library
+    # was recorded as a build input of planegcs, which would mean planegcs is
+    # built from it. Every other gate passed. So the direction is measured here
+    # against the build scripts and the fragments rather than read back.
+
+    # Every ref a build input names has to resolve, and to the right kind of
+    # thing: a `native+` ref is a component of this document, and any other is a
+    # bom-ref the Rust fragments already own.
+    check
+    fragment_refs="$work/fragment-refs.txt"
+    : > "$fragment_refs"
+    for target in "${NOTICE_TARGETS[@]}"; do
+        fragment="sbom/rust/rust-fragment-${target}.cdx.json"
+        [ -f "$fragment" ] || continue
+        jq -r '.components[]["bom-ref"]' "$fragment" | native_strip_cr >> "$fragment_refs"
+    done
+    LC_ALL=C sort -u "$fragment_refs" -o "$fragment_refs"
+    while IFS=$'\t' read -r id ref; do
+        [ -n "$ref" ] || continue
+        case "$ref" in
+            native+*) printf '%s\n' "$component_ids" | grep -Fxq "$ref" \
+                || fail "$id names $ref, which is not a component of this inventory" ;;
+            *) grep -Fxq "$ref" "$fragment_refs" \
+                || fail "$id names $ref, which no Rust fragment declares" ;;
+        esac
+    done < <(jq -r '(.components // [])[]
+                    | .id as $i
+                    | ((.buildInputOf // [])[], (.producedBy // empty))
+                    | [$i, .] | @tsv' "$inventory" | native_strip_cr)
+
+    # A component must not be its own build input, and a build artifact must not
+    # be produced by the thing it is an input of: either would be the loop the
+    # backwards edge made look reasonable.
+    #
+    # Written so a jq that cannot compile or cannot index says so. An earlier
+    # spelling asked `index(.id)` inside the array, where `.id` is the array's
+    # and not the component's: jq printed an error, exited non-zero, and the
+    # `if` read that as "no loop found".
+    check
+    if ! jq -r '(.components // [])[]
+                | . as $c
+                | select(($c.buildInputOf // []) | index($c.id))
+                | $c.id' "$inventory" > "$work/self-input.txt" 2>"$work/self-input.err"; then
+        fail 'the self-referential build input check could not run:'
+        sed 's/^/  /' "$work/self-input.err" >&2
+    elif [ -s "$work/self-input.txt" ]; then
+        fail 'a component declares itself one of its own build inputs:'
+        sed 's/^/  /' "$work/self-input.txt" >&2
+    fi
+    check
+    if ! jq -r '(.components // [])[]
+                | . as $c
+                | select($c.producedBy != null)
+                | select(($c.buildInputOf // []) | index($c.producedBy))
+                | $c.id' "$inventory" > "$work/loop.txt" 2>"$work/loop.err"; then
+        fail 'the produced-by direction check could not run:'
+        sed 's/^/  /' "$work/loop.err" >&2
+    elif [ -s "$work/loop.txt" ]; then
+        fail 'a build artifact is declared both produced by and a build input of the same component:'
+        sed 's/^/  /' "$work/loop.txt" >&2
+    fi
+
+    # And the import library specifically, against the build script that names
+    # the file. The consumer is whoever refuses to link without it; the producer
+    # is the component whose build emits it.
+    check
+    consumers="$(native_import_library_consumers)"
+    consumer_count="$(printf '%s\n' "$consumers" | grep -c . || true)"
+    if [ "$consumer_count" -ne 1 ]; then
+        fail "$consumer_count crates name $NATIVE_IMPORT_LIBRARY in a build script, and exactly one must"
+    else
+        importlib="$(jq -r --arg n "$NATIVE_IMPORT_LIBRARY" \
+            '(.components // [])[] | select(.artifactFilename == $n) | .id' \
+            "$inventory" | native_strip_cr)"
+        if [ -z "$importlib" ]; then
+            fail "no component in the inventory is the file $NATIVE_IMPORT_LIBRARY"
+        else
+            declared="$(jq -r --arg i "$importlib" \
+                '(.components // [])[] | select(.id == $i) | (.buildInputOf // []) | join(",")' \
+                "$inventory" | native_strip_cr)"
+            case "$declared" in
+                path+"$consumers"#*) ;;
+                *) fail "$importlib is declared a build input of '$declared', and $consumers is what reads it" ;;
+            esac
+            producer="$(jq -r --arg i "$importlib" \
+                '(.components // [])[] | select(.id == $i) | .producedBy // ""' \
+                "$inventory" | native_strip_cr)"
+            [ -n "$producer" ] \
+                || fail "$importlib says nothing about which build emits it"
+            grep -q "import_library_name=\"$NATIVE_IMPORT_LIBRARY\"" tools/build-planegcs.sh \
+                || fail "tools/build-planegcs.sh no longer produces $NATIVE_IMPORT_LIBRARY, and $importlib says it does"
+        fi
+    fi
+
     # Each platform's staged paths have to look like that platform's layout,
     # so a file from another target cannot arrive as a longer list.
     for p in "${NATIVE_PLATFORMS[@]}"; do

@@ -71,6 +71,34 @@ native_staged_map_for() { # platform
     printf 'tools/native/staged-%s.tsv\n' "$1"
 }
 
+# The Windows import library that the planegcs build produces beside the DLL,
+# and the one thing that reads it.
+#
+# Which way this relationship points is a question, not a convention, and the
+# first inventory answered it backwards: it recorded the `.lib` as a build
+# input of planegcs, which would mean planegcs is built from it. It is not.
+# tools/build-planegcs.sh produces `planegcs.lib` from the planegcs sources on
+# Windows, and the thing that consumes it is the Windows linker, on behalf of
+# the one crate that links planegcs. So the file is produced by planegcs and
+# is a build input of that crate, and both halves are measured below rather
+# than written down.
+readonly NATIVE_IMPORT_LIBRARY='planegcs.lib'
+
+# The workspace crates whose build script requires the import library. A crate
+# is on this list because its own build.rs names the file, so a second crate
+# growing a copy of the link is a failure rather than an unnoticed second
+# opinion - which is the same rule tools/check-solver-ownership.sh already
+# applies to the boundary itself.
+native_import_library_consumers() {
+    local f
+    find crates -mindepth 2 -maxdepth 2 -name build.rs -type f | LC_ALL=C sort \
+        | while IFS= read -r f; do
+            if grep -qF "$NATIVE_IMPORT_LIBRARY" "$f"; then
+                printf '%s\n' "${f%/build.rs}"
+            fi
+        done
+}
+
 readonly NATIVE_INVENTORY='sbom/native/native-assets-inventory.json'
 # The workflow that stages a layout and is therefore the only thing that can
 # check the file boundary. Named here because the gate asks it which platforms

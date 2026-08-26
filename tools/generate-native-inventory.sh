@@ -24,6 +24,10 @@
 #     written down by hand.
 #   * The product roots and the product targets come from tools/notices/lib.sh,
 #     which has owned them since the notices needed them first.
+#   * Which crate the Windows import library is a build input of comes from
+#     reading the build scripts for the one that names the file. It is the one
+#     relationship in this document whose direction is not obvious, and the
+#     first version of the document had it backwards.
 #
 # What it deliberately does not carry is the digest of any built binary. Two
 # clean builds of the same target on the same host reproduce their bytes; the
@@ -237,6 +241,19 @@ for root in "${NOTICE_ROOTS[@]}"; do
 done
 sort -u "$work/roots.tsv" -o "$work/roots.tsv"
 
+# The one crate whose build reads the Windows import library, and therefore the
+# thing that import library is a build input of. Measured from the build script
+# that names the file rather than assumed: the direction was recorded backwards
+# once, and a value nothing measures cannot notice being wrong again.
+consumers="$(native_import_library_consumers)"
+consumer_count="$(printf '%s\n' "$consumers" | grep -c . || true)"
+[ "$consumer_count" -eq 1 ] || native_die \
+    "$consumer_count crates name $NATIVE_IMPORT_LIBRARY in a build script, and exactly one must"
+consumer_key="$(awk -F'\t' -v d="$consumers" '$3 == d { print $1 }' "$work/packages.tsv")"
+[ -n "$consumer_key" ] || native_die \
+    "$consumers names $NATIVE_IMPORT_LIBRARY and is not a package in this workspace"
+importlib_consumer="path+$consumers#$consumer_key"
+
 : > "$work/fragments.tsv"
 for target in "${NOTICE_TARGETS[@]}"; do
     fragment="sbom/rust/rust-fragment-${target}.cdx.json"
@@ -280,6 +297,7 @@ jq -n -S \
     --arg boost_version "$FCAD_PLANEGCS_BOOST_VERSION" \
     --arg boost_url "$FCAD_PLANEGCS_BOOST_URL" \
     --arg boost_sha256 "$FCAD_PLANEGCS_BOOST_SHA256" \
+    --arg importlib_consumer "$importlib_consumer" \
     -f tools/native/inventory.jq \
     | native_strip_cr > "$work/out.json"
 
