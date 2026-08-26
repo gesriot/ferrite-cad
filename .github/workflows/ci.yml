@@ -5,6 +5,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Every other workflow here already has this and CI did not, which was an
+  # oversight rather than a decision. An Actions outage on 2026-08-26 left a
+  # merged commit on main with no CI run and no way to ask for one: the run was
+  # never created, so there was nothing to re-run, and the only remaining way
+  # to get CI onto that tree was to change it. A gate that cannot be asked to
+  # run is a gate that goes missing exactly when something has already gone
+  # wrong.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
