@@ -887,7 +887,7 @@ jobs:
           pattern: native-inventory-stable-*
           path: inventories
 
-      - name: Require the three hosts to have read one inventory
+      - name: Require the three hosts to have generated one inventory
         run: |
           set -euo pipefail
           # Named rather than counted, and named for all three: a platform that
@@ -911,10 +911,9 @@ jobs:
           # Byte for byte. Everything in these files is target-independent by
           # construction - component identities, versions, source digests, asset
           # digests, which binary loads what, and the digest of the inventory
-          # document itself - so a difference is either a host reading different
-          # bytes out of the checkout or a component whose identity depends on
-          # where it was read. The notices and the Rust fragment were both bitten
-          # by the first of those on Windows, which is the reason this is a
+          # document itself - so a difference is either a host generating
+          # different bytes or a component whose identity depends on where it
+          # was generated. The Windows CRLF defect proved why this is a
           # comparison and not three separate assertions.
           reference="inventories/native-inventory-stable-linux/native-stable-linux.txt"
           differs=0
@@ -928,7 +927,7 @@ jobs:
           done
           [ "$differs" -eq 0 ] || exit 1
 
-          echo "--- what all three hosts read ---"
+          echo "--- what all three hosts generated ---"
           cat "$reference"
           echo
           echo "the three platforms agree about every component identity, every source"
