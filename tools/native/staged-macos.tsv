@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: MIT
+#
+# Which component owns which staged runtime file on macos.
+#
+# Measured, not derived. The file names come from the combined runtime layout
+# workflow, which builds the product against pinned Open CASCADE and pinned
+# planegcs, walks the loader graph of both product binaries and stages what it
+# found; tools/check-native-inventory.sh compares this list against a staging
+# directory that workflow really produced, and against the independent class
+# runtime-closure.sh gave each library. A name here that staging does not
+# create, a staged file that is not here, and a file claimed twice are three
+# different failures and each has its own message.
+#
+# Two columns, tab separated: the owning component's key, and the path
+# relative to the root of the staged layout. Sorted in the C locale.
+#
+# The owner key is deliberately unversioned. What version of Open CASCADE this
+# is belongs to tools/occt/pin.env, and repeating it per file would make a
+# patch bump edit every line of a file that measures something else.
+ferritecad	FerriteCAD.app/Contents/MacOS/ferritecad
+ferritecad-viewer	FerriteCAD.app/Contents/MacOS/ferritecad-viewer
+occt	FerriteCAD.app/Contents/Frameworks/libTKBO.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKBRep.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKBin.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKBinL.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKBinTObj.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKBinXCAF.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKBool.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKCAF.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKCDF.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKDE.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKDECascade.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKDEIGES.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKDEOBJ.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKDEPLY.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKDESTEP.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKDESTL.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKDEVRML.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKExpress.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKFeat.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKFillet.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKG2d.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKG3d.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKGeomAlgo.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKGeomBase.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKHLR.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKHelix.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKLCAF.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKMath.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKMesh.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKMeshVS.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKOffset.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKOpenGl.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKPrim.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKRWMesh.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKService.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKShHealing.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKStd.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKStdL.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKTObj.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKTopAlgo.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKV3d.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKVCAF.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKXCAF.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKXMesh.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKXSBase.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKXml.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKXmlL.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKXmlTObj.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKXmlXCAF.8.0.dylib
+occt	FerriteCAD.app/Contents/Frameworks/libTKernel.8.0.dylib
+planegcs	FerriteCAD.app/Contents/Frameworks/libplanegcs.dylib

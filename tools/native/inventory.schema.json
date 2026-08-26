@@ -1,0 +1,361 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FerriteCAD native and assets inventory",
+  "description": "The intermediate manifest of 21A-2b2b0b2b1. It describes the native runtime components a FerriteCAD release carries, the native inputs that only take part in a build, and the assets a product binary embeds. It is not a complete product SBOM and the schema refuses a document that claims to be one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "formatVersion",
+    "complete",
+    "isProductSbom",
+    "statement",
+    "pendingMerge",
+    "productVersion",
+    "rustFragments",
+    "productRoots",
+    "components",
+    "targets"
+  ],
+  "properties": {
+    "kind": {
+      "const": "ferritecad-native-assets-inventory"
+    },
+    "formatVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "complete": {
+      "const": false,
+      "description": "An inventory that called itself complete would be claiming to be the product SBOM the merge slice has not written yet."
+    },
+    "isProductSbom": {
+      "const": false
+    },
+    "statement": {
+      "type": "string",
+      "minLength": 80
+    },
+    "pendingMerge": {
+      "const": "rust-fragment-and-native-assets"
+    },
+    "productVersion": {
+      "$ref": "#/definitions/version"
+    },
+    "rustFragments": {
+      "type": "array",
+      "minItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["target", "path", "sha256", "ref"],
+        "properties": {
+          "target": { "$ref": "#/definitions/triple" },
+          "path": { "$ref": "#/definitions/repoPath" },
+          "sha256": { "$ref": "#/definitions/sha256" },
+          "ref": { "type": "string", "pattern": "^ferritecad:rust-fragment:" }
+        }
+      }
+    },
+    "productRoots": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "binary",
+          "package",
+          "version",
+          "rustFragmentRef",
+          "stagedFilenames",
+          "loads"
+        ],
+        "properties": {
+          "binary": { "type": "string", "minLength": 1 },
+          "package": { "type": "string", "minLength": 1 },
+          "version": { "$ref": "#/definitions/version" },
+          "rustFragmentRef": {
+            "type": "string",
+            "pattern": "^path\\+[^#]+#[^#]+@[^#]+$",
+            "description": "The bom-ref the Rust fragment already gave this package. Reused, never rebuilt."
+          },
+          "stagedFilenames": { "$ref": "#/definitions/filenamesByTriple" },
+          "loads": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/definitions/component" }
+    },
+    "targets": {
+      "type": "array",
+      "minItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["triple", "platform", "layout", "stagedFiles", "systemLibraries"],
+        "properties": {
+          "triple": { "$ref": "#/definitions/triple" },
+          "platform": { "enum": ["linux", "macos", "windows"] },
+          "layout": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["executables", "libraries"],
+            "properties": {
+              "executables": { "$ref": "#/definitions/relativePath" },
+              "libraries": { "$ref": "#/definitions/relativePath" }
+            }
+          },
+          "stagedFiles": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "owner", "ownerKind"],
+              "properties": {
+                "path": { "$ref": "#/definitions/relativePath" },
+                "owner": { "type": "string", "minLength": 1 },
+                "ownerKind": { "enum": ["component", "product-root"] }
+              }
+            }
+          },
+          "systemLibraries": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["shipped", "rule", "enumerated", "enumerationNote"],
+            "properties": {
+              "shipped": {
+                "const": false,
+                "description": "A library the operating system ships is never part of the delivery."
+              },
+              "rule": { "type": "string", "minLength": 80 },
+              "enumerated": { "const": false },
+              "enumerationNote": { "type": "string", "minLength": 40 }
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+    },
+    "triple": {
+      "enum": [
+        "x86_64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc",
+        "aarch64-apple-darwin"
+      ]
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._+@-][A-Za-z0-9._+@/-]*$",
+      "description": "A path inside the staged layout or inside the repository. No leading separator, no drive letter, no backslash: any of those would make the manifest a statement about a machine. Parent traversal is refused by tools/check-native-inventory.sh, which can say so in words rather than as a pattern miss."
+    },
+    "repoPath": {
+      "allOf": [{ "$ref": "#/definitions/relativePath" }]
+    },
+    "filename": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/\\\\]+$"
+    },
+    "filenamesByTriple": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "x86_64-unknown-linux-gnu": { "$ref": "#/definitions/filenames" },
+        "x86_64-pc-windows-msvc": { "$ref": "#/definitions/filenames" },
+        "aarch64-apple-darwin": { "$ref": "#/definitions/filenames" }
+      }
+    },
+    "filenames": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/definitions/filename" }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "url", "sha256", "pin"],
+      "properties": {
+        "kind": { "enum": ["source-archive", "built-from"] },
+        "tag": { "type": "string", "minLength": 1 },
+        "version": { "$ref": "#/definitions/version" },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "url": { "type": "string", "pattern": "^https://" },
+        "sha256": { "$ref": "#/definitions/sha256" },
+        "pin": {
+          "enum": ["tools/occt/pin.env", "tools/planegcs/pin.env"],
+          "description": "The one file that owns this version and this digest. A component whose pin is not one of these is a component nothing owns."
+        },
+        "note": { "type": "string", "minLength": 1 }
+      }
+    },
+    "component": {
+      "type": "object",
+      "required": ["id", "name", "version", "role", "targets", "stagedRuntimeFile"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^(native|asset)\\+",
+          "description": "The namespace 21A-2b2b0b2a left free. Every Rust bom-ref begins with registry+, path+ or git+, so nothing here can collide with a component the fragment owns."
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "$ref": "#/definitions/version" },
+        "role": { "enum": ["runtime-native", "build-input", "embedded-asset"] },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/triple" }
+        },
+        "stagedRuntimeFile": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "role": { "const": "runtime-native" } } },
+          "then": {
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name",
+              "version",
+              "role",
+              "targets",
+              "stagedRuntimeFile",
+              "source",
+              "stagedFilenames",
+              "loadedBy",
+              "fileModel"
+            ],
+            "properties": {
+              "id": { "type": "string", "pattern": "^native\\+" },
+              "name": { "type": "string" },
+              "version": { "$ref": "#/definitions/version" },
+              "role": { "type": "string" },
+              "targets": { "type": "array" },
+              "stagedRuntimeFile": { "const": true },
+              "source": { "$ref": "#/definitions/source" },
+              "stagedFilenames": { "$ref": "#/definitions/filenamesByTriple" },
+              "loadedBy": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "type": "string", "minLength": 1 }
+              },
+              "fileModel": { "const": "one-component-with-file-inventory" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "role": { "const": "build-input" } } },
+          "then": {
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name",
+              "version",
+              "role",
+              "targets",
+              "stagedRuntimeFile",
+              "notAStagedRuntimeFile",
+              "buildInputOf",
+              "source"
+            ],
+            "properties": {
+              "id": { "type": "string", "pattern": "^native\\+" },
+              "name": { "type": "string" },
+              "version": { "$ref": "#/definitions/version" },
+              "role": { "type": "string" },
+              "targets": { "type": "array" },
+              "stagedRuntimeFile": {
+                "const": false,
+                "description": "A build input that claimed to be a staged runtime file would be asking the packager to ship a header tree."
+              },
+              "notAStagedRuntimeFile": { "type": "string", "minLength": 40 },
+              "buildInputOf": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "type": "string", "pattern": "^native\\+" }
+              },
+              "artifactFilename": { "$ref": "#/definitions/filename" },
+              "source": { "$ref": "#/definitions/source" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "role": { "const": "embedded-asset" } } },
+          "then": {
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name",
+              "version",
+              "role",
+              "targets",
+              "stagedRuntimeFile",
+              "notAStagedRuntimeFile",
+              "embeddedIn",
+              "asset",
+              "containedBy"
+            ],
+            "properties": {
+              "id": { "type": "string", "pattern": "^asset\\+" },
+              "name": { "$ref": "#/definitions/filename" },
+              "version": { "$ref": "#/definitions/version" },
+              "role": { "type": "string" },
+              "targets": { "type": "array" },
+              "stagedRuntimeFile": { "const": false },
+              "notAStagedRuntimeFile": { "type": "string", "minLength": 40 },
+              "embeddedIn": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "type": "string", "minLength": 1 }
+              },
+              "asset": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["location", "path", "sha256", "bytes"],
+                "properties": {
+                  "location": { "enum": ["repository", "crate"] },
+                  "path": { "$ref": "#/definitions/relativePath" },
+                  "crate": { "type": "string", "pattern": "^[^@]+@[^@]+$" },
+                  "sha256": { "$ref": "#/definitions/sha256" },
+                  "bytes": { "type": "integer", "minimum": 1 }
+                }
+              },
+              "containedBy": {
+                "type": "string",
+                "pattern": "^(path|registry)\\+"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MIT
+#
+# Which product binary loads which native runtime component.
+#
+# Measured. The combined runtime layout workflow walks the loader graph of both
+# product binaries with the platform's own inspector, and this is what it
+# found: the command line tool crosses the Open CASCADE boundary and never
+# touches the sketch solver, so it names no planegcs at all, on any of the
+# three platforms.
+#
+# tools/check-native-inventory.sh compares this against the closure reports
+# that measurement produced, in both directions: a component loaded by a binary
+# that is not written here, and a line here that the closure does not support,
+# are two different failures.
+#
+# Two columns, tab separated: the owning component's key, and the binary.
+occt	ferritecad
+occt	ferritecad-viewer
+planegcs	ferritecad-viewer

@@ -48,14 +48,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # The pin, copied from docs/build-occt.md. The commit is the authoritative
-  # one; the digest covers the one download of a tarball GitHub generates on
-  # demand. Written out rather than taken as a dispatch input, because this
-  # workflow is not choosing a version - it is measuring the one that was
-  # chosen, and a run that measured some other version would answer a question
-  # nobody asked.
-  OCCT_COMMIT: b8f597c677811d1f9f4d8a97f5ae2825c0353a42
-  OCCT_SHA256: dba62b81078dd43cec23feba89432be301582341001edad1b93342ad8bda35ea
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -95,6 +87,27 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      # The pin, from the one file that owns it. It used to be written out in
+      # this workflow's `env:` block, which made a workflow the only
+      # machine-readable owner of a component's version and source digest.
+      # §21A-2b2b0b2b1 names Open CASCADE as a component, and a component's
+      # identity cannot be a property of the file that happens to build it.
+      # Written to GITHUB_ENV rather than sourced per step, because the cache
+      # key below is an expression and expressions cannot source a file.
+      - name: Read the Open CASCADE pin
+        run: |
+          set -euo pipefail
+          . tools/occt/pin.env
+          for name in OCCT_TAG OCCT_VERSION OCCT_COMMIT OCCT_SHA256 OCCT_ARCHIVE_URL; do
+            value="${!name}"
+            if [ -z "$value" ]; then
+              echo "::error::tools/occt/pin.env does not set ${name}"
+              exit 1
+            fi
+            echo "${name}=${value}" >> "$GITHUB_ENV"
+          done
+          echo "Open CASCADE ${OCCT_VERSION} at ${OCCT_COMMIT}"
 
       - name: Install the tools each platform needs
         run: |
@@ -191,8 +204,7 @@ jobs:
         if: steps.occt-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
-          curl -fsSL --retry 3 -o occt.tar.gz \
-            "https://github.com/Open-Cascade-SAS/OCCT/archive/${OCCT_COMMIT}.tar.gz"
+          curl -fsSL --retry 3 -o occt.tar.gz "${OCCT_ARCHIVE_URL}"
           case '${{ matrix.name }}' in
             macos) actual="$(shasum -a 256 occt.tar.gz | cut -d' ' -f1)" ;;
             *)     actual="$(sha256sum occt.tar.gz | cut -d' ' -f1)" ;;
@@ -595,6 +607,93 @@ jobs:
             exit "$status"
           fi
 
+      # ---------------------------------------------------------------------
+      # The native/assets inventory, against the layout that was just staged.
+      # ---------------------------------------------------------------------
+
+      - name: Require one owner for every staged file and every embedded asset
+        run: |
+          set -euo pipefail
+          # The staged layout is still where the step above left it, and both
+          # product binaries are still in the build tree. This is the only
+          # place either exists, which is why the file boundary is checked
+          # here rather than in a job that only has the repository.
+          tools/check-native-inventory.sh \
+            --platform '${{ matrix.name }}' \
+            --staging '${{ steps.stage.outputs.staging }}' \
+            --closure closure-viewer.txt --closure closure-cli.txt \
+            --binary "ferritecad-viewer:${{ steps.build.outputs.viewer }}" \
+            --binary "ferritecad:${{ steps.build.outputs.cli }}" \
+            | tee "native-inventory-${{ matrix.name }}.txt"
+
+      - name: Record what this build produced, which the inventory does not
+        run: |
+          set -euo pipefail
+          # Build-local evidence and nothing else. These digests are a property
+          # of this run: two clean builds of the same target on one host
+          # reproduce them, and the same pinned sources on another host do not
+          # - measured on macOS, where every staged library differs in size
+          # between a developer machine and this runner while every staged name
+          # is identical. That is why the committed inventory carries source
+          # pins and expected filenames and no build hash at all, and why the
+          # packager will attach these to one build rather than to a component.
+          staging='${{ steps.stage.outputs.staging }}'
+          {
+            echo "# build-local evidence, ${{ matrix.name }}; not a committed fact"
+            echo "runner ${{ matrix.os }} ${RUNNER_ARCH}"
+            find "$staging" -type f | LC_ALL=C sort | while IFS= read -r file; do
+              case "${{ matrix.name }}" in
+                macos) digest="$(shasum -a 256 "$file" | cut -d' ' -f1)" ;;
+                *)     digest="$(sha256sum "$file" | cut -d' ' -f1)" ;;
+              esac
+              printf 'staged %s %s %s\n' "${file#"$staging"/}" "$digest" \
+                "$(wc -c < "$file" | tr -d ' ')"
+            done
+            # What the loader showed and the package deliberately does not
+            # carry. Uploaded rather than committed: the set is a property of
+            # the runner image, and a committed list would go stale on the next
+            # one while looking like a statement about the product.
+            awk '$1 == "dep" && $4 == "system" { print "system " $5 }' \
+              closure-viewer.txt closure-cli.txt | LC_ALL=C sort -u
+          } > "native-evidence-${{ matrix.name }}.txt"
+          wc -l < "native-evidence-${{ matrix.name }}.txt"
+
+      - name: Keep the part of the inventory that must not differ between hosts
+        run: |
+          set -euo pipefail
+          # Everything here is target-independent by construction: component
+          # identities, their versions, their source digests, the asset digests,
+          # which binary loads what, and the digest of the inventory document
+          # itself. The three platforms have to produce identical files. The
+          # per-target staged lists are deliberately absent - they differ, they
+          # are checked against the real staging in the step above, and putting
+          # them here would turn a real comparison into three files that only
+          # agree about their own platform.
+          {
+            jq -r '.components[]
+                   | "component " + .id + " " + .role + " "
+                     + ((.source.sha256 // .asset.sha256) // "-")' \
+              sbom/native/native-assets-inventory.json
+            jq -r '.components[] | select(.role == "runtime-native")
+                   | "loaded-by " + .id + " " + (.loadedBy | join(","))' \
+              sbom/native/native-assets-inventory.json
+            jq -r '.components[] | select(.role == "embedded-asset")
+                   | "embedded-in " + .id + " " + (.embeddedIn | join(","))' \
+              sbom/native/native-assets-inventory.json
+            jq -r '.productRoots[] | "root " + .binary + " " + .rustFragmentRef' \
+              sbom/native/native-assets-inventory.json
+            jq -r '.rustFragments[] | "fragment " + .target + " " + .sha256' \
+              sbom/native/native-assets-inventory.json
+            case '${{ matrix.name }}' in
+              macos) digest="$(shasum -a 256 sbom/native/native-assets-inventory.json \
+                       | cut -d' ' -f1)" ;;
+              *)     digest="$(sha256sum sbom/native/native-assets-inventory.json \
+                       | cut -d' ' -f1)" ;;
+            esac
+            echo "inventory $digest"
+          } | tr -d '\r' | LC_ALL=C sort > "native-stable-${{ matrix.name }}.txt"
+          cat "native-stable-${{ matrix.name }}.txt"
+
       - name: Write the measurement report
         run: |
           set -euo pipefail
@@ -654,6 +753,8 @@ jobs:
             closure-cli.txt
             layout-${{ matrix.name }}.txt
             staged-facts-${{ matrix.name }}.txt
+            native-inventory-${{ matrix.name }}.txt
+            native-evidence-${{ matrix.name }}.txt
           # Uploaded even when the job failed, which is when the closure and
           # the layout are most worth reading. A run that stopped before
           # producing them must not have its real failure replaced by an
@@ -665,6 +766,16 @@ jobs:
         with:
           name: runtime-layout-summary-${{ matrix.name }}
           path: summary-${{ matrix.name }}.txt
+          if-no-files-found: error
+
+      # Separate from the summary, because the comparison below asks a
+      # different question of it: the summary is compared by meaning per
+      # platform, and this has to be byte for byte the same file everywhere.
+      - name: Upload the host-independent part of the inventory
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-inventory-stable-${{ matrix.name }}
+          path: native-stable-${{ matrix.name }}.txt
           if-no-files-found: error
 
   compare:
@@ -744,3 +855,57 @@ jobs:
           echo "all three platforms performed the combined build, measured both component"
           echo "families, found nothing unaccounted for, and started the staged layout with"
           echo "the build trees taken away"
+
+      - name: Download every host-independent inventory
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-inventory-stable-*
+          path: inventories
+
+      - name: Require the three hosts to have read one inventory
+        run: |
+          set -euo pipefail
+          # Named rather than counted, and named for all three: a platform that
+          # dropped out of the matrix would otherwise leave two files that
+          # agree perfectly with each other.
+          missing=0
+          for platform in linux macos windows; do
+            file="inventories/native-inventory-stable-${platform}/native-stable-${platform}.txt"
+            if [ ! -f "$file" ]; then
+              echo "::error::${platform} produced no native inventory evidence"
+              missing=$((missing + 1))
+              continue
+            fi
+            if [ ! -s "$file" ]; then
+              echo "::error::${platform} produced an empty native inventory evidence file"
+              missing=$((missing + 1))
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+          # Byte for byte. Everything in these files is target-independent by
+          # construction - component identities, versions, source digests, asset
+          # digests, which binary loads what, and the digest of the inventory
+          # document itself - so a difference is either a host reading different
+          # bytes out of the checkout or a component whose identity depends on
+          # where it was read. The notices and the Rust fragment were both bitten
+          # by the first of those on Windows, which is the reason this is a
+          # comparison and not three separate assertions.
+          reference="inventories/native-inventory-stable-linux/native-stable-linux.txt"
+          differs=0
+          for platform in macos windows; do
+            file="inventories/native-inventory-stable-${platform}/native-stable-${platform}.txt"
+            if ! diff -u "$reference" "$file" > "diff-${platform}.txt"; then
+              echo "::error::${platform} and linux disagree about the host-independent part of the inventory"
+              sed 's/^/  /' "diff-${platform}.txt"
+              differs=$((differs + 1))
+            fi
+          done
+          [ "$differs" -eq 0 ] || exit 1
+
+          echo "--- what all three hosts read ---"
+          cat "$reference"
+          echo
+          echo "the three platforms agree about every component identity, every source"
+          echo "digest, every asset digest, which binary loads which native component,"
+          echo "and the bytes of the inventory document itself"

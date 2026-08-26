@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: MIT
+#
+# Which component owns which staged runtime file on linux.
+#
+# Measured, not derived. The file names come from the combined runtime layout
+# workflow, which builds the product against pinned Open CASCADE and pinned
+# planegcs, walks the loader graph of both product binaries and stages what it
+# found; tools/check-native-inventory.sh compares this list against a staging
+# directory that workflow really produced, and against the independent class
+# runtime-closure.sh gave each library. A name here that staging does not
+# create, a staged file that is not here, and a file claimed twice are three
+# different failures and each has its own message.
+#
+# Two columns, tab separated: the owning component's key, and the path
+# relative to the root of the staged layout. Sorted in the C locale.
+#
+# The owner key is deliberately unversioned. What version of Open CASCADE this
+# is belongs to tools/occt/pin.env, and repeating it per file would make a
+# patch bump edit every line of a file that measures something else.
+ferritecad	bin/ferritecad
+ferritecad-viewer	bin/ferritecad-viewer
+occt	lib/libTKBO.so.8.0
+occt	lib/libTKBRep.so.8.0
+occt	lib/libTKBool.so.8.0
+occt	lib/libTKCAF.so.8.0
+occt	lib/libTKCDF.so.8.0
+occt	lib/libTKDE.so.8.0
+occt	lib/libTKDESTEP.so.8.0
+occt	lib/libTKFillet.so.8.0
+occt	lib/libTKG2d.so.8.0
+occt	lib/libTKG3d.so.8.0
+occt	lib/libTKGeomAlgo.so.8.0
+occt	lib/libTKGeomBase.so.8.0
+occt	lib/libTKHLR.so.8.0
+occt	lib/libTKLCAF.so.8.0
+occt	lib/libTKMath.so.8.0
+occt	lib/libTKMesh.so.8.0
+occt	lib/libTKOffset.so.8.0
+occt	lib/libTKPrim.so.8.0
+occt	lib/libTKService.so.8.0
+occt	lib/libTKShHealing.so.8.0
+occt	lib/libTKTopAlgo.so.8.0
+occt	lib/libTKV3d.so.8.0
+occt	lib/libTKVCAF.so.8.0
+occt	lib/libTKXCAF.so.8.0
+occt	lib/libTKXSBase.so.8.0
+occt	lib/libTKernel.so.8.0
+planegcs	lib/libplanegcs.so

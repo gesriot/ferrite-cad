@@ -1,0 +1,1041 @@
+{
+  "complete": false,
+  "components": [
+    {
+      "asset": {
+        "bytes": 309408,
+        "crate": "epaint_default_fonts@0.36.1",
+        "location": "crate",
+        "path": "fonts/Hack-Regular.ttf",
+        "sha256": "15f55cc0c85a2988d2b4b3a8cdb5d77fdfbaf319e1bb5309d725db9818fb7125"
+      },
+      "containedBy": "registry+https://github.com/rust-lang/crates.io-index#epaint_default_fonts@0.36.1",
+      "embeddedIn": [
+        "ferritecad-viewer"
+      ],
+      "id": "asset+crate+epaint_default_fonts@0.36.1#fonts/Hack-Regular.ttf",
+      "name": "Hack-Regular.ttf",
+      "notAStagedRuntimeFile": "compiled into a product executable. There is no separate file to stage and none is staged.",
+      "role": "embedded-asset",
+      "stagedRuntimeFile": false,
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "version": "0.36.1"
+    },
+    {
+      "asset": {
+        "bytes": 418804,
+        "crate": "epaint_default_fonts@0.36.1",
+        "location": "crate",
+        "path": "fonts/NotoEmoji-Regular.ttf",
+        "sha256": "415dc6290378574135b64c808dc640c1df7531973290c4970c51fdeb849cb0c5"
+      },
+      "containedBy": "registry+https://github.com/rust-lang/crates.io-index#epaint_default_fonts@0.36.1",
+      "embeddedIn": [
+        "ferritecad-viewer"
+      ],
+      "id": "asset+crate+epaint_default_fonts@0.36.1#fonts/NotoEmoji-Regular.ttf",
+      "name": "NotoEmoji-Regular.ttf",
+      "notAStagedRuntimeFile": "compiled into a product executable. There is no separate file to stage and none is staged.",
+      "role": "embedded-asset",
+      "stagedRuntimeFile": false,
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "version": "0.36.1"
+    },
+    {
+      "asset": {
+        "bytes": 361676,
+        "crate": "epaint_default_fonts@0.36.1",
+        "location": "crate",
+        "path": "fonts/Ubuntu-Light.ttf",
+        "sha256": "80307b8da7649aa4ee4d484b232140e3ce1ec0ca093073d3c53c8f5a5ced7a70"
+      },
+      "containedBy": "registry+https://github.com/rust-lang/crates.io-index#epaint_default_fonts@0.36.1",
+      "embeddedIn": [
+        "ferritecad-viewer"
+      ],
+      "id": "asset+crate+epaint_default_fonts@0.36.1#fonts/Ubuntu-Light.ttf",
+      "name": "Ubuntu-Light.ttf",
+      "notAStagedRuntimeFile": "compiled into a product executable. There is no separate file to stage and none is staged.",
+      "role": "embedded-asset",
+      "stagedRuntimeFile": false,
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "version": "0.36.1"
+    },
+    {
+      "asset": {
+        "bytes": 324132,
+        "crate": "epaint_default_fonts@0.36.1",
+        "location": "crate",
+        "path": "fonts/emoji-icon-font.ttf",
+        "sha256": "f426bec371f484646d002717e2c555a95cd5145e635d83a48bbef83f3abf18ca"
+      },
+      "containedBy": "registry+https://github.com/rust-lang/crates.io-index#epaint_default_fonts@0.36.1",
+      "embeddedIn": [
+        "ferritecad-viewer"
+      ],
+      "id": "asset+crate+epaint_default_fonts@0.36.1#fonts/emoji-icon-font.ttf",
+      "name": "emoji-icon-font.ttf",
+      "notAStagedRuntimeFile": "compiled into a product executable. There is no separate file to stage and none is staged.",
+      "role": "embedded-asset",
+      "stagedRuntimeFile": false,
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "version": "0.36.1"
+    },
+    {
+      "asset": {
+        "bytes": 4083,
+        "location": "repository",
+        "path": "crates/ferritecad-viewport-gpu/src/grid.wgsl",
+        "sha256": "b61a64e60e7d3abcffa650b7631fbb0e2ffaa3c59cb9f6a35f31a7760df5515b"
+      },
+      "containedBy": "path+crates/ferritecad-viewport-gpu#ferritecad-viewport-gpu@0.0.1",
+      "embeddedIn": [
+        "ferritecad-viewer"
+      ],
+      "id": "asset+path+crates/ferritecad-viewport-gpu/src/grid.wgsl",
+      "name": "grid.wgsl",
+      "notAStagedRuntimeFile": "compiled into a product executable. There is no separate file to stage and none is staged.",
+      "role": "embedded-asset",
+      "stagedRuntimeFile": false,
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "version": "0.0.1"
+    },
+    {
+      "asset": {
+        "bytes": 19479,
+        "location": "repository",
+        "path": "crates/ferritecad-viewport-gpu/src/shader.wgsl",
+        "sha256": "08b6c1de013f8a0946ab028529956854822033dfba6124e14fec9a86c689e243"
+      },
+      "containedBy": "path+crates/ferritecad-viewport-gpu#ferritecad-viewport-gpu@0.0.1",
+      "embeddedIn": [
+        "ferritecad-viewer"
+      ],
+      "id": "asset+path+crates/ferritecad-viewport-gpu/src/shader.wgsl",
+      "name": "shader.wgsl",
+      "notAStagedRuntimeFile": "compiled into a product executable. There is no separate file to stage and none is staged.",
+      "role": "embedded-asset",
+      "stagedRuntimeFile": false,
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "version": "0.0.1"
+    },
+    {
+      "buildInputOf": [
+        "native+planegcs@1.0.1"
+      ],
+      "id": "native+boost@1.91.0",
+      "name": "Boost",
+      "notAStagedRuntimeFile": "a header tree compiled into planegcs and into the sketch solver shim. No file of it is staged, on any target.",
+      "role": "build-input",
+      "source": {
+        "kind": "source-archive",
+        "pin": "tools/planegcs/pin.env",
+        "sha256": "5734305f40a76c30f951c9abd409a45a2a19fb546efe4162119250bbe4d3a463",
+        "url": "https://archives.boost.io/release/1.91.0/source/boost_1_91_0.tar.gz",
+        "version": "1.91.0"
+      },
+      "stagedRuntimeFile": false,
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "version": "1.91.0"
+    },
+    {
+      "buildInputOf": [
+        "native+planegcs@1.0.1"
+      ],
+      "id": "native+eigen@3.4.0",
+      "name": "Eigen",
+      "notAStagedRuntimeFile": "a header tree compiled into planegcs and into the sketch solver shim. No file of it is staged, on any target.",
+      "role": "build-input",
+      "source": {
+        "kind": "source-archive",
+        "pin": "tools/planegcs/pin.env",
+        "sha256": "8586084f71f9bde545ee7fa6d00288b264a2b7ac3607b974e54d13e7162c1c72",
+        "url": "https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz",
+        "version": "3.4.0"
+      },
+      "stagedRuntimeFile": false,
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "version": "3.4.0"
+    },
+    {
+      "fileModel": "one-component-with-file-inventory",
+      "id": "native+occt@8.0.1",
+      "loadedBy": [
+        "ferritecad",
+        "ferritecad-viewer"
+      ],
+      "name": "Open CASCADE Technology",
+      "role": "runtime-native",
+      "source": {
+        "commit": "b8f597c677811d1f9f4d8a97f5ae2825c0353a42",
+        "kind": "source-archive",
+        "pin": "tools/occt/pin.env",
+        "sha256": "dba62b81078dd43cec23feba89432be301582341001edad1b93342ad8bda35ea",
+        "tag": "V8.0.1",
+        "url": "https://github.com/Open-Cascade-SAS/OCCT/archive/b8f597c677811d1f9f4d8a97f5ae2825c0353a42.tar.gz"
+      },
+      "stagedFilenames": {
+        "aarch64-apple-darwin": [
+          "libTKBO.8.0.dylib",
+          "libTKBRep.8.0.dylib",
+          "libTKBin.8.0.dylib",
+          "libTKBinL.8.0.dylib",
+          "libTKBinTObj.8.0.dylib",
+          "libTKBinXCAF.8.0.dylib",
+          "libTKBool.8.0.dylib",
+          "libTKCAF.8.0.dylib",
+          "libTKCDF.8.0.dylib",
+          "libTKDE.8.0.dylib",
+          "libTKDECascade.8.0.dylib",
+          "libTKDEIGES.8.0.dylib",
+          "libTKDEOBJ.8.0.dylib",
+          "libTKDEPLY.8.0.dylib",
+          "libTKDESTEP.8.0.dylib",
+          "libTKDESTL.8.0.dylib",
+          "libTKDEVRML.8.0.dylib",
+          "libTKExpress.8.0.dylib",
+          "libTKFeat.8.0.dylib",
+          "libTKFillet.8.0.dylib",
+          "libTKG2d.8.0.dylib",
+          "libTKG3d.8.0.dylib",
+          "libTKGeomAlgo.8.0.dylib",
+          "libTKGeomBase.8.0.dylib",
+          "libTKHLR.8.0.dylib",
+          "libTKHelix.8.0.dylib",
+          "libTKLCAF.8.0.dylib",
+          "libTKMath.8.0.dylib",
+          "libTKMesh.8.0.dylib",
+          "libTKMeshVS.8.0.dylib",
+          "libTKOffset.8.0.dylib",
+          "libTKOpenGl.8.0.dylib",
+          "libTKPrim.8.0.dylib",
+          "libTKRWMesh.8.0.dylib",
+          "libTKService.8.0.dylib",
+          "libTKShHealing.8.0.dylib",
+          "libTKStd.8.0.dylib",
+          "libTKStdL.8.0.dylib",
+          "libTKTObj.8.0.dylib",
+          "libTKTopAlgo.8.0.dylib",
+          "libTKV3d.8.0.dylib",
+          "libTKVCAF.8.0.dylib",
+          "libTKXCAF.8.0.dylib",
+          "libTKXMesh.8.0.dylib",
+          "libTKXSBase.8.0.dylib",
+          "libTKXml.8.0.dylib",
+          "libTKXmlL.8.0.dylib",
+          "libTKXmlTObj.8.0.dylib",
+          "libTKXmlXCAF.8.0.dylib",
+          "libTKernel.8.0.dylib"
+        ],
+        "x86_64-pc-windows-msvc": [
+          "TKBO.dll",
+          "TKBRep.dll",
+          "TKCAF.dll",
+          "TKCDF.dll",
+          "TKDE.dll",
+          "TKDESTEP.dll",
+          "TKG2d.dll",
+          "TKG3d.dll",
+          "TKGeomAlgo.dll",
+          "TKGeomBase.dll",
+          "TKHLR.dll",
+          "TKLCAF.dll",
+          "TKMath.dll",
+          "TKMesh.dll",
+          "TKPrim.dll",
+          "TKService.dll",
+          "TKShHealing.dll",
+          "TKTopAlgo.dll",
+          "TKV3d.dll",
+          "TKVCAF.dll",
+          "TKXCAF.dll",
+          "TKXSBase.dll",
+          "TKernel.dll"
+        ],
+        "x86_64-unknown-linux-gnu": [
+          "libTKBO.so.8.0",
+          "libTKBRep.so.8.0",
+          "libTKBool.so.8.0",
+          "libTKCAF.so.8.0",
+          "libTKCDF.so.8.0",
+          "libTKDE.so.8.0",
+          "libTKDESTEP.so.8.0",
+          "libTKFillet.so.8.0",
+          "libTKG2d.so.8.0",
+          "libTKG3d.so.8.0",
+          "libTKGeomAlgo.so.8.0",
+          "libTKGeomBase.so.8.0",
+          "libTKHLR.so.8.0",
+          "libTKLCAF.so.8.0",
+          "libTKMath.so.8.0",
+          "libTKMesh.so.8.0",
+          "libTKOffset.so.8.0",
+          "libTKPrim.so.8.0",
+          "libTKService.so.8.0",
+          "libTKShHealing.so.8.0",
+          "libTKTopAlgo.so.8.0",
+          "libTKV3d.so.8.0",
+          "libTKVCAF.so.8.0",
+          "libTKXCAF.so.8.0",
+          "libTKXSBase.so.8.0",
+          "libTKernel.so.8.0"
+        ]
+      },
+      "stagedRuntimeFile": true,
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "version": "8.0.1"
+    },
+    {
+      "artifactFilename": "planegcs.lib",
+      "buildInputOf": [
+        "native+planegcs@1.0.1"
+      ],
+      "id": "native+planegcs-import-library@1.0.1",
+      "name": "planegcs import library",
+      "notAStagedRuntimeFile": "linker metadata only. It lets somebody relink against a planegcs they replaced; it holds no planegcs code and the staged Windows layout does not carry it.",
+      "role": "build-input",
+      "source": {
+        "kind": "built-from",
+        "pin": "tools/planegcs/pin.env",
+        "sha256": "f62bc07c477544eff62b6ab0fc3bb63fa7f1e6f94763c51b0049507842d444f3",
+        "tag": "1.0.1",
+        "url": "https://github.com/FreeCAD/FreeCAD/archive/refs/tags/1.0.1.tar.gz"
+      },
+      "stagedRuntimeFile": false,
+      "targets": [
+        "x86_64-pc-windows-msvc"
+      ],
+      "version": "1.0.1"
+    },
+    {
+      "fileModel": "one-component-with-file-inventory",
+      "id": "native+planegcs@1.0.1",
+      "loadedBy": [
+        "ferritecad-viewer"
+      ],
+      "name": "planegcs",
+      "role": "runtime-native",
+      "source": {
+        "kind": "source-archive",
+        "note": "the planegcs sources are taken from the FreeCAD release archive named here",
+        "pin": "tools/planegcs/pin.env",
+        "sha256": "f62bc07c477544eff62b6ab0fc3bb63fa7f1e6f94763c51b0049507842d444f3",
+        "tag": "1.0.1",
+        "url": "https://github.com/FreeCAD/FreeCAD/archive/refs/tags/1.0.1.tar.gz"
+      },
+      "stagedFilenames": {
+        "aarch64-apple-darwin": [
+          "libplanegcs.dylib"
+        ],
+        "x86_64-pc-windows-msvc": [
+          "planegcs.dll"
+        ],
+        "x86_64-unknown-linux-gnu": [
+          "libplanegcs.so"
+        ]
+      },
+      "stagedRuntimeFile": true,
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "version": "1.0.1"
+    }
+  ],
+  "formatVersion": 1,
+  "isProductSbom": false,
+  "kind": "ferritecad-native-assets-inventory",
+  "pendingMerge": "rust-fragment-and-native-assets",
+  "productRoots": [
+    {
+      "binary": "ferritecad",
+      "loads": [
+        "occt"
+      ],
+      "package": "ferritecad-cli",
+      "rustFragmentRef": "path+crates/ferritecad-cli#ferritecad-cli@0.0.1",
+      "stagedFilenames": {
+        "aarch64-apple-darwin": [
+          "ferritecad"
+        ],
+        "x86_64-pc-windows-msvc": [
+          "ferritecad.exe"
+        ],
+        "x86_64-unknown-linux-gnu": [
+          "ferritecad"
+        ]
+      },
+      "version": "0.0.1"
+    },
+    {
+      "binary": "ferritecad-viewer",
+      "loads": [
+        "occt",
+        "planegcs"
+      ],
+      "package": "ferritecad-app",
+      "rustFragmentRef": "path+crates/ferritecad-app#ferritecad-app@0.0.1",
+      "stagedFilenames": {
+        "aarch64-apple-darwin": [
+          "ferritecad-viewer"
+        ],
+        "x86_64-pc-windows-msvc": [
+          "ferritecad-viewer.exe"
+        ],
+        "x86_64-unknown-linux-gnu": [
+          "ferritecad-viewer"
+        ]
+      },
+      "version": "0.0.1"
+    }
+  ],
+  "productVersion": "0.0.1",
+  "rustFragments": [
+    {
+      "path": "sbom/rust/rust-fragment-aarch64-apple-darwin.cdx.json",
+      "ref": "ferritecad:rust-fragment:aarch64-apple-darwin",
+      "sha256": "a89a34d6ebdc5045bd715ca2b6154853fb0236ba5411739761f5eeebedceaabc",
+      "target": "aarch64-apple-darwin"
+    },
+    {
+      "path": "sbom/rust/rust-fragment-x86_64-pc-windows-msvc.cdx.json",
+      "ref": "ferritecad:rust-fragment:x86_64-pc-windows-msvc",
+      "sha256": "b027296b1678e3608cffc4ee92026b4c6eda005f2b36df9b2afddd398994bec7",
+      "target": "x86_64-pc-windows-msvc"
+    },
+    {
+      "path": "sbom/rust/rust-fragment-x86_64-unknown-linux-gnu.cdx.json",
+      "ref": "ferritecad:rust-fragment:x86_64-unknown-linux-gnu",
+      "sha256": "febf1971d61e2c18e7f762b44793a56bd36eb3bb503372d1e653daabe5f79617",
+      "target": "x86_64-unknown-linux-gnu"
+    }
+  ],
+  "statement": "This is a native and assets inventory, not a complete product SBOM. It describes the native runtime components a FerriteCAD release carries, the native inputs that only take part in a build, and the assets a product binary embeds. The Rust components are described by the CycloneDX fragments named in rustFragments, and nothing here merges the two.",
+  "targets": [
+    {
+      "layout": {
+        "executables": "FerriteCAD.app/Contents/MacOS",
+        "libraries": "FerriteCAD.app/Contents/Frameworks"
+      },
+      "platform": "macos",
+      "stagedFiles": [
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKBO.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKBRep.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKBin.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKBinL.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKBinTObj.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKBinXCAF.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKBool.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKCAF.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKCDF.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKDE.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKDECascade.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKDEIGES.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKDEOBJ.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKDEPLY.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKDESTEP.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKDESTL.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKDEVRML.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKExpress.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKFeat.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKFillet.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKG2d.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKG3d.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKGeomAlgo.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKGeomBase.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKHLR.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKHelix.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKLCAF.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKMath.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKMesh.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKMeshVS.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKOffset.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKOpenGl.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKPrim.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKRWMesh.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKService.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKShHealing.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKStd.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKStdL.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKTObj.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKTopAlgo.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKV3d.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKVCAF.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKXCAF.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKXMesh.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKXSBase.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKXml.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKXmlL.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKXmlTObj.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKXmlXCAF.8.0.dylib"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libTKernel.8.0.dylib"
+        },
+        {
+          "owner": "native+planegcs@1.0.1",
+          "ownerKind": "component",
+          "path": "FerriteCAD.app/Contents/Frameworks/libplanegcs.dylib"
+        },
+        {
+          "owner": "ferritecad",
+          "ownerKind": "product-root",
+          "path": "FerriteCAD.app/Contents/MacOS/ferritecad"
+        },
+        {
+          "owner": "ferritecad-viewer",
+          "ownerKind": "product-root",
+          "path": "FerriteCAD.app/Contents/MacOS/ferritecad-viewer"
+        }
+      ],
+      "systemLibraries": {
+        "enumerated": false,
+        "enumerationNote": "The set differs between runner images and is therefore evidence of one run rather than a property of the product. Each run of the combined runtime layout workflow uploads what it observed; this document commits the rule instead.",
+        "rule": "A library the operating system ships is not part of the delivery and is never copied. tools/runtime-closure.sh decides this by where a name resolves - /lib, /lib64, /usr/lib, /usr/lib64, the program interpreter and the virtual DSO on Linux; /usr/lib and /System/Library on macOS, where the dyld shared cache means there is no file at all; System32, SysWOW64, WinSxS and the API set names the loader redirects on Windows. Open CASCADE and planegcs are matched by name before location, so a toolkit installed into a system directory is still this product's to carry.",
+        "shipped": false
+      },
+      "triple": "aarch64-apple-darwin"
+    },
+    {
+      "layout": {
+        "executables": "bin",
+        "libraries": "bin"
+      },
+      "platform": "windows",
+      "stagedFiles": [
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKBO.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKBRep.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKCAF.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKCDF.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKDE.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKDESTEP.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKG2d.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKG3d.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKGeomAlgo.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKGeomBase.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKHLR.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKLCAF.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKMath.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKMesh.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKPrim.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKService.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKShHealing.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKTopAlgo.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKV3d.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKVCAF.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKXCAF.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKXSBase.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKernel.dll"
+        },
+        {
+          "owner": "ferritecad-viewer",
+          "ownerKind": "product-root",
+          "path": "bin/ferritecad-viewer.exe"
+        },
+        {
+          "owner": "ferritecad",
+          "ownerKind": "product-root",
+          "path": "bin/ferritecad.exe"
+        },
+        {
+          "owner": "native+planegcs@1.0.1",
+          "ownerKind": "component",
+          "path": "bin/planegcs.dll"
+        }
+      ],
+      "systemLibraries": {
+        "enumerated": false,
+        "enumerationNote": "The set differs between runner images and is therefore evidence of one run rather than a property of the product. Each run of the combined runtime layout workflow uploads what it observed; this document commits the rule instead.",
+        "rule": "A library the operating system ships is not part of the delivery and is never copied. tools/runtime-closure.sh decides this by where a name resolves - /lib, /lib64, /usr/lib, /usr/lib64, the program interpreter and the virtual DSO on Linux; /usr/lib and /System/Library on macOS, where the dyld shared cache means there is no file at all; System32, SysWOW64, WinSxS and the API set names the loader redirects on Windows. Open CASCADE and planegcs are matched by name before location, so a toolkit installed into a system directory is still this product's to carry.",
+        "shipped": false
+      },
+      "triple": "x86_64-pc-windows-msvc"
+    },
+    {
+      "layout": {
+        "executables": "bin",
+        "libraries": "lib"
+      },
+      "platform": "linux",
+      "stagedFiles": [
+        {
+          "owner": "ferritecad",
+          "ownerKind": "product-root",
+          "path": "bin/ferritecad"
+        },
+        {
+          "owner": "ferritecad-viewer",
+          "ownerKind": "product-root",
+          "path": "bin/ferritecad-viewer"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKBO.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKBRep.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKBool.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKCAF.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKCDF.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKDE.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKDESTEP.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKFillet.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKG2d.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKG3d.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKGeomAlgo.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKGeomBase.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKHLR.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKLCAF.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKMath.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKMesh.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKOffset.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKPrim.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKService.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKShHealing.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKTopAlgo.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKV3d.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKVCAF.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKXCAF.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKXSBase.so.8.0"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "lib/libTKernel.so.8.0"
+        },
+        {
+          "owner": "native+planegcs@1.0.1",
+          "ownerKind": "component",
+          "path": "lib/libplanegcs.so"
+        }
+      ],
+      "systemLibraries": {
+        "enumerated": false,
+        "enumerationNote": "The set differs between runner images and is therefore evidence of one run rather than a property of the product. Each run of the combined runtime layout workflow uploads what it observed; this document commits the rule instead.",
+        "rule": "A library the operating system ships is not part of the delivery and is never copied. tools/runtime-closure.sh decides this by where a name resolves - /lib, /lib64, /usr/lib, /usr/lib64, the program interpreter and the virtual DSO on Linux; /usr/lib and /System/Library on macOS, where the dyld shared cache means there is no file at all; System32, SysWOW64, WinSxS and the API set names the loader redirects on Windows. Open CASCADE and planegcs are matched by name before location, so a toolkit installed into a system directory is still this product's to carry.",
+        "shipped": false
+      },
+      "triple": "x86_64-unknown-linux-gnu"
+    }
+  ]
+}

@@ -188,6 +188,17 @@ jobs:
       - run: cargo fetch --locked
       - run: tools/check-rust-sbom.sh
 
+      # The half of the native/assets inventory that needs no staged layout:
+      # the document is schema-valid, says in its own fields that it is not a
+      # product SBOM, carries nothing about the machine that produced it, two
+      # runs of its generator reproduce the committed bytes, every version and
+      # digest agrees with the file that owns it, every embedded asset exists
+      # and hashes to what is written down, and the Rust fragments above are
+      # byte for byte the ones it was written against. The file boundary needs
+      # a real staged layout and is checked by the combined runtime layout
+      # workflow, which is the only thing that produces one.
+      - run: tools/check-native-inventory.sh
+
   # Security advisories, dependency bans and source policy remain gates.
   # Licence policy is still reported, but ADR 0003 makes it advisory so an
   # unresolved or newly disallowed expression cannot stop product work.

@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: MIT
+#
+# Which component owns which staged runtime file on windows.
+#
+# Measured, not derived. The file names come from the combined runtime layout
+# workflow, which builds the product against pinned Open CASCADE and pinned
+# planegcs, walks the loader graph of both product binaries and stages what it
+# found; tools/check-native-inventory.sh compares this list against a staging
+# directory that workflow really produced, and against the independent class
+# runtime-closure.sh gave each library. A name here that staging does not
+# create, a staged file that is not here, and a file claimed twice are three
+# different failures and each has its own message.
+#
+# Two columns, tab separated: the owning component's key, and the path
+# relative to the root of the staged layout. Sorted in the C locale.
+#
+# The owner key is deliberately unversioned. What version of Open CASCADE this
+# is belongs to tools/occt/pin.env, and repeating it per file would make a
+# patch bump edit every line of a file that measures something else.
+ferritecad	bin/ferritecad.exe
+ferritecad-viewer	bin/ferritecad-viewer.exe
+occt	bin/TKBO.dll
+occt	bin/TKBRep.dll
+occt	bin/TKCAF.dll
+occt	bin/TKCDF.dll
+occt	bin/TKDE.dll
+occt	bin/TKDESTEP.dll
+occt	bin/TKG2d.dll
+occt	bin/TKG3d.dll
+occt	bin/TKGeomAlgo.dll
+occt	bin/TKGeomBase.dll
+occt	bin/TKHLR.dll
+occt	bin/TKLCAF.dll
+occt	bin/TKMath.dll
+occt	bin/TKMesh.dll
+occt	bin/TKPrim.dll
+occt	bin/TKService.dll
+occt	bin/TKShHealing.dll
+occt	bin/TKTopAlgo.dll
+occt	bin/TKV3d.dll
+occt	bin/TKVCAF.dll
+occt	bin/TKXCAF.dll
+occt	bin/TKXSBase.dll
+occt	bin/TKernel.dll
+planegcs	bin/planegcs.dll

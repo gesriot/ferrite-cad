@@ -27,3 +27,13 @@ tools/notices/texts/*   -text -whitespace
 sbom/rust/*.cdx.json    -text
 tools/sbom/*            -text
 tools/sbom/schema/*     -text
+
+# The native/assets inventory is compared byte for byte between two runs of its
+# generator and between three hosts, its own SHA-256 travels in the evidence
+# each platform uploads, and the measured ownership maps and the two pin files
+# beside it are read by a shell. A Windows checkout that rewrote their line
+# endings would change every one of those answers without changing anything
+# about the product.
+sbom/native/*.json      -text
+tools/native/*          -text
+tools/occt/*            -text
