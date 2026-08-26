@@ -670,9 +670,23 @@ jobs:
           } > "native-evidence-${{ matrix.name }}.txt"
           wc -l < "native-evidence-${{ matrix.name }}.txt"
 
+      - name: Reproduce the native inventory on this host
+        run: |
+          set -euo pipefail
+          generated="native-assets-inventory-${{ matrix.name }}.json"
+          tools/generate-native-inventory.sh --output "$generated"
+          if ! cmp -s sbom/native/native-assets-inventory.json "$generated"; then
+            echo "::error::${{ matrix.name }} generated native inventory bytes that differ from the committed document"
+            diff -u sbom/native/native-assets-inventory.json "$generated" \
+              | head -n 80 || true
+            exit 1
+          fi
+          echo "${{ matrix.name }} reproduced the committed native inventory byte for byte"
+
       - name: Keep the part of the inventory that must not differ between hosts
         run: |
           set -euo pipefail
+          inventory="native-assets-inventory-${{ matrix.name }}.json"
           # Everything here is target-independent by construction: component
           # identities, their versions, their source digests, the asset digests,
           # which binary loads what, and the digest of the inventory document
@@ -685,22 +699,20 @@ jobs:
             jq -r '.components[]
                    | "component " + .id + " " + .role + " "
                      + ((.source.sha256 // .asset.sha256) // "-")' \
-              sbom/native/native-assets-inventory.json
+              "$inventory"
             jq -r '.components[] | select(.role == "runtime-native")
                    | "loaded-by " + .id + " " + (.loadedBy | join(","))' \
-              sbom/native/native-assets-inventory.json
+              "$inventory"
             jq -r '.components[] | select(.role == "embedded-asset")
                    | "embedded-in " + .id + " " + (.embeddedIn | join(","))' \
-              sbom/native/native-assets-inventory.json
+              "$inventory"
             jq -r '.productRoots[] | "root " + .binary + " " + .rustFragmentRef' \
-              sbom/native/native-assets-inventory.json
+              "$inventory"
             jq -r '.rustFragments[] | "fragment " + .target + " " + .sha256' \
-              sbom/native/native-assets-inventory.json
+              "$inventory"
             case '${{ matrix.name }}' in
-              macos) digest="$(shasum -a 256 sbom/native/native-assets-inventory.json \
-                       | cut -d' ' -f1)" ;;
-              *)     digest="$(sha256sum sbom/native/native-assets-inventory.json \
-                       | cut -d' ' -f1)" ;;
+              macos) digest="$(shasum -a 256 "$inventory" | cut -d' ' -f1)" ;;
+              *)     digest="$(sha256sum "$inventory" | cut -d' ' -f1)" ;;
             esac
             echo "inventory $digest"
           } | tr -d '\r' | LC_ALL=C sort > "native-stable-${{ matrix.name }}.txt"
@@ -767,6 +779,7 @@ jobs:
             staged-facts-${{ matrix.name }}.txt
             native-inventory-${{ matrix.name }}.txt
             native-evidence-${{ matrix.name }}.txt
+            native-assets-inventory-${{ matrix.name }}.json
           # Uploaded even when the job failed, which is when the closure and
           # the layout are most worth reading. A run that stopped before
           # producing them must not have its real failure replaced by an
