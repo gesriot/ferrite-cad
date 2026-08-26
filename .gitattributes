@@ -38,6 +38,14 @@ sbom/native/*.json      -text
 tools/native/*          -text
 tools/occt/*            -text
 
+# The merged product SBOMs are compared byte for byte between two runs of the
+# merge and between three hosts, and each one carries the SHA-256 of the two
+# documents it was merged from. A Windows checkout that rewrote a line ending
+# would break every one of those answers without changing anything about the
+# product.
+sbom/product/*.cdx.json -text
+tools/product/*         -text
+
 # These two repository assets are hashed by the native/assets inventory and
 # embedded into the viewer byte for byte. They must keep the repository bytes
 # on Windows rather than being rewritten by core.autocrlf.

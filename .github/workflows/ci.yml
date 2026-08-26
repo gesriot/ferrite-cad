@@ -162,11 +162,13 @@ jobs:
       - run: cargo fetch --locked
       - run: tools/check-rust-notices.sh
 
-  # The Rust half of the product SBOM. A fragment, and it says so in its own
-  # metadata: the native and asset merge is a later slice. This job proves the
-  # checked-in fragments are neither stale nor host-specific and that an
-  # independent oracle agrees about their composition. ADR 0003 keeps recorded
-  # licence risk out of the exit code.
+  # The product SBOM and the two intermediate documents it is merged from. The
+  # fragment describes only the Rust components and says so; the inventory
+  # describes only the native components, the build inputs and the embedded
+  # assets and says so; the merged document under sbom/product is the one that
+  # describes the delivered product for a target. This job proves all three are
+  # neither stale nor host-specific and that an independent oracle agrees about
+  # each. ADR 0003 keeps recorded licence risk out of the exit code.
   sbom:
     runs-on: ubuntu-latest
     steps:
@@ -198,6 +200,17 @@ jobs:
       # a real staged layout and is checked by the combined runtime layout
       # workflow, which is the only thing that produces one.
       - run: tools/check-native-inventory.sh
+
+      # And the merge of the two. This is the first document in the repository
+      # that claims to describe the whole product: the Rust components of both
+      # shipped binaries, the native libraries the delivery carries, the native
+      # inputs that only take part in a build, and the files those binaries
+      # embed. The gate proves it is not stale, that it is schema-valid, that
+      # it carries nothing about the machine that merged it, and that an oracle
+      # built from the two inputs rather than from the merge agrees about every
+      # component and every relationship. That the merge is the same on every
+      # host is the separate product sbom workflow's claim.
+      - run: tools/check-product-sbom.sh
 
   # Security advisories, dependency bans and source policy remain gates.
   # Licence policy is still reported, but ADR 0003 makes it advisory so an

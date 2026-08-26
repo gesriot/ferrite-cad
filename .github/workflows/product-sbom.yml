@@ -1,0 +1,164 @@
+# SPDX-License-Identifier: MIT
+name: product sbom
+
+# The ordinary CI job proves the merged product SBOMs are neither stale nor
+# wrong on one host. This workflow additionally proves that a fixed target
+# merges to the same bytes whichever host did the merging, which is the claim a
+# reproducible SBOM actually makes.
+#
+# Every host merges for itself. Three checkouts of the same committed JSON
+# would compare equal without anything having been merged at all, so the
+# comparison is over what each runner produced in its own temporary directory,
+# and the compare job refuses to start comparing until all three hosts and all
+# three targets are named in the evidence it downloaded.
+#
+# Nothing here researches a licence. ADR 0003 makes unresolved licence evidence
+# a recorded risk rather than a gate, and the merge carries the Rust
+# components' licence fields across mechanically and unexamined.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - sbom/**
+      - tools/product/**
+      - tools/generate-product-sbom.sh
+      - tools/check-product-sbom.sh
+      - tools/product-digests.sh
+      - tools/sbom/**
+      - tools/native/**
+      - tools/notices/lib.sh
+      - .gitattributes
+      - .github/workflows/product-sbom.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  merge:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The version comes from the pin and is not repeated here. RUSTFLAGS is
+      # cleared for the install only: this repository denies warnings in its own
+      # code, and a warning inside a third-party tool is not a reason to be
+      # unable to install it.
+      - name: Install the pinned schema validator
+        env:
+          RUSTFLAGS: ''
+        run: |
+          set -euo pipefail
+          . tools/sbom/pin.env
+          cargo install jsonschema-cli --version "$JSONSCHEMA_CLI_VERSION" --locked
+
+      # The same gate the ordinary CI job runs, here on three hosts. It checks
+      # the schema, the absence of host data, two consecutive merges, the
+      # committed bytes and the independent oracle for every target.
+      - run: tools/check-product-sbom.sh
+
+      - name: What this host merged
+        env:
+          PRODUCT_KEEP_DIR: merged
+        run: tools/product-digests.sh | tee "digests-${{ matrix.os }}.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: product-sbom-digests-${{ matrix.os }}
+          path: digests-${{ matrix.os }}.txt
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: product-sbom-${{ matrix.os }}
+          path: merged/*.cdx.json
+          if-no-files-found: error
+
+  # Three files that all said nothing would compare equal, so the comparison
+  # requires the lines it is about to compare to be there, from every host and
+  # for every target.
+  compare:
+    needs: merge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: product-sbom-digests-*
+          path: digests
+          merge-multiple: true
+
+      - name: Every host must have merged the same bytes for each target
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          for os in ubuntu-latest macos-latest windows-latest; do
+            f="digests/digests-${os}.txt"
+            if [ ! -s "$f" ]; then
+              echo "::error::${os} produced no product SBOM evidence"
+              exit 1
+            fi
+          done
+
+          files=(digests/digests-*.txt)
+          if [ "${#files[@]}" -ne 3 ]; then
+            echo "::error::expected three host summaries, found ${#files[@]}"
+            exit 1
+          fi
+
+          # The lines that must exist before equality means anything, and the
+          # targets that must be named. A summary missing a target would agree
+          # with the others about everything it did say.
+          for f in "${files[@]}"; do
+            for kind in tool schema policy input product; do
+              grep -q "^$kind	" "$f" || {
+                echo "::error::$f carries no '$kind' line"; exit 1; }
+            done
+            n="$(grep -c '^product	' "$f")"
+            if [ "$n" -ne 3 ]; then
+              echo "::error::$f reports $n merged documents, not three"
+              exit 1
+            fi
+            for target in x86_64-unknown-linux-gnu x86_64-pc-windows-msvc \
+                          aarch64-apple-darwin; do
+              grep -q "^product	${target}	" "$f" || {
+                echo "::error::$f says nothing about ${target}"; exit 1; }
+            done
+          done
+
+          # Tool, schema, policy and input identity is shared by all three
+          # targets, so it must be identical on all three hosts. A merged
+          # document's digest differs between targets and must not differ
+          # between hosts.
+          first="${files[0]}"
+          status=0
+          for f in "${files[@]:1}"; do
+            if ! diff -u "$first" "$f"; then
+              echo "::error::$(basename "$f") disagrees with $(basename "$first")"
+              status=1
+            fi
+          done
+          [ "$status" = 0 ] || exit 1
+
+          echo "the three hosts agree, line for line:"
+          cat "$first"
