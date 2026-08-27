@@ -137,6 +137,20 @@ inventory="$NATIVE_INVENTORY"
 # ---------------------------------------------------------------------------
 
 if [ -z "$staging" ]; then
+    # A Windows path contains backslashes. GNU checksum tools escape a named
+    # file in their output and prefix the whole line with another backslash,
+    # which used to leave every digest in native-evidence-windows.txt spelled
+    # `\<digest>`. Exercise the shared helper with the same hazardous character
+    # and compare with a fixed digest of the bytes, not with another invocation
+    # of the helper.
+    check
+    hash_probe="$work/native\\evidence"
+    printf 'native evidence\n' > "$hash_probe"
+    got="$(native_sha256 "$hash_probe" | native_strip_cr)"
+    expected='eda1c084bf6d4e040549d55684705f795d9aeeec550c7d327501d519098dfde9'
+    [ "$got" = "$expected" ] \
+        || fail "the SHA-256 helper returned '$got' for a path with a backslash, expected $expected"
+
     # The schema is the definition of the shape, and it is a real validator
     # rather than a parser written here. Pinned like the CycloneDX one.
     check

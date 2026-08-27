@@ -167,10 +167,15 @@ native_load_pins() {
 }
 
 native_sha256() { # file
+    # Feed the bytes on stdin instead of naming the file. GNU checksum tools
+    # escape their output when a name contains a backslash and mark that fact
+    # with a leading `\`. RUNNER_TEMP has backslashes on Windows, so parsing the
+    # first field of a named checksum can return `\<digest>` rather than the
+    # digest. With no filename in the output there is nothing to escape.
     if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | cut -d' ' -f1
+        sha256sum < "$1" | cut -d' ' -f1
     else
-        shasum -a 256 "$1" | cut -d' ' -f1
+        shasum -a 256 < "$1" | cut -d' ' -f1
     fi
 }
 

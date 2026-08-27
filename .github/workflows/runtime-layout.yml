@@ -671,6 +671,7 @@ jobs:
       - name: Record what this build produced, which the inventory does not
         run: |
           set -euo pipefail
+          . tools/native/lib.sh
           # Build-local evidence and nothing else. These digests are a property
           # of this run: two clean builds of the same target on one host
           # reproduce them, and the same pinned sources on another host do not
@@ -684,10 +685,10 @@ jobs:
             echo "# build-local evidence, ${{ matrix.name }}; not a committed fact"
             echo "runner ${{ matrix.os }} ${RUNNER_ARCH}"
             find "$staging" -type f | LC_ALL=C sort | while IFS= read -r file; do
-              case "${{ matrix.name }}" in
-                macos) digest="$(shasum -a 256 "$file" | cut -d' ' -f1)" ;;
-                *)     digest="$(sha256sum "$file" | cut -d' ' -f1)" ;;
-              esac
+              # The shared helper reads the file on stdin. Naming a Windows
+              # path makes GNU sha256sum escape the line and put a stray `\`
+              # in front of the digest.
+              digest="$(native_sha256 "$file")"
               printf 'staged %s %s %s\n' "${file#"$staging"/}" "$digest" \
                 "$(wc -c < "$file" | tr -d ' ')"
             done
