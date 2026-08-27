@@ -758,4 +758,25 @@ for wanted in 'tools/build-release-set.sh' 'tools/check-release-set.sh' \
     fi
 done
 
+# The result is itself named ferritecad-release-set. A wildcard beginning
+# ferritecad-release- therefore downloads the previous result when the compare
+# job is re-run in the same workflow run. Ask for the three producer artifacts
+# by exact name, and make the broad pattern a regression rather than a fourth
+# input that happens not to exist on the first attempt.
+for artifact in ferritecad-release-linux ferritecad-release-macos \
+                ferritecad-release-windows; do
+    checks=$((checks + 1))
+    if LC_ALL=C grep -qF "name: $artifact" "$workflow"; then
+        echo "  ok      $workflow downloads '$artifact' by exact name"
+    else
+        fail "$workflow does not download '$artifact' by exact name"
+    fi
+done
+checks=$((checks + 1))
+if LC_ALL=C grep -qF 'pattern: ferritecad-release-*' "$workflow"; then
+    fail "$workflow uses a release-artifact wildcard that also matches its own release set on a re-run"
+else
+    echo "  ok      $workflow cannot download its own earlier release set as a platform archive"
+fi
+
 report_and_exit 0

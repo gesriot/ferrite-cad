@@ -1330,13 +1330,31 @@ jobs:
       # is no GitHub Release, no tag, no installer, no signature and no
       # notarisation, and nothing here creates one.
 
-      - name: Require an archive artifact from each platform
+      # Name the three producer artifacts exactly. A glob such as
+      # `ferritecad-release-*` also matches the `ferritecad-release-set`
+      # artifact this job uploads. That artifact is visible to a re-run of
+      # this job in the same workflow run, so the aggregator would download
+      # its own previous output and either mix it into its inputs or fail on
+      # six archives. Exact names ask only for the three measure-job outputs;
+      # when a re-run left more than one artifact with a name, download-
+      # artifact selects the latest one.
+      - name: Download the Linux release archive
         uses: actions/download-artifact@v4
-        # No run-id: this downloads the artifacts of this run, and `needs`
-        # above means all three platform jobs of this run succeeded.
         with:
-          pattern: ferritecad-release-*
-          path: archives
+          name: ferritecad-release-linux
+          path: archives/ferritecad-release-linux
+
+      - name: Download the macOS release archive
+        uses: actions/download-artifact@v4
+        with:
+          name: ferritecad-release-macos
+          path: archives/ferritecad-release-macos
+
+      - name: Download the Windows release archive
+        uses: actions/download-artifact@v4
+        with:
+          name: ferritecad-release-windows
+          path: archives/ferritecad-release-windows
 
       - name: Require each archive to have been uploaded
         run: |
