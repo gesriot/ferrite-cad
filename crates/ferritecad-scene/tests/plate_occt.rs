@@ -1632,6 +1632,7 @@ fn a_profile_whose_pair_meets_twice_gets_no_invented_corner_name() {
                             },
                         },
                     ],
+                    constraints: Vec::new(),
                 }),
             )?;
             w.add_dependency(Dependency {

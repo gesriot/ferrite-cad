@@ -104,7 +104,11 @@ fn populate(document: &mut Document, height: f64, order: &[usize]) -> Result<Pla
             None,
             1,
             Some("Profile"),
-            &ObjectPayload::Sketch(Sketch { plane, curves }),
+            &ObjectPayload::Sketch(Sketch {
+                plane,
+                curves,
+                constraints: Vec::new(),
+            }),
         )?;
         w.add_dependency(Dependency {
             dependent: sketch,

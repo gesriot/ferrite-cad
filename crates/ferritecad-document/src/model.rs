@@ -15,7 +15,7 @@ use ferritecad_types::{
     ProfileJoint, Result, StableEntityId, Transform, normalize_f64,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::envelope::{Envelope, UnknownObject};
 
@@ -58,6 +58,22 @@ pub const EXTRUDE_SWEEP_EDGE_CAPABILITY: &str = "topology.extrude-sweep-edge.v1"
 /// cannot reproduce. The envelope layout is unchanged once more, so this is a
 /// vocabulary change and not a version bump.
 pub const EXTRUDE_CAP_VERTEX_CAPABILITY: &str = "topology.extrude-cap-vertex.v1";
+
+/// What a reader must implement before it may rewrite a sketch that carries
+/// constraints.
+///
+/// Its own name beside [`CORE_CAPABILITY`] rather than a widening of it,
+/// because the two answer different questions. A build that predates this one
+/// can read every curve of such a sketch perfectly well; what it cannot do is
+/// keep the relationships between them, and a rewrite that dropped those would
+/// turn a constrained drawing back into loose coordinates that merely happen to
+/// sit where the solver last left them. The capability is what makes that
+/// build stop instead.
+///
+/// Declared only by a sketch that actually holds a constraint. An unconstrained
+/// sketch declares exactly what it declared before this build existed, stays at
+/// layout v1, and stays writable by a reader that lacks this.
+pub const SKETCH_CONSTRAINTS_CAPABILITY: &str = "sketch.constraints.v1";
 
 /// The capability an [`ImportedStep`] object depends on.
 ///
@@ -112,21 +128,54 @@ impl ObjectKind {
     }
 
     /// The capabilities a reader must implement to rewrite an object of this
-    /// type without losing what it means.
-    pub fn required_capabilities(self) -> Vec<String> {
-        match self {
-            Self::ImportedStep => vec![IMPORTED_STEP_CAPABILITY.to_owned()],
+    /// type, at one particular payload layout, without losing what it means.
+    ///
+    /// Taken with the layout rather than with the type alone because for a
+    /// sketch the two really do differ: v1 holds curves, which any build can
+    /// keep, and v2 holds the relationships between them, which only a build
+    /// that knows [`SKETCH_CONSTRAINTS_CAPABILITY`] can. Deciding it from the
+    /// header keeps the answer available before anything is decoded, which is
+    /// what capability negotiation at open time needs.
+    pub fn required_capabilities(self, schema_version: u32) -> Vec<String> {
+        match (self, schema_version) {
+            (Self::ImportedStep, _) => vec![IMPORTED_STEP_CAPABILITY.to_owned()],
+            (Self::Sketch, 2) => vec![
+                CORE_CAPABILITY.to_owned(),
+                SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
+            ],
             _ => vec![CORE_CAPABILITY.to_owned()],
         }
     }
 
-    /// Layout version of this object type's payload.
+    /// Every capability this type may require at any layout this build reads.
+    ///
+    /// A payload naming something outside this set is one whose contract this
+    /// build cannot honour whatever its version says, and is preserved verbatim
+    /// rather than decoded. That is how a future constraint family arrives: it
+    /// comes under a capability of its own, and this build keeps its bytes
+    /// instead of reading a vocabulary it only half understands.
+    pub fn known_capabilities(self) -> &'static [&'static str] {
+        match self {
+            Self::ImportedStep => &[IMPORTED_STEP_CAPABILITY],
+            Self::Sketch => &[CORE_CAPABILITY, SKETCH_CONSTRAINTS_CAPABILITY],
+            _ => &[CORE_CAPABILITY],
+        }
+    }
+
+    /// Newest layout version of this object type's payload.
+    ///
+    /// What an object is *stored* at is decided by what it holds, not by this:
+    /// see [`ObjectPayload::schema_version`].
     pub fn schema_version(self) -> u32 {
         match self {
             // v2 gave every definition the identity its source file wrote
             // down, and made instances name theirs by it rather than by
             // position. v1 objects are still read; see [`ImportedStep::scene`].
             Self::ImportedStep => 2,
+            // v2 added the constraint list. v1 sketches are still read and
+            // still written, because a sketch with no constraints is a v1
+            // sketch; see [`Sketch::schema_version`].
+            Self::Sketch => 2,
             _ => 1,
         }
     }
@@ -137,7 +186,7 @@ impl ObjectKind {
     /// recoverable; anything else is preserved verbatim and not interpreted.
     pub fn readable_schema_versions(self) -> &'static [u32] {
         match self {
-            Self::ImportedStep => &[2, 1],
+            Self::ImportedStep | Self::Sketch => &[2, 1],
             _ => &[1],
         }
     }
@@ -262,6 +311,16 @@ pub enum SketchGeometry {
 }
 
 impl SketchGeometry {
+    /// What to call this shape in a message about it.
+    fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Point { .. } => "point",
+            Self::Line { .. } => "line",
+            Self::Circle { .. } => "circle",
+            Self::Arc { .. } => "arc",
+        }
+    }
+
     fn validate(&self) -> Result<()> {
         match self {
             Self::Point { at } => at.validate(),
@@ -303,17 +362,346 @@ pub struct SketchCurve {
     pub geometry: SketchGeometry,
 }
 
-/// Profile geometry on a plane.
+/// Which stored point of a curve a constraint names.
 ///
-/// Constraints are deliberately absent at this schema version: the solver
-/// arrives in its own stage, and adding a constraint list before it exists
-/// would mean guessing at its representation. Adding one later is an object
-/// schema version bump, not a file format break.
+/// Only the points that are a stored coordinate pair of their own, because
+/// only those have somewhere for an answer to be written back to. Measured
+/// against all four [`SketchGeometry`] variants:
+///
+/// - `Point { at }` has one, [`Self::At`].
+/// - `Line { start, end }` has two, [`Self::Start`] and [`Self::End`].
+/// - `Circle { center, radius }` stores a centre, but a circle *is* its centre
+///   and its radius together, and the solver contract has no radius parameter
+///   and no relationship that names one. Constraining the centre alone would
+///   let a solve move a circle while everything that met its rim quietly
+///   stopped meeting it.
+/// - `Arc` is worse: the two points a profile chain actually joins at are its
+///   endpoints, and those are derived from a centre, a radius and two angles
+///   rather than stored. There is no durable pair to name, and no angle the
+///   contract could read or write.
+///
+/// So a reference into a circle or an arc has no selector at all, and
+/// validation says so by name. A `Center` variant that every path refused
+/// would be vocabulary this build cannot honour, written down as though it
+/// could.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SketchPointSelector {
+    /// The position of a [`SketchGeometry::Point`].
+    At,
+    /// The start of a [`SketchGeometry::Line`].
+    Start,
+    /// The end of a [`SketchGeometry::Line`].
+    End,
+}
+
+impl SketchPointSelector {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::At => "at",
+            Self::Start => "start",
+            Self::End => "end",
+        }
+    }
+
+    /// Whether this selector names a point that the given geometry stores.
+    fn fits(self, geometry: &SketchGeometry) -> bool {
+        matches!(
+            (self, geometry),
+            (Self::At, SketchGeometry::Point { .. })
+                | (Self::Start | Self::End, SketchGeometry::Line { .. })
+        )
+    }
+}
+
+/// One point of one curve, named the way the document names things.
+///
+/// A curve by its [`StableEntityId`] and a point of it by which point it is.
+/// Nothing here is a position in an array, a coordinate, a solver identifier or
+/// anything else that a later edit or a later session could re-issue: reordering
+/// the curve list moves nothing, and two curves drawn on top of one another stay
+/// two curves with two identities, which is exactly why `Coincident` has to be
+/// said rather than inferred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SketchPointRef {
+    pub curve: StableEntityId,
+    pub at: SketchPointSelector,
+}
+
+impl SketchPointRef {
+    pub fn new(curve: StableEntityId, at: SketchPointSelector) -> Self {
+        Self { curve, at }
+    }
+}
+
+impl std::fmt::Display for SketchPointRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}", self.curve, self.at.as_str())
+    }
+}
+
+/// A straight run between two named points.
+///
+/// Two point references and not a curve, because the relationships that take a
+/// segment — equal length, perpendicular, parallel — are about the line joining
+/// two points, and saying "the third curve" would make the meaning depend on an
+/// ordinal that any edit can change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SketchSegmentRef {
+    pub from: SketchPointRef,
+    pub to: SketchPointRef,
+}
+
+impl SketchSegmentRef {
+    pub fn new(from: SketchPointRef, to: SketchPointRef) -> Self {
+        Self { from, to }
+    }
+}
+
+/// What one constraint says.
+///
+/// The eight families the solver comparison measured, in the document's own
+/// words. Nothing here is wider than the sketch solver's contract, and nothing
+/// here is that crate's types: a document that imported them would make its
+/// stored meaning depend on which solver was chosen, and which solver was
+/// chosen is the one thing a stored meaning has to outlive.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SketchConstraintRule {
+    /// Two points occupy the same place.
+    Coincident {
+        a: SketchPointRef,
+        b: SketchPointRef,
+    },
+    /// A point is pinned where it is told.
+    Fixed {
+        point: SketchPointRef,
+        x: f64,
+        y: f64,
+    },
+    /// The distance between two points.
+    Distance {
+        a: SketchPointRef,
+        b: SketchPointRef,
+        distance: f64,
+    },
+    /// Two points share a y coordinate.
+    Horizontal {
+        a: SketchPointRef,
+        b: SketchPointRef,
+    },
+    /// Two points share an x coordinate.
+    Vertical {
+        a: SketchPointRef,
+        b: SketchPointRef,
+    },
+    /// Two segments are the same length.
+    EqualLength {
+        a: SketchSegmentRef,
+        b: SketchSegmentRef,
+    },
+    /// Two segments meet at a right angle.
+    Perpendicular {
+        a: SketchSegmentRef,
+        b: SketchSegmentRef,
+    },
+    /// Two segments run in the same direction.
+    Parallel {
+        a: SketchSegmentRef,
+        b: SketchSegmentRef,
+    },
+}
+
+impl SketchConstraintRule {
+    /// Every point this rule names, in the order it names them.
+    ///
+    /// The one enumeration. Validation checks these, and the translation that
+    /// §21B-1b will write reads these, so a constraint cannot be checked
+    /// against one set of references and solved against another. Adding a
+    /// family means adding an arm here and nowhere else.
+    pub fn points(&self) -> Vec<SketchPointRef> {
+        match *self {
+            Self::Fixed { point, .. } => vec![point],
+            Self::Coincident { a, b }
+            | Self::Distance { a, b, .. }
+            | Self::Horizontal { a, b }
+            | Self::Vertical { a, b } => vec![a, b],
+            Self::EqualLength { a, b } | Self::Perpendicular { a, b } | Self::Parallel { a, b } => {
+                vec![a.from, a.to, b.from, b.to]
+            }
+        }
+    }
+
+    /// The segments this rule names, which is none for the point families.
+    fn segments(&self) -> Vec<SketchSegmentRef> {
+        match *self {
+            Self::EqualLength { a, b } | Self::Perpendicular { a, b } | Self::Parallel { a, b } => {
+                vec![a, b]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        match *self {
+            Self::Fixed { x, y, .. } => {
+                normalize_f64(x)?;
+                normalize_f64(y)?;
+            }
+            Self::Distance { distance, .. } => {
+                validate_positive(distance, "constraint distance")?;
+            }
+            _ => {}
+        }
+
+        // A segment is two points. The solver contract does not refuse one that
+        // names a single point twice, but it does not mean anything either:
+        // perpendicular and parallel over a zero-length segment score exactly
+        // zero, so such a constraint is silently satisfied and never diagnosed.
+        // Refusing it here is the only place it can be said out loud.
+        //
+        // Nothing else structural is refused. `Distance` between a point and
+        // itself is impossible to satisfy, but that is a conflict, and telling
+        // the user which constraint conflicts is what the solver is for; a
+        // document that would not store it is a document in which they never
+        // find out.
+        for segment in self.segments() {
+            if segment.from == segment.to {
+                return Err(CadError::input(format!(
+                    "a segment runs between two points, but this one names {} twice",
+                    segment.from
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One durably identified constraint of a sketch.
+///
+/// The identifier is the whole point. A solver reports a conflict against
+/// whichever constraint conflicts, and that report has to survive being handed
+/// back to a document that has since had constraints added to it, removed from
+/// it or reordered. An ordinal would not; this does.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SketchConstraint {
+    pub id: StableEntityId,
+    pub rule: SketchConstraintRule,
+}
+
+/// Profile geometry on a plane, and the relationships between it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sketch {
     /// The datum plane this sketch lies on.
     pub plane: ObjectId,
     pub curves: Vec<SketchCurve>,
+    /// Stored in the order the user added them, and read back in it, because a
+    /// document should give back what it was given. No answer depends on that
+    /// order: a diagnosis names a [`SketchConstraint::id`].
+    ///
+    /// Skipped when empty, so a sketch that has no constraints is byte for byte
+    /// the sketch this build wrote before constraints existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<SketchConstraint>,
+}
+
+impl Sketch {
+    /// The layout this sketch has to be stored at.
+    ///
+    /// Decided by what it holds, not by what this build is capable of writing.
+    /// A sketch with no constraints is a v1 sketch however new the build is,
+    /// and stamping v2 on it would tell every older reader to keep its hands
+    /// off a document it can handle perfectly well.
+    pub fn schema_version(&self) -> u32 {
+        if self.constraints.is_empty() { 1 } else { 2 }
+    }
+
+    /// What a reader must implement to rewrite this sketch. See
+    /// [`SKETCH_CONSTRAINTS_CAPABILITY`].
+    pub fn required_capabilities(&self) -> Vec<String> {
+        ObjectKind::Sketch.required_capabilities(self.schema_version())
+    }
+
+    /// Refuses an envelope whose header does not describe the payload inside
+    /// it.
+    ///
+    /// Both directions, and both matter. A v1 header over a payload that
+    /// carries constraints is the dangerous one: it tells an older build the
+    /// document is safe to rewrite, and that build drops the constraints
+    /// without ever knowing they were there. A header that declares the
+    /// capability over a payload with no constraints is the other half of the
+    /// same dishonesty, and locks readers out of a document for nothing.
+    pub(crate) fn require_declared_contract(&self, envelope: &Envelope) -> Result<()> {
+        let version = self.schema_version();
+        let capabilities = self.required_capabilities();
+        if envelope.schema_version == version && envelope.required_capabilities == capabilities {
+            return Ok(());
+        }
+        Err(CadError::input(format!(
+            "a sketch holding {} constraint(s) belongs at schema v{version} requiring {}, but \
+             its envelope says schema v{} requiring {}",
+            self.constraints.len(),
+            capabilities.join(", "),
+            envelope.schema_version,
+            envelope.required_capabilities.join(", "),
+        )))
+    }
+
+    /// Everything the persistence boundary has to be sure of about a sketch.
+    ///
+    /// One implementation, called from [`ObjectPayload::validate`], which is
+    /// on both the read and the write path. There is no second copy of these
+    /// rules in document validation or in the evaluator to drift away from
+    /// this one.
+    fn validate(&self) -> Result<()> {
+        let mut geometry_of = BTreeMap::new();
+        for curve in &self.curves {
+            if geometry_of.insert(curve.id, &curve.geometry).is_some() {
+                return Err(CadError::input(format!(
+                    "sketch contains duplicate curve id {}",
+                    curve.id
+                )));
+            }
+            curve.geometry.validate()?;
+        }
+
+        let mut named = BTreeSet::new();
+        for constraint in &self.constraints {
+            if !named.insert(constraint.id) {
+                return Err(CadError::input(format!(
+                    "sketch contains duplicate constraint id {}",
+                    constraint.id
+                )));
+            }
+            constraint.rule.validate()?;
+
+            // Construction geometry is reached through exactly this lookup and
+            // is never filtered out of it. A construction line is what most
+            // constrained sketches are held together by, and a document that
+            // dropped constraints on it would lose the sketch's skeleton while
+            // keeping its skin.
+            for point in constraint.rule.points() {
+                let Some(geometry) = geometry_of.get(&point.curve) else {
+                    return Err(CadError::input(format!(
+                        "constraint {} refers to {}, which is not a curve of this sketch",
+                        constraint.id, point
+                    )));
+                };
+                if !point.at.fits(geometry) {
+                    return Err(CadError::input(format!(
+                        "constraint {} names the {} of {}, which is a {} and has no such point",
+                        constraint.id,
+                        point.at.as_str(),
+                        point.curve,
+                        geometry.kind_name(),
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A solid produced by the feature chain.
@@ -929,6 +1317,8 @@ impl ObjectPayload {
             // scene rewritten under a version 2 header would claim identities
             // it does not have, and the next reader would believe the header.
             Self::ImportedStep(imported) => imported.scene.version(),
+            // Same rule, same reason: see [`Sketch::schema_version`].
+            Self::Sketch(sketch) => sketch.schema_version(),
             known => known
                 .kind()
                 .map(ObjectKind::schema_version)
@@ -940,10 +1330,13 @@ impl ObjectPayload {
     pub fn required_capabilities(&self) -> Vec<String> {
         match self {
             Self::Unknown(unknown) => unknown.required_capabilities.clone(),
-            known => known
-                .kind()
-                .map(ObjectKind::required_capabilities)
-                .unwrap_or_else(|| vec![CORE_CAPABILITY.to_owned()]),
+            known => {
+                let version = known.schema_version();
+                known
+                    .kind()
+                    .map(|kind| kind.required_capabilities(version))
+                    .unwrap_or_else(|| vec![CORE_CAPABILITY.to_owned()])
+            }
         }
     }
 
@@ -999,14 +1392,18 @@ impl ObjectPayload {
             return Ok(Self::Unknown(UnknownObject::new(envelope, bytes.to_vec())));
         };
 
-        // A payload whose layout or capability contract differs from the one
-        // this build writes is not something to guess at. Keeping it verbatim
-        // also prevents a same-version type with a future capability from
-        // being re-written without that capability.
+        // A payload whose layout this build does not read, or which names a
+        // capability outside this type's vocabulary, is not something to guess
+        // at. Keeping it verbatim is also what carries a constraint family this
+        // build has never heard of: a future one arrives under a capability of
+        // its own, lands here, and is written back exactly as it came.
         if !kind
             .readable_schema_versions()
             .contains(&envelope.schema_version)
-            || envelope.required_capabilities != kind.required_capabilities()
+            || !envelope
+                .required_capabilities
+                .iter()
+                .all(|name| kind.known_capabilities().contains(&name.as_str()))
         {
             return Ok(Self::Unknown(UnknownObject::new(envelope, bytes.to_vec())));
         }
@@ -1030,8 +1427,37 @@ impl ObjectPayload {
                 }
             }),
         };
+        payload.require_declared_contract(&envelope)?;
         payload.validate()?;
         Ok(payload)
+    }
+
+    /// Refuses a decoded payload whose envelope header misdescribes it.
+    ///
+    /// The header is what capability negotiation reads at open time, before
+    /// anything is decoded, so a header that disagrees with its payload makes
+    /// two readers of the same file reach two different conclusions about what
+    /// they may do to it. Checked in both directions: under-declaring hands an
+    /// older build permission to discard meaning it cannot see, over-declaring
+    /// locks readers out of a document that has nothing they cannot handle.
+    fn require_declared_contract(&self, envelope: &Envelope) -> Result<()> {
+        if let Self::Sketch(sketch) = self {
+            return sketch.require_declared_contract(envelope);
+        }
+        if envelope.schema_version == self.schema_version()
+            && envelope.required_capabilities == self.required_capabilities()
+        {
+            return Ok(());
+        }
+        Err(CadError::input(format!(
+            "a {} payload belongs at schema v{} requiring {}, but its envelope says schema v{} \
+             requiring {}",
+            self.type_name(),
+            self.schema_version(),
+            self.required_capabilities().join(", "),
+            envelope.schema_version,
+            envelope.required_capabilities.join(", "),
+        )))
     }
 
     /// Enforces numeric and local semantic invariants at the persistence
@@ -1049,19 +1475,7 @@ impl ObjectPayload {
                 }
                 Ok(())
             }
-            Self::Sketch(sketch) => {
-                let mut seen = BTreeSet::new();
-                for curve in &sketch.curves {
-                    if !seen.insert(curve.id) {
-                        return Err(CadError::input(format!(
-                            "sketch contains duplicate curve id {}",
-                            curve.id
-                        )));
-                    }
-                    curve.geometry.validate()?;
-                }
-                Ok(())
-            }
+            Self::Sketch(sketch) => sketch.validate(),
             Self::Body(_) => Ok(()),
             Self::Extrude(extrude) => {
                 match &extrude.end_condition {
@@ -1144,6 +1558,7 @@ mod tests {
                         end: Point2::new(10.0, 0.0).expect("finite"),
                     },
                 }],
+                constraints: Vec::new(),
             }),
             ObjectPayload::Body(Body { tip_feature: None }),
             ObjectPayload::Extrude(sample_extrude()),

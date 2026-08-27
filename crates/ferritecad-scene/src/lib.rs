@@ -2885,7 +2885,11 @@ mod tests {
                         None,
                         ordinal + 1,
                         None,
-                        &ObjectPayload::Sketch(Sketch { plane, curves }),
+                        &ObjectPayload::Sketch(Sketch {
+                            plane,
+                            curves,
+                            constraints: Vec::new(),
+                        }),
                     )?;
                     w.add_dependency(Dependency {
                         dependent: sketch,
@@ -4823,7 +4827,11 @@ mod tests {
                     None,
                     1,
                     None,
-                    &ObjectPayload::Sketch(Sketch { plane, curves }),
+                    &ObjectPayload::Sketch(Sketch {
+                        plane,
+                        curves,
+                        constraints: Vec::new(),
+                    }),
                 )?;
                 w.add_dependency(Dependency {
                     dependent: sketch,

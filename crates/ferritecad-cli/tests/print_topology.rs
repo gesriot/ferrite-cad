@@ -97,6 +97,7 @@ fn drop_a_segment(document: &Path) -> ferritecad_types::StableEntityId {
                 &ObjectPayload::Sketch(Sketch {
                     plane: sketch.plane,
                     curves,
+                    constraints: Vec::new(),
                 }),
             )?;
             Ok(())

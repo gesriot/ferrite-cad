@@ -77,6 +77,7 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
             &ObjectPayload::Sketch(Sketch {
                 plane: plate.plane,
                 curves,
+                constraints: Vec::new(),
             }),
         )?;
         w.add_dependency(Dependency {
@@ -506,6 +507,7 @@ fn a_sketch_with_a_circle_is_unsupported_rather_than_approximated() {
                             radius: 5.0,
                         },
                     }],
+                    constraints: Vec::new(),
                 }),
             )?;
             w.add_dependency(Dependency {

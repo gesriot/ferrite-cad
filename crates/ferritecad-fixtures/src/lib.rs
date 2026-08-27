@@ -240,6 +240,7 @@ pub fn drop_segment(document: &mut Document) -> Result<StableEntityId> {
             &ObjectPayload::Sketch(Sketch {
                 plane: sketch.plane,
                 curves,
+                constraints: Vec::new(),
             }),
         )?;
         Ok(())
@@ -292,7 +293,11 @@ pub fn write_plate(path: &Path) -> Result<()> {
             None,
             1,
             Some("Profile"),
-            &ObjectPayload::Sketch(Sketch { plane, curves }),
+            &ObjectPayload::Sketch(Sketch {
+                plane,
+                curves,
+                constraints: Vec::new(),
+            }),
         )?;
         w.add_dependency(Dependency {
             dependent: sketch,

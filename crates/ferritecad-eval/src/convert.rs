@@ -36,7 +36,12 @@ pub fn plane_from_datum(datum: &DatumPlane) -> Result<SketchPlane> {
 ///
 /// The first slice accepts exactly one closed outer loop of lines and arcs.
 /// Construction geometry is ignored, as it produces no edges by definition.
+///
+/// A sketch that carries constraints is refused outright until §21B-1b
+/// connects the solver. See [`refuse_unsolved_constraints`].
 pub fn profile_from_sketch(sketch: &Sketch, plane: SketchPlane) -> Result<Profile> {
+    refuse_unsolved_constraints(sketch)?;
+
     let model: Vec<&SketchCurve> = sketch.curves.iter().filter(|c| !c.construction).collect();
 
     if model.is_empty() {
@@ -91,6 +96,27 @@ pub fn extrude_request(feature: &Extrude, profile: Profile) -> Result<ExtrudeReq
     };
 
     Ok(ExtrudeRequest::new(profile, extent, feature.reversed))
+}
+
+/// Refuses to build geometry from a sketch whose constraints nothing has
+/// solved.
+///
+/// The stored coordinates of a constrained sketch are wherever the curves were
+/// last left, and the constraints are what the drawing actually means. Until
+/// the solver translation exists, extruding those coordinates would produce a
+/// solid that looks finished and quietly disagrees with the model it came
+/// from: the one failure that a rebuild cannot report, because it succeeds.
+/// Refusing is louder and correct, and no kernel is asked for anything first.
+fn refuse_unsolved_constraints(sketch: &Sketch) -> Result<()> {
+    if sketch.constraints.is_empty() {
+        return Ok(());
+    }
+    Err(CadError::unsupported(format!(
+        "this sketch carries {} stored constraint(s), which the document keeps but no solver has \
+         been asked to satisfy yet; building from the stored coordinates would ignore what the \
+         sketch means, so it is refused rather than approximated",
+        sketch.constraints.len()
+    )))
 }
 
 fn segment_geometry(curve: &SketchCurve) -> Result<SegmentGeometry> {
@@ -229,6 +255,7 @@ mod tests {
         Sketch {
             plane: ObjectId::new(),
             curves,
+            constraints: Vec::new(),
         }
     }
 

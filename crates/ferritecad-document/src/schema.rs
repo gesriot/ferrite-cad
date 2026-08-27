@@ -33,6 +33,7 @@ pub const MINIMUM_READER_VERSION: u32 = 1;
 pub const SUPPORTED_CAPABILITIES: &[&str] = &[
     "core.part.v1",
     "exchange.step.imported.v1",
+    "sketch.constraints.v1",
     "topology.extrude-cap-edge.v1",
     "topology.extrude-sweep-edge.v1",
     "topology.extrude-cap-vertex.v1",

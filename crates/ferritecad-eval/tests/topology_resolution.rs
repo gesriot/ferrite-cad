@@ -94,7 +94,11 @@ fn populate(document: &mut Document, height: f64, order: &[usize]) -> Result<Pla
             None,
             1,
             Some("Profile"),
-            &ObjectPayload::Sketch(Sketch { plane, curves }),
+            &ObjectPayload::Sketch(Sketch {
+                plane,
+                curves,
+                constraints: Vec::new(),
+            }),
         )?;
         w.add_dependency(Dependency {
             dependent: sketch,
@@ -384,6 +388,7 @@ fn a_reference_to_a_deleted_segment_is_lost_rather_than_retargeted() {
                 &ObjectPayload::Sketch(Sketch {
                     plane: plane_id,
                     curves,
+                    constraints: Vec::new(),
                 }),
             )?;
             Ok(())

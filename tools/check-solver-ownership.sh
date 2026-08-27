@@ -93,6 +93,25 @@ for forbidden in 'extern "C"' 'unsafe' 'fc_gcs_' 'link_name' '#[link'; do
     fi
 done
 
+# The document and the evaluator must not reach the solver at all.
+#
+# A stored constraint is written in the document's own vocabulary on purpose:
+# a `SketchPointRef` outlives the solver that reads it, and a solver `PointId`
+# is issued per session and does not outlive the call it was minted for. The
+# moment a document could hold one, saving a sketch would mean saving a number
+# that means nothing tomorrow. The evaluator is held to the same line until
+# 21B-1b, so a constrained sketch is refused rather than quietly solved by
+# whatever the evaluator could reach.
+for client in crates/ferritecad-document crates/ferritecad-eval; do
+    if grep -Eqn '^[[:space:]]*ferritecad-sketch-solver[[:space:]]*[=.]' "${client}/Cargo.toml"; then
+        fail "${client} depends on ${PRODUCT}; a stored constraint must not be written in solver terms"
+    fi
+    if grep -rqn 'ferritecad_sketch_solver' "${client}/src" "${client}/tests"; then
+        grep -rn 'ferritecad_sketch_solver' "${client}/src" "${client}/tests" >&2
+        fail "${client} names ${PRODUCT}; a stored constraint must not be written in solver terms"
+    fi
+done
+
 # The bridge and the build detection are where they are said to be.
 for required in \
     "${PRODUCT}/build.rs" \

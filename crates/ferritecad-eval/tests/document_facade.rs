@@ -81,6 +81,7 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
             &ObjectPayload::Sketch(Sketch {
                 plane: plate.plane,
                 curves,
+                constraints: Vec::new(),
             }),
         )?;
         writer.add_dependency(Dependency {

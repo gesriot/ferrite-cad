@@ -16,8 +16,8 @@ use crate::graph::{Dependency, DependencyRole, evaluation_order};
 use crate::model::{
     CORE_CAPABILITY, EXTRUDE_CAP_EDGE_CAPABILITY, EXTRUDE_CAP_VERTEX_CAPABILITY,
     EXTRUDE_SWEEP_EDGE_CAPABILITY, EntityKind, ImportedDefinitionRef, ImportedStep,
-    ImporterIdentity, ObjectPayload, STEP_SOURCE_FORMAT, SemanticRole, TopologyRef,
-    TopologyRefPayload,
+    ImporterIdentity, ObjectKind, ObjectPayload, STEP_SOURCE_FORMAT, SemanticRole, Sketch,
+    TopologyRef, TopologyRefPayload,
 };
 use crate::schema::{
     self, CACHE_EXTENSION, DOCUMENT_APPLICATION_ID, FORMAT_VERSION, MINIMUM_READER_VERSION,
@@ -1443,6 +1443,22 @@ fn declared_capabilities(conn: &Connection) -> Result<BTreeSet<String>> {
             {
                 let decoded: TopologyRefPayload = envelope.decode()?;
                 require_role_capabilities(&envelope, &decoded.output_role)?;
+            }
+
+            // The same rule for the same reason, one table over. What a sketch
+            // envelope declares decides write access here, and what the payload
+            // holds decides it in `ObjectPayload::from_storage_bytes`; a header
+            // that disagreed with its payload would make those two answers
+            // differ, so the disagreement itself is the refusal.
+            if table == "objects"
+                && ObjectKind::parse(&envelope.type_name) == Some(ObjectKind::Sketch)
+                && ObjectKind::Sketch
+                    .readable_schema_versions()
+                    .contains(&envelope.schema_version)
+                && all_supported
+            {
+                let sketch: Sketch = envelope.decode()?;
+                sketch.require_declared_contract(&envelope)?;
             }
         }
     }

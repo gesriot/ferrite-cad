@@ -58,6 +58,7 @@ pub fn populate(document: &mut Document, width: f64, depth: f64, height: f64) ->
             &ObjectPayload::Sketch(Sketch {
                 plane,
                 curves: curves.clone(),
+                constraints: Vec::new(),
             }),
         )?;
         writer.add_dependency(Dependency {

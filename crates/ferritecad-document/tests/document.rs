@@ -77,6 +77,7 @@ fn populate(document: &mut Document) -> Result<Plate> {
             &ObjectPayload::Sketch(Sketch {
                 plane: plate.plane,
                 curves,
+                constraints: Vec::new(),
             }),
         )?;
         w.add_dependency(Dependency {
@@ -777,6 +778,7 @@ fn non_finite_geometry_cannot_cross_the_persistence_boundary() {
                             radius: f64::NAN,
                         },
                     }],
+                    constraints: Vec::new(),
                 }),
             )?;
             Ok(())

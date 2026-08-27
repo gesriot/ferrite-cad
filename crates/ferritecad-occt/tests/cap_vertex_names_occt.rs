@@ -162,7 +162,11 @@ fn store_plate(
             None,
             1,
             Some("Profile"),
-            &ObjectPayload::Sketch(Sketch { plane, curves }),
+            &ObjectPayload::Sketch(Sketch {
+                plane,
+                curves,
+                constraints: Vec::new(),
+            }),
         )?;
         w.add_dependency(Dependency {
             dependent: sketch,
