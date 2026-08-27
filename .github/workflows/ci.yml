@@ -220,6 +220,18 @@ jobs:
       # host is the separate product sbom workflow's claim.
       - run: tools/check-product-sbom.sh
 
+      # And the packager, on a staging directory this gate builds itself.
+      # Whether a release archive can be extracted on a machine with no build
+      # tree and started there is the combined runtime layout workflow's
+      # question and only it can answer it. Everything else about a package is
+      # arithmetic over a directory - a file with two owners, a file with none,
+      # a manifest describing the bytes it was written from rather than the
+      # ones that came out, an absolute path, a symlink where a payload file
+      # should be, a lost executable bit, two top-level directories - and
+      # waiting for a runner to build Open CASCADE before asking about those
+      # would mean asking about them roughly never.
+      - run: tools/check-packager.sh
+
   # Security advisories, dependency bans and source policy remain gates.
   # Licence policy is still reported, but ADR 0003 makes it advisory so an
   # unresolved or newly disallowed expression cannot stop product work.

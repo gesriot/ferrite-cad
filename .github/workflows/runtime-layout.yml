@@ -12,10 +12,17 @@ name: combined runtime layout
 # ever produced a product executable carrying both and then taken both build
 # trees away, so the layout of a release is not a thing anybody knows yet.
 #
-# This workflow measures it. It is not a packager and does not produce a
-# release: what it stages goes into the runner's temporary directory, carries no
-# version and no archive, and is deleted with the runner. §21A-2b2b is the
-# packager, and it is meant to be written against the numbers this produces.
+# This workflow measures it, and since §21A-2b2b1a it also packs what it
+# measured. The staging directory is still a directory in the runner's
+# temporary space; the archive built from it is a versioned file that is
+# extracted somewhere else, with the staging and both build trees taken away,
+# and started there. That is the difference between a layout that can be run
+# and a product that can be handed to somebody.
+#
+# It is still not a release. There is no installer, no GitHub Release, no
+# auto-update, no signing identity and no notarisation. The ad-hoc signature
+# the macOS staging applies is what makes a rewritten Mach-O startable at all
+# and is not a distribution signature.
 #
 # The measurement is only worth having if it cannot be satisfied by the machine
 # it ran on, so the smoke test runs with LD_LIBRARY_PATH and DYLD_LIBRARY_PATH
@@ -53,6 +60,23 @@ on:
       - 'tools/occt/**'
       - 'tools/notices/lib.sh'
       - 'sbom/native/**'
+      # And everything the release archive is made of or checked against.
+      # §21A-2b2b1a packs the staged layout here, because this is the only
+      # workflow that has a staged layout to pack; a change to the packager,
+      # to the manifest schema, to the gate on the extracted archive or to the
+      # product SBOM that travels inside it must not leave the last package run
+      # green while describing a package nobody built.
+      - 'tools/package-release.sh'
+      - 'tools/check-release-package.sh'
+      - 'tools/check-packager.sh'
+      - 'tools/runtime-probe.sh'
+      - 'tools/package/**'
+      - 'tools/product/**'
+      - 'tools/generate-product-sbom.sh'
+      - 'tools/check-product-sbom.sh'
+      - 'tools/sbom/**'
+      - 'sbom/product/**'
+      - 'sbom/rust/**'
       - '.github/workflows/runtime-layout.yml'
 
 permissions:
@@ -140,7 +164,13 @@ jobs:
                 libgl1-mesa-dev libglu1-mesa-dev
               ;;
             macos)
-              brew install ninja
+              # GNU tar as well as ninja. `tar` on macOS is bsdtar, which has
+              # no --sort and would give an archive whose entry order came
+              # from readdir; the packager refuses to use it and says so.
+              # Named here rather than relied on from the image, because a
+              # runner image that dropped it would turn a reproducibility
+              # requirement into a missing command.
+              brew install ninja gnu-tar
               ;;
             windows)
               choco install ninja -y --no-progress
@@ -718,6 +748,179 @@ jobs:
           } | tr -d '\r' | LC_ALL=C sort > "native-stable-${{ matrix.name }}.txt"
           cat "native-stable-${{ matrix.name }}.txt"
 
+      # ---------------------------------------------------------------------
+      # The release archive. Everything above measured a staging directory;
+      # this turns it into something that can be handed to somebody.
+      # ---------------------------------------------------------------------
+
+      - name: Pack the release archive, twice
+        id: package
+        run: |
+          set -euo pipefail
+          # Two packings of the same input bytes, into two directories, so the
+          # claim that the archive depends only on the bytes is measured rather
+          # than asserted. Only same-host: the native binaries are already
+          # measured to differ between hosts, so an archive digest shared
+          # across platforms would be a claim this repository knows is false.
+          first="${RUNNER_TEMP}/package-first"
+          second="${RUNNER_TEMP}/package-second"
+          rm -rf "$first" "$second"
+          tools/package-release.sh --platform '${{ matrix.name }}' \
+            --staging '${{ steps.stage.outputs.staging }}' --output-dir "$first" \
+            | tee "package-${{ matrix.name }}.txt"
+          tools/package-release.sh --platform '${{ matrix.name }}' \
+            --staging '${{ steps.stage.outputs.staging }}' --output-dir "$second" \
+            > /dev/null
+
+          archive="$(find "$first" -maxdepth 1 -name '*.tar.gz' | head -1)"
+          if [ -z "$archive" ]; then
+            echo "::error::the packager produced no archive"
+            exit 1
+          fi
+          name="$(basename "$archive")"
+          if ! cmp -s "$first/$name" "$second/$name"; then
+            echo "::error::two packings of the same staged bytes produced different archives"
+            ls -l "$first/$name" "$second/$name"
+            exit 1
+          fi
+          echo "two packings of ${name} are byte-identical"
+
+          # Copied into the workspace for the upload. Every other artifact in
+          # this workflow is uploaded by a path relative to the checkout, and
+          # RUNNER_TEMP on Windows is an absolute path with backslashes and a
+          # drive letter in it; one spelling on all three platforms is one
+          # fewer thing that can behave differently on one of them.
+          cp "$first/$name" "./$name"
+          cmp "$first/$name" "./$name"
+
+          {
+            echo "archive=$first/$name"
+            echo "archive_name=$name"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Take the staging away as well, and run the extracted archive
+        run: |
+          set -euo pipefail
+          occt_libs='${{ steps.occt.outputs.lib_dir }}'
+          occt_install="$PWD/vendor/install"
+          planegcs="$PWD/vendor/planegcs"
+          staging='${{ steps.stage.outputs.staging }}'
+
+          document="${RUNNER_TEMP}/plate-package.fcad"
+          cp crates/ferritecad-fixtures/plate/plate.fcad "$document"
+
+          # The staging directory goes away too, and that is the whole
+          # difference between this gate and the one above it. A package that
+          # only runs while the directory it was made from is still there is a
+          # package nobody can be given.
+          mv "$occt_install" "${occt_install}.away"
+          mv "$planegcs" "${planegcs}.away"
+          mv "$staging" "${staging}.away"
+
+          filtered="$PATH"
+          if [ '${{ matrix.name }}' = windows ]; then
+            filtered="$(printf '%s' "$PATH" | tr ':' '\n' \
+              | grep -v -F "$(cygpath -u "$occt_libs")" \
+              | grep -v -F 'vendor/planegcs' | paste -sd: -)"
+          fi
+
+          status=0
+          env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
+            PATH="$filtered" \
+            tools/check-release-package.sh --platform '${{ matrix.name }}' \
+              --archive '${{ steps.package.outputs.archive }}' \
+              --extract-to "${RUNNER_TEMP}/extracted" \
+              --document "$document" \
+              --forbidden "$occt_install" --forbidden "$planegcs" \
+              --forbidden "$occt_libs" --forbidden "$staging" \
+              --output "package-facts-${{ matrix.name }}.txt" || status=$?
+
+          mv "${occt_install}.away" "$occt_install"
+          mv "${planegcs}.away" "$planegcs"
+
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the extracted release archive did not run from a clean environment"
+            exit "$status"
+          fi
+
+      - name: Say what this build packaged
+        run: |
+          set -euo pipefail
+          # The gate above already refused an archive with more than one
+          # top-level directory, so there is exactly one here. Spelled the way
+          # the shell's own tools can read it: RUNNER_TEMP on Windows carries
+          # backslashes and a drive letter.
+          extracted="${RUNNER_TEMP}/extracted"
+          if command -v cygpath >/dev/null 2>&1; then
+            extracted="$(cygpath -u "$extracted")"
+          fi
+          root_dir="$(find "$extracted" -mindepth 1 -maxdepth 1 -type d)"
+          manifest="$root_dir/package/ferritecad-package.json"
+
+          # jq on Windows is a native binary that opens stdout in text mode and
+          # writes CRLF. A carriage return survives command substitution, and
+          # every value read here is compared or diffed later, so it is taken
+          # off once, here. The notices, the Rust fragment and the native
+          # inventory were each bitten by this first.
+          say() { jq -r "$1" "$manifest" | tr -d '\r'; }
+          archive='${{ steps.package.outputs.archive }}'
+          case '${{ matrix.name }}' in
+            macos) digest="$(shasum -a 256 "$archive" | cut -d' ' -f1)" ;;
+            *)     digest="$(sha256sum "$archive" | cut -d' ' -f1)" ;;
+          esac
+          {
+            echo "# FerriteCAD release archive, ${{ matrix.name }}; build-local evidence"
+            echo "runner ${{ matrix.os }} ${RUNNER_ARCH}"
+            echo "version $(say '.productVersion')"
+            echo "target $(say '.target')"
+            echo "root $(say '.root')"
+            echo "archive ${{ steps.package.outputs.archive_name }}"
+            echo "runtime-files $(say '.totals.runtimeFiles')"
+            echo "payload-bytes $(say '.totals.runtimeBytes + .totals.packageMetadataBytes')"
+            echo "sbom-sha256 $(say '.productSbom.sha256')"
+            echo "archive-sha256 ${digest}"
+            echo "archive-bytes $(wc -c < "$archive" | tr -d ' ')"
+          } > "package-evidence-${{ matrix.name }}.txt"
+          cat "package-evidence-${{ matrix.name }}.txt"
+
+          # What the three platforms are compared on. Meaning only: the file
+          # names differ per target, the native bytes are already measured to
+          # be host-dependent, and an archive digest is a property of one host.
+          # Comparing either would be comparing something this repository knows
+          # cannot agree.
+          {
+            printf 'package %s version=%s\n' '${{ matrix.name }}' "$(say '.productVersion')"
+            printf 'package %s target=%s\n' '${{ matrix.name }}' "$(say '.target')"
+            printf 'package %s archive=%s\n' '${{ matrix.name }}' '${{ steps.package.outputs.archive_name }}'
+            printf 'package %s runtime-files=%s\n' '${{ matrix.name }}' "$(say '.totals.runtimeFiles')"
+            printf 'package %s manifest-format=%s\n' '${{ matrix.name }}' "$(say '.formatVersion')"
+            sed 's/^/packaged /' "package-facts-${{ matrix.name }}.txt"
+          } | LC_ALL=C sort > "package-summary-${{ matrix.name }}.txt"
+          cat "package-summary-${{ matrix.name }}.txt"
+
+      - name: Upload the release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ferritecad-release-${{ matrix.name }}
+          path: ${{ steps.package.outputs.archive_name }}
+          if-no-files-found: error
+
+      - name: Upload what this build packaged
+        # Uploaded even when the job failed, which is when the facts are most
+        # worth reading: they say how far the extracted package got. The
+        # comparison below requires all three summaries by name, so a run that
+        # produced none cannot pass by having uploaded nothing.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-summary-${{ matrix.name }}
+          path: |
+            package-summary-${{ matrix.name }}.txt
+            package-evidence-${{ matrix.name }}.txt
+            package-facts-${{ matrix.name }}.txt
+            package-${{ matrix.name }}.txt
+          if-no-files-found: warn
+
       - name: Write the measurement report
         run: |
           set -euo pipefail
@@ -933,3 +1136,159 @@ jobs:
           echo "the three platforms agree about every component identity, every source"
           echo "digest, every asset digest, which binary loads which native component,"
           echo "and the bytes of the inventory document itself"
+
+      # ---------------------------------------------------------------------
+      # And that all three of them produced a release archive.
+      # ---------------------------------------------------------------------
+
+      - name: Download what each platform packaged
+        uses: actions/download-artifact@v4
+        with:
+          pattern: package-summary-*
+          path: packages
+
+      - name: Require a release archive from all three platforms and all three targets
+        run: |
+          set -euo pipefail
+          count="$(find packages -name 'package-summary-*.txt' | wc -l)"
+          if [ "$count" -ne 3 ]; then
+            echo "::error::expected three platform package summaries, found ${count}"
+            find packages -type f | sed 's/^/  /'
+            exit 1
+          fi
+
+          # Named rather than counted, and the targets named as well. Three
+          # summaries that all said x86_64-unknown-linux-gnu would satisfy a
+          # count while meaning that two platforms had packaged somebody else's
+          # product.
+          missing=0
+          : > targets.txt
+          : > versions.txt
+          for platform in linux macos windows; do
+            summary="packages/package-summary-${platform}/package-summary-${platform}.txt"
+            if [ ! -f "$summary" ]; then
+              echo "::error::${platform} produced no package summary, so no archive was uploaded there"
+              missing=$((missing + 1))
+              continue
+            fi
+            echo "== ${platform}"
+            cat "$summary"
+
+            require() {
+              if ! grep -q "$1" "$summary"; then
+                echo "::error::${platform}: ${2}"
+                missing=$((missing + 1))
+              fi
+            }
+            # That an archive exists, that it was inspected before it was
+            # unpacked, and that it unpacked into one versioned directory.
+            require '^packaged package archive-exists=true' \
+              'no release archive was produced'
+            require '^packaged package archive-top-level-roots=1' \
+              'the archive does not extract into one directory'
+            require '^packaged package archive-paths-normalised=true' \
+              'the archive holds an absolute path or a parent traversal'
+            require '^packaged package archive-entry-kinds=regular-and-directory-only' \
+              'the archive holds something that is not a file or a directory'
+            require '^packaged package archive-entry-order=normalised' \
+              'the archive entries are not in normalised order'
+            require '^packaged package archive-entry-timestamps=1' \
+              'the archive carries more than one entry timestamp'
+            # That the manifest describes the bytes that came out.
+            require '^packaged package manifest-covers-archive=exactly' \
+              'the manifest and the archive do not describe the same files'
+            require '^packaged package manifest-verified-against-extracted-bytes=true' \
+              'the manifest was not verified against the extracted bytes'
+            require '^packaged package manifest-files=[1-9]' \
+              'the manifest describes no file'
+            require '^packaged package manifest-self-hash=excluded-and-declared' \
+              'the manifest does not declare the one file it cannot hash'
+            require '^packaged package runtime-files=[1-9]' \
+              'the package carries no runtime file'
+            require '^packaged package import-library-present=0' \
+              'the runtime archive carries the import library'
+            require '^packaged package build-and-source-trees-present=0' \
+              'the archive carries a build tree, a source tree or workflow evidence'
+            # That the SBOM travelled with it, unchanged, for this target.
+            require '^packaged package product-sbom=byte-identical' \
+              'the packaged product SBOM is not the committed one'
+            # That the staging directory was gone and the package still ran.
+            require '^packaged package forbidden-directories-present=0' \
+              'the staging or a build tree was still there when the package was started'
+            require '^packaged package extracted-files-naming-build-tree=0' \
+              'an extracted file still names a directory that is gone'
+            require '^packaged package execution=performed' \
+              'the extracted package was measured but never run'
+            require '^packaged package extracted viewer solver-info exit=0 answer=available' \
+              'the extracted application did not answer about its solver'
+            require '^packaged package extracted viewer provenance-from-extracted-library=true' \
+              'the extracted application did not repeat the library inside the package'
+            require '^packaged package extracted cli rebuild-cold exit=0 kernel=occt' \
+              'the extracted command line tool did not cross the Open CASCADE boundary'
+            require '^packaged package extracted cli document-unchanged=true' \
+              'the rebuild changed the document it was diagnosing'
+            require '^packaged package extracted viewer hidden-planegcs started=false' \
+              'the extracted application ran with planegcs taken away'
+            require '^packaged package extracted cli hidden-occt-toolkit started=false' \
+              'the extracted command line tool ran with a toolkit taken away'
+            require '^packaged package extracted both restored=true' \
+              'the package was never shown to work again after the libraries came back'
+            require '^packaged package unchanged-by-running=true' \
+              'running the package changed files inside it'
+
+            sed -n "s/^package ${platform} target=//p" "$summary" >> targets.txt
+            sed -n "s/^package ${platform} version=//p" "$summary" >> versions.txt
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+          # Three targets, and the three the product has. Deliberately not a
+          # comparison of file counts, file names, native digests or archive
+          # digests: those differ per target by construction and per host by
+          # measurement, and requiring them to agree would be requiring
+          # something this repository already knows is false.
+          LC_ALL=C sort -u targets.txt > targets-unique.txt
+          printf '%s\n' aarch64-apple-darwin x86_64-pc-windows-msvc \
+            x86_64-unknown-linux-gnu | LC_ALL=C sort > targets-expected.txt
+          if ! diff -u targets-expected.txt targets-unique.txt; then
+            echo "::error::the three platforms did not package the three product targets"
+            exit 1
+          fi
+
+          if [ "$(LC_ALL=C sort -u versions.txt | wc -l)" -ne 1 ]; then
+            echo "::error::the three platforms packaged different product versions"
+            cat versions.txt
+            exit 1
+          fi
+
+          echo "all three platforms packaged their own target's release archive, extracted it"
+          echo "with the staging directory and both build trees taken away, ran both shipped"
+          echo "binaries out of it, verified every extracted byte against the manifest and"
+          echo "carried the committed product SBOM inside it unchanged"
+          echo
+          echo "version $(LC_ALL=C sort -u versions.txt)"
+          # What was measured rather than what was wanted. The two are equal
+          # once the comparison above has passed, and printing the expected
+          # list would go on looking right if it ever stopped being.
+          sed 's/^/target  /' targets-unique.txt
+
+      - name: Require an archive artifact from each platform
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ferritecad-release-*
+          path: archives
+
+      - name: Require each archive to have been uploaded
+        run: |
+          set -euo pipefail
+          missing=0
+          for platform in linux macos windows; do
+            found="$(find "archives/ferritecad-release-${platform}" -name '*.tar.gz' 2>/dev/null | wc -l)"
+            if [ "$found" -ne 1 ]; then
+              echo "::error::${platform} uploaded ${found} release archives rather than one"
+              missing=$((missing + 1))
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          find archives -name '*.tar.gz' | LC_ALL=C sort | while IFS= read -r archive; do
+            printf '%s  %s bytes\n' "$(basename "$archive")" "$(wc -c < "$archive" | tr -d ' ')"
+          done

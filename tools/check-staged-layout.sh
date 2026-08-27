@@ -43,6 +43,10 @@
 
 set -euo pipefail
 
+RUNTIME_PROBE_TOOL='check-staged-layout'
+# shellcheck source=tools/runtime-probe.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime-probe.sh"
+
 platform=''
 staging=''
 document=''
@@ -174,27 +178,9 @@ took away and never put back:" >&2
     exit 1
 fi
 
-# The inspector that says which toolkits a binary names for itself. Windows has
-# no run path, so this is also the only way to ask there.
-if [ "$platform" = windows ]; then
-    dumpbin=''
-    if [ -n "${FCAD_MSVC_BIN:-}" ] && [ -x "$FCAD_MSVC_BIN/dumpbin.exe" ]; then
-        dumpbin="$FCAD_MSVC_BIN/dumpbin.exe"
-    else
-        dumpbin="$(command -v dumpbin.exe 2>/dev/null || command -v dumpbin 2>/dev/null || true)"
-    fi
-    [ -n "$dumpbin" ] || die 'no dumpbin, so no import table can be read'
-fi
-
-names_directly() {
-    local binary="$1" name="$2"
-    case "$platform" in
-        linux)   readelf -d "$binary" | grep -qF "$name" ;;
-        macos)   otool -L "$binary" | grep -qF "$name" ;;
-        windows) "$dumpbin" //DEPENDENTS "$(cygpath -w "$binary")" \
-                     | tr -d '\r' | grep -qiF "$name" ;;
-    esac
-}
+# The inspector that says which libraries a binary names for itself, and on
+# Windows the only way to ask at all. tools/runtime-probe.sh owns both.
+runtime_probe_require_inspector "$platform"
 
 # ---------------------------------------------------------------------------
 # No staged file may name a directory that no longer exists.
@@ -219,37 +205,8 @@ fact "clean-environment staged-files-naming-build-tree=0"
 # Running it.
 # ---------------------------------------------------------------------------
 
-# A deadline, and a child that is killed and reaped rather than left behind.
-# `--solver-info` answers before any window exists, so a run that has not
-# returned has not answered; on a machine with a window server the difference
-# between those two is a process that waits forever.
-# Deliberately does not touch `set -e`. An earlier version restored errexit
-# just before returning the child's status, which made every non-zero exit
-# kill this script at the point of the call - including the ones it exists to
-# observe. The run that found it left a library renamed away and the next run
-# reported the layout as incomplete, which is exactly the confusion a stale
-# backup causes.
-run_with_deadline() {
-    local seconds="$1" out="$2"; shift 2
-    local pid waited=0 status=0
-    "$@" > "$out" 2>&1 &
-    pid=$!
-    while kill -0 "$pid" 2>/dev/null; do
-        if [ "$waited" -ge "$seconds" ]; then
-            kill -9 "$pid" 2>/dev/null || true
-            wait "$pid" 2>/dev/null || true
-            echo "TIMEOUT" >> "$out"
-            return 124
-        fi
-        sleep 1
-        waited=$((waited + 1))
-    done
-    wait "$pid" || status=$?
-    return "$status"
-}
-
 set +e
-run_with_deadline 60 "$work/solver-info.txt" "$viewer" --solver-info
+runtime_probe_run_with_deadline 60 "$work/solver-info.txt" "$viewer" --solver-info
 viewer_status=$?
 set -e
 echo "--- staged ferritecad-viewer --solver-info (exit ${viewer_status}) ---"
@@ -287,7 +244,7 @@ cp "$document" "$work/document.fcad"
 before="$(cksum < "$work/document.fcad")"
 
 set +e
-run_with_deadline 300 "$work/rebuild.txt" "$cli" rebuild "$work/document.fcad" --cold
+runtime_probe_run_with_deadline 300 "$work/rebuild.txt" "$cli" rebuild "$work/document.fcad" --cold
 cli_status=$?
 set -e
 echo "--- staged ferritecad rebuild --cold (exit ${cli_status}) ---"
@@ -320,68 +277,19 @@ fact "staged cli document-unchanged=true"
 # And that the package is really what answered.
 # ---------------------------------------------------------------------------
 
-hidden_must_stop() {
-    local library="$1" who="$2" binary="$3"; shift 3
-    mv "$library" "$library.hidden"
-    set +e
-    run_with_deadline 60 "$work/hidden.txt" "$binary" "$@"
-    local status=$?
-    set -e
-    mv "$library.hidden" "$library"
-    echo "--- with $(basename "$library") hidden, ${who} exited ${status} ---"
-    head -5 "$work/hidden.txt"
-    if [ "$status" -eq 0 ]; then
-        echo "check-staged-layout: ${who} ran with $(basename "$library") taken away, so some \
-other copy answered and none of this is about the package" >&2
-        exit 1
-    fi
-    if grep -q 'sketch solver:' "$work/hidden.txt"; then
-        echo "check-staged-layout: ${who} answered a question about the solver with no library \
-to load; the loader must stop it rather than let it fall back to anything" >&2
-        exit 1
-    fi
-}
-
-hidden_must_stop "$planegcs" 'the staged viewer' "$viewer" --solver-info
+runtime_probe_hidden_must_stop "$work/hidden.txt" "$planegcs" 'the staged viewer' \
+    "$viewer" --solver-info
 fact "staged viewer hidden-planegcs started=false"
 
-# A toolkit the binaries do not name themselves. The last one in a sorted list
-# is as arbitrary as any other and does not depend on which release this is.
-# A toolkit the product binary does not name for itself, so that hiding it
-# tests the half of the closure a build-tree run never has to think about.
-# Chosen by inspection rather than written down, because a name written here is
-# a name that stops being transitive one release later.
-#
-# Whether such a toolkit exists at all is a platform difference and a finding.
-# ferritecad-occt's build script hands the linker every toolkit the bridge
-# reports, and Mach-O records all of them whether or not a symbol is used from
-# each; a linker defaulting to --as-needed drops the ones that are not, and the
-# same closure then has a transitive half. Which case this platform is in is
-# recorded rather than assumed, because a gate that quietly stopped having a
-# transitive library to hide would go on passing while having stopped asking
-# the question.
-transitive=''
-while IFS= read -r toolkit; do
-    if names_directly "$cli" "$(basename "$toolkit")"; then continue; fi
-    transitive="$toolkit"
-    break
-done < "$work/toolkits"
+# Which toolkit to take away, and whether this platform still has a transitive
+# one to take. tools/runtime-probe.sh owns that choice so that this gate and
+# the one on the extracted archive cannot answer it differently.
+runtime_probe_choose_toolkit "$platform" "$cli" "$work/toolkits"
+echo "the Open CASCADE toolkit under test is $(basename "$runtime_probe_toolkit") (${runtime_probe_reach})"
 
-if [ -n "$transitive" ]; then
-    reach=transitive
-else
-    # Every toolkit is named directly. Hiding one is still the property that
-    # matters - a required library taken away must stop the process - and the
-    # fact says which kind was tested, so a platform that loses its transitive
-    # half is visible in the comparison rather than silently equivalent.
-    transitive="$(head -1 "$work/toolkits")"
-    reach=direct-only
-fi
-echo "the Open CASCADE toolkit under test is $(basename "$transitive") (${reach})"
-
-hidden_must_stop "$transitive" 'the staged command line tool' "$cli" rebuild \
-    "$work/document.fcad" --cold
-fact "staged cli hidden-occt-toolkit started=false reach=${reach}"
+runtime_probe_hidden_must_stop "$work/hidden.txt" "$runtime_probe_toolkit" \
+    'the staged command line tool' "$cli" rebuild "$work/document.fcad" --cold
+fact "staged cli hidden-occt-toolkit started=false reach=${runtime_probe_reach}"
 
 # ---------------------------------------------------------------------------
 # Restored, and passing again. A gate that only ever saw the broken state
@@ -389,9 +297,9 @@ fact "staged cli hidden-occt-toolkit started=false reach=${reach}"
 # ---------------------------------------------------------------------------
 
 set +e
-run_with_deadline 60 "$work/again-viewer.txt" "$viewer" --solver-info
+runtime_probe_run_with_deadline 60 "$work/again-viewer.txt" "$viewer" --solver-info
 again_viewer=$?
-run_with_deadline 300 "$work/again-cli.txt" "$cli" rebuild "$work/document.fcad" --cold
+runtime_probe_run_with_deadline 300 "$work/again-cli.txt" "$cli" rebuild "$work/document.fcad" --cold
 again_cli=$?
 set -e
 [ "$again_viewer" -eq 0 ] \

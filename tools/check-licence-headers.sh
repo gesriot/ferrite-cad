@@ -29,7 +29,8 @@ while IFS= read -r -d '' file; do
 
     case "$file" in
         *.rs | *.c | *.cc | *.cpp | *.cxx | *.h | *.hpp | *.hxx | *.cmake | \
-            *.wgsl | *.yml | *.yaml | *.toml | *.sh | */CMakeLists.txt | CMakeLists.txt) ;;
+            *.wgsl | *.yml | *.yaml | *.toml | *.sh | *.py | \
+            */CMakeLists.txt | CMakeLists.txt) ;;
         *) continue ;;
     esac
 

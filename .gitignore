@@ -19,6 +19,11 @@
 # Local planegcs build tree and delivery (see docs/build-planegcs.md)
 /vendor/planegcs
 
+# Release archives. tools/package-release.sh writes one per target and the
+# combined runtime layout workflow keeps a copy in the workspace to upload; a
+# built package is evidence of one build and never a committed file.
+/ferritecad-*.tar.gz
+
 # CMake build trees (tools/occt-smoke and others)
 /build/
 
