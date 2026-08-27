@@ -864,9 +864,14 @@ jobs:
           # inventory were each bitten by this first.
           say() { jq -r "$1" "$manifest" | tr -d '\r'; }
           archive='${{ steps.package.outputs.archive }}'
+          # Fed on stdin rather than named. GNU sha256sum escapes a line whose
+          # file name contains a backslash by putting one at the front of it,
+          # and RUNNER_TEMP on Windows is D:\a\_temp - so naming the file puts
+          # a stray backslash in front of the digest. With nothing to name,
+          # there is nothing to escape.
           case '${{ matrix.name }}' in
-            macos) digest="$(shasum -a 256 "$archive" | cut -d' ' -f1)" ;;
-            *)     digest="$(sha256sum "$archive" | cut -d' ' -f1)" ;;
+            macos) digest="$(shasum -a 256 < "$archive" | cut -d' ' -f1)" ;;
+            *)     digest="$(sha256sum < "$archive" | cut -d' ' -f1)" ;;
           esac
           {
             echo "# FerriteCAD release archive, ${{ matrix.name }}; build-local evidence"
