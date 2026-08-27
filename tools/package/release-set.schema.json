@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FerriteCAD release set",
+  "description": "The three platform archives of one FerriteCAD build, as one object. It names exactly the three targets the product has, the one product version and the one source revision all three were built from, and for each of them the archive's file name, the digest and size of the archive's actual bytes and the digest of the package manifest inside it. It is deliberately not an SBOM and not a package manifest: it copies no component identity, no bom-ref and nothing out of the product SBOM that travels inside each archive, and it points at the package manifests rather than repeating them. It describes archives and never the machine that assembled them, so it carries no timestamp, no run identifier, no host name and no absolute path.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "formatVersion",
+    "productVersion",
+    "sourceRevision",
+    "packageManifestFormat",
+    "packageManifestPath",
+    "checksums",
+    "targets"
+  ],
+  "properties": {
+    "kind": {
+      "const": "ferritecad-release-set"
+    },
+    "formatVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "productVersion": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+    },
+    "sourceRevision": {
+      "$ref": "#/definitions/revision",
+      "description": "The one commit of this repository all three archives were built from. Every package manifest in the set carries it too and has to agree; a set of one version built from two commits is two products, and nothing about the archives themselves would say so."
+    },
+    "packageManifestFormat": {
+      "type": "integer",
+      "minimum": 2,
+      "description": "The package manifest format a member of this set has to be. Format 2 is the first that records a source revision, so a set cannot be assembled out of format 1 packages: it could not tell an archive of another commit from the right one."
+    },
+    "packageManifestPath": {
+      "$ref": "#/definitions/relativePath",
+      "description": "Where the package manifest sits inside each archive. The link to the package documents is a path and a digest; nothing of what they say is copied here."
+    },
+    "checksums": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$",
+      "description": "The file beside this one that a recipient can hand to sha256sum with nothing else installed."
+    },
+    "targets": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": { "$ref": "#/definitions/member" },
+      "description": "Exactly three, one per product target, in sorted order so that assembling the same archives twice produces the same bytes whatever order they arrived in."
+    }
+  },
+  "definitions": {
+    "revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/+-]*$",
+      "description": "Relative, with forward slashes, no leading slash, no parent traversal, no drive letter and no backslash."
+    },
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "archive",
+        "sha256",
+        "size",
+        "root",
+        "packageManifestSha256"
+      ],
+      "properties": {
+        "target": {
+          "enum": [
+            "x86_64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "aarch64-apple-darwin"
+          ]
+        },
+        "archive": {
+          "type": "string",
+          "pattern": "^ferritecad-[A-Za-z0-9._+-]+\\.tar\\.gz$",
+          "description": "The file name as it is in the release set. A renamed archive is one a recipient reads the version and the target off and gets the wrong answer for, so this is checked against what the archive's own manifest says as well as against the bytes."
+        },
+        "sha256": {
+          "$ref": "#/definitions/sha256",
+          "description": "Of the archive's actual bytes, measured on the file that is being handed on rather than reported by whatever produced it."
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "root": {
+          "type": "string",
+          "pattern": "^ferritecad-[^/]+$",
+          "description": "The one top-level directory this archive extracts into."
+        },
+        "packageManifestSha256": {
+          "$ref": "#/definitions/sha256",
+          "description": "Of the package manifest inside this archive. This is the whole link to the package document: the manifest pins every file of that archive, and this pins the manifest, so nothing of what it says has to be repeated here."
+        }
+      }
+    }
+  }
+}

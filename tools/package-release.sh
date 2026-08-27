@@ -33,9 +33,17 @@
 # rewritten Mach-O startable at all; it is a technical condition of running and
 # says nothing about distribution.
 #
+# Which commit this is. The revision is handed in and never worked out here.
+# A packager that ran `git rev-parse HEAD` would be describing the tree it
+# happened to be standing in rather than the tree the binaries were built from,
+# and those are the same thing only until somebody packs an archive in a
+# checkout that has moved on. The workflow passes GITHUB_SHA, which is the
+# commit the job checked out and built; the local gates pass a fixed made-up
+# revision, and their fixtures are made-up bytes.
+#
 # Usage:
 #   tools/package-release.sh --platform linux|macos|windows \
-#       --staging DIR --output-dir DIR
+#       --staging DIR --output-dir DIR --source-revision SHA
 
 set -euo pipefail
 
@@ -47,12 +55,14 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 platform=''
 staging=''
 output_dir=''
+source_revision=''
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --platform)   platform="${2:?--platform needs a name}"; shift 2 ;;
         --staging)    staging="${2:?--staging needs a directory}"; shift 2 ;;
         --output-dir) output_dir="${2:?--output-dir needs a directory}"; shift 2 ;;
+        --source-revision) source_revision="${2:?--source-revision needs a commit}"; shift 2 ;;
         *) package_die "unknown argument: $1" ;;
     esac
 done
@@ -60,6 +70,10 @@ done
 [ -n "$platform" ] || package_die 'no --platform'
 [ -n "$staging" ] || package_die 'no --staging'
 [ -n "$output_dir" ] || package_die 'no --output-dir'
+[ -n "$source_revision" ] || package_die \
+    'no --source-revision, so nothing in the package would say which commit it was built from'
+package_valid_revision "$source_revision" || package_die \
+    "--source-revision '$source_revision' is not a full lower-case commit object name"
 [ -d "$staging" ] || package_die "no such staging directory: $staging"
 # Spelled the way this shell's own tools can read it. RUNNER_TEMP on Windows is
 # D:\a\_temp: a backslash is an escape to sed and to a shell pattern, and a
@@ -291,6 +305,7 @@ jq -s -S \
     --arg kind "$PACKAGE_KIND" \
     --argjson formatVersion "$PACKAGE_FORMAT" \
     --arg productVersion "$version" \
+    --arg sourceRevision "$source_revision" \
     --arg target "$triple" \
     --arg root "$root" \
     --arg archive "$archive_name" \
@@ -306,6 +321,7 @@ jq -s -S \
         kind: $kind,
         formatVersion: $formatVersion,
         productVersion: $productVersion,
+        sourceRevision: $sourceRevision,
         target: $target,
         root: $root,
         archive: $archive,
@@ -351,6 +367,7 @@ package_create_archive "$build" "$root" "$output_dir/$archive_name"
 manifest="$build/$root/$(package_manifest_path)"
 echo "# FerriteCAD release archive"
 echo "version        $version"
+echo "revision       $source_revision"
 echo "target         $triple"
 echo "root           $root"
 echo "archive        $archive_name"

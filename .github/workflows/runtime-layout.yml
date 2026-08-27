@@ -69,6 +69,9 @@ on:
       - 'tools/package-release.sh'
       - 'tools/check-release-package.sh'
       - 'tools/check-packager.sh'
+      - 'tools/build-release-set.sh'
+      - 'tools/check-release-set.sh'
+      - 'tools/check-release-set-builder.sh'
       - 'tools/runtime-probe.sh'
       - 'tools/package/**'
       - 'tools/product/**'
@@ -766,11 +769,19 @@ jobs:
           first="${RUNNER_TEMP}/package-first"
           second="${RUNNER_TEMP}/package-second"
           rm -rf "$first" "$second"
+          # Which commit this is, handed in rather than worked out. GITHUB_SHA is
+          # the commit this job checked out and built, and it is the only thing
+          # here that knows it: the packager refuses to guess, because a
+          # packager that ran `git rev-parse HEAD` would name whatever tree it
+          # was standing in. Without it three archives of one version are
+          # indistinguishable from three archives of three commits.
           tools/package-release.sh --platform '${{ matrix.name }}' \
             --staging '${{ steps.stage.outputs.staging }}' --output-dir "$first" \
+            --source-revision "$GITHUB_SHA" \
             | tee "package-${{ matrix.name }}.txt"
           tools/package-release.sh --platform '${{ matrix.name }}' \
             --staging '${{ steps.stage.outputs.staging }}' --output-dir "$second" \
+            --source-revision "$GITHUB_SHA" \
             > /dev/null
 
           archive="$(find "$first" -maxdepth 1 -name '*.tar.gz' | head -1)"
@@ -878,6 +889,7 @@ jobs:
             echo "# FerriteCAD release archive, ${{ matrix.name }}; build-local evidence"
             echo "runner ${{ matrix.os }} ${RUNNER_ARCH}"
             echo "version $(say '.productVersion')"
+            echo "source-revision $(say '.sourceRevision')"
             echo "target $(say '.target')"
             echo "root $(say '.root')"
             echo "archive ${{ steps.package.outputs.archive_name }}"
@@ -896,6 +908,7 @@ jobs:
           # cannot agree.
           {
             printf 'package %s version=%s\n' '${{ matrix.name }}' "$(say '.productVersion')"
+            printf 'package %s source-revision=%s\n' '${{ matrix.name }}' "$(say '.sourceRevision')"
             printf 'package %s target=%s\n' '${{ matrix.name }}' "$(say '.target')"
             printf 'package %s archive=%s\n' '${{ matrix.name }}' '${{ steps.package.outputs.archive_name }}'
             printf 'package %s runtime-files=%s\n' '${{ matrix.name }}' "$(say '.totals.runtimeFiles')"
@@ -1017,6 +1030,12 @@ jobs:
     needs: measure
     runs-on: ubuntu-latest
     steps:
+      # The repository, because the release set checker hands every archive to
+      # tools/check-release-package.sh, and that compares the product SBOM
+      # inside the archive with the committed one. Checked out first: it is the
+      # only step here that writes to the workspace root.
+      - uses: actions/checkout@v7
+
       - name: Download every summary
         uses: actions/download-artifact@v4
         with:
@@ -1170,6 +1189,7 @@ jobs:
           missing=0
           : > targets.txt
           : > versions.txt
+          : > revisions.txt
           for platform in linux macos windows; do
             summary="packages/package-summary-${platform}/package-summary-${platform}.txt"
             if [ ! -f "$summary" ]; then
@@ -1241,9 +1261,16 @@ jobs:
               'the package was never shown to work again after the libraries came back'
             require '^packaged package unchanged-by-running=true' \
               'running the package changed files inside it'
+            # And which commit it was built from, which is the one thing a
+            # package could not say before §21A-2b2b1b and the only thing that
+            # tells an archive of this build from an archive of another build
+            # carrying the same product version.
+            require '^packaged package source-revision=[0-9a-f]' \
+              'the package does not say which commit it was built from'
 
             sed -n "s/^package ${platform} target=//p" "$summary" >> targets.txt
             sed -n "s/^package ${platform} version=//p" "$summary" >> versions.txt
+            sed -n "s/^package ${platform} source-revision=//p" "$summary" >> revisions.txt
           done
           [ "$missing" -eq 0 ] || exit 1
 
@@ -1266,19 +1293,47 @@ jobs:
             exit 1
           fi
 
+          # One commit, and this run's commit. Three archives of one version
+          # built from three trees would satisfy everything above: the version
+          # matches, the targets are the three, and each package verifies on
+          # its own. What they are not is one product.
+          if [ "$(LC_ALL=C sort -u revisions.txt | wc -l)" -ne 1 ]; then
+            echo "::error::the three platforms packaged different source revisions"
+            cat revisions.txt
+            exit 1
+          fi
+          if [ "$(LC_ALL=C sort -u revisions.txt)" != '${{ github.sha }}' ]; then
+            echo "::error::the platforms packaged $(LC_ALL=C sort -u revisions.txt) and this run is ${{ github.sha }}"
+            exit 1
+          fi
+
           echo "all three platforms packaged their own target's release archive, extracted it"
           echo "with the staging directory and both build trees taken away, ran both shipped"
           echo "binaries out of it, verified every extracted byte against the manifest and"
           echo "carried the committed product SBOM inside it unchanged"
           echo
           echo "version $(LC_ALL=C sort -u versions.txt)"
+          echo "source revision $(LC_ALL=C sort -u revisions.txt)"
           # What was measured rather than what was wanted. The two are equal
           # once the comparison above has passed, and printing the expected
           # list would go on looking right if it ever stopped being.
           sed 's/^/target  /' targets-unique.txt
 
+      # ---------------------------------------------------------------------
+      # And that the three of them are one release set.
+      # ---------------------------------------------------------------------
+      #
+      # Everything above is about three platforms agreeing. This is about the
+      # three archives being one object: three targets, one product version,
+      # one source revision, and every byte of every archive pinned by a
+      # document that travels with them. It is still an Actions artifact. There
+      # is no GitHub Release, no tag, no installer, no signature and no
+      # notarisation, and nothing here creates one.
+
       - name: Require an archive artifact from each platform
         uses: actions/download-artifact@v4
+        # No run-id: this downloads the artifacts of this run, and `needs`
+        # above means all three platform jobs of this run succeeded.
         with:
           pattern: ferritecad-release-*
           path: archives
@@ -1287,14 +1342,115 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
+          : > archive-paths.txt
           for platform in linux macos windows; do
             found="$(find "archives/ferritecad-release-${platform}" -name '*.tar.gz' 2>/dev/null | wc -l)"
             if [ "$found" -ne 1 ]; then
               echo "::error::${platform} uploaded ${found} release archives rather than one"
               missing=$((missing + 1))
+              continue
             fi
+            find "archives/ferritecad-release-${platform}" -name '*.tar.gz' >> archive-paths.txt
           done
           [ "$missing" -eq 0 ] || exit 1
-          find archives -name '*.tar.gz' | LC_ALL=C sort | while IFS= read -r archive; do
+
+          # And nothing else came down. Three named artifacts each holding one
+          # archive is not the same statement as three archives: a fourth
+          # artifact matching the pattern would be a fourth archive assembled
+          # into the set as though a platform job had produced it.
+          total="$(find archives -name '*.tar.gz' | wc -l)"
+          if [ "$total" -ne 3 ]; then
+            echo "::error::the run carries ${total} release archives rather than three"
+            find archives -type f | sed 's/^/  /'
+            exit 1
+          fi
+
+          LC_ALL=C sort -o archive-paths.txt archive-paths.txt
+          while IFS= read -r archive; do
             printf '%s  %s bytes\n' "$(basename "$archive")" "$(wc -c < "$archive" | tr -d ' ')"
+          done < archive-paths.txt
+
+      - name: Assemble the three archives into one release set
+        run: |
+          set -euo pipefail
+          arguments=()
+          while IFS= read -r archive; do arguments+=(--archive "$archive"); done < archive-paths.txt
+          rm -rf release-set
+          tools/build-release-set.sh "${arguments[@]}" --output-dir release-set \
+            | tee release-set-evidence.txt
+
+      - name: Check the release set, against the release set
+        run: |
+          set -euo pipefail
+          # The build trees as the runner that packed spells them. Neither
+          # exists here: vendor/ is ignored and this is a fresh checkout, so a
+          # release archive naming either of them is naming a directory that is
+          # not on this machine. The checker passes them on to
+          # tools/check-release-package.sh, which owns that question and every
+          # other question about a single package; nothing about a package is
+          # re-implemented for the set.
+          tools/check-release-set.sh --release-set release-set \
+            --forbidden "${GITHUB_WORKSPACE}/vendor/install" \
+            --forbidden "${GITHUB_WORKSPACE}/vendor/planegcs" \
+            --output release-set-facts.txt
+
+          # Read back by name rather than trusted to the exit status, the way
+          # every platform summary above is read back. A check that stopped
+          # asking one of these would still exit zero.
+          missing=0
+          for wanted in 'release-set archives-verified=3' \
+                        'release-set targets=3 order=sorted' \
+                        'release-set files=5 extra=0' \
+                        'release-set checksums=3 order=sorted escaping=none' \
+                        'release-set host-local-values=0'; do
+            if ! grep -qF "$wanted" release-set-facts.txt; then
+              echo "::error::the release set check produced no fact saying '${wanted}'"
+              missing=$((missing + 1))
+            fi
           done
+          # And that the set is this run's commit rather than some commit.
+          if ! grep -qE "^release-set version=.+ source-revision=${{ github.sha }}$" \
+                  release-set-facts.txt; then
+            echo "::error::the release set was not assembled from ${{ github.sha }}"
+            grep '^release-set version=' release-set-facts.txt || true
+            missing=$((missing + 1))
+          fi
+          [ "$missing" -eq 0 ] || exit 1
+
+      - name: Assemble it again and require the same bytes
+        run: |
+          set -euo pipefail
+          # The two documents are what a recipient compares against, so they
+          # have to be a property of the three archives and of nothing else -
+          # not of the order the artifacts were downloaded in, not of when the
+          # job ran, not of which directory it ran in.
+          arguments=()
+          while IFS= read -r archive; do arguments+=(--archive "$archive"); done < archive-paths.txt
+          rm -rf release-set-again
+          tools/build-release-set.sh "${arguments[@]}" --output-dir release-set-again > /dev/null
+          for file in ferritecad-release-set.json SHA256SUMS; do
+            if ! cmp -s "release-set/${file}" "release-set-again/${file}"; then
+              echo "::error::two assemblies of the same three archives produced different ${file}"
+              diff -u "release-set/${file}" "release-set-again/${file}" || true
+              exit 1
+            fi
+          done
+          echo "two assemblies of the same three archives are byte-identical"
+          echo
+          cat release-set/ferritecad-release-set.json
+          echo
+          cat release-set/SHA256SUMS
+
+      - name: Upload the release set
+        uses: actions/upload-artifact@v4
+        # One artifact, so the three archives and the two documents that
+        # describe them cannot be downloaded apart from each other. Still an
+        # Actions artifact of this run: it is not published, nothing links to
+        # it, and no page of this repository offers it as a download.
+        with:
+          name: ferritecad-release-set
+          path: |
+            release-set/*
+            release-set-evidence.txt
+            release-set-facts.txt
+          if-no-files-found: error

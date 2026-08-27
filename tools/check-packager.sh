@@ -44,6 +44,13 @@ native_require_jq
 # Asserted here, so a host without it says so before it builds a fixture.
 package_gnu_tar > /dev/null
 
+# The commit the fixture packages claim to have been built from. Made up, and
+# handed to the packager the way the workflow hands it GITHUB_SHA: the packager
+# refuses to work a revision out for itself, because a packager that ran `git
+# rev-parse HEAD` would name the tree it was standing in rather than the tree
+# the binaries came from.
+FIXTURE_REVISION='a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'
+
 # Asked before a fixture is built, and named as the defect rather than as a
 # missing file. Up to §21A-2b2b1a the relocatable layout existed only as a
 # directory in the temporary space of the run that measured it: it could be
@@ -152,7 +159,8 @@ gate_platform() { # platform
 
     # ---- the packager, on a staging directory that is exactly right --------
     expect_pass 'the packager turns a staged layout into a versioned archive' \
-        tools/package-release.sh --platform "$platform" --staging "$staging" --output-dir "$out"
+        tools/package-release.sh --platform "$platform" --staging "$staging" \
+            --output-dir "$out" --source-revision "$FIXTURE_REVISION"
 
     if [ ! -f "$out/$archive" ]; then
         checks=$((checks + 1))
@@ -165,7 +173,8 @@ gate_platform() { # platform
     local second="$work/$platform/second"
     mkdir -p "$second"
     if ! tools/package-release.sh --platform "$platform" --staging "$staging" \
-            --output-dir "$second" > "$work/out.txt" 2>&1; then
+            --output-dir "$second" --source-revision "$FIXTURE_REVISION" \
+            > "$work/out.txt" 2>&1; then
         fail 'the second packing failed'
         sed 's/^/      /' "$work/out.txt" >&2
     elif cmp -s "$out/$archive" "$second/$archive"; then
@@ -225,6 +234,14 @@ gate_platform() { # platform
 
     # What it said, so a silently smaller answer is visible.
     checks=$((checks + 1))
+    if grep -q "^package source-revision=${FIXTURE_REVISION}\$" "$work/facts.txt"; then
+        echo "  ok      the package carries the revision the packager was handed"
+    else
+        fail 'the package does not carry the revision the packager was handed'
+        sed 's/^/      /' "$work/facts.txt" >&2
+    fi
+
+    checks=$((checks + 1))
     if grep -q "^package runtime-files=[1-9]" "$work/facts.txt" \
         && grep -q '^package product-sbom=byte-identical' "$work/facts.txt" \
         && grep -q '^package manifest-verified-against-extracted-bytes=true' "$work/facts.txt" \
@@ -244,7 +261,7 @@ gate_platform() { # platform
     }
     pack_broken() {
         tools/package-release.sh --platform "$platform" --staging "$broken" \
-            --output-dir "$work/$platform/reject"
+            --output-dir "$work/$platform/reject" --source-revision "$FIXTURE_REVISION"
     }
 
     mutate_unowned()  { touch "$broken/an-unaccounted-file"; }
@@ -319,6 +336,10 @@ gate_platform() { # platform
     mutate_no_owner() { edit_manifest '.runtimeFiles[0].owner = ""'; }
     mutate_bad_kind() { edit_manifest '.runtimeFiles[0].ownerKind = "somebody"'; }
     mutate_target()   { edit_manifest '.target = "aarch64-unknown-linux-gnu"'; }
+    mutate_v1()       { edit_manifest '.formatVersion = 1 | del(.sourceRevision)'; }
+    mutate_norev()    { edit_manifest 'del(.sourceRevision)'; }
+    mutate_badrev()   { edit_manifest '.sourceRevision = "HEAD"'; }
+    mutate_shortrev() { edit_manifest '.sourceRevision = "a1b2c3d"'; }
     mutate_self()     { edit_manifest '.selfDescription.path = "package/somewhere-else.json"'; }
     mutate_selfhash() { edit_manifest '.selfDescription.hashed = true'; }
     mutate_import_l() {
@@ -367,6 +388,25 @@ gate_platform() { # platform
 
     break_archive mutate_target
     expect_fail "a manifest for another target is caught" 'the manifest is for' check_bad
+
+    # The format that had no revision in it. A package of it is still a
+    # package; what it is not is a member of a release set, because nothing in
+    # it says which commit it came from.
+    break_archive mutate_v1
+    expect_fail 'a manifest of the format that carried no revision is caught' \
+        'the manifest is format 1' check_bad
+
+    break_archive mutate_norev
+    expect_fail 'a manifest with no source revision at all is caught' \
+        "it was built from 'null'" check_bad
+
+    break_archive mutate_badrev
+    expect_fail 'a manifest naming a branch instead of a commit is caught' \
+        'it was built from' check_bad
+
+    break_archive mutate_shortrev
+    expect_fail 'a manifest carrying an abbreviated revision is caught' \
+        'it was built from' check_bad
 
     break_archive mutate_self
     expect_fail 'the no-digest exception claimed for another file is caught' \

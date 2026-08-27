@@ -232,6 +232,17 @@ jobs:
       # would mean asking about them roughly never.
       - run: tools/check-packager.sh
 
+      # And the release set, on archives that gate builds for itself. A single
+      # archive verifying beautifully says nothing about whether the three that
+      # were uploaded are one product: a target missing, a target twice, a
+      # fourth target, two product versions, two source revisions, a package
+      # manifest too old to record a revision, an archive renamed or replaced
+      # after the set was assembled, a checksums file that does not say what
+      # the archives hash to. All of that is arithmetic over three files and
+      # two documents, and only whether the archives really run needs three
+      # runners.
+      - run: tools/check-release-set-builder.sh
+
   # Security advisories, dependency bans and source policy remain gates.
   # Licence policy is still reported, but ADR 0003 makes it advisory so an
   # unresolved or newly disallowed expression cannot stop product work.

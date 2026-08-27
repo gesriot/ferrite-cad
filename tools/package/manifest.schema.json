@@ -8,6 +8,7 @@
     "kind",
     "formatVersion",
     "productVersion",
+    "sourceRevision",
     "target",
     "root",
     "archive",
@@ -24,11 +25,15 @@
     },
     "formatVersion": {
       "type": "integer",
-      "minimum": 1
+      "minimum": 2
     },
     "productVersion": {
       "type": "string",
       "minLength": 1
+    },
+    "sourceRevision": {
+      "$ref": "#/definitions/revision",
+      "description": "The commit of this repository the packaged binaries were built from, handed to the packager rather than worked out by it. Two archives carrying one product version and two revisions are two products, and before format 2 nothing in a package could tell them apart."
     },
     "target": {
       "enum": [
@@ -111,6 +116,10 @@
     }
   },
   "definitions": {
+    "revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
     "sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"

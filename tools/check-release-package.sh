@@ -305,11 +305,18 @@ said_target="$(jq -r '.target' "$manifest" | native_strip_cr)"
 said_root="$(jq -r '.root' "$manifest" | native_strip_cr)"
 said_archive="$(jq -r '.archive' "$manifest" | native_strip_cr)"
 said_version="$(jq -r '.productVersion' "$manifest" | native_strip_cr)"
+said_revision="$(jq -r '.sourceRevision' "$manifest" | native_strip_cr)"
 
 [ "$said_kind" = "$PACKAGE_KIND" ] \
     || package_die "the manifest calls itself '$said_kind' rather than $PACKAGE_KIND"
 [ "$said_format" = "$PACKAGE_FORMAT" ] \
     || package_die "the manifest is format $said_format and this gate reads $PACKAGE_FORMAT"
+# Which commit the packaged binaries were built from. Checked for shape and
+# reported; which revision is the right one is not a question a single package
+# can answer, and tools/check-release-set.sh asks it of all three at once.
+package_valid_revision "$said_revision" \
+    || package_die "the manifest says it was built from '$said_revision', which is not a \
+full lower-case commit object name"
 [ "$said_target" = "$triple" ] \
     || package_die "the manifest is for $said_target and this is the $platform package, which is $triple"
 [ "$said_root" = "$archive_root" ] \
@@ -325,6 +332,7 @@ expected_root="$(package_root_for "$said_version" "$triple")"
 [ "$(basename "$archive")" = "$(package_archive_for "$said_version" "$triple")" ] \
     || package_die "the archive is not named for version $said_version of $triple"
 fact "package version=$said_version target=$triple root=$archive_root"
+fact "package source-revision=$said_revision"
 
 # The product version is the inventory's, not the manifest's own idea of one.
 inventory_version="$(jq -r '.productVersion' "$NATIVE_INVENTORY" | native_strip_cr)"
