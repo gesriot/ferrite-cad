@@ -466,6 +466,123 @@ pub fn selection_inspector(ui: &mut egui::Ui, selected: Option<Selected<'_>>) {
         });
 }
 
+/// What one solve found out about one sketch, in words a window can print.
+///
+/// Not the scene's type and not the evaluator's: a panel has no business
+/// knowing what a document, a rebuild or a solver is, and the conversion
+/// happens where all three are already in hand. What arrives here is the same
+/// vocabulary the rest of this module deals in – borrowed display text,
+/// durable identifiers already turned into strings, and one number.
+///
+/// # Portable terms only
+///
+/// There is no field for a `ConstraintId`, a `PointId`, an equation index, a
+/// native tag, a session or a position in this frame's list, because a solve
+/// report holds none of those and a panel that could print one would be a
+/// panel that outlived the solve it describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SolvedSketch<'a> {
+    /// What the document calls it, when it calls it anything.
+    pub name: Option<&'a str>,
+    /// The identifier the document stores for the sketch, whole.
+    pub object: &'a str,
+    /// How much freedom the drawing has left. Zero means it cannot move.
+    pub degrees_of_freedom: usize,
+    /// The constraints that repeat what the rest already said, named as the
+    /// document names them and in the order the document stores them.
+    pub redundant: &'a [&'a str],
+}
+
+/// What an unnamed sketch is called on screen.
+///
+/// Said rather than left blank. A row with an empty first line is
+/// indistinguishable from a row whose name failed to arrive, and a sketch that
+/// vanished from the list entirely because nobody named it is worse than
+/// either.
+const UNNAMED: &str = "Unnamed sketch";
+
+/// What a section with nothing to report says.
+const NOTHING_SOLVED: &str = "No solved constrained sketches";
+
+impl SolvedSketch<'_> {
+    /// The lines to put on screen, in order.
+    ///
+    /// Built as data rather than drawn directly, exactly as [`Selected::rows`]
+    /// is and for the same reason: what a person will read can then be
+    /// examined without a window.
+    pub fn rows(&self) -> Vec<(&'static str, String)> {
+        let mut rows = vec![
+            ("Sketch", self.name.unwrap_or(UNNAMED).to_owned()),
+            ("Object", self.object.to_owned()),
+            // Read from the number rather than carried beside it, so a row
+            // saying "fully constrained" and a row saying two degrees of
+            // freedom cannot appear together.
+            ("Status", self.status().to_owned()),
+            ("Degrees of freedom", self.degrees_of_freedom.to_string()),
+        ];
+        if self.redundant.is_empty() {
+            // A statement rather than an absent row: no line at all reads as a
+            // panel that has not got round to this sketch yet.
+            rows.push(("Redundant", "None".to_owned()));
+        }
+        for constraint in self.redundant {
+            rows.push(("Redundant", (*constraint).to_owned()));
+        }
+        rows
+    }
+
+    /// What a person is told about how settled this drawing is.
+    fn status(&self) -> &'static str {
+        if self.degrees_of_freedom == 0 {
+            "Fully constrained"
+        } else {
+            "Under-constrained"
+        }
+    }
+}
+
+/// What the solve of each constrained sketch found out, and nothing else.
+///
+/// Read-only, and not an inspector: no sketch is drawn in the viewport, none
+/// of these rows can be chosen, and pressing one is not a thing that can
+/// happen. The panel returns nothing because there is nothing for a caller to
+/// apply – a section that could report a press would be a second place where
+/// what is chosen is decided.
+///
+/// Nothing here asks a solver anything. Every value was found out by the one
+/// rebuild that produced the picture and has been carried since; a panel that
+/// could solve would solve once per frame.
+pub fn sketch_solves_panel(ui: &mut egui::Ui, sketches: &[SolvedSketch<'_>]) {
+    ui.label("Sketch solves");
+    if sketches.is_empty() {
+        // Said rather than left blank, for the same reason an empty list of
+        // definitions says so: a section that draws nothing is
+        // indistinguishable from one that failed.
+        ui.label(NOTHING_SOLVED);
+        return;
+    }
+
+    // Whatever room is left rather than a fixed height: this section is last
+    // and a bound of its own would leave a window with space in it showing
+    // fewer sketches than fit. What does not fit is scrolled to, because every
+    // sketch that was solved has to be reachable.
+    egui::ScrollArea::vertical()
+        .id_salt("ferritecad sketch solves")
+        .show(ui, |ui| {
+            for (index, sketch) in sketches.iter().enumerate() {
+                egui::Grid::new(("ferritecad sketch solve", index))
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        for (label, value) in sketch.rows() {
+                            ui.label(label);
+                            ui.add(egui::Label::new(value).truncate());
+                            ui.end_row();
+                        }
+                    });
+            }
+        });
+}
+
 /// What the window is doing, as far as the toolbar needs to know.
 ///
 /// `line` is a finished sentence and `progress` is how far through a reading
@@ -2140,5 +2257,350 @@ mod tests {
         keys.sort_unstable();
         keys.dedup();
         assert_eq!(keys.len(), VIEWS.len(), "two views share a shortcut");
+    }
+
+    /// Two identifiers of the shape a document actually stores.
+    ///
+    /// Real UUIDv7 text rather than short stand-ins: what is being checked
+    /// includes that a whole identifier reaches the screen, and a three-letter
+    /// stand-in would be shown whole by a panel that truncates.
+    const SKETCH_ID: &str = "01930f2c-1a2b-7c3d-8e4f-0a1b2c3d4e5f";
+    const FIRST_REDUNDANT: &str = "01930f2c-1a2b-7c3d-8e4f-111111111111";
+    const SECOND_REDUNDANT: &str = "01930f2c-1a2b-7c3d-8e4f-222222222222";
+
+    /// Every word this panel actually drew, in the order it drew them.
+    ///
+    /// Read out of the shapes egui produced rather than out of the values that
+    /// went in: what is being checked is what a person reads, and a panel that
+    /// laid out nothing would satisfy any assertion made against its input.
+    fn words_drawn(sketches: &[SolvedSketch<'_>]) -> Vec<String> {
+        let context = egui::Context::default();
+        // A frame first, so the fonts are loaded: without them there is
+        // nothing to lay a galley out with and every line comes back empty.
+        let mut warm = context.run_ui(egui::RawInput::default(), |_| {});
+        warm.textures_delta.clear();
+
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            sketch_solves_panel(ui, sketches);
+        });
+        output.textures_delta.clear();
+        let mut words = Vec::new();
+        for clipped in output.shapes {
+            collect_text(&clipped.shape, &mut words);
+        }
+        words
+    }
+
+    /// Every galley in one shape, however deeply it is nested.
+    fn collect_text(shape: &egui::Shape, into: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Text(text) => into.push(text.galley.text().to_owned()),
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect_text(shape, into);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Everything the panel drew, as one string to search.
+    fn page(sketches: &[SolvedSketch<'_>]) -> String {
+        words_drawn(sketches).join("\n")
+    }
+
+    /// A sketch that cannot move, with nothing repeated in it.
+    fn settled() -> SolvedSketch<'static> {
+        SolvedSketch {
+            name: Some("Profile"),
+            object: SKETCH_ID,
+            degrees_of_freedom: 0,
+            redundant: &[],
+        }
+    }
+
+    #[test]
+    fn a_section_with_nothing_to_report_says_so() {
+        let page = page(&[]);
+        assert!(
+            page.contains("Sketch solves"),
+            "the section did not name itself:\n{page}"
+        );
+        assert!(
+            page.contains("No solved constrained sketches"),
+            "a document with no constrained sketch left the section blank, which reads as a \
+             section that failed:\n{page}"
+        );
+    }
+
+    #[test]
+    fn a_sketch_that_cannot_move_is_called_fully_constrained() {
+        let page = page(&[settled()]);
+        assert!(
+            page.contains("Fully constrained"),
+            "a sketch with no freedom left was not called fully constrained:\n{page}"
+        );
+        assert!(
+            !page.contains("Under-constrained"),
+            "a sketch with no freedom left was called under-constrained:\n{page}"
+        );
+        assert!(
+            page.contains("Profile"),
+            "the sketch was not named:\n{page}"
+        );
+        assert!(
+            page.contains(SKETCH_ID),
+            "the whole identifier the document stores did not reach the screen:\n{page}"
+        );
+    }
+
+    #[test]
+    fn a_sketch_with_freedom_left_says_how_much_of_it() {
+        let page = page(&[SolvedSketch {
+            name: Some("Loose"),
+            object: SKETCH_ID,
+            degrees_of_freedom: 2,
+            redundant: &[],
+        }]);
+        assert!(
+            page.contains("Under-constrained"),
+            "a sketch with freedom left was not called under-constrained:\n{page}"
+        );
+        assert!(
+            !page.contains("Fully constrained"),
+            "a sketch with freedom left was called fully constrained:\n{page}"
+        );
+        // The number itself, and the two numbers it is most easily confused
+        // with: a panel showing "0" or "1" here would look right in a
+        // screenshot and be wrong about the drawing.
+        let rows = words_drawn(&[SolvedSketch {
+            name: Some("Loose"),
+            object: SKETCH_ID,
+            degrees_of_freedom: 2,
+            redundant: &[],
+        }]);
+        assert!(
+            rows.iter().any(|word| word == "2"),
+            "the exact number of degrees of freedom was not shown: {rows:?}"
+        );
+        assert!(
+            page.contains("Degrees of freedom"),
+            "the number was shown without saying what it counts:\n{page}"
+        );
+    }
+
+    #[test]
+    fn a_sketch_the_document_never_named_is_still_shown() {
+        let page = page(&[SolvedSketch {
+            name: None,
+            object: SKETCH_ID,
+            degrees_of_freedom: 1,
+            redundant: &[],
+        }]);
+        assert!(
+            page.contains("Unnamed sketch"),
+            "a sketch nobody named was dropped from the section, or shown with a blank line \
+             where its name goes:\n{page}"
+        );
+        assert!(
+            page.contains(SKETCH_ID),
+            "the unnamed sketch was shown without the one thing that identifies it:\n{page}"
+        );
+        assert!(
+            page.contains("Degrees of freedom"),
+            "an unnamed sketch was shown without what its solve found out:\n{page}"
+        );
+    }
+
+    #[test]
+    fn a_sketch_that_repeats_nothing_says_none_rather_than_leaving_a_gap() {
+        let page = page(&[settled()]);
+        assert!(
+            page.contains("Redundant"),
+            "the section said nothing at all about repeated constraints:\n{page}"
+        );
+        assert!(
+            page.contains("None"),
+            "a sketch that repeats nothing left the line blank, which reads the same as a list \
+             that failed to arrive:\n{page}"
+        );
+    }
+
+    #[test]
+    fn every_repeated_constraint_is_named_whole_and_in_the_documents_order() {
+        let redundant = [FIRST_REDUNDANT, SECOND_REDUNDANT];
+        let rows = words_drawn(&[SolvedSketch {
+            name: Some("Profile"),
+            object: SKETCH_ID,
+            degrees_of_freedom: 0,
+            redundant: &redundant,
+        }]);
+        let page = rows.join("\n");
+        let first = page.find(FIRST_REDUNDANT);
+        let second = page.find(SECOND_REDUNDANT);
+        assert!(
+            first.is_some(),
+            "the first repeated constraint was not named:\n{page}"
+        );
+        assert!(
+            second.is_some(),
+            "the second repeated constraint was not named:\n{page}"
+        );
+        assert!(
+            first < second,
+            "the repeated constraints were reordered, so the list is no longer the document's:\
+             \n{page}"
+        );
+        assert!(
+            !page.contains("None"),
+            "a sketch that repeats two constraints also said it repeats none:\n{page}"
+        );
+    }
+
+    #[test]
+    fn two_sketches_keep_their_own_facts_and_their_own_order() {
+        let first = SolvedSketch {
+            name: Some("Loose"),
+            object: SKETCH_ID,
+            degrees_of_freedom: 2,
+            redundant: &[],
+        };
+        let second_redundant = [SECOND_REDUNDANT];
+        let second = SolvedSketch {
+            name: Some("Sized"),
+            object: FIRST_REDUNDANT,
+            degrees_of_freedom: 0,
+            redundant: &second_redundant,
+        };
+        let page = page(&[first, second]);
+        let loose = page.find("Loose").expect("the first sketch was drawn");
+        let sized = page.find("Sized").expect("the second sketch was drawn");
+        assert!(
+            loose < sized,
+            "the section reordered the sketches, so a row no longer names the sketch above \
+             it:\n{page}"
+        );
+        // The second sketch's own repeated constraint sits after the second
+        // sketch's name and not after the first's, which is what makes this a
+        // statement about whose facts these are.
+        let repeated = page
+            .find(SECOND_REDUNDANT)
+            .expect("the repeated constraint was drawn");
+        assert!(
+            repeated > sized,
+            "one sketch was given the repeated constraint of another:\n{page}"
+        );
+        assert!(
+            page.contains("Fully constrained") && page.contains("Under-constrained"),
+            "two sketches in different states were described as being in one:\n{page}"
+        );
+    }
+
+    #[test]
+    fn nothing_in_the_section_can_be_pressed() {
+        // A click over every part of the section. Every widget in it is a
+        // label and nothing else: a label is what egui records a click on when
+        // a person drags across text to copy it, and that is the whole of what
+        // can happen here. A row that had become choosable, or a control that
+        // had appeared beside one, would be recorded as its own kind of widget
+        // and is what this refuses.
+        //
+        // The other half of the same statement is the signature: this panel
+        // returns nothing, so there is nothing a caller could apply even if a
+        // press did reach something.
+        let redundant = [FIRST_REDUNDANT, SECOND_REDUNDANT];
+        let sketches = [
+            settled(),
+            SolvedSketch {
+                name: None,
+                object: FIRST_REDUNDANT,
+                degrees_of_freedom: 3,
+                redundant: &redundant,
+            },
+        ];
+        let context = egui::Context::default();
+        let mut warm = context.run_ui(egui::RawInput::default(), |_| {});
+        warm.textures_delta.clear();
+
+        for step_y in 0..40 {
+            let at = egui::Pos2::new(60.0, step_y as f32 * 5.0);
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    events: vec![
+                        egui::Event::PointerMoved(at),
+                        egui::Event::PointerButton {
+                            pos: at,
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: egui::Modifiers::default(),
+                        },
+                        egui::Event::PointerButton {
+                            pos: at,
+                            button: egui::PointerButton::Primary,
+                            pressed: false,
+                            modifiers: egui::Modifiers::default(),
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |ui| sketch_solves_panel(ui, &sketches),
+            );
+            output.textures_delta.clear();
+            for event in &output.platform_output.events {
+                let widget = match event {
+                    egui::output::OutputEvent::Clicked(info)
+                    | egui::output::OutputEvent::DoubleClicked(info)
+                    | egui::output::OutputEvent::TripleClicked(info)
+                    | egui::output::OutputEvent::FocusGained(info)
+                    | egui::output::OutputEvent::TextSelectionChanged(info)
+                    | egui::output::OutputEvent::ValueChanged(info) => info,
+                };
+                assert_eq!(
+                    widget.typ,
+                    egui::WidgetType::Label,
+                    "a click at {at:?} reached something that is not a label, so this section                      offers an action: {event:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_section_speaks_no_solver_and_no_debug_vocabulary() {
+        let redundant = [FIRST_REDUNDANT, SECOND_REDUNDANT];
+        let page = page(&[
+            settled(),
+            SolvedSketch {
+                name: None,
+                object: FIRST_REDUNDANT,
+                degrees_of_freedom: 3,
+                redundant: &redundant,
+            },
+        ]);
+        // What a solve knows and a window may never print: the numbers one
+        // call to one library gave itself, and the shape of a value rather
+        // than a sentence.
+        for forbidden in [
+            "ConstraintId",
+            "PointId",
+            "SketchSolveReport",
+            "SketchSolveFacts",
+            "StableEntityId",
+            "ObjectId",
+            "degrees_of_freedom",
+            "redundant:",
+            "Some(",
+            "None(",
+            "[",
+            "planegcs",
+            "session",
+            "ordinal",
+            "index",
+        ] {
+            assert!(
+                !page.contains(forbidden),
+                "the section printed {forbidden:?}, which means something only to one solve:\
+                 \n{page}"
+            );
+        }
     }
 }

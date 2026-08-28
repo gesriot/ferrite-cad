@@ -252,6 +252,26 @@ durable answer the document has: an exact named native edge first, otherwise a
 named native face, otherwise its definition. Opening another document is the
 only editing operation there is.
 
+Below the inspector, `Sketch solves` says what the rebuild behind the picture
+found out about the drawings it was built from. One entry per constrained
+sketch of the document, in the order the document stores them, whether or not
+anything raised from that sketch is on screen: a sketch is not drawn here and
+cannot be clicked, and this is not part of what is selected. Each entry gives
+the sketch's name – or `Unnamed sketch`, because a drawing nobody named is
+still a drawing that was solved – the whole identifier the document stores for
+it, whether it came out `Fully constrained` or `Under-constrained`, exactly how
+many degrees of freedom it has left, and the identifier of every constraint the
+solve found to repeat what the rest already said, one to a line and in the
+order the document stores them. A sketch that repeats nothing says `None`
+rather than leaving the line blank, and a document with no constrained sketch
+in it says `No solved constrained sketches` rather than showing an empty strip.
+Nothing here can be pressed and nothing here asks a solver anything: every
+value was found out by the one rebuild that drew the picture, and there is no
+second solve behind any of it. Opening another document replaces this account
+and the picture together, so what you read always belongs to the model you are
+looking at; a document that could not be read, or that you stopped waiting for,
+leaves both exactly as they were.
+
 ## Which sketch solver this build has
 
 ```sh
@@ -275,7 +295,9 @@ when it rebuilds: the profile it extrudes is the solved one, not the
 coordinates the curves were last left at. The viewer still cannot create or
 edit a constraint, so a constrained sketch is one that arrived in the document
 some other way. A build with no solver refuses such a sketch rather than
-building from the stored coordinates. The repository can assemble checked
+building from the stored coordinates. What that solve found out – how much
+freedom each sketch has left, and which of its constraints repeat what the rest
+already said – is on screen under `Sketch solves`, described above. The repository can assemble checked
 archives containing planegcs, but no published release is offered. Building
 and replacing the library is
 [docs/build-planegcs.md](docs/build-planegcs.md).

@@ -38,12 +38,13 @@ use ferritecad_kernel::{CancelToken, OperationContext, ProgressSink, Tessellatio
 use ferritecad_occt::OcctKernel;
 use ferritecad_scene::{
     CatalogueEntry, EdgeNames, FaceMeaning, FaceNames, LoadedScene, SceneItem, Selection,
-    VertexNames, snapshot_of,
+    SketchSolveFacts, VertexNames, snapshot_of,
 };
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
     Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, HIDE_KEY, Hover, ISOLATE_KEY, PROJECTION_KEY,
-    PointerButton, RowVisibility, SHOW_ALL_KEY, Selected, VIEWS, ViewportEvent, ViewportInput,
+    PointerButton, RowVisibility, SHOW_ALL_KEY, Selected, SolvedSketch, VIEWS, ViewportEvent,
+    ViewportInput,
 };
 use ferritecad_viewport::{
     Camera, EdgePickId, FacePickId, Hovered, Marked, PickId, Projection, RenderSnapshot,
@@ -672,28 +673,46 @@ fn spawn_load(
     std::thread::spawn(move || deliver(load()))
 }
 
+/// Everything a prepared load hands to the event loop, in one name.
+///
+/// Eight parts of one arrival that must become current together. A named
+/// structure rather than the tuple this was: what a fifth, sixth or eighth
+/// element of a tuple means is something a reader has to count out, and the
+/// last of them – what the solve of each sketch found out – is a different
+/// kind of fact from the rest and would be the easiest to misread.
+///
+/// Private, and nothing here leaves this file: these are the terms in which
+/// one document replaces another, not an interface anything else uses.
+#[derive(Debug)]
+struct PreparedLoad<P> {
+    /// The camera that frames the arriving picture, staged rather than
+    /// applied: a camera that moved before the upload succeeded would frame a
+    /// model that is still the old one.
+    framed: ViewportInput,
+    prepared: P,
+    catalogue: Vec<CatalogueEntry>,
+    faces: FaceNames,
+    edges: EdgeNames,
+    vertices: VertexNames,
+    visibility: Visibility,
+    /// What the solve of each constrained sketch of the arriving document
+    /// found out, in document order.
+    ///
+    /// Carried beside the picture rather than derived from it, because it
+    /// cannot be derived from it: a sketch is not drawn here, and the one
+    /// rebuild that could have said this is over. Committed with the picture
+    /// so that no frame can show what one document's solve found out beside
+    /// another document's model.
+    sketch_solves: Vec<SketchSolveFacts>,
+}
+
 /// Prepares both halves of a loaded picture without changing the current one.
 ///
 /// Framing the camera is part of accepting a scene. It therefore has to be
 /// staged alongside the GPU upload: if preparing the buffers fails after the
 /// camera has already moved, the old model remains resident but may be framed
-/// completely out of view. Returning both candidates lets the event-loop
+/// completely out of view. Returning every candidate lets the event-loop
 /// thread commit them together after every fallible step has succeeded.
-/// Everything a prepared load hands to the event loop, in one name.
-///
-/// A tuple of seven because these are seven parts of one arrival that must be
-/// committed together; naming it is what keeps the signature readable now that
-/// the picture carries three kinds of durable name rather than two.
-type PreparedLoad<P> = (
-    ViewportInput,
-    P,
-    Vec<CatalogueEntry>,
-    FaceNames,
-    EdgeNames,
-    VertexNames,
-    Visibility,
-);
-
 fn prepare_load<P>(
     current_input: &ViewportInput,
     loaded: Result<LoadedScene>,
@@ -708,15 +727,19 @@ fn prepare_load<P>(
     // opening with parts already missing.
     let visibility = Visibility::new(&snapshot);
     let prepared = prepare(Arc::new(snapshot))?;
-    Ok((
-        input,
+    Ok(PreparedLoad {
+        framed: input,
         prepared,
-        loaded.catalogue,
-        loaded.faces,
-        loaded.edges,
-        loaded.vertices,
+        catalogue: loaded.catalogue,
+        faces: loaded.faces,
+        edges: loaded.edges,
+        vertices: loaded.vertices,
         visibility,
-    ))
+        // Carried, not rebuilt. This is what the one rebuild behind the
+        // picture found out, and the only other way to have it would be to
+        // solve every sketch of the document a second time.
+        sketch_solves: loaded.sketch_solves,
+    })
 }
 
 /// Applies every texture upload and consumes it from egui's command set.
@@ -841,6 +864,15 @@ struct LiveScene<P> {
     /// definition while a pixel can name a definition, face, edge or vertex,
     /// and those are different things to show.
     hovered: Hovered,
+    /// What the solve of each constrained sketch of the document behind
+    /// `prepared` found out, in document order.
+    ///
+    /// Held here and replaced with the picture, though it is no part of one: a
+    /// window that kept the last document's account of its drawings beside
+    /// this document's model would be describing a file nobody has open. It
+    /// names no pick, no mesh and no definition, so nothing resolves through
+    /// it and nothing about the picture depends on it.
+    sketch_solves: Vec<SketchSolveFacts>,
 }
 
 impl<P> LiveScene<P> {
@@ -852,6 +884,7 @@ impl<P> LiveScene<P> {
         edges: EdgeNames,
         vertices: VertexNames,
         visibility: Visibility,
+        sketch_solves: Vec<SketchSolveFacts>,
     ) -> Self {
         Self {
             prepared,
@@ -862,6 +895,7 @@ impl<P> LiveScene<P> {
             visibility,
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
+            sketch_solves,
         }
     }
 
@@ -926,9 +960,17 @@ fn commit_scene<P>(
     camera: &mut ViewportInput,
     next: Result<PreparedLoad<P>>,
 ) -> Result<()> {
-    let (framed, prepared, catalogue, faces, edges, vertices, visibility) = next?;
-    *scene = LiveScene::new(prepared, catalogue, faces, edges, vertices, visibility);
-    *camera = framed;
+    let next = next?;
+    *scene = LiveScene::new(
+        next.prepared,
+        next.catalogue,
+        next.faces,
+        next.edges,
+        next.vertices,
+        next.visibility,
+        next.sketch_solves,
+    );
+    *camera = next.framed;
     Ok(())
 }
 
@@ -1383,6 +1425,73 @@ fn topology_name(words: &TopologyWords) -> ferritecad_ui::TopologyName<'_> {
         role: &words.role,
         rule: &words.rule,
     }
+}
+
+/// What one solved sketch is called, and what its solve found out, in words.
+///
+/// Owned here for the same reason [`Words`] is: a panel borrows what it shows
+/// and cannot outlive the frame. Every string is either a display name the
+/// loader already had or a durable identifier the document stores; there is no
+/// solver number here, and nothing in this type was obtained by asking
+/// anything. The solve is long over by the time one of these exists.
+struct SolveWords {
+    name: Option<String>,
+    object: String,
+    degrees_of_freedom: usize,
+    redundant: Vec<String>,
+}
+
+impl SolveWords {
+    /// Each repeated constraint, borrowed, in the order it arrived in.
+    fn repeated(&self) -> Vec<&str> {
+        self.redundant.iter().map(String::as_str).collect()
+    }
+}
+
+/// What the window has to say about the sketches behind the picture.
+///
+/// A translation and nothing more: one entry per fact, in the order the facts
+/// arrived, which is the order the document stores its sketches. No solver is
+/// asked anything, no document is opened, and nothing is sorted, deduplicated
+/// or dropped – a sketch the loader accounted for has a row here or the window
+/// is not saying what it was told.
+fn solve_words_of(solves: &[SketchSolveFacts]) -> Vec<SolveWords> {
+    solves
+        .iter()
+        .map(|facts| SolveWords {
+            name: facts.name.clone(),
+            object: facts.sketch.to_string(),
+            degrees_of_freedom: facts.report.degrees_of_freedom(),
+            redundant: facts
+                .report
+                .redundant()
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+        })
+        .collect()
+}
+
+/// The rows the section shows this frame, borrowed from this frame's words.
+///
+/// The repeated constraints arrive alongside rather than inside `words`
+/// because a panel is given borrowed text and the owner of that text is the
+/// frame. Both lists are built from one slice in one order, so the row a
+/// person reads and the identifiers under it belong to the same sketch.
+fn solved_sketches<'a>(
+    words: &'a [SolveWords],
+    repeated: &'a [Vec<&'a str>],
+) -> Vec<SolvedSketch<'a>> {
+    words
+        .iter()
+        .zip(repeated)
+        .map(|(sketch, repeated)| SolvedSketch {
+            name: sketch.name.as_deref(),
+            object: &sketch.object,
+            degrees_of_freedom: sketch.degrees_of_freedom,
+            redundant: repeated,
+        })
+        .collect()
 }
 
 /// What a stored role says, as a sentence.
@@ -2339,6 +2448,7 @@ impl App {
                 EdgeNames::default(),
                 VertexNames::default(),
                 Visibility::default(),
+                Vec::new(),
             ),
             egui,
             egui_state,
@@ -2394,6 +2504,13 @@ impl Live {
         // renderer reads, so a row marked hidden and a definition missing from
         // the picture cannot be two different sets.
         let offers = rows_visibility(&scene.visibility, scene.prepared.snapshot());
+        // What the solve of each constrained sketch of this document found
+        // out, in the words a panel may use. Built from what the load carried
+        // and from nothing else: no solver is asked, and the document is not
+        // opened again.
+        let solve_words = solve_words_of(&scene.sketch_solves);
+        let repeated: Vec<Vec<&str>> = solve_words.iter().map(SolveWords::repeated).collect();
+        let solves = solved_sketches(&solve_words, &repeated);
         let described = inspected(
             &scene.selection,
             &scene.catalogue,
@@ -2439,6 +2556,13 @@ impl Live {
             // is allowed to say is decided by `Selected`, which cannot name
             // anything that means something only to this frame.
             ferritecad_ui::selection_inspector(ui, described);
+            ui.separator();
+            // What the rebuild behind this picture found out about the
+            // drawings it was built from. Not an inspector and not part of the
+            // choice: a sketch is not drawn in the viewport and cannot be
+            // picked, so this is a third kind of thing the window knows and it
+            // is shown as one.
+            ferritecad_ui::sketch_solves_panel(ui, &solves);
         });
         // Asked after the pass, when egui knows the areas it just laid out.
         // `EventResponse::consumed` deliberately means something narrower for
@@ -2938,8 +3062,8 @@ mod tests {
         // call a document ready before the frame that put it there.
         let outcome = if loads.accepts(generation) {
             match prepare_load(input, result, |_| Ok(())) {
-                Ok((updated, (), _, _, _, _, _)) => {
-                    *input = updated;
+                Ok(prepared) => {
+                    *input = prepared.framed;
                     Ok(())
                 }
                 Err(error) => Err(error),
@@ -3438,6 +3562,7 @@ mod tests {
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
         assert_eq!(
             old.selection,
@@ -3456,6 +3581,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::default(),
+            Vec::new(),
         );
         assert_eq!(replacement.selection, Selection::Nothing);
     }
@@ -3480,6 +3606,7 @@ mod tests {
             // A real question about the picture that is still on screen, so
             // "nothing changed" is a statement with content.
             hovered: Hovered::Definition(chosen),
+            sketch_solves: Vec::new(),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -3522,6 +3649,7 @@ mod tests {
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -3533,15 +3661,16 @@ mod tests {
         commit_scene(
             &mut scene,
             &mut camera,
-            Ok((
+            Ok(PreparedLoad {
                 framed,
-                (),
-                vec![arriving.clone()],
-                FaceNames::default(),
-                EdgeNames::default(),
-                VertexNames::default(),
-                Visibility::default(),
-            )),
+                prepared: (),
+                catalogue: vec![arriving.clone()],
+                faces: FaceNames::default(),
+                edges: EdgeNames::default(),
+                vertices: VertexNames::default(),
+                visibility: Visibility::default(),
+                sketch_solves: Vec::new(),
+            }),
         )
         .expect("a load that arrived commits");
 
@@ -3572,6 +3701,7 @@ mod tests {
                     .pick,
             ),
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
 
         // Two lookups and no search: this snapshot names the definition, this
@@ -3598,6 +3728,7 @@ mod tests {
             visibility: Visibility::default(),
             selection: scene.selection,
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
         assert_eq!(short.chosen(&picture), None);
     }
@@ -3620,6 +3751,7 @@ mod tests {
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
 
         // Pointing at the definition that is already chosen: a question about
@@ -3736,6 +3868,7 @@ mod tests {
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
         assert!(hover(
             &mut scene.hovered,
@@ -3928,6 +4061,7 @@ mod tests {
             visibility: Visibility::new(&picture),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
         let before = scene.selection.clone();
         assert!(hover(
@@ -4213,8 +4347,9 @@ mod tests {
         input.resize(800, 600);
         // The route a real Open takes: everything fallible first, and the
         // parts handed over together afterwards.
-        let (_framed, (), _catalogue, _faces, _edges, vertices, _visibility) =
-            prepare_load(&input, Ok(loaded), |_| Ok(())).expect("the load is prepared");
+        let vertices = prepare_load(&input, Ok(loaded), |_| Ok(()))
+            .expect("the load is prepared")
+            .vertices;
 
         let after: Vec<(u32, usize)> = (0..picture.vertex_count())
             .filter_map(|ordinal| picture.vertex_of(0, ordinal))
@@ -5530,6 +5665,7 @@ mod tests {
             scene.edges.clone(),
             scene.vertices.clone(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         scene_state.selection = chosen.clone();
         assert!(
@@ -5897,6 +6033,7 @@ mod tests {
             visibility: Visibility::new(&picture),
             selection: chosen.clone(),
             hovered: Hovered::Vertex(vertex),
+            sketch_solves: Vec::new(),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -5922,15 +6059,16 @@ mod tests {
         commit_scene(
             &mut scene,
             &mut camera,
-            Ok((
+            Ok(PreparedLoad {
                 framed,
-                (),
-                loaded.catalogue.clone(),
-                FaceNames::default(),
-                EdgeNames::default(),
-                VertexNames::default(),
-                Visibility::default(),
-            )),
+                prepared: (),
+                catalogue: loaded.catalogue.clone(),
+                faces: FaceNames::default(),
+                edges: EdgeNames::default(),
+                vertices: VertexNames::default(),
+                visibility: Visibility::default(),
+                sketch_solves: Vec::new(),
+            }),
         )
         .expect("a load that arrived commits");
         assert_eq!(scene.selection, Selection::Nothing);
@@ -5971,6 +6109,7 @@ mod tests {
             visibility: Visibility::new(&picture),
             selection: chosen.clone(),
             hovered: Hovered::Vertex(vertex),
+            sketch_solves: Vec::new(),
         };
         let mut input = ViewportInput::new();
         input.resize(480, 480);
@@ -6267,6 +6406,7 @@ mod tests {
             visibility: Visibility::new(&picture),
             selection: chosen.clone(),
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -6291,15 +6431,16 @@ mod tests {
         commit_scene(
             &mut scene,
             &mut camera,
-            Ok((
+            Ok(PreparedLoad {
                 framed,
-                (),
-                loaded.catalogue.clone(),
-                FaceNames::default(),
-                EdgeNames::default(),
-                VertexNames::default(),
-                Visibility::default(),
-            )),
+                prepared: (),
+                catalogue: loaded.catalogue.clone(),
+                faces: FaceNames::default(),
+                edges: EdgeNames::default(),
+                vertices: VertexNames::default(),
+                visibility: Visibility::default(),
+                sketch_solves: Vec::new(),
+            }),
         )
         .expect("a load that arrived commits");
         assert_eq!(scene.selection, Selection::Nothing);
@@ -6439,6 +6580,7 @@ mod tests {
             visibility: Visibility::new(&picture),
             selection: Selection::Nothing,
             hovered: asked,
+            sketch_solves: Vec::new(),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -6464,15 +6606,16 @@ mod tests {
         commit_scene(
             &mut scene,
             &mut camera,
-            Ok((
+            Ok(PreparedLoad {
                 framed,
-                (),
-                loaded.catalogue.clone(),
-                FaceNames::default(),
-                EdgeNames::default(),
-                VertexNames::default(),
-                Visibility::default(),
-            )),
+                prepared: (),
+                catalogue: loaded.catalogue.clone(),
+                faces: FaceNames::default(),
+                edges: EdgeNames::default(),
+                vertices: VertexNames::default(),
+                visibility: Visibility::default(),
+                sketch_solves: Vec::new(),
+            }),
         )
         .expect("a load that arrived commits");
         assert_eq!(
@@ -6498,8 +6641,9 @@ mod tests {
         input.resize(800, 600);
         // The route a real Open takes: everything fallible first, and the
         // parts handed over together afterwards.
-        let (_framed, (), _catalogue, _faces, edges, _vertices, _visibility) =
-            prepare_load(&input, Ok(loaded), |_| Ok(())).expect("the load is prepared");
+        let edges = prepare_load(&input, Ok(loaded), |_| Ok(()))
+            .expect("the load is prepared")
+            .edges;
 
         assert_eq!(
             edges.of(edge, &picture).len(),
@@ -6823,6 +6967,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(picture),
+            Vec::new(),
         );
         scene.selection =
             Selection::Definition(picture.pick_of(chosen).expect("the picture has that row"));
@@ -6851,6 +6996,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         scene.selection =
             Selection::Definition(picture.pick_of(empty).expect("the definition has a row"));
@@ -6969,6 +7115,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         let mut input = ViewportInput::new();
         input.resize(800, 600);
@@ -7100,15 +7247,16 @@ mod tests {
         commit_scene(
             &mut scene,
             &mut camera,
-            Ok((
+            Ok(PreparedLoad {
                 framed,
-                (),
-                vec![a_body(), a_body()],
-                FaceNames::default(),
-                EdgeNames::default(),
-                VertexNames::default(),
-                Visibility::new(&next),
-            )),
+                prepared: (),
+                catalogue: vec![a_body(), a_body()],
+                faces: FaceNames::default(),
+                edges: EdgeNames::default(),
+                vertices: VertexNames::default(),
+                visibility: Visibility::new(&next),
+                sketch_solves: Vec::new(),
+            }),
         )
         .expect("a load that arrived commits");
         assert!(!scene.visibility.anything_hidden());
@@ -7393,6 +7541,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         let mut input = ViewportInput::new();
         input.resize(800, 600);
@@ -7490,6 +7639,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
 
         // Nothing chosen: nothing to isolate to.
@@ -7544,6 +7694,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         scene.selection = Selection::Definition(picture.pick_of(drawn).expect("has a row"));
         let mut input = ViewportInput::new();
@@ -7576,6 +7727,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
         let mut input = ViewportInput::new();
@@ -7614,6 +7766,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
         let chosen = scene.selection.clone();
@@ -7668,6 +7821,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
         let chosen = scene.selection.clone();
@@ -7759,6 +7913,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
         let mut input = ViewportInput::new();
@@ -7785,15 +7940,16 @@ mod tests {
         commit_scene(
             &mut scene,
             &mut camera,
-            Ok((
+            Ok(PreparedLoad {
                 framed,
-                (),
-                vec![a_body(), a_body(), a_body()],
-                FaceNames::default(),
-                EdgeNames::default(),
-                VertexNames::default(),
-                Visibility::new(&next),
-            )),
+                prepared: (),
+                catalogue: vec![a_body(), a_body(), a_body()],
+                faces: FaceNames::default(),
+                edges: EdgeNames::default(),
+                vertices: VertexNames::default(),
+                visibility: Visibility::new(&next),
+                sketch_solves: Vec::new(),
+            }),
         )
         .expect("a load that arrived commits");
         assert!(!scene.visibility.anything_hidden());
@@ -7887,6 +8043,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
         let chosen = scene.selection.clone();
@@ -8000,6 +8157,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         let mut input = ViewportInput::new();
         input.resize(800, 600);
@@ -8143,6 +8301,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
         let mut input = ViewportInput::new();
@@ -8176,15 +8335,16 @@ mod tests {
         commit_scene(
             &mut scene,
             &mut camera,
-            Ok((
+            Ok(PreparedLoad {
                 framed,
-                (),
-                vec![a_body(), a_body(), a_body()],
-                FaceNames::default(),
-                EdgeNames::default(),
-                VertexNames::default(),
-                Visibility::new(&next),
-            )),
+                prepared: (),
+                catalogue: vec![a_body(), a_body(), a_body()],
+                faces: FaceNames::default(),
+                edges: EdgeNames::default(),
+                vertices: VertexNames::default(),
+                visibility: Visibility::new(&next),
+                sketch_solves: Vec::new(),
+            }),
         )
         .expect("a load that arrived commits");
         assert!(!scene.visibility.anything_hidden());
@@ -8261,6 +8421,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
         let chosen = scene.selection.clone();
@@ -8331,6 +8492,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
         let chosen = scene.selection.clone();
@@ -8438,6 +8600,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
         let mut input = ViewportInput::new();
@@ -8465,15 +8628,16 @@ mod tests {
         commit_scene(
             &mut scene,
             &mut camera,
-            Ok((
+            Ok(PreparedLoad {
                 framed,
-                (),
-                vec![a_body(), a_body(), a_body()],
-                FaceNames::default(),
-                EdgeNames::default(),
-                VertexNames::default(),
-                Visibility::new(&next),
-            )),
+                prepared: (),
+                catalogue: vec![a_body(), a_body(), a_body()],
+                faces: FaceNames::default(),
+                edges: EdgeNames::default(),
+                vertices: VertexNames::default(),
+                visibility: Visibility::new(&next),
+                sketch_solves: Vec::new(),
+            }),
         )
         .expect("a load that arrived commits");
         assert!(!scene.visibility.anything_hidden());
@@ -8572,6 +8736,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         let mut input = ViewportInput::new();
         input.resize(800, 600);
@@ -8647,6 +8812,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         let mut input = ViewportInput::new();
         input.resize(800, 600);
@@ -8728,6 +8894,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
         let chosen = scene.selection.clone();
@@ -8810,6 +8977,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         scene.selection = Selection::Definition(picture.pick_of(1).expect("drawn"));
         let mut input = ViewportInput::new();
@@ -8845,15 +9013,16 @@ mod tests {
         commit_scene(
             &mut scene,
             &mut camera,
-            Ok((
+            Ok(PreparedLoad {
                 framed,
-                (),
-                vec![a_body(), a_body(), a_body()],
-                FaceNames::default(),
-                EdgeNames::default(),
-                VertexNames::default(),
-                Visibility::new(&next),
-            )),
+                prepared: (),
+                catalogue: vec![a_body(), a_body(), a_body()],
+                faces: FaceNames::default(),
+                edges: EdgeNames::default(),
+                vertices: VertexNames::default(),
+                visibility: Visibility::new(&next),
+                sketch_solves: Vec::new(),
+            }),
         )
         .expect("a load that arrived commits");
         assert!(!scene.visibility.anything_hidden());
@@ -9021,6 +9190,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         let mut input = ViewportInput::new();
         input.resize(800, 600);
@@ -9049,7 +9219,7 @@ mod tests {
         let arriving = prepare_load(&input, Ok(loaded(next.clone())), |_| Ok(()))
             .expect("the picture is accepted");
         assert_eq!(
-            arriving.0.projection(),
+            arriving.framed.projection(),
             Projection::Perspective,
             "a document opened in the projection the last one was left in"
         );
@@ -9264,6 +9434,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         let mut input = ViewportInput::new();
         input.resize(800, 600);
@@ -9356,6 +9527,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         let mut input = ViewportInput::new();
         input.resize(800, 600);
@@ -9462,6 +9634,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         let mut input = ViewportInput::new();
         input.resize(800, 600);
@@ -9546,6 +9719,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&picture),
+            Vec::new(),
         );
         let mut input = ViewportInput::new();
         input.resize(800, 600);
@@ -9643,6 +9817,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&snapshot),
+            Vec::new(),
         );
         scene.selection = Selection::Definition(front);
         let mut input = ViewportInput::new();
@@ -9850,6 +10025,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&scene.snapshot),
+            Vec::new(),
         );
         live.selection = chosen.clone();
         let mut input = ViewportInput::new();
@@ -9921,6 +10097,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&snapshot),
+            Vec::new(),
         );
         live.selection = Selection::Definition(marker);
 
@@ -10188,6 +10365,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&scene.snapshot),
+            Vec::new(),
         );
         live.selection = chosen;
         let mut input = ViewportInput::new();
@@ -10266,6 +10444,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(snapshot),
+            Vec::new(),
         );
 
         // Nothing chosen: everything still on screen.
@@ -10337,6 +10516,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(snapshot),
+            Vec::new(),
         );
         live.selection = chosen.clone();
         let mut input = ViewportInput::new();
@@ -10388,6 +10568,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::new(&scene.snapshot),
+            Vec::new(),
         );
         let mut input = ViewportInput::new();
         input.resize(800, 600);
@@ -10603,6 +10784,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::default(),
+            Vec::new(),
         );
         scene_with_face.selection = chosen;
         assert!(
@@ -10620,6 +10802,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::default(),
+            Vec::new(),
         );
         scene_with_part.selection = definition;
         assert!(
@@ -10643,6 +10826,7 @@ mod tests {
             EdgeNames::default(),
             VertexNames::default(),
             Visibility::default(),
+            Vec::new(),
         );
         live.selection = chosen.clone();
         live.hovered = Hovered::Face(scene.snapshot.face_of(0, 1).expect("numbered"));
@@ -10665,15 +10849,16 @@ mod tests {
         commit_scene(
             &mut live,
             &mut camera,
-            Ok((
+            Ok(PreparedLoad {
                 framed,
-                (),
-                vec![a_body()],
-                FaceNames::default(),
-                EdgeNames::default(),
-                VertexNames::default(),
-                Visibility::default(),
-            )),
+                prepared: (),
+                catalogue: vec![a_body()],
+                faces: FaceNames::default(),
+                edges: EdgeNames::default(),
+                vertices: VertexNames::default(),
+                visibility: Visibility::default(),
+                sketch_solves: Vec::new(),
+            }),
         )
         .expect("a load that arrived commits");
         assert_eq!(live.selection, Selection::Nothing);
@@ -10772,6 +10957,7 @@ mod tests {
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
 
         // The face a pixel of this picture would report.
@@ -10824,6 +11010,7 @@ mod tests {
             visibility: Visibility::default(),
             selection: Selection::Definition(chosen),
             hovered: Hovered::Definition(chosen),
+            sketch_solves: Vec::new(),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -10842,15 +11029,16 @@ mod tests {
         commit_scene(
             &mut scene,
             &mut camera,
-            Ok((
+            Ok(PreparedLoad {
                 framed,
-                (),
-                vec![a_body()],
-                FaceNames::default(),
-                EdgeNames::default(),
-                VertexNames::default(),
-                Visibility::default(),
-            )),
+                prepared: (),
+                catalogue: vec![a_body()],
+                faces: FaceNames::default(),
+                edges: EdgeNames::default(),
+                vertices: VertexNames::default(),
+                visibility: Visibility::default(),
+                sketch_solves: Vec::new(),
+            }),
         )
         .expect("a load that arrived commits");
         assert_eq!(scene.hovered, Hovered::Nothing);
@@ -10890,6 +11078,7 @@ mod tests {
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
 
         // Choosing from a list: the row becomes an identity by asking the
@@ -10972,6 +11161,7 @@ mod tests {
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
 
         let identities = identities_of(&scene.catalogue);
@@ -10995,6 +11185,7 @@ mod tests {
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
         let identities = identities_of(&twins.catalogue);
         assert_eq!(twins.rows(&identities).len(), 2);
@@ -11028,6 +11219,7 @@ mod tests {
             visibility: Visibility::default(),
             selection: Selection::Definition(picture.pick_of(1).expect("the picture has that row")),
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
 
         let identities = identities_of(&scene.catalogue);
@@ -11082,6 +11274,7 @@ mod tests {
                 picture.pick_of(mesh).expect("the picture has that row"),
             ),
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -11142,6 +11335,7 @@ mod tests {
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
         let identities = identities_of(&scene.catalogue);
         let (rows, marked) = scene.view(&identities, &picture);
@@ -11194,6 +11388,7 @@ mod tests {
                 picture.pick_of(chosen).expect("the picture has that row"),
             ),
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
 
         let mut showing_choice = ViewportInput::new();
@@ -11258,6 +11453,7 @@ mod tests {
                 picture.pick_of(only).expect("the picture has that row"),
             ),
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
         assert_eq!(selection_bounds(&scene, &picture), picture.bounds());
 
@@ -11310,6 +11506,7 @@ mod tests {
             visibility: Visibility::default(),
             selection: Selection::Definition(picture.pick_of(0).expect("the picture has that row")),
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
@@ -11338,6 +11535,7 @@ mod tests {
             visibility: Visibility::default(),
             selection: Selection::Nothing,
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
         for _ in 0..3 {
             assert!(!frame_selection(&empty, &picture, &mut camera).expect("no failure"));
@@ -11382,6 +11580,7 @@ mod tests {
                     .pick,
             ),
             hovered: Hovered::Nothing,
+            sketch_solves: Vec::new(),
         };
         assert!(scene.chosen(&picture).is_some());
 
@@ -11440,6 +11639,7 @@ mod tests {
                 visibility: Visibility::default(),
                 selection: Selection::Definition(draw.pick),
                 hovered: Hovered::Nothing,
+                sketch_solves: Vec::new(),
             };
             assert_eq!(scene.chosen(&picture), Some((0, &entry)));
         }
@@ -12015,5 +12215,901 @@ mod tests {
                 "the {name} button prints {shortcut}, but that key selects something else"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // What a solve found out, from the document that was solved to the screen
+    // -----------------------------------------------------------------------
+    //
+    // A picture of a solid says nothing about the drawing behind it. These
+    // gates are about the third thing a load carries beside the picture and
+    // what a click means: what the one rebuild that drew it found out about
+    // each constrained sketch, and whether the window can still say it.
+    //
+    // Every document here is written to a real file and read back through the
+    // real loader, and every solve is a real planegcs solve. Nothing in this
+    // section may ask a solver anything of its own: if these facts could be
+    // obtained by asking again, carrying them would be pointless.
+
+    /// The corners of the plate every constrained document here draws.
+    const SOLVE_CORNERS: [(f64, f64); 4] = [(0.0, 0.0), (50.0, 0.0), (50.0, 30.0), (0.0, 30.0)];
+    /// The width the sizing constraint asks for.
+    const SOLVE_WIDTH: f64 = 60.0;
+
+    /// Whether a real solver is here, and whether its absence is allowed.
+    ///
+    /// Under `FERRITECAD_REQUIRE_PLANEGCS=1` a missing library is a failure
+    /// rather than a reason to return early: a run whose job is to show that
+    /// a solved document reaches the window cannot pass by never solving one.
+    fn solver_ready() -> bool {
+        if ferritecad_sketch_solver::is_available() {
+            return true;
+        }
+        assert!(
+            !ferritecad_sketch_solver::is_required(),
+            "FERRITECAD_REQUIRE_PLANEGCS=1 was set, so no gate may skip: a window that has \
+             never been handed a real solve has not been shown to carry one"
+        );
+        eprintln!("skipped: this build has no sketch solver");
+        false
+    }
+
+    macro_rules! solver_or_skip {
+        () => {
+            if !solver_ready() {
+                return;
+            }
+        };
+    }
+
+    /// One straight side of the plate.
+    fn solve_line(
+        id: ferritecad_types::StableEntityId,
+        start: (f64, f64),
+        end: (f64, f64),
+    ) -> ferritecad_document::SketchCurve {
+        ferritecad_document::SketchCurve {
+            id,
+            construction: false,
+            geometry: ferritecad_document::SketchGeometry::Line {
+                start: ferritecad_document::Point2::new(start.0, start.1).expect("finite"),
+                end: ferritecad_document::Point2::new(end.0, end.1).expect("finite"),
+            },
+        }
+    }
+
+    /// Four sides, each with an identity of its own.
+    fn solve_curves() -> Vec<ferritecad_document::SketchCurve> {
+        (0..4)
+            .map(|index| {
+                solve_line(
+                    ferritecad_types::StableEntityId::new(),
+                    SOLVE_CORNERS[index],
+                    SOLVE_CORNERS[(index + 1) % SOLVE_CORNERS.len()],
+                )
+            })
+            .collect()
+    }
+
+    /// Nine rules that close and square the plate without sizing it, which
+    /// leaves it free in two directions.
+    fn solve_frame(
+        edges: &[ferritecad_types::StableEntityId],
+    ) -> Vec<ferritecad_document::SketchConstraintRule> {
+        use ferritecad_document::SketchConstraintRule as Rule;
+        use ferritecad_document::SketchPointSelector::{End, Start};
+        let at = ferritecad_document::SketchPointRef::new;
+        vec![
+            Rule::Coincident {
+                a: at(edges[0], End),
+                b: at(edges[1], Start),
+            },
+            Rule::Coincident {
+                a: at(edges[1], End),
+                b: at(edges[2], Start),
+            },
+            Rule::Coincident {
+                a: at(edges[2], End),
+                b: at(edges[3], Start),
+            },
+            Rule::Coincident {
+                a: at(edges[3], End),
+                b: at(edges[0], Start),
+            },
+            Rule::Fixed {
+                point: at(edges[0], Start),
+                x: 0.0,
+                y: 0.0,
+            },
+            Rule::Horizontal {
+                a: at(edges[0], Start),
+                b: at(edges[0], End),
+            },
+            Rule::Vertical {
+                a: at(edges[1], Start),
+                b: at(edges[1], End),
+            },
+            Rule::Horizontal {
+                a: at(edges[2], Start),
+                b: at(edges[2], End),
+            },
+            Rule::Vertical {
+                a: at(edges[3], Start),
+                b: at(edges[3], End),
+            },
+        ]
+    }
+
+    /// The rule that says how wide the plate is.
+    fn solve_width(
+        edges: &[ferritecad_types::StableEntityId],
+    ) -> ferritecad_document::SketchConstraintRule {
+        ferritecad_document::SketchConstraintRule::Distance {
+            a: ferritecad_document::SketchPointRef::new(
+                edges[0],
+                ferritecad_document::SketchPointSelector::Start,
+            ),
+            b: ferritecad_document::SketchPointRef::new(
+                edges[0],
+                ferritecad_document::SketchPointSelector::End,
+            ),
+            distance: SOLVE_WIDTH,
+        }
+    }
+
+    /// Each rule given the identity the document stores it under.
+    fn solve_named(
+        rules: Vec<ferritecad_document::SketchConstraintRule>,
+    ) -> Vec<ferritecad_document::SketchConstraint> {
+        rules
+            .into_iter()
+            .map(|rule| ferritecad_document::SketchConstraint {
+                id: ferritecad_types::StableEntityId::new(),
+                rule,
+            })
+            .collect()
+    }
+
+    /// One sketch, one extrusion and one body per entry, written to a file.
+    ///
+    /// Returns the identity of each sketch, in the order the document stores
+    /// them, which is what a gate about order compares against.
+    fn write_sketches(
+        path: &Path,
+        sketches: Vec<(
+            Option<&str>,
+            Vec<ferritecad_document::SketchCurve>,
+            Vec<ferritecad_document::SketchConstraint>,
+        )>,
+    ) -> Vec<ferritecad_types::ObjectId> {
+        use ferritecad_document::{
+            Body, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression,
+            Extrude, ObjectPayload, Sketch, SolidOperation,
+        };
+        use ferritecad_types::{ObjectId, Transform};
+
+        let mut document = Document::create(path).expect("creates");
+        let plane = ObjectId::new();
+        let ids: Vec<ObjectId> = sketches.iter().map(|_| ObjectId::new()).collect();
+        document
+            .write(|w| {
+                w.put_object(
+                    plane,
+                    None,
+                    0,
+                    Some("XY"),
+                    &ObjectPayload::DatumPlane(DatumPlane {
+                        placement: Transform::IDENTITY,
+                    }),
+                )?;
+                let mut order = 1i64;
+                for (index, (name, curves, constraints)) in sketches.iter().enumerate() {
+                    let sketch = ids[index];
+                    let extrude = ObjectId::new();
+                    let body = ObjectId::new();
+                    w.put_object(
+                        sketch,
+                        None,
+                        order,
+                        *name,
+                        &ObjectPayload::Sketch(Sketch {
+                            plane,
+                            curves: curves.clone(),
+                            constraints: constraints.clone(),
+                        }),
+                    )?;
+                    w.add_dependency(Dependency {
+                        dependent: sketch,
+                        dependency: plane,
+                        role: DependencyRole::Plane,
+                    })?;
+                    w.put_object(
+                        extrude,
+                        None,
+                        order + 1,
+                        Some("Extrude"),
+                        &ObjectPayload::Extrude(Extrude {
+                            profile: sketch,
+                            end_condition: EndCondition::Blind {
+                                distance: Expression::constant(10.0)?,
+                            },
+                            reversed: false,
+                            operation: SolidOperation::NewBody,
+                            target_body: None,
+                        }),
+                    )?;
+                    w.add_dependency(Dependency {
+                        dependent: extrude,
+                        dependency: sketch,
+                        role: DependencyRole::Profile,
+                    })?;
+                    w.put_object(
+                        body,
+                        None,
+                        order + 2,
+                        Some("Plate"),
+                        &ObjectPayload::Body(Body {
+                            tip_feature: Some(extrude),
+                        }),
+                    )?;
+                    w.add_dependency(Dependency {
+                        dependent: body,
+                        dependency: extrude,
+                        role: DependencyRole::BodyTip,
+                    })?;
+                    order += 3;
+                }
+                Ok(())
+            })
+            .expect("populates");
+        document.close().expect("closes");
+        ids
+    }
+
+    /// The document the loader is given, read exactly as the viewer reads one.
+    fn load_document(path: &Path) -> LoadedScene {
+        use ferritecad_kernel::mock::MockKernel;
+
+        snapshot_of(
+            path,
+            &mut MockKernel::new(),
+            |_: &mut MockKernel, _: &[u8]| {
+                Err(CadError::unsupported("these documents hold no imports"))
+            },
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("the document loads")
+    }
+
+    /// A document with one sketch that is square, closed and free in one
+    /// direction, and that says its width twice.
+    ///
+    /// The repetition is deliberate: it gives the solve something durable to
+    /// report beyond a number, and the identifier it reports is one this test
+    /// wrote and can therefore recognise.
+    fn one_solved_sketch(
+        directory: &tempfile::TempDir,
+        name: Option<&str>,
+    ) -> (
+        LoadedScene,
+        ferritecad_types::ObjectId,
+        ferritecad_types::StableEntityId,
+    ) {
+        let path = directory.path().join("plate.fcad");
+        let curves = solve_curves();
+        let edges: Vec<ferritecad_types::StableEntityId> =
+            curves.iter().map(|curve| curve.id).collect();
+        let mut rules = solve_frame(&edges);
+        rules.push(solve_width(&edges));
+        rules.push(solve_width(&edges));
+        let constraints = solve_named(rules);
+        let repeated = constraints[10].id;
+        let sketches = write_sketches(&path, vec![(name, curves, constraints)]);
+        (load_document(&path), sketches[0], repeated)
+    }
+
+    /// A live scene holding one document's picture and its account of it.
+    fn live_scene_of(loaded: LoadedScene) -> (LiveScene<()>, ViewportInput) {
+        let mut camera = ViewportInput::new();
+        camera.resize(800, 600);
+        let mut scene = LiveScene::new(
+            (),
+            Vec::new(),
+            FaceNames::default(),
+            EdgeNames::default(),
+            VertexNames::default(),
+            Visibility::default(),
+            Vec::new(),
+        );
+        let prepared = prepare_load(&camera, Ok(loaded), |_| Ok(()));
+        commit_scene(&mut scene, &mut camera, prepared).expect("the document commits");
+        (scene, camera)
+    }
+
+    /// Every word the section actually drew, in the order it drew them.
+    ///
+    /// Read out of the shapes egui produced rather than out of the values that
+    /// went in: this is a gate about what a person reads.
+    fn section_words(solves: &[SketchSolveFacts]) -> Vec<String> {
+        let words = solve_words_of(solves);
+        let repeated: Vec<Vec<&str>> = words.iter().map(SolveWords::repeated).collect();
+        let sketches = solved_sketches(&words, &repeated);
+
+        let context = egui::Context::default();
+        // A frame first, so the fonts are loaded: with none loaded every line
+        // comes back empty and any assertion about absence would pass.
+        let mut warm = context.run_ui(egui::RawInput::default(), |_| {});
+        warm.textures_delta.clear();
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            ferritecad_ui::sketch_solves_panel(ui, &sketches);
+        });
+        output.textures_delta.clear();
+
+        fn collect(shape: &egui::Shape, into: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => into.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, into);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut words = Vec::new();
+        for clipped in output.shapes {
+            collect(&clipped.shape, &mut words);
+        }
+        words
+    }
+
+    /// Everything the section drew, as one string to search.
+    fn section_page(solves: &[SketchSolveFacts]) -> String {
+        section_words(solves).join("\n")
+    }
+
+    #[test]
+    fn a_constrained_document_reaches_the_window_and_says_what_its_solve_found_out() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let before = ferritecad_sketch_solver::native_solves();
+        let (loaded, sketch, repeated) = one_solved_sketch(&directory, Some("Profile"));
+        let picture = loaded.snapshot.clone();
+        let solved = ferritecad_sketch_solver::native_solves() - before;
+        assert_eq!(
+            solved, 1,
+            "the document holds one constrained sketch and the load solved it {solved} times"
+        );
+
+        let (scene, _camera) = live_scene_of(loaded);
+
+        // The facts survived the handoff, whole and in the document's words.
+        assert_eq!(
+            scene.sketch_solves.len(),
+            1,
+            "the window was handed a picture without the account that came with it"
+        );
+        assert_eq!(scene.sketch_solves[0].sketch, sketch);
+        assert_eq!(scene.sketch_solves[0].name.as_deref(), Some("Profile"));
+        assert_eq!(scene.sketch_solves[0].report.degrees_of_freedom(), 1);
+        assert_eq!(scene.sketch_solves[0].report.redundant(), [repeated]);
+
+        // And they reached a screen, in a person's words rather than a
+        // programmer's.
+        let page = section_page(&scene.sketch_solves);
+        assert!(
+            page.contains("Sketch solves"),
+            "the section did not name itself:\n{page}"
+        );
+        assert!(
+            page.contains("Profile"),
+            "the sketch was not named:\n{page}"
+        );
+        assert!(
+            page.contains(&sketch.to_string()),
+            "the identifier the document stores for the sketch did not reach the screen:\n{page}"
+        );
+        assert!(
+            page.contains("Under-constrained"),
+            "a sketch with a degree of freedom left was not said to have one:\n{page}"
+        );
+        assert!(
+            section_words(&scene.sketch_solves).iter().any(|w| w == "1"),
+            "the exact number of degrees of freedom was not shown:\n{page}"
+        );
+        assert!(
+            page.contains(&repeated.to_string()),
+            "the repeated constraint the document stores was not named:\n{page}"
+        );
+
+        // And no solver was asked anything to put them there.
+        assert_eq!(
+            ferritecad_sketch_solver::native_solves() - before,
+            1,
+            "showing what a solve found out solved the sketch again"
+        );
+
+        // What is drawn is what the document draws, and no part of it was
+        // decided by what the solve found out: a picture that arrived with an
+        // account of its sketches is drawn exactly as one that arrived without
+        // one.
+        assert!(
+            !scene.visibility.anything_hidden(),
+            "a document arrived with parts already missing"
+        );
+        assert!(
+            scene.visibility.shows(0, &picture),
+            "what a solve found out decided what is on screen"
+        );
+    }
+
+    #[test]
+    fn opening_a_document_replaces_what_the_last_solve_said_with_this_one() {
+        solver_or_skip!();
+
+        let first = tempfile::tempdir().expect("a temporary directory is available");
+        let second = tempfile::tempdir().expect("a temporary directory is available");
+        let (old, old_sketch, _) = one_solved_sketch(&first, Some("Old"));
+        let (mut scene, mut camera) = live_scene_of(old);
+        assert_eq!(
+            scene.sketch_solves.len(),
+            1,
+            "the first document's account never reached the window"
+        );
+        assert_eq!(scene.sketch_solves[0].sketch, old_sketch);
+
+        let (new, new_sketch, new_repeated) = one_solved_sketch(&second, Some("New"));
+        let prepared = prepare_load(&camera, Ok(new), |_| Ok(()));
+        commit_scene(&mut scene, &mut camera, prepared).expect("the second document commits");
+
+        // One operation, both halves: the picture is the new one and so is
+        // everything said about it. A window that kept the old account beside
+        // the new model would be describing a file nobody has open.
+        assert_eq!(scene.sketch_solves.len(), 1);
+        assert_eq!(scene.sketch_solves[0].sketch, new_sketch);
+        assert_eq!(scene.sketch_solves[0].name.as_deref(), Some("New"));
+        assert_eq!(scene.sketch_solves[0].report.redundant(), [new_repeated]);
+        let page = section_page(&scene.sketch_solves);
+        assert!(
+            !page.contains(&old_sketch.to_string()),
+            "the window is still showing the last document's sketch:\n{page}"
+        );
+        assert!(
+            !page.contains("Old"),
+            "the window is still showing the last document's sketch by name:\n{page}"
+        );
+    }
+
+    #[test]
+    fn a_document_with_nothing_to_solve_takes_away_what_the_last_one_said() {
+        solver_or_skip!();
+
+        let first = tempfile::tempdir().expect("a temporary directory is available");
+        let second = tempfile::tempdir().expect("a temporary directory is available");
+        let (old, old_sketch, _) = one_solved_sketch(&first, Some("Profile"));
+        let (mut scene, mut camera) = live_scene_of(old);
+        assert_eq!(scene.sketch_solves.len(), 1);
+
+        // A drawing with no constraints on it: nothing solved it, so there is
+        // nothing to report about it.
+        let path = second.path().join("plain.fcad");
+        write_sketches(&path, vec![(Some("Plain"), solve_curves(), Vec::new())]);
+        let prepared = prepare_load(&camera, Ok(load_document(&path)), |_| Ok(()));
+        commit_scene(&mut scene, &mut camera, prepared).expect("the plain document commits");
+
+        assert!(
+            scene.sketch_solves.is_empty(),
+            "a document with nothing solved in it left the last document's account on screen: \
+             {:?}",
+            scene.sketch_solves
+        );
+        let page = section_page(&scene.sketch_solves);
+        assert!(
+            !page.contains(&old_sketch.to_string()),
+            "the last document's sketch is still on screen:\n{page}"
+        );
+        assert!(
+            page.contains("No solved constrained sketches"),
+            "a document with no constrained sketch left the section blank:\n{page}"
+        );
+    }
+
+    #[test]
+    fn a_load_that_failed_leaves_what_the_last_solve_said_alone() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (loaded, sketch, repeated) = one_solved_sketch(&directory, Some("Profile"));
+        let (mut scene, mut camera) = live_scene_of(loaded);
+        let kept = scene.sketch_solves.clone();
+        assert_eq!(
+            kept.len(),
+            1,
+            "the document's account never reached the window, so there is nothing here to keep"
+        );
+
+        let refused = prepare_load(
+            &camera,
+            Err(CadError::input("this is not a document")),
+            |_| Ok(()),
+        );
+        let error = commit_scene(&mut scene, &mut camera, refused)
+            .expect_err("a failed load must not commit");
+        assert!(error.to_string().contains("not a document"));
+
+        // The whole of it, and not merely a list of the same length: a
+        // document that could not be read leaves the drawing a person was
+        // reading exactly as it was.
+        assert_eq!(scene.sketch_solves, kept);
+        assert_eq!(scene.sketch_solves[0].sketch, sketch);
+        assert_eq!(scene.sketch_solves[0].report.redundant(), [repeated]);
+    }
+
+    #[test]
+    fn a_load_that_was_given_up_on_leaves_what_the_last_solve_said_alone() {
+        solver_or_skip!();
+
+        let first = tempfile::tempdir().expect("a temporary directory is available");
+        let second = tempfile::tempdir().expect("a temporary directory is available");
+        let (loaded, sketch, _) = one_solved_sketch(&first, Some("Profile"));
+        let (mut scene, mut camera) = live_scene_of(loaded);
+        let kept = scene.sketch_solves.clone();
+        assert_eq!(
+            kept.len(),
+            1,
+            "the document's account never reached the window, so there is nothing here to keep"
+        );
+
+        // A second document that was read and then abandoned: the answer
+        // arrives, and the window has already stopped waiting for it. Applying
+        // it is what `Loads::accepts` refuses, so the account never reaches
+        // the scene and the previous one is untouched.
+        let mut loads = Loads::default();
+        let mut holds = Vec::new();
+        let stale = loads
+            .open(Some(Path::new("a.fcad")), relay(), |_, cancel| {
+                let (worker, release) = held_worker(cancel);
+                holds.push(release);
+                worker
+            })
+            .expect("a document was named");
+        loads.open(Some(Path::new("b.fcad")), relay(), |_, cancel| {
+            let (worker, release) = held_worker(cancel);
+            holds.push(release);
+            worker
+        });
+        assert!(
+            !loads.accepts(stale),
+            "the abandoned request is still current"
+        );
+
+        let (abandoned, other, _) = one_solved_sketch(&second, Some("Abandoned"));
+        if loads.accepts(stale) {
+            let prepared = prepare_load(&camera, Ok(abandoned), |_| Ok(()));
+            commit_scene(&mut scene, &mut camera, prepared).expect("commits");
+        }
+        loads.stop_all();
+
+        assert_eq!(scene.sketch_solves, kept);
+        assert_eq!(scene.sketch_solves[0].sketch, sketch);
+        let page = section_page(&scene.sketch_solves);
+        assert!(
+            !page.contains(&other.to_string()),
+            "a document the window stopped waiting for reached the screen:\n{page}"
+        );
+    }
+
+    #[test]
+    fn a_picture_that_could_not_be_prepared_leaves_what_the_last_solve_said_alone() {
+        solver_or_skip!();
+
+        let first = tempfile::tempdir().expect("a temporary directory is available");
+        let second = tempfile::tempdir().expect("a temporary directory is available");
+        let (loaded, sketch, _) = one_solved_sketch(&first, Some("Profile"));
+        let (mut scene, mut camera) = live_scene_of(loaded);
+        let kept = scene.sketch_solves.clone();
+        assert_eq!(
+            kept.len(),
+            1,
+            "the document's account never reached the window, so there is nothing here to keep"
+        );
+        let framing = *camera.camera();
+
+        // The document read, solved and accepted, and then the graphics device
+        // refused the upload. Nothing of it becomes current: not the picture,
+        // not the camera, and not what its solve found out.
+        let (arriving, other, _) = one_solved_sketch(&second, Some("Refused"));
+        let prepared = prepare_load(&camera, Ok(arriving), |_| {
+            Err(CadError::rendering("the device refused the buffers"))
+        });
+        let error = commit_scene(&mut scene, &mut camera, prepared)
+            .expect_err("an upload that failed must not commit");
+        assert!(error.to_string().contains("refused the buffers"));
+
+        assert_eq!(scene.sketch_solves, kept);
+        assert_eq!(scene.sketch_solves[0].sketch, sketch);
+        assert_eq!(*camera.camera(), framing);
+        let page = section_page(&scene.sketch_solves);
+        assert!(
+            !page.contains(&other.to_string()),
+            "a document whose picture was refused reached the screen anyway:\n{page}"
+        );
+    }
+
+    #[test]
+    fn two_documents_that_draw_one_picture_can_say_different_things_about_it() {
+        solver_or_skip!();
+
+        // The same drawing, already at the size it is told to be, said once
+        // and said twice. The pixels are the same and the accounts are not, so
+        // a window that read its facts off the picture would show one thing
+        // for both.
+        let once = tempfile::tempdir().expect("a temporary directory is available");
+        let twice = tempfile::tempdir().expect("a temporary directory is available");
+        let settled = [
+            (0.0, 0.0),
+            (SOLVE_WIDTH, 0.0),
+            (SOLVE_WIDTH, 30.0),
+            (0.0, 30.0),
+        ];
+        let curves: Vec<ferritecad_document::SketchCurve> = (0..4)
+            .map(|index| {
+                solve_line(
+                    ferritecad_types::StableEntityId::new(),
+                    settled[index],
+                    settled[(index + 1) % settled.len()],
+                )
+            })
+            .collect();
+        let edges: Vec<ferritecad_types::StableEntityId> =
+            curves.iter().map(|curve| curve.id).collect();
+        let mut sized = solve_frame(&edges);
+        sized.push(solve_width(&edges));
+        let mut repeated = sized.clone();
+        repeated.push(solve_width(&edges));
+
+        let once_path = once.path().join("plate.fcad");
+        let twice_path = twice.path().join("plate.fcad");
+        write_sketches(
+            &once_path,
+            vec![(Some("Profile"), curves.clone(), solve_named(sized))],
+        );
+        write_sketches(
+            &twice_path,
+            vec![(Some("Profile"), curves, solve_named(repeated))],
+        );
+
+        let first = load_document(&once_path);
+        let second = load_document(&twice_path);
+        assert_eq!(
+            first.snapshot, second.snapshot,
+            "the two documents were supposed to draw the same picture"
+        );
+
+        let (one, _) = live_scene_of(first);
+        let (two, _) = live_scene_of(second);
+        assert_eq!(
+            (one.sketch_solves.len(), two.sketch_solves.len()),
+            (1, 1),
+            "one of the two documents arrived without its account"
+        );
+        assert!(one.sketch_solves[0].report.redundant().is_empty());
+        assert_eq!(two.sketch_solves[0].report.redundant().len(), 1);
+        assert_ne!(
+            one.sketch_solves, two.sketch_solves,
+            "one picture was allowed to decide what both documents say"
+        );
+        assert!(section_page(&one.sketch_solves).contains("None"));
+        assert!(
+            section_page(&two.sketch_solves)
+                .contains(&two.sketch_solves[0].report.redundant()[0].to_string())
+        );
+    }
+
+    #[test]
+    fn every_sketch_keeps_its_own_name_and_its_own_account() {
+        solver_or_skip!();
+
+        // Two sketches whose accounts cannot be swapped without showing: one
+        // free in two directions and repeating nothing, one free in one and
+        // repeating the size it was given twice. The second is left unnamed,
+        // so a section that dropped what nobody named would lose it.
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("two.fcad");
+        let loose = solve_curves();
+        let loose_edges: Vec<ferritecad_types::StableEntityId> =
+            loose.iter().map(|curve| curve.id).collect();
+        let tight = solve_curves();
+        let tight_edges: Vec<ferritecad_types::StableEntityId> =
+            tight.iter().map(|curve| curve.id).collect();
+        let mut tight_rules = solve_frame(&tight_edges);
+        tight_rules.push(solve_width(&tight_edges));
+        tight_rules.push(solve_width(&tight_edges));
+        tight_rules.push(ferritecad_document::SketchConstraintRule::Horizontal {
+            a: ferritecad_document::SketchPointRef::new(
+                tight_edges[2],
+                ferritecad_document::SketchPointSelector::Start,
+            ),
+            b: ferritecad_document::SketchPointRef::new(
+                tight_edges[2],
+                ferritecad_document::SketchPointSelector::End,
+            ),
+        });
+        let tight_constraints = solve_named(tight_rules);
+        let first_repeated = tight_constraints[10].id;
+        let second_repeated = tight_constraints[11].id;
+
+        let sketches = write_sketches(
+            &path,
+            vec![
+                (Some("Loose"), loose, solve_named(solve_frame(&loose_edges))),
+                (None, tight, tight_constraints),
+            ],
+        );
+        let (scene, _camera) = live_scene_of(load_document(&path));
+
+        assert_eq!(scene.sketch_solves.len(), 2);
+        assert_eq!(
+            scene
+                .sketch_solves
+                .iter()
+                .map(|facts| facts.sketch)
+                .collect::<Vec<_>>(),
+            sketches,
+            "the accounts arrived in an order that is not the document's"
+        );
+        assert_eq!(scene.sketch_solves[0].name.as_deref(), Some("Loose"));
+        assert_eq!(scene.sketch_solves[0].report.degrees_of_freedom(), 2);
+        assert!(scene.sketch_solves[0].report.redundant().is_empty());
+        assert_eq!(scene.sketch_solves[1].name, None);
+        assert_eq!(scene.sketch_solves[1].report.degrees_of_freedom(), 1);
+        assert_eq!(
+            scene.sketch_solves[1].report.redundant(),
+            [first_repeated, second_repeated],
+            "the repeated constraints are not the ones the document stores, or not in its order"
+        );
+
+        // And on screen, where the whole of one sketch's account has to sit
+        // between its own name and the next sketch's. Positions in the words
+        // actually laid out, because that is the order a person reads them in
+        // and the only thing that says whose row is whose: two entries of the
+        // right shape in the wrong order read as two correct entries.
+        let drawn = section_words(&scene.sketch_solves);
+        let page = drawn.join("\n");
+        let at = |needle: &str| drawn.iter().position(|word| word == needle);
+        let named = at("Loose");
+        let unnamed = at("Unnamed sketch");
+        let loose_row = at(&sketches[0].to_string());
+        let tight_row = at(&sketches[1].to_string());
+        // Two and one, where the numbers most easily put here by mistake –
+        // nought, and how many constraints each sketch repeats – are nought
+        // and two.
+        let loose_freedom = at("2");
+        let tight_freedom = at("1");
+        let repeats_nothing = at("None");
+        let first_at = at(&first_repeated.to_string());
+        let second_at = at(&second_repeated.to_string());
+        for (what, found) in [
+            ("the first sketch's name", named),
+            ("the second sketch, which nobody named", unnamed),
+            ("the first sketch's identifier", loose_row),
+            ("the second sketch's identifier", tight_row),
+            ("two degrees of freedom", loose_freedom),
+            ("one degree of freedom", tight_freedom),
+            ("the line saying that nothing repeats", repeats_nothing),
+            ("the first repeated constraint", first_at),
+            ("the second repeated constraint", second_at),
+        ] {
+            assert!(found.is_some(), "{what} never reached the screen:\n{page}");
+        }
+        assert!(
+            named < loose_row
+                && loose_row < loose_freedom
+                && loose_freedom < repeats_nothing
+                && repeats_nothing < unnamed
+                && unnamed < tight_row
+                && tight_row < tight_freedom
+                && tight_freedom < first_at
+                && first_at < second_at,
+            "a row of the section does not belong to the sketch it is under: {drawn:?}"
+        );
+        assert_eq!(
+            drawn.iter().filter(|word| *word == "2").count(),
+            1,
+            "two degrees of freedom were reported for more than one of these sketches: {drawn:?}"
+        );
+        assert_eq!(
+            drawn.iter().filter(|word| *word == "1").count(),
+            1,
+            "one degree of freedom was reported for more than one of these sketches: {drawn:?}"
+        );
+        assert_eq!(
+            drawn.iter().filter(|word| *word == "None").count(),
+            1,
+            "exactly one of these two sketches repeats nothing: {drawn:?}"
+        );
+        assert!(
+            !page.contains("Fully constrained"),
+            "neither of these sketches is settled, and one was said to be:\n{page}"
+        );
+    }
+
+    #[test]
+    fn showing_what_a_solve_found_out_asks_no_solver_and_uploads_nothing() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (loaded, _, _) = one_solved_sketch(&directory, Some("Profile"));
+
+        let mut camera = ViewportInput::new();
+        camera.resize(800, 600);
+        let mut uploads = 0;
+        let mut scene = LiveScene::new(
+            (),
+            Vec::new(),
+            FaceNames::default(),
+            EdgeNames::default(),
+            VertexNames::default(),
+            Visibility::default(),
+            Vec::new(),
+        );
+        let prepared = prepare_load(&camera, Ok(loaded), |_| {
+            uploads += 1;
+            Ok(())
+        });
+        commit_scene(&mut scene, &mut camera, prepared).expect("the document commits");
+        assert_eq!(uploads, 1, "one arrival, one upload");
+
+        // Twenty frames of the section, which is what a window on screen does
+        // while nobody touches it.
+        let before = ferritecad_sketch_solver::native_solves();
+        for _ in 0..20 {
+            let page = section_page(&scene.sketch_solves);
+            assert!(page.contains("Under-constrained"));
+        }
+        assert_eq!(
+            ferritecad_sketch_solver::native_solves(),
+            before,
+            "drawing the section asked a solver something"
+        );
+        assert_eq!(
+            uploads, 1,
+            "drawing the section put geometry on the graphics device"
+        );
+    }
+
+    #[test]
+    fn showing_what_a_solve_found_out_changes_nothing_a_person_chose() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (loaded, _, _) = one_solved_sketch(&directory, Some("Profile"));
+        let picture = loaded.snapshot.clone();
+        let chosen = picture
+            .draws()
+            .first()
+            .expect("the picture draws something")
+            .pick;
+        let (mut scene, camera) = live_scene_of(loaded);
+
+        // A choice, a question and a hidden definition, all made in this
+        // picture, and a camera pointed somewhere in particular.
+        scene.selection = Selection::Definition(chosen);
+        scene.hovered = Hovered::Definition(chosen);
+        scene.visibility = Visibility::new(&picture);
+        let visibility = scene.visibility.clone();
+        let framing = *camera.camera();
+
+        for _ in 0..5 {
+            let page = section_page(&scene.sketch_solves);
+            assert!(page.contains("Sketch solves"));
+        }
+
+        assert_eq!(scene.selection, Selection::Definition(chosen));
+        assert_eq!(scene.hovered, Hovered::Definition(chosen));
+        assert_eq!(scene.visibility, visibility);
+        assert_eq!(*camera.camera(), framing);
     }
 }

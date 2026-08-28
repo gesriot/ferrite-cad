@@ -10,7 +10,10 @@
 # puts a solver on the rebuild path. Since 21B-2a `ferritecad-scene` is a
 # test-only client: what it carries out to a loaded scene is what the
 # evaluator solved, and its gates have to be able to tell a build with no
-# library from one that lost the facts. It states no sketch anything.
+# library from one that lost the facts. It states no sketch anything. Since
+# 21B-2b `ferritecad-ui` prints what a solve found out and is not a client at
+# all: it is handed borrowed text and numbers, and must be unable to name a
+# solver, a rebuild or a document.
 # The direction matters every way: a bench with its own copy
 # of the boundary would be measuring a second implementation and reporting it
 # as the product's; a product that could reach into the bench could be handed
@@ -31,6 +34,7 @@ readonly LAB='crates/ferritecad-solver-lab'
 readonly APP='crates/ferritecad-app'
 readonly EVAL='crates/ferritecad-eval'
 readonly SCENE='crates/ferritecad-scene'
+readonly UI='crates/ferritecad-ui'
 readonly DOCUMENT='crates/ferritecad-document'
 
 problems=0
@@ -193,6 +197,31 @@ for forbidden in 'extern "C"' 'unsafe' 'fc_gcs_' 'link_name' '#[link'; do
     fi
 done
 
+# The interface knows nothing about a solver, a rebuild or a document.
+#
+# Since 21B-2b a panel shows what the solve of each sketch found out. It is
+# given borrowed text and numbers to print and nothing else: a section that
+# could name a `SketchSolveReport`, a `Sketch` or a `LoadedScene` would be a
+# section that could ask one of them a question, and the answer would then
+# depend on when the panel was drawn rather than on what the rebuild found.
+if grep -Eqn '^[[:space:]]*ferritecad-(sketch-solver|solver-lab|eval|scene|document)[[:space:]]*[=.]' \
+    "${UI}/Cargo.toml"; then
+    grep -En '^[[:space:]]*ferritecad-(sketch-solver|solver-lab|eval|scene|document)[[:space:]]*[=.]' \
+        "${UI}/Cargo.toml" >&2
+    fail "${UI} depends on a solver, a rebuild or a document; a panel is given words to print"
+fi
+for forbidden in ferritecad_sketch_solver ferritecad_solver_lab ferritecad_eval \
+    ferritecad_scene ferritecad_document
+do
+    if grep -rqnF "${forbidden}" "${UI}/src"; then
+        grep -rnF "${forbidden}" "${UI}/src" >&2
+        fail "${UI} names ${forbidden}; a panel is given words to print and nothing to ask"
+    fi
+done
+grep -Fqx "      - 'crates/ferritecad-ui/**'" .github/workflows/planegcs-pin.yml \
+    || fail "planegcs pin does not watch ${UI}; a change to what the window says a solve \
+found out would miss linked three-platform coverage"
+
 # The bridge and the build detection are where they are said to be.
 for required in \
     "${PRODUCT}/build.rs" \
@@ -210,5 +239,5 @@ if [ "${problems}" -gt 0 ]; then
 fi
 
 echo "solver ownership: ${PRODUCT} owns the boundary; ${LAB}, ${APP} and ${EVAL} are clients of \
-it, ${SCENE} asks it only whether there is one to gate for, and ${DOCUMENT} does not know it \
-exists"
+it, ${SCENE} asks it only whether there is one to gate for, and ${DOCUMENT} and ${UI} do not \
+know it exists"

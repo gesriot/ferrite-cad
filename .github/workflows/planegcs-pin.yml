@@ -47,6 +47,11 @@ on:
       - 'crates/ferritecad-scene/**'
       - 'crates/ferritecad-sketch-solver/**'
       - 'crates/ferritecad-solver-lab/**'
+      # And since 21B-2b the interface crate holds the section that says what
+      # a solve found out. It knows nothing about a solver and never will,
+      # which is exactly why a change to what it prints has to be read back
+      # off a real solve on all three platforms rather than trusted.
+      - 'crates/ferritecad-ui/**'
       - 'tools/check-solver-ownership.sh'
       - '.github/workflows/planegcs-pin.yml'
 
@@ -763,6 +768,70 @@ jobs:
             'test a_required_build_answers_with_the_library_it_loaded ... ok' \
             app-test.txt \
             || { echo "::error::the required linked-application gate did not run and pass"; exit 1; }
+
+      - name: Run the window's own account of a solve through the real library
+        env:
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          # The log is parsed below. Colour escapes immediately before `ok`
+          # would make an executed gate indistinguishable from an absent one.
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          # Since 21B-2b the window shows what the solve of each constrained
+          # sketch found out. These gates start from a document written to a
+          # temporary file, read it through the real loader, hand the result
+          # across the same atomic commit the picture goes through, and then
+          # lay the section out and read the words back off it. None of that
+          # is a statement about anything until a real library did the solving,
+          # which is why it is here and not only in CI.
+          #
+          # Named one by one rather than run as a whole binary: the window's
+          # other gates want a graphics device, and a run that passed by
+          # skipping those would look exactly like this one.
+          cargo test --release -p ferritecad-app --features planegcs \
+            --bin ferritecad-viewer -- \
+            a_constrained_document_reaches_the_window_and_says_what_its_solve_found_out \
+            a_document_with_nothing_to_solve_takes_away_what_the_last_one_said \
+            a_load_that_failed_leaves_what_the_last_solve_said_alone \
+            a_load_that_was_given_up_on_leaves_what_the_last_solve_said_alone \
+            a_picture_that_could_not_be_prepared_leaves_what_the_last_solve_said_alone \
+            every_sketch_keeps_its_own_name_and_its_own_account \
+            opening_a_document_replaces_what_the_last_solve_said_with_this_one \
+            showing_what_a_solve_found_out_asks_no_solver_and_uploads_nothing \
+            showing_what_a_solve_found_out_changes_nothing_a_person_chose \
+            two_documents_that_draw_one_picture_can_say_different_things_about_it \
+            --nocapture --test-threads=1 2>&1 | tee window.txt
+
+          if grep -qF 'skipped: this build has no sketch solver' window.txt; then
+            echo "::error::a gate skipped itself under FERRITECAD_REQUIRE_PLANEGCS=1"
+            exit 1
+          fi
+
+          missing=0
+          for gate in \
+            'a_constrained_document_reaches_the_window_and_says_what_its_solve_found_out' \
+            'a_document_with_nothing_to_solve_takes_away_what_the_last_one_said' \
+            'a_load_that_failed_leaves_what_the_last_solve_said_alone' \
+            'a_load_that_was_given_up_on_leaves_what_the_last_solve_said_alone' \
+            'a_picture_that_could_not_be_prepared_leaves_what_the_last_solve_said_alone' \
+            'every_sketch_keeps_its_own_name_and_its_own_account' \
+            'opening_a_document_replaces_what_the_last_solve_said_with_this_one' \
+            'showing_what_a_solve_found_out_asks_no_solver_and_uploads_nothing' \
+            'showing_what_a_solve_found_out_changes_nothing_a_person_chose' \
+            'two_documents_that_draw_one_picture_can_say_different_things_about_it'
+          do
+            if ! grep -qF "test tests::${gate} ... ok" window.txt; then
+              echo "::error::the window gate ${gate} did not run and pass"
+              missing=$((missing + 1))
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+          # Ten gates ran and no eleventh crept in: this filter is what keeps
+          # the run away from the gates that want a graphics device.
+          grep -qE 'test result: ok\. 10 passed; 0 failed' window.txt \
+            || { echo "::error::the window gates did not run as exactly ten passes"; exit 1; }
+          echo "the window carried a real solve from a real document to a screen"
 
       - name: Ask the real application which sketch solver it has
         run: |
