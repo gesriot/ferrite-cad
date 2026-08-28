@@ -8,9 +8,15 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+# The evaluator is where a stored constraint becomes a solved coordinate, so it
+# is the one client of the product solver on the rebuild path. The document is
+# deliberately not: a `SketchPointRef` outlives whichever solver reads it, and a
+# solver `PointId` is minted per solve and means nothing after it. The
+# translation between them lives here and nowhere else, and lasts one solve.
 [dependencies]
 ferritecad-document.workspace = true
 ferritecad-kernel.workspace = true
+ferritecad-sketch-solver.workspace = true
 ferritecad-topology.workspace = true
 ferritecad-types.workspace = true
 
@@ -18,6 +24,13 @@ ferritecad-types.workspace = true
 # Only to store an import the rebuild must leave alone.
 ferritecad-exchange.workspace = true
 tempfile = "3"
+
+# Forwarded, never re-decided. Whether there is a planegcs to load is
+# `ferritecad-sketch-solver`'s question; a second build or link detection here
+# would be a second answer, free to disagree with the first while both halves
+# went on compiling.
+[features]
+planegcs = ["ferritecad-sketch-solver/planegcs"]
 
 [lints]
 workspace = true

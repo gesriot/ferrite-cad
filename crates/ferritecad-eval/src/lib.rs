@@ -35,6 +35,7 @@ mod convert;
 mod dirty;
 mod document_graph;
 mod plan;
+mod solve;
 
 pub use cache::{extrude_archive_key, load_extrude_archive, store_extrude_archive};
 pub use cold::{CacheEvent, CacheOutcome, RebuildResult, rebuild_cached, rebuild_cold};

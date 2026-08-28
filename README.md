@@ -269,10 +269,14 @@ loaded library says it is, which is the library's own answer and not a string
 this program carries. A command line this viewer cannot act on still exits
 `2`, as it always did.
 
-This says which component is loaded. A document can store the meaning of a
-constrained sketch, but the viewer cannot create constraints yet and the
-evaluator refuses to build from one until the solver translation is connected.
-No release packages planegcs. Building and replacing the library is
+This says which component is loaded. A document stores the meaning of a
+constrained sketch, and a build that linked planegcs solves those constraints
+when it rebuilds: the profile it extrudes is the solved one, not the
+coordinates the curves were last left at. The viewer still cannot create or
+edit a constraint, so a constrained sketch is one that arrived in the document
+some other way. A build with no solver refuses such a sketch rather than
+building from the stored coordinates, and no release packages planegcs.
+Building and replacing the library is
 [docs/build-planegcs.md](docs/build-planegcs.md).
 
 ## How a document is put together

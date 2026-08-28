@@ -33,5 +33,11 @@ ferritecad-viewport-gpu.workspace = true
 rusqlite = { version = "0.37", features = ["bundled"] }
 tempfile = "3"
 
+# Forwarded through the evaluator, which is what puts a solver on this binary's
+# rebuild path. Same rule as the viewer: this crate re-decides nothing about
+# whether a library is there.
+[features]
+planegcs = ["ferritecad-eval/planegcs"]
+
 [lints]
 workspace = true

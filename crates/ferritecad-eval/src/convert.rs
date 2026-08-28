@@ -37,11 +37,28 @@ pub fn plane_from_datum(datum: &DatumPlane) -> Result<SketchPlane> {
 /// The first slice accepts exactly one closed outer loop of lines and arcs.
 /// Construction geometry is ignored, as it produces no edges by definition.
 ///
-/// A sketch that carries constraints is refused outright until §21B-1b
-/// connects the solver. See [`refuse_unsolved_constraints`].
+/// A sketch that carries constraints is solved first, and the profile is built
+/// from the answer rather than from the stored coordinates: the stored ones
+/// are wherever the curves were last left, and the constraints are what the
+/// drawing means. The solve happens on a temporary copy and changes nothing
+/// the document holds. See [`crate::solve`].
+///
+/// A sketch with no constraints has nothing to solve and asks no solver
+/// anything, so a document written before constraints existed still rebuilds
+/// in a build that never linked one.
 pub fn profile_from_sketch(sketch: &Sketch, plane: SketchPlane) -> Result<Profile> {
-    refuse_unsolved_constraints(sketch)?;
+    match crate::solve::solved(sketch)? {
+        Some(solved) => profile_from_curves(&solved, plane),
+        None => profile_from_curves(sketch, plane),
+    }
+}
 
+/// The profile arithmetic itself, over whichever coordinates it was given.
+///
+/// Unchanged by the solver's arrival, and deliberately so: a solved sketch is
+/// a sketch, and there is one account of what a closed loop of lines and arcs
+/// means rather than one for each way the coordinates were arrived at.
+fn profile_from_curves(sketch: &Sketch, plane: SketchPlane) -> Result<Profile> {
     let model: Vec<&SketchCurve> = sketch.curves.iter().filter(|c| !c.construction).collect();
 
     if model.is_empty() {
@@ -96,27 +113,6 @@ pub fn extrude_request(feature: &Extrude, profile: Profile) -> Result<ExtrudeReq
     };
 
     Ok(ExtrudeRequest::new(profile, extent, feature.reversed))
-}
-
-/// Refuses to build geometry from a sketch whose constraints nothing has
-/// solved.
-///
-/// The stored coordinates of a constrained sketch are wherever the curves were
-/// last left, and the constraints are what the drawing actually means. Until
-/// the solver translation exists, extruding those coordinates would produce a
-/// solid that looks finished and quietly disagrees with the model it came
-/// from: the one failure that a rebuild cannot report, because it succeeds.
-/// Refusing is louder and correct, and no kernel is asked for anything first.
-fn refuse_unsolved_constraints(sketch: &Sketch) -> Result<()> {
-    if sketch.constraints.is_empty() {
-        return Ok(());
-    }
-    Err(CadError::unsupported(format!(
-        "this sketch carries {} stored constraint(s), which the document keeps but no solver has \
-         been asked to satisfy yet; building from the stored coordinates would ignore what the \
-         sketch means, so it is refused rather than approximated",
-        sketch.constraints.len()
-    )))
 }
 
 fn segment_geometry(curve: &SketchCurve) -> Result<SegmentGeometry> {

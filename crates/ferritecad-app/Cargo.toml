@@ -56,6 +56,13 @@ winit = { version = "0.30", default-features = false, features = ["x11", "waylan
 # own to offer: a second build/link detection here would be a second answer,
 # free to disagree with the first, and the disagreement would be invisible
 # because both halves would go on compiling.
+#
+# Since 21B-1b this also arms the rebuild path. `ferritecad-eval` depends on
+# the same `ferritecad-sketch-solver`, and a package is compiled once per build
+# with the union of the features anything asked of it, so the evaluator this
+# binary reaches through `ferritecad-scene` is the one linked against the
+# library. Naming the same feature again through the scene would not add a
+# second link decision, only a second place to forget one.
 [features]
 planegcs = ["ferritecad-sketch-solver/planegcs"]
 

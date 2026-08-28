@@ -384,7 +384,9 @@ pub struct SketchCurve {
 /// validation says so by name. A `Center` variant that every path refused
 /// would be vocabulary this build cannot honour, written down as though it
 /// could.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+// Ordered so that a point reference can key a map. The order itself carries no
+// meaning and nothing stored depends on it; what is stored is the name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum SketchPointSelector {
@@ -423,7 +425,7 @@ impl SketchPointSelector {
 /// the curve list moves nothing, and two curves drawn on top of one another stay
 /// two curves with two identities, which is exactly why `Coincident` has to be
 /// said rather than inferred.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SketchPointRef {
     pub curve: StableEntityId,
     pub at: SketchPointSelector,
@@ -517,10 +519,10 @@ pub enum SketchConstraintRule {
 impl SketchConstraintRule {
     /// Every point this rule names, in the order it names them.
     ///
-    /// The one enumeration. Validation checks these, and the translation that
-    /// §21B-1b will write reads these, so a constraint cannot be checked
-    /// against one set of references and solved against another. Adding a
-    /// family means adding an arm here and nowhere else.
+    /// The one enumeration. Validation checks these, and the evaluator's
+    /// translation into solver terms resolves these, so a constraint cannot be
+    /// checked against one set of references and solved against another.
+    /// Adding a family means adding an arm here and nowhere else.
     pub fn points(&self) -> Vec<SketchPointRef> {
         match *self {
             Self::Fixed { point, .. } => vec![point],

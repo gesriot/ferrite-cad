@@ -5,8 +5,9 @@
 #
 # `ferritecad-sketch-solver` holds the contract, the FFI, the MIT bridge, the
 # build detection and the native session's lifetime. `ferritecad-solver-lab` is
-# a client of it and holds none of those, and since 21A-2b1 so is
-# `ferritecad-app`. The direction matters every way: a bench with its own copy
+# a client of it and holds none of those; since 21A-2b1 so is
+# `ferritecad-app`, and since 21B-1b so is `ferritecad-eval`, which is what
+# puts a solver on the rebuild path. The direction matters every way: a bench with its own copy
 # of the boundary would be measuring a second implementation and reporting it
 # as the product's; a product that could reach into the bench could be handed
 # the reference solver's answer; and an application with its own link detection
@@ -24,6 +25,8 @@ set -euo pipefail
 readonly PRODUCT='crates/ferritecad-sketch-solver'
 readonly LAB='crates/ferritecad-solver-lab'
 readonly APP='crates/ferritecad-app'
+readonly EVAL='crates/ferritecad-eval'
+readonly DOCUMENT='crates/ferritecad-document'
 
 problems=0
 fail() {
@@ -93,22 +96,53 @@ for forbidden in 'extern "C"' 'unsafe' 'fc_gcs_' 'link_name' '#[link'; do
     fi
 done
 
-# The document and the evaluator must not reach the solver at all.
+# The document must not reach the solver at all.
 #
 # A stored constraint is written in the document's own vocabulary on purpose:
 # a `SketchPointRef` outlives the solver that reads it, and a solver `PointId`
-# is issued per session and does not outlive the call it was minted for. The
+# is issued per solve and does not outlive the call it was minted for. The
 # moment a document could hold one, saving a sketch would mean saving a number
-# that means nothing tomorrow. The evaluator is held to the same line until
-# 21B-1b, so a constrained sketch is refused rather than quietly solved by
-# whatever the evaluator could reach.
-for client in crates/ferritecad-document crates/ferritecad-eval; do
-    if grep -Eqn '^[[:space:]]*ferritecad-sketch-solver[[:space:]]*[=.]' "${client}/Cargo.toml"; then
-        fail "${client} depends on ${PRODUCT}; a stored constraint must not be written in solver terms"
-    fi
-    if grep -rqn 'ferritecad_sketch_solver' "${client}/src" "${client}/tests"; then
-        grep -rn 'ferritecad_sketch_solver' "${client}/src" "${client}/tests" >&2
-        fail "${client} names ${PRODUCT}; a stored constraint must not be written in solver terms"
+# that means nothing tomorrow.
+if grep -Eqn '^[[:space:]]*ferritecad-sketch-solver[[:space:]]*[=.]' "${DOCUMENT}/Cargo.toml"; then
+    fail "${DOCUMENT} depends on ${PRODUCT}; a stored constraint must not be written in solver terms"
+fi
+if grep -rqn 'ferritecad_sketch_solver' "${DOCUMENT}/src" "${DOCUMENT}/tests"; then
+    grep -rn 'ferritecad_sketch_solver' "${DOCUMENT}/src" "${DOCUMENT}/tests" >&2
+    fail "${DOCUMENT} names ${PRODUCT}; a stored constraint must not be written in solver terms"
+fi
+
+# The evaluator is the product path's client, and since 21B-1b it is the only
+# one that solves anything.
+#
+# It is where a stored constraint becomes a solved coordinate, so it must reach
+# the solver — and it must reach nothing else. The translation between the
+# document's durable words and the solver's transient ones is a mapping it
+# builds per solve and throws away; a build script, a C boundary or a link
+# decision of its own would be a second opinion about whether there is a solver
+# at all, and the bench is not a fallback for when there is not.
+grep -Eq '^[[:space:]]*ferritecad-sketch-solver[[:space:]]*[=.]' "${EVAL}/Cargo.toml" \
+    || fail "${EVAL} does not depend on ${PRODUCT}, so a constrained sketch has nothing to solve it"
+grep -Fq 'ferritecad-sketch-solver/planegcs' "${EVAL}/Cargo.toml" \
+    || fail "${EVAL} does not forward the planegcs feature to ${PRODUCT}, so a build meant to \
+link the library would not link one on the rebuild path"
+
+if grep -Eqn '^[[:space:]]*ferritecad-solver-lab[[:space:]]*[=.]' "${EVAL}/Cargo.toml"; then
+    fail "${EVAL} depends on ${LAB}; the rebuild path must never be able to reach the bench"
+fi
+if grep -rqn 'ferritecad_solver_lab' "${EVAL}/src" "${EVAL}/tests"; then
+    grep -rn 'ferritecad_solver_lab' "${EVAL}/src" "${EVAL}/tests" >&2
+    fail "${EVAL} names ${LAB}; the reference solver is not a fallback"
+fi
+
+[ -e "${EVAL}/build.rs" ] \
+    && fail "${EVAL}/build.rs exists; build and link detection belongs to ${PRODUCT}"
+[ -d "${EVAL}/planegcs-bridge" ] \
+    && fail "${EVAL}/planegcs-bridge exists; the C bridge belongs to ${PRODUCT}"
+
+for forbidden in 'extern "C"' 'unsafe' 'fc_gcs_' 'link_name' '#[link'; do
+    if grep -rqnF "${forbidden}" "${EVAL}/src" "${EVAL}/tests"; then
+        grep -rnF "${forbidden}" "${EVAL}/src" "${EVAL}/tests" >&2
+        fail "${EVAL} contains ${forbidden}; the FFI and its lifetime belong to ${PRODUCT}"
     fi
 done
 
@@ -128,4 +162,5 @@ if [ "${problems}" -gt 0 ]; then
     exit 1
 fi
 
-echo "solver ownership: ${PRODUCT} owns the boundary; ${LAB} and ${APP} are clients of it"
+echo "solver ownership: ${PRODUCT} owns the boundary; ${LAB}, ${APP} and ${EVAL} are clients of \
+it, and ${DOCUMENT} does not know it exists"
