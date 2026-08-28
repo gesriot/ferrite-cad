@@ -595,8 +595,14 @@ grep -v "$a_member" "$work/set/$RELEASE_SET_CHECKSUMS" > "$broken/$RELEASE_SET_C
 expect_fail 'a checksums file missing a line is caught' 'does not say what the archives hash to' \
     check_set "$broken"
 
+# Reversed on the key the builder sorts by, which is the archive name.
+# Reversing on the whole line instead sorts by the digest, and whether that
+# comes out in a different order at all depends on three digests that change
+# with every byte of the archives: it is the same order as the canonical one
+# about one time in six, and then this negative test quietly passes because
+# nothing was broken.
 break_set true
-LC_ALL=C sort -r "$work/set/$RELEASE_SET_CHECKSUMS" > "$broken/$RELEASE_SET_CHECKSUMS"
+LC_ALL=C sort -r -k2 "$work/set/$RELEASE_SET_CHECKSUMS" > "$broken/$RELEASE_SET_CHECKSUMS"
 expect_fail 'a checksums file in another order is caught' 'does not say what the archives hash to' \
     check_set "$broken"
 
