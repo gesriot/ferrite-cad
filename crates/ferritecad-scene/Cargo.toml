@@ -37,6 +37,21 @@ ferritecad-occt.workspace = true
 # so that reading it can be shown not to rewrite it.
 rusqlite = { version = "0.37", features = ["bundled"] }
 tempfile = "3"
+# Test-only, and only to ask whether there is a solver to skip for. What
+# solves a sketch is the evaluator, and this crate never states one anything:
+# a gate that could not tell "no library here" from "the facts were lost"
+# would pass in the build where it matters least.
+ferritecad-sketch-solver.workspace = true
+
+# Forwarded to the two crates that decide it, never re-decided. This crate has
+# no build script and no link detection, and a second opinion about whether a
+# solver exists is the one thing that could disagree with the rebuild path it
+# is gating.
+[features]
+planegcs = [
+    "ferritecad-eval/planegcs",
+    "ferritecad-sketch-solver/planegcs",
+]
 
 [lints]
 workspace = true

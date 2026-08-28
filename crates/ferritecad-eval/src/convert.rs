@@ -17,6 +17,8 @@ use ferritecad_kernel::{
 };
 use ferritecad_types::{CadError, Point3, Result, Vec3};
 
+use crate::solve::SketchSolveReport;
+
 /// How close two endpoints must be to count as joined, in millimetres.
 ///
 /// Matches the kernel's own loop tolerance. Chosen to be far below anything a
@@ -45,11 +47,20 @@ pub fn plane_from_datum(datum: &DatumPlane) -> Result<SketchPlane> {
 ///
 /// A sketch with no constraints has nothing to solve and asks no solver
 /// anything, so a document written before constraints existed still rebuilds
-/// in a build that never linked one.
-pub fn profile_from_sketch(sketch: &Sketch, plane: SketchPlane) -> Result<Profile> {
+/// in a build that never linked one. That is also why the report is optional:
+/// no solve, nothing to report, and an empty report would be a claim that a
+/// sketch nobody constrained is fully constrained.
+///
+/// Both halves come out of the one solve. A caller that wanted the geometry
+/// and the facts separately would have to ask twice, and the second answer
+/// would be a second solver run of a sketch that had already been solved.
+pub fn profile_from_sketch(
+    sketch: &Sketch,
+    plane: SketchPlane,
+) -> Result<(Profile, Option<SketchSolveReport>)> {
     match crate::solve::solved(sketch)? {
-        Some(solved) => profile_from_curves(&solved, plane),
-        None => profile_from_curves(sketch, plane),
+        Some((solved, report)) => Ok((profile_from_curves(&solved, plane)?, Some(report))),
+        None => Ok((profile_from_curves(sketch, plane)?, None)),
     }
 }
 
@@ -267,7 +278,7 @@ mod tests {
 
     #[test]
     fn a_square_becomes_a_four_segment_profile() {
-        let profile = profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
+        let (profile, _) = profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
             .expect("a closed square converts");
         assert_eq!(profile.outer().segments().len(), 4);
         assert!(profile.inner().is_empty());
@@ -280,7 +291,7 @@ mod tests {
         let mut curves = square_curves();
         curves.swap(1, 3);
 
-        let profile = profile_from_sketch(&sketch(curves), SketchPlane::world_xy())
+        let (profile, _) = profile_from_sketch(&sketch(curves), SketchPlane::world_xy())
             .expect("order is recovered by walking the chain");
         assert_eq!(profile.outer().segments().len(), 4);
     }
@@ -297,7 +308,7 @@ mod tests {
             },
         });
 
-        let profile = profile_from_sketch(&sketch(curves), SketchPlane::world_xy())
+        let (profile, _) = profile_from_sketch(&sketch(curves), SketchPlane::world_xy())
             .expect("a construction circle bounds nothing and is skipped");
         assert_eq!(profile.outer().segments().len(), 4);
     }
@@ -371,7 +382,7 @@ mod tests {
 
     #[test]
     fn a_blind_extrude_converts() {
-        let profile = profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
+        let (profile, _) = profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
             .expect("converts");
         let request = extrude_request(
             &extrude(EndCondition::Blind {
@@ -387,7 +398,7 @@ mod tests {
 
     #[test]
     fn a_symmetric_extrude_sweeps_the_distance_on_each_side() {
-        let profile = profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
+        let (profile, _) = profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
             .expect("converts");
         let request = extrude_request(
             &extrude(EndCondition::Symmetric {
@@ -404,7 +415,7 @@ mod tests {
 
     #[test]
     fn through_all_is_unsupported() {
-        let profile = profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
+        let (profile, _) = profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
             .expect("converts");
         let err = extrude_request(&extrude(EndCondition::ThroughAll), profile)
             .expect_err("ThroughAll needs booleans");
@@ -418,8 +429,9 @@ mod tests {
             SolidOperation::Cut,
             SolidOperation::Intersect,
         ] {
-            let profile = profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
-                .expect("converts");
+            let (profile, _) =
+                profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
+                    .expect("converts");
             let mut feature = extrude(EndCondition::Blind {
                 distance: Expression::constant(8.0).expect("finite"),
             });
@@ -432,7 +444,7 @@ mod tests {
 
     #[test]
     fn a_target_body_is_unsupported() {
-        let profile = profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
+        let (profile, _) = profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
             .expect("converts");
         let mut feature = extrude(EndCondition::Blind {
             distance: Expression::constant(8.0).expect("finite"),

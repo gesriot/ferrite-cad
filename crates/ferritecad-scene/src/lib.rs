@@ -41,6 +41,7 @@ use ferritecad_document::{
     Document, EntityKind, ImportedDefinitionRef, ObjectPayload, ObjectRecord, SelectionRule,
     SemanticRole, StepImporter, TopologyRef,
 };
+pub use ferritecad_eval::SketchSolveReport;
 use ferritecad_eval::rebuild_cold;
 use ferritecad_exchange::{ColourSource, Import, Scene};
 use ferritecad_kernel::{
@@ -73,6 +74,32 @@ pub struct LoadedScene {
     pub edges: EdgeNames,
     /// What it durably calls the topological vertices of this picture.
     pub vertices: VertexNames,
+    /// What the solve of each constrained sketch found out, in document order.
+    ///
+    /// A third kind of answer, beside the picture and what a click means: not
+    /// about anything drawn, because a sketch is not drawn here, and not about
+    /// anything clickable. It rides along because the rebuild that produced
+    /// the picture is the one solve that could have said it, and asking again
+    /// afterwards would be solving the same sketch twice.
+    pub sketch_solves: Vec<SketchSolveFacts>,
+}
+
+/// What one solved sketch of this document turned out to be, in the
+/// document's own words.
+///
+/// Assembled from the [`ObjectRecord`] and the rebuild that solved it, and
+/// from nothing else: no second read of the file, and no second solve. One
+/// entry per sketch that carried constraints, however many bodies,
+/// definitions, placements or downstream features read it — a sketch is one
+/// sketch, and how often it was used is not a fact about how it solved.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SketchSolveFacts {
+    /// The sketch this is about.
+    pub sketch: ObjectId,
+    /// What the document calls it, when it calls it anything.
+    pub name: Option<String>,
+    /// What the solve found out.
+    pub report: SketchSolveReport,
 }
 
 /// Every durable name this document has for the edges of one picture.
@@ -874,6 +901,22 @@ where
         let mut vertex_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = BTreeMap::new();
         let objects = document.objects()?;
 
+        // Read from the records already in hand and the rebuild that has
+        // already happened. Document order is the order `objects` is in, and
+        // the join is by the sketch's own identifier, so a report belongs to
+        // the sketch it was filed under and to no neighbour of it. An imported
+        // object is never a sketch and was never solved, so it is never here.
+        let sketch_solves: Vec<SketchSolveFacts> = objects
+            .iter()
+            .filter_map(|object| {
+                Some(SketchSolveFacts {
+                    sketch: object.id,
+                    name: object.name.clone(),
+                    report: built.solve_report(object.id)?.clone(),
+                })
+            })
+            .collect();
+
         // Counted before anything is drawn, so each one can say what fraction
         // of the drawing it is. An object that draws nothing is not part of
         // the count: the bar would stall on it and then jump.
@@ -1048,6 +1091,7 @@ where
             vertices: vertex_names(&snapshot, vertex_named)?,
             snapshot,
             catalogue: catalogue.finish(),
+            sketch_solves,
         })
     })();
 

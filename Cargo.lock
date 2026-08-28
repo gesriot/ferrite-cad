@@ -823,6 +823,7 @@ dependencies = [
  "ferritecad-fixtures",
  "ferritecad-kernel",
  "ferritecad-occt",
+ "ferritecad-sketch-solver",
  "ferritecad-types",
  "ferritecad-viewport",
  "rusqlite",

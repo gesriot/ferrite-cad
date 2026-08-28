@@ -43,3 +43,4 @@ pub use convert::{extrude_request, plane_from_datum, profile_from_sketch};
 pub use dirty::{DependentIndex, dirty_set};
 pub use document_graph::DocumentGraph;
 pub use plan::{RebuildPlan, plan_full_rebuild, plan_rebuild};
+pub use solve::SketchSolveReport;

@@ -7,7 +7,11 @@
 # build detection and the native session's lifetime. `ferritecad-solver-lab` is
 # a client of it and holds none of those; since 21A-2b1 so is
 # `ferritecad-app`, and since 21B-1b so is `ferritecad-eval`, which is what
-# puts a solver on the rebuild path. The direction matters every way: a bench with its own copy
+# puts a solver on the rebuild path. Since 21B-2a `ferritecad-scene` is a
+# test-only client: what it carries out to a loaded scene is what the
+# evaluator solved, and its gates have to be able to tell a build with no
+# library from one that lost the facts. It states no sketch anything.
+# The direction matters every way: a bench with its own copy
 # of the boundary would be measuring a second implementation and reporting it
 # as the product's; a product that could reach into the bench could be handed
 # the reference solver's answer; and an application with its own link detection
@@ -26,6 +30,7 @@ readonly PRODUCT='crates/ferritecad-sketch-solver'
 readonly LAB='crates/ferritecad-solver-lab'
 readonly APP='crates/ferritecad-app'
 readonly EVAL='crates/ferritecad-eval'
+readonly SCENE='crates/ferritecad-scene'
 readonly DOCUMENT='crates/ferritecad-document'
 
 problems=0
@@ -149,6 +154,45 @@ for forbidden in 'extern "C"' 'unsafe' 'fc_gcs_' 'link_name' '#[link'; do
     fi
 done
 
+# The scene is a client of the availability question and of nothing else.
+#
+# It carries what a solve found out from the evaluator to a loaded picture, so
+# its gates must be able to skip honestly where there is no library — and must
+# refuse to skip where one was required. That is the whole of its business with
+# the solver: it states no sketch, reads no answer, and holds no build script,
+# C boundary or link decision of its own. The dependency is dev-only, so a
+# shipped scene cannot reach the solver at all except through the evaluator.
+grep -Eq '^[[:space:]]*ferritecad-sketch-solver[[:space:]]*[=.]' "${SCENE}/Cargo.toml" \
+    || fail "${SCENE} does not depend on ${PRODUCT}, so its gates cannot tell a build with no \
+library from one that lost what a solve found out"
+grep -Fq 'ferritecad-sketch-solver/planegcs' "${SCENE}/Cargo.toml" \
+    || fail "${SCENE} does not forward the planegcs feature to ${PRODUCT}, so a build meant to \
+link the library would gate the scene boundary without one"
+grep -Fq 'ferritecad-eval/planegcs' "${SCENE}/Cargo.toml" \
+    || fail "${SCENE} does not forward the planegcs feature to the evaluator, so the path it \
+gates would not link a solver"
+grep -Fqx "      - 'crates/ferritecad-scene/**'" .github/workflows/planegcs-pin.yml \
+    || fail "planegcs pin does not watch ${SCENE}; a change to what a loaded scene carries \
+would miss linked three-platform coverage"
+
+if grep -rqn 'ferritecad_sketch_solver' "${SCENE}/src"; then
+    grep -rn 'ferritecad_sketch_solver' "${SCENE}/src" >&2
+    fail "${SCENE} names ${PRODUCT} outside its gates; what solves a sketch is ${EVAL}"
+fi
+if grep -Eqn '^[[:space:]]*ferritecad-solver-lab[[:space:]]*[=.]' "${SCENE}/Cargo.toml"; then
+    fail "${SCENE} depends on ${LAB}; the product path must never be able to reach the bench"
+fi
+
+[ -e "${SCENE}/build.rs" ] \
+    && fail "${SCENE}/build.rs exists; build and link detection belongs to ${PRODUCT}"
+
+for forbidden in 'extern "C"' 'unsafe' 'fc_gcs_' 'link_name' '#[link'; do
+    if grep -rqnF "${forbidden}" "${SCENE}/src" "${SCENE}/tests"; then
+        grep -rnF "${forbidden}" "${SCENE}/src" "${SCENE}/tests" >&2
+        fail "${SCENE} contains ${forbidden}; the FFI and its lifetime belong to ${PRODUCT}"
+    fi
+done
+
 # The bridge and the build detection are where they are said to be.
 for required in \
     "${PRODUCT}/build.rs" \
@@ -166,4 +210,5 @@ if [ "${problems}" -gt 0 ]; then
 fi
 
 echo "solver ownership: ${PRODUCT} owns the boundary; ${LAB}, ${APP} and ${EVAL} are clients of \
-it, and ${DOCUMENT} does not know it exists"
+it, ${SCENE} asks it only whether there is one to gate for, and ${DOCUMENT} does not know it \
+exists"

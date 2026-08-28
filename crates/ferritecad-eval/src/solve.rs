@@ -33,7 +33,7 @@
 //! across untouched; only the three stored coordinate pairs a solver can
 //! answer for — `Point.At`, `Line.Start` and `Line.End` — are written.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ferritecad_document::{
     Point2, Sketch, SketchConstraint, SketchConstraintRule, SketchGeometry, SketchPointRef,
@@ -48,10 +48,16 @@ use ferritecad_types::{CadError, Result, StableEntityId};
 /// the solver nothing at all: a document written before constraints existed
 /// must rebuild in a build that never linked a solver, exactly as it did.
 ///
-/// `Ok(Some(_))` is a temporary sketch at the solved coordinates. It is not
-/// stored, not returned to the caller of a rebuild and not compared against
-/// the original: it exists to be turned into a profile.
-pub(crate) fn solved(sketch: &Sketch) -> Result<Option<Sketch>> {
+/// `Ok(Some(_))` is a temporary sketch at the solved coordinates together with
+/// a [`SketchSolveReport`] for the same solve. The sketch is not stored, not
+/// returned to the caller of a rebuild and not compared against the original:
+/// it exists to be turned into a profile. The report outlives it, because what
+/// a solve found out about a drawing is a fact about the drawing.
+///
+/// One solve answers both. Asking again for the report would be asking a
+/// second question of a solver that has already been asked, and two answers to
+/// one question is one answer too many.
+pub(crate) fn solved(sketch: &Sketch) -> Result<Option<(Sketch, SketchSolveReport)>> {
     if sketch.constraints.is_empty() {
         return Ok(None);
     }
@@ -60,6 +66,48 @@ pub(crate) fn solved(sketch: &Sketch) -> Result<Option<Sketch>> {
     let outcome =
         solver::solve(translation.stated()).map_err(|error| translation.refusal(&error))?;
     translation.interpret(sketch, outcome).map(Some)
+}
+
+/// What one successful solve found out about the sketch it solved.
+///
+/// Everything here is said in the document's words and outlives the solve that
+/// produced it. There is no [`solver::PointId`], no [`solver::ConstraintId`],
+/// no native tag, no equation index and no position: those number one call to
+/// one library and mean nothing after it, and a report is read after it.
+///
+/// Not serialisable, and deliberately. This is what a rebuild found out, not
+/// something a document holds: storing it would make a file's meaning depend
+/// on which solver last opened it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SketchSolveReport {
+    degrees_of_freedom: usize,
+    redundant: Vec<StableEntityId>,
+}
+
+impl SketchSolveReport {
+    /// How much freedom the drawing has left. Zero means it cannot move.
+    pub fn degrees_of_freedom(&self) -> usize {
+        self.degrees_of_freedom
+    }
+
+    /// Whether anything about this sketch is still undecided.
+    ///
+    /// Read from the degrees of freedom rather than stored beside them. A
+    /// separate flag is a second account of one fact, free to disagree with
+    /// the first the moment either is written by hand.
+    pub fn is_under_constrained(&self) -> bool {
+        self.degrees_of_freedom > 0
+    }
+
+    /// The constraints that repeat what the rest already said, named as the
+    /// document names them and in the order the document stores them.
+    ///
+    /// Document order, because that is the order a person reading their own
+    /// drawing expects; the solver's own order is an artefact of how it
+    /// numbered a system it has since thrown away.
+    pub fn redundant(&self) -> &[StableEntityId] {
+        &self.redundant
+    }
 }
 
 /// The stored points of one piece of geometry, in the order the document
@@ -303,15 +351,26 @@ impl Translation {
     ///
     /// Split out from [`solved`] so that the three answers can be gated
     /// directly, in any build, without a library to produce them.
-    fn interpret(&self, sketch: &Sketch, outcome: solver::Outcome) -> Result<Sketch> {
+    fn interpret(
+        &self,
+        sketch: &Sketch,
+        outcome: solver::Outcome,
+    ) -> Result<(Sketch, SketchSolveReport)> {
         match outcome {
             // A solved sketch is built, whether or not it was fully
             // constrained. An under-constrained sketch has coordinates that
             // satisfy everything said about it and freedom left over, and a
             // redundant one says something twice; neither is a reason to
             // refuse to draw what the user drew. Nothing here calls such a
-            // sketch fully constrained, because nothing here says so at all.
-            solver::Outcome::Solved(solution) => self.apply(sketch, &solution),
+            // sketch fully constrained, because nothing here says so at all;
+            // it says how much freedom is left, and lets a reader conclude it.
+            solver::Outcome::Solved(solution) => {
+                let report = SketchSolveReport {
+                    degrees_of_freedom: solution.degrees_of_freedom(),
+                    redundant: self.redundant(sketch, solution.redundant())?,
+                };
+                Ok((self.apply(sketch, &solution)?, report))
+            }
 
             solver::Outcome::Conflicting { constraints, .. } => Err(CadError::constraint(format!(
                 "this sketch's constraints cannot all hold at once; the solver cannot satisfy \
@@ -362,6 +421,54 @@ impl Translation {
             }
         }
         Ok(solved)
+    }
+
+    /// The document's names for the constraints a solve found redundant.
+    ///
+    /// Every number the solver hands back is looked up, and a lookup that
+    /// fails is a refusal rather than a gap. A constraint this sketch was
+    /// never asked about, or one blamed twice, means the answer is about some
+    /// other system than the one that was stated, and reporting the part that
+    /// did resolve would publish a partial account of a sketch as a complete
+    /// one.
+    ///
+    /// The order is read off the document. The numbers this module minted
+    /// follow storage order today and the solver returns them sorted, so
+    /// walking the answer would give the same list — and would give somebody
+    /// else's list the moment either of those changed. What is promised is the
+    /// order a person reading their own drawing sees, so that is what is
+    /// computed.
+    fn redundant(
+        &self,
+        sketch: &Sketch,
+        blamed: &[solver::ConstraintId],
+    ) -> Result<Vec<StableEntityId>> {
+        let mut named = BTreeSet::new();
+        for id in blamed {
+            let Some(&constraint) = self.constraint_ref.get(id) else {
+                // Said without the number. It is the one this module minted a
+                // moment ago, and a message carrying it would invite a reader
+                // to look for it in a sketch that has no such word.
+                return Err(CadError::constraint(
+                    "the solver called a constraint redundant that this sketch never stated, so \
+                     there is nothing this drawing could be told about it",
+                ));
+            };
+            if !named.insert(constraint) {
+                return Err(CadError::constraint(format!(
+                    "the solver called constraint {constraint} redundant more than once, and \
+                     one constraint is one answer"
+                )));
+            }
+        }
+
+        let mut remaining = named;
+        Ok(sketch
+            .constraints
+            .iter()
+            .filter(|constraint| remaining.remove(&constraint.id))
+            .map(|constraint| constraint.id)
+            .collect())
     }
 
     /// Why the solver would not answer, said in the document's words.
@@ -1100,6 +1207,169 @@ mod tests {
         let error = Translation::read(&sketch)
             .expect_err("a circle has no start, so there is nothing to solve for");
         assert_eq!(error.kind(), ErrorKind::Constraint);
+    }
+
+    // -----------------------------------------------------------------
+    // What a solve reports, in the document's own order and words
+    // -----------------------------------------------------------------
+
+    /// Four constraints over one line, so an answer about them can be given
+    /// in an order that is not the document's.
+    ///
+    /// Two horizontals and two verticals: nothing here is solvable and nothing
+    /// here is asked to be. What is under test is the road back from a blamed
+    /// constraint to the word the document uses for it, which is travelled
+    /// whatever the geometry was.
+    fn four_constraints() -> (Sketch, Translation, Vec<StableEntityId>) {
+        let a = StableEntityId::new();
+        let ends = || SketchConstraintRule::Horizontal {
+            a: at(a, SketchPointSelector::Start),
+            b: at(a, SketchPointSelector::End),
+        };
+        let upright = || SketchConstraintRule::Vertical {
+            a: at(a, SketchPointSelector::Start),
+            b: at(a, SketchPointSelector::End),
+        };
+        let sketch = sketch(
+            vec![line(a, (0.0, 0.0), (10.0, 0.0))],
+            vec![rule(ends()), rule(upright()), rule(ends()), rule(upright())],
+        );
+        let ids = sketch.constraints.iter().map(|one| one.id).collect();
+        let translation = Translation::read(&sketch).expect("translates");
+        (sketch, translation, ids)
+    }
+
+    /// The solver's name for the constraint the document stores at `index`.
+    fn stated_at(translation: &Translation, index: usize) -> solver::ConstraintId {
+        translation
+            .stated()
+            .constraints()
+            .get(index)
+            .map(|(id, _)| *id)
+            .expect("the sketch stated this constraint")
+    }
+
+    #[test]
+    fn what_repeated_is_reported_in_the_order_the_document_stores_it() {
+        // The answer arrives back to front. What comes out follows the
+        // document, which is the only order a person reading their own drawing
+        // has ever seen.
+        let (sketch, translation, ids) = four_constraints();
+        let backwards: Vec<solver::ConstraintId> = (0..4)
+            .rev()
+            .map(|index| stated_at(&translation, index))
+            .collect();
+
+        let reported = translation
+            .redundant(&sketch, &backwards)
+            .expect("every one of these is a constraint of this sketch");
+
+        assert_eq!(reported, ids, "the answer's own order reached the report");
+    }
+
+    #[test]
+    fn a_report_names_a_subset_in_the_documents_order_and_not_a_position() {
+        let (sketch, translation, ids) = four_constraints();
+        let blamed = [stated_at(&translation, 3), stated_at(&translation, 1)];
+
+        let reported = translation
+            .redundant(&sketch, &blamed)
+            .expect("both are constraints of this sketch");
+
+        assert_eq!(reported, vec![ids[1], ids[3]]);
+    }
+
+    #[test]
+    fn a_constraint_the_sketch_never_stated_is_refused_rather_than_dropped() {
+        // The identifier of a fifth constraint, in a sketch that has four.
+        // Silently reporting the three that did resolve would publish a
+        // partial account of a sketch as the whole of it.
+        let (sketch, translation, _) = four_constraints();
+        let blamed = [
+            stated_at(&translation, 0),
+            solver::ConstraintId(4),
+            stated_at(&translation, 2),
+        ];
+
+        let error = translation
+            .redundant(&sketch, &blamed)
+            .expect_err("an answer about a constraint this sketch does not hold is not an answer");
+
+        assert_eq!(error.kind(), ErrorKind::Constraint);
+        let message = error.to_string();
+        assert!(
+            message.contains("never stated"),
+            "a refusal must say what it is: {message}"
+        );
+        for forbidden in ["ConstraintId", "PointId", "4"] {
+            assert!(
+                !message.contains(forbidden),
+                "the refusal published {forbidden}, which lasts one solve: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_constraint_blamed_twice_is_refused_rather_than_reported_twice() {
+        let (sketch, translation, ids) = four_constraints();
+        let once = stated_at(&translation, 2);
+        let blamed = [once, stated_at(&translation, 0), once];
+
+        let error = translation
+            .redundant(&sketch, &blamed)
+            .expect_err("one constraint cannot be two answers");
+
+        assert_eq!(error.kind(), ErrorKind::Constraint);
+        let message = error.to_string();
+        assert!(
+            message.contains(&ids[2].to_string()),
+            "the refusal must name the constraint as the document does: {message}"
+        );
+        for forbidden in ["ConstraintId", "PointId"] {
+            assert!(!message.contains(forbidden), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_solve_that_blamed_nothing_reports_nothing() {
+        let (sketch, translation, _) = four_constraints();
+        assert!(
+            translation
+                .redundant(&sketch, &[])
+                .expect("nothing to resolve")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_debug_of_a_report_publishes_no_transient_identifier() {
+        let (sketch, translation, ids) = four_constraints();
+        let report = SketchSolveReport {
+            degrees_of_freedom: 3,
+            redundant: translation
+                .redundant(&sketch, &[stated_at(&translation, 1)])
+                .expect("resolves"),
+        };
+
+        let printed = format!("{report:?}");
+        for forbidden in ["PointId", "ConstraintId", "ordinal", "equation", "session"] {
+            assert!(!printed.contains(forbidden), "{printed}");
+        }
+        assert!(printed.contains(&ids[1].to_string()), "{printed}");
+    }
+
+    #[test]
+    fn under_constrained_is_read_from_the_freedom_and_not_stored_beside_it() {
+        let none = SketchSolveReport {
+            degrees_of_freedom: 0,
+            redundant: Vec::new(),
+        };
+        let some = SketchSolveReport {
+            degrees_of_freedom: 1,
+            redundant: Vec::new(),
+        };
+        assert!(!none.is_under_constrained());
+        assert!(some.is_under_constrained());
     }
 
     #[test]

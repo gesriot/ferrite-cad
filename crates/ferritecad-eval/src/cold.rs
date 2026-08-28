@@ -38,6 +38,7 @@ use ferritecad_types::{CadError, ObjectId, Result};
 use crate::cache::{load_extrude_archive, store_extrude_archive};
 use crate::convert::{extrude_request, plane_from_datum, profile_from_sketch};
 use crate::document_graph::DocumentGraph;
+use crate::solve::SketchSolveReport;
 
 /// What a rebuild produced.
 ///
@@ -59,10 +60,20 @@ use crate::document_graph::DocumentGraph;
 /// used while building that account and then dropped: they describe an
 /// operation, and a feature restored from a cache had no operation. Anything a
 /// caller needs about a face it must ask for by name.
+///
+/// # What a solve found out is kept, and only for the sketch that was solved
+///
+/// A sketch that carries constraints is solved once, wherever this rebuild
+/// reaches it, and [`SketchSolveReport`] is the other half of that one answer.
+/// It is filed under the sketch's own [`ObjectId`], so a sketch two features
+/// read is still one sketch with one report, and nothing that was not solved —
+/// an unconstrained sketch, an extrude, a body, a datum, an import — has one
+/// at all.
 #[derive(Debug, Default)]
 pub struct RebuildResult {
     shapes: BTreeMap<ObjectId, ShapeHandle>,
     profiles: BTreeMap<ObjectId, Profile>,
+    solve_reports: BTreeMap<ObjectId, SketchSolveReport>,
     topology: TopologyMap,
     order: Vec<ObjectId>,
     owned: Vec<ShapeHandle>,
@@ -78,6 +89,27 @@ impl RebuildResult {
     /// The profile a sketch converted to.
     pub fn profile(&self, object: ObjectId) -> Option<&Profile> {
         self.profiles.get(&object)
+    }
+
+    /// What the solve of one sketch found out, if that sketch was solved.
+    ///
+    /// `None` for everything else, including a sketch that carries no
+    /// constraints: nothing asked a solver about it, so there is nothing this
+    /// could honestly say.
+    pub fn solve_report(&self, sketch: ObjectId) -> Option<&SketchSolveReport> {
+        self.solve_reports.get(&sketch)
+    }
+
+    /// Every sketch this rebuild solved, in the order it evaluated them.
+    ///
+    /// The order is [`order`][Self::order]'s, which is the plan's, which is a
+    /// function of the document alone. Not the map's own iteration order:
+    /// identifiers sort by when they were minted, which is close enough to
+    /// document order to look right in a test and is not the same fact.
+    pub fn solve_reports(&self) -> impl Iterator<Item = (ObjectId, &SketchSolveReport)> {
+        self.order
+            .iter()
+            .filter_map(|id| Some((*id, self.solve_reports.get(id)?)))
     }
 
     /// What each feature's output is called, for this session only.
@@ -233,9 +265,14 @@ fn run<K: GeometryKernel + ?Sized>(
                 })?;
                 // Converted here rather than when the extrude asks for it, so a
                 // malformed sketch is reported against the sketch.
-                state
-                    .profiles
-                    .insert(*id, profile_from_sketch(sketch, plane)?);
+                let (profile, report) = profile_from_sketch(sketch, plane)?;
+                state.profiles.insert(*id, profile);
+                // Filed only when there was a solve to report. Absent is the
+                // honest answer for a sketch nobody constrained, and an empty
+                // report would read as one that was solved and found rigid.
+                if let Some(report) = report {
+                    state.solve_reports.insert(*id, report);
+                }
             }
 
             ObjectPayload::Extrude(feature) => {

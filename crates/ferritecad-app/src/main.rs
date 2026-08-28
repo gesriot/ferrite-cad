@@ -2762,6 +2762,7 @@ mod tests {
             vertices: VertexNames::default(),
             snapshot,
             catalogue: Vec::new(),
+            sketch_solves: Vec::new(),
         }
     }
 
@@ -4147,7 +4148,7 @@ mod tests {
             })
             .expect("the fixture has a datum plane");
         let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
-        let profile =
+        let (profile, _) =
             ferritecad_eval::profile_from_sketch(&sketch, plane).expect("builds a profile");
 
         let stored = document.topology_refs().expect("reads");
@@ -4259,7 +4260,7 @@ mod tests {
             })
             .expect("the fixture has a datum plane");
         let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
-        let profile = ferritecad_eval::profile_from_sketch(&sketch, plane).expect("builds");
+        let (profile, _) = ferritecad_eval::profile_from_sketch(&sketch, plane).expect("builds");
 
         let stored = document.topology_refs().expect("reads");
         let producer = stored
@@ -5718,7 +5719,7 @@ mod tests {
             })
             .expect("the fixture has a datum plane");
         let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
-        let profile =
+        let (profile, _) =
             ferritecad_eval::profile_from_sketch(&sketch, plane).expect("builds a profile");
         let joint = profile
             .outer()

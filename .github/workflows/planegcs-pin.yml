@@ -41,6 +41,10 @@ on:
       # constrained sketch. A change there needs the linked three-platform
       # proof just as much as a change in the solver crate itself.
       - 'crates/ferritecad-eval/**'
+      # And the scene is where what a solve found out reaches a loaded
+      # picture. It states no sketch anything, but its gates are only gates
+      # when a library is linked, so they run here.
+      - 'crates/ferritecad-scene/**'
       - 'crates/ferritecad-sketch-solver/**'
       - 'crates/ferritecad-solver-lab/**'
       - 'tools/check-solver-ownership.sh'
@@ -536,6 +540,75 @@ jobs:
           grep -qF 'product sketch solver: planegcs from FreeCAD 1.0.1' product.txt \
             || { echo "::error::the product solver did not open the pinned library"; exit 1; }
           echo "every planegcs gate ran, on both the product path and the bench"
+
+      - name: Run the rebuild path and the scene boundary through the real library
+        env:
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          # The logs are parsed below. Colour escapes immediately before `ok`
+          # would make an executed gate indistinguishable from an absent one.
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          # The evaluator is what turns a stored constraint into a solved
+          # coordinate, and since 21B-2a it is also what says how the sketch
+          # was solved. Neither claim is exercised by the crate's own gates
+          # above: those state sketches directly, and these start from bytes on
+          # disk. Only the two test binaries that need a library, so a run here
+          # cannot pass by exercising something else.
+          cargo test --release -p ferritecad-eval --features planegcs \
+            --test solved_sketch --test solve_report \
+            -- --nocapture --test-threads=1 2>&1 | tee eval.txt
+
+          # And the boundary that carries those facts out of a rebuild into a
+          # loaded picture, from a real file through the real solver.
+          cargo test --release -p ferritecad-scene --features planegcs \
+            --test solve_facts -- --nocapture --test-threads=1 2>&1 | tee scene.txt
+
+          for skip in \
+            'skipped: this build did not link planegcs' \
+            'skipped: this build has no sketch solver'
+          do
+            if grep -qF "$skip" eval.txt scene.txt; then
+              echo "::error::a gate skipped itself under FERRITECAD_REQUIRE_PLANEGCS=1"
+              exit 1
+            fi
+          done
+
+          missing=0
+          check() {
+            if ! grep -qF "test $2 ... ok" "$1"; then
+              echo "::error::the planegcs gate $2 did not run and pass"
+              missing=$((missing + 1))
+            fi
+          }
+
+          # The rebuild path: a stored sketch solved, and what the solve found
+          # out kept without a second one.
+          for gate in \
+            'a_stored_constrained_plate_reaches_the_kernel_at_its_solved_coordinates' \
+            'two_features_reading_one_sketch_solve_it_once' \
+            'a_conflict_is_named_in_the_documents_own_constraint_identifiers' \
+            'an_under_constrained_sketch_reports_the_freedom_it_has_left' \
+            'a_repeated_constraint_is_named_by_the_identifier_the_document_stores' \
+            'several_repeated_constraints_arrive_in_the_order_the_document_stores_them' \
+            'the_solved_coordinates_and_the_report_are_two_halves_of_one_solve' \
+            'two_features_reading_one_sketch_get_one_solve_and_one_report' \
+            'a_cached_rebuild_reports_what_the_cold_one_did_and_solves_no_more_often'
+          do
+            check eval.txt "$gate"
+          done
+
+          # The scene boundary: the facts arrive in the document's words, and
+          # the picture does not change because of them.
+          for gate in \
+            'a_loaded_scene_says_what_the_solve_of_each_sketch_found_out' \
+            'two_sketches_keep_their_own_facts_and_the_documents_order' \
+            'what_a_solve_found_out_is_no_part_of_the_picture'
+          do
+            check scene.txt "$gate"
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          echo "the rebuild path and the scene boundary ran against the pinned library"
 
       - name: Build the real application against planegcs
         env:
