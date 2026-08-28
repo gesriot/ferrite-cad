@@ -4,9 +4,11 @@
 #
 # Measured. The combined runtime layout workflow walks the loader graph of both
 # product binaries with the platform's own inspector, and this is what it
-# found: the command line tool crosses the Open CASCADE boundary and never
-# touches the sketch solver, so it names no planegcs at all, on any of the
-# three platforms.
+# found. Both cross the Open CASCADE boundary, and since 21B-1b both reach the
+# sketch solver too: the command line tool rebuilds documents, a rebuild solves
+# whatever constraints a sketch stores, and `ferritecad-cli` forwards the
+# planegcs feature so that a build meant to link the library links one on that
+# path as well as in the viewer.
 #
 # tools/check-native-inventory.sh compares this against the closure reports
 # that measurement produced, in both directions: a component loaded by a binary
@@ -16,4 +18,5 @@
 # Two columns, tab separated: the owning component's key, and the binary.
 occt	ferritecad
 occt	ferritecad-viewer
+planegcs	ferritecad
 planegcs	ferritecad-viewer

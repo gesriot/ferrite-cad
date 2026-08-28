@@ -348,6 +348,7 @@
       "fileModel": "one-component-with-file-inventory",
       "id": "native+planegcs@1.0.1",
       "loadedBy": [
+        "ferritecad",
         "ferritecad-viewer"
       ],
       "name": "planegcs",
@@ -388,7 +389,8 @@
     {
       "binary": "ferritecad",
       "loads": [
-        "occt"
+        "occt",
+        "planegcs"
       ],
       "package": "ferritecad-cli",
       "rustFragmentRef": "path+crates/ferritecad-cli#ferritecad-cli@0.0.1",
@@ -432,19 +434,19 @@
     {
       "path": "sbom/rust/rust-fragment-aarch64-apple-darwin.cdx.json",
       "ref": "ferritecad:rust-fragment:aarch64-apple-darwin",
-      "sha256": "a89a34d6ebdc5045bd715ca2b6154853fb0236ba5411739761f5eeebedceaabc",
+      "sha256": "0d7ef55c4c6e5d0e35c1e8ccca9059b457e563a2083dd993601fde80ef7f857d",
       "target": "aarch64-apple-darwin"
     },
     {
       "path": "sbom/rust/rust-fragment-x86_64-pc-windows-msvc.cdx.json",
       "ref": "ferritecad:rust-fragment:x86_64-pc-windows-msvc",
-      "sha256": "b027296b1678e3608cffc4ee92026b4c6eda005f2b36df9b2afddd398994bec7",
+      "sha256": "f718fe62b82c099c6abceb8b3e1f39ae40d13a84ece7d9f98306a17e7f18d780",
       "target": "x86_64-pc-windows-msvc"
     },
     {
       "path": "sbom/rust/rust-fragment-x86_64-unknown-linux-gnu.cdx.json",
       "ref": "ferritecad:rust-fragment:x86_64-unknown-linux-gnu",
-      "sha256": "febf1971d61e2c18e7f762b44793a56bd36eb3bb503372d1e653daabe5f79617",
+      "sha256": "d252ca9fe54d62ca0a032e092d0daecc3ff7b5f5c959de9cc7e77973784cdf7a",
       "target": "x86_64-unknown-linux-gnu"
     }
   ],

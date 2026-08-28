@@ -550,14 +550,20 @@ fact "package build-and-source-trees-present=0"
 # names - would be a second layout that could go on agreeing with itself while
 # the real one moved.
 
-root_loading_planegcs="$(jq -r '.productRoots[] | select(.loads | index("planegcs")) | .binary' \
+# Told apart by the crate each root is built from, which is what the inventory
+# already records about them. Which native libraries a root loads used to
+# separate the two and no longer can: since 21B-1b the command line tool
+# rebuilds documents through an evaluator that can solve a constrained sketch,
+# so both roots load planegcs and only one of them opens a window.
+
+viewer_root="$(jq -r '.productRoots[] | select(.package == "ferritecad-app") | .binary' \
     "$NATIVE_INVENTORY" | native_strip_cr)"
-root_not_loading_planegcs="$(jq -r '.productRoots[] | select((.loads | index("planegcs")) | not) | .binary' \
+cli_root="$(jq -r '.productRoots[] | select(.package == "ferritecad-cli") | .binary' \
     "$NATIVE_INVENTORY" | native_strip_cr)"
-[ "$(printf '%s\n' "$root_loading_planegcs" | wc -l | tr -d ' ')" -eq 1 ] \
-    || package_die 'the inventory names more than one product root that loads the solver'
-[ "$(printf '%s\n' "$root_not_loading_planegcs" | wc -l | tr -d ' ')" -eq 1 ] \
-    || package_die 'the inventory names more than one product root that does not load the solver'
+[ "$(printf '%s\n' "$viewer_root" | wc -l | tr -d ' ')" -eq 1 ] && [ -n "$viewer_root" ] \
+    || package_die 'the inventory does not name exactly one product root built from ferritecad-app'
+[ "$(printf '%s\n' "$cli_root" | wc -l | tr -d ' ')" -eq 1 ] && [ -n "$cli_root" ] \
+    || package_die 'the inventory does not name exactly one product root built from ferritecad-cli'
 
 # The component identity behind a product root's short key, taken the way the
 # inventory builds it. A key with no component is a failure rather than a
@@ -583,8 +589,8 @@ one_file_owned_by() { # owner description
     printf '%s\n' "$found"
 }
 
-viewer="$root/$(one_file_owned_by "$root_loading_planegcs" 'shipped application')"
-cli="$root/$(one_file_owned_by "$root_not_loading_planegcs" 'shipped command line tool')"
+viewer="$root/$(one_file_owned_by "$viewer_root" 'shipped application')"
+cli="$root/$(one_file_owned_by "$cli_root" 'shipped command line tool')"
 planegcs="$root/$(one_file_owned_by "$planegcs_owner" 'sketch solver library')"
 
 awk -F'\t' -v o="$occt_owner" '$1 == "runtime" && $6 == o { print $2 }' "$work/claimed" \

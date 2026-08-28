@@ -576,6 +576,10 @@
         },
         {
           "name": "ferritecad:sbom:loaded-by",
+          "value": "ferritecad"
+        },
+        {
+          "name": "ferritecad:sbom:loaded-by",
           "value": "ferritecad-viewer"
         },
         {
@@ -7097,6 +7101,7 @@
     {
       "dependsOn": [
         "native+occt@8.0.1",
+        "native+planegcs@1.0.1",
         "path+crates/ferritecad-document#ferritecad-document@0.0.1",
         "path+crates/ferritecad-eval#ferritecad-eval@0.0.1",
         "path+crates/ferritecad-exchange#ferritecad-exchange@0.0.1",
@@ -7124,6 +7129,7 @@
       "dependsOn": [
         "path+crates/ferritecad-document#ferritecad-document@0.0.1",
         "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
+        "path+crates/ferritecad-sketch-solver#ferritecad-sketch-solver@0.0.1",
         "path+crates/ferritecad-topology#ferritecad-topology@0.0.1",
         "path+crates/ferritecad-types#ferritecad-types@0.0.1"
       ],
@@ -8422,11 +8428,11 @@
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/native/native-assets-inventory.json@sha256:e4f9c6ee07326e1b668b258e4a3dca9da43c2ccedf721fc0e90cb6f4498db7cc"
+        "value": "sbom/native/native-assets-inventory.json@sha256:476c9a6de3f75714fd384f2c79cd8ac60aafe88d28e8907460dadf4aaa68cb1e"
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/rust/rust-fragment-x86_64-unknown-linux-gnu.cdx.json@sha256:febf1971d61e2c18e7f762b44793a56bd36eb3bb503372d1e653daabe5f79617"
+        "value": "sbom/rust/rust-fragment-x86_64-unknown-linux-gnu.cdx.json@sha256:d252ca9fe54d62ca0a032e092d0daecc3ff7b5f5c959de9cc7e77973784cdf7a"
       },
       {
         "name": "ferritecad:sbom:product-format",
