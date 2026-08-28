@@ -37,6 +37,10 @@ on:
       - 'tools/planegcs/**'
       - 'tools/build-planegcs.sh'
       - 'crates/ferritecad-app/**'
+      # The evaluator is the product path that translates and solves a stored
+      # constrained sketch. A change there needs the linked three-platform
+      # proof just as much as a change in the solver crate itself.
+      - 'crates/ferritecad-eval/**'
       - 'crates/ferritecad-sketch-solver/**'
       - 'crates/ferritecad-solver-lab/**'
       - 'tools/check-solver-ownership.sh'

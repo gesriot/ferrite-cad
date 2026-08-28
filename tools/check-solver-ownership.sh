@@ -125,6 +125,9 @@ grep -Eq '^[[:space:]]*ferritecad-sketch-solver[[:space:]]*[=.]' "${EVAL}/Cargo.
 grep -Fq 'ferritecad-sketch-solver/planegcs' "${EVAL}/Cargo.toml" \
     || fail "${EVAL} does not forward the planegcs feature to ${PRODUCT}, so a build meant to \
 link the library would not link one on the rebuild path"
+grep -Fqx "      - 'crates/ferritecad-eval/**'" .github/workflows/planegcs-pin.yml \
+    || fail "planegcs pin does not watch ${EVAL}; a translation change would miss linked \
+three-platform coverage"
 
 if grep -Eqn '^[[:space:]]*ferritecad-solver-lab[[:space:]]*[=.]' "${EVAL}/Cargo.toml"; then
     fail "${EVAL} depends on ${LAB}; the rebuild path must never be able to reach the bench"

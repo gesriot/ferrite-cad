@@ -7,9 +7,11 @@
 //! the lifetime of the native session. `ferritecad-solver-lab` is a client of
 //! this crate and holds none of those; nothing here points back at the lab.
 //!
-//! Nothing in the application loads a sketch solver yet. This is the product
-//! boundary, not an integration: no document stores a constraint, no feature
-//! reads one, and no release packages planegcs.
+//! A document stores constraints in its own durable vocabulary. The evaluator
+//! translates them into this crate's transient identifiers, solves them and
+//! builds geometry from the answer without rewriting the document. No
+//! interface creates or edits a constraint yet, and no published release is
+//! offered.
 //!
 //! # Without planegcs
 //!

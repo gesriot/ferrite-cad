@@ -275,8 +275,9 @@ when it rebuilds: the profile it extrudes is the solved one, not the
 coordinates the curves were last left at. The viewer still cannot create or
 edit a constraint, so a constrained sketch is one that arrived in the document
 some other way. A build with no solver refuses such a sketch rather than
-building from the stored coordinates, and no release packages planegcs.
-Building and replacing the library is
+building from the stored coordinates. The repository can assemble checked
+archives containing planegcs, but no published release is offered. Building
+and replacing the library is
 [docs/build-planegcs.md](docs/build-planegcs.md).
 
 ## How a document is put together

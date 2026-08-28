@@ -8,19 +8,19 @@ own. Nothing of it is compiled into a FerriteCAD binary.
 Since §21A-2b1 the FerriteCAD application can load it. Built with the feature
 on, `ferritecad-viewer` links the shared library, and
 `ferritecad-viewer --solver-info` answers with what that library says about
-itself. What has not been done is packaging: there is no relocatable release
-that carries planegcs, because laying one out has to solve Open CASCADE's
-loader layout at the same time, and that is §21A-2b2. A run of the application
-against a build tree finds the library through the loader's search path, which
-is an unbundled run and is not evidence about a package.
+itself. The combined runtime and packager work now assembles checked archives
+that carry planegcs beside Open CASCADE, but those archives remain workflow
+artifacts: there is no published release, installer, signing or notarisation
+claim.
 
-§21A-2b2a has since measured what such a release would have to carry and run a
-candidate layout with both build trees taken away; the numbers and the layout
-are in [runtime-layout.md](runtime-layout.md). The packager itself is still to
-come.
+§21A-2b2a measured what such an archive has to carry and ran a candidate layout
+with both build trees taken away; the numbers and the layout are in
+[runtime-layout.md](runtime-layout.md). Later §21A-2b2b slices made that layout
+an archive and a three-platform release set without publishing either one.
 
-Nothing above the loading is integrated either. No document stores a
-constraint, no feature reads one, and no interface draws one.
+Since §21B-1b a document stores constraints in its own durable terms and the
+evaluator translates and solves them before building a profile. The viewer
+still has no interface for creating or editing them.
 
 ```
 tools/build-planegcs.sh [output-directory]      # default ./vendor/planegcs

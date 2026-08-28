@@ -78,12 +78,11 @@ through the loader's search path against a build tree, which is not a package.
 
 ## What this does not decide
 
-- **Nothing is integrated.** No document type, no interface, no feature reads
-  a constraint yet. This says which solver the sketcher will be built on, not
-  that it has been. Being buildable on three platforms does not change that,
-  and neither does §21A-2b1: the application can now link the library and say
-  which one it loaded, and that is a statement about a component, not about a
-  sketch. It still does not ship planegcs.
+- **The first integration is deliberately narrow.** Since §21B-1b a document
+  can store the eight measured constraint families and a linked build solves
+  them before constructing a profile. There is still no interface for creating
+  or editing a constraint, no drag interaction and no published release. This
+  ADR chooses the solver; it does not claim the sketcher is complete.
 - **Sparsity is unresolved.** The local LM is dense and cubic per iteration.
   planegcs's diagnosis and solver paths have not been characterized at larger
   scale, and its sparse options have not been exercised here.
