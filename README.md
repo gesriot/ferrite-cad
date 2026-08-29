@@ -260,9 +260,19 @@ cannot be clicked, and this is not part of what is selected. Each entry gives
 the sketch's name – or `Unnamed sketch`, because a drawing nobody named is
 still a drawing that was solved – the whole identifier the document stores for
 it, whether it came out `Fully constrained` or `Under-constrained`, exactly how
-many degrees of freedom it has left, and the identifier of every constraint the
-solve found to repeat what the rest already said, one to a line and in the
-order the document stores them. A sketch that repeats nothing says `None`
+many degrees of freedom it has left, and every constraint the solve found to
+repeat what the rest already said, in the order the document stores them.
+
+Each repeated constraint is given twice over: the whole identifier the document
+stores it under, so it can be found, and a sentence saying what it is, so it
+need not be. The sentence names the kind of relationship – coincident, fixed,
+distance, horizontal, vertical, equal length, perpendicular or parallel – the
+parts of the drawing it holds together, each as the identifier of a curve and
+which point of that curve it is, and the size it asks for in millimetres where
+it asks for one, exactly as the document stores it. Nothing is normalised on
+the way: two constraints that say the same thing under two identifiers stay two
+constraints, and the two ends of a relationship are read out in the order they
+are written down. A sketch that repeats nothing says `None`
 rather than leaving the line blank, and a document with no constrained sketch
 in it says `No solved constrained sketches` rather than showing an empty strip.
 Nothing here can be pressed and nothing here asks a solver anything: every
@@ -297,7 +307,8 @@ edit a constraint, so a constrained sketch is one that arrived in the document
 some other way. A build with no solver refuses such a sketch rather than
 building from the stored coordinates. What that solve found out – how much
 freedom each sketch has left, and which of its constraints repeat what the rest
-already said – is on screen under `Sketch solves`, described above. The repository can assemble checked
+already said, each one explained in the document's own words rather than named
+by identifier alone – is on screen under `Sketch solves`, described above. The repository can assemble checked
 archives containing planegcs, but no published release is offered. Building
 and replacing the library is
 [docs/build-planegcs.md](docs/build-planegcs.md).

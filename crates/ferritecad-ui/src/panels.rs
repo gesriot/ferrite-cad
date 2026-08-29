@@ -490,7 +490,25 @@ pub struct SolvedSketch<'a> {
     pub degrees_of_freedom: usize,
     /// The constraints that repeat what the rest already said, named as the
     /// document names them and in the order the document stores them.
-    pub redundant: &'a [&'a str],
+    pub redundant: &'a [RedundantExplanation<'a>],
+}
+
+/// One repeated constraint, as a person reads it.
+///
+/// Both halves, because either alone is useless. The identifier is what a
+/// person can find the constraint by and is shown whole; the sentence is what
+/// it says, already written by whoever had the document open. Nothing here is
+/// a shape a programmer prints – no rule value, no variant name, no list –
+/// because a panel that fell back on one would be showing its own internals
+/// the moment anything else was missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RedundantExplanation<'a> {
+    /// The identifier the document stores this constraint under, whole.
+    pub identifier: &'a str,
+    /// What it says: one finished sentence naming the kind of relationship,
+    /// the parts of the drawing it is about, and the size it asks for when it
+    /// asks for one.
+    pub says: &'a str,
 }
 
 /// What an unnamed sketch is called on screen.
@@ -526,7 +544,12 @@ impl SolvedSketch<'_> {
             rows.push(("Redundant", "None".to_owned()));
         }
         for constraint in self.redundant {
-            rows.push(("Redundant", (*constraint).to_owned()));
+            // Two lines rather than one: the identifier is what a person
+            // searches their document for, and the sentence is what tells them
+            // whether they want to. Running them together would leave neither
+            // readable once a row is narrow enough to be truncated.
+            rows.push(("Redundant", constraint.identifier.to_owned()));
+            rows.push(("Says", constraint.says.to_owned()));
         }
         rows
     }
@@ -2268,6 +2291,30 @@ mod tests {
     const FIRST_REDUNDANT: &str = "01930f2c-1a2b-7c3d-8e4f-111111111111";
     const SECOND_REDUNDANT: &str = "01930f2c-1a2b-7c3d-8e4f-222222222222";
 
+    /// What each of those two constraints says, already written by the caller.
+    ///
+    /// Finished sentences rather than fragments, because this panel neither
+    /// composes them nor inspects them: what is checked here is that a whole
+    /// one reaches a person, beside the whole identifier it belongs to.
+    const FIRST_SAYS: &str = "Coincident: 01930f2c-1a2b-7c3d-8e4f-333333333333.end and \
+                              01930f2c-1a2b-7c3d-8e4f-444444444444.start are the same point";
+    const SECOND_SAYS: &str = "Distance: 01930f2c-1a2b-7c3d-8e4f-333333333333.start and \
+                               01930f2c-1a2b-7c3d-8e4f-333333333333.end are 60 mm apart";
+
+    /// Two repeated constraints, each with its identifier and its sentence.
+    fn repeats() -> [RedundantExplanation<'static>; 2] {
+        [
+            RedundantExplanation {
+                identifier: FIRST_REDUNDANT,
+                says: FIRST_SAYS,
+            },
+            RedundantExplanation {
+                identifier: SECOND_REDUNDANT,
+                says: SECOND_SAYS,
+            },
+        ]
+    }
+
     /// Every word this panel actually drew, in the order it drew them.
     ///
     /// Read out of the shapes egui produced rather than out of the values that
@@ -2428,7 +2475,7 @@ mod tests {
 
     #[test]
     fn every_repeated_constraint_is_named_whole_and_in_the_documents_order() {
-        let redundant = [FIRST_REDUNDANT, SECOND_REDUNDANT];
+        let redundant = repeats();
         let rows = words_drawn(&[SolvedSketch {
             name: Some("Profile"),
             object: SKETCH_ID,
@@ -2458,6 +2505,49 @@ mod tests {
     }
 
     #[test]
+    fn every_repeated_constraint_carries_its_explanation_beside_its_identifier() {
+        // The defect this closes was a list of identifiers and nothing else.
+        // Both halves have to be on screen, and each pair has to belong to the
+        // constraint above it: an identifier under the wrong sentence is worse
+        // than no sentence at all.
+        let redundant = repeats();
+        let drawn = words_drawn(&[SolvedSketch {
+            name: Some("Profile"),
+            object: SKETCH_ID,
+            degrees_of_freedom: 0,
+            redundant: &redundant,
+        }]);
+        let page = drawn.join("\n");
+        let at = |needle: &str| drawn.iter().position(|word| word == needle);
+        for (what, found) in [
+            ("the first identifier", at(FIRST_REDUNDANT)),
+            ("what the first constraint says", at(FIRST_SAYS)),
+            ("the second identifier", at(SECOND_REDUNDANT)),
+            ("what the second constraint says", at(SECOND_SAYS)),
+        ] {
+            assert!(found.is_some(), "{what} never reached the screen:\n{page}");
+        }
+        assert!(
+            at(FIRST_REDUNDANT) < at(FIRST_SAYS)
+                && at(FIRST_SAYS) < at(SECOND_REDUNDANT)
+                && at(SECOND_REDUNDANT) < at(SECOND_SAYS),
+            "an explanation does not sit under the identifier it belongs to: {drawn:?}"
+        );
+        // Whole, not shortened to fit. The sentence names two curves by the
+        // identifiers a document stores, and half of one of those is not
+        // something a person can look up.
+        assert!(
+            drawn.iter().any(|word| word == FIRST_SAYS),
+            "the first explanation reached the screen cut short:\n{page}"
+        );
+        assert_eq!(
+            drawn.iter().filter(|word| *word == "Says").count(),
+            2,
+            "two repeated constraints were explained some other number of times: {drawn:?}"
+        );
+    }
+
+    #[test]
     fn two_sketches_keep_their_own_facts_and_their_own_order() {
         let first = SolvedSketch {
             name: Some("Loose"),
@@ -2465,7 +2555,10 @@ mod tests {
             degrees_of_freedom: 2,
             redundant: &[],
         };
-        let second_redundant = [SECOND_REDUNDANT];
+        let second_redundant = [RedundantExplanation {
+            identifier: SECOND_REDUNDANT,
+            says: SECOND_SAYS,
+        }];
         let second = SolvedSketch {
             name: Some("Sized"),
             object: FIRST_REDUNDANT,
@@ -2508,7 +2601,7 @@ mod tests {
         // The other half of the same statement is the signature: this panel
         // returns nothing, so there is nothing a caller could apply even if a
         // press did reach something.
-        let redundant = [FIRST_REDUNDANT, SECOND_REDUNDANT];
+        let redundant = repeats();
         let sketches = [
             settled(),
             SolvedSketch {
@@ -2566,7 +2659,7 @@ mod tests {
 
     #[test]
     fn the_section_speaks_no_solver_and_no_debug_vocabulary() {
-        let redundant = [FIRST_REDUNDANT, SECOND_REDUNDANT];
+        let redundant = repeats();
         let page = page(&[
             settled(),
             SolvedSketch {
@@ -2595,6 +2688,15 @@ mod tests {
             "session",
             "ordinal",
             "index",
+            // The document's own type names, and the punctuation a derived
+            // Debug puts around a value. A section that printed either would
+            // be showing the shape of what it holds rather than saying it.
+            "SketchConstraintRule",
+            "SketchPointRef",
+            "SketchSegmentRef",
+            "RedundantConstraint",
+            "{",
+            "}",
         ] {
             assert!(
                 !page.contains(forbidden),

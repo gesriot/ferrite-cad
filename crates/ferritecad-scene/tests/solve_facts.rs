@@ -27,7 +27,7 @@ use ferritecad_kernel::{
     ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane, TessellationParams,
     mock::MockKernel,
 };
-use ferritecad_scene::{LoadedScene, snapshot_of};
+use ferritecad_scene::{LoadedScene, RedundantConstraint, snapshot_of};
 use ferritecad_sketch_solver as solver;
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId, Transform};
 
@@ -344,6 +344,141 @@ fn two_sketches_keep_their_own_facts_and_the_documents_order() {
 }
 
 #[test]
+fn every_repeated_constraint_arrives_with_the_rule_stored_under_its_identifier() {
+    solver_or_skip!();
+
+    // A drawing that repeats two different things: the width it was already
+    // given, and a side already said to be level. Two families, so an account
+    // that answered one identifier with the other's rule reads wrongly rather
+    // than merely differently.
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("plate.fcad");
+    let curves = plate_curves();
+    let edges: Vec<StableEntityId> = curves.iter().map(|curve| curve.id).collect();
+    let mut rules = frame(&edges);
+    rules.push(width_of(&edges));
+    rules.push(width_of(&edges));
+    let level_again = SketchConstraintRule::Horizontal {
+        a: at(edges[2], SketchPointSelector::Start),
+        b: at(edges[2], SketchPointSelector::End),
+    };
+    rules.push(level_again);
+    let constraints = named(rules);
+    let sized_twice = constraints[10];
+    let levelled_twice = constraints[11];
+    write(&path, vec![(Some("Profile"), curves, constraints)]);
+
+    let loaded = load(&path);
+    let facts = &loaded.sketch_solves[0];
+
+    // The identifiers are the report's own, in the report's order, which is
+    // the document's. Compared as a list rather than as a set: a section that
+    // sorted or reversed them would still hold every identifier.
+    assert_eq!(
+        facts
+            .redundant
+            .iter()
+            .map(|constraint| constraint.id)
+            .collect::<Vec<_>>(),
+        facts.report.redundant(),
+        "the explanations are not the identifiers the solve reported, or not in its order"
+    );
+    assert_eq!(
+        facts.redundant,
+        vec![
+            RedundantConstraint {
+                id: sized_twice.id,
+                rule: sized_twice.rule,
+            },
+            RedundantConstraint {
+                id: levelled_twice.id,
+                rule: levelled_twice.rule,
+            },
+        ],
+        "a repeated constraint arrived as something other than the rule this document stores \
+         under its identifier"
+    );
+    // And what each of them is, spelled out, so that a rule answered from the
+    // neighbouring constraint would be a different assertion and not a
+    // different identifier.
+    assert_eq!(facts.redundant[0].rule, width_of(&edges));
+    assert_eq!(facts.redundant[1].rule, level_again);
+}
+
+#[test]
+fn a_repeated_constraint_is_answered_by_identity_and_not_by_what_it_says() {
+    solver_or_skip!();
+
+    // Three constraints that say exactly the same thing – one side is level,
+    // said once in the frame and twice more after it – each stored under an
+    // identifier of its own. The solve names one of the three, and which one
+    // is the solver's business.
+    //
+    // What is not the solver's business is which of them the window then
+    // describes. An account that looked the rule up by what it says would
+    // find whichever copy came first and hand back its identifier, and a
+    // person would delete a constraint they were never told about.
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("thrice.fcad");
+    let curves = plate_curves();
+    let edges: Vec<StableEntityId> = curves.iter().map(|curve| curve.id).collect();
+    let mut rules = frame(&edges);
+    rules.push(width_of(&edges));
+    let level_again = SketchConstraintRule::Horizontal {
+        a: at(edges[2], SketchPointSelector::Start),
+        b: at(edges[2], SketchPointSelector::End),
+    };
+    rules.push(level_again);
+    rules.push(level_again);
+    let constraints = named(rules);
+    let saying_the_same: Vec<StableEntityId> = constraints
+        .iter()
+        .filter(|constraint| constraint.rule == level_again)
+        .map(|constraint| constraint.id)
+        .collect();
+    assert_eq!(
+        saying_the_same.len(),
+        3,
+        "this document is supposed to say one thing three times"
+    );
+    write(&path, vec![(Some("Profile"), curves, constraints)]);
+
+    let loaded = load(&path);
+    let facts = &loaded.sketch_solves[0];
+
+    let named_by_the_solve = facts.report.redundant().to_vec();
+    assert_eq!(
+        named_by_the_solve.len(),
+        1,
+        "this gate is about which of three identical constraints is described, and the solve \
+         named {} of them",
+        named_by_the_solve.len()
+    );
+    assert_eq!(
+        facts.redundant,
+        vec![RedundantConstraint {
+            id: named_by_the_solve[0],
+            rule: level_again,
+        }],
+        "the account does not describe the constraint the solve actually named"
+    );
+    // The other two say the same thing and were not reported, so they are not
+    // here. Three document entities, one of them named.
+    for other in saying_the_same
+        .iter()
+        .filter(|id| **id != named_by_the_solve[0])
+    {
+        assert!(
+            !facts
+                .redundant
+                .iter()
+                .any(|constraint| constraint.id == *other),
+            "a constraint the solve did not name was described as though it had been"
+        );
+    }
+}
+
+#[test]
 fn a_sketch_nobody_constrained_produces_no_account_of_a_solve() {
     let directory = tempfile::tempdir().expect("a temporary directory is available");
     let path = directory.path().join("plain.fcad");
@@ -518,6 +653,20 @@ fn what_a_solve_found_out_is_no_part_of_the_picture() {
     assert_ne!(
         one.sketch_solves, two.sketch_solves,
         "two sketches that say the same size a different number of times reported the same thing"
+    );
+
+    // And the explanations, which are the part that grew: one document has
+    // none and the other has a whole rule, and the picture is the same value
+    // either way. Nothing about a constraint may reach anything a renderer
+    // draws, indexes or compares.
+    assert!(one.sketch_solves[0].redundant.is_empty());
+    assert_eq!(
+        two.sketch_solves[0].redundant,
+        vec![RedundantConstraint {
+            id: two.sketch_solves[0].report.redundant()[0],
+            rule: width_of(&edges),
+        }],
+        "the document that repeats a size did not say what it repeats"
     );
 }
 

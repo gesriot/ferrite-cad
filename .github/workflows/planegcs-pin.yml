@@ -608,6 +608,8 @@ jobs:
           for gate in \
             'a_loaded_scene_says_what_the_solve_of_each_sketch_found_out' \
             'two_sketches_keep_their_own_facts_and_the_documents_order' \
+            'every_repeated_constraint_arrives_with_the_rule_stored_under_its_identifier' \
+            'a_repeated_constraint_is_answered_by_identity_and_not_by_what_it_says' \
             'what_a_solve_found_out_is_no_part_of_the_picture'
           do
             check scene.txt "$gate"
@@ -795,10 +797,14 @@ jobs:
             a_load_that_failed_leaves_what_the_last_solve_said_alone \
             a_load_that_was_given_up_on_leaves_what_the_last_solve_said_alone \
             a_picture_that_could_not_be_prepared_leaves_what_the_last_solve_said_alone \
+            a_repeated_constraint_reaches_the_window_explained_rather_than_merely_named \
             every_sketch_keeps_its_own_name_and_its_own_account \
+            no_sketch_is_given_the_explanation_of_its_neighbour \
             opening_a_document_replaces_what_the_last_solve_said_with_this_one \
+            several_repeated_constraints_are_explained_one_by_one_in_the_documents_order \
             showing_what_a_solve_found_out_asks_no_solver_and_uploads_nothing \
             showing_what_a_solve_found_out_changes_nothing_a_person_chose \
+            the_section_says_nothing_a_solve_kept_to_itself \
             two_documents_that_draw_one_picture_can_say_different_things_about_it \
             --nocapture --test-threads=1 2>&1 | tee window.txt
 
@@ -814,10 +820,14 @@ jobs:
             'a_load_that_failed_leaves_what_the_last_solve_said_alone' \
             'a_load_that_was_given_up_on_leaves_what_the_last_solve_said_alone' \
             'a_picture_that_could_not_be_prepared_leaves_what_the_last_solve_said_alone' \
+            'a_repeated_constraint_reaches_the_window_explained_rather_than_merely_named' \
             'every_sketch_keeps_its_own_name_and_its_own_account' \
+            'no_sketch_is_given_the_explanation_of_its_neighbour' \
             'opening_a_document_replaces_what_the_last_solve_said_with_this_one' \
+            'several_repeated_constraints_are_explained_one_by_one_in_the_documents_order' \
             'showing_what_a_solve_found_out_asks_no_solver_and_uploads_nothing' \
             'showing_what_a_solve_found_out_changes_nothing_a_person_chose' \
+            'the_section_says_nothing_a_solve_kept_to_itself' \
             'two_documents_that_draw_one_picture_can_say_different_things_about_it'
           do
             if ! grep -qF "test tests::${gate} ... ok" window.txt; then
@@ -827,10 +837,10 @@ jobs:
           done
           [ "$missing" -eq 0 ] || exit 1
 
-          # Ten gates ran and no eleventh crept in: this filter is what keeps
-          # the run away from the gates that want a graphics device.
-          grep -qE 'test result: ok\. 10 passed; 0 failed' window.txt \
-            || { echo "::error::the window gates did not run as exactly ten passes"; exit 1; }
+          # Fourteen gates ran and no fifteenth crept in: this filter is what
+          # keeps the run away from the gates that want a graphics device.
+          grep -qE 'test result: ok\. 14 passed; 0 failed' window.txt \
+            || { echo "::error::the window gates did not run as exactly fourteen passes"; exit 1; }
           echo "the window carried a real solve from a real document to a screen"
 
       - name: Ask the real application which sketch solver it has

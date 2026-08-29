@@ -39,7 +39,7 @@ use std::path::Path;
 
 use ferritecad_document::{
     Document, EntityKind, ImportedDefinitionRef, ObjectPayload, ObjectRecord, SelectionRule,
-    SemanticRole, StepImporter, TopologyRef,
+    SemanticRole, Sketch, SketchConstraintRule, StepImporter, TopologyRef,
 };
 pub use ferritecad_eval::SketchSolveReport;
 use ferritecad_eval::rebuild_cold;
@@ -100,6 +100,76 @@ pub struct SketchSolveFacts {
     pub name: Option<String>,
     /// What the solve found out.
     pub report: SketchSolveReport,
+    /// What each constraint the solve called redundant actually says.
+    ///
+    /// Not a second list beside [`SketchSolveReport::redundant`]: it is that
+    /// list, walked once in its own order, with the rule this sketch stores
+    /// under each identifier carried alongside it. The two cannot disagree
+    /// because only one of them is read to build the other, and neither is
+    /// ever written by hand.
+    pub redundant: Vec<RedundantConstraint>,
+}
+
+/// One repeated constraint, named durably and said in the document's words.
+///
+/// The identifier is the solve's own answer and the rule is what the document
+/// stores under exactly that identifier – nothing here was decided by where a
+/// constraint sits in a list, by what a solver numbered it, or by two rules
+/// happening to say the same thing. Two identical rules stored under two
+/// identifiers are two of these, because they are two constraints.
+///
+/// The rule is carried whole rather than turned into a sentence: a scene has
+/// no business choosing anybody's words, and the document's own vocabulary is
+/// the smallest durable thing that can be explained later.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RedundantConstraint {
+    /// The identifier the document stores this constraint under.
+    pub id: StableEntityId,
+    /// What it says.
+    pub rule: SketchConstraintRule,
+}
+
+/// The stored constraint behind each identifier a solve called redundant.
+///
+/// `reported` is [`SketchSolveReport::redundant`] and nothing else; it arrives
+/// as the identifiers themselves because that is all of a report this has any
+/// business reading, and because a function over two document values can be
+/// held to its contract without a solver in the room.
+///
+/// Joined by [`StableEntityId`] alone. Not by position, because the report's
+/// order is the document's order and the sketch's order is the document's
+/// order and matching them up by index would pass every test that ever
+/// compared two lists of the same length; not by what a rule says, because two
+/// constraints are allowed to say the same thing; and not by anything a solver
+/// numbered, because none of that survives the call it was made in.
+///
+/// An identifier this sketch does not store is refused rather than skipped or
+/// blamed on a neighbour. It means the report and the sketch are not about the
+/// same drawing, and a window that quietly explained the constraint next to it
+/// would be confidently wrong.
+fn redundant_constraints(
+    sketch: &Sketch,
+    reported: &[StableEntityId],
+) -> Result<Vec<RedundantConstraint>> {
+    reported
+        .iter()
+        .map(|id| {
+            sketch
+                .constraints
+                .iter()
+                .find(|constraint| constraint.id == *id)
+                .map(|constraint| RedundantConstraint {
+                    id: *id,
+                    rule: constraint.rule,
+                })
+                .ok_or_else(|| {
+                    CadError::constraint(format!(
+                        "the solve called {id} redundant, and this sketch stores no constraint \
+                         under that identifier"
+                    ))
+                })
+        })
+        .collect()
 }
 
 /// Every durable name this document has for the edges of one picture.
@@ -906,16 +976,36 @@ where
         // the join is by the sketch's own identifier, so a report belongs to
         // the sketch it was filed under and to no neighbour of it. An imported
         // object is never a sketch and was never solved, so it is never here.
-        let sketch_solves: Vec<SketchSolveFacts> = objects
-            .iter()
-            .filter_map(|object| {
-                Some(SketchSolveFacts {
-                    sketch: object.id,
-                    name: object.name.clone(),
-                    report: built.solve_report(object.id)?.clone(),
-                })
-            })
-            .collect();
+        //
+        // This is the one moment a report and the sketch it is about are both
+        // in hand, so it is where each identifier the report named is turned
+        // back into the constraint the document stores under it. Nothing is
+        // asked of a solver and nothing is read from the file again: both
+        // halves are already here.
+        let mut sketch_solves: Vec<SketchSolveFacts> = Vec::new();
+        for object in &objects {
+            let Some(report) = built.solve_report(object.id) else {
+                continue;
+            };
+            // Only a sketch carries constraints and only a sketch is solved,
+            // so a report filed under anything else is a report about a
+            // different drawing. Refused rather than described from whatever
+            // record happens to be here.
+            let ObjectPayload::Sketch(sketch) = &object.payload else {
+                return Err(CadError::constraint(format!(
+                    "a solve was reported for {}, which this document stores as {} rather than \
+                     a sketch",
+                    object.id,
+                    object.payload.type_name()
+                )));
+            };
+            sketch_solves.push(SketchSolveFacts {
+                sketch: object.id,
+                name: object.name.clone(),
+                redundant: redundant_constraints(sketch, report.redundant())?,
+                report: report.clone(),
+            });
+        }
 
         // Counted before anything is drawn, so each one can say what fraction
         // of the drawing it is. An object that draws nothing is not part of
@@ -5565,6 +5655,169 @@ mod tests {
             ),
             Selection::Definition(pick),
             "a face the current document does not name became selectable as a face"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Turning what a solve called redundant back into what the document says
+    // -----------------------------------------------------------------------
+    //
+    // The join itself, held to its contract without a solver in the room. A
+    // report says which identifiers repeat; only the sketch it is about knows
+    // what those identifiers stand for, and putting the two together wrongly
+    // is the one mistake here that produces a confident, readable, wrong
+    // sentence.
+
+    /// A sketch with two lines and the constraints handed in.
+    fn constrained(constraints: Vec<ferritecad_document::SketchConstraint>) -> Sketch {
+        use ferritecad_document::{Point2, SketchCurve, SketchGeometry};
+        use ferritecad_types::StableEntityId;
+
+        let corners = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)];
+        let curves = (0..2)
+            .map(|index| SketchCurve {
+                id: StableEntityId::new(),
+                construction: false,
+                geometry: SketchGeometry::Line {
+                    start: Point2::new(corners[index].0, corners[index].1).expect("finite"),
+                    end: Point2::new(corners[index + 1].0, corners[index + 1].1).expect("finite"),
+                },
+            })
+            .collect();
+        Sketch {
+            plane: ObjectId::new(),
+            curves,
+            constraints,
+        }
+    }
+
+    /// One rule, given an identity of its own.
+    fn stored(rule: SketchConstraintRule) -> ferritecad_document::SketchConstraint {
+        ferritecad_document::SketchConstraint {
+            id: ferritecad_types::StableEntityId::new(),
+            rule,
+        }
+    }
+
+    /// A relationship between the two ends of the sketch's first curve.
+    fn level(sketch: &Sketch) -> SketchConstraintRule {
+        use ferritecad_document::{SketchPointRef, SketchPointSelector};
+        let curve = sketch.curves[0].id;
+        SketchConstraintRule::Horizontal {
+            a: SketchPointRef::new(curve, SketchPointSelector::Start),
+            b: SketchPointRef::new(curve, SketchPointSelector::End),
+        }
+    }
+
+    #[test]
+    fn each_reported_identifier_is_answered_with_the_rule_stored_under_it() {
+        let mut sketch = constrained(Vec::new());
+        let rule = level(&sketch);
+        let first = stored(rule);
+        let second = stored(rule);
+        // A third that says something else, and that no report names: it is
+        // here so that answering with a neighbour, or with everything the
+        // sketch holds, shows up as a difference.
+        let third = stored(SketchConstraintRule::Fixed {
+            point: ferritecad_document::SketchPointRef::new(
+                sketch.curves[1].id,
+                ferritecad_document::SketchPointSelector::Start,
+            ),
+            x: 1.0,
+            y: 2.0,
+        });
+        sketch.constraints = vec![first, third, second];
+
+        // Two constraints that say exactly the same thing, stored under two
+        // identifiers, reported in the order the document stores them. They
+        // are two constraints, and each is answered with its own entry.
+        let joined = redundant_constraints(&sketch, &[first.id, second.id])
+            .expect("both identifiers are stored in this sketch");
+        assert_eq!(
+            joined,
+            vec![
+                RedundantConstraint {
+                    id: first.id,
+                    rule: first.rule,
+                },
+                RedundantConstraint {
+                    id: second.id,
+                    rule: second.rule,
+                },
+            ],
+            "two identical rules under two identifiers are not two entries in the report's order"
+        );
+        assert_ne!(joined[0].id, joined[1].id, "one entry answered for both");
+    }
+
+    #[test]
+    fn the_answer_follows_the_identifier_and_not_the_position() {
+        let mut sketch = constrained(Vec::new());
+        let level = stored(level(&sketch));
+        let pinned = stored(SketchConstraintRule::Fixed {
+            point: ferritecad_document::SketchPointRef::new(
+                sketch.curves[1].id,
+                ferritecad_document::SketchPointSelector::End,
+            ),
+            x: 3.0,
+            y: 4.0,
+        });
+        sketch.constraints = vec![level, pinned];
+
+        // The second constraint reported first. Answering by position would
+        // hand back the first, which says something else entirely and would
+        // read perfectly.
+        let joined = redundant_constraints(&sketch, &[pinned.id])
+            .expect("the identifier is stored in this sketch");
+        assert_eq!(
+            joined,
+            vec![RedundantConstraint {
+                id: pinned.id,
+                rule: pinned.rule
+            }]
+        );
+    }
+
+    #[test]
+    fn an_identifier_this_sketch_does_not_store_is_refused() {
+        // The neighbour case, which is the one that happens: two sketches of
+        // one document, and a report about the first read against the second.
+        // Every identifier here is real and none of them is in this sketch.
+        let mut first = constrained(Vec::new());
+        first.constraints = vec![stored(level(&first))];
+        let mut second = constrained(Vec::new());
+        second.constraints = vec![stored(level(&second))];
+        let reported = first.constraints[0].id;
+
+        let refused = redundant_constraints(&second, &[reported])
+            .expect_err("a report about another sketch must not be answered from this one");
+        assert_eq!(
+            refused.kind(),
+            ferritecad_types::ErrorKind::Constraint,
+            "the mismatch was reported as something other than a constraint problem: {refused}"
+        );
+        assert!(
+            refused.to_string().contains(&reported.to_string()),
+            "the refusal does not say which identifier could not be found: {refused}"
+        );
+        // And not quietly answered with whatever this sketch does hold.
+        assert!(
+            !refused
+                .to_string()
+                .contains(&second.constraints[0].id.to_string()),
+            "the refusal named this sketch's own constraint as though it were the one \
+             reported: {refused}"
+        );
+    }
+
+    #[test]
+    fn a_report_naming_nothing_joins_to_nothing() {
+        let mut sketch = constrained(Vec::new());
+        sketch.constraints = vec![stored(level(&sketch))];
+        assert_eq!(
+            redundant_constraints(&sketch, &[]).expect("nothing to look up"),
+            Vec::new(),
+            "a sketch that repeats nothing was given an entry anyway"
         );
     }
 }

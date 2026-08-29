@@ -33,7 +33,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::{sync::Arc, time::Instant};
 
-use ferritecad_document::{CapSide, DOCUMENT_EXTENSION, SelectionRule, SemanticRole};
+use ferritecad_document::{
+    CapSide, DOCUMENT_EXTENSION, SelectionRule, SemanticRole, SketchConstraintRule,
+    SketchSegmentRef,
+};
 use ferritecad_kernel::{CancelToken, OperationContext, ProgressSink, TessellationParams};
 use ferritecad_occt::OcctKernel;
 use ferritecad_scene::{
@@ -1438,13 +1441,31 @@ struct SolveWords {
     name: Option<String>,
     object: String,
     degrees_of_freedom: usize,
-    redundant: Vec<String>,
+    redundant: Vec<RedundantWords>,
+}
+
+/// One repeated constraint, in the words a person will read.
+///
+/// The identifier exactly as the document stores it, and one sentence saying
+/// what the constraint is. Both are made here, from the durable rule the
+/// loader carried, and neither is a value formatted for a programmer: the
+/// window has no `{:?}` to fall back on because there is nothing here that
+/// could be missing.
+struct RedundantWords {
+    identifier: String,
+    says: String,
 }
 
 impl SolveWords {
     /// Each repeated constraint, borrowed, in the order it arrived in.
-    fn repeated(&self) -> Vec<&str> {
-        self.redundant.iter().map(String::as_str).collect()
+    fn repeated(&self) -> Vec<ferritecad_ui::RedundantExplanation<'_>> {
+        self.redundant
+            .iter()
+            .map(|constraint| ferritecad_ui::RedundantExplanation {
+                identifier: &constraint.identifier,
+                says: &constraint.says,
+            })
+            .collect()
     }
 }
 
@@ -1463,10 +1484,12 @@ fn solve_words_of(solves: &[SketchSolveFacts]) -> Vec<SolveWords> {
             object: facts.sketch.to_string(),
             degrees_of_freedom: facts.report.degrees_of_freedom(),
             redundant: facts
-                .report
-                .redundant()
+                .redundant
                 .iter()
-                .map(ToString::to_string)
+                .map(|constraint| RedundantWords {
+                    identifier: constraint.id.to_string(),
+                    says: describe_constraint(&constraint.rule),
+                })
                 .collect(),
         })
         .collect()
@@ -1480,7 +1503,7 @@ fn solve_words_of(solves: &[SketchSolveFacts]) -> Vec<SolveWords> {
 /// person reads and the identifiers under it belong to the same sketch.
 fn solved_sketches<'a>(
     words: &'a [SolveWords],
-    repeated: &'a [Vec<&'a str>],
+    repeated: &'a [Vec<ferritecad_ui::RedundantExplanation<'a>>],
 ) -> Vec<SolvedSketch<'a>> {
     words
         .iter()
@@ -1492,6 +1515,83 @@ fn solved_sketches<'a>(
             redundant: repeated,
         })
         .collect()
+}
+
+/// What one repeated constraint says, as a sentence.
+///
+/// The document's own vocabulary, spelled out: which kind of relationship it
+/// is, which parts of the drawing it holds together, and the size it asks for
+/// when it asks for one. Every part of that is durable – a curve by the
+/// identifier the document stores it under, a point of that curve by which
+/// point of it it is – so the sentence still means the same thing after the
+/// sketch has been reordered, edited or opened by another build.
+///
+/// The order the rule names its parts in is the order it is read out in.
+/// `Coincident` says the same thing either way round, but a document that
+/// stored one order and a window that printed the other would be a window
+/// making its own decisions about what is written down, and the families that
+/// do care about order sit in the same match arm as the ones that do not.
+///
+/// Every family the document can store is written out. `SketchConstraintRule`
+/// is `#[non_exhaustive]`, so one more arm is unavoidable, and it says in
+/// words that this build has no words rather than printing the value: an
+/// explanation that could degrade into a `{:?}` is not an explanation, and the
+/// one thing worse than "no words for it" is a line of punctuation offered as
+/// though it were a sentence. Adding a family means adding an arm above.
+fn describe_constraint(rule: &SketchConstraintRule) -> String {
+    match *rule {
+        SketchConstraintRule::Coincident { a, b } => {
+            format!("Coincident: {a} and {b} are the same point")
+        }
+        SketchConstraintRule::Fixed { point, x, y } => {
+            format!("Fixed: {point} is pinned at x {} mm, y {} mm", mm(x), mm(y))
+        }
+        SketchConstraintRule::Distance { a, b, distance } => {
+            format!("Distance: {a} and {b} are {} mm apart", mm(distance))
+        }
+        SketchConstraintRule::Horizontal { a, b } => {
+            format!("Horizontal: {a} and {b} share a y coordinate")
+        }
+        SketchConstraintRule::Vertical { a, b } => {
+            format!("Vertical: {a} and {b} share an x coordinate")
+        }
+        SketchConstraintRule::EqualLength { a, b } => {
+            format!("Equal length: {} is as long as {}", segment(a), segment(b))
+        }
+        SketchConstraintRule::Perpendicular { a, b } => {
+            format!(
+                "Perpendicular: {} meets {} at a right angle",
+                segment(a),
+                segment(b)
+            )
+        }
+        SketchConstraintRule::Parallel { a, b } => {
+            format!(
+                "Parallel: {} runs in the same direction as {}",
+                segment(a),
+                segment(b)
+            )
+        }
+        _ => "A kind of relationship this build has no words for".to_owned(),
+    }
+}
+
+/// One straight run between two named points, read out end to end.
+///
+/// From and to in the order the document stores them. A segment is not a
+/// curve and has no identifier of its own, so its two ends are the whole of
+/// what there is to say about it.
+fn segment(segment: SketchSegmentRef) -> String {
+    format!("{} to {}", segment.from, segment.to)
+}
+
+/// A length the way a drawing states one.
+///
+/// Millimetres, which is the only unit this document has, printed as the
+/// number that was stored rather than rounded to a house style: a size a
+/// person typed is a size they should be able to recognise.
+fn mm(value: f64) -> String {
+    value.to_string()
 }
 
 /// What a stored role says, as a sentence.
@@ -2509,7 +2609,8 @@ impl Live {
         // and from nothing else: no solver is asked, and the document is not
         // opened again.
         let solve_words = solve_words_of(&scene.sketch_solves);
-        let repeated: Vec<Vec<&str>> = solve_words.iter().map(SolveWords::repeated).collect();
+        let repeated: Vec<Vec<ferritecad_ui::RedundantExplanation<'_>>> =
+            solve_words.iter().map(SolveWords::repeated).collect();
         let solves = solved_sketches(&solve_words, &repeated);
         let described = inspected(
             &scene.selection,
@@ -12533,7 +12634,8 @@ mod tests {
     /// went in: this is a gate about what a person reads.
     fn section_words(solves: &[SketchSolveFacts]) -> Vec<String> {
         let words = solve_words_of(solves);
-        let repeated: Vec<Vec<&str>> = words.iter().map(SolveWords::repeated).collect();
+        let repeated: Vec<Vec<ferritecad_ui::RedundantExplanation<'_>>> =
+            words.iter().map(SolveWords::repeated).collect();
         let sketches = solved_sketches(&words, &repeated);
 
         let context = egui::Context::default();
@@ -12567,6 +12669,262 @@ mod tests {
     /// Everything the section drew, as one string to search.
     fn section_page(solves: &[SketchSolveFacts]) -> String {
         section_words(solves).join("\n")
+    }
+
+    /// Two curve identities of the shape a document actually stores.
+    ///
+    /// Made rather than written down, so nothing here can quietly depend on
+    /// the text of a particular identifier.
+    fn two_curves() -> (
+        ferritecad_types::StableEntityId,
+        ferritecad_types::StableEntityId,
+    ) {
+        (
+            ferritecad_types::StableEntityId::new(),
+            ferritecad_types::StableEntityId::new(),
+        )
+    }
+
+    #[test]
+    fn every_family_the_document_can_store_is_said_as_a_finished_sentence() {
+        use ferritecad_document::SketchConstraintRule as Rule;
+        use ferritecad_document::SketchPointSelector::{At, End, Start};
+        use ferritecad_document::{SketchPointRef, SketchSegmentRef};
+
+        let (first, second) = two_curves();
+        let point = SketchPointRef::new;
+        let segment = SketchSegmentRef::new;
+        // The eight families the document stores, each said out in full: what
+        // kind of relationship it is, which parts of the drawing it holds
+        // together, and the size it asks for when it asks for one.
+        let cases = [
+            (
+                Rule::Coincident {
+                    a: point(first, End),
+                    b: point(second, Start),
+                },
+                format!("Coincident: {first}.end and {second}.start are the same point"),
+            ),
+            (
+                Rule::Fixed {
+                    point: point(first, At),
+                    x: -4.5,
+                    y: 12.0,
+                },
+                format!("Fixed: {first}.at is pinned at x -4.5 mm, y 12 mm"),
+            ),
+            (
+                Rule::Distance {
+                    a: point(first, Start),
+                    b: point(first, End),
+                    distance: 12.7,
+                },
+                format!("Distance: {first}.start and {first}.end are 12.7 mm apart"),
+            ),
+            (
+                Rule::Horizontal {
+                    a: point(first, Start),
+                    b: point(second, End),
+                },
+                format!("Horizontal: {first}.start and {second}.end share a y coordinate"),
+            ),
+            (
+                Rule::Vertical {
+                    a: point(first, Start),
+                    b: point(second, End),
+                },
+                format!("Vertical: {first}.start and {second}.end share an x coordinate"),
+            ),
+            (
+                Rule::EqualLength {
+                    a: segment(point(first, Start), point(first, End)),
+                    b: segment(point(second, Start), point(second, End)),
+                },
+                format!(
+                    "Equal length: {first}.start to {first}.end is as long as {second}.start to \
+                     {second}.end"
+                ),
+            ),
+            (
+                Rule::Perpendicular {
+                    a: segment(point(first, Start), point(first, End)),
+                    b: segment(point(second, Start), point(second, End)),
+                },
+                format!(
+                    "Perpendicular: {first}.start to {first}.end meets {second}.start to \
+                     {second}.end at a right angle"
+                ),
+            ),
+            (
+                Rule::Parallel {
+                    a: segment(point(first, Start), point(first, End)),
+                    b: segment(point(second, Start), point(second, End)),
+                },
+                format!(
+                    "Parallel: {first}.start to {first}.end runs in the same direction as \
+                     {second}.start to {second}.end"
+                ),
+            ),
+        ];
+        assert_eq!(cases.len(), 8, "the document stores eight families");
+
+        let mut said: Vec<String> = Vec::new();
+        for (rule, expected) in cases {
+            let sentence = describe_constraint(&rule);
+            assert_eq!(sentence, expected);
+            said.push(sentence);
+        }
+        // No two families are described the same way, so a match arm answering
+        // for its neighbour cannot pass by saying something plausible.
+        let mut distinct = said.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            said.len(),
+            "two families are described identically: {said:?}"
+        );
+        // And nothing in any of them is a shape a programmer prints.
+        for sentence in &said {
+            for forbidden in [
+                "SketchConstraintRule",
+                "SketchPointRef",
+                "SketchSegmentRef",
+                "ConstraintId",
+                "PointId",
+                "StableEntityId",
+                "{",
+                "}",
+                "(",
+                "[",
+                "Some",
+                "planegcs",
+                "index",
+                "ordinal",
+            ] {
+                assert!(
+                    !sentence.contains(forbidden),
+                    "a description printed {forbidden:?} instead of saying something: {sentence}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_description_reads_the_rule_out_in_the_order_the_document_stores_it() {
+        use ferritecad_document::SketchConstraintRule as Rule;
+        use ferritecad_document::SketchPointSelector::{End, Start};
+        use ferritecad_document::{SketchPointRef, SketchSegmentRef};
+
+        let (first, second) = two_curves();
+        let point = SketchPointRef::new;
+
+        // Coincident says the same thing either way round. The document does
+        // not, and neither may the window: the order stored is the order read
+        // out, or the window has started editing what it was given.
+        let forwards = describe_constraint(&Rule::Coincident {
+            a: point(first, End),
+            b: point(second, Start),
+        });
+        let backwards = describe_constraint(&Rule::Coincident {
+            a: point(second, Start),
+            b: point(first, End),
+        });
+        assert_ne!(
+            forwards, backwards,
+            "the two arguments of a constraint were reordered into a house style"
+        );
+        assert!(forwards.find(&format!("{first}.end")) < forwards.find(&format!("{second}.start")));
+
+        // The two ends of one segment, likewise: start then end, because that
+        // is what is written down.
+        let run = describe_constraint(&Rule::Parallel {
+            a: SketchSegmentRef::new(point(first, Start), point(first, End)),
+            b: SketchSegmentRef::new(point(second, End), point(second, Start)),
+        });
+        assert!(
+            run.contains(&format!("{first}.start to {first}.end"))
+                && run.contains(&format!("{second}.end to {second}.start")),
+            "a segment was read out from whichever end looked tidier: {run}"
+        );
+    }
+
+    #[test]
+    fn a_size_is_said_exactly_as_it_was_stored_and_with_its_unit() {
+        use ferritecad_document::SketchConstraintRule as Rule;
+        use ferritecad_document::SketchPointRef;
+        use ferritecad_document::SketchPointSelector::{At, End, Start};
+
+        let (first, _) = two_curves();
+        let point = SketchPointRef::new;
+        for (distance, expected) in [(60.0, "60 mm"), (12.5, "12.5 mm"), (0.125, "0.125 mm")] {
+            let said = describe_constraint(&Rule::Distance {
+                a: point(first, Start),
+                b: point(first, End),
+                distance,
+            });
+            assert!(
+                said.contains(expected),
+                "a size of {distance} was not said as {expected}: {said}"
+            );
+        }
+        // The other family that carries numbers, and both of its numbers.
+        let pinned = describe_constraint(&Rule::Fixed {
+            point: point(first, At),
+            x: 3.25,
+            y: -7.0,
+        });
+        assert!(
+            pinned.contains("x 3.25 mm") && pinned.contains("y -7 mm"),
+            "a pinned point was not said at the place it is pinned to: {pinned}"
+        );
+    }
+
+    #[test]
+    fn a_repeated_constraint_reaches_the_window_explained_rather_than_merely_named() {
+        solver_or_skip!();
+
+        // The defect this closes: the window named the repeated constraint by
+        // its identifier and stopped there, so a person reading their own
+        // drawing was told that something repeats without being told what.
+        //
+        // A whole document, a real solve and the real section: what is checked
+        // is the words that were laid out, not the values that went in.
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("plate.fcad");
+        let curves = solve_curves();
+        let edges: Vec<ferritecad_types::StableEntityId> =
+            curves.iter().map(|curve| curve.id).collect();
+        let mut rules = solve_frame(&edges);
+        rules.push(solve_width(&edges));
+        rules.push(solve_width(&edges));
+        let constraints = solve_named(rules);
+        let repeated = constraints[10].id;
+        write_sketches(&path, vec![(Some("Profile"), curves, constraints)]);
+
+        let (scene, _camera) = live_scene_of(load_document(&path));
+        let page = section_page(&scene.sketch_solves);
+
+        assert!(
+            page.contains(&repeated.to_string()),
+            "the repeated constraint the document stores was not named:\n{page}"
+        );
+        assert!(
+            page.contains("Distance"),
+            "the window says something repeats without saying what kind of thing it is:\n{page}"
+        );
+        assert!(
+            page.contains(&format!("{}.start", edges[0])),
+            "the window does not say which points the repeated constraint is about:\n{page}"
+        );
+        assert!(
+            page.contains(&format!("{}.end", edges[0])),
+            "the window does not say which points the repeated constraint is about:\n{page}"
+        );
+        assert!(
+            page.contains("60 mm"),
+            "the window does not say the size the repeated constraint asks for:\n{page}"
+        );
     }
 
     #[test]
@@ -12902,9 +13260,19 @@ mod tests {
             "one picture was allowed to decide what both documents say"
         );
         assert!(section_page(&one.sketch_solves).contains("None"));
+        let said = section_page(&two.sketch_solves);
+        assert!(said.contains(&two.sketch_solves[0].report.redundant()[0].to_string()));
+        // The explanation is the other half of the same statement: two
+        // documents that draw one picture are told apart by what is said about
+        // them, and one of them says something the picture cannot show.
         assert!(
-            section_page(&two.sketch_solves)
-                .contains(&two.sketch_solves[0].report.redundant()[0].to_string())
+            said.contains("Distance") && said.contains("60 mm"),
+            "the repeated constraint went unexplained, so the two documents differ only by an \
+             identifier:\n{said}"
+        );
+        assert!(
+            !section_page(&one.sketch_solves).contains("Distance"),
+            "a document that repeats nothing was given an explanation anyway"
         );
     }
 
@@ -13037,6 +13405,196 @@ mod tests {
     }
 
     #[test]
+    fn several_repeated_constraints_are_explained_one_by_one_in_the_documents_order() {
+        solver_or_skip!();
+
+        // One sketch repeating two different things: the width it was already
+        // given, and a side already said to be level. Two families, so an
+        // entry described from its neighbour's rule reads wrongly rather than
+        // merely differently, and two entries, so the document's order is
+        // something a section can get wrong.
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("plate.fcad");
+        let curves = solve_curves();
+        let edges: Vec<ferritecad_types::StableEntityId> =
+            curves.iter().map(|curve| curve.id).collect();
+        let mut rules = solve_frame(&edges);
+        rules.push(solve_width(&edges));
+        rules.push(solve_width(&edges));
+        rules.push(ferritecad_document::SketchConstraintRule::Horizontal {
+            a: ferritecad_document::SketchPointRef::new(
+                edges[2],
+                ferritecad_document::SketchPointSelector::Start,
+            ),
+            b: ferritecad_document::SketchPointRef::new(
+                edges[2],
+                ferritecad_document::SketchPointSelector::End,
+            ),
+        });
+        let constraints = solve_named(rules);
+        let sized = constraints[10].id;
+        let levelled = constraints[11].id;
+        write_sketches(&path, vec![(Some("Profile"), curves, constraints)]);
+
+        let (scene, _camera) = live_scene_of(load_document(&path));
+        let drawn = section_words(&scene.sketch_solves);
+        let page = drawn.join("\n");
+        let at = |needle: &str| drawn.iter().position(|word| word == needle);
+
+        let sized_says = format!(
+            "Distance: {}.start and {}.end are 60 mm apart",
+            edges[0], edges[0]
+        );
+        let levelled_says = format!(
+            "Horizontal: {}.start and {}.end share a y coordinate",
+            edges[2], edges[2]
+        );
+        for (what, found) in [
+            ("the first repeated constraint", at(&sized.to_string())),
+            ("what the first one says", at(&sized_says)),
+            ("the second repeated constraint", at(&levelled.to_string())),
+            ("what the second one says", at(&levelled_says)),
+        ] {
+            assert!(found.is_some(), "{what} never reached the screen:\n{page}");
+        }
+        assert!(
+            at(&sized.to_string()) < at(&sized_says)
+                && at(&sized_says) < at(&levelled.to_string())
+                && at(&levelled.to_string()) < at(&levelled_says),
+            "the explanations are not under the identifiers they belong to, or not in the \
+             document's order: {drawn:?}"
+        );
+        assert!(
+            !page.contains("None"),
+            "a sketch repeating two constraints also said it repeats none:\n{page}"
+        );
+    }
+
+    #[test]
+    fn no_sketch_is_given_the_explanation_of_its_neighbour() {
+        solver_or_skip!();
+
+        // Two sketches in one document, each with curves of its own and each
+        // repeating something of its own: the first the width it was given
+        // twice, the second a side already said to be level. Nothing in the
+        // first's account may name a curve of the second, and the join that
+        // could get this wrong is the one that looks a report's identifiers up
+        // in whatever sketch is to hand.
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("two.fcad");
+
+        let sized = solve_curves();
+        let sized_edges: Vec<ferritecad_types::StableEntityId> =
+            sized.iter().map(|curve| curve.id).collect();
+        let mut sized_rules = solve_frame(&sized_edges);
+        sized_rules.push(solve_width(&sized_edges));
+        sized_rules.push(solve_width(&sized_edges));
+
+        let levelled = solve_curves();
+        let levelled_edges: Vec<ferritecad_types::StableEntityId> =
+            levelled.iter().map(|curve| curve.id).collect();
+        let mut levelled_rules = solve_frame(&levelled_edges);
+        levelled_rules.push(ferritecad_document::SketchConstraintRule::Horizontal {
+            a: ferritecad_document::SketchPointRef::new(
+                levelled_edges[2],
+                ferritecad_document::SketchPointSelector::Start,
+            ),
+            b: ferritecad_document::SketchPointRef::new(
+                levelled_edges[2],
+                ferritecad_document::SketchPointSelector::End,
+            ),
+        });
+
+        write_sketches(
+            &path,
+            vec![
+                (Some("Sized"), sized, solve_named(sized_rules)),
+                (Some("Levelled"), levelled, solve_named(levelled_rules)),
+            ],
+        );
+        let (scene, _camera) = live_scene_of(load_document(&path));
+        assert_eq!(scene.sketch_solves.len(), 2);
+
+        let words = solve_words_of(&scene.sketch_solves);
+        assert_eq!(
+            (words[0].redundant.len(), words[1].redundant.len()),
+            (1, 1),
+            "each of these sketches repeats exactly one thing"
+        );
+        // Each account speaks only of its own drawing. Checked against every
+        // curve of the other sketch, because naming one of them is exactly
+        // what describing a neighbour's constraint would produce.
+        for (mine, theirs) in [(&words[0], &levelled_edges), (&words[1], &sized_edges)] {
+            for constraint in &mine.redundant {
+                for curve in theirs {
+                    assert!(
+                        !constraint.says.contains(&curve.to_string()),
+                        "a sketch was described using a curve of the sketch beside it: {}",
+                        constraint.says
+                    );
+                }
+            }
+        }
+        assert!(
+            words[0].redundant[0].says.contains("Distance")
+                && words[1].redundant[0].says.contains("Horizontal"),
+            "the two sketches were given each other's families: {:?} and {:?}",
+            words[0].redundant[0].says,
+            words[1].redundant[0].says
+        );
+    }
+
+    #[test]
+    fn the_section_says_nothing_a_solve_kept_to_itself() {
+        solver_or_skip!();
+
+        // The whole section, laid out from a real document, read for words
+        // that mean something only inside one call to one library, and for the
+        // punctuation a derived Debug would leave behind.
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (loaded, _, _) = one_solved_sketch(&directory, None);
+        let (scene, _camera) = live_scene_of(loaded);
+        let page = section_page(&scene.sketch_solves);
+
+        assert!(
+            page.contains("Unnamed sketch"),
+            "a sketch nobody named vanished from the section instead of being said to be \
+             unnamed:\n{page}"
+        );
+        assert!(
+            page.contains("Distance"),
+            "the repeated constraint of an unnamed sketch went unexplained:\n{page}"
+        );
+        for forbidden in [
+            "ConstraintId",
+            "PointId",
+            "SketchSolveReport",
+            "SketchSolveFacts",
+            "RedundantConstraint",
+            "SketchConstraintRule",
+            "SketchPointRef",
+            "StableEntityId",
+            "ObjectId",
+            "degrees_of_freedom",
+            "redundant",
+            "planegcs",
+            "session",
+            "ordinal",
+            "index",
+            "{",
+            "}",
+            "[",
+            "Some(",
+        ] {
+            assert!(
+                !page.contains(forbidden),
+                "the section printed {forbidden:?}, which means something only to one solve:\
+                 \n{page}"
+            );
+        }
+    }
+
+    #[test]
     fn showing_what_a_solve_found_out_asks_no_solver_and_uploads_nothing() {
         solver_or_skip!();
 
@@ -13068,6 +13626,13 @@ mod tests {
         for _ in 0..20 {
             let page = section_page(&scene.sketch_solves);
             assert!(page.contains("Under-constrained"));
+            // Including the explanation, which is what a second solve would
+            // most plausibly be asked for: it is written from what the first
+            // one already said and from the document that was already read.
+            assert!(
+                page.contains("Distance") && page.contains("60 mm"),
+                "the explanation was not on screen this frame:\n{page}"
+            );
         }
         assert_eq!(
             ferritecad_sketch_solver::native_solves(),
@@ -13105,6 +13670,10 @@ mod tests {
         for _ in 0..5 {
             let page = section_page(&scene.sketch_solves);
             assert!(page.contains("Sketch solves"));
+            assert!(
+                page.contains("Distance"),
+                "the explanation stopped being drawn"
+            );
         }
 
         assert_eq!(scene.selection, Selection::Definition(chosen));
