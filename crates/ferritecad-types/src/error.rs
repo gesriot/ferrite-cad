@@ -70,7 +70,19 @@ pub enum CadError {
     },
 
     #[error("constraint problem: {message}")]
-    Constraint { message: String },
+    Constraint {
+        message: String,
+        /// What the refusal was about, when the refusal is about something a
+        /// caller can act on rather than only read.
+        ///
+        /// Optional for the same reason [`Self::Input`]'s is: most constraint
+        /// failures are a sentence and nothing more. The ones that are not
+        /// carry a value here, and a caller reads it by asking the crate that
+        /// owns that value whether this is one of its own — never by reading
+        /// the message, which is written for a person.
+        #[source]
+        source: Option<BoxError>,
+    },
 
     #[error("unresolved topology reference: {message}")]
     Topology { message: String },
@@ -134,6 +146,19 @@ impl CadError {
     pub fn constraint(message: impl Into<String>) -> Self {
         Self::Constraint {
             message: message.into(),
+            source: None,
+        }
+    }
+
+    /// A constraint failure that carries what it was about.
+    ///
+    /// The message stays the whole of what a person is shown; `source` is what
+    /// a caller that knows the type can ask for. Nothing here inspects it, and
+    /// no other variant gains one by association.
+    pub fn constraint_because(message: impl Into<String>, source: impl Into<BoxError>) -> Self {
+        Self::Constraint {
+            message: message.into(),
+            source: Some(source.into()),
         }
     }
 
@@ -210,6 +235,28 @@ mod tests {
         let err = CadError::topology("ExtrudeCap(Top) of feature 3 no longer exists");
         assert_eq!(err.kind(), ErrorKind::Topology);
         assert!(std::error::Error::source(&err).is_none());
+    }
+
+    #[test]
+    fn a_constraint_failure_carries_a_cause_only_when_it_was_given_one() {
+        // The plain constructor is what almost every constraint refusal uses,
+        // and a caller asking what one was about has to be told nothing rather
+        // than something that happens to be lying around.
+        let plain = CadError::constraint("this sketch names a point twice");
+        assert_eq!(plain.kind(), ErrorKind::Constraint);
+        assert!(std::error::Error::source(&plain).is_none());
+
+        let cause = std::io::Error::other("the thing it was about");
+        let carried = CadError::constraint_because("this sketch cannot hold", cause);
+        assert_eq!(carried.kind(), ErrorKind::Constraint);
+        let source =
+            std::error::Error::source(&carried).expect("a cause was given and must be reachable");
+        assert!(source.to_string().contains("the thing it was about"));
+
+        // And the message is the whole of what is shown. A caller that read
+        // the cause out of the sentence would be reading something that was
+        // never put there.
+        assert!(!carried.to_string().contains("the thing it was about"));
     }
 
     #[test]

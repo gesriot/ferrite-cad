@@ -27,7 +27,7 @@ use ferritecad_kernel::{
     ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane, TessellationParams,
     mock::MockKernel,
 };
-use ferritecad_scene::{LoadedScene, SketchSolveFacts, snapshot_of};
+use ferritecad_scene::{LoadedScene, SketchConflict, SketchSolveFacts, snapshot_of};
 use ferritecad_sketch_solver as solver;
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId, Transform};
 
@@ -674,12 +674,11 @@ fn what_a_solve_found_out_is_no_part_of_the_picture() {
     );
 }
 
-#[test]
-fn a_document_that_cannot_be_loaded_gives_back_no_scene() {
-    solver_or_skip!();
-
-    let directory = tempfile::tempdir().expect("a temporary directory is available");
-    let path = directory.path().join("impossible.fcad");
+/// A plate told to be two different widths at once, written to a real file.
+///
+/// Returns the sketch it is stored under and the constraints the file holds
+/// for it, read back out of the file.
+fn impossible_plate(path: &Path) -> (ObjectId, Vec<SketchConstraint>) {
     let curves = plate_curves();
     let edges: Vec<StableEntityId> = curves.iter().map(|curve| curve.id).collect();
     let mut rules = frame(&edges);
@@ -689,7 +688,28 @@ fn a_document_that_cannot_be_loaded_gives_back_no_scene() {
         b: at(edges[0], SketchPointSelector::End),
         distance: WIDTH + 15.0,
     });
-    write(&path, vec![(Some("Profile"), curves, named(rules))]);
+    let sketches = write(path, vec![(Some("Profile"), curves, named(rules))]);
+
+    let document = Document::open_read_only(path).expect("reopens");
+    let record = document
+        .objects()
+        .expect("objects")
+        .into_iter()
+        .find(|record| record.id == sketches[0])
+        .expect("the document holds that sketch");
+    let ObjectPayload::Sketch(stored) = record.payload else {
+        panic!("that object is not a sketch");
+    };
+    (sketches[0], stored.constraints)
+}
+
+#[test]
+fn a_document_that_cannot_be_loaded_gives_back_no_scene() {
+    solver_or_skip!();
+
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("impossible.fcad");
+    impossible_plate(&path);
 
     let mut kernel = MockKernel::new();
     let error = snapshot_of(
@@ -706,6 +726,54 @@ fn a_document_that_cannot_be_loaded_gives_back_no_scene() {
         kernel.live_shape_count(),
         0,
         "a failed load left shapes behind"
+    );
+}
+
+#[test]
+fn a_load_refused_for_a_conflict_says_which_constraints_disagree() {
+    solver_or_skip!();
+
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("impossible.fcad");
+    let (sketch, stored) = impossible_plate(&path);
+
+    let mut kernel = MockKernel::new();
+    let error = snapshot_of(
+        &path,
+        &mut kernel,
+        no_step,
+        &params(),
+        &OperationContext::default(),
+    )
+    .expect_err("a plate that is two widths at once has no picture");
+
+    // A caller reads the refusal by asking the type whether it is one of its
+    // own. Nothing here reads the message, which is a sentence for a person.
+    let conflict = SketchConflict::of(&error).expect(
+        "a load refused because a drawing contradicts itself gave back a sentence and nothing \
+         a program could act on",
+    );
+    assert_eq!(conflict.sketch(), sketch);
+    assert_eq!(
+        conflict
+            .constraints()
+            .iter()
+            .map(|constraint| (constraint.id(), *constraint.rule()))
+            .collect::<Vec<_>>(),
+        vec![
+            (stored[9].id, stored[9].rule),
+            (stored[10].id, stored[10].rule),
+        ],
+        "the refusal did not name the two sizes that disagree, in the document's order"
+    );
+
+    // And nothing of a scene was made on the way: no picture, no catalogue,
+    // no names and no account of any solve. There is no `LoadedScene` at all,
+    // which is the whole of that claim, and the kernel is empty.
+    assert_eq!(
+        kernel.live_shape_count(),
+        0,
+        "a refused load left shapes behind"
     );
 }
 

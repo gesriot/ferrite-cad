@@ -25,6 +25,17 @@
 //! happened to equal its own storage position would hide every mistake that
 //! matters here.
 //!
+//! # What a refusal carries
+//!
+//! Three of the four answers are a sentence and nothing more. The fourth is
+//! not: a sketch whose constraints cannot all hold has something a program can
+//! act on — which constraints, and what each of them says — and there is
+//! nowhere for it to travel except with the refusal, because a conflict makes
+//! no profile, no solid and no scene. So it goes out as the source of the
+//! [`CadError::Constraint`] it produces, as a [`SketchConflict`], and
+//! [`SketchConflict::of`] is the only road back. The message stays what it
+//! was: a sentence for a person, not a record for a caller to take apart.
+//!
 //! # What a solve is allowed to change
 //!
 //! Nothing in the document. The answer is applied to a clone, which is handed
@@ -40,7 +51,7 @@ use ferritecad_document::{
     SketchPointSelector, SketchSegmentRef,
 };
 use ferritecad_sketch_solver as solver;
-use ferritecad_types::{CadError, Result, StableEntityId};
+use ferritecad_types::{CadError, ObjectId, Result, StableEntityId};
 
 /// Solves `sketch` if it has anything to solve.
 ///
@@ -57,7 +68,14 @@ use ferritecad_types::{CadError, Result, StableEntityId};
 /// One solve answers both. Asking again for the report would be asking a
 /// second question of a solver that has already been asked, and two answers to
 /// one question is one answer too many.
-pub(crate) fn solved(sketch: &Sketch) -> Result<Option<(Sketch, SketchSolveReport)>> {
+///
+/// `Err` is every other outcome, and one of them carries more than a sentence:
+/// a solve whose constraints cannot all hold refuses with a [`SketchConflict`]
+/// naming `id` and each blamed constraint. That is built here because here is
+/// the only place the stored sketch and the solver's answer are both in hand,
+/// and nothing downstream gets a second chance to build it: a conflict makes
+/// no profile, no solid and no scene for it to travel in.
+pub(crate) fn solved(sketch: &Sketch, id: ObjectId) -> Result<Option<(Sketch, SketchSolveReport)>> {
     if sketch.constraints.is_empty() {
         return Ok(None);
     }
@@ -65,7 +83,7 @@ pub(crate) fn solved(sketch: &Sketch) -> Result<Option<(Sketch, SketchSolveRepor
     let translation = Translation::read(sketch)?;
     let outcome =
         solver::solve(translation.stated()).map_err(|error| translation.refusal(&error))?;
-    translation.interpret(sketch, outcome).map(Some)
+    translation.interpret(sketch, id, outcome).map(Some)
 }
 
 /// What one successful solve found out about the sketch it solved.
@@ -108,6 +126,151 @@ impl SketchSolveReport {
     pub fn redundant(&self) -> &[StableEntityId] {
         &self.redundant
     }
+}
+
+/// Why a sketch could not be solved: the constraints a solve said cannot all
+/// hold, said in the document's words.
+///
+/// A conflicting solve produces no coordinates, no profile and no scene, so
+/// there is nowhere for this to be filed the way [`SketchSolveReport`] is
+/// filed against a successful rebuild. It travels with the refusal instead,
+/// as the source of a [`CadError::Constraint`], and [`SketchConflict::of`] is
+/// the only way to get it back.
+///
+/// Everything here outlives the solve that produced it: the document's own
+/// identifier for the sketch, the document's own identifier for each blamed
+/// constraint, and the rule the document stores under exactly that
+/// identifier. There is no [`solver::ConstraintId`], no [`solver::PointId`],
+/// no equation index, no session identity and no position, so the derived
+/// `Debug` cannot publish one.
+///
+/// Not serialisable, for the same reason a report is not: this is what one
+/// rebuild found out, not something a document holds.
+///
+/// The fields are private and there is no constructor outside this module.
+/// A pair of an identifier and a rule that disagreed with each other would be
+/// this type saying something no solve ever said, and the compiler is what
+/// stops it being written rather than a test.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SketchConflict {
+    sketch: ObjectId,
+    constraints: Vec<ConflictingConstraint>,
+}
+
+impl SketchConflict {
+    /// The sketch whose constraints disagree.
+    ///
+    /// The document's word for it, supplied by the caller that was rebuilding
+    /// that sketch. A solver has no notion of a document object and could not
+    /// have said this.
+    pub fn sketch(&self) -> ObjectId {
+        self.sketch
+    }
+
+    /// The blamed constraints, in the order the document stores them.
+    pub fn constraints(&self) -> &[ConflictingConstraint] {
+        &self.constraints
+    }
+
+    /// The conflict behind a refusal, if that refusal is one.
+    ///
+    /// The one road back. A caller asks the type whether an error is one of
+    /// its own; it does not read the message, which is a sentence written for
+    /// a person and free to be rewritten. Every other failure – a document
+    /// that would not open, a sketch that would not converge, a build with no
+    /// solver – answers `None`, because none of them put one here.
+    pub fn of(error: &CadError) -> Option<&Self> {
+        let source = std::error::Error::source(error)?;
+        source.downcast_ref::<Self>()
+    }
+}
+
+/// A sentence for the error chain, and nothing a window would show.
+///
+/// Names the sketch and the identifiers, because those are what a reader of a
+/// log can look up. What each constraint *says* is deliberately absent: a
+/// vocabulary for the eight families is the interface's to choose, and one
+/// written here would be a second one to disagree with it.
+impl std::fmt::Display for SketchConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "sketch {} holds constraints that disagree:", self.sketch)?;
+        for (index, constraint) in self.constraints.iter().enumerate() {
+            let separator = if index == 0 { " " } else { ", " };
+            write!(f, "{separator}{}", constraint.id)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for SketchConflict {}
+
+/// One constraint a solve said cannot hold with the rest, named durably and
+/// carrying what the document stores under exactly that name.
+///
+/// The identifier is the solve's own answer, translated back; the rule is read
+/// out of the sketch under that identifier and nothing else. Not by where a
+/// constraint sits in a list, not by what a solver numbered it, not by two
+/// rules happening to say the same thing. Two identical rules stored under two
+/// identifiers are two of these, because they are two constraints.
+///
+/// The rule is carried whole rather than turned into a sentence: choosing
+/// anybody's words is the interface's job, and the document's own vocabulary
+/// is the smallest durable thing that can be explained later.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConflictingConstraint {
+    id: StableEntityId,
+    rule: SketchConstraintRule,
+}
+
+impl ConflictingConstraint {
+    /// The identifier the document stores this constraint under.
+    pub fn id(&self) -> StableEntityId {
+        self.id
+    }
+
+    /// The exact rule stored under that identifier.
+    pub fn rule(&self) -> &SketchConstraintRule {
+        &self.rule
+    }
+}
+
+/// The stored constraint behind each identifier a solve blamed for a conflict.
+///
+/// A pure function over two document values, so it can be held to its contract
+/// with no solver in the room.
+///
+/// Joined by [`StableEntityId`] alone. Not by position, because the blamed
+/// order and the storage order are both the document's and matching them up by
+/// index would pass every test that compared two lists of the same length; not
+/// by what a rule says, because two constraints are allowed to say the same
+/// thing; not by a solver's numbering, which does not outlive the call that
+/// issued it. An identifier this sketch does not store – one that belongs to
+/// the sketch next to it, or to nothing at all – is a refusal rather than a
+/// gap, because reporting the part that resolved would publish a partial
+/// account of a drawing as a complete one.
+fn conflicting_constraints(
+    sketch: &Sketch,
+    reported: &[StableEntityId],
+) -> Result<Vec<ConflictingConstraint>> {
+    reported
+        .iter()
+        .map(|id| {
+            sketch
+                .constraints
+                .iter()
+                .find(|constraint| constraint.id == *id)
+                .map(|constraint| ConflictingConstraint {
+                    id: *id,
+                    rule: constraint.rule,
+                })
+                .ok_or_else(|| {
+                    CadError::constraint(format!(
+                        "the solve blamed {id} for a conflict, and this sketch stores no \
+                         constraint under that identifier"
+                    ))
+                })
+        })
+        .collect()
 }
 
 /// The stored points of one piece of geometry, in the order the document
@@ -354,6 +517,7 @@ impl Translation {
     fn interpret(
         &self,
         sketch: &Sketch,
+        id: ObjectId,
         outcome: solver::Outcome,
     ) -> Result<(Sketch, SketchSolveReport)> {
         match outcome {
@@ -367,16 +531,32 @@ impl Translation {
             solver::Outcome::Solved(solution) => {
                 let report = SketchSolveReport {
                     degrees_of_freedom: solution.degrees_of_freedom(),
-                    redundant: self.redundant(sketch, solution.redundant())?,
+                    redundant: self.named_in_document_order(sketch, solution.redundant())?,
                 };
                 Ok((self.apply(sketch, &solution)?, report))
             }
 
-            solver::Outcome::Conflicting { constraints, .. } => Err(CadError::constraint(format!(
-                "this sketch's constraints cannot all hold at once; the solver cannot satisfy \
-                     {} together with the rest",
-                self.name_all(&constraints)
-            ))),
+            // The one answer that names constraints which cannot all hold.
+            // Every number in it was minted by `read` from a constraint of
+            // this sketch, so it can be said in the document's words; the
+            // facts are built here, where the sketch and the answer are both
+            // in hand, and travel with the refusal because there is no scene
+            // for them to travel in. Nothing partial is built either way.
+            solver::Outcome::Conflicting { constraints, .. } => {
+                let named = self.named_in_document_order(sketch, &constraints)?;
+                let conflict = SketchConflict {
+                    sketch: id,
+                    constraints: conflicting_constraints(sketch, &named)?,
+                };
+                Err(CadError::constraint_because(
+                    format!(
+                        "this sketch's constraints cannot all hold at once; the solver cannot \
+                         satisfy {} together with the rest",
+                        self.name_all(&constraints)
+                    ),
+                    conflict,
+                ))
+            }
 
             // No coordinates. The solver has some — it minimised an error
             // function and stopped somewhere — and publishing them is the one
@@ -423,7 +603,8 @@ impl Translation {
         Ok(solved)
     }
 
-    /// The document's names for the constraints a solve found redundant.
+    /// The document's names for the constraints a solve blamed, whichever
+    /// way it blamed them.
     ///
     /// Every number the solver hands back is looked up, and a lookup that
     /// fails is a refusal rather than a gap. A constraint this sketch was
@@ -438,7 +619,7 @@ impl Translation {
     /// else's list the moment either of those changed. What is promised is the
     /// order a person reading their own drawing sees, so that is what is
     /// computed.
-    fn redundant(
+    fn named_in_document_order(
         &self,
         sketch: &Sketch,
         blamed: &[solver::ConstraintId],
@@ -450,14 +631,14 @@ impl Translation {
                 // moment ago, and a message carrying it would invite a reader
                 // to look for it in a sketch that has no such word.
                 return Err(CadError::constraint(
-                    "the solver called a constraint redundant that this sketch never stated, so \
-                     there is nothing this drawing could be told about it",
+                    "the solver blamed a constraint that this sketch never stated, so there is \
+                     nothing this drawing could be told about it",
                 ));
             };
             if !named.insert(constraint) {
                 return Err(CadError::constraint(format!(
-                    "the solver called constraint {constraint} redundant more than once, and \
-                     one constraint is one answer"
+                    "the solver blamed constraint {constraint} more than once, and one \
+                     constraint is one answer"
                 )));
             }
         }
@@ -1117,6 +1298,7 @@ mod tests {
         let error = translation
             .interpret(
                 &sketch,
+                ObjectId::new(),
                 solver::Outcome::Conflicting {
                     constraints: vec![blamed],
                     redundant: Vec::new(),
@@ -1141,6 +1323,7 @@ mod tests {
         let error = translation
             .interpret(
                 &sketch,
+                ObjectId::new(),
                 solver::Outcome::DidNotConverge {
                     worst_residual: Some(4.2),
                 },
@@ -1180,7 +1363,7 @@ mod tests {
         let a = StableEntityId::new();
         let plain = sketch(vec![line(a, (0.0, 0.0), (10.0, 0.0))], Vec::new());
         assert!(
-            solved(&plain)
+            solved(&plain, ObjectId::new())
                 .expect("no constraints, no failure")
                 .is_none(),
             "an unconstrained sketch must not be handed to a solver"
@@ -1249,6 +1432,229 @@ mod tests {
             .expect("the sketch stated this constraint")
     }
 
+    // -----------------------------------------------------------------
+    // Joining a blamed identifier to the rule the document stores under it
+    //
+    // Nothing here asks a solver anything. What a real planegcs answers for a
+    // real conflicting document is measured in `tests/solve_conflict.rs`; what
+    // is measured there is a set of identifiers it *can* produce, and these
+    // are the answers it cannot. Today's solver crate sorts and deduplicates
+    // its answer and refuses a tag outside the system it was given, so an
+    // unknown, a repeated and a foreign identifier cannot arrive from it. Each
+    // of those is one decision away from arriving, and the decision is not
+    // this file's, which is why they are gated here rather than assumed.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn every_blamed_identifier_carries_the_rule_stored_under_exactly_it() {
+        let (sketch, _, ids) = four_constraints();
+        let joined = conflicting_constraints(&sketch, &ids).expect("all four are stored here");
+
+        assert_eq!(joined.len(), 4);
+        for (entry, stored) in joined.iter().zip(&sketch.constraints) {
+            assert_eq!(entry.id(), stored.id);
+            assert_eq!(entry.rule(), &stored.rule);
+        }
+    }
+
+    #[test]
+    fn the_rule_follows_the_identifier_and_not_the_position() {
+        let (sketch, _, ids) = four_constraints();
+        // The second and the fourth, in that order. Their rules differ from
+        // the ones stored first and third, so a join by index would answer
+        // with the wrong two and still hand back a list of the right length.
+        let asked = [ids[1], ids[3]];
+        let joined = conflicting_constraints(&sketch, &asked).expect("both are stored here");
+
+        assert_eq!(joined.len(), 2);
+        assert_eq!(joined[0].id(), ids[1]);
+        assert_eq!(joined[0].rule(), &sketch.constraints[1].rule);
+        assert_eq!(joined[1].id(), ids[3]);
+        assert_eq!(joined[1].rule(), &sketch.constraints[3].rule);
+        assert_ne!(
+            joined[0].rule(),
+            &sketch.constraints[0].rule,
+            "the first stored rule answered for the second identifier"
+        );
+    }
+
+    #[test]
+    fn two_identical_rules_under_two_identifiers_stay_two_entries() {
+        let (sketch, _, ids) = four_constraints();
+        // The first and the third say exactly the same thing.
+        assert_eq!(sketch.constraints[0].rule, sketch.constraints[2].rule);
+        let joined =
+            conflicting_constraints(&sketch, &[ids[0], ids[2]]).expect("both are stored here");
+
+        assert_eq!(joined.len(), 2, "two constraints became one report");
+        assert_eq!(joined[0].id(), ids[0]);
+        assert_eq!(joined[1].id(), ids[2]);
+        assert_ne!(joined[0].id(), joined[1].id());
+        assert_eq!(joined[0].rule(), joined[1].rule());
+    }
+
+    #[test]
+    fn an_identifier_this_sketch_does_not_store_is_refused() {
+        let (sketch, _, ids) = four_constraints();
+        let stranger = StableEntityId::new();
+        let error = conflicting_constraints(&sketch, &[ids[0], stranger])
+            .expect_err("a sketch cannot be told about a constraint it does not hold");
+
+        assert_eq!(error.kind(), ErrorKind::Constraint);
+        assert!(
+            error.to_string().contains(&stranger.to_string()),
+            "the refusal did not say which identifier it could not place: {error}"
+        );
+    }
+
+    #[test]
+    fn an_identifier_belonging_to_the_sketch_next_door_is_refused() {
+        let (sketch, _, _) = four_constraints();
+        // A second sketch drawn over the same curve, so its first constraint
+        // says word for word what this one's first constraint says and sits at
+        // the same position. Only the identifier differs, and the identifier
+        // is the whole of what may decide the answer.
+        let neighbour = self::tests::sketch(
+            sketch.curves.clone(),
+            vec![rule(sketch.constraints[0].rule)],
+        );
+        assert_eq!(
+            sketch.constraints[0].rule, neighbour.constraints[0].rule,
+            "this gate needs the neighbour to say the same thing"
+        );
+        assert_ne!(sketch.constraints[0].id, neighbour.constraints[0].id);
+
+        let error = conflicting_constraints(&sketch, &[neighbour.constraints[0].id])
+            .expect_err("a constraint of another sketch is not a constraint of this one");
+
+        assert_eq!(error.kind(), ErrorKind::Constraint);
+    }
+
+    #[test]
+    fn a_conflict_carries_the_rules_of_the_constraints_it_blamed() {
+        let (sketch, translation, ids) = four_constraints();
+        let sketch_id = ObjectId::new();
+        let blamed = vec![stated_at(&translation, 2), stated_at(&translation, 0)];
+
+        let error = translation
+            .interpret(
+                &sketch,
+                sketch_id,
+                solver::Outcome::Conflicting {
+                    constraints: blamed,
+                    redundant: Vec::new(),
+                },
+            )
+            .expect_err("a conflicting sketch is not built");
+
+        let conflict =
+            SketchConflict::of(&error).expect("a conflict carries what a caller can act on");
+        assert_eq!(conflict.sketch(), sketch_id);
+        // Reported back to front, reported out in the document's order.
+        assert_eq!(
+            conflict
+                .constraints()
+                .iter()
+                .map(ConflictingConstraint::id)
+                .collect::<Vec<_>>(),
+            vec![ids[0], ids[2]]
+        );
+        assert_eq!(
+            conflict.constraints()[0].rule(),
+            &sketch.constraints[0].rule
+        );
+        assert_eq!(
+            conflict.constraints()[1].rule(),
+            &sketch.constraints[2].rule
+        );
+    }
+
+    #[test]
+    fn a_blamed_identifier_this_translation_never_minted_is_refused() {
+        let (sketch, translation, _) = four_constraints();
+        let error = translation
+            .interpret(
+                &sketch,
+                ObjectId::new(),
+                solver::Outcome::Conflicting {
+                    // One past the last this sketch stated.
+                    constraints: vec![solver::ConstraintId(4)],
+                    redundant: Vec::new(),
+                },
+            )
+            .expect_err("a number this sketch never issued names nothing in it");
+
+        assert_eq!(error.kind(), ErrorKind::Constraint);
+        assert!(
+            SketchConflict::of(&error).is_none(),
+            "a refusal about an answer that could not be placed carried a report anyway: {error}"
+        );
+    }
+
+    #[test]
+    fn a_constraint_blamed_twice_for_a_conflict_is_refused() {
+        let (sketch, translation, _) = four_constraints();
+        let once = stated_at(&translation, 1);
+        let error = translation
+            .interpret(
+                &sketch,
+                ObjectId::new(),
+                solver::Outcome::Conflicting {
+                    constraints: vec![once, once],
+                    redundant: Vec::new(),
+                },
+            )
+            .expect_err("one constraint is one answer");
+
+        assert_eq!(error.kind(), ErrorKind::Constraint);
+        assert!(
+            SketchConflict::of(&error).is_none(),
+            "an answer that named one constraint twice was reported as a conflict: {error}"
+        );
+    }
+
+    #[test]
+    fn a_sketch_that_did_not_converge_carries_no_conflict() {
+        let (sketch, translation, _) = four_constraints();
+        let error = translation
+            .interpret(
+                &sketch,
+                ObjectId::new(),
+                solver::Outcome::DidNotConverge {
+                    worst_residual: Some(0.5),
+                },
+            )
+            .expect_err("where a solver stopped is not a solution");
+
+        assert!(
+            SketchConflict::of(&error).is_none(),
+            "a sketch that would not converge was reported as one whose constraints disagree"
+        );
+    }
+
+    #[test]
+    fn a_solver_refusal_carries_no_conflict() {
+        let (_, translation, _) = four_constraints();
+        for refusal in [
+            translation.refusal(&solver::SolverError::Unavailable(
+                solver::Unavailable::NotLinked,
+            )),
+            translation.refusal(&solver::SolverError::DuplicateConstraint(
+                solver::ConstraintId(0),
+            )),
+            translation.refusal(&solver::SolverError::UnknownPoint {
+                constraint: solver::ConstraintId(0),
+                point: solver::PointId(9),
+            }),
+        ] {
+            assert!(
+                SketchConflict::of(&refusal).is_none(),
+                "a solver that would not answer was reported as a set of constraints that \
+                 disagree: {refusal}"
+            );
+        }
+    }
+
     #[test]
     fn what_repeated_is_reported_in_the_order_the_document_stores_it() {
         // The answer arrives back to front. What comes out follows the
@@ -1261,7 +1667,7 @@ mod tests {
             .collect();
 
         let reported = translation
-            .redundant(&sketch, &backwards)
+            .named_in_document_order(&sketch, &backwards)
             .expect("every one of these is a constraint of this sketch");
 
         assert_eq!(reported, ids, "the answer's own order reached the report");
@@ -1273,7 +1679,7 @@ mod tests {
         let blamed = [stated_at(&translation, 3), stated_at(&translation, 1)];
 
         let reported = translation
-            .redundant(&sketch, &blamed)
+            .named_in_document_order(&sketch, &blamed)
             .expect("both are constraints of this sketch");
 
         assert_eq!(reported, vec![ids[1], ids[3]]);
@@ -1292,7 +1698,7 @@ mod tests {
         ];
 
         let error = translation
-            .redundant(&sketch, &blamed)
+            .named_in_document_order(&sketch, &blamed)
             .expect_err("an answer about a constraint this sketch does not hold is not an answer");
 
         assert_eq!(error.kind(), ErrorKind::Constraint);
@@ -1316,7 +1722,7 @@ mod tests {
         let blamed = [once, stated_at(&translation, 0), once];
 
         let error = translation
-            .redundant(&sketch, &blamed)
+            .named_in_document_order(&sketch, &blamed)
             .expect_err("one constraint cannot be two answers");
 
         assert_eq!(error.kind(), ErrorKind::Constraint);
@@ -1335,7 +1741,7 @@ mod tests {
         let (sketch, translation, _) = four_constraints();
         assert!(
             translation
-                .redundant(&sketch, &[])
+                .named_in_document_order(&sketch, &[])
                 .expect("nothing to resolve")
                 .is_empty()
         );
@@ -1347,7 +1753,7 @@ mod tests {
         let report = SketchSolveReport {
             degrees_of_freedom: 3,
             redundant: translation
-                .redundant(&sketch, &[stated_at(&translation, 1)])
+                .named_in_document_order(&sketch, &[stated_at(&translation, 1)])
                 .expect("resolves"),
         };
 

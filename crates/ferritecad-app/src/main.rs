@@ -4384,7 +4384,8 @@ mod tests {
             .expect("the fixture has a datum plane");
         let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
         let (profile, _) =
-            ferritecad_eval::profile_from_sketch(&sketch, plane).expect("builds a profile");
+            ferritecad_eval::profile_from_sketch(&sketch, ferritecad_types::ObjectId::new(), plane)
+                .expect("builds a profile");
 
         let stored = document.topology_refs().expect("reads");
         let producer = stored
@@ -4496,7 +4497,9 @@ mod tests {
             })
             .expect("the fixture has a datum plane");
         let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
-        let (profile, _) = ferritecad_eval::profile_from_sketch(&sketch, plane).expect("builds");
+        let (profile, _) =
+            ferritecad_eval::profile_from_sketch(&sketch, ferritecad_types::ObjectId::new(), plane)
+                .expect("builds");
 
         let stored = document.topology_refs().expect("reads");
         let producer = stored
@@ -5957,7 +5960,8 @@ mod tests {
             .expect("the fixture has a datum plane");
         let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
         let (profile, _) =
-            ferritecad_eval::profile_from_sketch(&sketch, plane).expect("builds a profile");
+            ferritecad_eval::profile_from_sketch(&sketch, ferritecad_types::ObjectId::new(), plane)
+                .expect("builds a profile");
         let joint = profile
             .outer()
             .joints()
@@ -13643,6 +13647,253 @@ mod tests {
             uploads, 1,
             "drawing the section put geometry on the graphics device"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // A document that contradicts itself, at the application boundary
+    // -----------------------------------------------------------------
+
+    /// Writes a plate told to be two different widths at once.
+    ///
+    /// Returns the file, the sketch the conflict belongs to, and the
+    /// constraints the file holds for it, read back out of the file.
+    fn impossible_document(
+        directory: &tempfile::TempDir,
+    ) -> (
+        std::path::PathBuf,
+        ferritecad_types::ObjectId,
+        Vec<ferritecad_document::SketchConstraint>,
+    ) {
+        use ferritecad_document::{Document, ObjectPayload};
+
+        let path = directory.path().join("impossible.fcad");
+        let curves = solve_curves();
+        let edges: Vec<ferritecad_types::StableEntityId> =
+            curves.iter().map(|curve| curve.id).collect();
+        let mut rules = solve_frame(&edges);
+        rules.push(solve_width(&edges));
+        rules.push(ferritecad_document::SketchConstraintRule::Distance {
+            a: ferritecad_document::SketchPointRef::new(
+                edges[0],
+                ferritecad_document::SketchPointSelector::Start,
+            ),
+            b: ferritecad_document::SketchPointRef::new(
+                edges[0],
+                ferritecad_document::SketchPointSelector::End,
+            ),
+            distance: SOLVE_WIDTH + 15.0,
+        });
+        let sketches = write_sketches(&path, vec![(Some("Profile"), curves, solve_named(rules))]);
+
+        let document = Document::open_read_only(&path).expect("reopens");
+        let record = document
+            .objects()
+            .expect("objects")
+            .into_iter()
+            .find(|record| record.id == sketches[0])
+            .expect("the document holds that sketch");
+        let ObjectPayload::Sketch(stored) = record.payload else {
+            panic!("that object is not a sketch");
+        };
+        (path, sketches[0], stored.constraints)
+    }
+
+    /// Loads the way the viewer does, and expects the load to be refused.
+    fn refused_document(path: &Path) -> CadError {
+        use ferritecad_kernel::mock::MockKernel;
+
+        let mut kernel = MockKernel::new();
+        let error = snapshot_of(
+            path,
+            &mut kernel,
+            |_: &mut MockKernel, _: &[u8]| {
+                Err(CadError::unsupported("these documents hold no imports"))
+            },
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect_err("a plate that is two widths at once has no picture");
+        assert_eq!(
+            kernel.live_shape_count(),
+            0,
+            "a refused load left shapes behind"
+        );
+        error
+    }
+
+    #[test]
+    fn a_conflicting_document_reaches_the_boundary_as_facts_and_not_as_a_sentence() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (path, sketch, stored) = impossible_document(&directory);
+
+        let mut camera = ViewportInput::new();
+        camera.resize(800, 600);
+        let mut uploads = 0;
+        // The route a real Open takes, minus the graphics device: the document
+        // is read, rebuilt, refused, and the refusal is handed to the same
+        // `prepare_load` that would otherwise have staged a picture.
+        let prepared = prepare_load(&camera, Err(refused_document(&path)), |_| {
+            uploads += 1;
+            Ok(())
+        });
+        let error = prepared.expect_err("a document that cannot be built has no picture to stage");
+
+        let conflict = ferritecad_scene::SketchConflict::of(&error)
+            .expect("the boundary was handed a sentence and nothing it could act on");
+        assert_eq!(
+            conflict.sketch(),
+            sketch,
+            "the conflict is about some other object than the sketch that holds it"
+        );
+        assert_eq!(
+            conflict
+                .constraints()
+                .iter()
+                .map(|constraint| (constraint.id(), *constraint.rule()))
+                .collect::<Vec<_>>(),
+            vec![
+                (stored[9].id, stored[9].rule),
+                (stored[10].id, stored[10].rule),
+            ],
+            "the boundary was not told which two sizes disagree, in the document's order"
+        );
+
+        assert_eq!(uploads, 0, "a refused document reached the graphics device");
+    }
+
+    #[test]
+    fn a_refused_open_replaces_neither_the_picture_nor_what_it_came_with() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+
+        // A document that loads, shown first, so there is something to lose.
+        let (loaded, sketch, repeated) = one_solved_sketch(&directory, Some("Profile"));
+        let (mut scene, mut camera) = live_scene_of(loaded);
+        assert_eq!(scene.sketch_solves.len(), 1);
+        let catalogue = scene.catalogue.clone();
+
+        let (path, _, _) = impossible_document(&directory);
+        let refused = prepare_load(&camera, Err(refused_document(&path)), |_| Ok(()));
+        let error = commit_scene(&mut scene, &mut camera, refused)
+            .expect_err("a refused document was committed");
+
+        // The refusal still carries its facts after the commit refused it, and
+        // it is still the same refusal.
+        assert!(
+            ferritecad_scene::SketchConflict::of(&error).is_some(),
+            "the facts were lost between the boundary and the commit"
+        );
+
+        // And the window is showing exactly what it was showing.
+        assert_eq!(scene.sketch_solves.len(), 1, "the account was replaced");
+        assert_eq!(scene.sketch_solves[0].sketch(), sketch);
+        assert_eq!(scene.sketch_solves[0].report().redundant(), [repeated]);
+        assert_eq!(
+            scene
+                .sketch_solves
+                .first()
+                .map(|facts| facts.redundant().len()),
+            Some(1),
+            "the explanation that came with the picture was replaced"
+        );
+        assert_eq!(
+            scene.catalogue, catalogue,
+            "a refused document changed the catalogue of the picture on screen"
+        );
+    }
+
+    #[test]
+    fn a_failure_that_is_not_a_conflict_stays_what_it_is() {
+        let mut camera = ViewportInput::new();
+        camera.resize(800, 600);
+        let error = prepare_load(
+            &camera,
+            Err(CadError::input("no such document")),
+            |_| Ok(()),
+        )
+        .expect_err("a document that is not there has no picture");
+
+        assert!(
+            ferritecad_scene::SketchConflict::of(&error).is_none(),
+            "a document that could not be read was reported as a drawing that contradicts \
+             itself: {error}"
+        );
+    }
+
+    #[test]
+    fn a_conflict_costs_one_native_system_and_one_reading_of_the_document() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (path, _, stored) = impossible_document(&directory);
+
+        let sessions = ferritecad_sketch_solver::native_sessions();
+        let solves = ferritecad_sketch_solver::native_solves();
+        let live = ferritecad_sketch_solver::native_live_sessions();
+
+        let error = refused_document(&path);
+        let conflict =
+            ferritecad_scene::SketchConflict::of(&error).expect("a conflict carries its facts");
+
+        assert_eq!(
+            ferritecad_sketch_solver::native_sessions() - sessions,
+            1,
+            "one refused document built more than one native system"
+        );
+        assert_eq!(
+            ferritecad_sketch_solver::native_solves(),
+            solves,
+            "a sketch refused before it was solved was solved anyway"
+        );
+        assert_eq!(
+            ferritecad_sketch_solver::native_live_sessions(),
+            live,
+            "a refused load left a native system alive"
+        );
+
+        // The file is gone and the facts are whole: they travelled with the
+        // refusal rather than being fetched when somebody asked for them.
+        std::fs::remove_file(&path).expect("removes");
+        assert_eq!(
+            conflict
+                .constraints()
+                .iter()
+                .map(|constraint| constraint.id())
+                .collect::<Vec<_>>(),
+            vec![stored[9].id, stored[10].id]
+        );
+    }
+
+    #[test]
+    fn a_conflict_at_the_boundary_says_nothing_that_lasts_one_solve() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (path, _, _) = impossible_document(&directory);
+        let error = refused_document(&path);
+        let conflict =
+            ferritecad_scene::SketchConflict::of(&error).expect("a conflict carries its facts");
+
+        let printed = format!("{conflict:?} {conflict} {error}");
+        for forbidden in [
+            "PointId",
+            "ConstraintId",
+            "SolverError",
+            "Outcome",
+            "session",
+            "Session",
+            "ordinal",
+            "equation",
+        ] {
+            assert!(
+                !printed.contains(forbidden),
+                "a conflict published {forbidden}, which means nothing outside one \
+                 solve:\n{printed}"
+            );
+        }
     }
 
     #[test]

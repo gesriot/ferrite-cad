@@ -265,7 +265,7 @@ fn run<K: GeometryKernel + ?Sized>(
                 })?;
                 // Converted here rather than when the extrude asks for it, so a
                 // malformed sketch is reported against the sketch.
-                let (profile, report) = profile_from_sketch(sketch, plane)?;
+                let (profile, report) = profile_from_sketch(sketch, *id, plane)?;
                 state.profiles.insert(*id, profile);
                 // Filed only when there was a solve to report. Absent is the
                 // honest answer for a sketch nobody constrained, and an empty

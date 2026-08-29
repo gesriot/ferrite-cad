@@ -41,8 +41,8 @@ use ferritecad_document::{
     Document, EntityKind, ImportedDefinitionRef, ObjectPayload, ObjectRecord, SelectionRule,
     SemanticRole, Sketch, SketchConstraintRule, StepImporter, TopologyRef,
 };
-pub use ferritecad_eval::SketchSolveReport;
 use ferritecad_eval::rebuild_cold;
+pub use ferritecad_eval::{ConflictingConstraint, SketchConflict, SketchSolveReport};
 use ferritecad_exchange::{ColourSource, Import, Scene};
 use ferritecad_kernel::{
     GeometryKernel, KernelIdentity, OperationContext, ProgressSink, ShapeHandle, TessellationParams,

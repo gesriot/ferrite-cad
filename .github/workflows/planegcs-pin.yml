@@ -561,7 +561,7 @@ jobs:
           # disk. Only the two test binaries that need a library, so a run here
           # cannot pass by exercising something else.
           cargo test --release -p ferritecad-eval --features planegcs \
-            --test solved_sketch --test solve_report \
+            --test solved_sketch --test solve_report --test solve_conflict \
             -- --nocapture --test-threads=1 2>&1 | tee eval.txt
 
           # And the boundary that carries those facts out of a rebuild into a
@@ -598,7 +598,18 @@ jobs:
             'several_repeated_constraints_arrive_in_the_order_the_document_stores_them' \
             'the_solved_coordinates_and_the_report_are_two_halves_of_one_solve' \
             'two_features_reading_one_sketch_get_one_solve_and_one_report' \
-            'a_cached_rebuild_reports_what_the_cold_one_did_and_solves_no_more_often'
+            'a_cached_rebuild_reports_what_the_cold_one_did_and_solves_no_more_often' \
+            'a_conflict_carries_the_constraints_it_blamed_in_the_documents_own_words' \
+            'several_blamed_constraints_arrive_in_the_order_the_document_stores_them' \
+            'moving_the_contradiction_to_the_front_moves_what_is_reported_with_it' \
+            'identical_rules_under_different_identifiers_stay_apart' \
+            'the_conflict_names_the_sketch_that_holds_it_and_not_its_neighbour' \
+            'a_failure_that_is_not_a_conflict_carries_no_conflict' \
+            'a_document_that_will_not_open_carries_no_conflict' \
+            'a_conflict_asks_the_solver_once_and_reads_the_document_once' \
+            'a_conflict_publishes_nothing_that_lasts_one_solve' \
+            'a_solve_that_refused_for_some_other_reason_carries_no_conflict' \
+            'a_document_that_solves_still_builds_and_reports_what_it_found'
           do
             check eval.txt "$gate"
           done
@@ -610,7 +621,8 @@ jobs:
             'two_sketches_keep_their_own_facts_and_the_documents_order' \
             'every_repeated_constraint_arrives_with_the_rule_stored_under_its_identifier' \
             'a_repeated_constraint_is_answered_by_identity_and_not_by_what_it_says' \
-            'what_a_solve_found_out_is_no_part_of_the_picture'
+            'what_a_solve_found_out_is_no_part_of_the_picture' \
+            'a_load_refused_for_a_conflict_says_which_constraints_disagree'
           do
             check scene.txt "$gate"
           done
@@ -806,6 +818,11 @@ jobs:
             showing_what_a_solve_found_out_changes_nothing_a_person_chose \
             the_section_says_nothing_a_solve_kept_to_itself \
             two_documents_that_draw_one_picture_can_say_different_things_about_it \
+            a_conflicting_document_reaches_the_boundary_as_facts_and_not_as_a_sentence \
+            a_refused_open_replaces_neither_the_picture_nor_what_it_came_with \
+            a_failure_that_is_not_a_conflict_stays_what_it_is \
+            a_conflict_costs_one_native_system_and_one_reading_of_the_document \
+            a_conflict_at_the_boundary_says_nothing_that_lasts_one_solve \
             --nocapture --test-threads=1 2>&1 | tee window.txt
 
           if grep -qF 'skipped: this build has no sketch solver' window.txt; then
@@ -828,7 +845,12 @@ jobs:
             'showing_what_a_solve_found_out_asks_no_solver_and_uploads_nothing' \
             'showing_what_a_solve_found_out_changes_nothing_a_person_chose' \
             'the_section_says_nothing_a_solve_kept_to_itself' \
-            'two_documents_that_draw_one_picture_can_say_different_things_about_it'
+            'two_documents_that_draw_one_picture_can_say_different_things_about_it' \
+            'a_conflicting_document_reaches_the_boundary_as_facts_and_not_as_a_sentence' \
+            'a_refused_open_replaces_neither_the_picture_nor_what_it_came_with' \
+            'a_failure_that_is_not_a_conflict_stays_what_it_is' \
+            'a_conflict_costs_one_native_system_and_one_reading_of_the_document' \
+            'a_conflict_at_the_boundary_says_nothing_that_lasts_one_solve'
           do
             if ! grep -qF "test tests::${gate} ... ok" window.txt; then
               echo "::error::the window gate ${gate} did not run and pass"
@@ -837,10 +859,10 @@ jobs:
           done
           [ "$missing" -eq 0 ] || exit 1
 
-          # Fourteen gates ran and no fifteenth crept in: this filter is what
+          # Nineteen gates ran and no twentieth crept in: this filter is what
           # keeps the run away from the gates that want a graphics device.
-          grep -qE 'test result: ok\. 14 passed; 0 failed' window.txt \
-            || { echo "::error::the window gates did not run as exactly fourteen passes"; exit 1; }
+          grep -qE 'test result: ok\. 19 passed; 0 failed' window.txt \
+            || { echo "::error::the window gates did not run as exactly nineteen passes"; exit 1; }
           echo "the window carried a real solve from a real document to a screen"
 
       - name: Ask the real application which sketch solver it has

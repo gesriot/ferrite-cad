@@ -267,7 +267,12 @@ fn archive_key(document: &Document, kernel: &MockKernel, feature: ObjectId) -> C
         })
         .expect("the plate has an extrusion");
 
-    let (profile, _) = profile_from_sketch(&sketch, SketchPlane::world_xy()).expect("converts");
+    let (profile, _) = profile_from_sketch(
+        &sketch,
+        ferritecad_types::ObjectId::new(),
+        SketchPlane::world_xy(),
+    )
+    .expect("converts");
     let request = extrude_request(&feature, profile).expect("converts");
     extrude_archive_key(kernel.identity(), &request, &OperationContext::default())
 }

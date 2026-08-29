@@ -15,7 +15,7 @@ use ferritecad_kernel::{
     ExtrudeExtent, ExtrudeRequest, PlanarPoint, Profile, ProfileLoop, ProfileSegment,
     SegmentGeometry, SketchPlane,
 };
-use ferritecad_types::{CadError, Point3, Result, Vec3};
+use ferritecad_types::{CadError, ObjectId, Point3, Result, Vec3};
 
 use crate::solve::SketchSolveReport;
 
@@ -54,11 +54,17 @@ pub fn plane_from_datum(datum: &DatumPlane) -> Result<SketchPlane> {
 /// Both halves come out of the one solve. A caller that wanted the geometry
 /// and the facts separately would have to ask twice, and the second answer
 /// would be a second solver run of a sketch that had already been solved.
+///
+/// `id` is what the document calls this sketch. It is not used to build
+/// anything: it is the one word a solver cannot supply, and it is needed so a
+/// refusal can say which sketch it is about. Passing it in beats attaching it
+/// to the error afterwards, which would let a report exist without a sketch.
 pub fn profile_from_sketch(
     sketch: &Sketch,
+    id: ObjectId,
     plane: SketchPlane,
 ) -> Result<(Profile, Option<SketchSolveReport>)> {
-    match crate::solve::solved(sketch)? {
+    match crate::solve::solved(sketch, id)? {
         Some((solved, report)) => Ok((profile_from_curves(&solved, plane)?, Some(report))),
         None => Ok((profile_from_curves(sketch, plane)?, None)),
     }
@@ -278,8 +284,12 @@ mod tests {
 
     #[test]
     fn a_square_becomes_a_four_segment_profile() {
-        let (profile, _) = profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
-            .expect("a closed square converts");
+        let (profile, _) = profile_from_sketch(
+            &sketch(square_curves()),
+            ObjectId::new(),
+            SketchPlane::world_xy(),
+        )
+        .expect("a closed square converts");
         assert_eq!(profile.outer().segments().len(), 4);
         assert!(profile.inner().is_empty());
     }
@@ -291,8 +301,9 @@ mod tests {
         let mut curves = square_curves();
         curves.swap(1, 3);
 
-        let (profile, _) = profile_from_sketch(&sketch(curves), SketchPlane::world_xy())
-            .expect("order is recovered by walking the chain");
+        let (profile, _) =
+            profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
+                .expect("order is recovered by walking the chain");
         assert_eq!(profile.outer().segments().len(), 4);
     }
 
@@ -308,8 +319,9 @@ mod tests {
             },
         });
 
-        let (profile, _) = profile_from_sketch(&sketch(curves), SketchPlane::world_xy())
-            .expect("a construction circle bounds nothing and is skipped");
+        let (profile, _) =
+            profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
+                .expect("a construction circle bounds nothing and is skipped");
         assert_eq!(profile.outer().segments().len(), 4);
     }
 
@@ -324,7 +336,7 @@ mod tests {
             },
         }];
 
-        let err = profile_from_sketch(&sketch(curves), SketchPlane::world_xy())
+        let err = profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
             .expect_err("a circle is not a chain segment");
         assert_eq!(err.kind(), ErrorKind::Unsupported);
     }
@@ -338,7 +350,7 @@ mod tests {
             geometry: SketchGeometry::Point { at: Point2::ORIGIN },
         });
 
-        let err = profile_from_sketch(&sketch(curves), SketchPlane::world_xy())
+        let err = profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
             .expect_err("a point bounds no face");
         assert_eq!(err.kind(), ErrorKind::Unsupported);
     }
@@ -352,7 +364,7 @@ mod tests {
             line((4.0, 4.0), (2.0, 2.0)),
         ]);
 
-        let err = profile_from_sketch(&sketch(curves), SketchPlane::world_xy())
+        let err = profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
             .expect_err("two loops are a profile with a hole");
         assert_eq!(err.kind(), ErrorKind::Unsupported);
         assert!(err.to_string().contains("left over"));
@@ -367,7 +379,7 @@ mod tests {
             line((10.0, 0.0), (10.0, 10.0)),
         ];
 
-        let err = profile_from_sketch(&sketch(curves), SketchPlane::world_xy())
+        let err = profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
             .expect_err("an open chain has no face");
         assert_eq!(err.kind(), ErrorKind::Input);
         assert!(err.to_string().contains("does not close"));
@@ -375,15 +387,23 @@ mod tests {
 
     #[test]
     fn an_empty_sketch_is_refused() {
-        let err = profile_from_sketch(&sketch(Vec::new()), SketchPlane::world_xy())
-            .expect_err("nothing to extrude");
+        let err = profile_from_sketch(
+            &sketch(Vec::new()),
+            ObjectId::new(),
+            SketchPlane::world_xy(),
+        )
+        .expect_err("nothing to extrude");
         assert_eq!(err.kind(), ErrorKind::Input);
     }
 
     #[test]
     fn a_blind_extrude_converts() {
-        let (profile, _) = profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
-            .expect("converts");
+        let (profile, _) = profile_from_sketch(
+            &sketch(square_curves()),
+            ObjectId::new(),
+            SketchPlane::world_xy(),
+        )
+        .expect("converts");
         let request = extrude_request(
             &extrude(EndCondition::Blind {
                 distance: Expression::constant(8.0).expect("finite"),
@@ -398,8 +418,12 @@ mod tests {
 
     #[test]
     fn a_symmetric_extrude_sweeps_the_distance_on_each_side() {
-        let (profile, _) = profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
-            .expect("converts");
+        let (profile, _) = profile_from_sketch(
+            &sketch(square_curves()),
+            ObjectId::new(),
+            SketchPlane::world_xy(),
+        )
+        .expect("converts");
         let request = extrude_request(
             &extrude(EndCondition::Symmetric {
                 distance: Expression::constant(4.0).expect("finite"),
@@ -415,8 +439,12 @@ mod tests {
 
     #[test]
     fn through_all_is_unsupported() {
-        let (profile, _) = profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
-            .expect("converts");
+        let (profile, _) = profile_from_sketch(
+            &sketch(square_curves()),
+            ObjectId::new(),
+            SketchPlane::world_xy(),
+        )
+        .expect("converts");
         let err = extrude_request(&extrude(EndCondition::ThroughAll), profile)
             .expect_err("ThroughAll needs booleans");
         assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -429,9 +457,12 @@ mod tests {
             SolidOperation::Cut,
             SolidOperation::Intersect,
         ] {
-            let (profile, _) =
-                profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
-                    .expect("converts");
+            let (profile, _) = profile_from_sketch(
+                &sketch(square_curves()),
+                ObjectId::new(),
+                SketchPlane::world_xy(),
+            )
+            .expect("converts");
             let mut feature = extrude(EndCondition::Blind {
                 distance: Expression::constant(8.0).expect("finite"),
             });
@@ -444,8 +475,12 @@ mod tests {
 
     #[test]
     fn a_target_body_is_unsupported() {
-        let (profile, _) = profile_from_sketch(&sketch(square_curves()), SketchPlane::world_xy())
-            .expect("converts");
+        let (profile, _) = profile_from_sketch(
+            &sketch(square_curves()),
+            ObjectId::new(),
+            SketchPlane::world_xy(),
+        )
+        .expect("converts");
         let mut feature = extrude(EndCondition::Blind {
             distance: Expression::constant(8.0).expect("finite"),
         });
