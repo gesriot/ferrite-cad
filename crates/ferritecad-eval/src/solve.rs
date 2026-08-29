@@ -180,6 +180,9 @@ impl SketchConflict {
     /// that would not open, a sketch that would not converge, a build with no
     /// solver – answers `None`, because none of them put one here.
     pub fn of(error: &CadError) -> Option<&Self> {
+        if !matches!(error, CadError::Constraint { .. }) {
+            return None;
+        }
         let source = std::error::Error::source(error)?;
         source.downcast_ref::<Self>()
     }
@@ -1314,6 +1317,44 @@ mod tests {
         );
         for forbidden in ["ConstraintId", "PointId"] {
             assert!(!message.contains(forbidden), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_conflict_used_as_the_cause_of_another_error_does_not_reclassify_it() {
+        let (sketch, translation, _) = one_constraint();
+        let blamed = translation
+            .stated()
+            .constraints()
+            .first()
+            .map(|(stated, _)| *stated)
+            .expect("one constraint");
+        let error = translation
+            .interpret(
+                &sketch,
+                ObjectId::new(),
+                solver::Outcome::Conflicting {
+                    constraints: vec![blamed],
+                    redundant: Vec::new(),
+                },
+            )
+            .expect_err("a conflicting sketch is not built");
+        let conflict = SketchConflict::of(&error)
+            .expect("the direct constraint refusal carries its conflict")
+            .clone();
+
+        let generic = [
+            CadError::input_because("reading the document failed", conflict.clone()),
+            CadError::kernel_because("building the shape failed", conflict.clone()),
+            CadError::rendering_because("drawing the frame failed", conflict.clone()),
+            CadError::io("opening the file", conflict),
+        ];
+        for error in generic {
+            assert!(
+                SketchConflict::of(&error).is_none(),
+                "a {} error was reclassified from its source: {error}",
+                error.kind()
+            );
         }
     }
 
