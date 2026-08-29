@@ -95,11 +95,11 @@ pub struct LoadedScene {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SketchSolveFacts {
     /// The sketch this is about.
-    pub sketch: ObjectId,
+    sketch: ObjectId,
     /// What the document calls it, when it calls it anything.
-    pub name: Option<String>,
+    name: Option<String>,
     /// What the solve found out.
-    pub report: SketchSolveReport,
+    report: SketchSolveReport,
     /// What each constraint the solve called redundant actually says.
     ///
     /// Not a second list beside [`SketchSolveReport::redundant`]: it is that
@@ -107,7 +107,33 @@ pub struct SketchSolveFacts {
     /// under each identifier carried alongside it. The two cannot disagree
     /// because only one of them is read to build the other, and neither is
     /// ever written by hand.
-    pub redundant: Vec<RedundantConstraint>,
+    redundant: Vec<RedundantConstraint>,
+}
+
+impl SketchSolveFacts {
+    /// The sketch this account belongs to.
+    pub fn sketch(&self) -> ObjectId {
+        self.sketch
+    }
+
+    /// What the document calls the sketch, when it calls it anything.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// What the one rebuild-time solve found out.
+    pub fn report(&self) -> &SketchSolveReport {
+        &self.report
+    }
+
+    /// The stored rule behind each identifier the report calls redundant.
+    ///
+    /// The fields of this type are private so this list cannot be replaced
+    /// independently of [`Self::report`]. Only the join in [`snapshot_of`]
+    /// constructs the pair.
+    pub fn redundant(&self) -> &[RedundantConstraint] {
+        &self.redundant
+    }
 }
 
 /// One repeated constraint, named durably and said in the document's words.
@@ -124,9 +150,21 @@ pub struct SketchSolveFacts {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RedundantConstraint {
     /// The identifier the document stores this constraint under.
-    pub id: StableEntityId,
+    id: StableEntityId,
     /// What it says.
-    pub rule: SketchConstraintRule,
+    rule: SketchConstraintRule,
+}
+
+impl RedundantConstraint {
+    /// The identifier the document stores this constraint under.
+    pub fn id(&self) -> StableEntityId {
+        self.id
+    }
+
+    /// The exact rule stored under that identifier.
+    pub fn rule(&self) -> &SketchConstraintRule {
+        &self.rule
+    }
 }
 
 /// The stored constraint behind each identifier a solve called redundant.

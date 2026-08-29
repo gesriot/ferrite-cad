@@ -1480,15 +1480,15 @@ fn solve_words_of(solves: &[SketchSolveFacts]) -> Vec<SolveWords> {
     solves
         .iter()
         .map(|facts| SolveWords {
-            name: facts.name.clone(),
-            object: facts.sketch.to_string(),
-            degrees_of_freedom: facts.report.degrees_of_freedom(),
+            name: facts.name().map(str::to_owned),
+            object: facts.sketch().to_string(),
+            degrees_of_freedom: facts.report().degrees_of_freedom(),
             redundant: facts
-                .redundant
+                .redundant()
                 .iter()
                 .map(|constraint| RedundantWords {
-                    identifier: constraint.id.to_string(),
-                    says: describe_constraint(&constraint.rule),
+                    identifier: constraint.id().to_string(),
+                    says: describe_constraint(constraint.rule()),
                 })
                 .collect(),
         })
@@ -12949,10 +12949,10 @@ mod tests {
             1,
             "the window was handed a picture without the account that came with it"
         );
-        assert_eq!(scene.sketch_solves[0].sketch, sketch);
-        assert_eq!(scene.sketch_solves[0].name.as_deref(), Some("Profile"));
-        assert_eq!(scene.sketch_solves[0].report.degrees_of_freedom(), 1);
-        assert_eq!(scene.sketch_solves[0].report.redundant(), [repeated]);
+        assert_eq!(scene.sketch_solves[0].sketch(), sketch);
+        assert_eq!(scene.sketch_solves[0].name(), Some("Profile"));
+        assert_eq!(scene.sketch_solves[0].report().degrees_of_freedom(), 1);
+        assert_eq!(scene.sketch_solves[0].report().redundant(), [repeated]);
 
         // And they reached a screen, in a person's words rather than a
         // programmer's.
@@ -13016,7 +13016,7 @@ mod tests {
             1,
             "the first document's account never reached the window"
         );
-        assert_eq!(scene.sketch_solves[0].sketch, old_sketch);
+        assert_eq!(scene.sketch_solves[0].sketch(), old_sketch);
 
         let (new, new_sketch, new_repeated) = one_solved_sketch(&second, Some("New"));
         let prepared = prepare_load(&camera, Ok(new), |_| Ok(()));
@@ -13026,9 +13026,9 @@ mod tests {
         // everything said about it. A window that kept the old account beside
         // the new model would be describing a file nobody has open.
         assert_eq!(scene.sketch_solves.len(), 1);
-        assert_eq!(scene.sketch_solves[0].sketch, new_sketch);
-        assert_eq!(scene.sketch_solves[0].name.as_deref(), Some("New"));
-        assert_eq!(scene.sketch_solves[0].report.redundant(), [new_repeated]);
+        assert_eq!(scene.sketch_solves[0].sketch(), new_sketch);
+        assert_eq!(scene.sketch_solves[0].name(), Some("New"));
+        assert_eq!(scene.sketch_solves[0].report().redundant(), [new_repeated]);
         let page = section_page(&scene.sketch_solves);
         assert!(
             !page.contains(&old_sketch.to_string()),
@@ -13101,8 +13101,8 @@ mod tests {
         // document that could not be read leaves the drawing a person was
         // reading exactly as it was.
         assert_eq!(scene.sketch_solves, kept);
-        assert_eq!(scene.sketch_solves[0].sketch, sketch);
-        assert_eq!(scene.sketch_solves[0].report.redundant(), [repeated]);
+        assert_eq!(scene.sketch_solves[0].sketch(), sketch);
+        assert_eq!(scene.sketch_solves[0].report().redundant(), [repeated]);
     }
 
     #[test]
@@ -13151,7 +13151,7 @@ mod tests {
         loads.stop_all();
 
         assert_eq!(scene.sketch_solves, kept);
-        assert_eq!(scene.sketch_solves[0].sketch, sketch);
+        assert_eq!(scene.sketch_solves[0].sketch(), sketch);
         let page = section_page(&scene.sketch_solves);
         assert!(
             !page.contains(&other.to_string()),
@@ -13187,7 +13187,7 @@ mod tests {
         assert!(error.to_string().contains("refused the buffers"));
 
         assert_eq!(scene.sketch_solves, kept);
-        assert_eq!(scene.sketch_solves[0].sketch, sketch);
+        assert_eq!(scene.sketch_solves[0].sketch(), sketch);
         assert_eq!(*camera.camera(), framing);
         let page = section_page(&scene.sketch_solves);
         assert!(
@@ -13253,15 +13253,15 @@ mod tests {
             (1, 1),
             "one of the two documents arrived without its account"
         );
-        assert!(one.sketch_solves[0].report.redundant().is_empty());
-        assert_eq!(two.sketch_solves[0].report.redundant().len(), 1);
+        assert!(one.sketch_solves[0].report().redundant().is_empty());
+        assert_eq!(two.sketch_solves[0].report().redundant().len(), 1);
         assert_ne!(
             one.sketch_solves, two.sketch_solves,
             "one picture was allowed to decide what both documents say"
         );
         assert!(section_page(&one.sketch_solves).contains("None"));
         let said = section_page(&two.sketch_solves);
-        assert!(said.contains(&two.sketch_solves[0].report.redundant()[0].to_string()));
+        assert!(said.contains(&two.sketch_solves[0].report().redundant()[0].to_string()));
         // The explanation is the other half of the same statement: two
         // documents that draw one picture are told apart by what is said about
         // them, and one of them says something the picture cannot show.
@@ -13323,18 +13323,18 @@ mod tests {
             scene
                 .sketch_solves
                 .iter()
-                .map(|facts| facts.sketch)
+                .map(SketchSolveFacts::sketch)
                 .collect::<Vec<_>>(),
             sketches,
             "the accounts arrived in an order that is not the document's"
         );
-        assert_eq!(scene.sketch_solves[0].name.as_deref(), Some("Loose"));
-        assert_eq!(scene.sketch_solves[0].report.degrees_of_freedom(), 2);
-        assert!(scene.sketch_solves[0].report.redundant().is_empty());
-        assert_eq!(scene.sketch_solves[1].name, None);
-        assert_eq!(scene.sketch_solves[1].report.degrees_of_freedom(), 1);
+        assert_eq!(scene.sketch_solves[0].name(), Some("Loose"));
+        assert_eq!(scene.sketch_solves[0].report().degrees_of_freedom(), 2);
+        assert!(scene.sketch_solves[0].report().redundant().is_empty());
+        assert_eq!(scene.sketch_solves[1].name(), None);
+        assert_eq!(scene.sketch_solves[1].report().degrees_of_freedom(), 1);
         assert_eq!(
-            scene.sketch_solves[1].report.redundant(),
+            scene.sketch_solves[1].report().redundant(),
             [first_repeated, second_repeated],
             "the repeated constraints are not the ones the document stores, or not in its order"
         );

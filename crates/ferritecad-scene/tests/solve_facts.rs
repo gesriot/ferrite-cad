@@ -27,7 +27,7 @@ use ferritecad_kernel::{
     ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane, TessellationParams,
     mock::MockKernel,
 };
-use ferritecad_scene::{LoadedScene, RedundantConstraint, snapshot_of};
+use ferritecad_scene::{LoadedScene, SketchSolveFacts, snapshot_of};
 use ferritecad_sketch_solver as solver;
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId, Transform};
 
@@ -286,13 +286,14 @@ fn a_loaded_scene_says_what_the_solve_of_each_sketch_found_out() {
     assert_eq!(loaded.sketch_solves.len(), 1, "one sketch, one account");
     let facts = &loaded.sketch_solves[0];
     assert_eq!(
-        facts.sketch, sketches[0],
+        facts.sketch(),
+        sketches[0],
         "the account names another object"
     );
-    assert_eq!(facts.name.as_deref(), Some("Profile"));
-    assert_eq!(facts.report.degrees_of_freedom(), 1);
-    assert!(facts.report.is_under_constrained());
-    assert_eq!(facts.report.redundant(), [repeated]);
+    assert_eq!(facts.name(), Some("Profile"));
+    assert_eq!(facts.report().degrees_of_freedom(), 1);
+    assert!(facts.report().is_under_constrained());
+    assert_eq!(facts.report().redundant(), [repeated]);
 }
 
 #[test]
@@ -330,17 +331,17 @@ fn two_sketches_keep_their_own_facts_and_the_documents_order() {
         loaded
             .sketch_solves
             .iter()
-            .map(|facts| facts.sketch)
+            .map(SketchSolveFacts::sketch)
             .collect::<Vec<_>>(),
         sketches,
         "the accounts must arrive in the order the document stores the sketches"
     );
-    assert_eq!(loaded.sketch_solves[0].name.as_deref(), Some("Loose"));
-    assert_eq!(loaded.sketch_solves[0].report.degrees_of_freedom(), 2);
-    assert!(loaded.sketch_solves[0].report.redundant().is_empty());
-    assert_eq!(loaded.sketch_solves[1].name.as_deref(), Some("Sized"));
-    assert_eq!(loaded.sketch_solves[1].report.degrees_of_freedom(), 1);
-    assert_eq!(loaded.sketch_solves[1].report.redundant(), [repeated]);
+    assert_eq!(loaded.sketch_solves[0].name(), Some("Loose"));
+    assert_eq!(loaded.sketch_solves[0].report().degrees_of_freedom(), 2);
+    assert!(loaded.sketch_solves[0].report().redundant().is_empty());
+    assert_eq!(loaded.sketch_solves[1].name(), Some("Sized"));
+    assert_eq!(loaded.sketch_solves[1].report().degrees_of_freedom(), 1);
+    assert_eq!(loaded.sketch_solves[1].report().redundant(), [repeated]);
 }
 
 #[test]
@@ -376,24 +377,22 @@ fn every_repeated_constraint_arrives_with_the_rule_stored_under_its_identifier()
     // sorted or reversed them would still hold every identifier.
     assert_eq!(
         facts
-            .redundant
+            .redundant()
             .iter()
-            .map(|constraint| constraint.id)
+            .map(|constraint| constraint.id())
             .collect::<Vec<_>>(),
-        facts.report.redundant(),
+        facts.report().redundant(),
         "the explanations are not the identifiers the solve reported, or not in its order"
     );
     assert_eq!(
-        facts.redundant,
+        facts
+            .redundant()
+            .iter()
+            .map(|constraint| (constraint.id(), *constraint.rule()))
+            .collect::<Vec<_>>(),
         vec![
-            RedundantConstraint {
-                id: sized_twice.id,
-                rule: sized_twice.rule,
-            },
-            RedundantConstraint {
-                id: levelled_twice.id,
-                rule: levelled_twice.rule,
-            },
+            (sized_twice.id, sized_twice.rule),
+            (levelled_twice.id, levelled_twice.rule),
         ],
         "a repeated constraint arrived as something other than the rule this document stores \
          under its identifier"
@@ -401,8 +400,8 @@ fn every_repeated_constraint_arrives_with_the_rule_stored_under_its_identifier()
     // And what each of them is, spelled out, so that a rule answered from the
     // neighbouring constraint would be a different assertion and not a
     // different identifier.
-    assert_eq!(facts.redundant[0].rule, width_of(&edges));
-    assert_eq!(facts.redundant[1].rule, level_again);
+    assert_eq!(*facts.redundant()[0].rule(), width_of(&edges));
+    assert_eq!(*facts.redundant()[1].rule(), level_again);
 }
 
 #[test]
@@ -446,7 +445,7 @@ fn a_repeated_constraint_is_answered_by_identity_and_not_by_what_it_says() {
     let loaded = load(&path);
     let facts = &loaded.sketch_solves[0];
 
-    let named_by_the_solve = facts.report.redundant().to_vec();
+    let named_by_the_solve = facts.report().redundant().to_vec();
     assert_eq!(
         named_by_the_solve.len(),
         1,
@@ -455,11 +454,12 @@ fn a_repeated_constraint_is_answered_by_identity_and_not_by_what_it_says() {
         named_by_the_solve.len()
     );
     assert_eq!(
-        facts.redundant,
-        vec![RedundantConstraint {
-            id: named_by_the_solve[0],
-            rule: level_again,
-        }],
+        facts
+            .redundant()
+            .iter()
+            .map(|constraint| (constraint.id(), *constraint.rule()))
+            .collect::<Vec<_>>(),
+        vec![(named_by_the_solve[0], level_again)],
         "the account does not describe the constraint the solve actually named"
     );
     // The other two say the same thing and were not reported, so they are not
@@ -470,9 +470,9 @@ fn a_repeated_constraint_is_answered_by_identity_and_not_by_what_it_says() {
     {
         assert!(
             !facts
-                .redundant
+                .redundant()
                 .iter()
-                .any(|constraint| constraint.id == *other),
+                .any(|constraint| constraint.id() == *other),
             "a constraint the solve did not name was described as though it had been"
         );
     }
@@ -562,9 +562,9 @@ fn an_import_beside_a_solved_sketch_gets_no_account_of_its_own() {
         "only the sketch was solved: {:?}",
         loaded.sketch_solves
     );
-    assert_eq!(loaded.sketch_solves[0].sketch, sketches[0]);
-    assert_eq!(loaded.sketch_solves[0].name.as_deref(), Some("Profile"));
-    assert_eq!(loaded.sketch_solves[0].report.degrees_of_freedom(), 1);
+    assert_eq!(loaded.sketch_solves[0].sketch(), sketches[0]);
+    assert_eq!(loaded.sketch_solves[0].name(), Some("Profile"));
+    assert_eq!(loaded.sketch_solves[0].report().degrees_of_freedom(), 1);
     assert!(
         loaded.snapshot.meshes().len() >= 2,
         "both kinds of geometry must actually be drawn, or this proves nothing"
@@ -648,8 +648,8 @@ fn what_a_solve_found_out_is_no_part_of_the_picture() {
         "the catalogue counts sketches now"
     );
 
-    assert!(one.sketch_solves[0].report.redundant().is_empty());
-    assert_eq!(two.sketch_solves[0].report.redundant().len(), 1);
+    assert!(one.sketch_solves[0].report().redundant().is_empty());
+    assert_eq!(two.sketch_solves[0].report().redundant().len(), 1);
     assert_ne!(
         one.sketch_solves, two.sketch_solves,
         "two sketches that say the same size a different number of times reported the same thing"
@@ -659,13 +659,17 @@ fn what_a_solve_found_out_is_no_part_of_the_picture() {
     // none and the other has a whole rule, and the picture is the same value
     // either way. Nothing about a constraint may reach anything a renderer
     // draws, indexes or compares.
-    assert!(one.sketch_solves[0].redundant.is_empty());
+    assert!(one.sketch_solves[0].redundant().is_empty());
     assert_eq!(
-        two.sketch_solves[0].redundant,
-        vec![RedundantConstraint {
-            id: two.sketch_solves[0].report.redundant()[0],
-            rule: width_of(&edges),
-        }],
+        two.sketch_solves[0]
+            .redundant()
+            .iter()
+            .map(|constraint| (constraint.id(), *constraint.rule()))
+            .collect::<Vec<_>>(),
+        vec![(
+            two.sketch_solves[0].report().redundant()[0],
+            width_of(&edges),
+        )],
         "the document that repeats a size did not say what it repeats"
     );
 }
