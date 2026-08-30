@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use ferritecad_types::{CadError, Result};
 use ferritecad_viewport::{
-    Camera, EdgePickId, FacePickId, Hovered, Marked, PickId, RenderSnapshot, VERTEX_FLOATS,
-    VertexPickId, Visibility,
+    Camera, EdgePickId, FacePickId, Hovered, Marked, PickId, RenderSnapshot, SketchDrawing,
+    SketchStyle, VERTEX_FLOATS, VertexPickId, Visibility,
 };
 use wgpu::util::DeviceExt as _;
 
@@ -54,6 +54,45 @@ pub const VERTEX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 /// capability that Metal, Vulkan and DX12 might each answer differently.
 pub const VERTEX_PICK_RADIUS_PIXELS: f32 = 3.0;
 
+/// How wide a sketch curve is drawn, in screen pixels.
+///
+/// Screen pixels and not millimetres: a drawing is something to read, and a
+/// line whose width was a length in the world would be a smear when zoomed in
+/// and invisible when zoomed out. The width is applied after the shared
+/// view-projection, in the vertex stage, so it is the same number under both
+/// projections and at every distance.
+pub const SKETCH_STROKE_PIXELS: f32 = 3.0;
+
+/// How wide a construction curve is drawn, in screen pixels.
+///
+/// Thinner than the geometry that bounds a face, which is half of what tells
+/// the two apart; the other half is [`SKETCH_CONSTRUCTION_COLOUR`]. Both are
+/// stated here and both are gated, because "visually distinct" is otherwise a
+/// claim nobody can check.
+pub const SKETCH_CONSTRUCTION_STROKE_PIXELS: f32 = 1.6;
+
+/// How large a sketch point is drawn, across, in screen pixels.
+///
+/// A point covers no area of the world, so it is given one on the screen: a
+/// square of this width centred where the shared view-projection puts it. Not
+/// a hit area – nothing in this slice is pointed at – only something to see.
+pub const SKETCH_POINT_PIXELS: f32 = 7.0;
+
+/// What a sketch curve that could bound a face is drawn in.
+///
+/// An amber nothing else in the picture uses. The grid is achromatic, its axes
+/// are a dull red and green, and the two marks are a warm accent and a cool
+/// one; a drawing has to be recognisable as a drawing at a glance and not as a
+/// brighter edge of the model.
+pub const SKETCH_COLOUR: [f32; 3] = [1.0, 0.78, 0.25];
+
+/// What a construction curve is drawn in.
+///
+/// A cool blue against the amber above, so the two differ in hue as well as in
+/// width. Two axes of difference rather than one: a person reading a drawing
+/// at a glance uses colour, and a person measuring one uses the width.
+pub const SKETCH_CONSTRUCTION_COLOUR: [f32; 3] = [0.45, 0.56, 0.86];
+
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// One vertex of the expanded edge stream.
@@ -80,6 +119,37 @@ struct CornerVertex {
     position: [f32; 3],
     vertex: u32,
     offset: [f32; 2],
+}
+
+/// One corner of one segment of a drawing.
+///
+/// Forty-eight bytes: both ends of the segment, the colour, which way to push
+/// this corner, and how far. Both ends travel with every vertex because the
+/// widening happens after the projection - a corner has to know which way the
+/// segment runs on screen, and that is not knowable from its own position. See
+/// `sketch.wgsl`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct SketchVertex {
+    here: [f32; 3],
+    there: [f32; 3],
+    colour: [f32; 3],
+    /// Along the segment and across it, each -1 or +1.
+    offset: [f32; 2],
+    half_width: f32,
+}
+
+/// What a drawing pass needs to know, and all it is allowed to know.
+///
+/// No model, no selection and no identity. A drawing is looked at and not
+/// pointed at in this slice, and a pass that could see a pick would be a pass
+/// somebody could make answer for one.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct SketchUniform {
+    view_projection: [f32; 16],
+    viewport: [f32; 2],
+    padding: [f32; 2],
 }
 
 /// Per-draw uniform data, as the shader declares it.
@@ -236,6 +306,10 @@ pub struct Renderer {
     /// property of the device and not a constant anyone may assume.
     draw_stride: u64,
     geometry_uploads: u64,
+    /// How many times drawings have been put on this device. Counted apart
+    /// from the meshes because they are a different channel with a different
+    /// life: see [`Renderer::sketch_uploads`].
+    sketch_uploads: u64,
     /// The backdrop, kept beside the model's pipelines and built the same way
     /// for both targets so the window and the offscreen path cannot draw
     /// different grids.
@@ -245,6 +319,15 @@ pub struct Renderer {
     grid_surface_pipelines: std::collections::HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     grid_globals: wgpu::Buffer,
     grid_bindings: wgpu::BindGroup,
+    /// The drawings, kept beside the model's pipelines and built the same way
+    /// for both targets so the window and the offscreen path cannot draw
+    /// different sketches.
+    sketch_shader: wgpu::ShaderModule,
+    sketch_pipeline_layout: wgpu::PipelineLayout,
+    sketch_pipeline: wgpu::RenderPipeline,
+    sketch_surface_pipelines: std::collections::HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    sketch_globals: wgpu::Buffer,
+    sketch_bindings: wgpu::BindGroup,
 }
 
 impl Renderer {
@@ -395,6 +478,51 @@ impl Renderer {
             COLOUR_FORMAT,
             true,
         );
+        let sketch_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ferritecad sketch shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("sketch.wgsl").into()),
+        });
+        let sketch_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ferritecad sketch bindings"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                // The vertex stage alone: the fragment stage of a drawing
+                // returns the colour it was handed and asks nothing.
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let sketch_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("ferritecad sketch pipeline layout"),
+                bind_group_layouts: &[Some(&sketch_layout)],
+                immediate_size: 0,
+            });
+        let sketch_globals = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ferritecad sketch globals"),
+            size: std::mem::size_of::<SketchUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let sketch_bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ferritecad sketch bind group"),
+            layout: &sketch_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: sketch_globals.as_entire_binding(),
+            }],
+        });
+        let sketch_pipeline = build_sketch_pipeline(
+            &device,
+            &sketch_shader,
+            &sketch_pipeline_layout,
+            COLOUR_FORMAT,
+        );
         let line_pipeline =
             build_line_pipeline(&device, &shader, &pipeline_layout, COLOUR_FORMAT, true);
         let edge_pipeline = build_edge_pipeline(&device, &shader, &pipeline_layout);
@@ -444,12 +572,19 @@ impl Renderer {
             globals,
             draw_stride,
             geometry_uploads: 0,
+            sketch_uploads: 0,
             grid_shader,
             grid_pipeline_layout,
             grid_pipeline,
             grid_surface_pipelines: std::collections::HashMap::new(),
             grid_globals,
             grid_bindings,
+            sketch_shader,
+            sketch_pipeline_layout,
+            sketch_pipeline,
+            sketch_surface_pipelines: std::collections::HashMap::new(),
+            sketch_globals,
+            sketch_bindings,
         })
     }
 
@@ -520,6 +655,26 @@ impl Renderer {
         // Two vertices per line, two axes' worth of lines, and no buffer: the
         // shader derives every position from the vertex number.
         pass.draw(0..(per_axis * 2 * 2), 0..1);
+    }
+
+    /// Prepares the drawings' view of the camera.
+    ///
+    /// The same [`Camera::view_projection`] the model and the grid go through,
+    /// written into a buffer of its own because a drawing pass is given
+    /// nothing else - no selection, no identity, no per-draw transform. The
+    /// viewport size rides along because that is what turns a width in pixels
+    /// into an offset in clip space; it is not a second camera and computes
+    /// nothing about where the world is.
+    fn write_sketch(&self, camera: &Camera, viewport: [f32; 2]) {
+        self.queue.write_buffer(
+            &self.sketch_globals,
+            0,
+            bytemuck::bytes_of(&SketchUniform {
+                view_projection: camera.view_projection(),
+                viewport,
+                padding: [0.0; 2],
+            }),
+        );
     }
 
     /// Writes what every draw in the coming frame is drawn against.
@@ -691,6 +846,7 @@ impl Renderer {
             [width as f32, height as f32],
         );
         let grid = self.write_grid(camera, prepared.snapshot());
+        self.write_sketch(camera, [width as f32, height as f32]);
 
         let mut encoder = self
             .device
@@ -744,6 +900,18 @@ impl Renderer {
                 .expect("the line pipeline for this format was just ensured");
             pass.set_pipeline(line_pipeline);
             Self::draw_lines(&mut pass, prepared, visibility, self.draw_stride);
+
+            // The document's drawings, over the model and under the marks,
+            // exactly where the readback puts them and through the very same
+            // call. A window's pass is colour-only already, so the drawings
+            // need no pass of their own here.
+            if let Some(sketch) = prepared.sketch.as_ref() {
+                let sketch_pipeline = self
+                    .sketch_surface_pipelines
+                    .get(&format)
+                    .expect("the sketch pipeline for this format was just ensured");
+                Self::draw_sketches(&mut pass, sketch_pipeline, &self.sketch_bindings, sketch);
+            }
 
             // And the marked edge over all of it, from the same stream and
             // the same rule the readback uses. A window pass is colour-only
@@ -937,6 +1105,48 @@ impl Renderer {
     /// covers only the corners that end it. A chosen edge of the same part that
     /// this corner does not end leaves the question alone, and so does any
     /// selection in another definition.
+    /// Turns drawings into the vertices a device rasterises, once.
+    ///
+    /// A document with nothing to draw gets no buffer at all rather than an
+    /// empty one, which is what lets a picture with no drawing behind it run
+    /// exactly the passes it ran before drawings existed.
+    fn upload_sketches(&mut self, drawings: &[SketchDrawing]) -> Result<Option<GpuSketch>> {
+        let vertices = sketch_stream(drawings)?;
+        if vertices.is_empty() {
+            return Ok(None);
+        }
+        let vertex_count = vertices.len() as u32;
+        let buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("ferritecad viewport sketch vertices"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        Ok(Some(GpuSketch {
+            vertices: buffer,
+            vertex_count,
+        }))
+    }
+
+    /// Draws a picture's drawings, in whichever pass is given.
+    ///
+    /// One statement of what drawing a sketch is, called by the window and by
+    /// the readback. Two similar loops would be two places for a stroke width,
+    /// a bind group or a vertex range to drift, and the one that drifted would
+    /// be whichever is harder to reach from a test.
+    fn draw_sketches(
+        pass: &mut wgpu::RenderPass<'_>,
+        pipeline: &wgpu::RenderPipeline,
+        bindings: &wgpu::BindGroup,
+        sketch: &GpuSketch,
+    ) {
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bindings, &[]);
+        pass.set_vertex_buffer(0, sketch.vertices.slice(..));
+        pass.draw(0..sketch.vertex_count, 0..1);
+    }
+
     fn marked_vertex(
         snapshot: &RenderSnapshot,
         selected: Marked,
@@ -1016,7 +1226,9 @@ impl Renderer {
         let needs_lines = !self.line_surface_pipelines.contains_key(&format);
         let needs_marks = !self.edge_mark_surface_pipelines.contains_key(&format);
         let needs_corner_marks = !self.corner_mark_surface_pipelines.contains_key(&format);
-        // Every one of the five, including the corner mark. Today the five maps
+        let needs_sketches = !self.sketch_surface_pipelines.contains_key(&format);
+        // Every one of the six, including the corner mark and the drawings.
+        // Today the six maps
         // move together - they are written only here and only after the single
         // refusal check below, so either all the requested pipelines are
         // published or none are - which makes leaving one out of this condition
@@ -1025,7 +1237,13 @@ impl Renderer {
         // can see, and the next map added to this function would inherit the
         // trap. `the_window_learns_every_pipeline_for_a_format_together` is
         // what holds the invariant itself.
-        if !needs_model && !needs_grid && !needs_lines && !needs_marks && !needs_corner_marks {
+        if !needs_model
+            && !needs_grid
+            && !needs_lines
+            && !needs_marks
+            && !needs_corner_marks
+            && !needs_sketches
+        {
             return Ok(());
         }
 
@@ -1070,6 +1288,14 @@ impl Renderer {
         let corner_marks = needs_corner_marks.then(|| {
             build_corner_mark_pipeline(&self.device, &self.shader, &self.pipeline_layout, format)
         });
+        let sketches = needs_sketches.then(|| {
+            build_sketch_pipeline(
+                &self.device,
+                &self.sketch_shader,
+                &self.sketch_pipeline_layout,
+                format,
+            )
+        });
         let internal_refusal = pollster::block_on(internal.pop()).map(|error| error.to_string());
         let validation_refusal =
             pollster::block_on(validation.pop()).map(|error| error.to_string());
@@ -1093,6 +1319,9 @@ impl Renderer {
             self.corner_mark_surface_pipelines
                 .insert(format, corner_marks);
         }
+        if let Some(sketches) = sketches {
+            self.sketch_surface_pipelines.insert(format, sketches);
+        }
         Ok(())
     }
 
@@ -1103,6 +1332,43 @@ impl Renderer {
     /// the same reason: an ownership claim nobody can check is a comment.
     pub fn geometry_uploads(&self) -> u64 {
         self.geometry_uploads
+    }
+
+    /// How many times this renderer has put a document's drawings on the
+    /// device.
+    ///
+    /// Its own count rather than a wider reading of
+    /// [`Self::geometry_uploads`], which is documented as mesh buffers and
+    /// would stop meaning that. One upload per accepted
+    /// [`Self::prepare_sketches`], whatever the drawings turn out to contain,
+    /// so "the drawings are uploaded once and a frame uploads nothing" is a
+    /// number anyone can read rather than a claim in a comment.
+    pub fn sketch_uploads(&self) -> u64 {
+        self.sketch_uploads
+    }
+
+    /// Uploads the drawings that belong beside a prepared picture.
+    ///
+    /// Consuming and returning rather than taking `&mut`: a picture with its
+    /// drawings and the same picture without them are two different things to
+    /// draw, and a caller that meant the first must not be left holding the
+    /// second. A second call rather than an argument to [`Self::prepare`],
+    /// because a picture and the drawings behind it are two channels of one
+    /// load that fail separately - and both happen before anything is
+    /// committed, so a refusal here leaves the caller with neither.
+    ///
+    /// Everything the camera does not decide happens here and once. A frame
+    /// writes a matrix and runs a pass; no vertex is built or uploaded again,
+    /// which is what [`Self::sketch_uploads`] is there to show.
+    pub fn prepare_sketches(
+        &mut self,
+        prepared: PreparedSnapshot,
+        drawings: &[SketchDrawing],
+    ) -> Result<PreparedSnapshot> {
+        self.require_own(&prepared)?;
+        let sketch = self.upload_sketches(drawings)?;
+        self.sketch_uploads += 1;
+        Ok(PreparedSnapshot { sketch, ..prepared })
     }
 
     /// Uploads a snapshot's geometry and keeps it on the device.
@@ -1272,6 +1538,9 @@ impl Renderer {
             snapshot,
             meshes,
             bindings,
+            // Not here. A picture and the drawings behind it arrive from two
+            // halves of one load, and this half knows only the picture.
+            sketch: None,
         })
     }
 
@@ -1342,6 +1611,7 @@ impl Renderer {
             [width as f32, height as f32],
         );
         let grid = self.write_grid(camera, prepared.snapshot());
+        self.write_sketch(camera, [width as f32, height as f32]);
 
         let mut encoder = self
             .device
@@ -1419,6 +1689,50 @@ impl Renderer {
             // Last, over the surfaces they bound and behind anything nearer.
             pass.set_pipeline(&self.line_pipeline);
             Self::draw_lines(&mut pass, prepared, visibility, self.draw_stride);
+        }
+
+        if let Some(sketch) = prepared.sketch.as_ref() {
+            // The document's drawings, over the model and under the marks.
+            //
+            // Its own pass with the colour and the depth loaded, and with no
+            // identity target attached at all: a sketch is drawn and is not
+            // pointed at in this slice, so nothing here can reach what a pixel
+            // *is*. Skipped entirely when there is nothing to draw, so a
+            // picture with no drawing behind it is drawn by exactly the passes
+            // it was drawn by before.
+            let colour_view = colour.create_view(&Default::default());
+            let depth_view = depth.create_view(&Default::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ferritecad viewport sketch pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &colour_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        // The model's own depth, tested and never written, and
+                        // kept because every pass after this reads it.
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            Self::draw_sketches(
+                &mut pass,
+                &self.sketch_pipeline,
+                &self.sketch_bindings,
+                sketch,
+            );
         }
 
         if Self::marked_edge(prepared.snapshot(), selected, hovered).is_some()
@@ -1841,6 +2155,24 @@ pub struct PreparedSnapshot {
     /// resources it names alive, so a second handle to that buffer would only
     /// be a second thing to keep in step.
     bindings: wgpu::BindGroup,
+    /// The drawings that go with this picture, once somebody has uploaded
+    /// them. `None` until [`Renderer::prepare_sketches`] is called, and `None`
+    /// afterwards too when the document had nothing to draw: a picture with no
+    /// drawings runs no sketch pass at all, so a frame of one is byte for byte
+    /// the frame it was before drawings existed.
+    sketch: Option<GpuSketch>,
+}
+
+/// One document's drawings, resident on a device.
+///
+/// Render primitives and nothing else. There is no plane here, no circle, no
+/// arc, no curve identifier and no construction flag: what a drawing means was
+/// settled at the boundary that knew, and what is left is the vertices two
+/// triangles per segment are rasterised from.
+#[derive(Debug)]
+struct GpuSketch {
+    vertices: wgpu::Buffer,
+    vertex_count: u32,
 }
 
 impl PreparedSnapshot {
@@ -2091,6 +2423,214 @@ fn edge_stream(
         }
     }
     Ok(stream)
+}
+
+/// What one style is drawn in, and how wide.
+///
+/// One function, so the colour and the width of a style are decided together
+/// and in one place: a construction curve that kept the model's width, or the
+/// model's colour, would be half a distinction.
+fn style_of(style: SketchStyle) -> ([f32; 3], f32) {
+    match style {
+        SketchStyle::Model => (SKETCH_COLOUR, SKETCH_STROKE_PIXELS),
+        SketchStyle::Construction => (
+            SKETCH_CONSTRUCTION_COLOUR,
+            SKETCH_CONSTRUCTION_STROKE_PIXELS,
+        ),
+        // The enum is `non_exhaustive`. A style this build has never heard of
+        // is drawn as the geometry it most likely is, rather than dropped: a
+        // curve nobody can see is worse than a curve in the wrong colour.
+        _ => (SKETCH_COLOUR, SKETCH_STROKE_PIXELS),
+    }
+}
+
+/// Every drawing of a document, as the vertices two triangles per segment are
+/// rasterised from.
+///
+/// Built here, once, from render input that is already in world space. No
+/// plane is applied, no arc is sampled and no circle is closed: all of that
+/// happened where the document was still in the room, and doing any of it
+/// again here would be a second opinion about what a sketch means.
+fn sketch_stream(drawings: &[SketchDrawing]) -> Result<Vec<SketchVertex>> {
+    let segments: usize = drawings
+        .iter()
+        .map(|drawing| {
+            let strokes: usize = drawing
+                .strokes()
+                .iter()
+                .map(|stroke| stroke.points().len().saturating_sub(1))
+                .sum();
+            strokes + drawing.points().len()
+        })
+        .sum();
+    let mut vertices = Vec::new();
+    vertices
+        .try_reserve_exact(segments * CORNERS_PER_SEGMENT)
+        .map_err(|error| CadError::rendering_because("collecting a drawing", error))?;
+
+    for drawing in drawings {
+        for stroke in drawing.strokes() {
+            let (colour, width) = style_of(stroke.style());
+            for pair in stroke.points().windows(2) {
+                push_segment(&mut vertices, pair[0], pair[1], colour, width / 2.0);
+            }
+        }
+        for point in drawing.points() {
+            let (colour, _) = style_of(point.style());
+            push_point(&mut vertices, point.at(), colour, SKETCH_POINT_PIXELS / 2.0);
+        }
+    }
+    Ok(vertices)
+}
+
+/// Two triangles' worth of corners per segment.
+const CORNERS_PER_SEGMENT: usize = 6;
+
+/// One point, as the square two triangles rasterise.
+///
+/// Both ends are the same place, so the shader's fallback direction is the
+/// screen's own x axis and the four offsets are a square around it. The same
+/// expansion a stroke goes through, which is what stops a dot and a line
+/// drifting into two different ideas of how large a pixel is - but the offsets
+/// are given out here rather than by [`push_segment`], because that function's
+/// far end relies on the direction reversing and a point's does not.
+///
+/// Its own size, because a dot as thin as a line is not a dot.
+fn push_point(vertices: &mut Vec<SketchVertex>, at: [f32; 3], colour: [f32; 3], half_width: f32) {
+    let corner = |offset: [f32; 2]| SketchVertex {
+        here: at,
+        there: at,
+        colour,
+        offset,
+        half_width,
+    };
+    let back_left = corner([-1.0, 1.0]);
+    let back_right = corner([-1.0, -1.0]);
+    let front_left = corner([1.0, 1.0]);
+    let front_right = corner([1.0, -1.0]);
+    vertices.extend_from_slice(&[
+        back_left,
+        back_right,
+        front_left,
+        back_right,
+        front_right,
+        front_left,
+    ]);
+}
+
+/// One segment, widened into two triangles by the offsets each corner carries.
+///
+/// The four corners are the two ends pushed across the segment either way and
+/// backwards along it: backwards, so a stroke has square ends, which is also
+/// what fills the join between two segments of one run without anything here
+/// having to know that a run has joins.
+fn push_segment(
+    vertices: &mut Vec<SketchVertex>,
+    from: [f32; 3],
+    to: [f32; 3],
+    colour: [f32; 3],
+    half_width: f32,
+) {
+    let corner = |here: [f32; 3], there: [f32; 3], offset: [f32; 2]| SketchVertex {
+        here,
+        there,
+        colour,
+        offset,
+        half_width,
+    };
+    // Across the segment is the second offset, and it flips with the end
+    // because the direction does: at `to` the segment runs the other way.
+    let near_left = corner(from, to, [-1.0, 1.0]);
+    let near_right = corner(from, to, [-1.0, -1.0]);
+    let far_left = corner(to, from, [-1.0, -1.0]);
+    let far_right = corner(to, from, [-1.0, 1.0]);
+    vertices.extend_from_slice(&[
+        near_left, near_right, far_left, near_right, far_right, far_left,
+    ]);
+}
+
+/// The pipeline that draws a document's drawings.
+///
+/// Colour and nothing else, whatever it is drawn into, which is what lets one
+/// builder serve the window and the readback alike: both have a colour target
+/// and a drawing writes no identity, so there is one statement of what drawing
+/// a sketch means rather than an offscreen one and a window one that could
+/// drift.
+///
+/// Depth is tested and never written. Tested, so the model hides a drawing
+/// behind it and a drawing in front of the model is seen; never written, so
+/// nothing drawn afterwards - the marked edge, the marked corner, the identity
+/// passes - can be occluded by a drawing that is not part of the model.
+///
+/// Biased towards the eye, and that is the decision rather than an accident. A
+/// sketch is very often exactly coplanar with the cap of the solid raised from
+/// it, and two coplanar surfaces with independently interpolated depth fight
+/// pixel by pixel. The bias is a few tens of units in the last place of the
+/// depth format, which settles that tie without letting a drawing a whole
+/// millimetre behind a surface show through it.
+fn build_sketch_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    pipeline_layout: &wgpu::PipelineLayout,
+    colour_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("ferritecad viewport sketch pipeline"),
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vertex_sketch"),
+            compilation_options: Default::default(),
+            buffers: &sketch_vertex_buffer_layout(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fragment_sketch"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: colour_format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            // A widened segment has whatever winding the projection gives it,
+            // and a drawing has no inside.
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: Default::default(),
+            bias: wgpu::DepthBiasState {
+                constant: -32,
+                slope_scale: -2.0,
+                clamp: 0.0,
+            },
+        }),
+        multisample: Default::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// What a corner of a drawing is, for the one pipeline that draws it.
+fn sketch_vertex_buffer_layout() -> [Option<wgpu::VertexBufferLayout<'static>>; 1] {
+    const ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+        0 => Float32x3,
+        1 => Float32x3,
+        2 => Float32x3,
+        3 => Float32x2,
+        4 => Float32,
+    ];
+    [Some(wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<SketchVertex>() as u64,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &ATTRIBUTES,
+    })]
 }
 
 /// How large the drawn corner mark is, in pixels.
@@ -3550,6 +4090,80 @@ mod tests {
     }
 
     #[test]
+    fn a_window_draws_the_same_drawing_the_readback_draws() {
+        let mut renderer = match Renderer::new() {
+            Ok(renderer) => renderer,
+            Err(error) if error.kind() == ErrorKind::Unsupported => {
+                eprintln!("skipped: {error}");
+                return;
+            }
+            Err(error) => panic!("a renderer failed after adapter discovery: {error}"),
+        };
+
+        let (snapshot, camera) = one_quad(200, 200);
+        // In front of the plate, so the drawing is over the model and over the
+        // backdrop both, and reaching outside it so neither half is missing.
+        let mut builder = ferritecad_viewport::SketchDrawingBuilder::new();
+        let run: Vec<[f64; 3]> = vec![
+            [-14.0, -4.0, -14.0],
+            [14.0, -4.0, -14.0],
+            [14.0, -4.0, 14.0],
+            [-14.0, -4.0, 14.0],
+            [-14.0, -4.0, -14.0],
+        ];
+        builder
+            .stroke(ferritecad_viewport::SketchStyle::Model, &run)
+            .expect("a square is drawable");
+        builder
+            .stroke(
+                ferritecad_viewport::SketchStyle::Construction,
+                &[[-14.0, -4.0, 0.0], [14.0, -4.0, 0.0]],
+            )
+            .expect("a guide is drawable");
+        builder
+            .point(ferritecad_viewport::SketchStyle::Model, [0.0, -4.0, 8.0])
+            .expect("a point is drawable");
+
+        let prepared = renderer.prepare(Arc::clone(&snapshot)).expect("uploads");
+        let prepared = renderer
+            .prepare_sketches(prepared, &[builder.build()])
+            .expect("the drawings upload");
+        let visibility = Visibility::new(&snapshot);
+
+        let offscreen = renderer
+            .render(
+                &prepared,
+                &camera,
+                Marked::Nothing,
+                Hovered::Nothing,
+                &visibility,
+            )
+            .expect("draws");
+
+        // Proven to contain a drawing before the two are compared: two frames
+        // that agree because neither drew anything would pass a comparison
+        // and say nothing at all.
+        let ink = SKETCH_COLOUR.map(|channel| (channel * 255.0).round() as u8);
+        let drawn = offscreen
+            .colour()
+            .chunks_exact(4)
+            .filter(|pixel| {
+                pixel[0].abs_diff(ink[0]) <= 2
+                    && pixel[1].abs_diff(ink[1]) <= 2
+                    && pixel[2].abs_diff(ink[2]) <= 2
+            })
+            .count();
+        assert!(drawn > 0, "the frame being compared holds no drawing");
+
+        let window = window_colour(&mut renderer, &prepared, &camera, &visibility);
+        assert_eq!(
+            window,
+            offscreen.colour(),
+            "a window and a readback drew different pictures of one document's drawings"
+        );
+    }
+
+    #[test]
     fn the_window_learns_every_pipeline_for_a_format_together() {
         let mut renderer = match Renderer::new() {
             Ok(renderer) => renderer,
@@ -3561,13 +4175,14 @@ mod tests {
         };
 
         // What makes the early return in `ensure_surface_pipeline` safe is that
-        // the five maps move together: they are written only there, and only
+        // the six maps move together: they are written only there, and only
         // after one refusal check, so a format is either in all of them or in
         // none. Asked directly here, because the compiler cannot see it and the
         // early return would otherwise be free to drift out of step with them.
         let format = COLOUR_FORMAT;
         assert!(!renderer.surface_pipelines.contains_key(&format));
         assert!(!renderer.corner_mark_surface_pipelines.contains_key(&format));
+        assert!(!renderer.sketch_surface_pipelines.contains_key(&format));
 
         renderer
             .ensure_surface_pipeline(format)
@@ -3590,6 +4205,10 @@ mod tests {
             (
                 "corner marks",
                 renderer.corner_mark_surface_pipelines.contains_key(&format),
+            ),
+            (
+                "sketches",
+                renderer.sketch_surface_pipelines.contains_key(&format),
             ),
         ] {
             assert!(present, "the window learned no {what} pipeline");

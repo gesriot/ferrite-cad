@@ -33,10 +33,13 @@
 //! adapter back at the document. Passing the kernel to the function instead of
 //! capturing it is what lets one `&mut` satisfy both.
 
+mod drawing;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::path::Path;
 
+pub use drawing::{CIRCLE_SEGMENTS, sketch_drawing, sketch_drawings};
 use ferritecad_document::{
     Document, EntityKind, ImportedDefinitionRef, ObjectPayload, ObjectRecord, SelectionRule,
     SemanticRole, Sketch, SketchConstraintRule, StepImporter, TopologyRef,

@@ -5,7 +5,8 @@ account, no proprietary container you cannot read back.
 
 **Status: early.** There is a document format with its tooling, geometry
 through Open CASCADE, STEP import, and a viewer window that opens a `.fcad`
-file, draws what it describes and lets a definition be selected and inspected.
+file, draws what it describes – solids and the sketches they were raised from –
+and lets a definition be selected and inspected.
 There is no modelling in the interface: nothing can be created or edited there
 yet, and everything is built through the command line. See
 [`docs/implementation-plan.md`](docs/implementation-plan.md) for what comes when,
@@ -154,6 +155,39 @@ hidden. That is where you look when you wonder where something went. None of
 this touches the document, and none of it survives opening one: a file always
 opens with all of it on screen.
 
+The sketches themselves are drawn too, on the datum planes they were actually
+placed on, at the coordinates their constraints put them rather than the ones
+the file happens to store. Every sketch the document holds is drawn, including
+one nothing was raised from: a drawing exists because somebody drew it, and
+what read it afterwards is not a fact about whether it is there. Points, lines,
+circles and arcs all appear; an arc keeps the direction its angles give it and a
+circle stays a circle. Construction geometry is drawn as well, thinner and in a
+different colour from geometry that bounds a face, because it guides the drawing
+rather than shaping the solid. A circle or a point can only reach a document as
+construction geometry today: a sketch whose profile cannot be built refuses the
+whole rebuild, so it makes no picture and no drawing either, and that is a limit
+of what a sketch may contain rather than of what is drawn.
+
+A drawing is in the world, not on the glass: it moves with the model when you
+orbit, pan, zoom and roll, and it foreshortens with everything else. What stays
+fixed is how thick it looks – a line and a point are a set number of screen
+pixels wherever the camera is and under either projection – because a drawing is
+something to read. The model hides a drawing behind it, a drawing in front of
+the model is seen, and a sketch lying exactly on the face raised from it is
+drawn whole rather than fighting with it. Where a marked edge or corner and a
+drawing meet, the mark wins.
+
+Sketches are drawn and not yet pointed at. Clicking one clicks whatever is
+behind it, hovering over one reports whatever is behind it, and nothing about a
+sketch appears in the list of definitions or in the inspector. `Hide selected`,
+`Isolate selected` and `Show all` act on definitions and leave every drawing on
+screen: the document records no link saying which sketch belongs to which
+definition, and guessing one from what happens to read a sketch would be an
+invention. There is no control for turning drawings off, and `Frame all` and
+`Frame selected` still frame the model alone, so a document that holds only a
+sketch shows it when the camera already happens to be pointing that way rather
+than because the framing went looking for it.
+
 The button beside the views says which projection the model is drawn through
 and swaps it when pressed, or `O`. `Perspective` is what an eye sees and is
 where a document opens: things further away are drawn smaller, which is how a
@@ -255,8 +289,9 @@ only editing operation there is.
 Below the inspector, `Sketch solves` says what the rebuild behind the picture
 found out about the drawings it was built from. One entry per constrained
 sketch of the document, in the order the document stores them, whether or not
-anything raised from that sketch is on screen: a sketch is not drawn here and
-cannot be clicked, and this is not part of what is selected. Each entry gives
+anything raised from that sketch is on screen: the drawing itself is in the
+viewport rather than here, neither can be clicked, and this is not part of what
+is selected. Each entry gives
 the sketch's name – or `Unnamed sketch`, because a drawing nobody named is
 still a drawing that was solved – the whole identifier the document stores for
 it, whether it came out `Fully constrained` or `Under-constrained`, exactly how

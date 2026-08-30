@@ -52,6 +52,14 @@ on:
       # which is exactly why a change to what it prints has to be read back
       # off a real solve on all three platforms rather than trusted.
       - 'crates/ferritecad-ui/**'
+      # And since 21C-1b the two viewport crates are on the path a solved
+      # coordinate takes to a pixel: one holds the render input a drawing
+      # becomes, the other draws it. Whether what lands on screen is the
+      # solved coordinate or the stored one is a question only a linked
+      # library can answer, so a change to either is a change this workflow
+      # has to re-prove on all three platforms.
+      - 'crates/ferritecad-viewport/**'
+      - 'crates/ferritecad-viewport-gpu/**'
       - 'tools/check-solver-ownership.sh'
       - '.github/workflows/planegcs-pin.yml'
 
@@ -94,6 +102,20 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      - name: Install a graphics stack on Linux
+        if: matrix.name == 'linux'
+        run: |
+          set -euo pipefail
+          # Since 21C-1b this workflow ends in pixels, and a pixel gate needs
+          # an adapter. macOS and Windows runners have one; a Linux runner has
+          # one only once Mesa is installed. FERRITECAD_REQUIRE_GPU below makes
+          # a missing adapter a failure rather than a green skip, so this is
+          # what stops the three-platform claim quietly becoming a two-platform
+          # one.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dev libglu1-mesa-dev libegl1-mesa-dev mesa-vulkan-drivers
 
       - name: Require one owner of the solver boundary
         run: tools/check-solver-ownership.sh
@@ -570,7 +592,7 @@ jobs:
           # whether they hold the solved coordinates or the stored ones is a
           # question only a linked library can answer.
           cargo test --release -p ferritecad-scene --features planegcs \
-            --test solve_facts --test sketch_geometry \
+            --test solve_facts --test sketch_geometry --test sketch_drawing \
             -- --nocapture --test-threads=1 2>&1 | tee scene.txt
 
           for skip in \
@@ -641,7 +663,19 @@ jobs:
             'drawings_arrive_in_document_order' \
             'a_document_whose_constraints_disagree_publishes_no_drawing_at_all' \
             'carrying_the_drawings_changes_nothing_about_the_picture' \
-            'a_drawing_names_nothing_that_lasts_one_solve'
+            'a_drawing_names_nothing_that_lasts_one_solve' \
+            'every_kind_of_curve_a_document_can_hold_becomes_something_to_draw' \
+            'a_circle_is_closed_and_is_not_an_arc_that_nearly_meets_itself' \
+            'an_arc_runs_the_way_its_angles_say_and_not_the_other_way' \
+            'a_drawing_sits_on_the_datum_the_sketch_is_actually_on' \
+            'what_guides_a_drawing_is_drawn_differently_from_what_bounds_a_face' \
+            'construction_geometry_reaches_the_drawing_rather_than_being_dropped_with_the_profile' \
+            'a_sketch_no_feature_reads_is_still_a_drawing' \
+            'a_drawing_carries_no_name_for_anything_and_no_order_that_could_become_one' \
+            'a_drawing_is_no_part_of_the_picture_it_travels_beside' \
+            'a_construction_curve_changes_the_drawing_and_leaves_the_picture_byte_for_byte' \
+            'a_coordinate_no_picture_can_hold_is_refused_rather_than_drawn_somewhere_else' \
+            'the_origin_is_an_ordinary_place_for_a_drawing_to_be'
           do
             check scene.txt "$gate"
           done
@@ -924,6 +958,68 @@ jobs:
           grep -qE 'test result: ok\. 39 passed; 0 failed' window.txt \
             || { echo "::error::the window gates did not run as exactly thirty-nine passes"; exit 1; }
           echo "the window carried a real solve from a real document to a screen"
+
+      - name: Draw a solved sketch on a real device
+        env:
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          # A missing adapter is a failure here, not a skip: the claim this
+          # step makes is that a constrained document reached pixels, and a
+          # skip that looked like a pass would make that claim readable only
+          # by hunting a log for a line that is not there.
+          FERRITECAD_REQUIRE_GPU: '1'
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          # The whole of 21C-1b in one line: a document written to a temporary
+          # file, solved by the pinned library, loaded by the real loader,
+          # turned into world-space drawings at the one boundary that does
+          # that, uploaded to a real device beside the picture, drawn into a
+          # real offscreen frame, and read back as pixels that are compared
+          # against the very camera matrix they were drawn with.
+          #
+          # Only a linked library can say whether those pixels are at the
+          # coordinates the constraints ask for or at the ones the file
+          # stores: the stored plate is fifty wide and the constrained one is
+          # sixty, so a drawing at the stored coordinates leaves the corner
+          # this gate looks at bare.
+          cargo test --release -p ferritecad-app --features planegcs \
+            --bin ferritecad-viewer -- \
+            a_solved_sketch_is_drawn_where_its_constraints_put_it \
+            hiding_every_definition_of_a_document_leaves_its_drawings_on_screen \
+            twenty_frames_of_one_document_read_nothing_and_upload_nothing \
+            a_pin_run_cannot_turn_a_missing_gpu_into_a_green_skip \
+            --nocapture --test-threads=1 2>&1 | tee drawn.txt
+
+          for skip in \
+            'skipped: this build has no sketch solver' \
+            'skipped: no graphics adapter'
+          do
+            if grep -qF "$skip" drawn.txt; then
+              echo "::error::a pixel gate skipped itself under a required run"
+              exit 1
+            fi
+          done
+
+          missing=0
+          for gate in \
+            'a_solved_sketch_is_drawn_where_its_constraints_put_it' \
+            'hiding_every_definition_of_a_document_leaves_its_drawings_on_screen' \
+            'twenty_frames_of_one_document_read_nothing_and_upload_nothing' \
+            'a_pin_run_cannot_turn_a_missing_gpu_into_a_green_skip'
+          do
+            if ! grep -qF "test tests::${gate} ... ok" drawn.txt; then
+              echo "::error::the drawing gate ${gate} did not run and pass"
+              missing=$((missing + 1))
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+          # Four gates ran and no fifth crept in, for the reason the window
+          # step gives: the filter is what keeps this run to the gates whose
+          # green result is the claim being made.
+          grep -qE 'test result: ok\. 4 passed; 0 failed' drawn.txt \
+            || { echo "::error::the drawing gates did not run as exactly four passes"; exit 1; }
+          echo "a constrained document reached pixels through the pinned library"
 
       - name: Ask the real application which sketch solver it has
         run: |

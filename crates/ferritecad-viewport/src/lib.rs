@@ -34,9 +34,18 @@
 //! buffer – but that integer has meaning only together with the exact snapshot
 //! that rendered it. Durable selection starts from a definition identity in the
 //! document, never from this value.
+//!
+//! # A drawing is a second channel, not part of the picture
+//!
+//! [`SketchDrawing`] is world-space strokes and points to look at, and it
+//! travels beside a [`RenderSnapshot`] rather than inside one. A snapshot's
+//! bytes, its bounds and every identity it issues are what they were before
+//! drawings existed, and a drawing carries no identity of its own: in this
+//! slice a sketch is drawn and is not pointed at.
 
 mod camera;
 mod grid;
+mod sketch;
 mod snapshot;
 
 // Interaction lives here, as arithmetic over a [`Camera`] and nothing else.
@@ -47,6 +56,7 @@ mod snapshot;
 
 pub use camera::{Camera, Projection, StandardView};
 pub use grid::{GridPlan, HALF_LINES, MAJOR_EVERY, MAX_PIXELS, MIN_PIXELS, plan as grid_plan};
+pub use sketch::{SketchDrawing, SketchDrawingBuilder, SketchPoint, SketchStroke, SketchStyle};
 pub use snapshot::{
     DrawItem, EdgePickId, FacePickId, Hovered, Marked, PackedMesh, PickId, RenderSnapshot,
     SnapshotBuilder, VERTEX_FLOATS, VertexPickId, Visibility,
