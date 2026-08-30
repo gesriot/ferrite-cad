@@ -144,6 +144,29 @@
       "version": "0.0.1"
     },
     {
+      "asset": {
+        "bytes": 4260,
+        "location": "repository",
+        "path": "crates/ferritecad-viewport-gpu/src/sketch.wgsl",
+        "sha256": "985bba49ef0919c54a9634d62c908b3174063f2a03b12bda679b48a0a2d0bbf4"
+      },
+      "containedBy": "path+crates/ferritecad-viewport-gpu#ferritecad-viewport-gpu@0.0.1",
+      "embeddedIn": [
+        "ferritecad-viewer"
+      ],
+      "id": "asset+path+crates/ferritecad-viewport-gpu/src/sketch.wgsl",
+      "name": "sketch.wgsl",
+      "notAStagedRuntimeFile": "compiled into a product executable. There is no separate file to stage and none is staged.",
+      "role": "embedded-asset",
+      "stagedRuntimeFile": false,
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "version": "0.0.1"
+    },
+    {
       "buildInputOf": [
         "native+planegcs@1.0.1"
       ],

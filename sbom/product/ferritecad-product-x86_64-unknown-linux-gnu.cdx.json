@@ -300,6 +300,53 @@
       "version": "0.0.1"
     },
     {
+      "bom-ref": "asset+path+crates/ferritecad-viewport-gpu/src/sketch.wgsl",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "985bba49ef0919c54a9634d62c908b3174063f2a03b12bda679b48a0a2d0bbf4"
+        }
+      ],
+      "name": "sketch.wgsl",
+      "properties": [
+        {
+          "name": "ferritecad:sbom:asset-bytes",
+          "value": "4260"
+        },
+        {
+          "name": "ferritecad:sbom:asset-location",
+          "value": "repository"
+        },
+        {
+          "name": "ferritecad:sbom:asset-path",
+          "value": "crates/ferritecad-viewport-gpu/src/sketch.wgsl"
+        },
+        {
+          "name": "ferritecad:sbom:contained-by",
+          "value": "path+crates/ferritecad-viewport-gpu#ferritecad-viewport-gpu@0.0.1"
+        },
+        {
+          "name": "ferritecad:sbom:embedded-in",
+          "value": "ferritecad-viewer"
+        },
+        {
+          "name": "ferritecad:sbom:not-a-staged-runtime-file",
+          "value": "compiled into a product executable. There is no separate file to stage and none is staged."
+        },
+        {
+          "name": "ferritecad:sbom:role",
+          "value": "embedded-asset"
+        },
+        {
+          "name": "ferritecad:sbom:staged-runtime-file",
+          "value": "false"
+        }
+      ],
+      "scope": "required",
+      "type": "file",
+      "version": "0.0.1"
+    },
+    {
       "bom-ref": "native+boost@1.91.0",
       "externalReferences": [
         {
@@ -7045,6 +7092,10 @@
       "ref": "asset+path+crates/ferritecad-viewport-gpu/src/shader.wgsl"
     },
     {
+      "dependsOn": [],
+      "ref": "asset+path+crates/ferritecad-viewport-gpu/src/sketch.wgsl"
+    },
+    {
       "dependsOn": [
         "path+crates/ferritecad-app#ferritecad-app@0.0.1",
         "path+crates/ferritecad-cli#ferritecad-cli@0.0.1"
@@ -7078,6 +7129,7 @@
         "asset+crate+epaint_default_fonts@0.36.1#fonts/emoji-icon-font.ttf",
         "asset+path+crates/ferritecad-viewport-gpu/src/grid.wgsl",
         "asset+path+crates/ferritecad-viewport-gpu/src/shader.wgsl",
+        "asset+path+crates/ferritecad-viewport-gpu/src/sketch.wgsl",
         "native+occt@8.0.1",
         "native+planegcs@1.0.1",
         "path+crates/ferritecad-document#ferritecad-document@0.0.1",
@@ -7218,6 +7270,7 @@
       "dependsOn": [
         "asset+path+crates/ferritecad-viewport-gpu/src/grid.wgsl",
         "asset+path+crates/ferritecad-viewport-gpu/src/shader.wgsl",
+        "asset+path+crates/ferritecad-viewport-gpu/src/sketch.wgsl",
         "path+crates/ferritecad-types#ferritecad-types@0.0.1",
         "path+crates/ferritecad-viewport#ferritecad-viewport@0.0.1",
         "registry+https://github.com/rust-lang/crates.io-index#bytemuck@1.25.2",
@@ -8428,7 +8481,7 @@
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/native/native-assets-inventory.json@sha256:476c9a6de3f75714fd384f2c79cd8ac60aafe88d28e8907460dadf4aaa68cb1e"
+        "value": "sbom/native/native-assets-inventory.json@sha256:957d691b5e0f85effa3fc3b0a9306cff1f9ce12e16412cfe331c0c814cbef133"
       },
       {
         "name": "ferritecad:sbom:merged-from",
