@@ -42,7 +42,9 @@ use ferritecad_document::{
     SemanticRole, Sketch, SketchConstraintRule, StepImporter, TopologyRef,
 };
 use ferritecad_eval::rebuild_cold;
-pub use ferritecad_eval::{ConflictingConstraint, SketchConflict, SketchSolveReport};
+pub use ferritecad_eval::{
+    ConflictingConstraint, PresentedCurve, SketchConflict, SketchPresentation, SketchSolveReport,
+};
 use ferritecad_exchange::{ColourSource, Import, Scene};
 use ferritecad_kernel::{
     GeometryKernel, KernelIdentity, OperationContext, ProgressSink, ShapeHandle, TessellationParams,
@@ -82,6 +84,20 @@ pub struct LoadedScene {
     /// the picture is the one solve that could have said it, and asking again
     /// afterwards would be solving the same sketch twice.
     pub sketch_solves: Vec<SketchSolveFacts>,
+    /// Every sketch of the document, at the coordinates its profile was built
+    /// from, in document order.
+    ///
+    /// A fourth answer, and the only one that is geometry without being part
+    /// of the picture: nothing here is packed, placed, tessellated, picked or
+    /// counted, and the snapshot beside it is byte for byte what it was before
+    /// this existed. It rides along for the same reason the solve facts do —
+    /// the rebuild that drew the solids is the one evaluation that could have
+    /// said where the drawing behind them ended up.
+    ///
+    /// One entry per sketch, however many extrudes or bodies read it, and
+    /// unlike [`sketch_solves`][Self::sketch_solves] an unconstrained sketch
+    /// has one too: it was never solved, and it was still drawn.
+    pub sketch_presentations: Vec<SketchPresentation>,
 }
 
 /// What one solved sketch of this document turned out to be, in the
@@ -1020,8 +1036,18 @@ where
         // back into the constraint the document stores under it. Nothing is
         // asked of a solver and nothing is read from the file again: both
         // halves are already here.
+        //
+        // The drawings themselves are read out of the same rebuild in the
+        // same walk, and for the same reasons: document order because that is
+        // the order the person who drew them sees, by identifier because a
+        // sketch two extrudes read is one sketch, and from the rebuild because
+        // it is the only thing that knows where a solve left the curves.
         let mut sketch_solves: Vec<SketchSolveFacts> = Vec::new();
+        let mut sketch_presentations: Vec<SketchPresentation> = Vec::new();
         for object in &objects {
+            if let Some(presentation) = built.sketch_presentation(object.id) {
+                sketch_presentations.push(presentation.clone());
+            }
             let Some(report) = built.solve_report(object.id) else {
                 continue;
             };
@@ -1220,6 +1246,7 @@ where
             snapshot,
             catalogue: catalogue.finish(),
             sketch_solves,
+            sketch_presentations,
         })
     })();
 

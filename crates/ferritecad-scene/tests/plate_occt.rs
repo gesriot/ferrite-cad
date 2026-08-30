@@ -528,9 +528,10 @@ fn plate_with_every_edge_named(
         })
         .expect("the fixture has a datum plane");
     let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
-    let (profile, _) =
+    let profile =
         ferritecad_eval::profile_from_sketch(&sketch, ferritecad_types::ObjectId::new(), plane)
-            .expect("builds a profile");
+            .expect("builds a profile")
+            .profile;
 
     let stored = document.topology_refs().expect("reads");
     let producer = stored
@@ -908,9 +909,10 @@ fn plate_with_named_cap_vertices(path: &std::path::Path) -> Vec<ferritecad_docum
         })
         .expect("the fixture has a datum plane");
     let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
-    let (profile, _) =
+    let profile =
         ferritecad_eval::profile_from_sketch(&sketch, ferritecad_types::ObjectId::new(), plane)
-            .expect("builds a profile");
+            .expect("builds a profile")
+            .profile;
 
     let stored = document.topology_refs().expect("reads");
     let producer = stored
@@ -1517,9 +1519,10 @@ fn a_corner_the_document_does_not_name_carries_no_invented_name() {
         })
         .expect("the fixture has a datum plane");
     let plane = ferritecad_eval::plane_from_datum(&datum).expect("reads the plane");
-    let (profile, _) =
+    let profile =
         ferritecad_eval::profile_from_sketch(&sketch, ferritecad_types::ObjectId::new(), plane)
-            .expect("builds a profile");
+            .expect("builds a profile")
+            .profile;
     let stored = document.topology_refs().expect("reads");
     let producer = stored
         .iter()

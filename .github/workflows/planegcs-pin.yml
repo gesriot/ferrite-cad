@@ -565,9 +565,13 @@ jobs:
             -- --nocapture --test-threads=1 2>&1 | tee eval.txt
 
           # And the boundary that carries those facts out of a rebuild into a
-          # loaded picture, from a real file through the real solver.
+          # loaded picture, from a real file through the real solver. Since
+          # 21C-1a the same boundary carries the drawings themselves, and
+          # whether they hold the solved coordinates or the stored ones is a
+          # question only a linked library can answer.
           cargo test --release -p ferritecad-scene --features planegcs \
-            --test solve_facts -- --nocapture --test-threads=1 2>&1 | tee scene.txt
+            --test solve_facts --test sketch_geometry \
+            -- --nocapture --test-threads=1 2>&1 | tee scene.txt
 
           for skip in \
             'skipped: this build did not link planegcs' \
@@ -609,7 +613,9 @@ jobs:
             'a_conflict_asks_the_solver_once_and_reads_the_document_once' \
             'a_conflict_publishes_nothing_that_lasts_one_solve' \
             'a_solve_that_refused_for_some_other_reason_carries_no_conflict' \
-            'a_document_that_solves_still_builds_and_reports_what_it_found'
+            'a_document_that_solves_still_builds_and_reports_what_it_found' \
+            'the_profile_and_the_drawing_are_the_same_answer' \
+            'a_sketch_nobody_constrained_is_carried_exactly_as_it_is_stored'
           do
             check eval.txt "$gate"
           done
@@ -622,7 +628,20 @@ jobs:
             'every_repeated_constraint_arrives_with_the_rule_stored_under_its_identifier' \
             'a_repeated_constraint_is_answered_by_identity_and_not_by_what_it_says' \
             'what_a_solve_found_out_is_no_part_of_the_picture' \
-            'a_load_refused_for_a_conflict_says_which_constraints_disagree'
+            'a_load_refused_for_a_conflict_says_which_constraints_disagree' \
+            'a_constrained_sketch_reaches_the_scene_at_the_coordinates_it_was_solved_to' \
+            'the_picture_and_the_drawing_are_the_same_answer' \
+            'an_unconstrained_sketch_is_carried_without_a_solver' \
+            'construction_geometry_of_every_kind_survives' \
+            'curve_identities_and_document_order_survive' \
+            'two_curves_that_draw_the_same_thing_are_two_curves' \
+            'the_plane_the_sketch_was_actually_placed_on_is_carried' \
+            'two_extrudes_of_one_sketch_give_one_drawing' \
+            'two_sketches_that_draw_the_same_thing_stay_two_drawings' \
+            'drawings_arrive_in_document_order' \
+            'a_document_whose_constraints_disagree_publishes_no_drawing_at_all' \
+            'carrying_the_drawings_changes_nothing_about_the_picture' \
+            'a_drawing_names_nothing_that_lasts_one_solve'
           do
             check scene.txt "$gate"
           done
@@ -838,6 +857,11 @@ jobs:
             a_failed_open_with_no_picture_behind_it_still_reads \
             one_accepted_failure_asks_for_one_frame_and_laying_it_out_again_changes_nothing \
             the_diagnostic_stream_gets_the_current_failure_only_and_none_of_the_words \
+            a_document_that_opens_replaces_the_drawings_with_its_own \
+            a_load_that_failed_leaves_the_drawings_alone \
+            a_load_that_was_given_up_on_leaves_the_drawings_alone \
+            a_picture_that_could_not_be_prepared_leaves_the_drawings_alone \
+            a_window_left_alone_neither_solves_again_nor_loses_the_drawings \
             --nocapture --test-threads=1 2>&1 | tee window.txt
 
           if grep -qF 'skipped: this build has no sketch solver' window.txt; then
@@ -880,7 +904,12 @@ jobs:
             'a_conflict_wrapped_in_another_failure_is_not_reported_as_one' \
             'a_failed_open_with_no_picture_behind_it_still_reads' \
             'one_accepted_failure_asks_for_one_frame_and_laying_it_out_again_changes_nothing' \
-            'the_diagnostic_stream_gets_the_current_failure_only_and_none_of_the_words'
+            'the_diagnostic_stream_gets_the_current_failure_only_and_none_of_the_words' \
+            'a_document_that_opens_replaces_the_drawings_with_its_own' \
+            'a_load_that_failed_leaves_the_drawings_alone' \
+            'a_load_that_was_given_up_on_leaves_the_drawings_alone' \
+            'a_picture_that_could_not_be_prepared_leaves_the_drawings_alone' \
+            'a_window_left_alone_neither_solves_again_nor_loses_the_drawings'
           do
             if ! grep -qF "test tests::${gate} ... ok" window.txt; then
               echo "::error::the window gate ${gate} did not run and pass"
@@ -889,11 +918,11 @@ jobs:
           done
           [ "$missing" -eq 0 ] || exit 1
 
-          # Thirty-four gates ran and no thirty-fifth crept in: this filter
+          # Thirty-nine gates ran and no fortieth crept in: this filter
           # is what keeps the run away from the gates that want a graphics
           # device.
-          grep -qE 'test result: ok\. 34 passed; 0 failed' window.txt \
-            || { echo "::error::the window gates did not run as exactly thirty-four passes"; exit 1; }
+          grep -qE 'test result: ok\. 39 passed; 0 failed' window.txt \
+            || { echo "::error::the window gates did not run as exactly thirty-nine passes"; exit 1; }
           echo "the window carried a real solve from a real document to a screen"
 
       - name: Ask the real application which sketch solver it has

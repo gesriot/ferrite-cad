@@ -38,6 +38,7 @@ use ferritecad_types::{CadError, ObjectId, Result};
 use crate::cache::{load_extrude_archive, store_extrude_archive};
 use crate::convert::{extrude_request, plane_from_datum, profile_from_sketch};
 use crate::document_graph::DocumentGraph;
+use crate::presentation::SketchPresentation;
 use crate::solve::SketchSolveReport;
 
 /// What a rebuild produced.
@@ -69,11 +70,21 @@ use crate::solve::SketchSolveReport;
 /// read is still one sketch with one report, and nothing that was not solved —
 /// an unconstrained sketch, an extrude, a body, a datum, an import — has one
 /// at all.
+///
+/// # What each sketch looked like is kept for every sketch
+///
+/// [`SketchPresentation`] is the third side of the same one evaluation, and
+/// unlike a report every sketch this rebuild reached has one: an unconstrained
+/// drawing is still a drawing, and asking no solver about it is not the same
+/// as having nothing to show. Filed under the sketch's own [`ObjectId`] for
+/// the same reason a report is, so two extrudes of one sketch are two
+/// extrusions of one drawing.
 #[derive(Debug, Default)]
 pub struct RebuildResult {
     shapes: BTreeMap<ObjectId, ShapeHandle>,
     profiles: BTreeMap<ObjectId, Profile>,
     solve_reports: BTreeMap<ObjectId, SketchSolveReport>,
+    presentations: BTreeMap<ObjectId, SketchPresentation>,
     topology: TopologyMap,
     order: Vec<ObjectId>,
     owned: Vec<ShapeHandle>,
@@ -98,6 +109,16 @@ impl RebuildResult {
     /// could honestly say.
     pub fn solve_report(&self, sketch: ObjectId) -> Option<&SketchSolveReport> {
         self.solve_reports.get(&sketch)
+    }
+
+    /// What one sketch of this document looked like, at the coordinates this
+    /// rebuild built its profile from.
+    ///
+    /// `None` for everything that is not a sketch. Present for every sketch,
+    /// constrained or not: what a drawing looks like is not a thing only a
+    /// solver could have said.
+    pub fn sketch_presentation(&self, sketch: ObjectId) -> Option<&SketchPresentation> {
+        self.presentations.get(&sketch)
     }
 
     /// Every sketch this rebuild solved, in the order it evaluated them.
@@ -265,12 +286,17 @@ fn run<K: GeometryKernel + ?Sized>(
                 })?;
                 // Converted here rather than when the extrude asks for it, so a
                 // malformed sketch is reported against the sketch.
-                let (profile, report) = profile_from_sketch(sketch, *id, plane)?;
-                state.profiles.insert(*id, profile);
+                let evaluated = profile_from_sketch(sketch, *id, plane)?;
+                state.profiles.insert(*id, evaluated.profile);
+                // Filed for every sketch, however it was arrived at. The
+                // profile above and this were built from one set of
+                // coordinates, so nothing downstream has to choose between
+                // them or ask for them again.
+                state.presentations.insert(*id, evaluated.presentation);
                 // Filed only when there was a solve to report. Absent is the
                 // honest answer for a sketch nobody constrained, and an empty
                 // report would read as one that was solved and found rigid.
-                if let Some(report) = report {
+                if let Some(report) = evaluated.report {
                     state.solve_reports.insert(*id, report);
                 }
             }

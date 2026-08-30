@@ -24,7 +24,7 @@ use ferritecad_document::{
     Extrude, ObjectPayload, Point2, Sketch, SketchConstraint, SketchConstraintRule, SketchCurve,
     SketchGeometry, SketchPointRef, SketchPointSelector, SketchSegmentRef, SolidOperation,
 };
-use ferritecad_eval::{rebuild_cached, rebuild_cold};
+use ferritecad_eval::{SketchPresentation, rebuild_cached, rebuild_cold};
 use ferritecad_kernel::{
     ArchiveSlot, BrepBlob, ExtrudeRequest, ExtrudeResult, GeometryKernel, KernelIdentity, Mesh,
     OperationContext, OperationResult, ShapeHandle, SubShapeHandle, TessellationParams,
@@ -285,6 +285,7 @@ fn plate_constraints(edges: &[StableEntityId], ids: &[StableEntityId]) -> Vec<Sk
 
 /// Every identifier the fixture hands out, so a gate can name one afterwards.
 struct Plate {
+    sketch: ObjectId,
     extrude: ObjectId,
     edges: Vec<StableEntityId>,
     constraints: Vec<StableEntityId>,
@@ -403,6 +404,7 @@ fn write_plate(
     (
         document,
         Plate {
+            sketch,
             extrude,
             edges,
             constraints: constraint_ids,
@@ -467,6 +469,32 @@ fn near(actual: (f64, f64), expected: (f64, f64)) -> bool {
     (actual.0 - expected.0).abs() <= PLACED && (actual.1 - expected.1).abs() <= PLACED
 }
 
+/// Where the drawing a rebuild carried put each named line, ends included.
+///
+/// Looked up by the identifier the document minted, never by position: the
+/// whole point of carrying the curves is that they are still the document's
+/// curves, and a gate that read them off the list in order would pass for a
+/// drawing that had renamed every one of them.
+fn drawn(
+    presentation: &SketchPresentation,
+    edges: &[StableEntityId],
+) -> Vec<((f64, f64), (f64, f64))> {
+    edges
+        .iter()
+        .map(|edge| {
+            let curve = presentation
+                .curves()
+                .iter()
+                .find(|curve| curve.id() == *edge)
+                .unwrap_or_else(|| panic!("the drawing carries no curve called {edge}"));
+            match curve.geometry() {
+                SketchGeometry::Line { start, end } => ((start.x, start.y), (end.x, end.y)),
+                other => panic!("curve {edge} was stored as a line and came back as {other:?}"),
+            }
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // The end-to-end gate
 // ---------------------------------------------------------------------------
@@ -514,6 +542,106 @@ fn a_stored_constrained_plate_reaches_the_kernel_at_its_solved_coordinates() {
     assert_eq!(kernel.extrude_count(), 1);
     built.release_all(&mut kernel);
     assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
+fn the_profile_and_the_drawing_are_the_same_answer() {
+    solver_or_skip!();
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (written, plate) = plate(&dir);
+    let document = reopen(&written);
+    drop(written);
+
+    let mut kernel = RecordingKernel::new();
+    let before = solver::native_solves();
+
+    let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
+        .expect("a constrained plate whose constraints can be met must rebuild");
+
+    // The whole claim in one number. Carrying the drawing beside the profile
+    // is only worth anything if it costs no second answer: a rebuild that
+    // solved once for the kernel and again for whatever draws the sketch
+    // could hand out two different plates.
+    assert_eq!(
+        solver::native_solves() - before,
+        1,
+        "carrying the drawing bought a second crossing into planegcs"
+    );
+
+    let requests = kernel.requests();
+    assert_eq!(requests.len(), 1, "one extrude, one request");
+    let corners = corners(requests[0].profile(), &plate.edges);
+
+    let presentation = built
+        .sketch_presentation(plate.sketch)
+        .expect("the rebuild that built the profile saw the sketch it built it from");
+    let drawn = drawn(presentation, &plate.edges);
+
+    for (index, (start, end)) in drawn.into_iter().enumerate() {
+        // Bit for bit, not near: these are not two computations that agree,
+        // they are one set of coordinates read twice. Anything looser would
+        // pass for a drawing solved a second time to four decimal places.
+        assert_eq!(
+            start, corners[index],
+            "line {index} is at {start:?} in the drawing and at {:?} in the profile the kernel \
+             was handed",
+            corners[index]
+        );
+        assert!(
+            near(start, SOLVED[index].0) && near(end, SOLVED[index].1),
+            "line {index} runs {start:?} to {end:?}, and the constraints put it at {:?}",
+            SOLVED[index]
+        );
+        assert!(
+            !near(start, STORED[index].0),
+            "line {index} was carried at the coordinates the file stores, so nothing solved it"
+        );
+    }
+
+    built.release_all(&mut kernel);
+}
+
+#[test]
+fn a_sketch_nobody_constrained_is_carried_exactly_as_it_is_stored() {
+    // Holds in every build, with or without a library, and it is the half of
+    // the claim a solver cannot help with: a drawing with nothing to solve is
+    // still a drawing, and what it looks like is what the file says.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let curves: Vec<SketchCurve> = SOLVED
+        .iter()
+        .map(|(start, end)| line(StableEntityId::new(), *start, *end).expect("finite"))
+        .collect();
+    let (written, plate) = write_plate(&dir, curves, Vec::new(), false);
+    let document = reopen(&written);
+    drop(written);
+
+    let mut kernel = MockKernel::new();
+    let before = solver::native_solves();
+
+    let built = rebuild_cold(&document, &mut kernel, &OperationContext::default())
+        .expect("an unconstrained plate rebuilds as it always did");
+
+    assert_eq!(
+        solver::native_solves(),
+        before,
+        "carrying the drawing of an unconstrained sketch reached for a solver"
+    );
+    assert!(
+        built.solve_report(plate.sketch).is_none(),
+        "nothing solved this sketch, so nothing may report on it"
+    );
+
+    let presentation = built
+        .sketch_presentation(plate.sketch)
+        .expect("a sketch with no constraints is still a sketch this rebuild read");
+    assert_eq!(
+        drawn(presentation, &plate.edges),
+        SOLVED.to_vec(),
+        "the drawing came back as something other than what the file stores"
+    );
+
+    built.release_all(&mut kernel);
 }
 
 #[test]

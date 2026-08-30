@@ -17,6 +17,7 @@ use ferritecad_kernel::{
 };
 use ferritecad_types::{CadError, ObjectId, Point3, Result, Vec3};
 
+use crate::presentation::SketchPresentation;
 use crate::solve::SketchSolveReport;
 
 /// How close two endpoints must be to count as joined, in millimetres.
@@ -51,9 +52,10 @@ pub fn plane_from_datum(datum: &DatumPlane) -> Result<SketchPlane> {
 /// no solve, nothing to report, and an empty report would be a claim that a
 /// sketch nobody constrained is fully constrained.
 ///
-/// Both halves come out of the one solve. A caller that wanted the geometry
-/// and the facts separately would have to ask twice, and the second answer
-/// would be a second solver run of a sketch that had already been solved.
+/// All three sides of [`SketchEvaluation`] come out of the one solve. A caller
+/// that wanted the profile, the drawing or the facts separately would have to
+/// ask twice, and the second answer would be a second solver run of a sketch
+/// that had already been solved.
 ///
 /// `id` is what the document calls this sketch. It is not used to build
 /// anything: it is the one word a solver cannot supply, and it is needed so a
@@ -63,11 +65,51 @@ pub fn profile_from_sketch(
     sketch: &Sketch,
     id: ObjectId,
     plane: SketchPlane,
-) -> Result<(Profile, Option<SketchSolveReport>)> {
+) -> Result<SketchEvaluation> {
     match crate::solve::solved(sketch, id)? {
-        Some((solved, report)) => Ok((profile_from_curves(&solved, plane)?, Some(report))),
-        None => Ok((profile_from_curves(sketch, plane)?, None)),
+        Some((solved, report)) => evaluation_of(&solved, id, plane, Some(report)),
+        None => evaluation_of(sketch, id, plane, None),
     }
+}
+
+/// The three sides of one sketch evaluation.
+///
+/// Named rather than returned as a tuple because the three are the same
+/// answer read three ways, and which of them a caller took would otherwise be
+/// a position to count out. What holds them together is that they are built
+/// from one `&Sketch`: whichever coordinates that sketch carries, the profile
+/// and the drawing carry the same ones, and there is no arrangement in which a
+/// caller gets a solved profile beside a stored drawing.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct SketchEvaluation {
+    /// What the kernel is asked to sweep. Less than the drawing by design:
+    /// construction geometry bounds no face, and the rest is chained into one
+    /// loop.
+    pub profile: Profile,
+    /// The whole drawing, at the coordinates the profile was built from.
+    pub presentation: SketchPresentation,
+    /// What the solve found out, and `None` when there was nothing to solve.
+    pub report: Option<SketchSolveReport>,
+}
+
+/// Reads one set of coordinates three ways.
+///
+/// `evaluated` is whatever the profile is entitled to be built from – the
+/// solved sketch when there were constraints, the stored one when there were
+/// none. Both sides are built from it here, in one place, so neither can come
+/// from anywhere else.
+fn evaluation_of(
+    evaluated: &Sketch,
+    id: ObjectId,
+    plane: SketchPlane,
+    report: Option<SketchSolveReport>,
+) -> Result<SketchEvaluation> {
+    Ok(SketchEvaluation {
+        profile: profile_from_curves(evaluated, plane)?,
+        presentation: SketchPresentation::of(id, plane, evaluated),
+        report,
+    })
 }
 
 /// The profile arithmetic itself, over whichever coordinates it was given.
@@ -284,12 +326,13 @@ mod tests {
 
     #[test]
     fn a_square_becomes_a_four_segment_profile() {
-        let (profile, _) = profile_from_sketch(
+        let profile = profile_from_sketch(
             &sketch(square_curves()),
             ObjectId::new(),
             SketchPlane::world_xy(),
         )
-        .expect("a closed square converts");
+        .expect("a closed square converts")
+        .profile;
         assert_eq!(profile.outer().segments().len(), 4);
         assert!(profile.inner().is_empty());
     }
@@ -301,9 +344,10 @@ mod tests {
         let mut curves = square_curves();
         curves.swap(1, 3);
 
-        let (profile, _) =
+        let profile =
             profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
-                .expect("order is recovered by walking the chain");
+                .expect("order is recovered by walking the chain")
+                .profile;
         assert_eq!(profile.outer().segments().len(), 4);
     }
 
@@ -319,9 +363,10 @@ mod tests {
             },
         });
 
-        let (profile, _) =
+        let profile =
             profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
-                .expect("a construction circle bounds nothing and is skipped");
+                .expect("a construction circle bounds nothing and is skipped")
+                .profile;
         assert_eq!(profile.outer().segments().len(), 4);
     }
 
@@ -398,12 +443,13 @@ mod tests {
 
     #[test]
     fn a_blind_extrude_converts() {
-        let (profile, _) = profile_from_sketch(
+        let profile = profile_from_sketch(
             &sketch(square_curves()),
             ObjectId::new(),
             SketchPlane::world_xy(),
         )
-        .expect("converts");
+        .expect("converts")
+        .profile;
         let request = extrude_request(
             &extrude(EndCondition::Blind {
                 distance: Expression::constant(8.0).expect("finite"),
@@ -418,12 +464,13 @@ mod tests {
 
     #[test]
     fn a_symmetric_extrude_sweeps_the_distance_on_each_side() {
-        let (profile, _) = profile_from_sketch(
+        let profile = profile_from_sketch(
             &sketch(square_curves()),
             ObjectId::new(),
             SketchPlane::world_xy(),
         )
-        .expect("converts");
+        .expect("converts")
+        .profile;
         let request = extrude_request(
             &extrude(EndCondition::Symmetric {
                 distance: Expression::constant(4.0).expect("finite"),
@@ -439,12 +486,13 @@ mod tests {
 
     #[test]
     fn through_all_is_unsupported() {
-        let (profile, _) = profile_from_sketch(
+        let profile = profile_from_sketch(
             &sketch(square_curves()),
             ObjectId::new(),
             SketchPlane::world_xy(),
         )
-        .expect("converts");
+        .expect("converts")
+        .profile;
         let err = extrude_request(&extrude(EndCondition::ThroughAll), profile)
             .expect_err("ThroughAll needs booleans");
         assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -457,12 +505,13 @@ mod tests {
             SolidOperation::Cut,
             SolidOperation::Intersect,
         ] {
-            let (profile, _) = profile_from_sketch(
+            let profile = profile_from_sketch(
                 &sketch(square_curves()),
                 ObjectId::new(),
                 SketchPlane::world_xy(),
             )
-            .expect("converts");
+            .expect("converts")
+            .profile;
             let mut feature = extrude(EndCondition::Blind {
                 distance: Expression::constant(8.0).expect("finite"),
             });
@@ -475,12 +524,13 @@ mod tests {
 
     #[test]
     fn a_target_body_is_unsupported() {
-        let (profile, _) = profile_from_sketch(
+        let profile = profile_from_sketch(
             &sketch(square_curves()),
             ObjectId::new(),
             SketchPlane::world_xy(),
         )
-        .expect("converts");
+        .expect("converts")
+        .profile;
         let mut feature = extrude(EndCondition::Blind {
             distance: Expression::constant(8.0).expect("finite"),
         });
