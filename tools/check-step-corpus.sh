@@ -37,7 +37,8 @@ while IFS= read -r line; do
 
   path=""
   for candidate in "${root}/fixtures/step/canonical/${name}" \
-                   "${root}/fixtures/step/damaged/${name}"; do
+                   "${root}/fixtures/step/damaged/${name}" \
+                   "${root}/fixtures/step/interoperability/${name}"; do
     [ -f "${candidate}" ] && path="${candidate}" && break
   done
   if [ -z "${path}" ]; then
@@ -58,8 +59,10 @@ done < "${provenance}"
 
 # Every file in the corpus must be accounted for, or a file could be added
 # without provenance and the check would still pass.
-present="$(find "${root}/fixtures/step/canonical" "${root}/fixtures/step/damaged" \
-  -type f \( -name '*.step' -o -name '*.txt' \) | wc -l | tr -d ' ')"
+present="$(find "${root}/fixtures/step/canonical" \
+                  "${root}/fixtures/step/damaged" \
+                  "${root}/fixtures/step/interoperability" \
+  -type f \( -name '*.step' -o -name '*.stp' -o -name '*.txt' \) | wc -l | tr -d ' ')"
 if [ "${checked}" -ne "${present}" ]; then
   echo "the corpus holds ${present} files and PROVENANCE.md records ${checked}" >&2
   failed=$((failed + 1))

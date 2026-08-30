@@ -50,3 +50,10 @@ tools/product/*         -text
 # embedded into the viewer byte for byte. They must keep the repository bytes
 # on Windows rather than being rewritten by core.autocrlf.
 crates/ferritecad-viewport-gpu/src/*.wgsl -text
+
+# Interoperability inputs are preserved exactly as supplied. In particular,
+# the C3D AP203 fixture uses CRLF throughout; treating it as source text would
+# make `git diff --check` call every original line trailing whitespace and a
+# Windows checkout could rewrite the regression input before its checksum is
+# checked.
+fixtures/step/interoperability/*.stp binary
