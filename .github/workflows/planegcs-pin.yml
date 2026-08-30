@@ -823,6 +823,21 @@ jobs:
             a_failure_that_is_not_a_conflict_stays_what_it_is \
             a_conflict_costs_one_native_system_and_one_reading_of_the_document \
             a_conflict_at_the_boundary_says_nothing_that_lasts_one_solve \
+            a_conflicting_document_says_in_the_window_which_constraints_disagree \
+            several_conflicting_constraints_stay_in_the_order_the_document_stores_them \
+            a_failed_open_names_the_file_it_failed_on_and_not_the_one_on_screen \
+            a_failed_open_leaves_the_picture_and_everything_chosen_in_it_alone \
+            the_conflict_is_not_filed_with_what_the_documents_own_solves_found_out \
+            a_stale_failure_after_a_newer_document_opened_says_nothing_anywhere \
+            a_stale_failure_while_another_document_is_being_read_says_nothing_anywhere \
+            asking_for_another_document_takes_down_the_last_attempts_account \
+            giving_up_on_a_reading_leaves_no_account_of_it \
+            a_document_that_opens_takes_away_the_account_of_the_one_that_did_not \
+            a_failure_with_nothing_to_explain_takes_away_the_last_ones_constraints \
+            a_conflict_wrapped_in_another_failure_is_not_reported_as_one \
+            a_failed_open_with_no_picture_behind_it_still_reads \
+            one_accepted_failure_asks_for_one_frame_and_laying_it_out_again_changes_nothing \
+            the_diagnostic_stream_gets_the_current_failure_only_and_none_of_the_words \
             --nocapture --test-threads=1 2>&1 | tee window.txt
 
           if grep -qF 'skipped: this build has no sketch solver' window.txt; then
@@ -850,7 +865,22 @@ jobs:
             'a_refused_open_replaces_neither_the_picture_nor_what_it_came_with' \
             'a_failure_that_is_not_a_conflict_stays_what_it_is' \
             'a_conflict_costs_one_native_system_and_one_reading_of_the_document' \
-            'a_conflict_at_the_boundary_says_nothing_that_lasts_one_solve'
+            'a_conflict_at_the_boundary_says_nothing_that_lasts_one_solve' \
+            'a_conflicting_document_says_in_the_window_which_constraints_disagree' \
+            'several_conflicting_constraints_stay_in_the_order_the_document_stores_them' \
+            'a_failed_open_names_the_file_it_failed_on_and_not_the_one_on_screen' \
+            'a_failed_open_leaves_the_picture_and_everything_chosen_in_it_alone' \
+            'the_conflict_is_not_filed_with_what_the_documents_own_solves_found_out' \
+            'a_stale_failure_after_a_newer_document_opened_says_nothing_anywhere' \
+            'a_stale_failure_while_another_document_is_being_read_says_nothing_anywhere' \
+            'asking_for_another_document_takes_down_the_last_attempts_account' \
+            'giving_up_on_a_reading_leaves_no_account_of_it' \
+            'a_document_that_opens_takes_away_the_account_of_the_one_that_did_not' \
+            'a_failure_with_nothing_to_explain_takes_away_the_last_ones_constraints' \
+            'a_conflict_wrapped_in_another_failure_is_not_reported_as_one' \
+            'a_failed_open_with_no_picture_behind_it_still_reads' \
+            'one_accepted_failure_asks_for_one_frame_and_laying_it_out_again_changes_nothing' \
+            'the_diagnostic_stream_gets_the_current_failure_only_and_none_of_the_words'
           do
             if ! grep -qF "test tests::${gate} ... ok" window.txt; then
               echo "::error::the window gate ${gate} did not run and pass"
@@ -859,10 +889,11 @@ jobs:
           done
           [ "$missing" -eq 0 ] || exit 1
 
-          # Nineteen gates ran and no twentieth crept in: this filter is what
-          # keeps the run away from the gates that want a graphics device.
-          grep -qE 'test result: ok\. 19 passed; 0 failed' window.txt \
-            || { echo "::error::the window gates did not run as exactly nineteen passes"; exit 1; }
+          # Thirty-four gates ran and no thirty-fifth crept in: this filter
+          # is what keeps the run away from the gates that want a graphics
+          # device.
+          grep -qE 'test result: ok\. 34 passed; 0 failed' window.txt \
+            || { echo "::error::the window gates did not run as exactly thirty-four passes"; exit 1; }
           echo "the window carried a real solve from a real document to a screen"
 
       - name: Ask the real application which sketch solver it has

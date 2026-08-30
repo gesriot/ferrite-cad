@@ -21,8 +21,8 @@ mod panels;
 
 pub use input::{Hover, PointerButton, ViewportEvent, ViewportInput};
 pub use panels::{
-    Activity, Chosen, EdgeName, FRAME_ALL_KEY, FRAME_KEY, FaceName, HIDE_KEY, ISOLATE_KEY,
-    PROJECTION_KEY, RedundantExplanation, RowVisibility, Rows, SHOW_ALL_KEY, Selected,
-    SolvedSketch, TopologyName, VIEWS, VertexName, definitions_panel, selection_inspector,
-    sketch_solves_panel, toolbar,
+    Activity, Chosen, ConflictingRule, EdgeName, FRAME_ALL_KEY, FRAME_KEY, FaceName, HIDE_KEY,
+    ISOLATE_KEY, OpenFailure, PROJECTION_KEY, RedundantExplanation, RowVisibility, Rows,
+    SHOW_ALL_KEY, Selected, SolvedSketch, TopologyName, VIEWS, VertexName, definitions_panel,
+    open_failure_panel, selection_inspector, sketch_solves_panel, toolbar,
 };

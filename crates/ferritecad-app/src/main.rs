@@ -286,6 +286,13 @@ struct Loads {
     shown: Option<String>,
     /// Where the reading in flight reports how far it has got.
     progress: Option<(LoadGeneration, Arc<ProgressRelay>)>,
+    /// What the last attempt to open a document failed over, when it failed
+    /// over something with parts.
+    ///
+    /// About that attempt and nothing else. Written, replaced and cleared by
+    /// the one place that decides what an answer is worth, so a diagnostic
+    /// cannot outlive the question it answered.
+    conflict: Option<OpenConflict>,
 }
 
 /// What the window says about the document it is showing.
@@ -309,6 +316,84 @@ enum Status {
     Ready { file: String },
     /// Could not be read. The previous model stays, and this says why.
     Failed { file: String, message: String },
+}
+
+/// Why one attempt to open a document failed, in the words a person reads.
+///
+/// Owned by the application rather than by the picture. It is not a fact about
+/// the model on screen: the model on screen came from another file, which
+/// still opens, and this describes the one that did not. Filing it beside what
+/// that model's own solves found out would make a window say that the drawing
+/// in front of the user contradicts itself when it does not.
+///
+/// Every string is made once, when the refusal arrives, from the durable facts
+/// the refusal carried: the document's identifier for the sketch, the
+/// document's identifier for each blamed constraint, and the same sentence
+/// [`describe_constraint`] writes for a repeated constraint of that rule. No
+/// solver is asked anything and no document is opened: by the time one of
+/// these exists the rebuild that produced it is over, and the file may since
+/// have been deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OpenConflict {
+    /// The document that was being opened, named as the attempt named it.
+    file: String,
+    /// The sketch whose constraints disagree, as the document stores it.
+    sketch: String,
+    /// The blamed constraints, in the order the refusal carried them.
+    constraints: Vec<ConstraintWords>,
+}
+
+impl OpenConflict {
+    /// The diagnostic behind a refusal, when the refusal is a conflict.
+    ///
+    /// The type is asked, never the message: a message is a sentence written
+    /// for a person and free to be rewritten, and a window that read one back
+    /// as data would break the next time it was. A refusal that is not a
+    /// conflict answers `None`, and the window shows the one line it has
+    /// always shown.
+    fn of(error: &CadError, file: &str) -> Option<Self> {
+        let conflict = ferritecad_scene::SketchConflict::of(error)?;
+        Some(Self {
+            file: file.to_owned(),
+            sketch: conflict.sketch().to_string(),
+            // In the order the conflict carried them, which is the order the
+            // document stores them. Nothing is sorted, folded or dropped: two
+            // constraints that say the same thing under two identifiers are
+            // two constraints, and a person looking for either has to find it.
+            constraints: conflict
+                .constraints()
+                .iter()
+                .map(|constraint| ConstraintWords::of(constraint.id(), constraint.rule()))
+                .collect(),
+        })
+    }
+
+    /// Each blamed constraint, borrowed, in the order it arrived in.
+    fn rules(&self) -> Vec<ferritecad_ui::ConflictingRule<'_>> {
+        self.constraints
+            .iter()
+            .map(|constraint| ferritecad_ui::ConflictingRule {
+                identifier: &constraint.identifier,
+                says: &constraint.says,
+            })
+            .collect()
+    }
+
+    /// What the section shows this frame, borrowed from this frame's words.
+    ///
+    /// The rules arrive alongside rather than inside, on the same terms as a
+    /// solved sketch's repeated constraints: a panel is given borrowed text
+    /// and the owner of that text is the frame.
+    fn shown<'a>(
+        &'a self,
+        rules: &'a [ferritecad_ui::ConflictingRule<'a>],
+    ) -> ferritecad_ui::OpenFailure<'a> {
+        ferritecad_ui::OpenFailure {
+            file: &self.file,
+            sketch: &self.sketch,
+            constraints: rules,
+        }
+    }
 }
 
 impl Status {
@@ -380,6 +465,16 @@ impl Loads {
         self.running.push(Loading { cancel, worker });
         self.current = Some(generation);
         self.progress = Some((generation, progress));
+        // Asking for a document is the end of the last attempt's account of
+        // itself. Leaving it up beside `Opening…` would read as this file
+        // having already failed.
+        //
+        // The only place one is taken down, and that is why it is the only
+        // state an account can be in when an answer arrives: nothing else can
+        // reach `Status::Loading`, so a document that opens, a document that
+        // fails for some other reason and a reading given up on all find that
+        // this has already happened.
+        self.conflict = None;
         self.status = Status::Loading {
             generation,
             file: short_name(path),
@@ -396,6 +491,11 @@ impl Loads {
     /// What the window should be saying.
     fn status(&self) -> &Status {
         &self.status
+    }
+
+    /// What the last attempt to open a document failed over, if it did.
+    fn conflict(&self) -> Option<&OpenConflict> {
+        self.conflict.as_ref()
     }
 
     /// The newest thing the load in flight has said about itself.
@@ -448,6 +548,9 @@ impl Loads {
             loading.cancel.cancel();
         }
         self.progress = None;
+        // Nothing is cleared here beyond the reading itself. There can be no
+        // account of a failure to clear: asking for this document took the
+        // last one's down, and a reading that has not answered has not failed.
 
         // Back to naming the document that is actually drawn. Saying anything
         // about the one that was abandoned would describe a model the window
@@ -484,10 +587,19 @@ impl Loads {
                         self.shown = Some(file.clone());
                         Status::Ready { file }
                     }
-                    Err(error) => Status::Failed {
-                        file,
-                        message: error.to_string(),
-                    },
+                    Err(error) => {
+                        // The one place an account of a failure is written,
+                        // and it is written for the attempt that just failed,
+                        // named by the file that attempt asked for. A refusal
+                        // with no parts writes none, and there is never an
+                        // older one underneath it: asking for this document
+                        // took that one down.
+                        self.conflict = OpenConflict::of(&error, &file);
+                        Status::Failed {
+                            file,
+                            message: error.to_string(),
+                        }
+                    }
                 };
                 true
             }
@@ -1441,19 +1553,40 @@ struct SolveWords {
     name: Option<String>,
     object: String,
     degrees_of_freedom: usize,
-    redundant: Vec<RedundantWords>,
+    redundant: Vec<ConstraintWords>,
 }
 
-/// One repeated constraint, in the words a person will read.
+/// One constraint, in the words a person will read.
 ///
 /// The identifier exactly as the document stores it, and one sentence saying
-/// what the constraint is. Both are made here, from the durable rule the
-/// loader carried, and neither is a value formatted for a programmer: the
-/// window has no `{:?}` to fall back on because there is nothing here that
-/// could be missing.
-struct RedundantWords {
+/// what the constraint is. Both are made here, from the durable rule whoever
+/// had the document open carried out of it, and neither is a value formatted
+/// for a programmer: the window has no `{:?}` to fall back on because there is
+/// nothing here that could be missing.
+///
+/// One type for both places a constraint is named – a repeated one beside the
+/// sketch it repeats in, and a conflicting one beside the Open that failed
+/// over it – because they are the same two halves of the same thing. Two
+/// types would be two vocabularies, and the first time either was changed a
+/// window would say one rule two ways.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConstraintWords {
     identifier: String,
     says: String,
+}
+
+impl ConstraintWords {
+    /// What one stored constraint is called and what it says.
+    ///
+    /// The one road from a durable rule to a sentence, taken by everything
+    /// that shows a constraint. A second one would be a second vocabulary for
+    /// the eight families the document can store.
+    fn of(id: ferritecad_types::StableEntityId, rule: &SketchConstraintRule) -> Self {
+        Self {
+            identifier: id.to_string(),
+            says: describe_constraint(rule),
+        }
+    }
 }
 
 impl SolveWords {
@@ -1486,10 +1619,7 @@ fn solve_words_of(solves: &[SketchSolveFacts]) -> Vec<SolveWords> {
             redundant: facts
                 .redundant()
                 .iter()
-                .map(|constraint| RedundantWords {
-                    identifier: constraint.id().to_string(),
-                    says: describe_constraint(constraint.rule()),
-                })
+                .map(|constraint| ConstraintWords::of(constraint.id(), constraint.rule()))
                 .collect(),
         })
         .collect()
@@ -1897,7 +2027,16 @@ impl ApplicationHandler<AppEvent> for App {
                         .can_undo(live.scene.prepared.snapshot()),
                     orthographic: self.input.projection() == Projection::Orthographic,
                 };
-                match live.draw(&self.input, activity) {
+                // The words of the last failed attempt, borrowed for this
+                // frame from the application's own account of it. Nothing is
+                // computed here: these were written when the refusal arrived.
+                let rules = self
+                    .loads
+                    .conflict()
+                    .map(OpenConflict::rules)
+                    .unwrap_or_default();
+                let failure = self.loads.conflict().map(|conflict| conflict.shown(&rules));
+                match live.draw(&self.input, activity, failure) {
                     // A button pressed during this frame reaches the camera
                     // the same way a keystroke does, through the reducer.
                     Ok((chosen, pointed_row, interface_has_pointer)) => {
@@ -2567,6 +2706,7 @@ impl Live {
         &mut self,
         input: &ViewportInput,
         activity: Activity<'_>,
+        failure: Option<ferritecad_ui::OpenFailure<'_>>,
     ) -> Result<(Chosen, Option<usize>, bool)> {
         // Taken apart so the picture can be read while the surface is being
         // drawn into: these are different fields, and only the compiler needs
@@ -2645,6 +2785,12 @@ impl Live {
             // apart.
             chosen = ferritecad_ui::toolbar(ui, activity);
             ui.separator();
+            // Why the last attempt to open a document failed, when there is
+            // more to it than the line the toolbar already shows. Beside the
+            // status line because that is what it belongs to, and above
+            // everything that describes the model because it describes another
+            // document: the picture below is the one that did open.
+            ferritecad_ui::open_failure_panel(ui, failure);
             // Every definition in the picture, whether or not any of it is on
             // screen: a part hidden behind another, too small to hit or out of
             // shot is reachable here and nowhere else.
@@ -3158,21 +3304,45 @@ mod tests {
         generation: LoadGeneration,
         result: Result<LoadedScene>,
     ) -> AnswerEffect {
+        deliver_into(&mut empty_scene(), loads, input, generation, result)
+    }
+
+    /// The same, into a picture that is already on screen.
+    ///
+    /// What `App::show` does, minus the graphics device: prepare, commit and
+    /// then say so, in that order. A picture is committed by the same
+    /// statement the window uses, so a gate about what a failed Open leaves
+    /// behind is a gate about the arrangement the window actually has.
+    fn deliver_into(
+        scene: &mut LiveScene<()>,
+        loads: &mut Loads,
+        input: &mut ViewportInput,
+        generation: LoadGeneration,
+        result: Result<LoadedScene>,
+    ) -> AnswerEffect {
         // The same order the event loop uses: whether to show it, then
         // showing it, then saying so. Announcing first would let the window
         // call a document ready before the frame that put it there.
         let outcome = if loads.accepts(generation) {
-            match prepare_load(input, result, |_| Ok(())) {
-                Ok(prepared) => {
-                    *input = prepared.framed;
-                    Ok(())
-                }
-                Err(error) => Err(error),
-            }
+            let next = prepare_load(input, result, |_| Ok(()));
+            commit_scene(scene, input, next)
         } else {
             result.map(|_| ())
         };
         finish_answer(loads, input, generation, outcome)
+    }
+
+    /// A window with nothing in it yet.
+    fn empty_scene() -> LiveScene<()> {
+        LiveScene::new(
+            (),
+            Vec::new(),
+            FaceNames::default(),
+            EdgeNames::default(),
+            VertexNames::default(),
+            Visibility::default(),
+            Vec::new(),
+        )
     }
 
     #[test]
@@ -12618,15 +12788,7 @@ mod tests {
     fn live_scene_of(loaded: LoadedScene) -> (LiveScene<()>, ViewportInput) {
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
-        let mut scene = LiveScene::new(
-            (),
-            Vec::new(),
-            FaceNames::default(),
-            EdgeNames::default(),
-            VertexNames::default(),
-            Visibility::default(),
-            Vec::new(),
-        );
+        let mut scene = empty_scene();
         let prepared = prepare_load(&camera, Ok(loaded), |_| Ok(()));
         commit_scene(&mut scene, &mut camera, prepared).expect("the document commits");
         (scene, camera)
@@ -12641,15 +12803,21 @@ mod tests {
         let repeated: Vec<Vec<ferritecad_ui::RedundantExplanation<'_>>> =
             words.iter().map(SolveWords::repeated).collect();
         let sketches = solved_sketches(&words, &repeated);
+        laid_out(|ui| ferritecad_ui::sketch_solves_panel(ui, &sketches))
+    }
 
+    /// Every word one pass of egui actually drew, in the order it drew them.
+    ///
+    /// Read out of the shapes egui produced rather than out of the values that
+    /// went in: these are gates about what a person reads, and a section that
+    /// laid nothing out would satisfy any assertion made against its input.
+    fn laid_out(section: impl FnMut(&mut egui::Ui)) -> Vec<String> {
         let context = egui::Context::default();
         // A frame first, so the fonts are loaded: with none loaded every line
         // comes back empty and any assertion about absence would pass.
         let mut warm = context.run_ui(egui::RawInput::default(), |_| {});
         warm.textures_delta.clear();
-        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            ferritecad_ui::sketch_solves_panel(ui, &sketches);
-        });
+        let mut output = context.run_ui(egui::RawInput::default(), section);
         output.textures_delta.clear();
 
         fn collect(shape: &egui::Shape, into: &mut Vec<String>) {
@@ -12668,6 +12836,22 @@ mod tests {
             collect(&clipped.shape, &mut words);
         }
         words
+    }
+
+    /// Every word the account of a failed Open drew, exactly as the window
+    /// builds it: the application's own record, borrowed for one frame.
+    fn failure_words(loads: &Loads) -> Vec<String> {
+        let rules = loads
+            .conflict()
+            .map(OpenConflict::rules)
+            .unwrap_or_default();
+        let failure = loads.conflict().map(|conflict| conflict.shown(&rules));
+        laid_out(|ui| ferritecad_ui::open_failure_panel(ui, failure))
+    }
+
+    /// Everything that account drew, as one string to search.
+    fn failure_page(loads: &Loads) -> String {
+        failure_words(loads).join("\n")
     }
 
     /// Everything the section drew, as one string to search.
@@ -12689,19 +12873,25 @@ mod tests {
         )
     }
 
-    #[test]
-    fn every_family_the_document_can_store_is_said_as_a_finished_sentence() {
+    /// The eight families the document stores, each with the one sentence the
+    /// window is to say for it.
+    ///
+    /// One list, read by every gate that checks those words, wherever the
+    /// window says them. Two lists would be two vocabularies, and the gate
+    /// that was not updated would be the one certifying the wrong one.
+    fn eight_families(
+        first: ferritecad_types::StableEntityId,
+        second: ferritecad_types::StableEntityId,
+    ) -> Vec<(ferritecad_document::SketchConstraintRule, String)> {
         use ferritecad_document::SketchConstraintRule as Rule;
         use ferritecad_document::SketchPointSelector::{At, End, Start};
         use ferritecad_document::{SketchPointRef, SketchSegmentRef};
 
-        let (first, second) = two_curves();
         let point = SketchPointRef::new;
         let segment = SketchSegmentRef::new;
-        // The eight families the document stores, each said out in full: what
-        // kind of relationship it is, which parts of the drawing it holds
+        // What kind of relationship it is, which parts of the drawing it holds
         // together, and the size it asks for when it asks for one.
-        let cases = [
+        let families = vec![
             (
                 Rule::Coincident {
                     a: point(first, End),
@@ -12770,7 +12960,14 @@ mod tests {
                 ),
             ),
         ];
-        assert_eq!(cases.len(), 8, "the document stores eight families");
+        assert_eq!(families.len(), 8, "the document stores eight families");
+        families
+    }
+
+    #[test]
+    fn every_family_the_document_can_store_is_said_as_a_finished_sentence() {
+        let (first, second) = two_curves();
+        let cases = eight_families(first, second);
 
         let mut said: Vec<String> = Vec::new();
         for (rule, expected) in cases {
@@ -13664,14 +13861,34 @@ mod tests {
         ferritecad_types::ObjectId,
         Vec<ferritecad_document::SketchConstraint>,
     ) {
+        contradicted_document(directory, "impossible.fcad", 1)
+    }
+
+    /// The same, with `agreeing` copies of the stored width before the one
+    /// that disagrees with them.
+    ///
+    /// More than one copy is how the same rule comes to be stored under
+    /// several identifiers, which is the case where naming a constraint by
+    /// what it says rather than by what it is called would lose one.
+    fn contradicted_document(
+        directory: &tempfile::TempDir,
+        file: &str,
+        agreeing: usize,
+    ) -> (
+        std::path::PathBuf,
+        ferritecad_types::ObjectId,
+        Vec<ferritecad_document::SketchConstraint>,
+    ) {
         use ferritecad_document::{Document, ObjectPayload};
 
-        let path = directory.path().join("impossible.fcad");
+        let path = directory.path().join(file);
         let curves = solve_curves();
         let edges: Vec<ferritecad_types::StableEntityId> =
             curves.iter().map(|curve| curve.id).collect();
         let mut rules = solve_frame(&edges);
-        rules.push(solve_width(&edges));
+        for _ in 0..agreeing {
+            rules.push(solve_width(&edges));
+        }
         rules.push(ferritecad_document::SketchConstraintRule::Distance {
             a: ferritecad_document::SketchPointRef::new(
                 edges[0],
@@ -13931,5 +14148,845 @@ mod tests {
         assert_eq!(scene.hovered, Hovered::Definition(chosen));
         assert_eq!(scene.visibility, visibility);
         assert_eq!(*camera.camera(), framing);
+    }
+
+    // -----------------------------------------------------------------
+    // What the window says about an Open that failed
+    // -----------------------------------------------------------------
+
+    /// Starts a real request for a document, without doing the reading.
+    ///
+    /// The generation, the status and the cancellation are the window's own;
+    /// what the worker would have produced is handed to `deliver_into` by the
+    /// gate, which is where the real load actually happens.
+    fn start_open(loads: &mut Loads, path: &Path) -> LoadGeneration {
+        loads
+            .open(Some(path), relay(), |_, _| std::thread::spawn(|| {}))
+            .expect("a load started")
+    }
+
+    /// The sentence a gate expects for one stored size.
+    ///
+    /// Written out here from the two points and the number the file holds,
+    /// rather than obtained from the code that writes it.
+    fn distance_says(constraint: &ferritecad_document::SketchConstraint) -> String {
+        let ferritecad_document::SketchConstraintRule::Distance { a, b, distance } =
+            constraint.rule
+        else {
+            panic!("this fixture stores its widths as distances");
+        };
+        format!("Distance: {a} and {b} are {distance} mm apart")
+    }
+
+    #[test]
+    fn a_conflicting_document_says_in_the_window_which_constraints_disagree() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (path, sketch, stored) = impossible_document(&directory);
+
+        // The whole route a real Open takes: a request, a document read and
+        // refused by the real solver, and the answer delivered to the
+        // generation that asked for it.
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+        let generation = start_open(&mut loads, &path);
+        let effect = deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            generation,
+            Err(refused_document(&path)),
+        );
+        assert!(effect.status_changed, "the failure was not accepted");
+
+        assert_eq!(
+            failure_words(&loads),
+            vec![
+                "Open failed".to_owned(),
+                "Problem".to_owned(),
+                "Constraint conflict".to_owned(),
+                "File".to_owned(),
+                "impossible.fcad".to_owned(),
+                "Sketch".to_owned(),
+                sketch.to_string(),
+                "Constraint".to_owned(),
+                stored[9].id.to_string(),
+                "Says".to_owned(),
+                distance_says(&stored[9]),
+                "Constraint".to_owned(),
+                stored[10].id.to_string(),
+                "Says".to_owned(),
+                distance_says(&stored[10]),
+            ],
+            "the window did not say which stored constraints disagree, on which file"
+        );
+
+        // The two sizes themselves, read back off the page: a size a person
+        // typed is a size they have to be able to recognise.
+        let page = failure_page(&loads);
+        assert!(
+            page.contains("are 60 mm apart"),
+            "the stored size was lost:\n{page}"
+        );
+        assert!(
+            page.contains("are 75 mm apart"),
+            "the stated size was lost:\n{page}"
+        );
+    }
+
+    #[test]
+    fn every_family_is_said_in_a_failed_open_exactly_as_it_is_said_when_it_repeats() {
+        let (first, second) = two_curves();
+        let families = eight_families(first, second);
+
+        // One conflict blaming one constraint of every family the document
+        // can store, worded by the one road from a rule to a sentence.
+        let sketch = ferritecad_types::ObjectId::new();
+        let identifiers: Vec<ferritecad_types::StableEntityId> = families
+            .iter()
+            .map(|_| ferritecad_types::StableEntityId::new())
+            .collect();
+        let conflict = OpenConflict {
+            file: "impossible.fcad".to_owned(),
+            sketch: sketch.to_string(),
+            constraints: identifiers
+                .iter()
+                .zip(&families)
+                .map(|(id, (rule, _))| ConstraintWords::of(*id, rule))
+                .collect(),
+        };
+
+        let rules = conflict.rules();
+        let words =
+            laid_out(|ui| ferritecad_ui::open_failure_panel(ui, Some(conflict.shown(&rules))));
+
+        let mut expected = vec![
+            "Open failed".to_owned(),
+            "Problem".to_owned(),
+            "Constraint conflict".to_owned(),
+            "File".to_owned(),
+            "impossible.fcad".to_owned(),
+            "Sketch".to_owned(),
+            sketch.to_string(),
+        ];
+        for (id, (_, says)) in identifiers.iter().zip(&families) {
+            expected.push("Constraint".to_owned());
+            expected.push(id.to_string());
+            expected.push("Says".to_owned());
+            expected.push(says.clone());
+        }
+        assert_eq!(
+            words, expected,
+            "a conflicting constraint is worded differently from a repeated one of the same rule"
+        );
+
+        // No two families read the same, so an arm answering for its
+        // neighbour cannot pass by saying something plausible.
+        let said: std::collections::BTreeSet<&String> =
+            families.iter().map(|(_, says)| says).collect();
+        assert_eq!(
+            said.len(),
+            families.len(),
+            "two families are said the same way"
+        );
+    }
+
+    #[test]
+    fn a_conflicting_size_is_said_as_it_was_stored() {
+        let (first, _) = two_curves();
+        let point = ferritecad_document::SketchPointRef::new;
+        use ferritecad_document::SketchPointSelector::{End, Start};
+
+        // A whole number and a fraction, both as stored: a house style that
+        // rounded either would be the window deciding what a drawing says.
+        for (distance, expected) in [(60.0_f64, "60"), (12.7, "12.7"), (0.5, "0.5")] {
+            let id = ferritecad_types::StableEntityId::new();
+            let rule = ferritecad_document::SketchConstraintRule::Distance {
+                a: point(first, Start),
+                b: point(first, End),
+                distance,
+            };
+            let conflict = OpenConflict {
+                file: "impossible.fcad".to_owned(),
+                sketch: ferritecad_types::ObjectId::new().to_string(),
+                constraints: vec![ConstraintWords::of(id, &rule)],
+            };
+            let rules = conflict.rules();
+            let page =
+                laid_out(|ui| ferritecad_ui::open_failure_panel(ui, Some(conflict.shown(&rules))))
+                    .join("\n");
+            assert!(
+                page.contains(&format!(
+                    "Distance: {first}.start and {first}.end are {expected} mm apart"
+                )),
+                "a stored size, its unit or the order of its two points changed:\n{page}"
+            );
+        }
+    }
+
+    #[test]
+    fn several_conflicting_constraints_stay_in_the_order_the_document_stores_them() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        // Three copies of one width and one that contradicts them: the same
+        // rule under three identifiers, which is three constraints.
+        let (path, sketch, stored) = contradicted_document(&directory, "repeated.fcad", 3);
+
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+        let generation = start_open(&mut loads, &path);
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            generation,
+            Err(refused_document(&path)),
+        );
+
+        let mut expected = vec![
+            "Open failed".to_owned(),
+            "Problem".to_owned(),
+            "Constraint conflict".to_owned(),
+            "File".to_owned(),
+            "repeated.fcad".to_owned(),
+            "Sketch".to_owned(),
+            sketch.to_string(),
+        ];
+        for constraint in &stored[9..13] {
+            expected.push("Constraint".to_owned());
+            expected.push(constraint.id.to_string());
+            expected.push("Says".to_owned());
+            expected.push(distance_says(constraint));
+        }
+        assert_eq!(
+            failure_words(&loads),
+            expected,
+            "constraints were lost, merged or reordered on the way to the window"
+        );
+
+        // The three that agree say the same thing under three identifiers,
+        // and are three rows: a section that named them by what they say
+        // would show one.
+        let says = distance_says(&stored[9]);
+        assert_eq!(
+            failure_words(&loads)
+                .iter()
+                .filter(|word| **word == says)
+                .count(),
+            3,
+            "identical rules stored under different identifiers were folded together"
+        );
+    }
+
+    #[test]
+    fn a_failed_open_names_the_file_it_failed_on_and_not_the_one_on_screen() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (loaded, shown_sketch, _) = one_solved_sketch(&directory, Some("Profile"));
+        let (path, conflicting_sketch, _) = impossible_document(&directory);
+
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+
+        // A document that opens, first, so there is another file and another
+        // sketch for the account to be confused with.
+        let first = start_open(&mut loads, &directory.path().join("plate.fcad"));
+        deliver_into(&mut scene, &mut loads, &mut input, first, Ok(loaded));
+
+        let second = start_open(&mut loads, &path);
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            second,
+            Err(refused_document(&path)),
+        );
+
+        let page = failure_page(&loads);
+        assert!(
+            page.contains("impossible.fcad"),
+            "the attempted file is not named:\n{page}"
+        );
+        assert!(
+            page.contains(&conflicting_sketch.to_string()),
+            "the sketch that holds the conflict is not named:\n{page}"
+        );
+        assert!(
+            !page.contains("plate.fcad"),
+            "the account of a failed Open named the document on screen:\n{page}"
+        );
+        assert!(
+            !page.contains(&shown_sketch.to_string()),
+            "the account of a failed Open named a sketch of the document on screen:\n{page}"
+        );
+    }
+
+    #[test]
+    fn a_failed_open_leaves_the_picture_and_everything_chosen_in_it_alone() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (loaded, shown_sketch, repeated) = one_solved_sketch(&directory, Some("Profile"));
+        let picture = loaded.snapshot.clone();
+        let chosen = picture
+            .draws()
+            .first()
+            .expect("the picture draws something")
+            .pick;
+
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+        let first = start_open(&mut loads, &directory.path().join("plate.fcad"));
+        deliver_into(&mut scene, &mut loads, &mut input, first, Ok(loaded));
+
+        // A choice, a question, a hidden definition and a camera pointed
+        // somewhere in particular, all made in the picture that is up.
+        scene.selection = Selection::Definition(chosen);
+        scene.hovered = Hovered::Definition(chosen);
+        scene.visibility = Visibility::new(&picture);
+        let catalogue = scene.catalogue.clone();
+        let visibility = scene.visibility.clone();
+        let framing = *input.camera();
+        let solves = section_page(&scene.sketch_solves);
+
+        let (path, _, _) = impossible_document(&directory);
+        let second = start_open(&mut loads, &path);
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            second,
+            Err(refused_document(&path)),
+        );
+
+        assert!(
+            failure_page(&loads).contains("Constraint conflict"),
+            "the failure was not reported at all"
+        );
+        assert_eq!(
+            scene.selection,
+            Selection::Definition(chosen),
+            "the choice was cleared"
+        );
+        assert_eq!(
+            scene.hovered,
+            Hovered::Definition(chosen),
+            "the question was cleared"
+        );
+        assert_eq!(scene.visibility, visibility, "what is drawn changed");
+        assert_eq!(*input.camera(), framing, "the camera moved");
+        assert_eq!(
+            scene.catalogue, catalogue,
+            "the parts of the picture changed"
+        );
+        assert_eq!(
+            scene.sketch_solves.len(),
+            1,
+            "the account of the drawing was replaced"
+        );
+        assert_eq!(scene.sketch_solves[0].sketch(), shown_sketch);
+        assert_eq!(scene.sketch_solves[0].report().redundant(), [repeated]);
+        assert_eq!(
+            section_page(&scene.sketch_solves),
+            solves,
+            "what this document's own solve found out changed"
+        );
+    }
+
+    #[test]
+    fn the_conflict_is_not_filed_with_what_the_documents_own_solves_found_out() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (loaded, _, _) = one_solved_sketch(&directory, Some("Profile"));
+
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+        let first = start_open(&mut loads, &directory.path().join("plate.fcad"));
+        deliver_into(&mut scene, &mut loads, &mut input, first, Ok(loaded));
+
+        let (path, conflicting_sketch, stored) = impossible_document(&directory);
+        let second = start_open(&mut loads, &path);
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            second,
+            Err(refused_document(&path)),
+        );
+
+        // The section that describes the model on screen says nothing about
+        // the file that did not open: these are facts about two documents,
+        // and one window showing them as one page would be describing a
+        // drawing that does not contradict itself as one that does.
+        let solves = section_page(&scene.sketch_solves);
+        for foreign in [
+            "Open failed",
+            "Constraint conflict",
+            "impossible.fcad",
+            &conflicting_sketch.to_string(),
+            &stored[9].id.to_string(),
+            &stored[10].id.to_string(),
+        ] {
+            assert!(
+                !solves.contains(foreign),
+                "what a document's own solve found out included {foreign:?}, which belongs to \
+                 another document's failed Open:\n{solves}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stale_failure_after_a_newer_document_opened_says_nothing_anywhere() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (loaded, _, _) = one_solved_sketch(&directory, Some("Profile"));
+        let (path, _, _) = impossible_document(&directory);
+
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+
+        // The slow reading is the one a user gives up waiting for, so this
+        // order is the usual one rather than the unlucky one.
+        let stale = start_open(&mut loads, &path);
+        let current = start_open(&mut loads, &directory.path().join("plate.fcad"));
+        deliver_into(&mut scene, &mut loads, &mut input, current, Ok(loaded));
+
+        let status = loads.status().clone();
+        let solves = section_page(&scene.sketch_solves);
+        let _ = input.take_redraw();
+
+        let effect = deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            stale,
+            Err(refused_document(&path)),
+        );
+
+        assert!(
+            !effect.status_changed,
+            "an abandoned reading changed the line"
+        );
+        assert_eq!(effect.error, None, "an abandoned reading was announced");
+        assert!(
+            !input.take_redraw(),
+            "an abandoned reading asked for a frame"
+        );
+        assert_eq!(
+            *loads.status(),
+            status,
+            "an abandoned reading changed the line"
+        );
+        assert!(
+            failure_words(&loads).is_empty(),
+            "a document nobody is opening was reported as having failed to open"
+        );
+        assert_eq!(
+            scene.sketch_solves.len(),
+            1,
+            "an abandoned reading changed the picture"
+        );
+        assert_eq!(section_page(&scene.sketch_solves), solves);
+    }
+
+    #[test]
+    fn a_stale_failure_while_another_document_is_being_read_says_nothing_anywhere() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (path, _, _) = impossible_document(&directory);
+
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+
+        let stale = start_open(&mut loads, &path);
+        start_open(&mut loads, &directory.path().join("plate.fcad"));
+        let waiting = loads.status().clone();
+        let _ = input.take_redraw();
+
+        let effect = deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            stale,
+            Err(refused_document(&path)),
+        );
+
+        assert!(!effect.status_changed);
+        assert_eq!(effect.error, None, "an abandoned reading was announced");
+        assert!(
+            !input.take_redraw(),
+            "an abandoned reading asked for a frame"
+        );
+        assert_eq!(
+            *loads.status(),
+            waiting,
+            "an abandoned reading interrupted the one that replaced it"
+        );
+        assert!(
+            failure_words(&loads).is_empty(),
+            "a reading that was replaced put its own failure in front of the one in flight"
+        );
+    }
+
+    #[test]
+    fn asking_for_another_document_takes_down_the_last_attempts_account() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (path, _, _) = impossible_document(&directory);
+
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+        let failed = start_open(&mut loads, &path);
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            failed,
+            Err(refused_document(&path)),
+        );
+        assert!(
+            !failure_words(&loads).is_empty(),
+            "the failure was not reported"
+        );
+
+        start_open(&mut loads, &directory.path().join("plate.fcad"));
+
+        assert!(
+            failure_words(&loads).is_empty(),
+            "the last attempt's constraints were still on screen beside Opening…"
+        );
+        assert!(
+            matches!(loads.status(), Status::Loading { .. }),
+            "asking for a document did not say it was being read"
+        );
+    }
+
+    #[test]
+    fn giving_up_on_a_reading_leaves_no_account_of_it() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (path, _, _) = impossible_document(&directory);
+
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+        let failed = start_open(&mut loads, &path);
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            failed,
+            Err(refused_document(&path)),
+        );
+
+        // A second attempt, given up on before it answered.
+        start_open(&mut loads, &directory.path().join("plate.fcad"));
+        cancel_load(&mut loads, &mut input);
+
+        assert_eq!(
+            *loads.status(),
+            Status::Idle,
+            "the line describes a reading nobody made"
+        );
+        assert!(
+            failure_words(&loads).is_empty(),
+            "an attempt that was given up on left an account of a failure behind"
+        );
+    }
+
+    #[test]
+    fn a_document_that_opens_takes_away_the_account_of_the_one_that_did_not() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (loaded, shown_sketch, _) = one_solved_sketch(&directory, Some("Profile"));
+        let (path, _, _) = impossible_document(&directory);
+
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+        let failed = start_open(&mut loads, &path);
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            failed,
+            Err(refused_document(&path)),
+        );
+        assert!(
+            !failure_words(&loads).is_empty(),
+            "the failure was not reported"
+        );
+
+        let opened = start_open(&mut loads, &directory.path().join("plate.fcad"));
+        deliver_into(&mut scene, &mut loads, &mut input, opened, Ok(loaded));
+
+        assert!(
+            failure_words(&loads).is_empty(),
+            "a document that opened left the last failure's constraints on screen"
+        );
+        assert_eq!(
+            *loads.status(),
+            Status::Ready {
+                file: "plate.fcad".to_owned()
+            }
+        );
+        assert_eq!(
+            scene.sketch_solves.first().map(SketchSolveFacts::sketch),
+            Some(shown_sketch),
+            "the picture and its account did not arrive together"
+        );
+    }
+
+    #[test]
+    fn a_failure_with_nothing_to_explain_takes_away_the_last_ones_constraints() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (path, _, stored) = impossible_document(&directory);
+
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+        let failed = start_open(&mut loads, &path);
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            failed,
+            Err(refused_document(&path)),
+        );
+        assert!(
+            !failure_words(&loads).is_empty(),
+            "the failure was not reported"
+        );
+
+        let missing = start_open(&mut loads, Path::new("gone.fcad"));
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            missing,
+            Err(CadError::input("no such document")),
+        );
+
+        assert!(
+            failure_words(&loads).is_empty(),
+            "a document that could not be read was reported as a drawing that contradicts \
+             itself, with the last one's constraints"
+        );
+        assert!(
+            !failure_page(&loads).contains(&stored[9].id.to_string()),
+            "the constraints of an earlier failure outlived it"
+        );
+        assert_eq!(
+            loads.status().line(),
+            "gone.fcad: invalid input: no such document",
+            "the ordinary line about the ordinary failure changed"
+        );
+    }
+
+    #[test]
+    fn a_conflict_wrapped_in_another_failure_is_not_reported_as_one() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (path, _, _) = impossible_document(&directory);
+
+        let refusal = refused_document(&path);
+        let conflict = ferritecad_scene::SketchConflict::of(&refusal)
+            .expect("the direct refusal carries its conflict")
+            .clone();
+
+        // Two shapes of the same mistake: a generic failure with the
+        // constraint refusal below it, and a generic failure carrying the
+        // conflict itself as its cause. What a failure is is what its own
+        // variant says, however far down a conflict happens to lie.
+        for wrapped in [
+            CadError::input_because("this document could not be read", refusal),
+            CadError::input_because("this document could not be read", conflict.clone()),
+            CadError::kernel_because("this shape could not be built", conflict.clone()),
+            CadError::io("this file could not be opened", conflict),
+        ] {
+            let mut loads = Loads::default();
+            let mut input = ViewportInput::new();
+            input.resize(800, 600);
+            let mut scene = empty_scene();
+            let generation = start_open(&mut loads, &path);
+            deliver_into(&mut scene, &mut loads, &mut input, generation, Err(wrapped));
+
+            assert!(
+                failure_words(&loads).is_empty(),
+                "a failure that merely has a conflict below it was reported as a conflict: {}",
+                loads.status().line()
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_open_with_no_picture_behind_it_still_reads() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (path, sketch, stored) = impossible_document(&directory);
+
+        // Nothing has ever been opened: the first thing this window shows is
+        // the account of what went wrong.
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+        let generation = start_open(&mut loads, &path);
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            generation,
+            Err(refused_document(&path)),
+        );
+
+        let page = failure_page(&loads);
+        for expected in [
+            "Open failed",
+            "Constraint conflict",
+            "impossible.fcad",
+            &sketch.to_string(),
+            &stored[9].id.to_string(),
+            &distance_says(&stored[9]),
+        ] {
+            assert!(
+                page.contains(expected),
+                "a window with no picture lost {expected:?}:\n{page}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_accepted_failure_asks_for_one_frame_and_laying_it_out_again_changes_nothing() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (path, _, _) = impossible_document(&directory);
+
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+        let generation = start_open(&mut loads, &path);
+        let _ = input.take_redraw();
+
+        let error = refused_document(&path);
+        let solves = ferritecad_sketch_solver::native_solves();
+        let effect = deliver_into(&mut scene, &mut loads, &mut input, generation, Err(error));
+
+        assert!(effect.status_changed, "the failure was not accepted");
+        assert!(
+            input.take_redraw(),
+            "an accepted failure asked for no frame"
+        );
+        assert!(
+            !input.take_redraw(),
+            "an accepted failure asked for a second frame"
+        );
+
+        let first = failure_words(&loads);
+        let recorded = loads.conflict().cloned();
+        for _ in 0..20 {
+            assert_eq!(
+                failure_words(&loads),
+                first,
+                "the section changed while nothing did"
+            );
+        }
+        assert_eq!(
+            ferritecad_sketch_solver::native_solves(),
+            solves,
+            "drawing the account of a failure asked a solver something"
+        );
+        assert_eq!(
+            loads.conflict().cloned(),
+            recorded,
+            "laying the section out changed it"
+        );
+        assert!(
+            !input.take_redraw(),
+            "laying the section out asked for a frame"
+        );
+    }
+
+    #[test]
+    fn the_diagnostic_stream_gets_the_current_failure_only_and_none_of_the_words() {
+        solver_or_skip!();
+
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let (path, _, stored) = impossible_document(&directory);
+
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+        let generation = start_open(&mut loads, &path);
+        let effect = deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            generation,
+            Err(refused_document(&path)),
+        );
+
+        let announced = effect.error.expect("the current failure was not announced");
+        // The line the toolbar shows is the same one sentence it has always
+        // been. What the section says is the section's, and a status line that
+        // grew it would be a second place the wording lives.
+        let line = loads.status().line();
+        assert!(
+            line.starts_with("impossible.fcad: "),
+            "the line stopped being one sentence about one file: {line}"
+        );
+        // The sentence a person reads on screen is written for a screen. A
+        // log line that grew it would be a second place the wording lives.
+        for presentation in [
+            "Open failed",
+            "Constraint conflict",
+            "Says",
+            &distance_says(&stored[9]),
+        ] {
+            assert!(
+                !announced.contains(presentation),
+                "the diagnostic stream was given {presentation:?}, which is written for a \
+                 window:\n{announced}"
+            );
+            assert!(
+                !line.contains(presentation),
+                "the status line was given {presentation:?}, which belongs to the section:\n{line}"
+            );
+        }
     }
 }

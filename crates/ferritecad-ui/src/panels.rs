@@ -511,6 +511,105 @@ pub struct RedundantExplanation<'a> {
     pub says: &'a str,
 }
 
+/// One constraint of a conflict, as a person reads it.
+///
+/// The same two halves a repeated constraint arrives in, and for the same
+/// reason: the identifier is what a person finds the constraint by in their
+/// own document, and the sentence is what tells them whether they want to.
+/// Nothing here is a value a programmer prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConflictingRule<'a> {
+    /// The identifier the document stores this constraint under, whole.
+    pub identifier: &'a str,
+    /// What it says: one finished sentence, written by whoever had the
+    /// document open.
+    pub says: &'a str,
+}
+
+/// Why an attempt to open a document failed, when the reason has parts.
+///
+/// This is not about the model on screen. It describes a different document –
+/// one that did not open – and it names that document itself so that the two
+/// cannot be read as one. The picture, the choice made in it and what the last
+/// solve found out are all still whatever they were.
+///
+/// Not the scene's type and not the evaluator's: this crate knows nothing of
+/// documents, rebuilds, solvers or errors, and every field here is text
+/// somebody else already wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenFailure<'a> {
+    /// The file that was being opened, named as the attempt named it.
+    pub file: &'a str,
+    /// The identifier the document stores for the sketch whose constraints
+    /// disagree, whole.
+    pub sketch: &'a str,
+    /// The constraints that cannot all hold, in the order they arrived in.
+    pub constraints: &'a [ConflictingRule<'a>],
+}
+
+/// What a section reporting a failed attempt calls itself.
+const OPEN_FAILED: &str = "Open failed";
+
+/// What kind of failure this section is about.
+///
+/// Said as a row rather than folded into the heading: the heading says an
+/// attempt failed, which is one fact, and what went wrong is another.
+const CONSTRAINT_CONFLICT: &str = "Constraint conflict";
+
+impl OpenFailure<'_> {
+    /// The lines to put on screen, in order.
+    ///
+    /// Built as data rather than drawn directly, exactly as [`Selected::rows`]
+    /// and [`SolvedSketch::rows`] are, and for the same reason.
+    pub fn rows(&self) -> Vec<(&'static str, String)> {
+        let mut rows = vec![
+            ("Problem", CONSTRAINT_CONFLICT.to_owned()),
+            // The file that was attempted, always, and never the one on
+            // screen: these two rows are the whole of what keeps a reader from
+            // taking this for a report about the model in front of them.
+            ("File", self.file.to_owned()),
+            ("Sketch", self.sketch.to_owned()),
+        ];
+        for constraint in self.constraints {
+            // Two lines rather than one, on the same terms as a repeated
+            // constraint: neither half is readable once a narrow row runs them
+            // together.
+            rows.push(("Constraint", constraint.identifier.to_owned()));
+            rows.push(("Says", constraint.says.to_owned()));
+        }
+        rows
+    }
+}
+
+/// What the last attempt to open a document failed over, and nothing else.
+///
+/// Read-only, like every other section here: no row can be chosen, pressing
+/// one is not a thing that can happen, and there is nothing to hand back.
+///
+/// Nothing at all is drawn when there is nothing to report, which is the usual
+/// state of a window. A permanent line saying that the last Open did not fail
+/// would be a sentence nobody has a use for, and unlike an empty list of
+/// definitions there is no risk of reading absence as breakage: a section
+/// about a failure appears exactly when one happened.
+pub fn open_failure_panel(ui: &mut egui::Ui, failure: Option<OpenFailure<'_>>) {
+    let Some(failure) = failure else {
+        return;
+    };
+    ui.label(OPEN_FAILED);
+    egui::Grid::new("ferritecad open failure")
+        .num_columns(2)
+        .show(ui, |ui| {
+            for (label, value) in failure.rows() {
+                ui.label(label);
+                ui.add(egui::Label::new(value).truncate());
+                ui.end_row();
+            }
+        });
+    // Drawn by the section itself, so that a window with nothing to report
+    // shows one separator under the toolbar rather than two.
+    ui.separator();
+}
+
 /// What an unnamed sketch is called on screen.
 ///
 /// Said rather than left blank. A row with an empty first line is
@@ -2338,6 +2437,41 @@ mod tests {
         words
     }
 
+    /// What a section painted, counted by kind of mark.
+    ///
+    /// The one signal that tells a read-only section from a section with
+    /// something pressable in it. A label paints a galley and nothing else; a
+    /// button, a checkbox, a slider or a chosen row paints itself a background
+    /// or a frame first, and that is a rectangle. Asking egui whether a click
+    /// "reached a widget" does not tell them apart: a plain label is already
+    /// click-sensing, because that is how a person selects text in one.
+    fn marks(
+        shapes: &[egui::epaint::ClippedShape],
+    ) -> std::collections::BTreeMap<&'static str, usize> {
+        fn kind(shape: &egui::Shape, into: &mut std::collections::BTreeMap<&'static str, usize>) {
+            let name = match shape {
+                egui::Shape::Text(_) => "text",
+                egui::Shape::LineSegment { .. } => "line",
+                egui::Shape::Noop => return,
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        kind(shape, into);
+                    }
+                    return;
+                }
+                // Everything a widget paints for itself: a background, a
+                // frame, a tick, a handle.
+                _ => "furniture",
+            };
+            *into.entry(name).or_default() += 1;
+        }
+        let mut counted = std::collections::BTreeMap::new();
+        for clipped in shapes {
+            kind(&clipped.shape, &mut counted);
+        }
+        counted
+    }
+
     /// Every galley in one shape, however deeply it is nested.
     fn collect_text(shape: &egui::Shape, into: &mut Vec<String>) {
         match shape {
@@ -2591,12 +2725,17 @@ mod tests {
 
     #[test]
     fn nothing_in_the_section_can_be_pressed() {
-        // A click over every part of the section. Every widget in it is a
-        // label and nothing else: a label is what egui records a click on when
-        // a person drags across text to copy it, and that is the whole of what
-        // can happen here. A row that had become choosable, or a control that
-        // had appeared beside one, would be recorded as its own kind of widget
-        // and is what this refuses.
+        // What this section may paint: the words themselves. A row that had
+        // become choosable, or a control that had appeared beside one, would
+        // paint itself a background or a frame first, and that is what this
+        // refuses – before a click, under one, and after it.
+        //
+        // Asked of the marks rather than of egui's record of which widget a
+        // click reached: a plain label is already click-sensing, because that
+        // is how a person selects the text in one, so that record cannot tell
+        // a label from a button. This was found by the mutation campaign of
+        // 21B-3b2, which turned every row of this section into a button and
+        // was not noticed.
         //
         // The other half of the same statement is the signature: this panel
         // returns nothing, so there is nothing a caller could apply even if a
@@ -2615,44 +2754,55 @@ mod tests {
         let mut warm = context.run_ui(egui::RawInput::default(), |_| {});
         warm.textures_delta.clear();
 
+        let mut said = None;
         for step_y in 0..40 {
             let at = egui::Pos2::new(60.0, step_y as f32 * 5.0);
-            let mut output = context.run_ui(
-                egui::RawInput {
-                    events: vec![
-                        egui::Event::PointerMoved(at),
-                        egui::Event::PointerButton {
-                            pos: at,
-                            button: egui::PointerButton::Primary,
-                            pressed: true,
-                            modifiers: egui::Modifiers::default(),
-                        },
-                        egui::Event::PointerButton {
-                            pos: at,
-                            button: egui::PointerButton::Primary,
-                            pressed: false,
-                            modifiers: egui::Modifiers::default(),
-                        },
-                    ],
-                    ..Default::default()
-                },
-                |ui| sketch_solves_panel(ui, &sketches),
-            );
-            output.textures_delta.clear();
-            for event in &output.platform_output.events {
-                let widget = match event {
-                    egui::output::OutputEvent::Clicked(info)
-                    | egui::output::OutputEvent::DoubleClicked(info)
-                    | egui::output::OutputEvent::TripleClicked(info)
-                    | egui::output::OutputEvent::FocusGained(info)
-                    | egui::output::OutputEvent::TextSelectionChanged(info)
-                    | egui::output::OutputEvent::ValueChanged(info) => info,
-                };
-                assert_eq!(
-                    widget.typ,
-                    egui::WidgetType::Label,
-                    "a click at {at:?} reached something that is not a label, so this section                      offers an action: {event:?}"
+            for events in [
+                vec![egui::Event::PointerMoved(at)],
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                }],
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                }],
+            ] {
+                let mut output = context.run_ui(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| sketch_solves_panel(ui, &sketches),
                 );
+                output.textures_delta.clear();
+                let painted = marks(&output.shapes);
+                // One mark that is not a word, at every position and in every
+                // pass: the bar this section scrolls itself with, which is
+                // deliberate and is not a way to choose anything. Anything a
+                // person could press to act on a sketch would be one more.
+                assert_eq!(
+                    painted.get("furniture"),
+                    Some(&1),
+                    "a pointer at {at:?} found something in this section that paints itself \
+                     like a control: {painted:?}"
+                );
+
+                let mut words = Vec::new();
+                for clipped in &output.shapes {
+                    collect_text(&clipped.shape, &mut words);
+                }
+                match &said {
+                    None => said = Some(words),
+                    Some(before) => assert_eq!(
+                        &words, before,
+                        "a pointer at {at:?} changed what this section says"
+                    ),
+                }
             }
         }
     }
@@ -2703,6 +2853,171 @@ mod tests {
                 "the section printed {forbidden:?}, which means something only to one solve:\
                  \n{page}"
             );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // What the window says about an Open that failed
+    // -----------------------------------------------------------------
+
+    const ATTEMPTED_FILE: &str = "impossible.fcad";
+    const CONFLICT_SKETCH: &str = "01930f2c-1a2b-7c3d-8e4f-444444444444";
+
+    /// Two constraints that cannot both hold, as the application words them.
+    fn disagreeing() -> [ConflictingRule<'static>; 2] {
+        [
+            ConflictingRule {
+                identifier: FIRST_REDUNDANT,
+                says: FIRST_SAYS,
+            },
+            ConflictingRule {
+                identifier: SECOND_REDUNDANT,
+                says: SECOND_SAYS,
+            },
+        ]
+    }
+
+    /// Every word the failure section actually drew, in the order it drew them.
+    fn failure_words(failure: Option<OpenFailure<'_>>) -> Vec<String> {
+        let context = egui::Context::default();
+        // A frame first, so the fonts are loaded: without them every line
+        // comes back empty and an assertion about absence would pass.
+        let mut warm = context.run_ui(egui::RawInput::default(), |_| {});
+        warm.textures_delta.clear();
+
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            open_failure_panel(ui, failure);
+        });
+        output.textures_delta.clear();
+        let mut words = Vec::new();
+        for clipped in output.shapes {
+            collect_text(&clipped.shape, &mut words);
+        }
+        words
+    }
+
+    #[test]
+    fn a_failed_open_is_laid_out_as_the_attempt_it_was() {
+        let rules = disagreeing();
+        let words = failure_words(Some(OpenFailure {
+            file: ATTEMPTED_FILE,
+            sketch: CONFLICT_SKETCH,
+            constraints: &rules,
+        }));
+
+        // The heading, what went wrong, which file it went wrong on, which
+        // sketch inside it, and then both halves of each constraint in the
+        // order they arrived. Positions rather than presence: two right lines
+        // in the wrong order read as an account of something else.
+        assert_eq!(
+            words,
+            vec![
+                "Open failed".to_owned(),
+                "Problem".to_owned(),
+                "Constraint conflict".to_owned(),
+                "File".to_owned(),
+                ATTEMPTED_FILE.to_owned(),
+                "Sketch".to_owned(),
+                CONFLICT_SKETCH.to_owned(),
+                "Constraint".to_owned(),
+                FIRST_REDUNDANT.to_owned(),
+                "Says".to_owned(),
+                FIRST_SAYS.to_owned(),
+                "Constraint".to_owned(),
+                SECOND_REDUNDANT.to_owned(),
+                "Says".to_owned(),
+                SECOND_SAYS.to_owned(),
+            ],
+            "the section did not say, in order, what failed, where, and why"
+        );
+    }
+
+    #[test]
+    fn a_window_with_no_failed_attempt_draws_no_such_section() {
+        assert!(
+            failure_words(None).is_empty(),
+            "a window that has not failed to open anything drew an account of a failure"
+        );
+    }
+
+    #[test]
+    fn nothing_in_a_failed_opens_account_can_be_pressed() {
+        // What this section may paint: the words themselves, and the one line
+        // it draws under itself. A row that had become a button, a control
+        // that had appeared beside one, or a row that could be chosen would
+        // paint itself a background or a frame first, and that is what this
+        // refuses – before a click, under one, and after it.
+        //
+        // Asked of the marks rather than of egui's record of which widget a
+        // click reached: a plain label is already click-sensing, because that
+        // is how a person selects the text in one, so that record cannot tell
+        // a label from a button.
+        //
+        // The other half of the same statement is the signature: this panel
+        // returns nothing, so there is nothing a caller could apply even if a
+        // press did reach something.
+        let rules = disagreeing();
+        let context = egui::Context::default();
+        let mut warm = context.run_ui(egui::RawInput::default(), |_| {});
+        warm.textures_delta.clear();
+        let draw = |ui: &mut egui::Ui| {
+            open_failure_panel(
+                ui,
+                Some(OpenFailure {
+                    file: ATTEMPTED_FILE,
+                    sketch: CONFLICT_SKETCH,
+                    constraints: &rules,
+                }),
+            );
+        };
+
+        let mut said = None;
+        for step in 0..40 {
+            let at = egui::Pos2::new(60.0, step as f32 * 8.0);
+            for events in [
+                vec![egui::Event::PointerMoved(at)],
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                }],
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                }],
+            ] {
+                let mut output = context.run_ui(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    draw,
+                );
+                output.textures_delta.clear();
+                let painted = marks(&output.shapes);
+                assert_eq!(
+                    painted.get("furniture"),
+                    None,
+                    "a pointer at {at:?} found something in this section that paints itself \
+                     like a control: {painted:?}"
+                );
+
+                // And the words are the words, whatever the pointer does.
+                let mut words = Vec::new();
+                for clipped in &output.shapes {
+                    collect_text(&clipped.shape, &mut words);
+                }
+                match &said {
+                    None => said = Some(words),
+                    Some(before) => assert_eq!(
+                        &words, before,
+                        "a pointer at {at:?} changed what this section says"
+                    ),
+                }
+            }
         }
     }
 }

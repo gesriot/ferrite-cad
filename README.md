@@ -282,6 +282,21 @@ and the picture together, so what you read always belongs to the model you are
 looking at; a document that could not be read, or that you stopped waiting for,
 leaves both exactly as they were.
 
+When a document cannot be opened because a drawing in it holds constraints that
+cannot all hold at once, `Open failed` appears under the toolbar and says which
+ones. It is about the attempt, not about the model on screen, and says so: it
+names the file that was being opened and the whole identifier of the sketch
+inside it, and then gives each blamed constraint twice over – the identifier
+the document stores it under and the same sentence a repeated constraint of
+that rule is given, in the order the document stores them, with identical rules
+under different identifiers left as the separate constraints they are. The
+model you were looking at stays exactly as it was, along with what is chosen in
+it, what is hidden, where the camera is pointing and its own `Sketch solves`;
+those describe the document that did open, and this describes the one that did
+not. Asking for another document takes it down at once, and a document that
+opens, or a failure with nothing of this kind to say, replaces it. A failure
+that is not about constraints is still the one line it has always been.
+
 ## Which sketch solver this build has
 
 ```sh
