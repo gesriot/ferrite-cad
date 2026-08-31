@@ -166,6 +166,7 @@ pub fn decode(bytes: &[u8], session: SessionId) -> Result<Import> {
             0 => Stage::Load,
             1 => Stage::Transfer,
             2 => Stage::Identity,
+            3 => Stage::Validation,
             other => {
                 return Err(malformed(format!(
                     "a diagnostic claims stage {other}, which this build does \

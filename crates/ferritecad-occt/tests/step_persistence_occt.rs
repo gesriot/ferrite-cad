@@ -23,7 +23,7 @@ use ferritecad_document::{
     StepImportRequest, StepImporter,
 };
 use ferritecad_exchange::StoredScene;
-use ferritecad_exchange::{Import, Severity};
+use ferritecad_exchange::{Import, Severity, Stage};
 use ferritecad_kernel::{GeometryKernel, ShapeHandle};
 use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_types::{ContentHash, ErrorKind, ObjectId, Result};
@@ -197,6 +197,124 @@ fn every_sound_file_reopens_in_a_session_that_never_read_it() {
         }
         assert_eq!(kernel.live_shape_count(), 0, "{name} leaked on reopening");
     }
+}
+
+#[test]
+fn the_complex_ap203_scene_reopens_after_its_external_source_is_removed() {
+    if !is_available() {
+        eprintln!("skipped: this build has no Open CASCADE");
+        return;
+    }
+
+    let (dir, path) = workspace();
+    let external = dir.path().join("c3d-ap203-complex-assembly.stp");
+    std::fs::write(
+        &external,
+        corpus("interoperability", "c3d-ap203-complex-assembly.stp"),
+    )
+    .expect("copies the external fixture");
+    let bytes = std::fs::read(&external).expect("reads the external fixture");
+    let object = ObjectId::new();
+
+    let stored = {
+        let mut kernel = OcctKernel::new().expect("opens the first session");
+        let outcome = kernel
+            .import_step(&bytes)
+            .expect("imports the AP203 source");
+        let scene = outcome.scene().expect("publishes the partial import");
+        assert_eq!(scene.definitions.len(), 46);
+        assert_eq!(scene.instances.len(), 140);
+        assert_eq!(
+            scene
+                .instances
+                .iter()
+                .filter(|instance| instance.parent.is_none())
+                .count(),
+            1
+        );
+        assert_eq!(
+            scene
+                .instances
+                .iter()
+                .filter(|instance| instance.parent.is_some())
+                .count(),
+            139
+        );
+        assert_eq!(
+            outcome
+                .diagnostics()
+                .iter()
+                .filter(|diagnostic| diagnostic.stage == Stage::Validation)
+                .count(),
+            2,
+            "invalid part solids must make the partial import explicit"
+        );
+
+        let mut document = Document::create(&path).expect("creates the document");
+        let stored = document
+            .store_step_import(StepImportRequest {
+                object,
+                name: Some("complex AP203 assembly"),
+                source: &bytes,
+                source_name: external.file_name().and_then(|name| name.to_str()),
+                import: &outcome,
+                importer: kernel.identity(),
+            })
+            .expect("stores the complex scene");
+        document.close().expect("closes the document");
+        release(&mut kernel, &outcome);
+        assert_eq!(kernel.live_shape_count(), 0);
+        stored
+    };
+
+    // From this point the document is the only source. The second OCCT
+    // session never sees the original path or the first session's handles.
+    std::fs::remove_file(&external).expect("removes the external STEP source");
+    assert!(!external.exists());
+
+    let mut kernel = OcctKernel::new().expect("opens the second session");
+    let document = Document::open(&path).expect("opens the standalone document");
+    let reopened = document
+        .reopen_step_import(object, &mut Session(&mut kernel))
+        .expect("binds all definitions from the stored bytes");
+    let now = reopened
+        .scene
+        .persist()
+        .expect("projects the reopened scene");
+    assert_eq!(StoredScene::V2(now.clone()), stored.scene);
+    assert_eq!(now.definitions.len(), 46);
+    assert_eq!(now.instances.len(), 140);
+    assert!(
+        now.definitions
+            .iter()
+            .any(|definition| definition.key == "step.product_definition#1"),
+        "the root assembly identity was lost"
+    );
+    for key in [
+        "step.product_definition#1764",
+        "step.product_definition#2927",
+    ] {
+        assert!(
+            now.definitions
+                .iter()
+                .any(|definition| definition.key == key),
+            "the equal-children assembly {key} was lost"
+        );
+    }
+    assert_eq!(
+        reopened
+            .diagnostics_now
+            .iter()
+            .filter(|diagnostic| diagnostic.stage == Stage::Validation)
+            .count(),
+        2
+    );
+    assert_eq!(reopened.diagnostics_now, reopened.diagnostics_at_import);
+
+    for shape in reopened.scene.shapes() {
+        kernel.release(shape);
+    }
+    assert_eq!(kernel.live_shape_count(), 0);
 }
 
 #[test]

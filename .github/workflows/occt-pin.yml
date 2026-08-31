@@ -736,6 +736,7 @@ jobs:
           # the matrix is that it will be made on data from the kernel that
           # ships rather than on the one that happened to be installed.
           "$binary" fixtures/step/canonical/*.step fixtures/step/damaged/*.step \
+            fixtures/step/interoperability/*.stp \
             | tee step-import-matrix.txt
 
           echo "--- summary ---"
@@ -777,8 +778,43 @@ jobs:
           # the sound ones: a key that exists only while a file is undamaged is
           # a key that disappears exactly when a user needs to be told which
           # component stopped resolving.
-          inputs=(fixtures/step/canonical/*.step fixtures/step/damaged/*.step)
+          inputs=(fixtures/step/canonical/*.step fixtures/step/damaged/*.step \
+                  fixtures/step/interoperability/*.stp)
           "$binary" "${inputs[@]}" | tee step-key-matrix.txt
+
+          # The interoperability fixture is the ownership case this slice
+          # exists to guard. These are source relationships and XDE
+          # associations, not geometry-derived expectations. Keep the checks
+          # beside the full report so a renamed or missing section cannot make
+          # a sequence of independent grep commands accidentally pass.
+          complex="$(sed -n '/^c3d-ap203-complex-assembly.stp$/,/^$/p' \
+            step-key-matrix.txt)"
+          if ! grep -Fxq '# typed ambiguity rejected yes' step-key-matrix.txt; then
+            echo "::error::the shared identity implementation accepted ambiguity"
+            exit 1
+          fi
+          require_complex() {
+            if ! grep -Fq "$1" <<<"$complex"; then
+              echo "::error::the complex AP203 key report is missing: $1"
+              printf '%s\n' "$complex"
+              exit 1
+            fi
+          }
+          require_complex '    definitions 46'
+          require_complex '    roots 1'
+          require_complex '    placed occurrences 139'
+          require_complex '    assemblies with equal children but distinct products 1 pair(s)'
+          require_complex '    same after reversed traversal yes'
+          require_complex '    foreign source entity rejected yes'
+          require_complex 'identity index model scans 1  entities'
+          require_complex 'non-transforming relationships 35'
+          require_complex 'transforming relationships ignored 67'
+          require_complex 'XDE product associations 46'
+          require_complex 'ambiguous source identities 0'
+          require_complex '        durable key         step.product_definition#1'
+          require_complex '        durable key         step.product_definition#1764'
+          require_complex '        durable key         step.product_definition#2927'
+          require_complex '    product definition  present 46/46  unique yes  same on a second read yes'
 
           # The gate. Durable selection into an imported assembly cannot be
           # built on a key that is missing, ambiguous or different on a second

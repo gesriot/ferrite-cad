@@ -120,14 +120,22 @@ and the diff says what.
 Converter/C3D Toolkit and the AP203 `CONFIG_CONTROL_DESIGN` schema. It is kept
 as the regression input for §22A and must not be rewritten or normalised.
 
-The baseline on OCCT 7.9.3 transfers the scene and enumerates 46 definitions
-and 139 placed occurrences. It also reports 180 malformed `FILL_AREA_STYLE`
-parameters, recoverable seam/periodic/projection warnings and several invalid
-solids. FerriteCAD currently refuses before writing `.fcad` because its STEP
-identity walk misses a non-transforming representation relationship and then
-cannot give every definition a durable source identity. That refusal is the
-expected result until §22A lands; silently dropping an unnamed definition is
-not an acceptable way to make the fixture green.
+The §22A-1a measurement on OCCT 7.9.3 transfers 46 definitions, one root and
+139 placed occurrences. The shared identity index scans the 28,782 source
+entities once, follows 35 non-transforming shape representation relationships,
+ignores 67 transforming placement relationships as ownership, and records 46
+typed XDE product associations. The root is product definition `#1`; the two
+assemblies with identical child product sets remain distinct as `#1764` and
+`#2927`.
+
+FerriteCAD now publishes the scene as an explicit partial import. The report
+retains the 180 grouped `FILL_AREA_STYLE` problems, 195 seam warnings and the
+periodic/projection warnings. Typed validation diagnostics name the two owning
+part definitions with invalid solids, `#2428` and `#2583`; recursive assembly
+compounds do not duplicate those findings. A stored `.fcad` reopens in a fresh
+OCCT session after the external STEP has been removed and reproduces the full
+definition and occurrence scene. No normalization or rewrite of this fixture
+is part of that path.
 
 | File | Bytes | SHA-256 |
 |---|---:|---|

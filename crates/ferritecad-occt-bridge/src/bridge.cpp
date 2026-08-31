@@ -365,6 +365,10 @@ void collect_diagnostics(const std::string &report, uint8_t stage,
     while (!message.empty() && message.front() == ' ') {
       message.erase(0, 1);
     }
+    if (repeats > 1) {
+      message = "Open CASCADE reported this " + std::to_string(repeats) +
+                " times: " + message;
+    }
 
     put<uint8_t>(out, stage);
     put<uint8_t>(out, severity);
@@ -385,6 +389,19 @@ void put_identity_diagnostic(std::vector<uint8_t> &out, uint32_t &count,
                              const std::string &entity,
                              const std::string &message) {
   put<uint8_t>(out, 2);  // identity
+  put<uint8_t>(out, 1);  // fail
+  put_text(out, entity);
+  put_text(out, message);
+  ++count;
+}
+
+/// Records invalid topology without discarding the definition Open CASCADE
+/// transferred. Stage 3 lets callers distinguish this explicit partial import
+/// from a transfer refusal and from FerriteCAD's source-identity checks.
+void put_validation_diagnostic(std::vector<uint8_t> &out, uint32_t &count,
+                               const std::string &entity,
+                               const std::string &message) {
+  put<uint8_t>(out, 3);  // validation
   put<uint8_t>(out, 1);  // fail
   put_text(out, entity);
   put_text(out, message);
@@ -1210,19 +1227,18 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
     // used four times is one definition and four placements rather than four
     // copies of the same solid.
     //
-    // Their bytes are written after the walk rather than during it, because a
-    // definition's key is not knowable while it is being visited: an assembly
-    // is identified through the components inside it, and those are not all
-    // known until the walk reaches them.
+    // Their bytes are written after the walk rather than during it because the
+    // document-wide STEP/XDE association is built once all definition labels
+    // have been collected.
     struct DefinitionRecord {
       TDF_Label label;
       TopoDS_Shape shape;
       uint64_t id = 0;
       uint32_t solids = 0;
+      uint32_t invalid_solids = 0;
+      bool assembly = false;
     };
     std::vector<DefinitionRecord> definitions;
-    // Which definitions sit directly inside which, by position above.
-    std::vector<std::vector<std::size_t>> children_of;
 
     const auto definition_index = [&](const TDF_Label &label) -> uint32_t {
       for (std::size_t i = 0; i < definitions.size(); ++i) {
@@ -1240,9 +1256,18 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
       DefinitionRecord entry;
       entry.label = label;
       entry.shape = record.shape;
+      entry.assembly = shapes->IsAssembly(label) == Standard_True;
       if (!record.shape.IsNull()) {
         for (TopExp_Explorer it(record.shape, TopAbs_SOLID); it.More(); it.Next()) {
           ++entry.solids;
+          // Assembly compounds recursively contain their children's solids;
+          // checking them here would duplicate each part finding at every
+          // assembly level. A simple definition owns the solid and therefore
+          // owns its validation diagnostic.
+          if (!entry.assembly &&
+              BRepCheck_Analyzer(it.Current()).IsValid() != Standard_True) {
+            ++entry.invalid_solids;
+          }
         }
       }
 
@@ -1257,7 +1282,6 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
       }
 
       definitions.push_back(std::move(entry));
-      children_of.emplace_back();
       return static_cast<uint32_t>(definitions.size() - 1);
     };
 
@@ -1308,9 +1332,8 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
           TDF_LabelSequence children;
           shapes->GetComponents(definition, children);
           for (int i = 1; i <= children.Length(); ++i) {
-            const uint32_t child = walk(children.Value(i), self,
-                                        shapes->GetShape(children.Value(i)).Location());
-            children_of[index].push_back(child);
+            walk(children.Value(i), self,
+                 shapes->GetShape(children.Value(i)).Location());
           }
           return index;
         };
@@ -1322,12 +1345,18 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
     }
 
     // What identifies each definition in the file, as opposed to in this
-    // reading of it. Computed once the whole tree is known, because an
-    // assembly is named through the components inside it.
+    // reading of it. The temporary labels and shapes query one typed index;
+    // only source PRODUCT_DEFINITION identifiers leave this block.
     std::vector<TopoDS_Shape> definition_shapes;
+    std::vector<TDF_Label> definition_labels;
+    std::vector<bool> definition_assemblies;
     definition_shapes.reserve(definitions.size());
+    definition_labels.reserve(definitions.size());
+    definition_assemblies.reserve(definitions.size());
     for (const DefinitionRecord &definition : definitions) {
       definition_shapes.push_back(definition.shape);
+      definition_labels.push_back(definition.label);
+      definition_assemblies.push_back(definition.assembly);
     }
 
     Handle(XSControl_WorkSession) work = reader.Reader().WS();
@@ -1335,8 +1364,11 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
         work.IsNull() ? Handle(XSControl_TransferReader)() : work->TransferReader();
     std::vector<std::string> keys(definitions.size());
     if (!work.IsNull() && !model.IsNull()) {
-      keys = ferritecad::definition_keys(work->Graph(), model, transfer,
-                                         definition_shapes, children_of);
+      const ferritecad::StepIdentityIndex identity_index(
+          model, transfer, reader.GetShapeLabelMap());
+      keys = ferritecad::definition_keys(identity_index, definition_shapes,
+                                         definition_labels,
+                                         definition_assemblies);
     }
 
     // The scene is not handed over until every definition can be told apart
@@ -1373,6 +1405,19 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
                     "two definitions in this file carry the same identity, so "
                     "a reference to either would resolve to whichever was "
                     "looked up first");
+    }
+
+    for (std::size_t i = 0; i < definitions.size(); ++i) {
+      const uint32_t invalid = definitions[i].invalid_solids;
+      if (invalid == 0) {
+        continue;
+      }
+      put_validation_diagnostic(
+          diagnostics, diagnostic_count, keys[i],
+          "Open CASCADE reports " + std::to_string(invalid) + " of " +
+              std::to_string(definitions[i].solids) +
+              " solid(s) invalid; the definition was retained in the "
+              "partial import");
     }
 
     put<uint32_t>(encoded, static_cast<uint32_t>(definitions.size()));

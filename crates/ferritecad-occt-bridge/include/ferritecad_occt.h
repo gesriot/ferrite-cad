@@ -409,7 +409,8 @@ FcOcctStatus fc_occt_decode_shape(FcOcctSession *session,
  *       colour source    u8   0 = none, 1 = from the instance, 2 = inherited
  *       colour           3 f64, linear RGB, meaningless when the source is 0
  *   diagnostic count u32, then per diagnostic:
- *       stage            u8   0 = load, 1 = transfer, 2 = identity
+ *       stage            u8   0 = load, 1 = transfer, 2 = identity,
+ *                             3 = validation
  *       severity         u8   0 = warning, 1 = fail
  *       entity           length-prefixed UTF-8, empty when not attributed
  *       message          length-prefixed UTF-8

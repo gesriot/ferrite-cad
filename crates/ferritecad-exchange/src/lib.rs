@@ -130,6 +130,12 @@ pub enum Stage {
     /// can name a second time; reporting that under [`Stage::Load`] would
     /// attribute to Open CASCADE a refusal it had no part in.
     Identity,
+    /// Checking the topology Open CASCADE produced.
+    ///
+    /// A transferred definition can still contain an invalid solid. Keeping
+    /// that finding separate from transfer makes a partial import explicit
+    /// without claiming that the reader refused geometry it actually built.
+    Validation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -159,6 +165,7 @@ impl fmt::Display for Diagnostic {
             Stage::Load => "reading",
             Stage::Transfer => "building",
             Stage::Identity => "identifying",
+            Stage::Validation => "validating",
         };
         let severity = match self.severity {
             Severity::Warning => "warning",

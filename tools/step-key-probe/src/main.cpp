@@ -107,10 +107,25 @@ struct Ident {
 /// What was learned about one definition.
 struct Probe {
   std::string name;
+  bool assembly = false;
+  bool root = false;
+  ferritecad::StepIdentityRoute route = ferritecad::StepIdentityRoute::none;
   Ident shape_entity;
   Ident product_definition;
   Ident product;
   std::string product_id;
+  std::string durable_key;
+  std::vector<int> child_product_definitions;
+};
+
+struct ProbeRun {
+  std::vector<Probe> definitions;
+  ferritecad::StepIdentityMetrics metrics;
+  std::size_t scene_nodes = 0;
+  std::size_t roots = 0;
+  std::size_t equal_child_assembly_pairs = 0;
+  bool reversed_traversal_stable = false;
+  bool foreign_entity_rejected = false;
 };
 
 std::string name_of(const TDF_Label &label) {
@@ -150,8 +165,8 @@ Ident ident_of(const Handle(StepData_StepModel) & model,
 ///
 /// Returns an empty vector when the file did not get far enough to have
 /// definitions, which the caller reports rather than treating as a failure.
-std::vector<Probe> probe(const std::string &path, std::string &complaint) {
-  std::vector<Probe> found;
+ProbeRun probe(const std::string &path, std::string &complaint) {
+  ProbeRun run;
 
   Handle(TDocStd_Application) app = new TDocStd_Application();
   Handle(TDocStd_Document) doc;
@@ -164,15 +179,15 @@ std::vector<Probe> probe(const std::string &path, std::string &complaint) {
   try {
     if (reader.ReadFile(path.c_str()) != IFSelect_RetDone) {
       complaint = "the file was not read";
-      return found;
+      return run;
     }
     if (reader.Transfer(doc) != Standard_True) {
       complaint = "nothing was transferred";
-      return found;
+      return run;
     }
   } catch (const Standard_Failure &failure) {
     complaint = std::string("threw: ") + failure.GetMessageString();
-    return found;
+    return run;
   }
 
   Handle(StepData_StepModel) model =
@@ -182,19 +197,18 @@ std::vector<Probe> probe(const std::string &path, std::string &complaint) {
       session.IsNull() ? Handle(XSControl_TransferReader)() : session->TransferReader();
   if (model.IsNull() || session.IsNull()) {
     complaint = "the reader kept no model to ask";
-    return found;
+    return run;
   }
-  const Interface_Graph &graph = session->Graph();
-
   Handle(XCAFDoc_ShapeTool) shapes = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
 
   // Every distinct definition, reached the same way the importer reaches them:
   // through references, never by assuming the free shapes are all there is.
   std::vector<TDF_Label> definitions;
-  // Which definitions sit inside which, by position in `definitions`. An
-  // assembly has no geometry and so no entity of its own; the file names it
-  // only through the components it contains, and this is what makes that
-  // route available.
+  std::vector<bool> assemblies;
+  // Which definitions sit inside which, only for reporting the deliberately
+  // equal child multisets. The identity resolver does not consume this list:
+  // assembly ownership comes from the XDE ProductDefinition transfer
+  // association below.
   std::vector<std::vector<std::size_t>> children_of;
 
   std::function<std::size_t(const TDF_Label &)> walk =
@@ -210,6 +224,7 @@ std::vector<Probe> probe(const std::string &path, std::string &complaint) {
     }
     const std::size_t index = definitions.size();
     definitions.push_back(definition);
+    assemblies.push_back(shapes->IsAssembly(definition) == Standard_True);
     children_of.emplace_back();
 
     TDF_LabelSequence children;
@@ -223,21 +238,75 @@ std::vector<Probe> probe(const std::string &path, std::string &complaint) {
 
   TDF_LabelSequence roots;
   shapes->GetFreeShapes(roots);
+  std::vector<std::size_t> root_definitions;
   for (int r = 1; r <= roots.Length(); ++r) {
-    walk(roots.Value(r));
+    root_definitions.push_back(walk(roots.Value(r)));
+  }
+  run.roots = static_cast<std::size_t>(roots.Length());
+
+  // Count the placed tree without definition deduplication. A shared
+  // definition can contain children of its own, and every placement of that
+  // definition places that whole subtree again.
+  std::function<void(const TDF_Label &)> count_occurrences =
+      [&](const TDF_Label &label) {
+        ++run.scene_nodes;
+        TDF_Label definition = label;
+        if (shapes->IsReference(label)) {
+          shapes->GetReferredShape(label, definition);
+        }
+        TDF_LabelSequence children;
+        shapes->GetComponents(definition, children);
+        for (int c = 1; c <= children.Length(); ++c) {
+          count_occurrences(children.Value(c));
+        }
+      };
+  for (int r = 1; r <= roots.Length(); ++r) {
+    count_occurrences(roots.Value(r));
   }
 
   // The bridge's own resolution, not a second copy of it: parts through the
-  // representation holding their solid, assemblies through the occurrences
-  // that put their components inside them.
+  // representation holding their solid, assemblies through the exact XDE
+  // ProductDefinition transfer result associated with their definition label.
   std::vector<TopoDS_Shape> definition_shapes;
   definition_shapes.reserve(definitions.size());
   for (const TDF_Label &definition : definitions) {
     definition_shapes.push_back(shapes->GetShape(definition));
   }
-  const std::vector<Handle(StepBasic_ProductDefinition)> product_definitions =
-      ferritecad::resolve_product_definitions(graph, transfer, definition_shapes,
-                                              children_of);
+  const ferritecad::StepIdentityIndex identity_index(
+      model, transfer, reader.GetShapeLabelMap());
+  const std::vector<ferritecad::StepDefinitionIdentity> identities =
+      ferritecad::resolve_definition_identities(
+          identity_index, definition_shapes, definitions, assemblies);
+  const std::vector<std::string> durable_keys = ferritecad::definition_keys(
+      identity_index, definition_shapes, definitions, assemblies);
+
+  std::vector<TopoDS_Shape> reversed_shapes(definition_shapes.rbegin(),
+                                             definition_shapes.rend());
+  std::vector<TDF_Label> reversed_labels(definitions.rbegin(), definitions.rend());
+  std::vector<bool> reversed_assemblies(assemblies.rbegin(), assemblies.rend());
+  const std::vector<ferritecad::StepDefinitionIdentity> reversed =
+      ferritecad::resolve_definition_identities(
+          identity_index, reversed_shapes, reversed_labels, reversed_assemblies);
+  run.reversed_traversal_stable = reversed.size() == identities.size();
+  for (std::size_t i = 0; run.reversed_traversal_stable && i < identities.size(); ++i) {
+    run.reversed_traversal_stable =
+        identities[i].product == reversed[identities.size() - 1 - i].product;
+  }
+  run.metrics = identity_index.metrics();
+
+  Handle(StepBasic_ProductDefinition) foreign =
+      new StepBasic_ProductDefinition();
+  Handle(StepData_StepModel) foreign_model = new StepData_StepModel();
+  foreign_model->AddEntity(foreign);
+  foreign_model->SetIdentLabel(foreign, 1);
+  run.foreign_entity_rejected = identity_index.source_ident(foreign) == 0 &&
+                                foreign_model->Contains(foreign) &&
+                                foreign_model->IdentLabel(foreign) == 1;
+  std::vector<Handle(StepBasic_ProductDefinition)> product_definitions(
+      identities.size());
+  for (std::size_t i = 0; i < identities.size(); ++i) {
+    product_definitions[i] = identities[i].product;
+  }
 
   std::vector<Ident> shape_entities(definitions.size());
   for (std::size_t i = 0; i < definitions.size(); ++i) {
@@ -251,8 +320,26 @@ std::vector<Probe> probe(const std::string &path, std::string &complaint) {
   for (std::size_t i = 0; i < definitions.size(); ++i) {
     Probe entry;
     entry.name = name_of(definitions[i]);
+    entry.assembly = assemblies[i];
+    entry.root = std::find(root_definitions.begin(), root_definitions.end(), i) !=
+                 root_definitions.end();
+    entry.route = identities[i].route;
+    entry.durable_key = durable_keys[i];
     entry.shape_entity = shape_entities[i];
     entry.product_definition = ident_of(model, product_definitions[i]);
+    if (identity_index.source_ident(product_definitions[i]) == 0) {
+      entry.product_definition.id = 0;
+      entry.product_definition.source = false;
+    }
+
+    for (const std::size_t child : children_of[i]) {
+      if (child < product_definitions.size()) {
+        entry.child_product_definitions.push_back(
+            identity_index.source_ident(product_definitions[child]));
+      }
+    }
+    std::sort(entry.child_product_definitions.begin(),
+              entry.child_product_definitions.end());
 
     const Handle(StepBasic_ProductDefinition) &product_definition =
         product_definitions[i];
@@ -264,18 +351,36 @@ std::vector<Probe> probe(const std::string &path, std::string &complaint) {
         entry.product_id = product->Id()->ToCString();
       }
     }
-    found.push_back(entry);
+    run.definitions.push_back(entry);
   }
 
   // Sorted so two reads, and two platforms, list the same definitions in the
   // same order however the document happened to be walked.
-  std::sort(found.begin(), found.end(), [](const Probe &a, const Probe &b) {
+  std::sort(run.definitions.begin(), run.definitions.end(), [](const Probe &a, const Probe &b) {
     if (a.name != b.name) {
       return a.name < b.name;
     }
+    if (a.product_definition.id != b.product_definition.id) {
+      return a.product_definition.id < b.product_definition.id;
+    }
     return a.shape_entity.id < b.shape_entity.id;
   });
-  return found;
+
+  for (std::size_t i = 0; i < run.definitions.size(); ++i) {
+    if (!run.definitions[i].assembly) {
+      continue;
+    }
+    for (std::size_t j = i + 1; j < run.definitions.size(); ++j) {
+      if (run.definitions[j].assembly &&
+          run.definitions[i].child_product_definitions ==
+              run.definitions[j].child_product_definitions &&
+          run.definitions[i].product_definition.id !=
+              run.definitions[j].product_definition.id) {
+        ++run.equal_child_assembly_pairs;
+      }
+    }
+  }
+  return run;
 }
 
 /// The key a candidate would supply, as the text a comparison would use.
@@ -284,8 +389,7 @@ std::string key_of(const Probe &entry, int candidate) {
     case 0:
       return entry.shape_entity.source ? entry.shape_entity.text() : std::string();
     case 1:
-      return entry.product_definition.source ? entry.product_definition.text()
-                                             : std::string();
+      return entry.durable_key;
     case 2:
       return entry.product.source ? entry.product.text() : std::string();
     default:
@@ -306,12 +410,41 @@ const char *candidate_name(int candidate) {
   }
 }
 
+const char *route_name(ferritecad::StepIdentityRoute route) {
+  switch (route) {
+    case ferritecad::StepIdentityRoute::part_representation:
+      return "part representation";
+    case ferritecad::StepIdentityRoute::assembly_xde:
+      return "assembly XDE product transfer";
+    case ferritecad::StepIdentityRoute::ambiguous:
+      return "ambiguous";
+    case ferritecad::StepIdentityRoute::none:
+      return "none";
+  }
+  return "none";
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
   if (argc < 2) {
     std::fprintf(stderr, "usage: step_key_probe <file.step>...\n");
     return 2;
+  }
+
+  Handle(StepBasic_ProductDefinition) first_product =
+      new StepBasic_ProductDefinition();
+  Handle(StepBasic_ProductDefinition) second_product =
+      new StepBasic_ProductDefinition();
+  ferritecad::ProductCandidates one_product;
+  ferritecad::remember_product(one_product, first_product);
+  ferritecad::remember_product(one_product, first_product);
+  ferritecad::ProductCandidates two_products = one_product;
+  ferritecad::remember_product(two_products, second_product);
+  if (ferritecad::unambiguous_product(one_product) != first_product ||
+      !ferritecad::unambiguous_product(two_products).IsNull()) {
+    std::cerr << "typed ambiguity was accepted\n";
+    return 1;
   }
 
   // Open CASCADE prints to stdout by default, which would interleave with the
@@ -326,7 +459,8 @@ int main(int argc, char **argv) {
       << "# counted as a key below. A candidate is usable only where it is\n"
       << "# present for every definition, unique within the file, and identical\n"
       << "# when the same bytes are read again in a second reader.\n#\n"
-      << "# This reports. What FerriteCAD does about it is decided elsewhere.\n\n";
+      << "# This reports. What FerriteCAD does about it is decided elsewhere.\n\n"
+      << "# typed ambiguity rejected yes\n\n";
 
   // Counted across the whole corpus, so a gate can be set on a stated fact
   // rather than on a human reading three columns per file.
@@ -348,7 +482,8 @@ int main(int argc, char **argv) {
     out << name << "\n";
 
     std::string complaint;
-    const std::vector<Probe> first = probe(path, complaint);
+    const ProbeRun first_run = probe(path, complaint);
+    const std::vector<Probe> &first = first_run.definitions;
     if (first.empty()) {
       out << "    " << (complaint.empty() ? "no definitions" : complaint) << "\n\n";
       continue;
@@ -356,6 +491,25 @@ int main(int argc, char **argv) {
 
     ++with_definitions;
     out << "    definitions " << first.size() << "\n";
+    out << "    roots " << first_run.roots << "\n";
+    out << "    placed occurrences "
+        << first_run.scene_nodes - first_run.roots << "\n";
+    out << "    assemblies with equal children but distinct products "
+        << first_run.equal_child_assembly_pairs << " pair(s)\n";
+    out << "    same after reversed traversal "
+        << (first_run.reversed_traversal_stable ? "yes" : "no") << "\n";
+    out << "    foreign source entity rejected "
+        << (first_run.foreign_entity_rejected ? "yes" : "no") << "\n";
+    out << "    identity index model scans " << first_run.metrics.model_scans
+        << "  entities " << first_run.metrics.entities_scanned
+        << "  non-transforming relationships "
+        << first_run.metrics.nontransforming_relationships
+        << "  transforming relationships ignored "
+        << first_run.metrics.transforming_relationships_ignored
+        << "  XDE product associations "
+        << first_run.metrics.xde_product_associations
+        << "  ambiguous source identities "
+        << first_run.metrics.ambiguous_source_identities << "\n";
     char line[512];
     for (const Probe &entry : first) {
       std::snprintf(line, sizeof(line), "    %-32s", entry.name.c_str());
@@ -375,13 +529,30 @@ int main(int argc, char **argv) {
                     entry.product.text().c_str(),
                     entry.product_id.empty() ? "-" : entry.product_id.c_str());
       out << line << "\n";
+      out << "        definition          "
+          << (entry.assembly ? "assembly" : "part")
+          << (entry.root ? " root" : "") << " via " << route_name(entry.route)
+          << "\n";
+      out << "        durable key         "
+          << (entry.durable_key.empty() ? "-" : entry.durable_key) << "\n";
+      if (entry.assembly) {
+        out << "        child products      ";
+        if (entry.child_product_definitions.empty()) {
+          out << "-";
+        }
+        for (const int child : entry.child_product_definitions) {
+          out << " #" << child;
+        }
+        out << "\n";
+      }
     }
 
     // The same bytes, a second reader, a second document. Two readings that
     // disagree would end the candidate outright, and are the reason this runs
     // twice rather than trusting that a read is a function of its input.
     std::string second_complaint;
-    const std::vector<Probe> second = probe(path, second_complaint);
+    const ProbeRun second_run = probe(path, second_complaint);
+    const std::vector<Probe> &second = second_run.definitions;
 
     for (int candidate = 0; candidate < 3; ++candidate) {
       std::vector<std::string> keys;

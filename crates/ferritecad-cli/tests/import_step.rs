@@ -18,6 +18,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use ferritecad_document::{Document, ObjectPayload};
+use ferritecad_exchange::{Stage, StoredScene};
+
 const CLEAN: i32 = 0;
 const FAILED: i32 = 2;
 const NOTICED: i32 = 4;
@@ -209,6 +212,192 @@ fn the_source_bytes_are_in_the_document_and_the_file_is_no_longer_needed() {
     let inspected = run(&["inspect", &output.to_string_lossy()]);
     assert!(inspected.status.success());
     assert!(stdout(&inspected).contains("exchange.step.imported"));
+}
+
+#[test]
+fn the_complex_ap203_assembly_becomes_a_durable_document() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    if !has_kernel(dir.path()) {
+        return;
+    }
+
+    let input = source(
+        dir.path(),
+        "interoperability",
+        "c3d-ap203-complex-assembly.stp",
+    );
+    let original = std::fs::read(&input).expect("reads the interoperability fixture");
+    let modified_before = std::fs::metadata(&input).expect("stats").modified().ok();
+    let output = dir.path().join("complex.fcad");
+
+    let result = import(&input, &output, &[]);
+    assert_eq!(
+        code(&result),
+        NOTICED,
+        "the transferred AP203 scene must be published with its diagnostics: {}{}",
+        stdout(&result),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(output.is_file(), "no durable document was written");
+
+    let report = stdout(&result);
+    // The persisted scene contains one unplaced root node and 139 occurrences
+    // placed below it. The CLI's long-standing summary calls all scene nodes
+    // placements, so its total is 140.
+    assert!(
+        report.contains("46 definitions, 140 placements"),
+        "{report}"
+    );
+    assert!(report.contains("reading reported"), "{report}");
+    assert!(
+        report.contains("problem while validating step.product_definition#"),
+        "invalid solids were not surfaced as typed diagnostics:\n{report}"
+    );
+    assert_eq!(
+        std::fs::read(&input).expect("reads the fixture again"),
+        original,
+        "the interoperability STEP bytes changed"
+    );
+    assert_eq!(
+        std::fs::metadata(&input)
+            .expect("stats again")
+            .modified()
+            .ok(),
+        modified_before,
+        "the interoperability STEP mtime changed"
+    );
+
+    std::fs::remove_file(&input).expect("hides the external STEP source");
+
+    let document = Document::open(&output).expect("opens the standalone document");
+    let objects = document.objects().expect("reads the imported object");
+    let imported = objects
+        .iter()
+        .find_map(|record| match &record.payload {
+            ObjectPayload::ImportedStep(imported) => Some(imported),
+            _ => None,
+        })
+        .expect("the document carries an imported STEP object");
+    let StoredScene::V2(scene) = &imported.scene else {
+        panic!("a new import must carry source definition keys");
+    };
+    assert!(
+        imported.diagnostics_at_import.iter().any(|diagnostic| {
+            diagnostic.stage == Stage::Load
+                && diagnostic.entity == "FILL_AREA_STYLE"
+                && diagnostic.message.contains("180 times")
+        }),
+        "the 180 grouped FILL_AREA_STYLE problems were hidden: {:?}",
+        imported.diagnostics_at_import
+    );
+    let mut validation_entities: Vec<&str> = imported
+        .diagnostics_at_import
+        .iter()
+        .filter(|diagnostic| diagnostic.stage == Stage::Validation)
+        .map(|diagnostic| diagnostic.entity.as_str())
+        .collect();
+    validation_entities.sort_unstable();
+    assert_eq!(
+        validation_entities,
+        [
+            "step.product_definition#2428",
+            "step.product_definition#2583"
+        ],
+        "invalid part solids must be retained and named, without assembly duplicates"
+    );
+    assert_eq!(scene.definitions.len(), 46);
+    assert_eq!(scene.instances.len(), 140);
+    assert_eq!(
+        scene
+            .instances
+            .iter()
+            .filter(|instance| instance.parent.is_none())
+            .count(),
+        1,
+        "the root assembly was lost"
+    );
+    assert_eq!(
+        scene
+            .instances
+            .iter()
+            .find(|instance| instance.parent.is_none())
+            .expect("the root exists")
+            .definition,
+        "step.product_definition#1",
+        "the root was assigned another definition identity"
+    );
+    assert_eq!(
+        scene
+            .instances
+            .iter()
+            .filter(|instance| instance.parent.is_some())
+            .count(),
+        139,
+        "a placed occurrence was lost or invented"
+    );
+
+    let keys: BTreeMap<&str, usize> = scene
+        .definitions
+        .iter()
+        .enumerate()
+        .map(|(index, definition)| (definition.key.as_str(), index))
+        .collect();
+    assert_eq!(keys.len(), 46, "definition keys are not unique");
+    for required in [
+        "step.product_definition#1",
+        "step.product_definition#1764",
+        "step.product_definition#2927",
+    ] {
+        assert!(keys.contains_key(required), "missing {required}");
+    }
+
+    let repeated: Vec<_> = scene
+        .instances
+        .iter()
+        .filter(|instance| instance.definition == "step.product_definition#2753")
+        .collect();
+    assert_eq!(repeated.len(), 8, "the repeated definition was not shared");
+    assert!(
+        repeated
+            .iter()
+            .skip(1)
+            .any(|instance| instance.placement != repeated[0].placement),
+        "repeated instances incorrectly share one placement"
+    );
+
+    let direct_children = |parent: usize| -> Vec<&str> {
+        let mut children: Vec<&str> = scene
+            .instances
+            .iter()
+            .filter(|instance| instance.parent == Some(parent as u32))
+            .map(|instance| instance.definition.as_str())
+            .collect();
+        children.sort_unstable();
+        children
+    };
+    let first_assembly = scene
+        .instances
+        .iter()
+        .position(|instance| instance.definition == "step.product_definition#1764")
+        .expect("places the first equal-children assembly");
+    let second_assembly = scene
+        .instances
+        .iter()
+        .position(|instance| instance.definition == "step.product_definition#2927")
+        .expect("places the second equal-children assembly");
+    assert_eq!(
+        direct_children(first_assembly),
+        direct_children(second_assembly),
+        "the measurement no longer contains the equal-children pair"
+    );
+
+    let validated = run(&["validate", &output.to_string_lossy()]);
+    assert!(
+        validated.status.success(),
+        "the document does not stand alone: {}{}",
+        stdout(&validated),
+        String::from_utf8_lossy(&validated.stderr)
+    );
 }
 
 #[test]
