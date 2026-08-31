@@ -137,6 +137,23 @@ OCCT session after the external STEP has been removed and reproduces the full
 definition and occurrence scene. No normalization or rewrite of this fixture
 is part of that path.
 
+The §22A-1b measurement tessellates 34 of the 35 leaf definitions without
+healing. Invalid `#2428` produces 3,372 triangles; invalid `#2583` is the only
+definition refused by face tessellation, with OCCT status 6. ShapeFix on deep
+copies changes none of the measured solid, face, edge, vertex or placement
+counts and does not make `#2583` tessellate. It is therefore not in the default
+path.
+
+The product policy retains the partial document, reports the diagnostics and
+returns code 4. A viewer may represent only the exact persisted-and-current
+validation failure as a catalogued, placed empty mesh with a typed omission
+reason; every unrelated tessellation failure still refuses the load. The real
+offscreen path after deleting the external STEP measures 46 definitions, 139
+non-root occurrences, 35 meshes, 112 draws, 987,203 triangles and 5,982 model
+pixels in a 256 by 256 frame. `#2428` has four draws; `#2583` also has four
+draws and its catalogue entry carries the status-6 omission. Rendering changes
+neither this fixture nor the stored document.
+
 | File | Bytes | SHA-256 |
 |---|---:|---|
 | `c3d-ap203-complex-assembly.stp` | 1896140 | `f167cc7f36949131e2f5c274de434db5dd7930470cca71e2ad8d8f8ef05598ca` |

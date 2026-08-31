@@ -48,13 +48,14 @@ use ferritecad_eval::rebuild_cold;
 pub use ferritecad_eval::{
     ConflictingConstraint, PresentedCurve, SketchConflict, SketchPresentation, SketchSolveReport,
 };
-use ferritecad_exchange::{ColourSource, Import, Scene};
+use ferritecad_exchange::{ColourSource, Diagnostic, Import, Scene, Severity, Stage};
 use ferritecad_kernel::{
-    GeometryKernel, KernelIdentity, OperationContext, ProgressSink, ShapeHandle, TessellationParams,
+    GeometryKernel, KernelIdentity, Mesh, OperationContext, ProgressSink, ShapeHandle,
+    TessellationParams,
 };
 use ferritecad_types::{
-    CadError, CanonicalHasher, ContentHash, ImportedSourceId, ObjectId, Result, StableEntityId,
-    Transform,
+    CadError, CanonicalHasher, ContentHash, ErrorKind, ImportedSourceId, ObjectId, Result,
+    StableEntityId, Transform,
 };
 use ferritecad_viewport::{
     EdgePickId, FacePickId, PickId, RenderSnapshot, SnapshotBuilder, VertexPickId,
@@ -736,6 +737,26 @@ pub struct CatalogueEntry {
     pub source_file: Option<String>,
     /// How many solids the definition holds, as the importer counted them.
     pub solids: Option<u32>,
+    /// Why this definition has no triangles, when its imported topology was
+    /// retained but the current kernel could not tessellate it.
+    ///
+    /// `None` is not proof that geometry exists; a genuinely empty native
+    /// body has no omission. `Some` is the typed, visible distinction between
+    /// a deliberate partial picture and a definition lost by accident.
+    pub geometry_omission: Option<GeometryOmission>,
+}
+
+/// A retained definition that the current viewer cannot turn into triangles.
+///
+/// The supporting diagnostic is the persisted import-time observation. The
+/// reason is the current kernel's tessellation refusal. Both are needed: an
+/// old warning does not excuse an unrelated loader failure, and a current
+/// error alone does not prove the document knowingly retained invalid
+/// topology.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeometryOmission {
+    pub diagnostic: Diagnostic,
+    pub reason: String,
 }
 
 /// One drawn definition while the load is still going on.
@@ -751,6 +772,7 @@ struct Drawn {
     name: Fact,
     source_file: Fact,
     solids: Option<u32>,
+    geometry_omission: Option<GeometryOmission>,
 }
 
 /// What repeated sightings of one display fact add up to.
@@ -863,12 +885,32 @@ impl Catalogue {
             name: Fact::Unknown,
             source_file: Fact::Unknown,
             solids: seen.solids,
+            geometry_omission: None,
         };
         entry.name.seen(seen.name);
         entry.source_file.seen(seen.source_file);
         self.entries.push(entry);
         self.packed.insert(item, index);
         Ok(index)
+    }
+
+    /// Records why an already packed definition deliberately has no geometry.
+    fn omit(&mut self, definition: usize, omission: GeometryOmission) -> Result<()> {
+        let entry = self.entries.get_mut(definition).ok_or_else(|| {
+            CadError::topology(format!(
+                "definition {definition} was omitted before it entered the catalogue"
+            ))
+        })?;
+        match &entry.geometry_omission {
+            None => entry.geometry_omission = Some(omission),
+            Some(earlier) if earlier == &omission => {}
+            Some(earlier) => {
+                return Err(CadError::topology(format!(
+                    "one definition has two geometry omissions: {earlier:?} and {omission:?}"
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// What the load is handing over, in the order the snapshot draws it.
@@ -880,6 +922,7 @@ impl Catalogue {
                 name: entry.name.into_option(),
                 source_file: entry.source_file.into_option(),
                 solids: entry.solids,
+                geometry_omission: entry.geometry_omission,
             })
             .collect()
     }
@@ -1219,6 +1262,23 @@ where
                         document.reopen_step_import(object.id, &mut reader)?
                     };
                     imported.extend(reopened.scene.shapes());
+                    // An omitted mesh needs two observations of the same
+                    // definition: the diagnostic persisted with the document
+                    // and the one made by this fresh reading. A historical
+                    // warning cannot excuse an unrelated current failure, and
+                    // a current finding cannot silently rewrite history.
+                    let omittable: BTreeMap<String, Diagnostic> = reopened
+                        .diagnostics_at_import
+                        .iter()
+                        .filter(|diagnostic| {
+                            is_topology_failure(diagnostic)
+                                && reopened.diagnostics_now.iter().any(|current| {
+                                    is_topology_failure(current)
+                                        && current.entity == diagnostic.entity
+                                })
+                        })
+                        .map(|diagnostic| (diagnostic.entity.clone(), diagnostic.clone()))
+                        .collect();
                     draw_scene(
                         &mut builder,
                         &mut catalogue,
@@ -1226,6 +1286,7 @@ where
                         Provenance {
                             source: reopened.source(),
                             file: source_file,
+                            omittable: &omittable,
                         },
                         &reopened.scene,
                         params,
@@ -1401,9 +1462,31 @@ fn semantic_context_identity(
 }
 
 /// Where an imported scene came from: its identity, and what to call it.
-struct Provenance {
+struct Provenance<'a> {
     source: ImportedSourceId,
     file: Option<String>,
+    /// Persisted validation failures confirmed by the current reader.
+    omittable: &'a BTreeMap<String, Diagnostic>,
+}
+
+fn is_topology_failure(diagnostic: &Diagnostic) -> bool {
+    diagnostic.stage == Stage::Validation && diagnostic.severity == Severity::Fail
+}
+
+/// Whether this is the narrow failure an invalid retained definition may turn
+/// into an explicit empty catalogue row.
+///
+/// Cancellation, allocation, malformed mesh data and every other loader error
+/// still refuse the picture. No healing, sewing, tolerance change or topology
+/// edit is attempted here.
+fn is_face_tessellation_refusal(reason: &CadError) -> bool {
+    reason.kind() == ErrorKind::Kernel
+        && (reason
+            .to_string()
+            .contains("Open CASCADE could not tessellate every face")
+            || reason
+                .to_string()
+                .contains("Open CASCADE produced no triangles for one of the shape's faces"))
 }
 
 /// Adds an imported scene to the picture being built.
@@ -1427,7 +1510,7 @@ fn draw_scene<K: GeometryKernel + ?Sized>(
     builder: &mut SnapshotBuilder,
     catalogue: &mut Catalogue,
     kernel: &mut K,
-    from: Provenance,
+    from: Provenance<'_>,
     scene: &Scene,
     params: &TessellationParams,
     context: &OperationContext,
@@ -1509,16 +1592,40 @@ fn draw_scene<K: GeometryKernel + ?Sized>(
             solids: Some(definition.solids),
         };
 
+        let mut omission = None;
         let mesh = catalogue.definition(item, seen, || {
             let scoped = phase(
                 context,
                 definitions_meshed as f64 / definitions_to_mesh.max(1) as f64,
                 (definitions_meshed + 1) as f64 / definitions_to_mesh.max(1) as f64,
             );
-            let mesh = kernel.tessellate(definition.shape, params, &scoped)?;
+            let mesh = match kernel.tessellate(definition.shape, params, &scoped) {
+                Ok(mesh) => mesh,
+                Err(reason) if is_face_tessellation_refusal(&reason) => {
+                    let Some(diagnostic) = from.omittable.get(&definition.key) else {
+                        return Err(reason);
+                    };
+                    omission = Some(GeometryOmission {
+                        diagnostic: diagnostic.clone(),
+                        reason: reason.to_string(),
+                    });
+                    Mesh {
+                        positions: Vec::new(),
+                        normals: Vec::new(),
+                        indices: Vec::new(),
+                        faces: Vec::new(),
+                        edges: None,
+                        topological_vertices: None,
+                    }
+                }
+                Err(reason) => return Err(reason),
+            };
             definitions_meshed += 1;
             builder.add_mesh(&mesh)
         })?;
+        if let Some(omission) = omission {
+            catalogue.omit(mesh, omission)?;
+        }
 
         // Linear RGB as the importer read it out of the file. Where the file
         // said nothing, the same neutral colour a native body gets: inventing
@@ -4257,6 +4364,7 @@ mod tests {
 
         let mut builder = SnapshotBuilder::new();
         let mut catalogue = Catalogue::default();
+        let omittable = BTreeMap::new();
         draw_scene(
             &mut builder,
             &mut catalogue,
@@ -4264,6 +4372,7 @@ mod tests {
             Provenance {
                 source: ImportedSourceId::new(),
                 file: None,
+                omittable: &omittable,
             },
             &scene,
             &params(),

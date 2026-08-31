@@ -3154,6 +3154,7 @@ mod tests {
             name: Some("Plate".to_owned()),
             source_file: None,
             solids: None,
+            geometry_omission: None,
         }
     }
 
@@ -11489,6 +11490,7 @@ mod tests {
             name: Some("Bolt".to_owned()),
             source_file: Some("pattern.step".to_owned()),
             solids: Some(1),
+            geometry_omission: None,
         };
         let scene = LiveScene {
             prepared: (),
@@ -11963,6 +11965,7 @@ mod tests {
             name: Some("Bolt".to_owned()),
             source_file: Some("04-instance-colours.step".to_owned()),
             solids: Some(1),
+            geometry_omission: None,
         };
 
         // Clicking any of the four gives the same answer, because a pick names

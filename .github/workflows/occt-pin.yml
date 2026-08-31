@@ -524,10 +524,11 @@ jobs:
           # for a contributor without the kernel and wrong for a run whose
           # purpose is to prove the adapter works against the pinned version.
           export FERRITECAD_REQUIRE_OCCT=1
-          # This run also carries the only end-to-end STEP -> document -> GPU
-          # -> pixel gate. A contributor with no adapter may skip that test;
-          # this workflow may not, or green would require reading its log to
-          # learn whether the asserted path ran at all.
+          # This run also carries both end-to-end STEP -> document -> GPU ->
+          # pixel gates: the canonical clean import and the complex partial
+          # import. A contributor with no adapter may skip those tests; this
+          # workflow may not, or green would require reading its log to learn
+          # whether either asserted path ran at all.
           export FERRITECAD_REQUIRE_GPU=1
           export OpenCASCADE_DIR="$FCAD_OCCT_CONFIG_DIR"
 
