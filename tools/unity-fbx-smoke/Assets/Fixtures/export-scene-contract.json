@@ -1,0 +1,124 @@
+{
+  "schema": "ferritecad.measurement-export-scene.v1",
+  "complete": false,
+  "partial_exit_code": 6,
+  "source": {
+    "imported": "persisted_scene_hierarchy_plus_one_cold_rebuild",
+    "native": "one_cold_rebuild_in_document_order",
+    "writer_input": "kernel_neutral_export_scene",
+    "forbidden": [
+      "RenderSnapshot",
+      "GPU buffers",
+      "camera",
+      "PickId",
+      "FacePickId",
+      "EdgePickId",
+      "VertexPickId"
+    ],
+    "second_solve": false,
+    "second_step_read": false,
+    "external_step_required": false
+  },
+  "fbx_contract": {
+    "encoding": "ascii",
+    "version": 7400,
+    "right_axis": "+X",
+    "up_axis": "+Y",
+    "front_opposite_forward_axis": "+Z",
+    "unit_meters": 1.0,
+    "fcad_mm_to_fbx_m": "(x,y,z)->(x,z,-y)*0.001",
+    "fcad_mm_to_unity_world": "(x,y,z)->(-x,z,-y)*0.001",
+    "writer_reverses_winding": false,
+    "normal_conversion": "(nx,ny,nz)->(nx,nz,-ny)",
+    "transform_application": "parent_local_once",
+    "mesh_ownership": "one_geometry_per_definition"
+  },
+  "definitions": [
+    {
+      "key": "definition/asymmetric",
+      "geometry_key": "geometry/asymmetric",
+      "vertex_count": 4,
+      "index_count": 12,
+      "normal_count_by_polygon_vertex": 12,
+      "material_slots": ["material/red", "material/blue"]
+    },
+    {
+      "key": "step.product_definition#2428",
+      "geometry_key": "geometry/step.product_definition#2428",
+      "measured_as_real_mesh": true,
+      "material_slots": []
+    },
+    {
+      "key": "step.product_definition#2583",
+      "geometry_key": null,
+      "measured_as_real_mesh": false,
+      "omission": {
+        "kind": "GeometryOmission",
+        "finding_entity": "step.product_definition#2583",
+        "reason": "tessellation status 6"
+      },
+      "material_slots": []
+    }
+  ],
+  "nodes": [
+    {
+      "key": "node/root",
+      "parent": null,
+      "display_name": "FCAD_ROOT",
+      "stable_name": "FCAD_ROOT [node-root]",
+      "transform_space": "parent_local",
+      "definition": null
+    },
+    {
+      "key": "node/assembly",
+      "parent": "node/root",
+      "display_name": "Assembly Frame",
+      "stable_name": "Assembly Frame [node-assembly]",
+      "transform_space": "parent_local",
+      "definition": null
+    },
+    {
+      "key": "node/instance-a",
+      "parent": "node/assembly",
+      "display_name": "Repeated Part",
+      "stable_name": "Repeated Part [node-instance-a]",
+      "transform_space": "parent_local",
+      "definition": "definition/asymmetric",
+      "material_override": null,
+      "colour_override_linear": null
+    },
+    {
+      "key": "node/instance-b",
+      "parent": "node/assembly",
+      "display_name": "Repeated Part",
+      "stable_name": "Repeated Part [node-instance-b]",
+      "transform_space": "parent_local",
+      "definition": "definition/asymmetric",
+      "material_override": null,
+      "colour_override_linear": null
+    },
+    {
+      "key": "node/omitted-2583",
+      "parent": "node/assembly",
+      "display_name": "Omitted #2583",
+      "stable_name": "Omitted #2583 [node-omitted-2583]",
+      "transform_space": "parent_local",
+      "definition": "step.product_definition#2583",
+      "omission_marker": "FerriteCADGeometryOmission"
+    }
+  ],
+  "materials": [
+    {"key": "material/red", "base_colour_srgb": [0.8, 0.2, 0.1, 1.0]},
+    {"key": "material/blue", "base_colour_srgb": [0.1, 0.35, 0.9, 1.0]}
+  ],
+  "complex_measurement": {
+    "definitions": 46,
+    "root_nodes": 1,
+    "non_root_occurrences": 139,
+    "tessellated_leaf_definitions": 34,
+    "render_snapshot_meshes": 35,
+    "render_snapshot_draws": 112,
+    "omitted_definition": "step.product_definition#2583",
+    "real_mesh_definition": "step.product_definition#2428"
+  }
+}

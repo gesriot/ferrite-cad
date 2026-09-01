@@ -1476,7 +1476,7 @@ Loader разрешает ровно один узкий partial-picture исх�
 
 ### §22B. FCAD → FBX → Unity
 
-Экспорт FBX обязателен для нативных моделей и для импортированных STEP-моделей/сборок. Первая версия экспортирует сцену как mesh asset, а не пытается представить параметрическую историю или B-Rep средствами FBX. До выбора writer'а и версии формата срез измеряет импорт в поддерживаемой Unity LTS: вариант FBX, оси, handedness, метры/миллиметры, преобразования instances, normals и material semantics.
+Экспорт FBX обязателен для нативных моделей и для импортированных STEP-моделей/сборок. Первая версия экспортирует сцену как mesh asset, а не пытается представить параметрическую историю или B-Rep средствами FBX.
 
 Контракт первой версии:
 
@@ -1489,6 +1489,20 @@ Loader разрешает ровно один узкий partial-picture исх�
 7. end-to-end gate использует в том числе `c3d-ap203-complex-assembly.stp`: STEP → FCAD → FBX, после чего проверяются все 46 definitions, 139 occurrences и отсутствие тихо отброшенной геометрии.
 
 Animation, rigging, skinning, текстуры и выбор поддерева не входят в первый FBX-срез. Они не должны задерживать базовый статический export, но отсутствие этих возможностей должно быть сказано явно.
+
+**§22B-1a сделано: измерение, не exporter.** Настоящий arm64 Unity Editor сообщил точную версию `6000.4.10f1 (feeafc12a938)`, Release, без Rosetta, и прошёл только batchmode probe. Полный semantic reference принят как FBX 7.4.0 ASCII; отдельный trusted binary FBX 7.4.0 из установленного Editor тоже принят, но production dependency из этого не следует. Независимый strict ufbx 0.23.0 подтвердил сырой format/version, settings, дерево, connections одной Geometry к двум Model, local transforms, polygons, normals и material assignments. Канонические Unity и independent-reader reports повторяемы byte-for-byte.
+
+**Оси и единицы следующего среза.** Единственный выбранный контракт — right-handed FBX metadata `right=+X, up=+Y, front-opposite-forward=+Z`, metre units (`UnitScaleFactor=100`) и координаты `C_fbx(x,y,z)=(x,z,-y)*0.001`. Измеренный Unity мир получает `C_unity=(-x,z,-y)*0.001`: importer добавляет X reflection и согласованно меняет winding. Так как determinant writer-side rotation равен `+1`, writer сохраняет FCAD polygon order; normals переводятся `(nx,ny,nz)->(nx,nz,-ny)`. `ModelImporter` для выбранного файла имеет `fileScale=1`, `useFileScale=true`, `globalScale=1`, `bakeAxisConversion=false`; imported root rotation/scale identity. Контрольные 1000/2000/3000 mm дали ровно 1/2/3 Unity units, mm-as-metres дали 1000/2000/3000, двойная конверсия — 0.001/0.002/0.003.
+
+**TRS выбран только после корпуса.** Реальный OCCT gate классифицировал все 14 STEP-файлов: 11 imported, 3 rejected, 170 placements. Все 170 finite, determinant 1, orthogonal, uniform scale 1; reflection, shear, non-uniform scale и singular — 0. Complex fixture даёт те же свойства для 140 nodes. Поэтому текущий корпус представим parent-local Unity TRS без bake. Любой будущий непредставимый transform обязан отказать экспорт до отдельного bake-policy, а не угадывать её.
+
+**Иерархия и instances.** Raw FBX сохраняет два одинаковых `Repeated Part` как разные nodes под `Assembly Frame`, оба соединены с одной Geometry. Unity оставляет два MeshFilter, один unique Mesh и reference-equal `sharedMesh`, но переименовывает второй GameObject в `Repeated Part 1`, заменяет видимое имя единственного FBX root именем asset и меняет sibling order. Поэтому production nodes получают детерминированные уникальные `stable_name`; source display name/key остаются metadata, а importer auto-name/order не считаются identity. Definitions владеют geometry один раз, nodes — parent, stable name, parent-local transform, definition reference и material/linear-colour override. Definitions идут в document/source order, nodes parent-before-child, slots в source order; hash iteration не наблюдаема.
+
+**Normals, materials, omissions.** Unity сохранил различимый authored normal pattern, 12 indices, два submeshes и обе base colours; recalculation/slot/colour mutations убиваются. Так как Scene colours linear, граница перед FBX один раз кодирует finite clamped RGB в sRGB; Unity `.linear` должен вернуть source value. Empty `#2583` остаётся в hierarchy, а Unity AssetPostprocessor видит custom `FerriteCADGeometryOmission` и `FerriteCADComplete=False`; это не runtime component, поэтому marker не заменяет deterministic CLI report. Future partial export всегда сохраняет definition/placements, выдаёт report и зарезервированный non-clean exit 6, и не называет 34 tessellated leaf definitions полной 46-definition assembly. `#2428` остаётся real mesh; healing/sewing/invention запрещены.
+
+**ExportScene и writer boundary следующего среза.** `RenderSnapshot` не источник экспорта: complex Scene 46/140 превращается в 35 meshes/112 draws и теряет parents, source-local keys и typed omission. Kernel-neutral immutable `ExportScene` строится один раз: imported road берёт persisted Scene hierarchy и один cold geometry rebuild, native road — один cold rebuild в document order; дороги сходятся до writer. Нет second solve, second STEP read или external STEP. Pick IDs, GPU buffers, packed draws и camera исключены. Предполагаемый writer получает только `&ExportScene`, deterministic options и byte sink и возвращает bytes + completeness report; он не открывает Document, не вызывает kernel и не читает STEP/snapshot. Concrete production writer не выбран. Independent ufbx остаётся gate, не production dependency.
+
+Полный протокол, provenance, raw/Unity reports и 14 убитых semantic mutants находятся в [`measurements/fcad-fbx-unity-6000.4.10f1.md`](measurements/fcad-fbx-unity-6000.4.10f1.md) и [`../tools/unity-fbx-smoke`](../tools/unity-fbx-smoke). Срез останавливается перед §22B-1b: production `export-fbx`, CLI route, serializer и writer dependency отсутствуют.
 
 ## 15. Чего не делать до beta
 

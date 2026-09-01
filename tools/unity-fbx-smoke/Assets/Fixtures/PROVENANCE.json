@@ -1,0 +1,32 @@
+{
+  "schema": "ferritecad.fbx-measurement-provenance.v1",
+  "measurement_base_commit": "2cea3c19637956a12b58007f7c48d79020189f73",
+  "generator": {
+    "name": "ferritecad-unity-fbx-measurement-generator/1",
+    "commit": "a7f68ee5642f4e11ae1fa7fc40f1166920133e93",
+    "file": "scripts/generate_fixtures.py",
+    "sha256": "28036787312849577a548313aad57a908d6e9b0f74535a234b0994a8dba5f5d1"
+  },
+  "generated_fixture_manifest": {
+    "file": "Assets/Fixtures/fixture-manifest.json",
+    "sha256": "aa6a22e92e255c3be298db0fbb8148fa40381051114eb461286e8840be3af790"
+  },
+  "trusted_binary_probe": {
+    "file": "Assets/Fixtures/unity_builtin_disc_binary7400.fbx",
+    "source_within_unity_editor": "Contents/Resources/PackageManager/BuiltInPackages/com.unity.render-pipelines.high-definition/Runtime/RenderPipelineResources/Mesh/Disc.fbx",
+    "unity_editor_version": "6000.4.10f1",
+    "bytes": 42464,
+    "sha256": "44b73637485be387c355702426fbb5386c10df05aa1d8faa305bcfcf492ce4eb",
+    "raw_creator": "FBX SDK/FBX Plugins version 2018.1 build=20170501",
+    "independent_format": "binary",
+    "independent_fbx_version": 7400
+  },
+  "independent_reader": {
+    "name": "ufbx",
+    "version": "0.23.0",
+    "commit": "fcc5d6ba444cfd3eb80677dba5e37e493941abe5",
+    "ufbx_c_sha256": "7d8d6ae4373f71692f295ff49ee0826466306ebcaa80b0e587c13ed047b98cea",
+    "ufbx_h_sha256": "942481725372d2ac4da5e77a062b47c20054a3440e7ee09a6043f99fe1f130ed",
+    "role": "measurement gate only; no production dependency selected"
+  }
+}

@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT
+/Library/
+/Temp/
+/Logs/
+/UserSettings/
+/obj/
+/scripts/.cache/
+/scripts/__pycache__/
+/measurement-output/
+*.csproj
+*.sln
+*.pidb
+*.unityproj
