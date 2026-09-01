@@ -1,0 +1,66 @@
+{
+  "fbx_version": 7400,
+  "fixtures": [
+    {
+      "axis": "z_up_right_handed",
+      "bytes": 6937,
+      "coordinate_axis": "fcad_z_up",
+      "coordinate_unit": "millimetre",
+      "encoding": "ascii",
+      "fbx_version": 7400,
+      "file": "zup_mm_ascii7400.fbx",
+      "sha256": "f9b1edfaffc2324bd02327c53ad0b7e17280199f9fd760f0db70134dc83c9372",
+      "unit": "millimetre",
+      "unit_scale_factor_centimetres": 0.1
+    },
+    {
+      "axis": "y_up_right_handed",
+      "bytes": 6936,
+      "coordinate_axis": "fcad_z_up",
+      "coordinate_unit": "millimetre",
+      "encoding": "ascii",
+      "fbx_version": 7400,
+      "file": "wrong_yup_metadata_ascii7400.fbx",
+      "sha256": "74c904804f61e277619bed37dc9912567be134471257df103faa27cbf0e0daec",
+      "unit": "millimetre",
+      "unit_scale_factor_centimetres": 0.1
+    },
+    {
+      "axis": "z_up_right_handed",
+      "bytes": 6905,
+      "coordinate_axis": "fcad_z_up",
+      "coordinate_unit": "millimetre",
+      "encoding": "ascii",
+      "fbx_version": 7400,
+      "file": "wrong_m_metadata_ascii7400.fbx",
+      "sha256": "cc4b6154204c23b78508be65c835b2b65c4dd284fc06d00ba8c6223e0f635893",
+      "unit": "metre",
+      "unit_scale_factor_centimetres": 100.0
+    },
+    {
+      "axis": "z_up_right_handed",
+      "bytes": 7061,
+      "coordinate_axis": "fcad_z_up",
+      "coordinate_unit": "metre",
+      "encoding": "ascii",
+      "fbx_version": 7400,
+      "file": "wrong_double_unit_ascii7400.fbx",
+      "sha256": "573ffbb784d2026b5d5b259af30a4db720a01cdd1738757575da31143d353e10",
+      "unit": "millimetre",
+      "unit_scale_factor_centimetres": 0.1
+    },
+    {
+      "axis": "y_up_right_handed",
+      "bytes": 7199,
+      "coordinate_axis": "y_up",
+      "coordinate_unit": "metre",
+      "encoding": "ascii",
+      "fbx_version": 7400,
+      "file": "yup_m_preconverted_ascii7400.fbx",
+      "sha256": "81e54bc50d1185e3f50e8140b8d66feed62d7cde4786e67c3a512a8ac57e89cf",
+      "unit": "metre",
+      "unit_scale_factor_centimetres": 100.0
+    }
+  ],
+  "generator": "ferritecad-unity-fbx-measurement-generator/1"
+}

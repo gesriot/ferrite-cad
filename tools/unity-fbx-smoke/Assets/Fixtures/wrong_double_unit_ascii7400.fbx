@@ -1,0 +1,251 @@
+; FBX 7.4.0 project file
+; ferritecad-unity-fbx-measurement-generator/1
+
+FBXHeaderExtension: {
+	FBXHeaderVersion: 1003
+	FBXVersion: 7400
+	EncryptionType: 0
+	CreationTimeStamp: {
+		Version: 1000
+		Year: 2000
+		Month: 1
+		Day: 1
+		Hour: 0
+		Minute: 0
+		Second: 0
+		Millisecond: 0
+	}
+	Creator: "ferritecad-unity-fbx-measurement-generator/1"
+}
+FileId: "464341442D3232422D31412D4649585455"
+CreationTime: "2000-01-01 00:00:00:000"
+Creator: "ferritecad-unity-fbx-measurement-generator/1"
+GlobalSettings: {
+	Version: 1000
+	Properties70: {
+		P: "UpAxis", "int", "Integer", "", 2
+		P: "UpAxisSign", "int", "Integer", "", 1
+		P: "FrontAxis", "int", "Integer", "", 1
+		P: "FrontAxisSign", "int", "Integer", "", -1
+		P: "CoordAxis", "int", "Integer", "", 0
+		P: "CoordAxisSign", "int", "Integer", "", 1
+		P: "OriginalUpAxis", "int", "Integer", "", 2
+		P: "OriginalUpAxisSign", "int", "Integer", "", 1
+		P: "UnitScaleFactor", "double", "Number", "", 0.10000000000000001
+		P: "OriginalUnitScaleFactor", "double", "Number", "", 0.10000000000000001
+	}
+}
+Documents: {
+	Count: 1
+	Document: 4000, "Scene", "Scene" {
+		Properties70: {
+		}
+		RootNode: 0
+	}
+}
+References: {
+}
+Definitions: {
+	Version: 100
+	Count: 13
+	ObjectType: "GlobalSettings" {
+		Count: 1
+	}
+	ObjectType: "Geometry" {
+		Count: 1
+	}
+	ObjectType: "Model" {
+		Count: 9
+	}
+	ObjectType: "Material" {
+		Count: 2
+	}
+}
+Objects: {
+	Geometry: 1000, "Geometry::Asymmetric1000x2000x3000", "Mesh" {
+		GeometryVersion: 124
+		Vertices: *12 {
+			a: 0.0,0.0,0.0,1,0.0,0.0,0.0,2,0.0,0.0,0.0,3
+		}
+		PolygonVertexIndex: *12 {
+			a: 0,2,-2,0,1,-4,0,3,-3,1,2,-4
+		}
+		LayerElementNormal: 0 {
+			Version: 101
+			Name: "FCAD authored normals"
+			MappingInformationType: "ByPolygonVertex"
+			ReferenceInformationType: "Direct"
+			Normals: *36 {
+				a: 1,0.0,0.0,0.0,1,0.0,0.0,0.0,1,0.0,1,0.0,0.0,0.0,1,1,0.0,0.0,0.0,0.0,1,1,0.0,0.0,0.0,1,0.0,1,0.0,0.0,0.0,0.0,1,0.0,1,0.0
+			}
+		}
+		LayerElementMaterial: 0 {
+			Version: 101
+			Name: ""
+			MappingInformationType: "ByPolygon"
+			ReferenceInformationType: "IndexToDirect"
+			Materials: *4 {
+				a: 0,0,1,1
+			}
+		}
+		Layer: 0 {
+			Version: 100
+			LayerElement: {
+				Type: "LayerElementNormal"
+				TypedIndex: 0
+			}
+			LayerElement: {
+				Type: "LayerElementMaterial"
+				TypedIndex: 0
+			}
+		}
+	}
+	Model: 2000, "Model::FCAD_ROOT", "Null" {
+		Version: 232
+		Properties70: {
+			P: "Lcl Translation", "Lcl Translation", "", "A", 0.0, 0.0, 0.0
+			P: "Lcl Rotation", "Lcl Rotation", "", "A", 0.0, 0.0, 0.0
+			P: "Lcl Scaling", "Lcl Scaling", "", "A", 1, 1, 1
+			P: "FerriteCADNodeKey", "KString", "", "U", "node/root"
+		}
+		Shading: 1
+		Culling: "CullingOff"
+		TypeFlags: "Null"
+	}
+	Model: 2001, "Model::Assembly Frame", "Null" {
+		Version: 232
+		Properties70: {
+			P: "Lcl Translation", "Lcl Translation", "", "A", 0.10000000000000001, 0.20000000000000001, 0.29999999999999999
+			P: "Lcl Rotation", "Lcl Rotation", "", "A", 11, 23, -17
+			P: "Lcl Scaling", "Lcl Scaling", "", "A", 1, 1, 1
+			P: "FerriteCADNodeKey", "KString", "", "U", "node/assembly"
+		}
+		Shading: 1
+		Culling: "CullingOff"
+		TypeFlags: "Null"
+	}
+	Model: 2002, "Model::Repeated Part", "Mesh" {
+		Version: 232
+		Properties70: {
+			P: "Lcl Translation", "Lcl Translation", "", "A", 1.2, -0.40000000000000002, 0.80000000000000004
+			P: "Lcl Rotation", "Lcl Rotation", "", "A", 31, -19, 47
+			P: "Lcl Scaling", "Lcl Scaling", "", "A", 1, 1, 1
+			P: "FerriteCADNodeKey", "KString", "", "U", "node/instance-a"
+		}
+		Shading: 1
+		Culling: "CullingOff"
+	}
+	Model: 2003, "Model::Repeated Part", "Mesh" {
+		Version: 232
+		Properties70: {
+			P: "Lcl Translation", "Lcl Translation", "", "A", -0.70000000000000007, 0.90000000000000002, 1.3
+			P: "Lcl Rotation", "Lcl Rotation", "", "A", -13, 29.000000000000004, -37
+			P: "Lcl Scaling", "Lcl Scaling", "", "A", 1, 1, 1
+			P: "FerriteCADNodeKey", "KString", "", "U", "node/instance-b"
+		}
+		Shading: 1
+		Culling: "CullingOff"
+	}
+	Model: 2004, "Model::Omitted #2583", "Null" {
+		Version: 232
+		Properties70: {
+			P: "Lcl Translation", "Lcl Translation", "", "A", 0.40000000000000002, 0.5, 0.59999999999999998
+			P: "Lcl Rotation", "Lcl Rotation", "", "A", 7, 13, 29.000000000000004
+			P: "Lcl Scaling", "Lcl Scaling", "", "A", 1, 1, 1
+			P: "FerriteCADNodeKey", "KString", "", "U", "node/omitted-2583"
+			P: "FerriteCADGeometryOmission", "KString", "", "U", "definition=step.product_definition#2583;reason=tessellation status 6"
+			P: "FerriteCADComplete", "bool", "", "U", 0
+		}
+		Shading: 1
+		Culling: "CullingOff"
+		TypeFlags: "Null"
+	}
+	Model: 2100, "Model::CP Origin", "Null" {
+		Version: 232
+		Properties70: {
+			P: "Lcl Translation", "Lcl Translation", "", "A", 0.0, 0.0, 0.0
+			P: "Lcl Rotation", "Lcl Rotation", "", "A", 0.0, 0.0, 0.0
+			P: "Lcl Scaling", "Lcl Scaling", "", "A", 1, 1, 1
+			P: "FerriteCADNodeKey", "KString", "", "U", "control/origin"
+		}
+		Shading: 1
+		Culling: "CullingOff"
+		TypeFlags: "Null"
+	}
+	Model: 2101, "Model::CP X1000", "Null" {
+		Version: 232
+		Properties70: {
+			P: "Lcl Translation", "Lcl Translation", "", "A", 1, 0.0, 0.0
+			P: "Lcl Rotation", "Lcl Rotation", "", "A", 0.0, 0.0, 0.0
+			P: "Lcl Scaling", "Lcl Scaling", "", "A", 1, 1, 1
+			P: "FerriteCADNodeKey", "KString", "", "U", "control/x1000"
+		}
+		Shading: 1
+		Culling: "CullingOff"
+		TypeFlags: "Null"
+	}
+	Model: 2102, "Model::CP Y2000", "Null" {
+		Version: 232
+		Properties70: {
+			P: "Lcl Translation", "Lcl Translation", "", "A", 0.0, 2, 0.0
+			P: "Lcl Rotation", "Lcl Rotation", "", "A", 0.0, 0.0, 0.0
+			P: "Lcl Scaling", "Lcl Scaling", "", "A", 1, 1, 1
+			P: "FerriteCADNodeKey", "KString", "", "U", "control/y2000"
+		}
+		Shading: 1
+		Culling: "CullingOff"
+		TypeFlags: "Null"
+	}
+	Model: 2103, "Model::CP Z3000", "Null" {
+		Version: 232
+		Properties70: {
+			P: "Lcl Translation", "Lcl Translation", "", "A", 0.0, 0.0, 3
+			P: "Lcl Rotation", "Lcl Rotation", "", "A", 0.0, 0.0, 0.0
+			P: "Lcl Scaling", "Lcl Scaling", "", "A", 1, 1, 1
+			P: "FerriteCADNodeKey", "KString", "", "U", "control/z3000"
+		}
+		Shading: 1
+		Culling: "CullingOff"
+		TypeFlags: "Null"
+	}
+	Material: 3000, "Material::Ferrite Red", "" {
+		Version: 102
+		ShadingModel: "phong"
+		MultiLayer: 0
+		Properties70: {
+			P: "DiffuseColor", "ColorRGB", "Color", "", 0.80000000000000004, 0.20000000000000001, 0.10000000000000001
+			P: "DiffuseFactor", "Number", "", "A", 1
+			P: "TransparencyFactor", "Number", "", "A", 0.0
+		}
+	}
+	Material: 3001, "Material::Ferrite Blue", "" {
+		Version: 102
+		ShadingModel: "phong"
+		MultiLayer: 0
+		Properties70: {
+			P: "DiffuseColor", "ColorRGB", "Color", "", 0.10000000000000001, 0.34999999999999998, 0.90000000000000002
+			P: "DiffuseFactor", "Number", "", "A", 1
+			P: "TransparencyFactor", "Number", "", "A", 0.0
+		}
+	}
+}
+Connections: {
+	C: "OO", 2000, 0
+	C: "OO", 2001, 2000
+	C: "OO", 2002, 2001
+	C: "OO", 2003, 2001
+	C: "OO", 2004, 2001
+	C: "OO", 2100, 2002
+	C: "OO", 2101, 2002
+	C: "OO", 2102, 2002
+	C: "OO", 2103, 2002
+	C: "OO", 1000, 2002
+	C: "OO", 1000, 2003
+	C: "OO", 3000, 2002
+	C: "OO", 3001, 2002
+	C: "OO", 3000, 2003
+	C: "OO", 3001, 2003
+}
+Takes: {
+	Current: ""
+}
