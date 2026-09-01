@@ -51,11 +51,11 @@ pub use ferritecad_eval::{
 use ferritecad_exchange::{ColourSource, Diagnostic, Import, Scene, Severity, Stage};
 use ferritecad_kernel::{
     GeometryKernel, KernelIdentity, Mesh, OperationContext, ProgressSink, ShapeHandle,
-    TessellationParams,
+    TessellationParams, TessellationRefusal,
 };
 use ferritecad_types::{
-    CadError, CanonicalHasher, ContentHash, ErrorKind, ImportedSourceId, ObjectId, Result,
-    StableEntityId, Transform,
+    CadError, CanonicalHasher, ContentHash, ImportedSourceId, ObjectId, Result, StableEntityId,
+    Transform,
 };
 use ferritecad_viewport::{
     EdgePickId, FacePickId, PickId, RenderSnapshot, SnapshotBuilder, VertexPickId,
@@ -1480,13 +1480,7 @@ fn is_topology_failure(diagnostic: &Diagnostic) -> bool {
 /// still refuse the picture. No healing, sewing, tolerance change or topology
 /// edit is attempted here.
 fn is_face_tessellation_refusal(reason: &CadError) -> bool {
-    reason.kind() == ErrorKind::Kernel
-        && (reason
-            .to_string()
-            .contains("Open CASCADE could not tessellate every face")
-            || reason
-                .to_string()
-                .contains("Open CASCADE produced no triangles for one of the shape's faces"))
+    TessellationRefusal::of(reason) == Some(&TessellationRefusal::IncompleteFace)
 }
 
 /// Adds an imported scene to the picture being built.
@@ -1728,7 +1722,7 @@ mod tests {
     use ferritecad_kernel::mock::MockKernel;
     use ferritecad_kernel::{
         ArchiveSlot, BrepBlob, CancelToken, ExtrudeRequest, ExtrudeResult, KernelIdentity, Mesh,
-        OperationResult, ShapeHandle, SubShapeHandle,
+        OperationResult, ShapeHandle, SubShapeHandle, TessellationRefusal,
     };
     use ferritecad_types::ObjectId;
 
@@ -3641,6 +3635,290 @@ mod tests {
                 ColourSource::None,
                 [0.0; 3],
             )],
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum MeshAnswer {
+        GenericOldPhrase,
+        Typed(&'static str),
+        Empty,
+    }
+
+    /// A conforming kernel whose only special behaviour is refusing the mesh.
+    ///
+    /// The inner kernel owns the shape so every operation other than the one
+    /// under test keeps its ordinary contract.
+    struct RefusesMesh {
+        inner: MockKernel,
+        answer: MeshAnswer,
+    }
+
+    impl GeometryKernel for RefusesMesh {
+        fn identity(&self) -> &KernelIdentity {
+            self.inner.identity()
+        }
+
+        fn extrude(
+            &mut self,
+            request: &ExtrudeRequest,
+            context: &OperationContext,
+        ) -> Result<ExtrudeResult> {
+            self.inner.extrude(request, context)
+        }
+
+        fn transform(
+            &mut self,
+            shape: ShapeHandle,
+            transform: &Transform,
+            context: &OperationContext,
+        ) -> Result<OperationResult> {
+            self.inner.transform(shape, transform, context)
+        }
+
+        fn tessellate(
+            &mut self,
+            _shape: ShapeHandle,
+            _params: &TessellationParams,
+            _context: &OperationContext,
+        ) -> Result<Mesh> {
+            match self.answer {
+                MeshAnswer::GenericOldPhrase => Err(CadError::kernel(
+                    "Open CASCADE could not tessellate every face; status 6",
+                )),
+                MeshAnswer::Typed(message) => Err(CadError::kernel_because(
+                    message,
+                    TessellationRefusal::IncompleteFace,
+                )),
+                MeshAnswer::Empty => Ok(Mesh {
+                    positions: Vec::new(),
+                    normals: Vec::new(),
+                    indices: Vec::new(),
+                    faces: Vec::new(),
+                    edges: None,
+                    topological_vertices: None,
+                }),
+            }
+        }
+
+        fn encode_shape_with(
+            &mut self,
+            shape: ShapeHandle,
+            sub_shapes: &[SubShapeHandle],
+        ) -> Result<(BrepBlob, Vec<ArchiveSlot>)> {
+            self.inner.encode_shape_with(shape, sub_shapes)
+        }
+
+        fn decode_shape_with(
+            &mut self,
+            blob: &BrepBlob,
+            slots: &[ArchiveSlot],
+        ) -> Result<(ShapeHandle, Vec<SubShapeHandle>)> {
+            self.inner.decode_shape_with(blob, slots)
+        }
+
+        fn encode_shape(&mut self, shape: ShapeHandle) -> Result<BrepBlob> {
+            self.inner.encode_shape(shape)
+        }
+
+        fn decode_shape(&mut self, blob: &BrepBlob) -> Result<ShapeHandle> {
+            self.inner.decode_shape(blob)
+        }
+
+        fn release(&mut self, shape: ShapeHandle) {
+            self.inner.release(shape);
+        }
+    }
+
+    fn validation_failure(entity: &str) -> Diagnostic {
+        Diagnostic {
+            stage: Stage::Validation,
+            severity: Severity::Fail,
+            entity: entity.to_owned(),
+            message: "the imported definition contains an invalid solid".to_owned(),
+        }
+    }
+
+    fn draw_test_part(
+        answer: MeshAnswer,
+        diagnostic: Option<Diagnostic>,
+    ) -> Result<(RenderSnapshot, Vec<CatalogueEntry>)> {
+        const KEY: &str = "step.product_definition#17";
+        let mut inner = MockKernel::new();
+        let mut scene = one_part(&mut inner, "Retained part");
+        scene.definitions[0].key = KEY.to_owned();
+        let mut kernel = RefusesMesh { inner, answer };
+        let mut builder = SnapshotBuilder::new();
+        let mut catalogue = Catalogue::default();
+        let omittable = diagnostic
+            .map(|diagnostic| [(KEY.to_owned(), diagnostic)].into_iter().collect())
+            .unwrap_or_default();
+        let result = draw_scene(
+            &mut builder,
+            &mut catalogue,
+            &mut kernel,
+            Provenance {
+                source: ImportedSourceId::new(),
+                file: Some("retained.step".to_owned()),
+                omittable: &omittable,
+            },
+            &scene,
+            &params(),
+            &OperationContext::default(),
+        );
+        for shape in scene.shapes() {
+            kernel.release(shape);
+        }
+        result?;
+        Ok((builder.build(), catalogue.finish()))
+    }
+
+    #[test]
+    fn the_old_phrase_in_an_untyped_kernel_error_does_not_permit_omission() {
+        let error = draw_test_part(
+            MeshAnswer::GenericOldPhrase,
+            Some(validation_failure("step.product_definition#17")),
+        )
+        .expect_err("human-readable words are not a tessellation refusal type");
+        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Kernel);
+        assert_eq!(TessellationRefusal::of(&error), None);
+    }
+
+    #[test]
+    fn a_typed_refusal_and_matching_validation_finding_make_one_explicit_omission() {
+        let (snapshot, catalogue) = draw_test_part(
+            MeshAnswer::Typed("the current kernel found an incomplete face"),
+            Some(validation_failure("step.product_definition#17")),
+        )
+        .expect("the confirmed incomplete face is retained explicitly");
+
+        assert_eq!(catalogue.len(), 1);
+        assert_eq!(snapshot.meshes().len(), 1);
+        assert_eq!(snapshot.meshes()[0].triangle_count(), 0);
+        assert_eq!(snapshot.draws().len(), 1, "the placement was lost");
+        let omission = catalogue[0]
+            .geometry_omission
+            .as_ref()
+            .expect("the empty definition is visibly an omission");
+        assert_eq!(omission.diagnostic.entity, "step.product_definition#17");
+        assert!(omission.reason.contains("incomplete face"));
+    }
+
+    #[test]
+    fn a_typed_refusal_without_matching_validation_finding_refuses_the_whole_load() {
+        let error = draw_test_part(
+            MeshAnswer::Typed("the current kernel found an incomplete face"),
+            None,
+        )
+        .expect_err("a current typed refusal cannot authorise itself");
+        assert_eq!(
+            TessellationRefusal::of(&error),
+            Some(&TessellationRefusal::IncompleteFace)
+        );
+    }
+
+    #[test]
+    fn human_wording_does_not_change_a_typed_partial_import() {
+        for message in [
+            "Open CASCADE could not tessellate every face; status 6",
+            "different human wording with no OCCT status text",
+        ] {
+            let (snapshot, catalogue) = draw_test_part(
+                MeshAnswer::Typed(message),
+                Some(validation_failure("step.product_definition#17")),
+            )
+            .expect("the source type, not its display text, decides the outcome");
+            assert_eq!(snapshot.meshes().len(), 1);
+            assert_eq!(snapshot.meshes()[0].triangle_count(), 0);
+            assert_eq!(catalogue.len(), 1);
+            assert!(catalogue[0].geometry_omission.is_some());
+        }
+    }
+
+    #[test]
+    fn a_triangle_free_mesh_is_not_itself_evidence_of_an_omission() {
+        let (snapshot, catalogue) = draw_test_part(
+            MeshAnswer::Empty,
+            Some(validation_failure("step.product_definition#17")),
+        )
+        .expect("a successful empty mesh keeps its ordinary meaning");
+
+        assert_eq!(snapshot.meshes().len(), 1);
+        assert_eq!(snapshot.meshes()[0].triangle_count(), 0);
+        assert_eq!(catalogue.len(), 1);
+        assert_eq!(
+            catalogue[0].geometry_omission, None,
+            "triangles alone must not classify a typed tessellation refusal"
+        );
+    }
+
+    fn reopen_refused_part(persisted: bool, fresh: bool) -> Result<LoadedScene> {
+        const KEY: &str = "step.product_definition#5";
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("retained.fcad");
+        let source = b"ISO-10303-21; retained diagnostic gate";
+
+        let mut storing = MockKernel::new();
+        let stored = Import::Imported {
+            scene: one_part(&mut storing, "Retained part"),
+            diagnostics: persisted
+                .then(|| validation_failure(KEY))
+                .into_iter()
+                .collect(),
+        };
+        let object = ObjectId::new();
+        let mut document = Document::create(&path).expect("creates the document");
+        document
+            .store_step_import(StepImportRequest {
+                object,
+                name: Some("Retained part"),
+                source,
+                source_name: Some("retained.step"),
+                import: &stored,
+                importer: storing.identity(),
+            })
+            .expect("stores the imported scene and its historical finding");
+        for shape in stored.scene().expect("the setup stores a scene").shapes() {
+            storing.release(shape);
+        }
+
+        let mut kernel = RefusesMesh {
+            inner: MockKernel::new(),
+            answer: MeshAnswer::Typed("the current kernel found an incomplete face"),
+        };
+        snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel, bytes| {
+                assert_eq!(bytes, source);
+                Ok(Import::Imported {
+                    scene: one_part(&mut kernel.inner, "Retained part"),
+                    diagnostics: fresh.then(|| validation_failure(KEY)).into_iter().collect(),
+                })
+            },
+            &params(),
+            &OperationContext::default(),
+        )
+    }
+
+    #[test]
+    fn omission_requires_the_same_persisted_and_fresh_validation_failure() {
+        let loaded = reopen_refused_part(true, true)
+            .expect("both observations confirm the typed current refusal");
+        assert_eq!(loaded.catalogue.len(), 1);
+        assert!(loaded.catalogue[0].geometry_omission.is_some());
+
+        for (persisted, fresh, missing) in [
+            (true, false, "fresh validation"),
+            (false, true, "persisted validation"),
+            (false, false, "both validation observations"),
+        ] {
+            let error = reopen_refused_part(persisted, fresh).expect_err(missing);
+            assert_eq!(
+                TessellationRefusal::of(&error),
+                Some(&TessellationRefusal::IncompleteFace),
+                "missing {missing} changed the underlying refusal"
+            );
         }
     }
 

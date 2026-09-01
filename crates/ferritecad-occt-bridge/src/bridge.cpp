@@ -1684,7 +1684,7 @@ FcOcctStatus fc_occt_tessellate(
       BRepTools::Clean(record.shape);
       write_error(out_error, "Open CASCADE could not tessellate every face; status " +
                                  std::to_string(mesh_status));
-      return FC_OCCT_KERNEL;
+      return FC_OCCT_INCOMPLETE_FACE_TESSELLATION;
     }
 
     std::vector<float> positions;
@@ -1718,7 +1718,7 @@ FcOcctStatus fc_occt_tessellate(
         BRepTools::Clean(record.shape);
         write_error(out_error,
                     "Open CASCADE produced no triangles for one of the shape's faces");
-        return FC_OCCT_KERNEL;
+        return FC_OCCT_INCOMPLETE_FACE_TESSELLATION;
       }
 
       const gp_Trsf transform = location.Transformation();

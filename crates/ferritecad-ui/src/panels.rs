@@ -127,7 +127,24 @@ pub enum Selected<'a> {
         /// The name the file itself gave the definition.
         definition_key: &'a str,
         solids: Option<u32>,
+        /// Why the imported geometry is unavailable, if it was deliberately
+        /// retained without triangles.
+        geometry_unavailable: Option<GeometryUnavailable<'a>>,
     },
+}
+
+/// Display-ready facts about imported geometry the current viewer cannot draw.
+///
+/// This is deliberately only text chosen by the application. It carries no
+/// document diagnostic, kernel error, handle, path, pick or scene identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GeometryUnavailable<'a> {
+    /// The source-local entity the persisted validation finding named.
+    pub finding_entity: &'a str,
+    /// The stored import-time validation finding, in human-readable words.
+    pub validation: &'a str,
+    /// Why the current tessellator still cannot produce complete geometry.
+    pub tessellation: &'a str,
 }
 
 /// One durable name for an entity, already turned into words by the caller.
@@ -239,6 +256,7 @@ impl Selected<'_> {
                 source,
                 definition_key,
                 solids,
+                geometry_unavailable,
             } => {
                 rows.push(("Kind", "Imported definition".to_owned()));
                 if let Some(name) = name {
@@ -253,6 +271,12 @@ impl Selected<'_> {
                 rows.push(("Definition", (*definition_key).to_owned()));
                 if let Some(solids) = solids {
                     rows.push(("Solids", solids.to_string()));
+                }
+                if let Some(unavailable) = geometry_unavailable {
+                    rows.push(("Geometry", "Imported geometry unavailable".to_owned()));
+                    rows.push(("Finding entity", unavailable.finding_entity.to_owned()));
+                    rows.push(("Validation", unavailable.validation.to_owned()));
+                    rows.push(("Tessellation", unavailable.tessellation.to_owned()));
                 }
             }
         }
@@ -285,6 +309,7 @@ impl Selected<'_> {
                 definition_key,
                 source_file,
                 source,
+                geometry_unavailable,
                 ..
             } => {
                 let named = match name {
@@ -300,7 +325,12 @@ impl Selected<'_> {
                 // The key is scoped to this source. Always include both so
                 // two unrelated files with the same name and ordinary STEP
                 // numbering cannot produce rows that read alike.
-                format!("{described} · {source}")
+                let described = format!("{described} · {source}");
+                if geometry_unavailable.is_some() {
+                    format!("{described} · geometry unavailable")
+                } else {
+                    described
+                }
             }
         }
     }
@@ -1365,6 +1395,95 @@ mod tests {
             source: "018f2b7c-0000-7000-8000-0000000000ff",
             definition_key: "step.product_definition#58",
             solids: Some(1),
+            geometry_unavailable: None,
+        }
+    }
+
+    fn unavailable_import() -> Selected<'static> {
+        Selected::Imported {
+            name: Some("Retained gear"),
+            source_file: Some("assembly.step"),
+            source: "018f2b7c-0000-7000-8000-0000000000aa",
+            definition_key: "step.product_definition#2583",
+            solids: Some(1),
+            geometry_unavailable: Some(GeometryUnavailable {
+                finding_entity: "step.product_definition#2583",
+                validation: "the imported definition contains an invalid solid",
+                tessellation: "the current tessellator found an incomplete face",
+            }),
+        }
+    }
+
+    #[test]
+    fn an_omitted_import_is_visibly_marked_in_the_definitions_list_only() {
+        let unavailable = unavailable_import();
+        assert!(
+            unavailable.summary().contains("geometry unavailable"),
+            "the concise list summary hid the omission: {}",
+            unavailable.summary()
+        );
+        assert!(
+            !imported().summary().contains("geometry unavailable"),
+            "an ordinary imported definition was marked unavailable"
+        );
+        assert!(
+            !body().summary().contains("geometry unavailable"),
+            "a native body with no omission was marked unavailable"
+        );
+
+        let context = egui::Context::default();
+        let shown = list_text(&context, &[unavailable], &[]);
+        assert!(
+            shown.contains("geometry unavailable"),
+            "the actual Definitions panel hid the marker: {shown}"
+        );
+    }
+
+    #[test]
+    fn an_omitted_import_inspector_explains_both_observations_in_portable_terms() {
+        let rows = unavailable_import().rows();
+        let value = |label: &str| {
+            rows.iter()
+                .find(|(name, _)| *name == label)
+                .map(|(_, value)| value.as_str())
+        };
+
+        assert_eq!(value("Geometry"), Some("Imported geometry unavailable"));
+        assert_eq!(
+            value("Finding entity"),
+            Some("step.product_definition#2583")
+        );
+        assert_eq!(
+            value("Validation"),
+            Some("the imported definition contains an invalid solid")
+        );
+        assert_eq!(
+            value("Tessellation"),
+            Some("the current tessellator found an incomplete face")
+        );
+        assert_eq!(value("Definition"), Some("step.product_definition#2583"));
+
+        let shown = rows
+            .iter()
+            .map(|(label, value)| format!("{label} {value}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        for forbidden in [
+            "/users/",
+            "\\users\\",
+            "pickid",
+            "shapehandle",
+            "geometryomission",
+            "debug",
+            "session",
+            "snapshot",
+            "0x",
+        ] {
+            assert!(
+                !shown.contains(forbidden),
+                "the omission inspector leaked {forbidden:?}: {shown}"
+            );
         }
     }
 
@@ -2156,6 +2275,7 @@ mod tests {
             source: "018f2b7c-0000-7000-8000-000000000001",
             definition_key: "step.product_definition#5",
             solids: Some(1),
+            geometry_unavailable: None,
         };
         let second = Selected::Imported {
             name: Some("Bracket"),
@@ -2163,6 +2283,7 @@ mod tests {
             source: "018f2b7c-0000-7000-8000-000000000002",
             definition_key: "step.product_definition#5",
             solids: Some(1),
+            geometry_unavailable: None,
         };
 
         assert_ne!(

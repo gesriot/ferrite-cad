@@ -45,9 +45,9 @@ use ferritecad_scene::{
 };
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
-    Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, HIDE_KEY, Hover, ISOLATE_KEY, PROJECTION_KEY,
-    PointerButton, RowVisibility, SHOW_ALL_KEY, Selected, SolvedSketch, VIEWS, ViewportEvent,
-    ViewportInput,
+    Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, GeometryUnavailable, HIDE_KEY, Hover, ISOLATE_KEY,
+    PROJECTION_KEY, PointerButton, RowVisibility, SHOW_ALL_KEY, Selected, SolvedSketch, VIEWS,
+    ViewportEvent, ViewportInput,
 };
 use ferritecad_viewport::{
     Camera, EdgePickId, FacePickId, Hovered, Marked, PickId, Projection, RenderSnapshot,
@@ -1889,6 +1889,13 @@ fn describe<'a>(entry: &'a CatalogueEntry, identity: &'a str) -> Selected<'a> {
             source: identity,
             definition_key: reference.definition_key(),
             solids: entry.solids,
+            geometry_unavailable: entry.geometry_omission.as_ref().map(|omission| {
+                GeometryUnavailable {
+                    finding_entity: omission.diagnostic.entity.as_str(),
+                    validation: omission.diagnostic.message.as_str(),
+                    tessellation: omission.reason.as_str(),
+                }
+            }),
         },
     }
 }
@@ -11529,6 +11536,98 @@ mod tests {
         };
         let identities = identities_of(&twins.catalogue);
         assert_eq!(twins.rows(&identities).len(), 2);
+    }
+
+    #[test]
+    fn describe_carries_an_imported_geometry_omission_into_the_ui_model() {
+        let source = ferritecad_types::ImportedSourceId::new();
+        let entry = CatalogueEntry {
+            item: SceneItem::Imported(
+                ferritecad_document::ImportedDefinitionRef::new(
+                    source,
+                    "step.product_definition#2583",
+                )
+                .expect("a source-local definition key"),
+            ),
+            name: Some("Retained gear".to_owned()),
+            source_file: Some("assembly.step".to_owned()),
+            solids: Some(1),
+            geometry_omission: Some(ferritecad_scene::GeometryOmission {
+                diagnostic: ferritecad_exchange::Diagnostic {
+                    stage: ferritecad_exchange::Stage::Validation,
+                    severity: ferritecad_exchange::Severity::Fail,
+                    entity: "step.product_definition#2583".to_owned(),
+                    message: "the imported definition contains an invalid solid".to_owned(),
+                },
+                reason: "geometry kernel failure: one face has no usable triangles".to_owned(),
+            }),
+        };
+        let identity = source.to_string();
+
+        let described = describe(&entry, &identity);
+        let Selected::Imported {
+            definition_key,
+            geometry_unavailable: Some(unavailable),
+            ..
+        } = described
+        else {
+            panic!("the app discarded the scene's typed omission")
+        };
+        assert_eq!(definition_key, "step.product_definition#2583");
+        assert_eq!(unavailable.finding_entity, definition_key);
+        assert_eq!(
+            unavailable.validation,
+            "the imported definition contains an invalid solid"
+        );
+        assert_eq!(
+            unavailable.tessellation,
+            "geometry kernel failure: one face has no usable triangles"
+        );
+
+        let shown = described
+            .rows()
+            .into_iter()
+            .map(|(label, value)| format!("{label} {value}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        for forbidden in [
+            "/users/",
+            "\\users\\",
+            "geometryomission",
+            "pickid",
+            "shapehandle",
+            "session",
+            "snapshot",
+            "debug",
+            "0x",
+        ] {
+            assert!(
+                !shown.contains(forbidden),
+                "describe leaked {forbidden:?} into the inspector: {shown}"
+            );
+        }
+
+        let mut ordinary_import = entry.clone();
+        ordinary_import.geometry_omission = None;
+        let Selected::Imported {
+            geometry_unavailable,
+            ..
+        } = describe(&ordinary_import, &identity)
+        else {
+            panic!("an imported definition changed kind")
+        };
+        assert_eq!(
+            geometry_unavailable, None,
+            "an imported definition without GeometryOmission was inferred to be omitted"
+        );
+
+        let native_entry = a_body();
+        let native = describe(&native_entry, "018f2b7c-0000-7000-8000-000000000001");
+        assert!(
+            !native.summary().contains("geometry unavailable"),
+            "a genuinely empty native body acquired an import omission"
+        );
     }
 
     #[test]

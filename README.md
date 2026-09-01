@@ -155,6 +155,15 @@ hidden. That is where you look when you wonder where something went. None of
 this touches the document, and none of it survives opening one: a file always
 opens with all of it on screen.
 
+An imported definition whose topology was deliberately retained but whose
+faces cannot all be tessellated keeps its one row and every placement, marked
+`geometry unavailable`. Choosing that row makes the inspector show the
+source-local definition, the validation finding stored with the import and the
+current tessellation reason. It contributes no bounds or pixels and offers no
+Hide or Show action, because there is no drawn geometry for those actions to
+change. A genuinely empty native body has no such marker: absence of triangles
+alone is not treated as an import failure.
+
 The sketches themselves are drawn too, on the datum planes they were actually
 placed on, at the coordinates their constraints put them rather than the ones
 the file happens to store. Every sketch the document holds is drawn, including

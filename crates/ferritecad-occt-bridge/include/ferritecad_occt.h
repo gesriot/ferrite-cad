@@ -46,7 +46,9 @@ enum {
   /* A shape or sub-shape identifier this session did not issue. */
   FC_OCCT_UNKNOWN_HANDLE = 5,
   /* An exception that is not Standard_Failure or std::exception. */
-  FC_OCCT_INTERNAL = 6
+  FC_OCCT_INTERNAL = 6,
+  /* A tessellation has at least one face without usable triangles. */
+  FC_OCCT_INCOMPLETE_FACE_TESSELLATION = 7
 };
 
 /* Caller-owned error detail. Always NUL-terminated after a failed call, and

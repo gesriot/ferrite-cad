@@ -37,6 +37,7 @@ mod handle;
 mod identity;
 mod kernel;
 mod profile;
+mod refusal;
 mod request;
 mod result;
 
@@ -49,6 +50,7 @@ pub use kernel::{GeometryKernel, extrude_cache_key, tessellation_cache_key};
 pub use profile::{
     PlanarPoint, Profile, ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane,
 };
+pub use refusal::TessellationRefusal;
 pub use request::{ExtrudeExtent, ExtrudeRequest, TessellationParams};
 pub use result::{
     ArchiveSlot, BrepBlob, ExtrudeResult, History, HistoryInput, Mesh, MeshEdgeRange, MeshEdges,

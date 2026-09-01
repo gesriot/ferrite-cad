@@ -15,7 +15,7 @@
 
 use std::ffi::{CStr, c_char, c_void};
 
-use ferritecad_kernel::CancelToken;
+use ferritecad_kernel::{CancelToken, TessellationRefusal};
 use ferritecad_types::{CadError, Result};
 
 /// Must match `FC_OCCT_ERROR_CAPACITY` in `ferritecad_occt.h`.
@@ -28,6 +28,7 @@ const STATUS_CANCELLED: i32 = 3;
 const STATUS_UNSUPPORTED: i32 = 4;
 const STATUS_UNKNOWN_HANDLE: i32 = 5;
 const STATUS_INTERNAL: i32 = 6;
+const STATUS_INCOMPLETE_FACE_TESSELLATION: i32 = 7;
 
 pub(crate) const SEGMENT_LINE: i32 = 0;
 pub(crate) const SEGMENT_ARC: i32 = 1;
@@ -340,6 +341,10 @@ fn interpret(status: i32, error: &RawError, what: &str) -> Result<()> {
         STATUS_KERNEL | STATUS_UNKNOWN_HANDLE => {
             Err(CadError::kernel(format!("{what}: {}", error.text())))
         }
+        STATUS_INCOMPLETE_FACE_TESSELLATION => Err(CadError::kernel_because(
+            format!("{what}: {}", error.text()),
+            TessellationRefusal::IncompleteFace,
+        )),
         STATUS_INTERNAL => Err(CadError::kernel(format!(
             "{what}: the bridge caught an exception it could not identify: {}",
             error.text()
@@ -1148,6 +1153,60 @@ mod tests {
     use ferritecad_types::ErrorKind;
 
     use super::*;
+
+    #[test]
+    fn incomplete_face_status_is_typed_and_an_ordinary_kernel_status_is_not() {
+        let detail = RawError::empty();
+        let refusal = interpret(
+            STATUS_INCOMPLETE_FACE_TESSELLATION,
+            &detail,
+            "measuring a tessellation",
+        )
+        .expect_err("an incomplete face has no successful mesh");
+        assert_eq!(
+            TessellationRefusal::of(&refusal),
+            Some(&TessellationRefusal::IncompleteFace)
+        );
+
+        let ordinary = interpret(STATUS_KERNEL, &detail, "measuring a tessellation")
+            .expect_err("the ordinary kernel status is still a failure");
+        assert_eq!(TessellationRefusal::of(&ordinary), None);
+    }
+
+    #[test]
+    fn both_incomplete_face_bridge_branches_use_the_dedicated_status() {
+        let bridge = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../ferritecad-occt-bridge/src/bridge.cpp"
+        ));
+        assert_eq!(
+            bridge
+                .matches("return FC_OCCT_INCOMPLETE_FACE_TESSELLATION;")
+                .count(),
+            2,
+            "the dedicated status must be returned only by both recognised incomplete-face paths"
+        );
+        for message in [
+            "Open CASCADE could not tessellate every face; status ",
+            "Open CASCADE produced no triangles for one of the shape's faces",
+        ] {
+            let after = bridge
+                .split_once(message)
+                .expect("the recognised branch keeps its diagnostic")
+                .1;
+            let return_statement = after
+                .split_once("return ")
+                .expect("the recognised branch returns a status")
+                .1
+                .split_once(';')
+                .expect("the status return ends")
+                .0;
+            assert_eq!(
+                return_statement, "FC_OCCT_INCOMPLETE_FACE_TESSELLATION",
+                "the recognised branch returned a generic status"
+            );
+        }
+    }
 
     #[test]
     fn a_restored_sub_shape_keeps_the_kind_the_bridge_reported() {

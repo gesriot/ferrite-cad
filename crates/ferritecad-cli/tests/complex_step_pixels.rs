@@ -15,7 +15,9 @@ use std::sync::Arc;
 
 use ferritecad_document::{Document, ObjectPayload};
 use ferritecad_exchange::{Stage, StoredScene};
-use ferritecad_kernel::{GeometryKernel, OperationContext, TessellationParams};
+use ferritecad_kernel::{
+    GeometryKernel, OperationContext, TessellationParams, TessellationRefusal,
+};
 use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_scene::{LoadedScene, SceneItem, snapshot_of};
 use ferritecad_types::ErrorKind;
@@ -107,7 +109,11 @@ fn measured_bounds(snapshot: &RenderSnapshot) -> ([f32; 3], [f32; 3]) {
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
     for draw in snapshot.draws() {
-        let (mesh_min, mesh_max) = snapshot.meshes()[draw.mesh].bounds();
+        let mesh = &snapshot.meshes()[draw.mesh];
+        if mesh.triangle_count() == 0 {
+            continue;
+        }
+        let (mesh_min, mesh_max) = mesh.bounds();
         for x in [mesh_min[0], mesh_max[0]] {
             for y in [mesh_min[1], mesh_max[1]] {
                 for z in [mesh_min[2], mesh_max[2]] {
@@ -335,6 +341,12 @@ fn each_complex_leaf_definition_is_measured_without_healing() {
                 succeeded.push(definition.key.clone());
             }
             Err(reason) => {
+                assert_eq!(
+                    TessellationRefusal::of(&reason),
+                    Some(&TessellationRefusal::IncompleteFace),
+                    "{} failed for an untyped reason: {reason}",
+                    definition.key
+                );
                 eprintln!(
                     "complex tessellation {}: valid {valid}, solids {}, failed: {reason}",
                     definition.key, definition.solids
@@ -570,6 +582,18 @@ fn the_complex_partial_import_reaches_repeatable_identified_pixels() {
         "#2583 unexpectedly gained geometry without an explicit healing policy"
     );
     assert!(refused_draws > 0, "#2583 lost its placed occurrence");
+    let refused_pick = snapshot
+        .pick_of(refused_invalid)
+        .expect("the retained definition keeps its catalogue row");
+    assert_eq!(
+        snapshot.bounds_of(refused_pick),
+        None,
+        "the omitted geometry invented selection bounds"
+    );
+    assert!(
+        !Visibility::new(&snapshot).can_hide(Marked::Definition(refused_pick), &snapshot),
+        "the omitted geometry invented a visibility action"
+    );
     let omission = catalogue[refused_invalid]
         .geometry_omission
         .as_ref()
@@ -643,6 +667,15 @@ fn the_complex_partial_import_reaches_repeatable_identified_pixels() {
         "render uploaded geometry after preparation"
     );
     let pixels = inspect_pixels(&first);
+    for y in 0..first.height() {
+        for x in 0..first.width() {
+            assert_ne!(
+                first.pick_at(x, y),
+                refused_pick,
+                "the omitted definition invented a selectable pixel at {x},{y}"
+            );
+        }
+    }
     let substantial = (first.width() * first.height()) as usize / 100;
     assert!(
         pixels.model > substantial,

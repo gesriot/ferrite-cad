@@ -75,6 +75,7 @@ planegcs = ["ferritecad-sketch-solver/planegcs"]
 # a second piece of adjacency arithmetic, free to disagree with the first.
 [dev-dependencies]
 ferritecad-eval.workspace = true
+ferritecad-exchange.workspace = true
 ferritecad-fixtures.workspace = true
 tempfile = "3"
 
