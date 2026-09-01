@@ -15,6 +15,10 @@ authors.workspace = true
 # nothing to do with where the geometry came from. `ferritecad-kernel` below is
 # the implementation-neutral contract crate that defines `Mesh`.
 [dependencies]
+# The import diagnostic an omission report carries is defined here and is
+# handle-free. This is not the STEP reader: nothing in this crate imports
+# anything, and `Scene` never crosses this boundary.
+ferritecad-exchange.workspace = true
 ferritecad-kernel.workspace = true
 ferritecad-types.workspace = true
 

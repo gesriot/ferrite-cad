@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: MIT
-//! §22B-1a measurement: classify every imported STEP placement before an FBX
-//! TRS policy exists. This test adds no exporter and no serialisation path.
+//! §22B-1a measurement: classify every imported STEP placement, and check the
+//! classification against the boundary that acts on it.
+//!
+//! The tolerance is [`ferritecad_export::TRANSFORM_TOLERANCE`] rather than a
+//! second copy of the same number. A measurement and a refusal that disagreed
+//! about how far from exact is exact enough would be a corpus this project
+//! believes representable and an export that refuses it.
 
 #![allow(clippy::panic)]
 
@@ -8,12 +13,26 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use ferritecad_exchange::Import;
+use ferritecad_export::{ExportTransform, TRANSFORM_TOLERANCE};
 use ferritecad_kernel::GeometryKernel;
 use ferritecad_occt::{OcctKernel, is_available};
 
 const EXPECTED: &str =
     "../../tools/unity-fbx-smoke/Assets/Expected/fcad-step-transform-report.json";
-const TOLERANCE: f64 = 1.0e-10;
+const TOLERANCE: f64 = TRANSFORM_TOLERANCE;
+
+/// Whether the boundary that will hand a placement to a writer accepts it.
+///
+/// Asked of every placement beside the arithmetic above, so the two cannot
+/// drift: a corpus this test calls representable is one an export accepts.
+fn representable(placement: &[f64; 12]) -> bool {
+    ExportTransform::new([
+        [placement[0], placement[1], placement[2], placement[3]],
+        [placement[4], placement[5], placement[6], placement[7]],
+        [placement[8], placement[9], placement[10], placement[11]],
+    ])
+    .is_ok()
+}
 
 #[derive(Debug, Default)]
 struct Metrics {
@@ -202,6 +221,11 @@ fn every_step_placement_is_unity_trs_representable() {
                 for instance in &scene.instances {
                     metrics.observe(&instance.placement);
                     total.observe(&instance.placement);
+                    assert!(
+                        representable(&instance.placement),
+                        "{name}: the export boundary refuses a placement this measurement calls \
+                         representable"
+                    );
                 }
                 write!(
                     output,

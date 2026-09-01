@@ -774,6 +774,7 @@ version = "0.0.1"
 dependencies = [
  "ferritecad-document",
  "ferritecad-eval",
+ "ferritecad-exchange",
  "ferritecad-fixtures",
  "ferritecad-kernel",
  "ferritecad-types",
@@ -821,6 +822,7 @@ dependencies = [
  "ferritecad-document",
  "ferritecad-eval",
  "ferritecad-exchange",
+ "ferritecad-export",
  "ferritecad-fixtures",
  "ferritecad-kernel",
  "ferritecad-occt",

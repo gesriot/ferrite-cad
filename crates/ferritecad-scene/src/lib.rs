@@ -34,29 +34,25 @@
 //! capturing it is what lets one `&mut` satisfy both.
 
 mod drawing;
+mod export;
+mod prepare;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::Path;
 
 pub use drawing::{CIRCLE_SEGMENTS, sketch_drawing, sketch_drawings};
+pub use export::export_scene;
 use ferritecad_document::{
     Document, EntityKind, ImportedDefinitionRef, ObjectPayload, ObjectRecord, SelectionRule,
-    SemanticRole, Sketch, SketchConstraintRule, StepImporter, TopologyRef,
+    SemanticRole, Sketch, SketchConstraintRule, TopologyRef,
 };
-use ferritecad_eval::rebuild_cold;
 pub use ferritecad_eval::{
     ConflictingConstraint, PresentedCurve, SketchConflict, SketchPresentation, SketchSolveReport,
 };
-use ferritecad_exchange::{ColourSource, Diagnostic, Import, Scene, Severity, Stage};
-use ferritecad_kernel::{
-    GeometryKernel, KernelIdentity, Mesh, OperationContext, ProgressSink, ShapeHandle,
-    TessellationParams, TessellationRefusal,
-};
-use ferritecad_types::{
-    CadError, CanonicalHasher, ContentHash, ImportedSourceId, ObjectId, Result, StableEntityId,
-    Transform,
-};
+use ferritecad_exchange::{ColourSource, Diagnostic, Import};
+use ferritecad_kernel::{GeometryKernel, Mesh, OperationContext, TessellationParams};
+use ferritecad_types::{CadError, CanonicalHasher, ContentHash, ObjectId, Result, StableEntityId};
 use ferritecad_viewport::{
     EdgePickId, FacePickId, PickId, RenderSnapshot, SnapshotBuilder, VertexPickId,
 };
@@ -759,193 +755,6 @@ pub struct GeometryOmission {
     pub reason: String,
 }
 
-/// One drawn definition while the load is still going on.
-///
-/// The same identity can be met more than once: a document may hold two
-/// imported objects storing the same bytes, and the document layer gives
-/// identical bytes one source identity, so the two objects describe the same
-/// definitions. What is drawn must be one definition all the same, and what is
-/// said about it must not depend on which object was read first.
-#[derive(Debug)]
-struct Drawn {
-    item: SceneItem,
-    name: Fact,
-    source_file: Fact,
-    solids: Option<u32>,
-    geometry_omission: Option<GeometryOmission>,
-}
-
-/// What repeated sightings of one display fact add up to.
-///
-/// Three states rather than two. "Nobody said" and "two sources said
-/// different things" are different situations, and collapsing them would let
-/// a third sighting refill a fact that had already been found ambiguous.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Fact {
-    Unknown,
-    Known(String),
-    /// Two sightings disagreed. Nothing is shown rather than one of them
-    /// chosen by which import happened to be read first: display facts are
-    /// not identity, and a window must not present document order as though
-    /// it were a decision about which name is right.
-    Ambiguous,
-}
-
-impl Fact {
-    fn seen(&mut self, value: Option<String>) {
-        let Some(value) = value.filter(|value| !value.trim().is_empty()) else {
-            return;
-        };
-        *self = match std::mem::replace(self, Self::Unknown) {
-            Self::Unknown => Self::Known(value),
-            Self::Known(known) if known == value => Self::Known(known),
-            Self::Known(_) | Self::Ambiguous => Self::Ambiguous,
-        };
-    }
-
-    fn into_option(self) -> Option<String> {
-        match self {
-            Self::Known(value) => Some(value),
-            Self::Unknown | Self::Ambiguous => None,
-        }
-    }
-}
-
-/// What one sighting of a definition said about it.
-#[derive(Debug, Default)]
-struct Seen {
-    name: Option<String>,
-    source_file: Option<String>,
-    solids: Option<u32>,
-}
-
-/// Every definition drawn in one load, one entry per portable identity.
-///
-/// Canonical across the whole document rather than within one imported
-/// object. Two objects storing the same bytes share a source identity, so a
-/// definition they both draw is one definition: packing it twice would give it
-/// two identities on the GPU, and choosing one of them would highlight half of
-/// its placements.
-///
-/// Keyed by [`SceneItem`] and by nothing else. A name, a file name, a solid
-/// count, a position in the file and an object's place in the document are all
-/// things two different definitions can share and one definition can be
-/// described by differently.
-#[derive(Debug, Default)]
-struct Catalogue {
-    entries: Vec<Drawn>,
-    /// Where each identity was packed. Never iterated – it is a lookup, and
-    /// what is ordered is the entries beside it.
-    packed: HashMap<SceneItem, usize>,
-}
-
-impl Catalogue {
-    /// The definition this identity is drawn as, packing it if it is new.
-    ///
-    /// `pack` is called only for an identity nothing has drawn yet, which is
-    /// what stops one definition from being tessellated twice merely because
-    /// two imported objects both refer to it.
-    fn definition(
-        &mut self,
-        item: SceneItem,
-        seen: Seen,
-        pack: impl FnOnce() -> Result<usize>,
-    ) -> Result<usize> {
-        if let Some(&index) = self.packed.get(&item) {
-            let entry = &mut self.entries[index];
-            entry.name.seen(seen.name);
-            entry.source_file.seen(seen.source_file);
-            match (entry.solids, seen.solids) {
-                (Some(known), Some(now)) if known != now => {
-                    // Not two definitions, and not a number to pick between:
-                    // one identity has one geometry, so two counts mean the
-                    // document and the file disagree about what this is.
-                    return Err(CadError::topology(format!(
-                        "{item:?} was read as {known} solids and again as {now}; one durable \
-                         definition cannot be two shapes"
-                    )));
-                }
-                (None, now) => entry.solids = now,
-                _ => {}
-            }
-            return Ok(index);
-        }
-
-        let index = pack()?;
-        if index != self.entries.len() {
-            return Err(CadError::topology(format!(
-                "a definition was packed as {index} while the catalogue held {}; a click \
-                 resolves through both, so they cannot disagree",
-                self.entries.len()
-            )));
-        }
-
-        let mut entry = Drawn {
-            item: item.clone(),
-            name: Fact::Unknown,
-            source_file: Fact::Unknown,
-            solids: seen.solids,
-            geometry_omission: None,
-        };
-        entry.name.seen(seen.name);
-        entry.source_file.seen(seen.source_file);
-        self.entries.push(entry);
-        self.packed.insert(item, index);
-        Ok(index)
-    }
-
-    /// Records why an already packed definition deliberately has no geometry.
-    fn omit(&mut self, definition: usize, omission: GeometryOmission) -> Result<()> {
-        let entry = self.entries.get_mut(definition).ok_or_else(|| {
-            CadError::topology(format!(
-                "definition {definition} was omitted before it entered the catalogue"
-            ))
-        })?;
-        match &entry.geometry_omission {
-            None => entry.geometry_omission = Some(omission),
-            Some(earlier) if earlier == &omission => {}
-            Some(earlier) => {
-                return Err(CadError::topology(format!(
-                    "one definition has two geometry omissions: {earlier:?} and {omission:?}"
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    /// What the load is handing over, in the order the snapshot draws it.
-    fn finish(self) -> Vec<CatalogueEntry> {
-        self.entries
-            .into_iter()
-            .map(|entry| CatalogueEntry {
-                item: entry.item,
-                name: entry.name.into_option(),
-                source_file: entry.source_file.into_option(),
-                solids: entry.solids,
-                geometry_omission: entry.geometry_omission,
-            })
-            .collect()
-    }
-}
-
-/// The last component of whatever provenance the document recorded.
-///
-/// The field is a hint for a person and nothing opens it, but a document
-/// written elsewhere may hold a whole path in it, and a viewport is not the
-/// place to display one.
-fn file_name_of(recorded: Option<&str>) -> Option<String> {
-    let recorded = recorded?.trim();
-    if recorded.is_empty() {
-        return None;
-    }
-    let name = recorded
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(recorded)
-        .trim();
-    (!name.is_empty()).then(|| name.to_owned())
-}
-
 /// What one drawn definition is, in terms that outlive this reading.
 ///
 /// A pick names a definition inside one snapshot and means nothing outside it
@@ -971,7 +780,7 @@ pub enum SceneItem {
 /// something the file said. Appearance is a document feature that does not
 /// exist yet; when it does, it will arrive here as data rather than as a
 /// palette.
-const BODY_COLOUR: [f64; 3] = [0.62, 0.66, 0.70];
+pub(crate) const BODY_COLOUR: [f64; 3] = [0.62, 0.66, 0.70];
 
 /// Reads a document and builds a picture of it.
 ///
@@ -985,55 +794,155 @@ const BODY_COLOUR: [f64; 3] = [0.62, 0.66, 0.70];
 /// both kinds of geometry; a document with no imports never calls it, which is
 /// why a caller with no importer can pass one that refuses.
 ///
-/// Cancellation is checked between objects and between definitions as well as
-/// inside the rebuild, so a document whose geometry takes a while can be
-/// abandoned without waiting for it to finish.
+/// The reading itself is [`prepare::load`], which an export uses too. What is
+/// here is only what a picture keeps: packed meshes, world placements, the
+/// identities a click resolves through, and the names the document gives them.
 pub fn snapshot_of<K>(
     path: &Path,
     kernel: &mut K,
-    mut read_step: impl FnMut(&mut K, &[u8]) -> Result<Import>,
+    read_step: impl FnMut(&mut K, &[u8]) -> Result<Import>,
     params: &TessellationParams,
     context: &OperationContext,
 ) -> Result<LoadedScene>
 where
     K: GeometryKernel + ?Sized,
 {
-    let document = Document::open_read_only(path)?;
+    prepare::load(path, kernel, read_step, params, context, Picture::new())
+}
 
-    // Two phases of one job, so they share one scale. Building the geometry
-    // is the slow half and gets most of it; the rest is drawing what was
-    // built. A bar that reached the end when the rebuild did would sit at
-    // "finished" for the whole of the meshing.
-    let building = phase(context, 0.0, BUILDING);
-    let drawing = phase(context, BUILDING, 1.0);
+/// What a picture keeps from one reading of a document.
+struct Picture {
+    builder: SnapshotBuilder,
+    /// Every stored reference that names exactly one entity of this rebuild,
+    /// paired with the handle it named.
+    named: Vec<(ferritecad_kernel::SubShapeHandle, BoundMeaning)>,
+    /// Where each prepared definition was packed, and the reverse.
+    packed: HashMap<usize, usize>,
+    drawn: Vec<usize>,
+    /// What each face of each packed definition is called, by the ordinal the
+    /// kernel listed it under while packing. Turned into the picture's own
+    /// face identities once the picture exists, because the picture is what
+    /// numbers them.
+    names: BTreeMap<usize, Vec<Vec<BoundMeaning>>>,
+    /// The same, for the topological edges the kernel named. A definition
+    /// whose mesh carries no edge association contributes no entry at all,
+    /// which is what keeps "nothing is known" from becoming "named nothing".
+    edge_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>>,
+    /// And the same for the topological vertices. One entry per corner the
+    /// kernel identified, never per occurrence: how often a corner is drawn is
+    /// a fact about triangles, and what it is called is not.
+    vertex_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>>,
+    sketch_solves: Vec<SketchSolveFacts>,
+    sketch_presentations: Vec<SketchPresentation>,
+}
 
-    // Cold on purpose, as everywhere else a result must be right rather than
-    // quick: consulting a cache would make what is on screen depend on the
-    // state of a sidecar that exists only to save time.
-    let built = rebuild_cold(&document, kernel, &building)?;
+impl Picture {
+    fn new() -> Self {
+        Self {
+            builder: SnapshotBuilder::new(),
+            named: Vec::new(),
+            packed: HashMap::new(),
+            drawn: Vec::new(),
+            names: BTreeMap::new(),
+            edge_named: BTreeMap::new(),
+            vertex_named: BTreeMap::new(),
+            sketch_solves: Vec::new(),
+            sketch_presentations: Vec::new(),
+        }
+    }
 
-    // Handles this function obtained itself, as opposed to the ones the
-    // rebuild owns. Filled as it goes so that a failure halfway through an
-    // assembly still gives back what had already been read.
-    let mut imported: Vec<ShapeHandle> = Vec::new();
+    /// Every meaning bound to `handle`, in the order the document stores them.
+    fn meanings_of(&self, handle: ferritecad_kernel::SubShapeHandle) -> Vec<BoundMeaning> {
+        self.named
+            .iter()
+            .filter(|(named, _)| *named == handle)
+            .map(|(_, meaning)| meaning.clone())
+            .collect()
+    }
 
-    // Everything that can fail happens in here, so that the shapes can be
-    // handed back in one place whatever the outcome.
-    let snapshot = (|| -> Result<LoadedScene> {
-        // Every stored reference that names exactly one entity of this rebuild,
-        // paired with the handle it named. Resolved once, in the order the
-        // document stores its references, so what an entity is called does not
-        // depend on the order faces, edges or vertices happen to be tessellated
-        // in.
+    /// Packs one mesh and records what its faces, edges and corners are called.
+    fn pack(&mut self, definition: usize, mesh: &Mesh) -> Result<()> {
+        // Joined by the handle the kernel gave the face, which is the only
+        // thing that says the stored name and this triangle range are the same
+        // face. Not by ordinal, not by geometry, and not by name: two faces of
+        // one body can be congruent, and traversal order is the kernel's
+        // business. The edges and the corners, joined the same way and for the
+        // same reason. A handle carries its kind, so a face's name can never
+        // match an edge's range however the two are numbered.
+        let named_faces: Vec<Vec<BoundMeaning>> = mesh
+            .faces
+            .iter()
+            .map(|range| self.meanings_of(range.face))
+            .collect();
+        let named_edges: Vec<Vec<BoundMeaning>> = mesh
+            .edges
+            .as_ref()
+            .map(|edges| {
+                edges
+                    .ranges
+                    .iter()
+                    .map(|range| self.meanings_of(range.edge))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let named_vertices: Vec<Vec<BoundMeaning>> = mesh
+            .topological_vertices
+            .as_ref()
+            .map(|corners| {
+                corners
+                    .ranges
+                    .iter()
+                    .map(|range| self.meanings_of(range.vertex))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let index = self.builder.add_mesh(mesh)?;
+        if index != self.drawn.len() {
+            return Err(CadError::topology(format!(
+                "a definition was packed as {index} while the catalogue held {}; a click \
+                 resolves through both, so they cannot disagree",
+                self.drawn.len()
+            )));
+        }
+        self.names.insert(index, named_faces);
+        if !named_edges.is_empty() {
+            self.edge_named.insert(index, named_edges);
+        }
+        // A mesh with no vertex association, and one whose association is
+        // provably empty, both contribute nothing. Either way this picture
+        // knows of no corner here, which is not the same as knowing there is a
+        // corner nobody named.
+        if !named_vertices.is_empty() {
+            self.vertex_named.insert(index, named_vertices);
+        }
+        self.drawn.push(definition);
+        self.packed.insert(definition, index);
+        Ok(())
+    }
+}
+
+impl prepare::LoadSink for Picture {
+    type Output = LoadedScene;
+
+    fn opened(
+        &mut self,
+        document: &Document,
+        objects: &[ObjectRecord],
+        built: &ferritecad_eval::RebuildResult,
+    ) -> Result<()> {
+        // Resolved once, in the order the document stores its references, so
+        // what an entity is called does not depend on the order faces, edges
+        // or vertices happen to be tessellated in.
         //
         // A reference that resolves to several entities is not a name for
         // whichever one was clicked, so it is not here; one that resolves to
         // none, or that this build cannot resolve at all, names nothing and is
-        // not here either.
-        // No failure is reported: a lost reference is a document-level fact, and
-        // a viewer that refused to draw a model because one name no longer
-        // resolves would be useless exactly when it is needed.
-        let named: Vec<(ferritecad_kernel::SubShapeHandle, BoundMeaning)> = document
+        // not here either. No failure is reported: a lost reference is a
+        // document-level fact, and a viewer that refused to draw a model
+        // because one name no longer resolves would be useless exactly when it
+        // is needed.
+        self.named = document
             .topology_refs()?
             .iter()
             .filter_map(|reference| match built.resolve(reference) {
@@ -1051,26 +960,6 @@ where
             })
             .collect();
 
-        let mut builder = SnapshotBuilder::new();
-        // One catalogue for the whole document, not one per imported object:
-        // two objects can store the same bytes, and what they then draw is the
-        // same definition.
-        let mut catalogue = Catalogue::default();
-        // What each face of each packed definition is called, by the ordinal
-        // the kernel listed it under while packing. Turned into the picture's
-        // own face identities once the picture exists, because the picture is
-        // what numbers them.
-        let mut names: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = BTreeMap::new();
-        // The same, for the topological edges the kernel named. A definition
-        // whose mesh carries no edge association contributes no entry at all,
-        // which is what keeps "nothing is known" from becoming "named nothing".
-        let mut edge_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = BTreeMap::new();
-        // And the same for the topological vertices. One entry per corner the
-        // kernel identified, never per occurrence: how often a corner is drawn
-        // is a fact about triangles, and what it is called is not.
-        let mut vertex_named: BTreeMap<usize, Vec<Vec<BoundMeaning>>> = BTreeMap::new();
-        let objects = document.objects()?;
-
         // Read from the records already in hand and the rebuild that has
         // already happened. Document order is the order `objects` is in, and
         // the join is by the sketch's own identifier, so a report belongs to
@@ -1083,16 +972,14 @@ where
         // asked of a solver and nothing is read from the file again: both
         // halves are already here.
         //
-        // The drawings themselves are read out of the same rebuild in the
-        // same walk, and for the same reasons: document order because that is
-        // the order the person who drew them sees, by identifier because a
-        // sketch two extrudes read is one sketch, and from the rebuild because
-        // it is the only thing that knows where a solve left the curves.
-        let mut sketch_solves: Vec<SketchSolveFacts> = Vec::new();
-        let mut sketch_presentations: Vec<SketchPresentation> = Vec::new();
-        for object in &objects {
+        // The drawings themselves are read out of the same rebuild in the same
+        // walk, and for the same reasons: document order because that is the
+        // order the person who drew them sees, by identifier because a sketch
+        // two extrudes read is one sketch, and from the rebuild because it is
+        // the only thing that knows where a solve left the curves.
+        for object in objects {
             if let Some(presentation) = built.sketch_presentation(object.id) {
-                sketch_presentations.push(presentation.clone());
+                self.sketch_presentations.push(presentation.clone());
             }
             let Some(report) = built.solve_report(object.id) else {
                 continue;
@@ -1109,216 +996,85 @@ where
                     object.payload.type_name()
                 )));
             };
-            sketch_solves.push(SketchSolveFacts {
+            self.sketch_solves.push(SketchSolveFacts {
                 sketch: object.id,
                 name: object.name.clone(),
                 redundant: redundant_constraints(sketch, report.redundant())?,
                 report: report.clone(),
             });
         }
-
-        // Counted before anything is drawn, so each one can say what fraction
-        // of the drawing it is. An object that draws nothing is not part of
-        // the count: the bar would stall on it and then jump.
-        let drawable = objects.iter().filter(|object| draws(object)).count();
-        let mut done = 0usize;
-
-        for object in objects {
-            context.check_cancelled()?;
-            // This object's share of the drawing phase. The kernel reports
-            // that it finished a mesh, and that report arrives as the part of
-            // the load it actually is.
-            let scoped = phase(
-                &drawing,
-                done as f64 / drawable.max(1) as f64,
-                (done + 1) as f64 / drawable.max(1) as f64,
-            );
-            if draws(&object) {
-                done += 1;
-            }
-
-            match &object.payload {
-                ObjectPayload::Body(body) => {
-                    // A body with no tip feature is empty by definition rather
-                    // than broken: nothing has been built into it yet.
-                    if body.tip_feature.is_none() {
-                        continue;
-                    }
-                    let shape = built.shape(object.id).ok_or_else(|| {
-                        CadError::topology(format!(
-                            "body {} names a feature but the rebuild produced no geometry for it",
-                            object.id
-                        ))
-                    })?;
-                    // Two bodies are two definitions however alike they look:
-                    // the object that holds one is what it is, and a document
-                    // may give two of them one name.
-                    let definition = catalogue.definition(
-                        SceneItem::Body(object.id),
-                        Seen {
-                            name: object.name.clone(),
-                            ..Seen::default()
-                        },
-                        || {
-                            let mesh = kernel.tessellate(shape, params, &scoped)?;
-                            // Joined by the handle the kernel gave the face,
-                            // which is the only thing that says the stored
-                            // name and this triangle range are the same face.
-                            // Not by ordinal, not by geometry, and not by
-                            // name: two faces of one body can be congruent,
-                            // and traversal order is the kernel's business.
-                            // The edges, joined the same way and for the same
-                            // reason: the handle the kernel gave the edge is
-                            // the only thing that says a stored name and this
-                            // run of segments are the same edge. A handle
-                            // carries its kind, so a face's name can never
-                            // match an edge's range however the two are
-                            // numbered.
-                            let named_edges: Vec<Vec<BoundMeaning>> = mesh
-                                .edges
-                                .as_ref()
-                                .map(|edges| {
-                                    edges
-                                        .ranges
-                                        .iter()
-                                        .map(|range| {
-                                            named
-                                                .iter()
-                                                .filter(|(handle, _)| *handle == range.edge)
-                                                .map(|(_, meaning)| meaning.clone())
-                                                .collect::<Vec<BoundMeaning>>()
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            // The corners, joined the same way and for the
-                            // same reason. `range.vertex` is the handle the
-                            // kernel gave the topological vertex, and equality
-                            // with it is the only thing that says a stored name
-                            // and this corner are the same point. Not the
-                            // ordinal, not the coordinates, not which
-                            // occurrence came first and not how many there are:
-                            // one range is one corner however often it is drawn.
-                            let named_vertices: Vec<Vec<BoundMeaning>> = mesh
-                                .topological_vertices
-                                .as_ref()
-                                .map(|corners| {
-                                    corners
-                                        .ranges
-                                        .iter()
-                                        .map(|range| {
-                                            named
-                                                .iter()
-                                                .filter(|(handle, _)| *handle == range.vertex)
-                                                .map(|(_, meaning)| meaning.clone())
-                                                .collect::<Vec<BoundMeaning>>()
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            let named: Vec<Vec<BoundMeaning>> = mesh
-                                .faces
-                                .iter()
-                                .map(|range| {
-                                    named
-                                        .iter()
-                                        .filter(|(handle, _)| *handle == range.face)
-                                        .map(|(_, meaning)| meaning.clone())
-                                        .collect()
-                                })
-                                .collect();
-                            let definition = builder.add_mesh(&mesh)?;
-                            names.insert(definition, named);
-                            if !named_edges.is_empty() {
-                                edge_named.insert(definition, named_edges);
-                            }
-                            // A mesh with no vertex association, and one whose
-                            // association is provably empty, both contribute
-                            // nothing. Either way this picture knows of no
-                            // corner here, which is not the same as knowing
-                            // there is a corner nobody named.
-                            if !named_vertices.is_empty() {
-                                vertex_named.insert(definition, named_vertices);
-                            }
-                            Ok(definition)
-                        },
-                    )?;
-                    builder.place(definition, None, &Transform::IDENTITY, BODY_COLOUR)?;
-                }
-
-                ObjectPayload::ImportedStep(stored) => {
-                    // Read from the record already in hand rather than by
-                    // asking the document again: the other route would fetch
-                    // the whole source blob to learn one short string.
-                    let source_file = file_name_of(stored.source_name.as_deref());
-                    // Scoped so the borrow ends before the kernel is needed
-                    // for meshing. A refusal here releases what it built; what
-                    // it returns is this function's to give back.
-                    let reopened = {
-                        let mut reader = Reader {
-                            kernel: &mut *kernel,
-                            read: &mut read_step,
-                        };
-                        document.reopen_step_import(object.id, &mut reader)?
-                    };
-                    imported.extend(reopened.scene.shapes());
-                    // An omitted mesh needs two observations of the same
-                    // definition: the diagnostic persisted with the document
-                    // and the one made by this fresh reading. A historical
-                    // warning cannot excuse an unrelated current failure, and
-                    // a current finding cannot silently rewrite history.
-                    let omittable: BTreeMap<String, Diagnostic> = reopened
-                        .diagnostics_at_import
-                        .iter()
-                        .filter(|diagnostic| {
-                            is_topology_failure(diagnostic)
-                                && reopened.diagnostics_now.iter().any(|current| {
-                                    is_topology_failure(current)
-                                        && current.entity == diagnostic.entity
-                                })
-                        })
-                        .map(|diagnostic| (diagnostic.entity.clone(), diagnostic.clone()))
-                        .collect();
-                    draw_scene(
-                        &mut builder,
-                        &mut catalogue,
-                        kernel,
-                        Provenance {
-                            source: reopened.source(),
-                            file: source_file,
-                            omittable: &omittable,
-                        },
-                        &reopened.scene,
-                        params,
-                        &scoped,
-                    )?;
-                }
-
-                _ => continue,
-            }
-        }
-        builder.bind_identities_to(semantic_context_identity(
-            &names,
-            &edge_named,
-            &vertex_named,
-        ))?;
-        let snapshot = builder.build();
-        Ok(LoadedScene {
-            faces: face_names(&snapshot, names)?,
-            edges: edge_names(&snapshot, edge_named)?,
-            vertices: vertex_names(&snapshot, vertex_named)?,
-            snapshot,
-            catalogue: catalogue.finish(),
-            sketch_solves,
-            sketch_presentations,
-        })
-    })();
-
-    for shape in imported.into_iter().rev() {
-        kernel.release(shape);
+        Ok(())
     }
-    built.release_all(kernel);
-    snapshot
+
+    fn definition(&mut self, definition: usize, geometry: prepare::Geometry<'_>) -> Result<()> {
+        match geometry {
+            prepare::Geometry::Mesh(mesh) => self.pack(definition, mesh),
+            // Packed all the same, so the placements of a retained definition
+            // this build could not mesh are still in the picture, and still
+            // resolve to the definition a person can read about.
+            prepare::Geometry::Omitted(_) => self.pack(definition, &Mesh::default()),
+            // An assembly frame is drawn through its children, so there is
+            // nothing here to pack and nothing to place.
+            prepare::Geometry::Structural => Ok(()),
+        }
+    }
+
+    fn node(&mut self, node: &prepare::PreparedNode) -> Result<()> {
+        if node.structural {
+            return Ok(());
+        }
+        let mesh = *self.packed.get(&node.definition).ok_or_else(|| {
+            CadError::topology(format!(
+                "a placement draws definition {}, which this picture never packed",
+                node.definition
+            ))
+        })?;
+        // Linear RGB as the importer read it out of the file. Where the file
+        // said nothing, the same neutral colour a native body gets: inventing
+        // one per part would present a decision nobody made as something the
+        // file recorded. Written this way rather than by naming the two known
+        // sources: a third would be another place a colour can come from, not
+        // a reason to stop using it.
+        let colour = match node.colour_source {
+            ColourSource::None => BODY_COLOUR,
+            _ => node.colour,
+        };
+        self.builder.place(mesh, None, &node.world, colour)?;
+        Ok(())
+    }
+
+    fn finish(mut self, definitions: &[prepare::PreparedDefinition]) -> Result<LoadedScene> {
+        self.builder.bind_identities_to(semantic_context_identity(
+            &self.names,
+            &self.edge_named,
+            &self.vertex_named,
+        ))?;
+        let snapshot = self.builder.build();
+        let mut catalogue = Vec::with_capacity(self.drawn.len());
+        for prepared in &self.drawn {
+            let prepared = definitions.get(*prepared).ok_or_else(|| {
+                CadError::topology(format!(
+                    "the picture packed definition {prepared}, which this load never settled"
+                ))
+            })?;
+            catalogue.push(CatalogueEntry {
+                item: prepared.item.clone(),
+                name: prepared.name.clone(),
+                source_file: prepared.source_file.clone(),
+                solids: prepared.solids,
+                geometry_omission: prepared.omission.clone(),
+            });
+        }
+        Ok(LoadedScene {
+            faces: face_names(&snapshot, self.names)?,
+            edges: edge_names(&snapshot, self.edge_named)?,
+            vertices: vertex_names(&snapshot, self.vertex_named)?,
+            snapshot,
+            catalogue,
+            sketch_solves: self.sketch_solves,
+            sketch_presentations: self.sketch_presentations,
+        })
+    }
 }
 
 /// Lays what each definition's faces are called out by the picture's own
@@ -1461,270 +1217,22 @@ fn semantic_context_identity(
     hasher.finish()
 }
 
-/// Where an imported scene came from: its identity, and what to call it.
-struct Provenance<'a> {
-    source: ImportedSourceId,
-    file: Option<String>,
-    /// Persisted validation failures confirmed by the current reader.
-    omittable: &'a BTreeMap<String, Diagnostic>,
-}
-
-fn is_topology_failure(diagnostic: &Diagnostic) -> bool {
-    diagnostic.stage == Stage::Validation && diagnostic.severity == Severity::Fail
-}
-
-/// Whether this is the narrow failure an invalid retained definition may turn
-/// into an explicit empty catalogue row.
-///
-/// Cancellation, allocation, malformed mesh data and every other loader error
-/// still refuse the picture. No healing, sewing, tolerance change or topology
-/// edit is attempted here.
-fn is_face_tessellation_refusal(reason: &CadError) -> bool {
-    TessellationRefusal::of(reason) == Some(&TessellationRefusal::IncompleteFace)
-}
-
-/// Adds an imported scene to the picture being built.
-///
-/// # Only the leaves carry geometry
-///
-/// An assembly arrives as both: a definition whose shape is the whole
-/// assembly, and separate instances of the parts inside it. Drawing every
-/// instance would draw the same solids twice – once through the assembly's own
-/// compound and once through each component – so an instance that has children
-/// is structure and is not drawn. Its placement still counts: it is what its
-/// children sit in.
-///
-/// # Composed here
-///
-/// A file records each placement relative to its parent, which is the file's
-/// own structure and worth keeping in the document. A picture needs world
-/// positions, so the chain is multiplied out once, here, where the tree is
-/// still in hand.
-fn draw_scene<K: GeometryKernel + ?Sized>(
-    builder: &mut SnapshotBuilder,
-    catalogue: &mut Catalogue,
-    kernel: &mut K,
-    from: Provenance<'_>,
-    scene: &Scene,
-    params: &TessellationParams,
-    context: &OperationContext,
-) -> Result<()> {
-    let mut structural = vec![false; scene.instances.len()];
-    for (index, instance) in scene.instances.iter().enumerate() {
-        let Some(parent) = instance.parent else {
-            continue;
-        };
-        let holds = structural.get_mut(parent).ok_or_else(|| {
-            CadError::input(format!(
-                "instance {index} sits inside {parent}, which this scene does not have"
-            ))
-        })?;
-        *holds = true;
-    }
-
-    // Parents come before children, so one pass composes the whole tree.
-    let mut world: Vec<Transform> = Vec::with_capacity(scene.instances.len());
-    for (index, instance) in scene.instances.iter().enumerate() {
-        let local = placement_of(&instance.placement)?;
-        let placed = match instance.parent {
-            None => local,
-            Some(parent) => {
-                let outer = world.get(parent).ok_or_else(|| {
-                    CadError::input(format!(
-                        "instance {index} sits inside {parent}, which the scene lists after it"
-                    ))
-                })?;
-                local.then(outer)?
-            }
-        };
-        world.push(placed);
-    }
-
-    // One imported object can hold many definitions. The caller gives the
-    // object one slice of the load; divide that slice among the unique leaf
-    // definitions it draws. A definition another object already drew is not
-    // meshed again. Reusing the object's context for every definition would
-    // make progress run from the beginning to the end of the same slice once
-    // per part, going backwards between parts and announcing completion more
-    // than once. If canonicalisation skips some or all meshes, the explicit
-    // report at the end closes the part of this object's slice no kernel call
-    // could report.
-    let definitions_to_mesh = scene
-        .instances
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| !structural[*index])
-        .map(|(_, instance)| instance.definition)
-        .collect::<BTreeSet<_>>()
-        .len();
-    let mut definitions_meshed = 0usize;
-
-    for (index, instance) in scene.instances.iter().enumerate() {
-        if structural[index] {
-            continue;
-        }
-        context.check_cancelled()?;
-
-        let definition = scene.definitions.get(instance.definition).ok_or_else(|| {
-            CadError::input(format!(
-                "instance {index} draws definition {}, which this scene does not have",
-                instance.definition
-            ))
-        })?;
-
-        // The file's own name for this definition, kept beside the source it
-        // belongs to. `#31` in one file is not `#31` in another, which is why
-        // neither half travels alone – and why two objects storing the same
-        // bytes name the same definition when they use the same key.
-        let item = SceneItem::Imported(ImportedDefinitionRef::new(
-            from.source,
-            definition.key.clone(),
-        )?);
-        let seen = Seen {
-            name: Some(definition.name.clone()),
-            source_file: from.file.clone(),
-            solids: Some(definition.solids),
-        };
-
-        let mut omission = None;
-        let mesh = catalogue.definition(item, seen, || {
-            let scoped = phase(
-                context,
-                definitions_meshed as f64 / definitions_to_mesh.max(1) as f64,
-                (definitions_meshed + 1) as f64 / definitions_to_mesh.max(1) as f64,
-            );
-            let mesh = match kernel.tessellate(definition.shape, params, &scoped) {
-                Ok(mesh) => mesh,
-                Err(reason) if is_face_tessellation_refusal(&reason) => {
-                    let Some(diagnostic) = from.omittable.get(&definition.key) else {
-                        return Err(reason);
-                    };
-                    omission = Some(GeometryOmission {
-                        diagnostic: diagnostic.clone(),
-                        reason: reason.to_string(),
-                    });
-                    Mesh {
-                        positions: Vec::new(),
-                        normals: Vec::new(),
-                        indices: Vec::new(),
-                        faces: Vec::new(),
-                        edges: None,
-                        topological_vertices: None,
-                    }
-                }
-                Err(reason) => return Err(reason),
-            };
-            definitions_meshed += 1;
-            builder.add_mesh(&mesh)
-        })?;
-        if let Some(omission) = omission {
-            catalogue.omit(mesh, omission)?;
-        }
-
-        // Linear RGB as the importer read it out of the file. Where the file
-        // said nothing, the same neutral colour a native body gets: inventing
-        // one per part would present a decision nobody made as something the
-        // file recorded.
-        // Any source at all means the number beside it came from the file.
-        // Written this way rather than by naming the two known sources: a
-        // third would be another place a colour can come from, not a reason to
-        // stop using it.
-        let colour = match instance.colour_source {
-            ColourSource::None => BODY_COLOUR,
-            _ => instance.colour,
-        };
-        builder.place(mesh, None, &world[index], colour)?;
-    }
-
-    if definitions_to_mesh == 0 || definitions_meshed < definitions_to_mesh {
-        context.progress().report(1.0);
-    }
-    Ok(())
-}
-
-/// Whether this object puts anything on screen.
-///
-/// A body with nothing built into it yet draws nothing, and neither does
-/// anything that is not geometry at all.
-fn draws(object: &ObjectRecord) -> bool {
-    match &object.payload {
-        ObjectPayload::Body(body) => body.tip_feature.is_some(),
-        ObjectPayload::ImportedStep(_) => true,
-        _ => false,
-    }
-}
-
-/// How much of a load is building geometry rather than drawing it.
-///
-/// A guess, and the honest kind: nothing here can know the ratio for a
-/// particular document, and any number would be wrong for some of them. What
-/// it must not do is reach the end before the work does.
-const BUILDING: f64 = 0.75;
-
-/// A slice of the whole load, as its own `0..1`.
-///
-/// The phases below report how far through themselves they are; a caller
-/// wants to know how far through the load it is. Composing that here means
-/// neither phase has to know what else the load does.
-fn phase(context: &OperationContext, from: f64, to: f64) -> OperationContext {
-    let outer = context.progress().clone();
-    OperationContext::new(context.tolerance())
-        .with_cancel(context.cancel().clone())
-        .with_progress(ProgressSink::new(move |fraction| {
-            outer.report(from + fraction * (to - from));
-        }))
-}
-
-/// Turns a scene's row-major 3x4 placement into a transform.
-fn placement_of(placement: &[f64; 12]) -> Result<Transform> {
-    Transform::from_rows([
-        [placement[0], placement[1], placement[2], placement[3]],
-        [placement[4], placement[5], placement[6], placement[7]],
-        [placement[8], placement[9], placement[10], placement[11]],
-    ])
-}
-
-/// A kernel, behind the contract the document uses to re-read a STEP file.
-///
-/// Holds the kernel for exactly as long as one reopening takes. Identity and
-/// release come from the kernel itself, so the only thing a caller has to
-/// supply is how this particular kernel reads STEP bytes.
-struct Reader<'a, K: ?Sized, F> {
-    kernel: &'a mut K,
-    read: F,
-}
-
-impl<K, F> StepImporter for Reader<'_, K, F>
-where
-    K: GeometryKernel + ?Sized,
-    F: FnMut(&mut K, &[u8]) -> Result<Import>,
-{
-    fn identity(&self) -> &KernelIdentity {
-        self.kernel.identity()
-    }
-
-    fn import(&mut self, source: &[u8]) -> Result<Import> {
-        (self.read)(self.kernel, source)
-    }
-
-    fn release(&mut self, shape: ShapeHandle) {
-        self.kernel.release(shape);
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::panic, reason = "a gate that cannot fail is not a gate")]
 mod tests {
     use super::*;
 
+    use crate::prepare::{BUILDING, PreparedDefinition, Registry, Seen, file_name_of};
     use ferritecad_document::StepImportRequest;
-    use ferritecad_exchange::{Definition, Instance};
+    use ferritecad_exchange::{Definition, Instance, Scene, Severity, Stage};
+    use ferritecad_kernel::ProgressSink;
     use ferritecad_kernel::mock::MockKernel;
     use ferritecad_kernel::{
         ArchiveSlot, BrepBlob, CancelToken, ExtrudeRequest, ExtrudeResult, KernelIdentity, Mesh,
         OperationResult, ShapeHandle, SubShapeHandle, TessellationRefusal,
     };
     use ferritecad_types::ObjectId;
+    use ferritecad_types::Transform;
 
     /// One reference and the digest it contributes.
     fn bound(role: SemanticRole) -> BoundMeaning {
@@ -3744,33 +3252,60 @@ mod tests {
         diagnostic: Option<Diagnostic>,
     ) -> Result<(RenderSnapshot, Vec<CatalogueEntry>)> {
         const KEY: &str = "step.product_definition#17";
-        let mut inner = MockKernel::new();
-        let mut scene = one_part(&mut inner, "Retained part");
-        scene.definitions[0].key = KEY.to_owned();
-        let mut kernel = RefusesMesh { inner, answer };
-        let mut builder = SnapshotBuilder::new();
-        let mut catalogue = Catalogue::default();
-        let omittable = diagnostic
-            .map(|diagnostic| [(KEY.to_owned(), diagnostic)].into_iter().collect())
-            .unwrap_or_default();
-        let result = draw_scene(
-            &mut builder,
-            &mut catalogue,
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("retained.fcad");
+        const BYTES: &[u8] = b"ISO-10303-21; the retained definition gate";
+
+        let retained = |kernel: &mut MockKernel| {
+            let mut scene = one_part(kernel, "Retained part");
+            scene.definitions[0].key = KEY.to_owned();
+            scene
+        };
+        let mut storing = MockKernel::new();
+        let stored = Import::Imported {
+            scene: retained(&mut storing),
+            diagnostics: diagnostic.clone().into_iter().collect(),
+        };
+        let mut document = Document::create(&path).expect("creates the document");
+        document
+            .store_step_import(StepImportRequest {
+                object: ObjectId::new(),
+                name: Some("Retained part"),
+                source: BYTES,
+                source_name: Some("retained.step"),
+                import: &stored,
+                importer: storing.identity(),
+            })
+            .expect("stores the import");
+        for shape in stored.scene().expect("the setup stores a scene").shapes() {
+            storing.release(shape);
+        }
+        drop(document);
+
+        let mut kernel = RefusesMesh {
+            inner: MockKernel::new(),
+            answer,
+        };
+        let loaded = snapshot_of(
+            &path,
             &mut kernel,
-            Provenance {
-                source: ImportedSourceId::new(),
-                file: Some("retained.step".to_owned()),
-                omittable: &omittable,
+            |kernel: &mut RefusesMesh, bytes: &[u8]| {
+                assert_eq!(bytes, BYTES);
+                Ok(Import::Imported {
+                    scene: retained(&mut kernel.inner),
+                    diagnostics: diagnostic.clone().into_iter().collect(),
+                })
             },
-            &scene,
             &params(),
             &OperationContext::default(),
         );
-        for shape in scene.shapes() {
-            kernel.release(shape);
-        }
-        result?;
-        Ok((builder.build(), catalogue.finish()))
+        assert_eq!(
+            kernel.inner.live_shape_count(),
+            0,
+            "the load kept shapes whatever its outcome"
+        );
+        let loaded = loaded?;
+        Ok((loaded.snapshot, loaded.catalogue))
     }
 
     #[test]
@@ -4231,14 +3766,17 @@ mod tests {
     }
 
     /// One identity seen twice, with whatever each sighting said about it.
-    fn twice(first: Seen, second: Seen) -> Result<Vec<CatalogueEntry>> {
+    fn twice(first: Seen, second: Seen) -> Result<Vec<PreparedDefinition>> {
         let item = SceneItem::Body(ObjectId::new());
-        let mut catalogue = Catalogue::default();
-        catalogue.definition(item.clone(), first, || Ok(0))?;
-        catalogue.definition(item, second, || {
-            unreachable!("an identity already drawn was packed a second time")
-        })?;
-        Ok(catalogue.finish())
+        let mut registry = Registry::default();
+        let (_, first_sighting) = registry.register(item.clone(), first)?;
+        assert!(
+            first_sighting,
+            "the first sighting of an identity is the first"
+        );
+        let (_, again) = registry.register(item, second)?;
+        assert!(!again, "an identity already settled was reported as new");
+        Ok(registry.finish())
     }
 
     #[test]
@@ -4247,12 +3785,12 @@ mod tests {
             Seen {
                 name: None,
                 source_file: Some("part.step".to_owned()),
-                solids: None,
+                ..Seen::default()
             },
             Seen {
                 name: Some("Bracket".to_owned()),
-                source_file: None,
                 solids: Some(2),
+                ..Seen::default()
             },
         )
         .expect("two sightings of one definition");
@@ -4272,11 +3810,13 @@ mod tests {
                 name: Some("Bracket".to_owned()),
                 source_file: Some("left.step".to_owned()),
                 solids: Some(1),
+                ..Seen::default()
             },
             Seen {
                 name: Some("Support".to_owned()),
                 source_file: Some("right.step".to_owned()),
                 solids: Some(1),
+                ..Seen::default()
             },
         )
         .expect("two sightings of one definition");
@@ -4293,26 +3833,24 @@ mod tests {
     #[test]
     fn a_third_sighting_does_not_settle_what_two_left_open() {
         let item = SceneItem::Body(ObjectId::new());
-        let mut catalogue = Catalogue::default();
+        let mut registry = Registry::default();
         let named = |name: &str| Seen {
             name: Some(name.to_owned()),
             ..Seen::default()
         };
 
-        catalogue
-            .definition(item.clone(), named("Bracket"), || Ok(0))
-            .expect("packs");
-        catalogue
-            .definition(item.clone(), named("Support"), || Ok(0))
+        registry
+            .register(item.clone(), named("Bracket"))
+            .expect("registers");
+        registry
+            .register(item.clone(), named("Support"))
             .expect("merges");
-        catalogue
-            .definition(item, named("Bracket"), || Ok(0))
-            .expect("merges");
+        registry.register(item, named("Bracket")).expect("merges");
 
         // Two names disagreed, so the question is settled as unanswerable. A
         // third voice does not carry it: "nobody said" and "they disagreed"
         // are different states, and only the first can still be filled in.
-        assert_eq!(catalogue.finish()[0].name, None);
+        assert_eq!(registry.finish()[0].name, None);
     }
 
     #[test]
@@ -4340,16 +3878,36 @@ mod tests {
     }
 
     #[test]
-    fn a_catalogue_that_lost_step_with_the_picture_refuses() {
-        let mut catalogue = Catalogue::default();
+    fn the_catalogue_is_indexed_the_way_the_picture_is() {
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("indexed.fcad");
+        let mut setup = MockKernel::new();
+        document_with_two_sources(&path, &mut setup);
+
+        let mut kernel = MockKernel::new();
+        let loaded = snapshot_of(
+            &path,
+            &mut kernel,
+            |kernel, _| {
+                Ok(Import::Imported {
+                    scene: one_part(kernel, "Bracket"),
+                    diagnostics: Vec::new(),
+                })
+            },
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("two sources load");
 
         // The catalogue is indexed the way the snapshot is, and a click is
-        // resolved through both. A packer that returned some other index would
-        // make a click mean whatever happened to sit there.
-        let error = catalogue
-            .definition(SceneItem::Body(ObjectId::new()), Seen::default(), || Ok(3))
-            .expect_err("a definition packed out of step must not be catalogued");
-        assert!(error.to_string().contains("cannot disagree"), "{error}");
+        // resolved through both. A row that sat anywhere else would make a
+        // click mean whatever happened to be beside it.
+        assert_eq!(loaded.catalogue.len(), loaded.snapshot.meshes().len());
+        assert_eq!(loaded.catalogue.len(), 2);
+        for draw in loaded.snapshot.draws() {
+            assert!(draw.mesh < loaded.catalogue.len());
+        }
+        assert_ne!(loaded.catalogue[0].item, loaded.catalogue[1].item);
     }
 
     #[test]
@@ -4601,14 +4159,15 @@ mod tests {
 
     #[test]
     fn an_imported_assembly_reports_one_monotonic_drawing_phase() {
-        let mut kernel = MockKernel::new();
-        let scene = Scene {
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("assembly.fcad");
+        let two_parts = |kernel: &mut MockKernel| Scene {
             source_unit: "MILLIMETRE".to_owned(),
             schema: "AP214".to_owned(),
             definitions: vec![
-                definition(&mut kernel, "Assembly", 2, "step.product_definition#1"),
-                definition(&mut kernel, "First", 1, "step.product_definition#2"),
-                definition(&mut kernel, "Second", 1, "step.product_definition#3"),
+                definition(kernel, "Assembly", 2, "step.product_definition#1"),
+                definition(kernel, "First", 1, "step.product_definition#2"),
+                definition(kernel, "Second", 1, "step.product_definition#3"),
             ],
             instances: vec![
                 instance(0, None, [0.0, 0.0, 0.0], ColourSource::None, [0.0; 3]),
@@ -4629,36 +4188,56 @@ mod tests {
             ],
         };
 
+        let mut setup = MockKernel::new();
+        let stored = Import::Imported {
+            scene: two_parts(&mut setup),
+            diagnostics: Vec::new(),
+        };
+        let mut document = Document::create(&path).expect("creates the document");
+        document
+            .store_step_import(StepImportRequest {
+                object: ObjectId::new(),
+                name: Some("Assembly"),
+                source: SOURCE,
+                source_name: Some("assembly.step"),
+                import: &stored,
+                importer: setup.identity(),
+            })
+            .expect("stores the import");
+        for shape in stored.scene().expect("the setup stores a scene").shapes() {
+            setup.release(shape);
+        }
+        drop(document);
+
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let record = std::sync::Arc::clone(&seen);
-        let context = OperationContext::default().with_progress(
-            ferritecad_kernel::ProgressSink::new(move |fraction| {
+        let context =
+            OperationContext::default().with_progress(ProgressSink::new(move |fraction| {
                 record
                     .lock()
                     .expect("no test thread panicked")
                     .push(fraction);
-            }),
-        );
+            }));
 
-        let mut builder = SnapshotBuilder::new();
-        let mut catalogue = Catalogue::default();
-        let omittable = BTreeMap::new();
-        draw_scene(
-            &mut builder,
-            &mut catalogue,
+        let mut kernel = MockKernel::new();
+        let loaded = snapshot_of(
+            &path,
             &mut kernel,
-            Provenance {
-                source: ImportedSourceId::new(),
-                file: None,
-                omittable: &omittable,
+            |kernel, _| {
+                Ok(Import::Imported {
+                    scene: two_parts(kernel),
+                    diagnostics: Vec::new(),
+                })
             },
-            &scene,
             &params(),
             &context,
         )
         .expect("the assembly draws");
-        let snapshot = builder.build();
-        assert_eq!(snapshot.meshes().len(), 2, "a leaf definition was missed");
+        assert_eq!(
+            loaded.snapshot.meshes().len(),
+            2,
+            "a leaf definition was missed"
+        );
 
         let seen = seen.lock().expect("no test thread panicked").clone();
         assert!(
@@ -4671,13 +4250,10 @@ mod tests {
             "the imported object announced completion once per definition: {seen:?}"
         );
         assert!(
-            seen.iter().any(|fraction| (0.0..1.0).contains(fraction)),
+            seen.iter()
+                .any(|fraction| (BUILDING..1.0).contains(fraction)),
             "the first definition consumed the whole drawing phase: {seen:?}"
         );
-
-        for shape in scene.shapes() {
-            kernel.release(shape);
-        }
         assert_eq!(kernel.live_shape_count(), 0, "the test kept its shapes");
     }
 

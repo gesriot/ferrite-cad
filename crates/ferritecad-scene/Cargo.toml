@@ -17,6 +17,10 @@ authors.workspace = true
 ferritecad-document.workspace = true
 ferritecad-eval.workspace = true
 ferritecad-exchange.workspace = true
+# The neutral export model. This crate is the one place that knows a document,
+# a rebuild, a stored import and a kernel at once, so building that model is
+# its job; what the model is allowed to be is the export crate's.
+ferritecad-export.workspace = true
 ferritecad-kernel.workspace = true
 ferritecad-types.workspace = true
 ferritecad-viewport.workspace = true

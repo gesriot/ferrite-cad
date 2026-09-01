@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: MIT
 //! Turning a mesh into a file another program will accept.
 //!
+//! Two halves. [`binary_stl`] is a writer: it takes one mesh and returns
+//! bytes. [`ExportScene`] is the other half, and the one a scene-shaped format
+//! needs — an immutable, kernel-neutral description of a whole model, its
+//! hierarchy, its geometry and what it could not export. Neither knows what
+//! read a document, opened a kernel session or drew a picture; that is the
+//! point of both.
+//!
 //! Only binary STL so far, and deliberately written here rather than asked of
 //! Open CASCADE. A kernel's own writer is a black box that may change what it
 //! emits between releases, and the one property this needs above all is that
@@ -19,6 +26,15 @@
 //! second is not pedantry: a zero-area facet has no direction, so the normal
 //! written for it would be invented, and a reader that trusts normals would be
 //! misled about a surface that is not there.
+
+mod scene;
+
+pub use scene::{
+    ExportColourOrigin, ExportCompleteness, ExportDefinition, ExportDefinitionId, ExportGeometry,
+    ExportMaterial, ExportMesh, ExportNode, ExportNodeId, ExportOmission, ExportOmissionReport,
+    ExportProvenance, ExportScene, ExportSceneBuilder, ExportSource, ExportTransform,
+    TRANSFORM_TOLERANCE,
+};
 
 use ferritecad_kernel::Mesh;
 use ferritecad_types::{CadError, Result};

@@ -42,6 +42,12 @@ jobs:
       - run: tools/check-licence-headers.sh
       - run: tools/check-step-corpus.sh
 
+      # The export model must stay a model: no document, no loader, no kernel
+      # implementation, no GPU. A dependency that broke that would compile
+      # perfectly, and one more load path would only show up as a document
+      # read nobody counted.
+      - run: tools/check-export-boundary.sh
+
       # One crate owns the sketch solver boundary. Both halves keep compiling
       # if a second copy appears, so this is checked rather than remembered.
       - run: tools/check-solver-ownership.sh
