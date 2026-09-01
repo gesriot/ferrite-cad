@@ -5809,6 +5809,7 @@
     },
     {
       "dependsOn": [
+        "path+crates/ferritecad-exchange#ferritecad-exchange@0.0.1",
         "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
         "path+crates/ferritecad-types#ferritecad-types@0.0.1"
       ],
@@ -5833,6 +5834,7 @@
         "path+crates/ferritecad-document#ferritecad-document@0.0.1",
         "path+crates/ferritecad-eval#ferritecad-eval@0.0.1",
         "path+crates/ferritecad-exchange#ferritecad-exchange@0.0.1",
+        "path+crates/ferritecad-export#ferritecad-export@0.0.1",
         "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
         "path+crates/ferritecad-types#ferritecad-types@0.0.1",
         "path+crates/ferritecad-viewport#ferritecad-viewport@0.0.1",
