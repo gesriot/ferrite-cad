@@ -11,3 +11,4 @@
 *.sln
 *.pidb
 *.unityproj
+/Assets/Production/

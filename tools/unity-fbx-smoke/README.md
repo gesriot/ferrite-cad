@@ -71,3 +71,29 @@ omission policy without adding a production type, serializer, or CLI route.
 
 The measured decision and the interpretation of every report field are in
 [`../../docs/measurements/fcad-fbx-unity-6000.4.10f1.md`](../../docs/measurements/fcad-fbx-unity-6000.4.10f1.md).
+
+## The production writer gates
+
+Two of the instruments here are pointed at the §22B-1b2 FBX writer rather than
+at a committed fixture. Neither reads `Assets/Fixtures`.
+
+`read_production.c` is a second pinned-ufbx reader. It does not print a report
+for comparison; it checks the production bytes against the measured contract
+and exits nonzero on any mismatch. `../../tools/check-fbx-writer.sh` builds the
+writer's two gate scenes and runs it over them, and also compares their SHA-256
+with `../fbx/digests.tsv` so that "the same scene always produces the same
+bytes" is measured on Linux, macOS and Windows.
+`../../tools/check-fbx-complex.sh` runs it over the FBX built from the real
+complex STEP assembly, which needs Open CASCADE.
+
+`Assets/Editor/FerriteFbxProduction.cs` is the Unity half. Run it with:
+
+```sh
+scripts/run_production_unity_smoke.sh
+```
+
+It writes the production FBX into `Assets/Production`, imports it in the same
+batchmode editor, compares the canonical report with
+`Assets/Expected/unity-production-report.json`, runs the whole thing twice to
+show the two reports are the same bytes, and deletes the asset afterwards. The
+asset is one build's output and is never committed.

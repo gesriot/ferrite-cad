@@ -13,9 +13,13 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use ferritecad_exchange::Import;
-use ferritecad_export::{ExportTransform, TRANSFORM_TOLERANCE};
+use ferritecad_export::{
+    ExportGeometry, ExportProvenance, ExportSceneBuilder, ExportSource, ExportTransform,
+    TRANSFORM_TOLERANCE, write_fbx_ascii_7400,
+};
 use ferritecad_kernel::GeometryKernel;
 use ferritecad_occt::{OcctKernel, is_available};
+use ferritecad_types::ImportedSourceId;
 
 const EXPECTED: &str =
     "../../tools/unity-fbx-smoke/Assets/Expected/fcad-step-transform-report.json";
@@ -32,6 +36,124 @@ fn representable(placement: &[f64; 12]) -> bool {
         [placement[8], placement[9], placement[10], placement[11]],
     ])
     .is_ok()
+}
+
+/// Whether the production FBX writer can express this placement, and whether
+/// what it wrote rebuilds the matrix it was given.
+///
+/// Asked of every placement of the corpus beside the classification above,
+/// through the shipped writer and its public entry point rather than through
+/// an internal helper. The writer converts by conjugation and then splits the
+/// result into a translation, three angles in one declared order and a uniform
+/// scale; this recomputes the conversion the long way and rebuilds the matrix
+/// from the three values that reached the file. A corpus this measurement
+/// calls representable is one an export writes correctly, or it is neither.
+fn writes_and_rebuilds(placement: &[f64; 12]) -> Result<(), String> {
+    let rows = [
+        [placement[0], placement[1], placement[2], placement[3]],
+        [placement[4], placement[5], placement[6], placement[7]],
+        [placement[8], placement[9], placement[10], placement[11]],
+    ];
+    let transform = ExportTransform::new(rows).map_err(|error| error.to_string())?;
+
+    let mut builder = ExportSceneBuilder::new();
+    let definition = builder
+        .definition(
+            ExportSource::Imported {
+                source: ImportedSourceId::new(),
+                definition_key: "placement".to_owned(),
+            },
+            Some("Placement".to_owned()),
+            ExportProvenance::default(),
+            ExportGeometry::Structural,
+        )
+        .map_err(|error| error.to_string())?;
+    builder
+        .node(
+            None,
+            definition,
+            transform,
+            Some("Placement".to_owned()),
+            None,
+        )
+        .map_err(|error| error.to_string())?;
+    let scene = builder.finish().map_err(|error| error.to_string())?;
+
+    let mut bytes = Vec::new();
+    write_fbx_ascii_7400(&scene, &mut bytes).map_err(|error| error.to_string())?;
+    let text = String::from_utf8(bytes).map_err(|error| error.to_string())?;
+
+    let read = |name: &str| -> Result<[f64; 3], String> {
+        let needle = format!("P: \"{name}\", \"{name}\", \"\", \"A\", ");
+        let line = text
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with(&needle))
+            .ok_or_else(|| format!("the writer wrote no {name}"))?;
+        let mut values = [0.0; 3];
+        let mut parts = line[needle.len()..].split(", ");
+        for value in &mut values {
+            *value = parts
+                .next()
+                .ok_or_else(|| format!("{name} has fewer than three values"))?
+                .trim()
+                .parse()
+                .map_err(|_| format!("{name} is not three numbers"))?;
+        }
+        Ok(values)
+    };
+    let translation = read("Lcl Translation")?;
+    let rotation = read("Lcl Rotation")?;
+    let scaling = read("Lcl Scaling")?;
+
+    // The conversion, computed here rather than taken from the writer.
+    let c = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]];
+    let mut left = [[0.0; 3]; 3];
+    for row in 0..3 {
+        for column in 0..3 {
+            left[row][column] = (0..3).map(|k| c[row][k] * rows[k][column]).sum();
+        }
+    }
+    let mut linear = [[0.0; 3]; 3];
+    for row in 0..3 {
+        for column in 0..3 {
+            linear[row][column] = (0..3).map(|k| left[row][k] * c[column][k]).sum();
+        }
+    }
+    for axis in 0..3 {
+        let expected = (0..3).map(|k| c[axis][k] * rows[k][3]).sum::<f64>() / 1000.0;
+        if (translation[axis] - expected).abs() > TOLERANCE {
+            return Err(format!(
+                "translation {axis} is {} and not {expected}",
+                translation[axis]
+            ));
+        }
+    }
+    if (scaling[0] - scaling[1]).abs() > TOLERANCE || (scaling[0] - scaling[2]).abs() > TOLERANCE {
+        return Err("the writer produced a non-uniform scale".to_owned());
+    }
+
+    // `Rz * Ry * Rx`, the order the writer declares.
+    let [x, y, z] = rotation.map(f64::to_radians);
+    let (sx, cx) = x.sin_cos();
+    let (sy, cy) = y.sin_cos();
+    let (sz, cz) = z.sin_cos();
+    let rebuilt = [
+        [cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx],
+        [sz * cy, sz * sy * sx + cz * cx, sz * sy * cx - cz * sx],
+        [-sy, cy * sx, cy * cx],
+    ];
+    for row in 0..3 {
+        for column in 0..3 {
+            let difference = (rebuilt[row][column] * scaling[0] - linear[row][column]).abs();
+            if difference > TOLERANCE * scaling[0].max(1.0) {
+                return Err(format!(
+                    "rebuilding element {row},{column} changes it by {difference}"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default)]
@@ -226,6 +348,12 @@ fn every_step_placement_is_unity_trs_representable() {
                         "{name}: the export boundary refuses a placement this measurement calls \
                          representable"
                     );
+                    if let Err(reason) = writes_and_rebuilds(&instance.placement) {
+                        panic!(
+                            "{name}: the FBX writer cannot express a placement this measurement \
+                             calls representable: {reason}"
+                        );
+                    }
                 }
                 write!(
                     output,
@@ -295,6 +423,10 @@ fn every_step_placement_is_unity_trs_representable() {
     }
     eprintln!(
         "FCAD_STEP_TRANSFORM_MEASUREMENT transforms={}",
+        total.transforms
+    );
+    eprintln!(
+        "FCAD_FBX_TRANSFORM_MEASUREMENT written_and_rebuilt={}",
         total.transforms
     );
 }

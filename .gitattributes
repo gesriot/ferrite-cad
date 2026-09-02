@@ -64,6 +64,12 @@ crates/ferritecad-viewport-gpu/src/*.wgsl -text
 tools/unity-fbx-smoke/Assets/Expected/*  -text
 tools/unity-fbx-smoke/Assets/Fixtures/*  -text
 
+# The production FBX writer's two gate scenes are arithmetic over an in-memory
+# value, so the SHA-256 of what it writes is compared with tools/fbx/digests.tsv
+# on Linux, macOS and Windows. A checkout that rewrote a line ending in that
+# file would break the comparison, and the file is also read by a shell.
+tools/fbx/*  -text
+
 # Interoperability inputs are preserved exactly as supplied. In particular,
 # the C3D AP203 fixture uses CRLF throughout; treating it as source text would
 # make `git diff --check` call every original line trailing whitespace and a

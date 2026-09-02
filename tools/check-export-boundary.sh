@@ -68,6 +68,25 @@ shipped() {
     awk '/^#\[cfg\(test\)\]/ { exit } { print }' "$1"
 }
 
+# Every line of the shipped half of a file that names something, with its line
+# number, or nothing.
+#
+# Deliberately not `grep -q` at the end of a pipeline: this script runs under
+# `pipefail`, and a `grep -q` that exits on its first match kills the `grep`
+# feeding it with SIGPIPE. The pipeline then reports 141, an `if` around it is
+# false, and the check silently passes whatever it was supposed to catch.
+# String literals are removed before matching. A writer must not *use* a
+# document, a kernel or a clock; that FBX happens to call one of its own nodes
+# `Document` is the format's vocabulary and not a dependency.
+names() {
+    local file="$1"
+    local name="$2"
+    shipped "$file" \
+        | grep -vE '^[[:space:]]*(//|\*)' \
+        | sed 's/"[^"]*"//g' \
+        | grep -nw "$name" || true
+}
+
 # How many times the shipped half of a crate's sources does something.
 shipped_count() {
     local pattern="$1"
@@ -145,11 +164,106 @@ done <<<"$closure"
 # face ranges are handles, and that is what an STL writer is handed.
 readonly MODEL='crates/ferritecad-export/src/scene.rs'
 for name in "${FORBIDDEN_NAMES[@]}"; do
-    if shipped "$MODEL" | grep -vE '^[[:space:]]*(//|\*)' | grep -qw "$name"; then
-        shipped "$MODEL" | grep -nw "$name" >&2
+    found="$(names "$MODEL" "$name")"
+    if [ -n "$found" ]; then
+        echo "$found" >&2
         fail "${EXPORT} names ${name} in the export model"
     fi
 done
+
+# The FBX writer is the first thing handed the model, and the whole point of
+# the model is what the writer therefore cannot reach. It is given a scene and
+# a byte sink, so its output is a function of the scene; a writer that could
+# reopen the document, ask the kernel for more geometry, read the STEP the
+# document was imported from, look at a picture, open a file, read a clock or
+# draw a random number would be a writer whose output is a function of the
+# machine it ran on. None of those would be a compile error, so they are
+# checked here.
+readonly WRITER_SOURCES=(
+    crates/ferritecad-export/src/fbx/mod.rs
+    crates/ferritecad-export/src/fbx/contract.rs
+    crates/ferritecad-export/src/fbx/syntax.rs
+)
+
+# What a writer must not name, over and above the transient identities the
+# model is already checked for.
+readonly FORBIDDEN_IN_WRITER=(
+    # A document, a kernel, an importer or a picture.
+    Document
+    DocumentId
+    GeometryKernel
+    OcctKernel
+    Occt
+    OCCT
+    StepImporter
+    Import
+    RenderSnapshot
+    SnapshotBuilder
+    LiveScene
+    Camera
+    PickId
+    ShapeHandle
+    SubShapeHandle
+    SessionId
+    tessellate
+    rebuild_cold
+    # A filesystem. The sink is a `Write`; naming a path would be naming where
+    # the bytes go, which is the caller's decision and not the writer's.
+    Path
+    PathBuf
+    File
+    OpenOptions
+    read_to_string
+    create_dir
+    # A clock, an environment or a random number: three ways for one scene to
+    # produce two files.
+    SystemTime
+    Instant
+    UNIX_EPOCH
+    now
+    chrono
+    rand
+    random
+    thread_rng
+    var_os
+    env
+    # An unordered map iterated into the output would put a hash seed in the
+    # file. Ordered collections and vectors are what a deterministic file is
+    # built from.
+    HashMap
+    HashSet
+    BTreeMap
+    BTreeSet
+)
+
+for source in "${WRITER_SOURCES[@]}"; do
+    [ -f "$source" ] || fail "the FBX writer source ${source} is missing"
+done
+for name in "${FORBIDDEN_IN_WRITER[@]}"; do
+    for source in "${WRITER_SOURCES[@]}"; do
+        [ -f "$source" ] || continue
+        found="$(names "$source" "$name")"
+        if [ -n "$found" ]; then
+            echo "$found" >&2
+            fail "the FBX writer names ${name} in ${source}"
+        fi
+    done
+done
+
+# And it is handed a scene and a sink, and nothing else. A third parameter
+# would be a way to tell the writer what to say about a scene, and the first
+# thing anybody would tell it is that a partial export is complete.
+writer_signature="$(shipped crates/ferritecad-export/src/fbx/mod.rs \
+    | tr '\n' ' ' \
+    | grep -o 'pub fn write_fbx_ascii_7400([^)]*)' || true)"
+if [ -z "$writer_signature" ]; then
+    fail "crates/ferritecad-export/src/fbx/mod.rs does not define write_fbx_ascii_7400"
+elif ! printf '%s' "$writer_signature" \
+    | grep -qE '^pub fn write_fbx_ascii_7400\( *scene: &ExportScene, *output: &mut impl Write, *\)$'
+then
+    echo "$writer_signature" >&2
+    fail "the FBX writer takes something other than a scene and a byte sink"
+fi
 
 # Nothing in the export model may be serialised.
 if grep -rn --include='*.rs' -E 'derive\([^)]*\b(Serialize|Deserialize)\b' \
