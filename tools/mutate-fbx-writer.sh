@@ -253,6 +253,8 @@ baseline() {
   baseline_gate fbx two_placements_of_one_definition_share_one_geometry
   baseline_gate fbx a_node_colour_override_is_a_binding_and_not_a_change_to_the_definition
   baseline_gate fbx an_omitted_definition_is_a_node_with_no_geometry_and_says_why
+  baseline_gate fbx two_sources_with_one_local_key_remain_distinct_in_the_report
+  baseline_gate fbx a_colour_outside_the_measured_range_is_refused_before_any_byte_is_written
   baseline_gate fbx the_same_scene_always_produces_the_same_bytes
   baseline_gate fbx the_local_transform_is_converted_and_never_accumulated
   baseline_gate fbx a_name_the_format_cannot_spell_is_refused_rather_than_quietly_changed
@@ -577,9 +579,28 @@ replace_once "$writer" \
 expect_kill debug_as_a_data_format fbx an_omitted_definition_is_a_node_with_no_geometry_and_says_why
 restore_mutation
 
+# 30. Every omission reduced to the first source's report. Source-local keys
+# collide between imported files, so one complete record cannot stand for all.
+begin_mutation "$writer"
+replace_once "$writer" \
+  '        let omissions = scene.completeness().omissions().to_vec();' \
+  $'        let omissions = scene\n            .completeness()\n            .omissions()\n            .first()\n            .map(|first| vec![first.clone(); scene.completeness().omissions().len()])\n            .unwrap_or_default();'
+expect_kill omission_source_identity_collapsed fbx \
+  two_sources_with_one_local_key_remain_distinct_in_the_report
+restore_mutation
+
+# 31. A colour outside the measured linear range silently accepted.
+begin_mutation "$contract"
+replace_once "$contract" \
+  '    if !linear.is_finite() || !(0.0..=1.0).contains(&linear) {' \
+  '    if !linear.is_finite() {'
+expect_kill out_of_contract_colour_accepted fbx \
+  a_colour_outside_the_measured_range_is_refused_before_any_byte_is_written
+restore_mutation
+
 # ------------------------------------------------------------------- strings
 
-# 30. Names written as they are, which changes what a reader gets back.
+# 32. Names written as they are, which changes what a reader gets back.
 begin_mutation "$syntax"
 replace_once "$syntax" \
   $'    let mut out = String::with_capacity(value.len());\n    for character in value.chars() {' \
@@ -587,7 +608,7 @@ replace_once "$syntax" \
 expect_kill names_not_escaped model the_three_escaped_characters_survive_a_round_trip
 restore_mutation
 
-# 31. And the same mutation as the whole-file gate sees it.
+# 33. And the same mutation as the whole-file gate sees it.
 begin_mutation "$syntax"
 replace_once "$syntax" \
   $'    let mut out = String::with_capacity(value.len());\n    for character in value.chars() {' \
@@ -596,7 +617,7 @@ expect_kill unescaped_names_reach_the_file fbx \
   a_name_the_format_cannot_spell_is_refused_rather_than_quietly_changed
 restore_mutation
 
-# 32. A name this format cannot spell accepted rather than refused.
+# 34. A name this format cannot spell accepted rather than refused.
 begin_mutation "$syntax"
 replace_once "$syntax" \
   $'    for entity in ENTITIES {\n        if value.contains(entity) {' \
@@ -604,7 +625,7 @@ replace_once "$syntax" \
 expect_kill unspellable_name_accepted model a_name_this_format_cannot_spell_is_refused
 restore_mutation
 
-# 33. A value that is not a number written into the file.
+# 35. A value that is not a number written into the file.
 begin_mutation "$syntax"
 replace_once "$syntax" \
   $'    if !value.is_finite() {\n        return Err(CadError::unsupported(format!(\n            "the export produced {value}, which is not a number any file can record"\n        )));\n    }' \
@@ -612,7 +633,7 @@ replace_once "$syntax" \
 expect_kill non_finite_output_accepted model zero_has_one_spelling_and_a_non_number_has_none
 restore_mutation
 
-# 34. Signed zero left in the file, so two equal scenes are two files.
+# 36. Signed zero left in the file, so two equal scenes are two files.
 begin_mutation "$syntax"
 replace_once "$syntax" \
   '    let canonical = if value == 0.0 { 0.0 } else { value };' \
@@ -622,7 +643,7 @@ restore_mutation
 
 # --------------------------------------------------------------- the boundary
 
-# 35. A kernel reached from the writer.
+# 37. A kernel reached from the writer.
 begin_mutation "$writer"
 replace_once "$writer" \
   $'use ferritecad_types::{CadError, Result};' \
@@ -630,7 +651,7 @@ replace_once "$writer" \
 expect_kill kernel_reached_from_the_writer boundary -
 restore_mutation
 
-# 36. A document reached from the writer.
+# 38. A document reached from the writer.
 begin_mutation "$writer"
 replace_once "$writer" \
   $'use ferritecad_types::{CadError, Result};' \
@@ -638,7 +659,7 @@ replace_once "$writer" \
 expect_kill document_and_snapshot_reached_from_the_writer boundary -
 restore_mutation
 
-# 37. The writer given a third thing to be told.
+# 39. The writer given a third thing to be told.
 begin_mutation "$writer"
 replace_once "$writer" \
   $'    scene: &ExportScene,\n    output: &mut impl Write,\n) -> Result<FbxWriteReport> {' \

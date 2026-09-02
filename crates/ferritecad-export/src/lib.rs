@@ -30,7 +30,7 @@
 mod fbx;
 mod scene;
 
-pub use fbx::{FbxOmission, FbxWriteReport, write_fbx_ascii_7400};
+pub use fbx::{FbxWriteReport, write_fbx_ascii_7400};
 pub use scene::{
     ExportColourOrigin, ExportCompleteness, ExportDefinition, ExportDefinitionId, ExportGeometry,
     ExportMaterial, ExportMesh, ExportNode, ExportNodeId, ExportOmission, ExportOmissionReport,

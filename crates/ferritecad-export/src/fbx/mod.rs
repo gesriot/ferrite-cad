@@ -44,7 +44,8 @@ use std::io::Write;
 use ferritecad_types::{CadError, Result};
 
 use crate::scene::{
-    ExportDefinition, ExportGeometry, ExportMesh, ExportNodeId, ExportScene, ExportSource,
+    ExportDefinition, ExportGeometry, ExportMesh, ExportNodeId, ExportOmissionReport, ExportScene,
+    ExportSource,
 };
 use syntax::{Ascii, Value};
 
@@ -69,30 +70,14 @@ const CREATOR: &str = "FerriteCAD FBX 7.4 ASCII writer";
 const CREATION_TIME: &str = "2000-01-01 00:00:00:000";
 const FILE_ID: &str = "FCAD-FBX-7400-ASCII";
 
-/// One definition this file records as placed but empty, and every node of it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct FbxOmission {
-    /// The source-local key, exactly as written into the file.
-    pub definition_key: String,
-    /// The entity the persisted import finding named.
-    pub finding_entity: String,
-    /// The stable name of the typed refusal. Not its message, and not a
-    /// `Debug` rendering.
-    pub refusal: &'static str,
-    /// Every node written as a hierarchy node with no geometry, in scene
-    /// order.
-    pub nodes: Vec<ExportNodeId>,
-}
-
 /// What one write produced, and what it could not.
 ///
 /// Derived from the scene rather than supplied to the writer: a caller able to
 /// hand in its own list of omissions would be a caller able to describe a
 /// partial export as a complete one.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct FbxWriteReport {
-    omissions: Vec<FbxOmission>,
+    omissions: Vec<ExportOmissionReport>,
     bytes: u64,
     models: u32,
     geometries: u32,
@@ -100,7 +85,12 @@ pub struct FbxWriteReport {
 }
 
 impl FbxWriteReport {
-    pub fn omissions(&self) -> &[FbxOmission] {
+    /// The exact completeness records from the scene that was written.
+    ///
+    /// Keeping the records whole matters: the source identity qualifies an
+    /// imported definition's local key, and both the persisted finding and
+    /// the current typed refusal are facts the publishing layer must report.
+    pub fn omissions(&self) -> &[ExportOmissionReport] {
         &self.omissions
     }
 
@@ -196,7 +186,7 @@ struct Plan<'a> {
     /// Which materials each node binds, in slot order, as indices into
     /// [`Self::materials`].
     bindings: Vec<Vec<usize>>,
-    omissions: Vec<FbxOmission>,
+    omissions: Vec<ExportOmissionReport>,
 }
 
 impl<'a> Plan<'a> {
@@ -247,15 +237,7 @@ impl<'a> Plan<'a> {
             bindings.push(bound);
         }
 
-        let mut omissions = Vec::new();
-        for report in scene.completeness().omissions() {
-            omissions.push(FbxOmission {
-                definition_key: definition_key(&report.source),
-                finding_entity: report.omission.finding.entity.clone(),
-                refusal: report.omission.refusal.stable_name(),
-                nodes: report.nodes.clone(),
-            });
-        }
+        let omissions = scene.completeness().omissions().to_vec();
 
         Ok(Self {
             scene,

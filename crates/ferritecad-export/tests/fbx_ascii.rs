@@ -15,7 +15,13 @@ mod fbx_scene;
 
 use fbx_scene::{Fbx, escaping_scene, measured_scene};
 
-use ferritecad_export::write_fbx_ascii_7400;
+use ferritecad_exchange::{Diagnostic, Severity, Stage};
+use ferritecad_export::{
+    ExportColourOrigin, ExportGeometry, ExportMaterial, ExportMesh, ExportOmission,
+    ExportProvenance, ExportSceneBuilder, ExportSource, ExportTransform, write_fbx_ascii_7400,
+};
+use ferritecad_kernel::TessellationRefusal;
+use ferritecad_types::{ErrorKind, ImportedSourceId, ObjectId};
 
 fn written(scene: &ferritecad_export::ExportScene) -> (Vec<u8>, ferritecad_export::FbxWriteReport) {
     let mut bytes = Vec::new();
@@ -295,7 +301,8 @@ fn a_node_colour_override_is_a_binding_and_not_a_change_to_the_definition() {
 
 #[test]
 fn an_omitted_definition_is_a_node_with_no_geometry_and_says_why() {
-    let (bytes, report) = written(&measured_scene());
+    let scene = measured_scene();
+    let (bytes, report) = written(&scene);
     let file = parsed(&bytes);
     let models = file.all("Objects/Model");
     let omitted = &models[4];
@@ -351,17 +358,127 @@ fn an_omitted_definition_is_a_node_with_no_geometry_and_says_why() {
 
     // And the report says the same thing the scene's completeness does.
     assert!(!report.is_complete());
-    assert_eq!(report.omissions().len(), 1);
-    let omission = &report.omissions()[0];
-    assert_eq!(omission.definition_key, "step.product_definition#2583");
-    assert_eq!(omission.finding_entity, "step.product_definition#2583");
-    assert_eq!(omission.refusal, "IncompleteFace");
-    let scene = measured_scene();
     assert_eq!(
-        omission.nodes,
-        scene.completeness().omissions()[0].nodes,
-        "the report names other nodes than the scene does"
+        report.omissions(),
+        scene.completeness().omissions(),
+        "the writer discarded part of the scene's completeness report"
     );
+}
+
+#[test]
+fn two_sources_with_one_local_key_remain_distinct_in_the_report() {
+    let first_source = ImportedSourceId::new();
+    let second_source = ImportedSourceId::new();
+    let key = "step.product_definition#31";
+    let mut builder = ExportSceneBuilder::new();
+
+    for (source, message) in [
+        (first_source, "first source finding"),
+        (second_source, "second source finding"),
+    ] {
+        let definition = builder
+            .definition(
+                ExportSource::Imported {
+                    source,
+                    definition_key: key.to_owned(),
+                },
+                None,
+                ExportProvenance::default(),
+                ExportGeometry::Omitted(ExportOmission::new(
+                    Diagnostic {
+                        stage: Stage::Validation,
+                        severity: Severity::Fail,
+                        entity: key.to_owned(),
+                        message: message.to_owned(),
+                    },
+                    TessellationRefusal::IncompleteFace,
+                )),
+            )
+            .expect("a source-local omission");
+        builder
+            .node(None, definition, ExportTransform::IDENTITY, None, None)
+            .expect("the omitted definition remains placed");
+    }
+
+    let scene = builder.finish().expect("two distinct source identities");
+    let (_, report) = written(&scene);
+    assert_eq!(report.omissions().len(), 2);
+    assert_eq!(
+        report.omissions()[0].source,
+        ExportSource::Imported {
+            source: first_source,
+            definition_key: key.to_owned(),
+        }
+    );
+    assert_eq!(
+        report.omissions()[1].source,
+        ExportSource::Imported {
+            source: second_source,
+            definition_key: key.to_owned(),
+        }
+    );
+    assert_eq!(
+        report.omissions()[0].omission.finding.message,
+        "first source finding"
+    );
+    assert_eq!(
+        report.omissions()[1].omission.finding.message,
+        "second source finding"
+    );
+}
+
+fn one_triangle(material: ExportMaterial) -> ExportMesh {
+    ExportMesh::new(
+        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        vec![[0.0, 0.0, 1.0]; 3],
+        vec![[0, 1, 2]],
+        vec![0],
+        vec![material],
+    )
+    .expect("one triangle")
+}
+
+fn scene_with_colour(
+    material: [f64; 3],
+    override_colour: Option<[f64; 3]>,
+) -> ferritecad_export::ExportScene {
+    let mut builder = ExportSceneBuilder::new();
+    let material = ExportMaterial::new("colour", material, ExportColourOrigin::Source)
+        .expect("the neutral scene can carry an HDR linear value");
+    let definition = builder
+        .definition(
+            ExportSource::Body {
+                object: ObjectId::new(),
+            },
+            None,
+            ExportProvenance::default(),
+            ExportGeometry::Mesh(one_triangle(material)),
+        )
+        .expect("one body");
+    builder
+        .node(
+            None,
+            definition,
+            ExportTransform::IDENTITY,
+            None,
+            override_colour,
+        )
+        .expect("one placement");
+    builder.finish().expect("one coloured triangle")
+}
+
+#[test]
+fn a_colour_outside_the_measured_range_is_refused_before_any_byte_is_written() {
+    for scene in [
+        scene_with_colour([2.0, 0.0, 0.0], None),
+        scene_with_colour([0.5, 0.5, 0.5], Some([0.0, 1.5, 0.0])),
+    ] {
+        let mut bytes = Vec::new();
+        let error = write_fbx_ascii_7400(&scene, &mut bytes)
+            .expect_err("an unmeasured HDR colour must not be clamped");
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+        assert!(bytes.is_empty(), "the refusal left a partial FBX behind");
+    }
 }
 
 #[test]

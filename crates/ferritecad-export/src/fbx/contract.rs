@@ -94,16 +94,15 @@ pub(crate) fn direction(value: [f32; 3]) -> [f64; 3] {
 /// because FerriteCAD stores linear RGB and the measurement showed Unity
 /// reading FBX base colour as a display value.
 pub(crate) fn srgb(linear: f64) -> Result<f64> {
-    if !linear.is_finite() {
+    if !linear.is_finite() || !(0.0..=1.0).contains(&linear) {
         return Err(CadError::unsupported(format!(
-            "a colour component is {linear}, which is not an intensity"
+            "a colour component is {linear}, outside the measured linear range from 0 to 1"
         )));
     }
-    let clamped = linear.clamp(0.0, 1.0);
-    let encoded = if clamped <= 0.003_130_8 {
-        12.92 * clamped
+    let encoded = if linear <= 0.003_130_8 {
+        12.92 * linear
     } else {
-        1.055 * clamped.powf(1.0 / 2.4) - 0.055
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
     };
     Ok(quantise(encoded, COLOUR_DECIMALS))
 }
@@ -457,7 +456,8 @@ mod tests {
         }
         assert_eq!(srgb(0.0).expect("black"), 0.0);
         assert_eq!(srgb(1.0).expect("white"), 1.0);
-        assert_eq!(srgb(2.0).expect("clamped"), 1.0);
+        assert!(srgb(2.0).is_err(), "an HDR value was silently clamped");
+        assert!(srgb(-0.1).is_err(), "a negative value was silently clamped");
         assert!(srgb(f64::NAN).is_err());
     }
 

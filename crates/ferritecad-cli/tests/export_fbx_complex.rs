@@ -631,9 +631,9 @@ fn the_complex_assembly_becomes_one_fbx_that_keeps_every_definition_and_says_wha
     );
     assert_eq!(report.omissions().len(), 1);
     let omission = &report.omissions()[0];
-    assert_eq!(omission.definition_key, OMITTED);
-    assert_eq!(omission.finding_entity, OMITTED);
-    assert_eq!(omission.refusal, "IncompleteFace");
+    assert_eq!(omission.source, scene.completeness().omissions()[0].source);
+    assert_eq!(omission.omission.finding.entity, OMITTED);
+    assert_eq!(omission.omission.refusal.stable_name(), "IncompleteFace");
     assert_eq!(
         omission.nodes,
         scene.completeness().omissions()[0].nodes,
