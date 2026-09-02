@@ -104,9 +104,18 @@ done
 cache="$("$smoke/scripts/fetch_ufbx.sh")"
 
 reader="$work/read_production$suffix"
+# Two compilations, not one. Warnings as errors are for the reader written
+# here; ufbx is a pinned third-party file whose warning-cleanliness is a
+# property of somebody else's compiler. Clang targeting MSVC does not give
+# `ufbxi_unused` the GCC attribute, so four of its deliberately unused
+# helpers become errors on Windows and nowhere else, which says nothing
+# about the bytes this gate is reading.
 "$compiler" -std=c11 -O2 -Wall -Wextra -Werror \
-    -I "$(native "$cache")" "$(native "$smoke/scripts/read_production.c")" \
-    "$(native "$cache/ufbx.c")" \
+    -I "$(native "$cache")" -c "$(native "$smoke/scripts/read_production.c")" \
+    -o "$(native "$work/read_production.o")"
+"$compiler" -std=c11 -O2 -I "$(native "$cache")" \
+    -c "$(native "$cache/ufbx.c")" -o "$(native "$work/ufbx.o")"
+"$compiler" "$(native "$work/read_production.o")" "$(native "$work/ufbx.o")" \
     "${link_math[@]+"${link_math[@]}"}" -o "$(native "$reader")"
 
 # Written twice from one scene, and the second copy must be the same bytes.
