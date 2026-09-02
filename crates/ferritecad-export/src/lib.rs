@@ -27,8 +27,10 @@
 //! written for it would be invented, and a reader that trusts normals would be
 //! misled about a surface that is not there.
 
+mod fbx;
 mod scene;
 
+pub use fbx::{FbxWriteReport, write_fbx_ascii_7400};
 pub use scene::{
     ExportColourOrigin, ExportCompleteness, ExportDefinition, ExportDefinitionId, ExportGeometry,
     ExportMaterial, ExportMesh, ExportNode, ExportNodeId, ExportOmission, ExportOmissionReport,

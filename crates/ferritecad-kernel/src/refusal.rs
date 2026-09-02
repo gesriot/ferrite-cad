@@ -17,6 +17,20 @@ pub enum TessellationRefusal {
 }
 
 impl TessellationRefusal {
+    /// A stable name for this refusal, for a file or a report that has to
+    /// record which one it was.
+    ///
+    /// Not the display message, which is written for a person and free to
+    /// change, and not the `Debug` rendering, which is a debugging aid rather
+    /// than a data format. Written out here so a new variant that forgets to
+    /// name itself is a compile error rather than a file that records the
+    /// wrong reason.
+    pub fn stable_name(&self) -> &'static str {
+        match self {
+            Self::IncompleteFace => "IncompleteFace",
+        }
+    }
+
     /// The typed tessellation refusal behind `error`, if it is one.
     ///
     /// Only a direct source of a kernel failure counts. Wrapping this value in
@@ -43,6 +57,13 @@ impl std::error::Error for TessellationRefusal {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refusal_has_a_name_that_is_not_its_message() {
+        let refusal = TessellationRefusal::IncompleteFace;
+        assert_eq!(refusal.stable_name(), "IncompleteFace");
+        assert_ne!(refusal.stable_name(), refusal.to_string());
+    }
 
     #[test]
     fn only_a_typed_direct_kernel_source_is_a_tessellation_refusal() {

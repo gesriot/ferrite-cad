@@ -15,7 +15,11 @@ fetch() {
     curl -fsSL "https://raw.githubusercontent.com/ufbx/ufbx/$commit/$name" -o "$path"
   fi
   local actual
-  actual="$(shasum -a 256 "$path" | cut -d' ' -f1)"
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$path" | cut -d' ' -f1)"
+  else
+    actual="$(shasum -a 256 "$path" | cut -d' ' -f1)"
+  fi
   if [ "$actual" != "$expected" ]; then
     echo "ufbx $name digest mismatch: $actual" >&2
     exit 1

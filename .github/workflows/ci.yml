@@ -103,6 +103,35 @@ jobs:
 
       - run: cargo test --workspace
 
+      # The production FBX writer, read by pinned ufbx 0.23.0 in strict mode on
+      # every product platform.
+      #
+      # Here rather than in the lint job because two of the three things it
+      # proves are platform questions. The writer's own gates read what the
+      # writer wrote with a reader written beside it, which cannot notice a
+      # misunderstanding the two share; an independent reader can. And the
+      # digests it compares are what turns "the same scene always produces the
+      # same bytes" into a measured property of Linux, macOS and Windows rather
+      # than a claim about one developer's machine: both gate scenes are
+      # arithmetic over an in-memory value, so a digest that moves between
+      # hosts is a writer that is no longer a function of its input.
+      #
+      # No Open CASCADE and no Unity take part. The complex assembly's FBX
+      # needs a kernel and is gated by the OCCT pin workflow; the Unity import
+      # needs the measured editor and is run locally.
+      - name: Read the production FBX with pinned ufbx
+        shell: bash
+        run: |
+          set -euo pipefail
+          for candidate in "${CC:-}" clang gcc cc; do
+            [ -n "$candidate" ] || continue
+            if command -v "$candidate" >/dev/null 2>&1; then
+              echo "C compiler: $("$candidate" --version | head -1)"
+              break
+            fi
+          done
+          tools/check-fbx-writer.sh
+
       # Only when something already failed, and only on the platform the trap
       # is set on. A green run prints nothing and uploads nothing.
       - name: Whether Windows left a crash dump

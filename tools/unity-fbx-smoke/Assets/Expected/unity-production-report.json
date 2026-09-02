@@ -1,0 +1,713 @@
+{
+    "schema": "ferritecad.unity-production-fbx.v1",
+    "unity_version": "6000.4.10f1",
+    "colour_space": "gamma",
+    "importer": {
+        "file_scale": 1.0,
+        "use_file_scale": true,
+        "global_scale": 1.0,
+        "bake_axis_conversion": false
+    },
+    "importer_messages": [],
+    "tree": [
+        {
+            "path": "0:fcad-production(Clone)",
+            "name": "fcad-production(Clone)",
+            "local_position": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "local_rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "local_scale": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "world_matrix": [
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "has_mesh": false
+        },
+        {
+            "path": "0:fcad-production(Clone)/0:Assembly Frame",
+            "name": "Assembly Frame",
+            "local_position": [
+                -0.10000000149011612,
+                0.30000001192092898,
+                -0.20000000298023225
+            ],
+            "local_rotation": [
+                0.12222299724817276,
+                0.16307400166988374,
+                0.18238799273967744,
+                0.9618750214576721
+            ],
+            "local_scale": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "world_matrix": [
+                0.880282998085022,
+                -0.31100600957870486,
+                0.3582969903945923,
+                -0.10000000149011612,
+                0.39073100686073305,
+                0.9035930037498474,
+                -0.1756410002708435,
+                0.30000001192092898,
+                -0.26912999153137209,
+                0.29461100697517397,
+                0.916936993598938,
+                -0.20000000298023225,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "has_mesh": false
+        },
+        {
+            "path": "0:fcad-production(Clone)/0:Assembly Frame/0:Omitted #2583",
+            "name": "Omitted #2583",
+            "local_position": [
+                -0.4000000059604645,
+                0.6000000238418579,
+                -0.5
+            ],
+            "local_rotation": [
+                0.03043299913406372,
+                -0.24161599576473237,
+                0.1245800033211708,
+                0.9618600010871887
+            ],
+            "local_scale": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "world_matrix": [
+                0.8494729995727539,
+                -0.5252810120582581,
+                -0.04975099861621857,
+                -0.8178650140762329,
+                0.45327699184417727,
+                0.7747740149497986,
+                -0.4407550096511841,
+                0.7736830115318298,
+                0.2700659930706024,
+                0.3518590033054352,
+                0.8962470293045044,
+                -0.37404999136924746,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "has_mesh": false
+        },
+        {
+            "path": "0:fcad-production(Clone)/0:Assembly Frame/1:Repeated Part",
+            "name": "Repeated Part",
+            "local_position": [
+                -1.2000000476837159,
+                0.800000011920929,
+                0.4000000059604645
+            ],
+            "local_rotation": [
+                0.3051320016384125,
+                -0.41942599415779116,
+                -0.04075400158762932,
+                0.8539999723434448
+            ],
+            "local_scale": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "world_matrix": [
+                0.9166629910469055,
+                -0.21712200343608857,
+                -0.3355399966239929,
+                -1.2618260383605958,
+                -0.16367800533771516,
+                0.5619770288467407,
+                -0.8107969760894775,
+                0.48374098539352419,
+                0.3646079897880554,
+                0.798147976398468,
+                0.4796049892902374,
+                0.7254189848899841,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "has_mesh": true
+        },
+        {
+            "path": "0:fcad-production(Clone)/0:Assembly Frame/1:Repeated Part/0:CP Origin",
+            "name": "CP Origin",
+            "local_position": [
+                0.0,
+                0.0,
+                0.0
+            ],
+            "local_rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "local_scale": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "world_matrix": [
+                0.9166629910469055,
+                -0.21712200343608857,
+                -0.3355399966239929,
+                -1.2618260383605958,
+                -0.16367800533771516,
+                0.5619770288467407,
+                -0.8107969760894775,
+                0.48374098539352419,
+                0.3646079897880554,
+                0.798147976398468,
+                0.4796049892902374,
+                0.7254189848899841,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "has_mesh": false
+        },
+        {
+            "path": "0:fcad-production(Clone)/0:Assembly Frame/1:Repeated Part/1:CP X1000",
+            "name": "CP X1000",
+            "local_position": [
+                -1.0,
+                0.0,
+                0.0
+            ],
+            "local_rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "local_scale": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "world_matrix": [
+                0.9166629910469055,
+                -0.21712200343608857,
+                -0.3355399966239929,
+                -2.17848801612854,
+                -0.16367800533771516,
+                0.5619770288467407,
+                -0.8107969760894775,
+                0.6474180221557617,
+                0.3646079897880554,
+                0.798147976398468,
+                0.4796049892902374,
+                0.3608120083808899,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "has_mesh": false
+        },
+        {
+            "path": "0:fcad-production(Clone)/0:Assembly Frame/1:Repeated Part/2:CP Y2000",
+            "name": "CP Y2000",
+            "local_position": [
+                0.0,
+                0.0,
+                -2.0
+            ],
+            "local_rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "local_scale": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "world_matrix": [
+                0.9166629910469055,
+                -0.21712200343608857,
+                -0.3355399966239929,
+                -0.5907449722290039,
+                -0.16367800533771516,
+                0.5619770288467407,
+                -0.8107969760894775,
+                2.105334997177124,
+                0.3646079897880554,
+                0.798147976398468,
+                0.4796049892902374,
+                -0.23379099369049073,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "has_mesh": false
+        },
+        {
+            "path": "0:fcad-production(Clone)/0:Assembly Frame/1:Repeated Part/3:CP Z3000",
+            "name": "CP Z3000",
+            "local_position": [
+                0.0,
+                3.0,
+                0.0
+            ],
+            "local_rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "local_scale": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "world_matrix": [
+                0.9166629910469055,
+                -0.21712200343608857,
+                -0.3355399966239929,
+                -1.9131909608840943,
+                -0.16367800533771516,
+                0.5619770288467407,
+                -0.8107969760894775,
+                2.1696701049804689,
+                0.3646079897880554,
+                0.798147976398468,
+                0.4796049892902374,
+                3.119863986968994,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "has_mesh": false
+        },
+        {
+            "path": "0:fcad-production(Clone)/0:Assembly Frame/2:Repeated Part 1",
+            "name": "Repeated Part 1",
+            "local_position": [
+                0.699999988079071,
+                1.2999999523162842,
+                -0.8999999761581421
+            ],
+            "local_rotation": [
+                -0.024997999891638757,
+                0.2783440053462982,
+                0.27069100737571719,
+                0.9212089776992798
+            ],
+            "local_scale": [
+                1.0,
+                1.0,
+                1.0
+            ],
+            "world_matrix": [
+                0.27550798654556277,
+                -0.678820013999939,
+                0.6806610226631165,
+                -0.21057699620723725,
+                0.8034470081329346,
+                0.5513619780540466,
+                0.22466200590133668,
+                1.9062589406967164,
+                -0.5277950167655945,
+                0.48497799038887026,
+                0.6973000168800354,
+                -0.8306390047073364,
+                0.0,
+                0.0,
+                0.0,
+                1.0
+            ],
+            "has_mesh": true
+        }
+    ],
+    "control_points": [
+        {
+            "name": "CP Origin",
+            "world_position": [
+                -1.2618260383605958,
+                0.4837400019168854,
+                0.7254189848899841
+            ],
+            "distance_from_origin": 0.0
+        },
+        {
+            "name": "CP X1000",
+            "world_position": [
+                -2.17848801612854,
+                0.6474180221557617,
+                0.3608120083808899
+            ],
+            "distance_from_origin": 1.0
+        },
+        {
+            "name": "CP Y2000",
+            "world_position": [
+                -0.5907449722290039,
+                2.105334997177124,
+                -0.23379099369049073
+            ],
+            "distance_from_origin": 2.0
+        },
+        {
+            "name": "CP Z3000",
+            "world_position": [
+                -1.9131909608840943,
+                2.1696701049804689,
+                3.119863986968994
+            ],
+            "distance_from_origin": 3.0
+        }
+    ],
+    "mesh_filter_count": 2,
+    "unique_mesh_asset_count": 1,
+    "repeated_parts_share_mesh": true,
+    "meshes": [
+        {
+            "asset_name": "Repeated Part",
+            "vertex_count": 4,
+            "index_count": 12,
+            "submesh_count": 2,
+            "vertices": [
+                0.0,
+                0.0,
+                0.0,
+                -1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                -2.0,
+                0.0,
+                3.0,
+                0.0
+            ],
+            "normals": [
+                -1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                -1.0,
+                0.0,
+                1.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0
+            ],
+            "submeshes": [
+                {
+                    "slot": 0,
+                    "indices": [
+                        0,
+                        1,
+                        2,
+                        0,
+                        3,
+                        1
+                    ]
+                },
+                {
+                    "slot": 1,
+                    "indices": [
+                        0,
+                        2,
+                        3,
+                        1,
+                        3,
+                        2
+                    ]
+                }
+            ],
+            "triangle_orientation": [
+                {
+                    "slot": 0,
+                    "triangle": 0,
+                    "geometric_normal": [
+                        0.0,
+                        -1.0,
+                        0.0
+                    ],
+                    "average_imported_normal": [
+                        -0.5773500204086304,
+                        0.5773500204086304,
+                        -0.5773500204086304
+                    ],
+                    "normal_dot": -0.5773500204086304
+                },
+                {
+                    "slot": 0,
+                    "triangle": 1,
+                    "geometric_normal": [
+                        0.0,
+                        0.0,
+                        1.0
+                    ],
+                    "average_imported_normal": [
+                        0.0,
+                        0.0,
+                        -1.0
+                    ],
+                    "normal_dot": -1.0
+                },
+                {
+                    "slot": 1,
+                    "triangle": 0,
+                    "geometric_normal": [
+                        1.0,
+                        0.0,
+                        0.0
+                    ],
+                    "average_imported_normal": [
+                        0.0,
+                        1.0,
+                        0.0
+                    ],
+                    "normal_dot": 0.0
+                },
+                {
+                    "slot": 1,
+                    "triangle": 1,
+                    "geometric_normal": [
+                        -0.857142984867096,
+                        0.2857140004634857,
+                        -0.4285709857940674
+                    ],
+                    "average_imported_normal": [
+                        0.5773500204086304,
+                        0.5773500204086304,
+                        -0.5773500204086304
+                    ],
+                    "normal_dot": -0.08247900009155274
+                }
+            ]
+        }
+    ],
+    "materials": [
+        {
+            "node_path": "0:fcad-production(Clone)/0:Assembly Frame/1:Repeated Part",
+            "slot": 0,
+            "material_name": "Ferrite Red #0",
+            "base_colour": [
+                0.800000011920929,
+                0.20000100135803224,
+                0.10000099986791611,
+                1.0
+            ],
+            "base_colour_linear": [
+                0.6038269996643066,
+                0.03310500085353851,
+                0.010022999718785286,
+                1.0
+            ]
+        },
+        {
+            "node_path": "0:fcad-production(Clone)/0:Assembly Frame/1:Repeated Part",
+            "slot": 1,
+            "material_name": "Ferrite Blue #1",
+            "base_colour": [
+                0.10000099986791611,
+                0.3500010073184967,
+                0.8999999761581421,
+                1.0
+            ],
+            "base_colour_linear": [
+                0.010022999718785286,
+                0.10048200190067291,
+                0.7874119877815247,
+                1.0
+            ]
+        },
+        {
+            "node_path": "0:fcad-production(Clone)/0:Assembly Frame/2:Repeated Part 1",
+            "slot": 0,
+            "material_name": "Ferrite Red #2",
+            "base_colour": [
+                0.50211101770401,
+                0.750307023525238,
+                0.25279000401496889,
+                1.0
+            ],
+            "base_colour_linear": [
+                0.2160000056028366,
+                0.5230000019073486,
+                0.052000001072883609,
+                1.0
+            ]
+        },
+        {
+            "node_path": "0:fcad-production(Clone)/0:Assembly Frame/2:Repeated Part 1",
+            "slot": 1,
+            "material_name": "Ferrite Blue #3",
+            "base_colour": [
+                0.50211101770401,
+                0.750307023525238,
+                0.25279000401496889,
+                1.0
+            ],
+            "base_colour_linear": [
+                0.2160000056028366,
+                0.5230000019073486,
+                0.052000001072883609,
+                1.0
+            ]
+        }
+    ],
+    "user_properties": [
+        {
+            "node_name": "Assembly Frame",
+            "property": "FerriteCADDefinitionKey",
+            "value": "step.product_definition#7"
+        },
+        {
+            "node_name": "Assembly Frame",
+            "property": "FerriteCADNodeKey",
+            "value": "node/1"
+        },
+        {
+            "node_name": "Assembly Root",
+            "property": "FerriteCADDefinitionKey",
+            "value": "step.product_definition#1"
+        },
+        {
+            "node_name": "Assembly Root",
+            "property": "FerriteCADNodeKey",
+            "value": "node/0"
+        },
+        {
+            "node_name": "CP Origin",
+            "property": "FerriteCADDefinitionKey",
+            "value": "step.product_definition#9"
+        },
+        {
+            "node_name": "CP Origin",
+            "property": "FerriteCADNodeKey",
+            "value": "node/5"
+        },
+        {
+            "node_name": "CP X1000",
+            "property": "FerriteCADDefinitionKey",
+            "value": "step.product_definition#9"
+        },
+        {
+            "node_name": "CP X1000",
+            "property": "FerriteCADNodeKey",
+            "value": "node/6"
+        },
+        {
+            "node_name": "CP Y2000",
+            "property": "FerriteCADDefinitionKey",
+            "value": "step.product_definition#9"
+        },
+        {
+            "node_name": "CP Y2000",
+            "property": "FerriteCADNodeKey",
+            "value": "node/7"
+        },
+        {
+            "node_name": "CP Z3000",
+            "property": "FerriteCADDefinitionKey",
+            "value": "step.product_definition#9"
+        },
+        {
+            "node_name": "CP Z3000",
+            "property": "FerriteCADNodeKey",
+            "value": "node/8"
+        },
+        {
+            "node_name": "Omitted #2583",
+            "property": "FerriteCADComplete",
+            "value": "False"
+        },
+        {
+            "node_name": "Omitted #2583",
+            "property": "FerriteCADDefinitionKey",
+            "value": "step.product_definition#2583"
+        },
+        {
+            "node_name": "Omitted #2583",
+            "property": "FerriteCADGeometryOmission",
+            "value": "step.product_definition#2583"
+        },
+        {
+            "node_name": "Omitted #2583",
+            "property": "FerriteCADNodeKey",
+            "value": "node/4"
+        },
+        {
+            "node_name": "Omitted #2583",
+            "property": "FerriteCADOmissionFinding",
+            "value": "step.product_definition#2583"
+        },
+        {
+            "node_name": "Omitted #2583",
+            "property": "FerriteCADOmissionRefusal",
+            "value": "IncompleteFace"
+        },
+        {
+            "node_name": "Repeated Part",
+            "property": "FerriteCADDefinitionKey",
+            "value": "step.product_definition#2428"
+        },
+        {
+            "node_name": "Repeated Part",
+            "property": "FerriteCADNodeKey",
+            "value": "node/2"
+        },
+        {
+            "node_name": "Repeated Part 1",
+            "property": "FerriteCADDefinitionKey",
+            "value": "step.product_definition#2428"
+        },
+        {
+            "node_name": "Repeated Part 1",
+            "property": "FerriteCADNodeKey",
+            "value": "node/3"
+        }
+    ],
+    "placement_separation": 2.355844020843506,
+    "frame_to_first_placement": 1.496662974357605,
+    "checks": 210
+}

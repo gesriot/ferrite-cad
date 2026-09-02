@@ -647,6 +647,18 @@ jobs:
           # actually computed.
           cargo test -p ferritecad-scene --tests -- --nocapture
 
+          # The complex assembly's FBX, read by pinned ufbx. The Rust gate
+          # above already compared that file with the `ExportScene` it came
+          # from, node for node and transform for transform. This is the only
+          # place an independent reader is handed a production FBX built from a
+          # real kernel's tessellation and asked whether 46 definitions are
+          # still represented, whether there are 34 geometries rather than the
+          # 112 draws a flattened picture of this document has, and whether the
+          # one definition that could not be tessellated is a node with no
+          # triangles that says so. The written file is one build's
+          # tessellation and is never committed.
+          tools/check-fbx-complex.sh
+
       - name: Generate the STEP corpus and compare two runs
         env:
           FCAD_OCCT_CONFIG_DIR: ${{ steps.occt.outputs.config_dir }}
