@@ -19,15 +19,19 @@ ferritecad-exchange.workspace = true
 ferritecad-export.workspace = true
 ferritecad-kernel.workspace = true
 ferritecad-occt.workspace = true
+# The one crate that knows a document, a rebuild, a stored import and a kernel
+# at once, and so the one that builds the neutral `ExportScene` the FBX writer
+# is handed. `export-fbx` takes that route and no other: there is no flattened
+# picture on it, and nothing here rebuilds a scene of its own.
+ferritecad-scene.workspace = true
 ferritecad-types.workspace = true
 
 clap = { version = "4", features = ["derive"] }
 
-# The vertical gate ends in pixels, so the test needs the loader and a GPU.
-# Dev-only: the command line neither opens a window nor draws anything.
+# The vertical gate ends in pixels, so the test needs a GPU. Dev-only: the
+# command line neither opens a window nor draws anything.
 [dev-dependencies]
 ferritecad-fixtures.workspace = true
-ferritecad-scene.workspace = true
 ferritecad-viewport.workspace = true
 ferritecad-viewport-gpu.workspace = true
 rusqlite = { version = "0.37", features = ["bundled"] }
@@ -37,7 +41,7 @@ tempfile = "3"
 # rebuild path. Same rule as the viewer: this crate re-decides nothing about
 # whether a library is there.
 [features]
-planegcs = ["ferritecad-eval/planegcs"]
+planegcs = ["ferritecad-eval/planegcs", "ferritecad-scene/planegcs"]
 
 [lints]
 workspace = true

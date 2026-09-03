@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: MIT
 //! The complex STEP assembly, from the shipped command to production FBX.
 //!
-//! The route is the production one: `import-step` publishes an `.fcad`, the
-//! external STEP is deleted, a new Open CASCADE session builds the
-//! `ExportScene` from the bytes the document stores, and the FBX writer is
-//! handed that scene and a file to write into. What is measured is the file:
-//! its hierarchy, its geometry sharing, its local transforms and what it says
-//! about the one definition this build cannot give triangles to.
+//! The route is the shipped one, end to end: `import-step` publishes an
+//! `.fcad`, the external STEP is deleted, and `export-fbx` is run as a
+//! command. Nothing here hands the writer a scene or a sink — the file being
+//! measured is the one a person gets. What is measured is that file: its
+//! hierarchy, its geometry sharing, its local transforms and what it says
+//! about the one definition this build cannot give triangles to, together with
+//! the exit status and the report the command produced beside it.
+//!
+//! The `ExportScene` built in this process is the gate's own second reading,
+//! never the command's. It is what the file and the report are compared
+//! against; a command that agreed with itself would prove nothing.
 //!
 //! The written file is a temporary artefact and is never committed. When
 //! `FCAD_FBX_COMPLEX_OUT` names a path it is left there as well, so
@@ -24,16 +29,18 @@
 #![allow(clippy::panic)]
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{BufRead, BufReader, BufWriter};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
-use ferritecad_export::{ExportGeometry, ExportScene, ExportSource, write_fbx_ascii_7400};
+use ferritecad_export::{ExportGeometry, ExportScene, ExportSource};
 use ferritecad_kernel::{OperationContext, TessellationParams};
 use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_scene::export_scene;
 
 const NOTICED: i32 = 4;
+/// A published export that is not the whole model.
+const PARTIAL: i32 = 6;
 const REAL_GEOMETRY: &str = "step.product_definition#2428";
 const OMITTED: &str = "step.product_definition#2583";
 
@@ -48,6 +55,17 @@ fn ferritecad() -> PathBuf {
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/step/interoperability/c3d-ap203-complex-assembly.stp")
+}
+
+/// One run of the shipped export command, exactly as a person would run it.
+fn export_command(document: &Path, output: &Path) -> Output {
+    Command::new(ferritecad())
+        .arg("export-fbx")
+        .arg(document)
+        .arg("--output")
+        .arg(output)
+        .output()
+        .expect("the shipped export-fbx command runs")
 }
 
 fn key_of(source: &ExportSource) -> &str {
@@ -373,18 +391,30 @@ fn the_complex_assembly_becomes_one_fbx_that_keeps_every_definition_and_says_wha
     std::fs::remove_file(&input).expect("hides the external STEP before exporting");
     let document_before = std::fs::read(&document).expect("snapshots the FCAD bytes");
 
+    // The production route, from the published document alone. The external
+    // STEP is gone, so every triangle in the file came out of the bytes the
+    // `.fcad` stores.
+    let written_path = directory.path().join("complex.fbx");
+    let exported = export_command(&document, &written_path);
+    assert_eq!(
+        exported.status.code().expect("the command exits normally"),
+        PARTIAL,
+        "a partial export is neither a plain success nor a refusal: {}{}",
+        String::from_utf8_lossy(&exported.stdout),
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let said = String::from_utf8_lossy(&exported.stdout).into_owned();
+    let reported = String::from_utf8_lossy(&exported.stderr).into_owned();
+    let published = std::fs::metadata(&written_path)
+        .expect("the command published an FBX")
+        .len();
+    assert!(published > 0, "the command published an empty file");
+
+    // The gate's own reading of the same document, which the file and the
+    // report are measured against.
     let scene = export_of(&document);
     assert_eq!(scene.definitions().len(), 46);
     assert_eq!(scene.nodes().len(), 140);
-
-    let written_path = directory.path().join("complex.fbx");
-    let report = {
-        let file = std::fs::File::create(&written_path).expect("a temporary FBX");
-        let mut sink = BufWriter::with_capacity(1 << 20, file);
-        let report = write_fbx_ascii_7400(&scene, &mut sink).expect("the assembly is writable");
-        std::io::Write::flush(&mut sink).expect("the FBX is finished");
-        report
-    };
 
     let written = Written::scan(&written_path);
     assert_eq!(written.version, 7400, "the file is not FBX 7400");
@@ -408,7 +438,6 @@ fn the_complex_assembly_becomes_one_fbx_that_keeps_every_definition_and_says_wha
     // One model per node, one root, and thirty-four geometries rather than the
     // hundred and twelve draws a flattened picture of this document has.
     assert_eq!(written.models.len(), 140, "a hierarchy node was lost");
-    assert_eq!(report.models(), 140);
     assert_eq!(
         written
             .connections
@@ -423,7 +452,6 @@ fn the_complex_assembly_becomes_one_fbx_that_keeps_every_definition_and_says_wha
         34,
         "a definition's geometry was copied or lost"
     );
-    assert_eq!(report.geometries(), 34);
     let triangles: usize = written.geometries.iter().map(|g| g.polygons).sum();
     assert!(triangles > 0);
     for geometry in &written.geometries {
@@ -624,50 +652,105 @@ fn the_complex_assembly_becomes_one_fbx_that_keeps_every_definition_and_says_wha
         "a frame was marked as a missing part"
     );
 
-    // The report is partial and names the same nodes the scene does.
+    // What the command said it wrote is what is on the disk.
     assert!(
-        !report.is_complete(),
-        "a partial export claimed to be complete"
+        said.contains("140 nodes, 34 geometry objects"),
+        "the summary does not describe the file it wrote:\n{said}"
     );
-    assert_eq!(report.omissions().len(), 1);
-    let omission = &report.omissions()[0];
-    assert_eq!(omission.source, scene.completeness().omissions()[0].source);
-    assert_eq!(omission.omission.finding.entity, OMITTED);
-    assert_eq!(omission.omission.refusal.stable_name(), "IncompleteFace");
-    assert_eq!(
-        omission.nodes,
-        scene.completeness().omissions()[0].nodes,
-        "the report names other nodes than the scene does"
+    assert!(
+        said.contains(&format!("{published} byte(s)")),
+        "the summary counts other bytes than the published file has:\n{said}"
+    );
+
+    // The report on standard error is partial, and says everything the scene's
+    // own completeness holds about the definition that has no triangles: its
+    // source-qualified identity, the finding the import persisted, the typed
+    // refusal this build got, and every placement.
+    let omissions = scene.completeness().omissions();
+    assert_eq!(omissions.len(), 1, "the typed omission changed");
+    let expected = &omissions[0];
+    assert!(
+        reported.starts_with("partial export: 1 definition could not be given triangles"),
+        "the report does not open by saying what happened:\n{reported}"
+    );
+    assert!(
+        reported.contains("omission 1 of 1"),
+        "the report does not number its entries:\n{reported}"
+    );
+    let source_id = match &expected.source {
+        ExportSource::Imported { source, .. } => source.to_string(),
+        ExportSource::Body { .. } => panic!("the imported assembly reported a native body"),
+    };
+    assert!(
+        reported.contains(&format!("imported source {source_id}  key {OMITTED}")),
+        "the report drops the identity of the file the key belongs to:\n{reported}"
+    );
+    assert!(
+        reported.contains(&format!("{}", expected.omission.finding)),
+        "the report drops the finding the document persisted:\n{reported}"
+    );
+    assert!(
+        reported.contains("refusal     IncompleteFace"),
+        "the report drops the typed refusal:\n{reported}"
+    );
+    assert!(
+        reported.contains(&format!(
+            "placements  {} in the file: ",
+            expected.nodes.len()
+        )),
+        "the report does not say how many placements are affected:\n{reported}"
     );
     assert_eq!(
-        omission.nodes.len(),
+        expected.nodes.len(),
         missing.len(),
         "the report and the file disagree about how many placements are affected"
     );
+    for node in &expected.nodes {
+        assert!(
+            reported.contains(&format!("node/{}", node.index())),
+            "the report lost placement node/{}:\n{reported}",
+            node.index()
+        );
+    }
+    // And nothing in it is a `Debug` rendering of a value.
+    for rendering in ["Diagnostic {", "ExportSource::", "Imported {", "NodeId("] {
+        assert!(
+            !reported.contains(rendering),
+            "the report used a Debug rendering as data ({rendering}):\n{reported}"
+        );
+    }
 
     eprintln!(
         "FCAD_EXPORT_FBX_COMPLEX definitions=46 nodes=140 geometries={} triangles={triangles} \
-         omissions={} bytes={}",
+         omissions={} bytes={published}",
         written.geometries.len(),
-        report.omissions().len(),
-        report.bytes()
+        omissions.len(),
     );
 
-    // Writing it again gives the same bytes, and neither the document nor the
-    // committed fixture moved.
+    // Running the command again gives the same file and the same report, and
+    // neither the document nor the committed fixture moved.
     let again_path = directory.path().join("complex-again.fbx");
-    {
-        let file = std::fs::File::create(&again_path).expect("a second temporary FBX");
-        let mut sink = BufWriter::with_capacity(1 << 20, file);
-        let second = write_fbx_ascii_7400(&scene, &mut sink).expect("writes again");
-        std::io::Write::flush(&mut sink).expect("the second FBX is finished");
-        assert_eq!(second, report, "two writes reported different things");
-    }
+    let again = export_command(&document, &again_path);
+    assert_eq!(again.status.code(), Some(PARTIAL));
+    assert_eq!(
+        String::from_utf8_lossy(&again.stderr),
+        reported,
+        "two exports of one document reported different things"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&again.stdout).replace(
+            &*again_path.to_string_lossy(),
+            &written_path.to_string_lossy()
+        ),
+        said,
+        "two exports of one document summarised differently"
+    );
     assert_eq!(
         std::fs::read(&written_path).expect("rereads the first"),
         std::fs::read(&again_path).expect("rereads the second"),
-        "two writes of one scene differ"
+        "two exports of one document differ"
     );
+    std::fs::remove_file(&again_path).expect("the second copy is not needed");
     assert_eq!(
         std::fs::read(&document).expect("rereads the FCAD"),
         document_before,

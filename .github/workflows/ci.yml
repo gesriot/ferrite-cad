@@ -45,7 +45,11 @@ jobs:
       # The export model must stay a model: no document, no loader, no kernel
       # implementation, no GPU. A dependency that broke that would compile
       # perfectly, and one more load path would only show up as a document
-      # read nobody counted.
+      # read nobody counted. The same gate now also checks the shipped
+      # `export-fbx` route: that it is handed the hierarchical scene rather
+      # than a flattened picture, reads the document once, calls the writer
+      # once, opens nothing but its own scratch file, publishes only after the
+      # writer has finished, and reports from the writer's own record.
       - run: tools/check-export-boundary.sh
 
       # One crate owns the sketch solver boundary. Both halves keep compiling

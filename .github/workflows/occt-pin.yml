@@ -638,7 +638,35 @@ jobs:
           # Keep the output because it is useful evidence; unlike an ordinary
           # developer run, FERRITECAD_REQUIRE_GPU above makes a missing adapter
           # a failure rather than a green skip.
-          cargo test -p ferritecad-cli --tests -- --nocapture
+          cargo test -p ferritecad-cli --tests -- --nocapture 2>&1 | tee cli-tests.log
+
+          # And nothing on this run may have decided for itself that it had
+          # nothing to check. Every command-line gate that needs geometry skips
+          # itself with a line saying so when a contributor has no kernel;
+          # here the kernel is a build requirement, so such a line means a gate
+          # that was counted green without running.
+          if grep -n 'skipped: this build has no Open CASCADE' cli-tests.log; then
+            echo "::error::a command-line gate skipped itself on a run that requires the kernel"
+            exit 1
+          fi
+
+          # The shipped `export-fbx` command, named rather than counted. These
+          # three are the process gates that need a real kernel: a complete
+          # export of a native document, an imported assembly whose hierarchy
+          # and geometry sharing must survive being written, and the complex
+          # AP203 assembly end to end — imported, its STEP deleted, exported
+          # from the stored bytes alone, published, and exiting 6 with a report
+          # of what has no triangles.
+          for gate in \
+            the_command_exists_and_writes_an_fbx_the_format_recognises \
+            a_nested_assembly_keeps_its_hierarchy_and_shares_one_geometry \
+            the_complex_assembly_becomes_one_fbx_that_keeps_every_definition_and_says_what_is_missing
+          do
+            if ! grep -q "^test ${gate} \.\.\. ok$" cli-tests.log; then
+              echo "::error::${gate} did not run and pass on this platform"
+              exit 1
+            fi
+          done
 
           # And the loader, for the same reason one step further up: everything
           # about it is settled against the mock, which cannot say whether the
