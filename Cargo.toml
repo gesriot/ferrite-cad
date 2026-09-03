@@ -8,6 +8,7 @@ members = [
     "crates/ferritecad-exchange",
     "crates/ferritecad-export",
     "crates/ferritecad-fixtures",
+    "crates/ferritecad-jobs",
     "crates/ferritecad-kernel",
     "crates/ferritecad-occt",
     "crates/ferritecad-scene",
@@ -35,6 +36,7 @@ ferritecad-eval = { path = "crates/ferritecad-eval", version = "0.0.1" }
 ferritecad-exchange = { path = "crates/ferritecad-exchange", version = "0.0.1" }
 ferritecad-export = { path = "crates/ferritecad-export", version = "0.0.1" }
 ferritecad-fixtures = { path = "crates/ferritecad-fixtures", version = "0.0.1" }
+ferritecad-jobs = { path = "crates/ferritecad-jobs", version = "0.0.1" }
 ferritecad-kernel = { path = "crates/ferritecad-kernel", version = "0.0.1" }
 ferritecad-occt = { path = "crates/ferritecad-occt", version = "0.0.1" }
 ferritecad-scene = { path = "crates/ferritecad-scene", version = "0.0.1" }

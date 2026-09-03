@@ -22,6 +22,12 @@ path = "src/main.rs"
 # cargo-deny policy refuses. A viewport does not draw its own title bar.
 [dependencies]
 ferritecad-document.workspace = true
+# What an export *is*, shared with the shipped command rather than written
+# twice. This crate owns when the action is offered and what the window says
+# about it; the cold read, the writer and the atomic publication are the job's.
+ferritecad-exchange.workspace = true
+ferritecad-export.workspace = true
+ferritecad-jobs.workspace = true
 ferritecad-kernel.workspace = true
 ferritecad-occt.workspace = true
 ferritecad-scene.workspace = true
@@ -64,7 +70,7 @@ winit = { version = "0.30", default-features = false, features = ["x11", "waylan
 # library. Naming the same feature again through the scene would not add a
 # second link decision, only a second place to forget one.
 [features]
-planegcs = ["ferritecad-sketch-solver/planegcs"]
+planegcs = ["ferritecad-jobs/planegcs", "ferritecad-sketch-solver/planegcs"]
 
 # Only the tests read a document from disk: the committed plate is what an
 # end-to-end gate needs to click a face the document actually names.
@@ -75,7 +81,6 @@ planegcs = ["ferritecad-sketch-solver/planegcs"]
 # a second piece of adjacency arithmetic, free to disagree with the first.
 [dev-dependencies]
 ferritecad-eval.workspace = true
-ferritecad-exchange.workspace = true
 ferritecad-fixtures.workspace = true
 tempfile = "3"
 

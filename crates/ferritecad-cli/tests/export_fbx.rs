@@ -167,6 +167,49 @@ fn the_same_document_exports_to_the_same_bytes_and_the_same_report() {
     assert_eq!(one.stderr, two.stderr);
 }
 
+/// The command and the shared job write the same file.
+///
+/// The other half of the promise the window makes. That window's own gates
+/// prove it writes what the job writes; this proves the shipped command does
+/// too, so the two interfaces produce one file rather than two that agree
+/// until the day they do not. Run against the built binary on one side and the
+/// job called directly on the other, in this process, with the same document.
+#[test]
+fn the_command_writes_exactly_what_the_shared_job_writes() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let document = plate(directory.path());
+    let through_command = directory.path().join("command.fbx");
+    if !has_kernel(&document, &through_command) {
+        return;
+    }
+
+    let ran = export(&document, &through_command, &[]);
+    assert_eq!(ran.status.code(), Some(0));
+
+    let through_job = directory.path().join("job.fbx");
+    let mut kernel = ferritecad_occt::OcctKernel::new().expect("opens a session");
+    ferritecad_jobs::export_document_as_fbx(
+        ferritecad_jobs::FbxExportRequest::new(
+            &document,
+            &through_job,
+            ferritecad_jobs::Existing::Keep {
+                advice: "pass --force to replace it",
+            },
+        ),
+        &mut kernel,
+        |kernel: &mut ferritecad_occt::OcctKernel, source: &[u8]| kernel.import_step(source),
+        &ferritecad_kernel::TessellationParams::default(),
+        &ferritecad_kernel::OperationContext::default(),
+    )
+    .expect("the shared job writes");
+
+    assert_eq!(
+        std::fs::read(&through_command).expect("reads the command's file"),
+        std::fs::read(&through_job).expect("reads the job's file"),
+        "the shipped command wrote something other than what the shared job writes"
+    );
+}
+
 #[test]
 fn an_existing_file_is_not_replaced_without_being_asked() {
     let directory = tempfile::tempdir().expect("a temporary directory");

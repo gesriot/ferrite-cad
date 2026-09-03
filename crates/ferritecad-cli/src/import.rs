@@ -24,8 +24,8 @@ use ferritecad_kernel::GeometryKernel;
 use ferritecad_occt::OcctKernel;
 use ferritecad_types::{CadError, ObjectId, Result};
 
-use crate::publish::{Temporary, path_entry_exists, refuse_source_as_destination};
-use crate::{EXIT_NOTICED, EXIT_REJECTED, ImportStepArgs};
+use crate::{EXIT_NOTICED, EXIT_REJECTED, ImportStepArgs, REPLACE_ADVICE, replacing};
+use ferritecad_jobs::{Temporary, path_entry_exists, refuse_source_as_destination};
 
 pub fn import_step(args: ImportStepArgs) -> Result<ExitCode> {
     // Takes precedence over the ordinary no-clobber message: the file being
@@ -41,7 +41,7 @@ pub fn import_step(args: ImportStepArgs) -> Result<ExitCode> {
     // they could not have been told at once.
     if !args.force && path_entry_exists(&args.output)? {
         return Err(CadError::input(format!(
-            "{} already exists; pass --force to replace it",
+            "{} already exists; {REPLACE_ADVICE}",
             args.output.display()
         )));
     }
@@ -116,7 +116,7 @@ fn write_document(
         importer: kernel.identity(),
     })?;
     document.close()?;
-    temporary.publish(&args.output, args.force)?;
+    temporary.publish(&args.output, replacing(args.force))?;
 
     Ok(imported(
         args, source, outcome, kernel, &name, object, &stored,

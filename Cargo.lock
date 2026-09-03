@@ -697,7 +697,9 @@ dependencies = [
  "ferritecad-document",
  "ferritecad-eval",
  "ferritecad-exchange",
+ "ferritecad-export",
  "ferritecad-fixtures",
+ "ferritecad-jobs",
  "ferritecad-kernel",
  "ferritecad-occt",
  "ferritecad-scene",
@@ -722,6 +724,7 @@ dependencies = [
  "ferritecad-exchange",
  "ferritecad-export",
  "ferritecad-fixtures",
+ "ferritecad-jobs",
  "ferritecad-kernel",
  "ferritecad-occt",
  "ferritecad-scene",
@@ -788,6 +791,18 @@ dependencies = [
  "ferritecad-document",
  "ferritecad-eval",
  "ferritecad-kernel",
+ "ferritecad-types",
+ "tempfile",
+]
+
+[[package]]
+name = "ferritecad-jobs"
+version = "0.0.1"
+dependencies = [
+ "ferritecad-exchange",
+ "ferritecad-export",
+ "ferritecad-kernel",
+ "ferritecad-scene",
  "ferritecad-types",
  "tempfile",
 ]

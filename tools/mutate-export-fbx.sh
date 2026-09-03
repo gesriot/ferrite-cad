@@ -17,6 +17,11 @@
 # its source-qualified identity, its persisted finding, its typed refusal and
 # every affected placement.
 #
+# Since §22B-1d the work itself lives in `ferritecad-jobs` and this command is
+# a thin adapter over it, so the mutations that are about the work are applied
+# there. What is being gated is unchanged: the same properties, at the place
+# they are now decided, and the command's own bytes, text and exit codes.
+#
 # Open CASCADE is needed: five of the gates run the real command against a real
 # document, and a gate that skipped itself measured nothing. The complex
 # assembly gate takes about two minutes at baseline.
@@ -29,7 +34,8 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 route="$root/crates/ferritecad-cli/src/export_fbx.rs"
 main="$root/crates/ferritecad-cli/src/main.rs"
-publish="$root/crates/ferritecad-cli/src/publish.rs"
+job="$root/crates/ferritecad-jobs/src/fbx.rs"
+publish="$root/crates/ferritecad-jobs/src/publish.rs"
 builder="$root/crates/ferritecad-scene/src/export.rs"
 prepare="$root/crates/ferritecad-scene/src/prepare.rs"
 writer="$root/crates/ferritecad-export/src/fbx/mod.rs"
@@ -167,6 +173,9 @@ cargo_gate() {
     if ! cargo build -p ferritecad-cli --bin ferritecad >"$log" 2>&1; then
       return 20
     fi
+    if ! cargo build -p ferritecad-jobs >>"$log" 2>&1; then
+      return 20
+    fi
     if tools/check-export-boundary.sh >>"$log" 2>&1; then
       return 0
     fi
@@ -176,6 +185,9 @@ cargo_gate() {
   case "$gate" in
     unit)
       cargo test -p ferritecad-cli --bin ferritecad "$test_name" -- --nocapture >"$log" 2>&1
+      ;;
+    jobs)
+      cargo test -p ferritecad-jobs --lib "$test_name" -- --nocapture >"$log" 2>&1
       ;;
     cli)
       cargo test -p ferritecad-cli --test export_fbx "$test_name" -- --nocapture >"$log" 2>&1
@@ -272,11 +284,12 @@ expect_kill() {
 
 baseline() {
   baseline_gate unit a_complete_export_is_a_plain_success
-  baseline_gate unit a_partial_export_is_published_and_reported_and_is_not_a_success
-  baseline_gate unit a_writer_that_fails_after_it_has_started_publishes_nothing
-  baseline_gate unit a_colour_the_format_cannot_record_is_refused_before_anything_is_published
-  baseline_gate unit a_destination_that_appears_while_the_writer_works_is_not_overwritten
-  baseline_gate unit force_replaces_a_destination_that_appeared_while_the_writer_worked
+  baseline_gate unit a_partial_export_is_not_a_success_and_is_not_a_failure
+  baseline_gate jobs a_writer_that_fails_after_it_has_started_publishes_nothing
+  baseline_gate jobs a_colour_the_format_cannot_record_is_refused_before_anything_is_published
+  baseline_gate jobs a_destination_that_appears_while_the_writer_works_is_not_overwritten
+  baseline_gate jobs replacing_a_destination_leaves_none_of_the_old_file_behind
+  baseline_gate jobs a_partial_export_is_published_and_says_it_is_not_the_whole_document
   baseline_gate unit every_omission_is_reported_in_a_stable_order
   baseline_gate unit two_sources_with_one_local_key_are_two_entries_in_the_report
   baseline_gate unit the_report_carries_the_typed_refusal_and_not_a_rendering_of_it
@@ -364,10 +377,10 @@ restore_mutation
 
 # 3. The scene is flattened before it is written: every placement becomes a
 #    root, which is exactly what a picture would have handed the writer.
-begin_mutation "$route"
-replace_once "$route" \
-  '    let report = write_and_publish(&args.output, &scene, args.force)?;' \
-  $'    let scene = {\n        let mut builder = ferritecad_export::ExportSceneBuilder::new();\n        let mut ids = Vec::new();\n        for definition in scene.definitions() {\n            ids.push(builder.definition(\n                definition.source.clone(),\n                definition.display_name.clone(),\n                definition.provenance.clone(),\n                definition.geometry.clone(),\n            )?);\n        }\n        for node in scene.nodes() {\n            builder.node(\n                None,\n                ids[node.definition.index()],\n                node.local_transform,\n                node.display_name.clone(),\n                node.colour_override,\n            )?;\n        }\n        builder.finish()?\n    };\n    let report = write_and_publish(&args.output, &scene, args.force)?;'
+begin_mutation "$job"
+replace_once "$job" \
+  '    let report = write_and_publish(&request, &scene, context.cancel())?;' \
+  $'    let scene = {\n        let mut builder = ferritecad_export::ExportSceneBuilder::new();\n        let mut ids = Vec::new();\n        for definition in scene.definitions() {\n            ids.push(builder.definition(\n                definition.source.clone(),\n                definition.display_name.clone(),\n                definition.provenance.clone(),\n                definition.geometry.clone(),\n            )?);\n        }\n        for node in scene.nodes() {\n            builder.node(\n                None,\n                ids[node.definition.index()],\n                node.local_transform,\n                node.display_name.clone(),\n                node.colour_override,\n            )?;\n        }\n        builder.finish()?\n    };\n    let report = write_and_publish(&request, &scene, context.cancel())?;'
 expect_kill hierarchy_flattened_before_writing cli \
   a_nested_assembly_keeps_its_hierarchy_and_shares_one_geometry
 restore_mutation
@@ -377,8 +390,8 @@ restore_mutation
 #    that follows it is written.
 begin_mutation "$route"
 replace_once "$route" \
-  '    let report = write_and_publish(&args.output, &scene, args.force)?;' \
-  $'    let picture: Option<&ferritecad_scene::LoadedScene> = None;\n    let _snapshot = picture.map(|loaded| &loaded.snapshot);\n    let report = write_and_publish(&args.output, &scene, args.force)?;'
+  '    let mut kernel = OcctKernel::new()?;' \
+  $'    let picture: Option<&ferritecad_scene::LoadedScene> = None;\n    let _snapshot = picture.map(|loaded| &loaded.snapshot);\n    let mut kernel = OcctKernel::new()?;'
 expect_kill route_names_a_picture boundary -
 restore_mutation
 
@@ -409,56 +422,67 @@ expect_kill external_step_read_again complex \
 restore_mutation
 
 # 8. The writer is called twice into the same sink.
-begin_mutation "$route"
-replace_once "$route" \
-  '    let report = write_fbx_ascii_7400(scene, &mut sink)?;' \
-  $'    let _first = write_fbx_ascii_7400(scene, &mut sink)?;\n    let report = write_fbx_ascii_7400(scene, &mut sink)?;'
+begin_mutation "$job"
+replace_once "$job" \
+  '    let report = write_scene(scene, &mut sink, cancel)?;' \
+  $'    let _first = write_scene(scene, &mut sink, cancel)?;\n    let report = write_scene(scene, &mut sink, cancel)?;'
 expect_kill writer_called_twice cli a_nested_assembly_keeps_its_hierarchy_and_shares_one_geometry
 restore_mutation
 
 # ---------------------------------------------------------------- publication
 
 # 9. The destination itself is opened and written into.
-begin_mutation "$route"
-replace_once "$route" '        .open(temporary.path())' '        .open(destination)'
-expect_kill destination_written_directly unit \
+begin_mutation "$job"
+replace_once "$job" '        .open(temporary.path())' '        .open(request.destination)'
+expect_kill destination_written_directly jobs \
   a_writer_that_fails_after_it_has_started_publishes_nothing
 restore_mutation
 
 # 10. The file appears at the destination before the writer has finished with
 #     it, so a reader can see a prefix of an export.
-begin_mutation "$route"
-replace_once "$route" \
+begin_mutation "$job"
+replace_once "$job" \
   '    let mut sink = std::io::BufWriter::with_capacity(1 << 20, file);' \
-  $'    std::fs::hard_link(temporary.path(), destination)\n        .map_err(|e| CadError::io(format!("publishing {}", destination.display()), e))?;\n    let mut sink = std::io::BufWriter::with_capacity(1 << 20, file);'
-replace_once "$route" \
-  '    temporary.publish(destination, force)?;' \
-  $'    let _ = force;\n    drop(temporary);'
-expect_kill published_before_the_writer_finished unit \
+  $'    std::fs::hard_link(temporary.path(), request.destination).map_err(|e| {\n        CadError::io(format!("publishing {}", request.destination.display()), e)\n    })?;\n    let mut sink = std::io::BufWriter::with_capacity(1 << 20, file);'
+replace_once "$job" \
+  '    publish_if_still_wanted(temporary, request.destination, request.existing, cancel)?;' \
+  $'    drop(temporary);'
+expect_kill published_before_the_writer_finished jobs \
   a_writer_that_fails_after_it_has_started_publishes_nothing
 restore_mutation
 
 # 11. Publication replaces whatever is there, whether or not it was allowed to.
-begin_mutation "$route"
-replace_once "$route" '    temporary.publish(destination, force)?;' \
-  $'    let _ = force;\n    temporary.publish(destination, true)?;'
-expect_kill overwrite_without_force unit \
-  a_destination_that_appears_while_the_writer_works_is_not_overwritten
+#
+#     Both halves, because only both together are the defect a user would see:
+#     the early check is a courtesy — the survivor at the end of this file says
+#     so — and on its own it would hide this behind a refusal that happens to
+#     come first. What is being gated is the publication.
+begin_mutation "$main" "$route"
+replace_once "$main" \
+  $'    if force {\n        Existing::Replace\n    } else {\n        Existing::Keep {\n            advice: REPLACE_ADVICE,\n        }\n    }' \
+  $'    let _ = force;\n    Existing::Replace'
+replace_once "$route" '    if !args.force && path_entry_exists(&args.output)? {' \
+  '    if false && !args.force && path_entry_exists(&args.output)? {'
+expect_kill overwrite_without_force cli \
+  an_existing_file_is_not_replaced_without_being_asked
 restore_mutation
 
 # 12. `--force` stops replacing anything.
-begin_mutation "$route"
-replace_once "$route" '    temporary.publish(destination, force)?;' \
-  $'    let _ = force;\n    temporary.publish(destination, false)?;'
-expect_kill force_does_not_replace unit \
-  force_replaces_a_destination_that_appeared_while_the_writer_worked
+begin_mutation "$main"
+replace_once "$main" \
+  $'    if force {\n        Existing::Replace\n    } else {\n        Existing::Keep {\n            advice: REPLACE_ADVICE,\n        }\n    }' \
+  $'    let _ = force;\n    Existing::Keep {\n        advice: REPLACE_ADVICE,\n    }'
+expect_kill force_does_not_replace cli force_replaces_the_destination_completely
 restore_mutation
 
 # 13. The document is allowed to be its own output.
-begin_mutation "$route"
+begin_mutation "$route" "$job"
 replace_once "$route" \
-  $'    refuse_source_as_destination(\n        &args.path,\n        &args.output,\n        "the native document cannot also be the FBX output",\n    )?;' \
-  '    let _ = "the native document cannot also be the FBX output";'
+  '    refuse_source_as_destination(&args.path, &args.output, SOURCE_IS_DESTINATION)?;' \
+  '    let _ = SOURCE_IS_DESTINATION;'
+replace_once "$job" \
+  '    refuse_source_as_destination(request.document, request.destination, SOURCE_IS_DESTINATION)?;' \
+  '    let _ = SOURCE_IS_DESTINATION;'
 expect_kill source_allowed_as_destination cli the_document_cannot_be_its_own_output
 restore_mutation
 
@@ -468,7 +492,7 @@ begin_mutation "$publish"
 replace_once "$publish" \
   $'    fn drop(&mut self) {\n        // A failure here is not worth reporting over whatever error is already\n        // on its way out, and there is nothing useful to do about it.\n        self.clean();\n    }' \
   $'    fn drop(&mut self) {\n        let _ = &self.directory;\n    }'
-expect_kill scratch_survives_an_early_failure unit \
+expect_kill scratch_survives_an_early_failure jobs \
   a_colour_the_format_cannot_record_is_refused_before_anything_is_published
 restore_mutation
 
@@ -477,7 +501,7 @@ begin_mutation "$publish"
 replace_once "$publish" \
   $'    fn drop(&mut self) {\n        // A failure here is not worth reporting over whatever error is already\n        // on its way out, and there is nothing useful to do about it.\n        self.clean();\n    }' \
   $'    fn drop(&mut self) {\n        let _ = &self.directory;\n    }'
-expect_kill scratch_survives_a_late_failure unit \
+expect_kill scratch_survives_a_late_failure jobs \
   a_writer_that_fails_after_it_has_started_publishes_nothing
 restore_mutation
 
@@ -489,17 +513,17 @@ replace_once "$route" \
   $'    if report.is_complete() {\n        0\n    } else {\n        EXIT_PARTIAL\n    }' \
   $'    let _ = report;\n    0'
 expect_kill partial_export_returns_zero unit \
-  a_partial_export_is_published_and_reported_and_is_not_a_success
+  a_partial_export_is_not_a_success_and_is_not_a_failure
 restore_mutation
 
 # 17. A partial export becomes a refusal with no file at all, which throws away
 #     every definition that was fine.
-begin_mutation "$route"
-replace_once "$route" \
-  '    temporary.publish(destination, force)?;' \
-  $'    if !report.is_complete() {\n        return Err(CadError::input("this document cannot be exported completely"));\n    }\n    temporary.publish(destination, force)?;'
-expect_kill partial_export_refuses_entirely unit \
-  a_partial_export_is_published_and_reported_and_is_not_a_success
+begin_mutation "$job"
+replace_once "$job" \
+  '    publish_if_still_wanted(temporary, request.destination, request.existing, cancel)?;' \
+  $'    if !report.is_complete() {\n        return Err(CadError::input("this document cannot be exported completely"));\n    }\n    publish_if_still_wanted(temporary, request.destination, request.existing, cancel)?;'
+expect_kill partial_export_refuses_entirely jobs \
+  a_partial_export_is_published_and_says_it_is_not_the_whole_document
 restore_mutation
 
 # ------------------------------------------------------------- what it reports

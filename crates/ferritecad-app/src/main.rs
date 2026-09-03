@@ -27,6 +27,8 @@
 //! its own thread and comes back as one more event. The window opens on an
 //! empty scene and gains the model when the model is ready.
 
+mod exports;
+
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -202,6 +204,15 @@ enum AppEvent {
         generation: LoadGeneration,
         result: Box<Result<LoadedScene>>,
     },
+    /// An export has finished, or has finished failing to.
+    ///
+    /// Boxed for the reason a load's answer is: this is the second largest
+    /// thing this application moves, and every other event would otherwise be
+    /// that size too.
+    Exported {
+        generation: exports::ExportGeneration,
+        result: Box<Result<ferritecad_jobs::FbxExport>>,
+    },
     /// A load has something new to say about how far along it is.
     ///
     /// Carries no number: the number is in the relay, and by the time this
@@ -284,6 +295,13 @@ struct Loads {
     status: Status,
     /// The document currently drawn, if any reading ever finished.
     shown: Option<String>,
+    /// The request in flight and the exact path it asked for.
+    ///
+    /// Not "the last path the user chose": that is remembered elsewhere, for
+    /// the file dialog, and it changes the moment Open is pressed. This is
+    /// what a particular reading is reading, so the answer to that reading can
+    /// be committed together with the path it came from.
+    requested: Option<(LoadGeneration, PathBuf)>,
     /// Where the reading in flight reports how far it has got.
     progress: Option<(LoadGeneration, Arc<ProgressRelay>)>,
     /// What the last attempt to open a document failed over, when it failed
@@ -422,6 +440,48 @@ impl Status {
     }
 }
 
+/// The extension the export dialog filters on and suggests.
+const FBX_EXTENSION: &str = "fbx";
+
+/// What the export dialog offers as a name for the file.
+///
+/// The document's own name with the format's extension, because that is the
+/// name a person would type: the two files are the same model, and a viewer
+/// that suggested anything else would be inventing a name for it.
+fn suggested_export_name(document: &Path) -> String {
+    let stem = document.file_stem().unwrap_or(document.as_os_str());
+    format!("{}.{FBX_EXTENSION}", stem.to_string_lossy())
+}
+
+/// What a started export runs, and where its answer goes.
+///
+/// The document is optional here only because this is built before the
+/// decision to start is made; an export that starts is one that has a document
+/// on screen, which is what the invariant below says.
+fn spawner(
+    document: Option<PathBuf>,
+    proxy: EventLoopProxy<AppEvent>,
+) -> impl FnOnce(&Path, bool, exports::ExportGeneration, &CancelToken) -> JoinHandle<()> {
+    move |destination, replace, generation, cancel| {
+        let document = document.expect("an export only starts for a document that is on screen");
+        let destination = destination.to_path_buf();
+        // The one thing the event loop hands the worker beyond the two paths:
+        // how to be told to stop.
+        let context = OperationContext::default().with_cancel(cancel.clone());
+        exports::spawn_export(
+            move || exports::run_export(&document, &destination, replace, &context),
+            move |result| {
+                // A closed event loop is an ordinary end state, and there is
+                // nowhere useful to report a failed wake-up after it.
+                let _ = proxy.send_event(AppEvent::Exported {
+                    generation,
+                    result: Box::new(result),
+                });
+            },
+        )
+    }
+}
+
 /// What to call a document in one line.
 ///
 /// The file's own name rather than the path it was found at: a status line is
@@ -464,6 +524,7 @@ impl Loads {
         let worker = spawn(generation, &cancel);
         self.running.push(Loading { cancel, worker });
         self.current = Some(generation);
+        self.requested = Some((generation, path.to_path_buf()));
         self.progress = Some((generation, progress));
         // Asking for a document is the end of the last attempt's account of
         // itself. Leaving it up beside `Opening…` would read as this file
@@ -486,6 +547,22 @@ impl Loads {
     /// Whether this answer is still the one that was asked for.
     fn accepts(&self, generation: LoadGeneration) -> bool {
         self.current == Some(generation)
+    }
+
+    /// The document this answer would put on screen, if it is still wanted.
+    ///
+    /// One question rather than two, because the two have one answer: an
+    /// answer worth committing is an answer whose path is worth committing
+    /// with it, and a caller that asked them separately could commit a picture
+    /// under the name of another reading.
+    fn accepted_path(&self, generation: LoadGeneration) -> Option<&Path> {
+        if !self.accepts(generation) {
+            return None;
+        }
+        self.requested
+            .as_ref()
+            .filter(|(asked, _)| *asked == generation)
+            .map(|(_, path)| path.as_path())
     }
 
     /// What the window should be saying.
@@ -801,6 +878,9 @@ fn spawn_load(
 /// one document replaces another, not an interface anything else uses.
 #[derive(Debug)]
 struct PreparedLoad<P> {
+    /// The document this arrival was read from, carried so that it becomes
+    /// current with the picture rather than before it.
+    document: PathBuf,
     /// The camera that frames the arriving picture, staged rather than
     /// applied: a camera that moved before the upload succeeded would frame a
     /// model that is still the old one.
@@ -831,6 +911,7 @@ struct PreparedLoad<P> {
 /// thread commit them together after every fallible step has succeeded.
 fn prepare_load<P>(
     current_input: &ViewportInput,
+    document: &Path,
     loaded: Result<LoadedScene>,
     prepare: impl FnOnce(Arc<RenderSnapshot>, &[SketchDrawing]) -> Result<P>,
 ) -> Result<PreparedLoad<P>> {
@@ -855,6 +936,7 @@ fn prepare_load<P>(
     let drawings = ferritecad_scene::sketch_drawings(&loaded.sketch_presentations)?;
     let prepared = prepare(Arc::new(snapshot), &drawings)?;
     Ok(PreparedLoad {
+        document: document.to_path_buf(),
         framed: input,
         prepared,
         catalogue: loaded.catalogue,
@@ -959,6 +1041,14 @@ struct Live {
 /// produce byte-identical geometry: the same raw pick beside a different
 /// catalogue could otherwise silently name another document object.
 struct LiveScene<P> {
+    /// The document this picture was read from, exactly as it was read.
+    ///
+    /// `None` until a reading has been accepted, which is what makes writing
+    /// the model out an action a window can only offer once there is something
+    /// to write. Replaced by [`commit_scene`] and by nothing else, so a
+    /// reading that failed, was abandoned or arrived too late leaves it naming
+    /// the document actually on screen.
+    document: Option<PathBuf>,
     /// What is on the device for this document: the picture's buffers and the
     /// buffers of the drawings behind it, uploaded together and replaced
     /// together, so no frame can show one document's model over another
@@ -1018,6 +1108,7 @@ impl<P> LiveScene<P> {
         reason = "one document replacing another is one statement; see PreparedLoad"
     )]
     fn new(
+        document: Option<PathBuf>,
         prepared: P,
         catalogue: Vec<CatalogueEntry>,
         faces: FaceNames,
@@ -1027,6 +1118,7 @@ impl<P> LiveScene<P> {
         sketch_solves: Vec<SketchSolveFacts>,
     ) -> Self {
         Self {
+            document,
             prepared,
             catalogue,
             faces,
@@ -1102,6 +1194,11 @@ fn commit_scene<P>(
 ) -> Result<()> {
     let next = next?;
     *scene = LiveScene::new(
+        // The one place the document an export reads is replaced, and it is
+        // replaced by the same statement that replaces the picture. There is
+        // no arrangement in which the window shows one document and writes
+        // out another.
+        Some(next.document),
         next.prepared,
         next.catalogue,
         next.faces,
@@ -1112,6 +1209,16 @@ fn commit_scene<P>(
     );
     *camera = next.framed;
     Ok(())
+}
+
+/// Whether there is a document this window could write out.
+///
+/// The picture's own answer, because the picture is what was accepted. Asking
+/// the path the file dialog remembers instead would offer to export a document
+/// that is still being read, or one that failed to open — and would then
+/// export it, under a name the user last chose for something else.
+fn can_export<P>(scene: &LiveScene<P>) -> bool {
+    scene.document.is_some()
 }
 
 /// Where everything drawn as the chosen definition is.
@@ -1917,8 +2024,13 @@ struct App {
     input: ViewportInput,
     proxy: EventLoopProxy<AppEvent>,
     frames: FrameScheduler,
+    /// The last document the user named, which is what the file dialogs open
+    /// beside. Deliberately not what an export reads: this changes the moment
+    /// Open is pressed, and the document on screen changes only when one has
+    /// been accepted.
     document: PathBuf,
     loads: Loads,
+    exports: exports::Exports,
 }
 
 impl ApplicationHandler<AppEvent> for App {
@@ -1969,6 +2081,9 @@ impl ApplicationHandler<AppEvent> for App {
     /// window can end.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.loads.stop_all();
+        // On the same terms and for the same reason: an export worker owns a
+        // kernel session, and a detached one is a session nobody ends.
+        self.exports.stop_all();
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
@@ -1980,6 +2095,15 @@ impl ApplicationHandler<AppEvent> for App {
                     self.request_frame_now(event_loop);
                 }
             }
+            AppEvent::Exported { generation, result } => {
+                // An answer to an export the user has since replaced, or that
+                // an Open left behind, changes nothing at all: not the line,
+                // not the file rows, not the list of what is missing.
+                exports::finish_export(&mut self.exports, &mut self.input, generation, *result);
+                if self.input.take_redraw() {
+                    self.request_frame_now(event_loop);
+                }
+            }
             AppEvent::Loaded { generation, result } => {
                 // An answer to a question the user has since replaced is not
                 // shown and is not announced: "this document could not be
@@ -1987,10 +2111,16 @@ impl ApplicationHandler<AppEvent> for App {
                 // complaint about the wrong file arriving after they moved on.
                 // Which of the two this is belongs to `Loads`, so the outcome
                 // is reported the same way whatever it turns out to be.
-                let outcome = if self.loads.accepts(generation) {
-                    self.show(*result)
-                } else {
-                    (*result).map(|_| ())
+                let outcome = match self.loads.accepted_path(generation) {
+                    // Committed together: the picture and the name of the
+                    // document it was read from become current in one
+                    // statement, so nothing can write out a document the
+                    // window is not showing.
+                    Some(path) => {
+                        let path = path.to_path_buf();
+                        self.show(&path, *result)
+                    }
+                    None => (*result).map(|_| ()),
                 };
                 let effect = finish_answer(&mut self.loads, &mut self.input, generation, outcome);
                 if let Some(error) = effect.error {
@@ -2037,6 +2167,14 @@ impl ApplicationHandler<AppEvent> for App {
                 let activity = Activity {
                     line: &line,
                     progress: self.loads.status().fraction(),
+                    // Exactly when there is a document that was accepted. The
+                    // picture is what knows: a document asked for is not a
+                    // document on screen.
+                    can_export: can_export(&live.scene),
+                    // And offered a way to stop only while there is one to
+                    // stop. Separate from the reading's Cancel: a window can
+                    // be reading one document and writing another out at once.
+                    can_cancel_export: self.exports.running(),
                     can_frame_selection: selection_bounds(
                         &live.scene,
                         live.scene.prepared.snapshot(),
@@ -2068,10 +2206,19 @@ impl ApplicationHandler<AppEvent> for App {
                     .map(OpenConflict::rules)
                     .unwrap_or_default();
                 let failure = self.loads.conflict().map(|conflict| conflict.shown(&rules));
-                match live.draw(&self.input, activity, failure) {
+                // And what the last export did, on the same terms: written
+                // when its answer arrived, borrowed for this frame, and no
+                // scene, report or file read again to produce it.
+                let (export_line, export_omissions) = exports::words(self.exports.status());
+                let export = exports::shown(self.exports.status(), &export_line, &export_omissions);
+                let replacing = self
+                    .exports
+                    .pending()
+                    .map(|path| path.display().to_string());
+                match live.draw(&self.input, activity, failure, export, replacing.as_deref()) {
                     // A button pressed during this frame reaches the camera
                     // the same way a keystroke does, through the reducer.
-                    Ok((chosen, pointed_row, interface_has_pointer)) => {
+                    Ok((chosen, replace, pointed_row, interface_has_pointer)) => {
                         if let Some(view) = chosen.view {
                             self.input.handle(ViewportEvent::Look(view), false);
                         }
@@ -2083,11 +2230,30 @@ impl ApplicationHandler<AppEvent> for App {
                         if chosen.open {
                             self.ask_for_a_document();
                         }
+                        // Asked for after the frame for the same reason, and
+                        // before the answer to the replace question, because
+                        // pressing Export is how a person replaces the
+                        // question that is on screen with one about the file
+                        // they have just chosen.
+                        if chosen.export {
+                            self.ask_where_to_export();
+                        }
+                        // The window's own question, answered by the window.
+                        // Nothing has been written at this point: the worker
+                        // starts here or does not start at all.
+                        self.answer_replace(replace);
                         // Asked for after the frame as well: this is the frame
                         // whose button was pressed, and the line it drew is
                         // about to be replaced by the one naming what stays.
                         if chosen.cancel {
                             cancel_load(&mut self.loads, &mut self.input);
+                        }
+                        // The same, for the other thing this window can be
+                        // busy with. Nothing on screen changes and no file is
+                        // published: the check the job makes before it
+                        // publishes finds a withdrawn request.
+                        if chosen.cancel_export {
+                            exports::cancel_export(&mut self.exports, &mut self.input);
                         }
                         // A definition picked out of the list. The row is a
                         // position in the list that was just drawn; what it
@@ -2215,6 +2381,7 @@ impl App {
             frames: FrameScheduler::default(),
             document,
             loads: Loads::default(),
+            exports: exports::Exports::default(),
         }
     }
 
@@ -2252,12 +2419,91 @@ impl App {
         }
     }
 
+    /// Asks the system where to write the model, and starts writing it there.
+    ///
+    /// Blocking on purpose, exactly as the Open dialog is: while it is up the
+    /// user is choosing a file, and every toolkit runs the window's events for
+    /// the duration. What must not block is the export itself, and that has
+    /// its own thread.
+    ///
+    /// Nothing is read, no kernel is opened and no file is touched until a
+    /// path comes back. A cancelled dialog is an answer and does nothing at
+    /// all.
+    fn ask_where_to_export(&mut self) {
+        // A toolbar cannot be drawn without a live window, and the document to
+        // export is the one that window is showing. Both are read here and the
+        // decision is made somewhere it can be exercised without either.
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Some(document) = live.scene.document.clone() else {
+            return;
+        };
+
+        let chosen = rfd::FileDialog::new()
+            .set_title("Export FBX")
+            .add_filter("FBX", &[FBX_EXTENSION])
+            // Beside the document being exported, which is where a person
+            // looking for the thing they just made will look for it.
+            .set_directory(
+                document
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or(Path::new(".")),
+            )
+            .set_file_name(suggested_export_name(&document))
+            .set_parent(live.window.as_ref())
+            .save_file();
+
+        self.export_to(chosen);
+    }
+
+    /// Acts on a chosen destination, whether or not a dialog produced it.
+    ///
+    /// Split from the dialog so that everything this decides can be exercised
+    /// with an injected `Option<PathBuf>`, exactly as opening a document is.
+    fn export_to(&mut self, chosen: Option<PathBuf>) {
+        let document = self
+            .live
+            .as_ref()
+            .and_then(|live| live.scene.document.clone());
+        let proxy = self.proxy.clone();
+        exports::begin_export(
+            &mut self.exports,
+            &mut self.input,
+            document.as_deref(),
+            chosen,
+            spawner(document.clone(), proxy),
+        );
+    }
+
+    /// Acts on the answer to the window's own replace question.
+    fn answer_replace(&mut self, choice: ferritecad_ui::ReplaceChoice) {
+        let document = self
+            .live
+            .as_ref()
+            .and_then(|live| live.scene.document.clone());
+        let proxy = self.proxy.clone();
+        exports::confirm_export(
+            &mut self.exports,
+            &mut self.input,
+            document.as_deref(),
+            choice,
+            spawner(document.clone(), proxy),
+        );
+    }
+
     /// Starts reading a document on a thread of its own.
     ///
     /// Whatever was being read is abandoned. The reading that replaces it is
     /// the only one whose answer can reach the screen, however the two
     /// readings finish relative to each other.
     fn open(&mut self, path: PathBuf) {
+        // The export in flight was of the document being left behind, and its
+        // answer would describe a file nobody asked for beside a model that is
+        // no longer on screen. Stopping it here means the check the job makes
+        // before it publishes finds a withdrawn request.
+        exports::cancel_export(&mut self.exports, &mut self.input);
         self.document = path;
         let path = self.document.clone();
         let proxy = self.proxy.clone();
@@ -2601,7 +2847,7 @@ impl App {
     /// happens: the model already on screen stays on screen, because a viewer
     /// that went blank would lose the drawing the user was reading while they
     /// work out what went wrong.
-    fn show(&mut self, loaded: Result<LoadedScene>) -> Result<()> {
+    fn show(&mut self, document: &Path, loaded: Result<LoadedScene>) -> Result<()> {
         let Some(live) = self.live.as_mut() else {
             // No window to show it in, which means the loop is already on its
             // way out. The outcome is still the outcome; nothing here changes
@@ -2614,7 +2860,7 @@ impl App {
         // what its parts are, the choice made in it and the camera all become
         // current together – and only then is the document a thing the window
         // may call ready.
-        let next = prepare_load(&self.input, loaded, |snapshot, drawings| {
+        let next = prepare_load(&self.input, document, loaded, |snapshot, drawings| {
             // Both halves of one upload, and both before anything is
             // committed. The drawings ride on the prepared picture, so a
             // window cannot end up drawing this document's model beside the
@@ -2719,6 +2965,8 @@ impl App {
             renderer,
             surface: window_surface,
             scene: LiveScene::new(
+                // Nothing accepted yet, so there is nothing to write out.
+                None,
                 prepared,
                 Vec::new(),
                 FaceNames::default(),
@@ -2745,7 +2993,9 @@ impl Live {
         input: &ViewportInput,
         activity: Activity<'_>,
         failure: Option<ferritecad_ui::OpenFailure<'_>>,
-    ) -> Result<(Chosen, Option<usize>, bool)> {
+        export: Option<ferritecad_ui::ExportOutcome<'_>>,
+        replacing: Option<&str>,
+    ) -> Result<(Chosen, ferritecad_ui::ReplaceChoice, Option<usize>, bool)> {
         // Taken apart so the picture can be read while the surface is being
         // drawn into: these are different fields, and only the compiler needs
         // telling. It also means the list below describes the catalogue itself
@@ -2803,7 +3053,12 @@ impl Live {
         let Some(frame) = surface.begin(renderer)? else {
             // No area, nobody watching, or the compositor was busy. None of
             // those is an error.
-            return Ok((Chosen::default(), None, false));
+            return Ok((
+                Chosen::default(),
+                ferritecad_ui::ReplaceChoice::default(),
+                None,
+                false,
+            ));
         };
         let frame = frame.draw_scene(
             &scene.prepared,
@@ -2815,6 +3070,7 @@ impl Live {
 
         let raw_input = egui_state.take_egui_input(window);
         let mut chosen = Chosen::default();
+        let mut replace = ferritecad_ui::ReplaceChoice::default();
         let mut pointed_row = None;
         let mut output = egui.run_ui(raw_input, |ui| {
             // The panel returns what was asked for and applies nothing. What a
@@ -2823,6 +3079,15 @@ impl Live {
             // apart.
             chosen = ferritecad_ui::toolbar(ui, activity);
             ui.separator();
+            // Directly under the toolbar, because it is a question about the
+            // button that was just pressed and nothing is written until it is
+            // answered.
+            replace = ferritecad_ui::replace_confirmation(ui, replacing);
+            // What the last export did. Its own section rather than a second
+            // sentence in the status line: an export that failed is not a
+            // document that failed to open, and the two must not be read as
+            // one.
+            ferritecad_ui::export_panel(ui, export);
             // Why the last attempt to open a document failed, when there is
             // more to it than the line the toolbar already shows. Beside the
             // status line because that is what it belongs to, and above
@@ -2904,7 +3169,7 @@ impl Live {
 
         free_textures(&mut textures, |id| egui_renderer.free_texture(id));
         frame.present();
-        Ok((chosen, pointed_row, interface_has_pointer))
+        Ok((chosen, replace, pointed_row, interface_has_pointer))
     }
 }
 
@@ -3363,11 +3628,15 @@ mod tests {
         // The same order the event loop uses: whether to show it, then
         // showing it, then saying so. Announcing first would let the window
         // call a document ready before the frame that put it there.
-        let outcome = if loads.accepts(generation) {
-            let next = prepare_load(input, result, |_, _| Ok(()));
-            commit_scene(scene, input, next)
-        } else {
-            result.map(|_| ())
+        let outcome = match loads.accepted_path(generation) {
+            // Exactly what the event loop does: the picture and the name of
+            // the document it came from are committed by one statement.
+            Some(path) => {
+                let path = path.to_path_buf();
+                let next = prepare_load(input, &path, result, |_, _| Ok(()));
+                commit_scene(scene, input, next)
+            }
+            None => result.map(|_| ()),
         };
         finish_answer(loads, input, generation, outcome)
     }
@@ -3375,6 +3644,7 @@ mod tests {
     /// A window with nothing in it yet.
     fn empty_scene() -> LiveScene<()> {
         LiveScene::new(
+            None,
             (),
             Vec::new(),
             FaceNames::default(),
@@ -3383,6 +3653,342 @@ mod tests {
             Visibility::default(),
             Vec::new(),
         )
+    }
+
+    /// Nothing is exportable until a reading has been accepted.
+    ///
+    /// Not "until one has been asked for": a window that offered to write out
+    /// a document it is still reading would be offering to write out whatever
+    /// was on screen before, under the new document's name.
+    #[test]
+    fn nothing_can_be_exported_until_a_document_is_on_screen() {
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+        let mut holds = Vec::new();
+
+        assert_eq!(scene.document, None, "an empty window named a document");
+        assert!(
+            !can_export(&scene),
+            "a window with nothing on screen offered to write it out"
+        );
+
+        let asked = loads
+            .open(Some(Path::new("a.fcad")), relay(), |_, cancel| {
+                let (worker, release) = held_worker(cancel);
+                holds.push(release);
+                worker
+            })
+            .expect("a load started");
+        assert_eq!(
+            scene.document, None,
+            "asking for a document made it exportable before it arrived"
+        );
+        assert!(
+            !can_export(&scene),
+            "a document that is still being read was offered for export"
+        );
+
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            asked,
+            Ok(loaded(scene_at(0.0))),
+        );
+        assert_eq!(
+            scene.document.as_deref(),
+            Some(Path::new("a.fcad")),
+            "an accepted document is not what an export would read"
+        );
+        assert!(
+            can_export(&scene),
+            "an accepted document cannot be written out"
+        );
+
+        loads.stop_all();
+    }
+
+    /// A document on screen, an Open of another that fails, and an export.
+    ///
+    /// The export must read the document the user is looking at. This is the
+    /// whole reason the path is kept beside the picture: `App::document` is
+    /// already `b.fcad` by the time this failure arrives, because it was
+    /// replaced when Open was pressed.
+    #[test]
+    fn a_failed_open_does_not_change_what_an_export_would_read() {
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+        let mut holds = Vec::new();
+        let mut spawn = |cancel: &CancelToken| {
+            let (worker, release) = held_worker(cancel);
+            holds.push(release);
+            worker
+        };
+
+        let a = loads
+            .open(Some(Path::new("a.fcad")), relay(), |_, cancel| {
+                spawn(cancel)
+            })
+            .expect("a load started");
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            a,
+            Ok(loaded(scene_at(0.0))),
+        );
+        assert_eq!(scene.document.as_deref(), Some(Path::new("a.fcad")));
+
+        // B is asked for and cannot be read.
+        let b = loads
+            .open(Some(Path::new("b.fcad")), relay(), |_, cancel| {
+                spawn(cancel)
+            })
+            .expect("a second load started");
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            b,
+            Err(CadError::input("b.fcad is not a document")),
+        );
+
+        assert_eq!(
+            scene.document.as_deref(),
+            Some(Path::new("a.fcad")),
+            "an export would have written out the document that failed to open"
+        );
+        // And the two accounts stay apart: the reading failed, and that is a
+        // fact about opening rather than about the model on screen.
+        assert!(matches!(loads.status(), Status::Failed { .. }));
+
+        loads.stop_all();
+    }
+
+    /// The same for a reading that is given up on rather than one that fails.
+    #[test]
+    fn an_abandoned_open_does_not_change_what_an_export_would_read() {
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+        let mut holds = Vec::new();
+        let mut spawn = |cancel: &CancelToken| {
+            let (worker, release) = held_worker(cancel);
+            holds.push(release);
+            worker
+        };
+
+        let a = loads
+            .open(Some(Path::new("a.fcad")), relay(), |_, cancel| {
+                spawn(cancel)
+            })
+            .expect("a load started");
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            a,
+            Ok(loaded(scene_at(0.0))),
+        );
+
+        // Asked for, then given up on before it answered.
+        let b = loads
+            .open(Some(Path::new("b.fcad")), relay(), |_, cancel| {
+                spawn(cancel)
+            })
+            .expect("a second load started");
+        assert!(loads.cancel_current());
+        assert_eq!(
+            scene.document.as_deref(),
+            Some(Path::new("a.fcad")),
+            "giving up on a reading changed what an export would read"
+        );
+
+        // And it answers anyway, successfully, some time later — which is the
+        // whole reason giving up is a decision rather than a wish. A reading
+        // nobody is waiting for must not arrive: not on screen, and not as the
+        // document an export would read.
+        let framing = *input.camera();
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            b,
+            Ok(loaded(scene_at(5000.0))),
+        );
+        assert_eq!(
+            scene.document.as_deref(),
+            Some(Path::new("a.fcad")),
+            "a reading that was given up on arrived and renamed the export source"
+        );
+        assert_eq!(
+            *input.camera(),
+            framing,
+            "a reading that was given up on arrived and moved the camera"
+        );
+
+        loads.stop_all();
+    }
+
+    /// And for an answer that arrives after the user has moved on.
+    #[test]
+    fn a_stale_answer_does_not_change_what_an_export_would_read() {
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+        let mut holds = Vec::new();
+        let mut spawn = |cancel: &CancelToken| {
+            let (worker, release) = held_worker(cancel);
+            holds.push(release);
+            worker
+        };
+
+        let slow = loads
+            .open(Some(Path::new("slow.fcad")), relay(), |_, cancel| {
+                spawn(cancel)
+            })
+            .expect("a load started");
+        let quick = loads
+            .open(Some(Path::new("quick.fcad")), relay(), |_, cancel| {
+                spawn(cancel)
+            })
+            .expect("a second load started");
+
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            quick,
+            Ok(loaded(scene_at(0.0))),
+        );
+        // The abandoned reading answers last and successfully, which is the
+        // case a generation check exists for.
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            slow,
+            Ok(loaded(scene_at(5000.0))),
+        );
+
+        assert_eq!(
+            scene.document.as_deref(),
+            Some(Path::new("quick.fcad")),
+            "a stale answer renamed the document an export would read"
+        );
+
+        loads.stop_all();
+    }
+
+    /// Asking for an export changes nothing about what is on screen.
+    #[test]
+    fn asking_for_an_export_changes_nothing_about_the_picture() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let document = directory.path().join("shown.fcad");
+        std::fs::copy(ferritecad_fixtures::plate_source(), &document).expect("copies the fixture");
+
+        let picture = distant_scene();
+        let chosen = picture
+            .draws()
+            .first()
+            .expect("the picture draws something")
+            .pick;
+        let scene = LiveScene {
+            document: Some(document.clone()),
+            prepared: (),
+            catalogue: vec![a_body()],
+            faces: FaceNames::default(),
+            edges: EdgeNames::default(),
+            vertices: VertexNames::default(),
+            visibility: Visibility::default(),
+            selection: Selection::Definition(chosen),
+            hovered: Hovered::Definition(chosen),
+            sketch_solves: Vec::new(),
+        };
+        let before = (
+            scene.selection.clone(),
+            scene.hovered,
+            scene.visibility.clone(),
+            scene.catalogue.clone(),
+            scene.document.clone(),
+        );
+
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let framing = *input.camera();
+        // A click already recorded and not yet answered. An export must not
+        // answer it, forget it, or turn it into a question about another
+        // frame.
+        input.handle(ViewportEvent::PointerMoved { x: 100.0, y: 120.0 }, false);
+        input.handle(ViewportEvent::PointerPressed(PointerButton::Primary), false);
+        input.handle(
+            ViewportEvent::PointerReleased(PointerButton::Primary),
+            false,
+        );
+
+        let loads = Loads::default();
+        let open_status = loads.status().clone();
+
+        let mut exports = exports::Exports::default();
+        let mut holds = Vec::new();
+        let mut cancels = Vec::new();
+        let generation = exports::begin_export(
+            &mut exports,
+            &mut input,
+            scene.document.as_deref(),
+            Some(directory.path().join("shown.fbx")),
+            |_, _, _, cancel| {
+                cancels.push(cancel.clone());
+                let (worker, release) = held_worker(cancel);
+                holds.push(release);
+                worker
+            },
+        )
+        .expect("an export started");
+
+        assert_eq!(scene.selection, before.0, "an export changed the choice");
+        assert_eq!(
+            scene.hovered, before.1,
+            "an export changed what is pointed at"
+        );
+        assert_eq!(
+            scene.visibility, before.2,
+            "an export changed what is drawn"
+        );
+        assert_eq!(scene.catalogue, before.3, "an export changed the catalogue");
+        assert_eq!(scene.document, before.4, "an export renamed the document");
+        assert_eq!(*input.camera(), framing, "an export moved the camera");
+        assert_eq!(
+            input.take_pick(),
+            Some((100.0, 120.0)),
+            "an export answered or forgot a click that was already in flight"
+        );
+        assert_eq!(
+            *loads.status(),
+            open_status,
+            "an export was reported as something about opening a document"
+        );
+
+        // And a failure of that export changes none of it either, and is
+        // still not an Open failure.
+        exports::finish_export(
+            &mut exports,
+            &mut input,
+            generation,
+            Err(CadError::input("nothing was written")),
+        );
+        assert_eq!(scene.selection, before.0);
+        assert_eq!(scene.visibility, before.2);
+        assert_eq!(*input.camera(), framing);
+        assert_eq!(*loads.status(), open_status);
+
+        exports.stop_all();
     }
 
     #[test]
@@ -3865,6 +4471,7 @@ mod tests {
             .expect("the picture draws something")
             .pick;
         let old = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
@@ -3886,6 +4493,7 @@ mod tests {
         // another object. Replacing all three pieces through the constructor
         // is what prevents the old raw definition number from retargeting.
         let replacement = LiveScene::new(
+            Some(PathBuf::from("b.fcad")),
             (),
             vec![a_body()],
             FaceNames::default(),
@@ -3907,6 +4515,7 @@ mod tests {
             .pick;
         let mine = a_body();
         let mut scene = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![mine.clone()],
             faces: FaceNames::default(),
@@ -3952,6 +4561,7 @@ mod tests {
             .expect("the picture draws something")
             .pick;
         let mut scene = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
@@ -3973,6 +4583,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
                 catalogue: vec![arriving.clone()],
@@ -3998,6 +4609,7 @@ mod tests {
         let elsewhere = scene_at(50.0);
         let mine = a_body();
         let scene = LiveScene {
+            document: Some(PathBuf::from("shown.fcad")),
             prepared: (),
             catalogue: vec![mine.clone()],
             faces: FaceNames::default(),
@@ -4031,6 +4643,7 @@ mod tests {
         // A catalogue that does not run that far answers nothing rather than
         // whatever is at the end of it.
         let short = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: Vec::new(),
             faces: FaceNames::default(),
@@ -4054,6 +4667,7 @@ mod tests {
             .expect("the picture draws something")
             .pick;
         let mut scene = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
@@ -4171,6 +4785,7 @@ mod tests {
         // decided elsewhere and stay where they were.
         let entries = vec![a_body(), a_body()];
         let mut scene = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: entries.clone(),
             faces: FaceNames::default(),
@@ -4392,6 +5007,7 @@ mod tests {
 
         // A choice already made, and a question about an edge of it.
         let mut scene = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
@@ -4688,7 +5304,7 @@ mod tests {
         input.resize(800, 600);
         // The route a real Open takes: everything fallible first, and the
         // parts handed over together afterwards.
-        let vertices = prepare_load(&input, Ok(loaded), |_, _| Ok(()))
+        let vertices = prepare_load(&input, Path::new("shown.fcad"), Ok(loaded), |_, _| Ok(()))
             .expect("the load is prepared")
             .vertices;
 
@@ -6003,6 +6619,7 @@ mod tests {
         let mut input = ViewportInput::new();
         input.resize(480, 480);
         let mut scene_state = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             scene.catalogue.clone(),
             scene.faces.clone(),
@@ -6371,6 +6988,7 @@ mod tests {
         assert!(matches!(chosen, Selection::Vertex(_)), "{chosen:?}");
 
         let mut scene = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: loaded.catalogue.clone(),
             faces: loaded.faces.clone(),
@@ -6406,6 +7024,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
                 catalogue: loaded.catalogue.clone(),
@@ -6447,6 +7066,7 @@ mod tests {
         // Isolate keeps the corner chosen exactly as that corner, and takes
         // the other body off screen.
         let mut scene = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: loaded.catalogue.clone(),
             faces: loaded.faces.clone(),
@@ -6744,6 +7364,7 @@ mod tests {
         );
 
         let mut scene = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: loaded.catalogue.clone(),
             faces: loaded.faces.clone(),
@@ -6778,6 +7399,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
                 catalogue: loaded.catalogue.clone(),
@@ -6918,6 +7540,7 @@ mod tests {
         );
 
         let mut scene = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: loaded.catalogue.clone(),
             faces: loaded.faces.clone(),
@@ -6953,6 +7576,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
                 catalogue: loaded.catalogue.clone(),
@@ -6987,7 +7611,7 @@ mod tests {
         input.resize(800, 600);
         // The route a real Open takes: everything fallible first, and the
         // parts handed over together afterwards.
-        let edges = prepare_load(&input, Ok(loaded), |_, _| Ok(()))
+        let edges = prepare_load(&input, Path::new("shown.fcad"), Ok(loaded), |_, _| Ok(()))
             .expect("the load is prepared")
             .edges;
 
@@ -7307,6 +7931,7 @@ mod tests {
     /// A scene with that picture, and something chosen in it.
     fn live_with(picture: &RenderSnapshot, chosen: usize) -> LiveScene<()> {
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body()],
             FaceNames::default(),
@@ -7336,6 +7961,7 @@ mod tests {
             .expect("places");
         let picture = builder.build();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body()],
             FaceNames::default(),
@@ -7455,6 +8081,7 @@ mod tests {
     fn an_action_with_nothing_to_do_asks_for_nothing() {
         let picture = two_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body()],
             FaceNames::default(),
@@ -7594,6 +8221,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
                 catalogue: vec![a_body(), a_body()],
@@ -7881,6 +8509,7 @@ mod tests {
     fn isolating_keeps_the_choice_exactly_and_forgets_everything_pointing_elsewhere() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -7979,6 +8608,7 @@ mod tests {
     fn isolate_is_offered_exactly_when_something_else_is_still_drawn() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -8034,6 +8664,7 @@ mod tests {
         }
         let picture = builder.build();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body()],
             FaceNames::default(),
@@ -8067,6 +8698,7 @@ mod tests {
     fn what_isolating_leaves_is_what_both_framings_find() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -8106,6 +8738,7 @@ mod tests {
     fn showing_everything_after_isolating_keeps_the_choice_and_hiding_still_clears_it() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -8161,6 +8794,7 @@ mod tests {
     fn showing_everything_forgets_questions_about_the_isolated_frame() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -8253,6 +8887,7 @@ mod tests {
     fn a_successful_open_forgets_an_isolation_and_a_failed_one_keeps_it() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -8287,6 +8922,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
                 catalogue: vec![a_body(), a_body(), a_body()],
@@ -8383,6 +9019,7 @@ mod tests {
     fn showing_one_definition_keeps_the_choice_and_forgets_the_old_frame() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -8497,6 +9134,7 @@ mod tests {
     fn asking_a_definition_back_that_is_already_there_changes_nothing() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -8641,6 +9279,7 @@ mod tests {
     fn a_successful_open_forgets_a_partly_shown_scene_and_a_failed_one_keeps_it() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -8682,6 +9321,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
                 catalogue: vec![a_body(), a_body(), a_body()],
@@ -8761,6 +9401,7 @@ mod tests {
     fn hiding_a_row_forgets_the_frame_it_was_asked_from() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -8832,6 +9473,7 @@ mod tests {
     fn a_row_hide_that_does_nothing_leaves_everything_as_it_was() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -8940,6 +9582,7 @@ mod tests {
     fn a_row_hide_survives_a_failed_open_and_not_a_successful_one() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -8975,6 +9618,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
                 catalogue: vec![a_body(), a_body(), a_body()],
@@ -9076,6 +9720,7 @@ mod tests {
     fn taking_back_a_change_does_not_put_back_what_it_unchose() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -9152,6 +9797,7 @@ mod tests {
     fn taking_back_a_change_forgets_the_frame_and_leaves_the_camera() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -9234,6 +9880,7 @@ mod tests {
     fn an_undo_with_nothing_to_take_back_changes_absolutely_nothing() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -9317,6 +9964,7 @@ mod tests {
     fn a_document_opens_with_nothing_to_take_back_and_a_failed_open_keeps_it() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -9360,6 +10008,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
                 catalogue: vec![a_body(), a_body(), a_body()],
@@ -9530,6 +10179,7 @@ mod tests {
     fn a_document_opens_as_an_eye_sees_it_and_a_failed_open_keeps_the_drawing() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -9562,8 +10212,13 @@ mod tests {
         // A load that arrived starts the way a new camera starts, because a
         // document is opened to be understood before it is measured.
         let next = three_definitions();
-        let arriving = prepare_load(&input, Ok(loaded(next.clone())), |_, _| Ok(()))
-            .expect("the picture is accepted");
+        let arriving = prepare_load(
+            &input,
+            Path::new("shown.fcad"),
+            Ok(loaded(next.clone())),
+            |_, _| Ok(()),
+        )
+        .expect("the picture is accepted");
         assert_eq!(
             arriving.framed.projection(),
             Projection::Perspective,
@@ -9774,6 +10429,7 @@ mod tests {
     fn one_visible_neighbour_goes_from_its_row_without_disturbing_the_choice() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -9867,6 +10523,7 @@ mod tests {
     fn hiding_the_row_that_is_chosen_unchooses_it() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -9974,6 +10631,7 @@ mod tests {
     fn one_hidden_neighbour_comes_back_from_its_row_without_the_other() {
         let picture = three_definitions();
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -10059,6 +10717,7 @@ mod tests {
         let picture = three_definitions();
         let target = picture.pick_of(1).expect("the middle definition has a row");
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body(), a_body(), a_body()],
             FaceNames::default(),
@@ -10157,6 +10816,7 @@ mod tests {
 
         // Choosing the front one, and hiding what is chosen.
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             Vec::new(),
             FaceNames::default(),
@@ -10365,6 +11025,7 @@ mod tests {
     fn a_double_tap_magnifies_what_is_chosen_and_taps_back_to_where_it_was() {
         let (_directory, scene, chosen) = plate_with_a_chosen_face();
         let mut live = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body()],
             FaceNames::default(),
@@ -10437,6 +11098,7 @@ mod tests {
         let marker_face = snapshot.face_of(0, 0).expect("numbered");
 
         let mut live = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             Vec::new(),
             FaceNames::default(),
@@ -10705,6 +11367,7 @@ mod tests {
     fn a_double_tap_the_interface_wanted_changes_nothing_at_all() {
         let (_directory, scene, chosen) = plate_with_a_chosen_face();
         let mut live = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body()],
             FaceNames::default(),
@@ -10784,6 +11447,7 @@ mod tests {
         let (_directory, scene, chosen) = plate_with_a_chosen_face();
         let snapshot = &scene.snapshot;
         let mut live = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body()],
             FaceNames::default(),
@@ -10856,6 +11520,7 @@ mod tests {
         let (_directory, scene, chosen) = plate_with_a_chosen_face();
         let snapshot = &scene.snapshot;
         let mut live = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body()],
             FaceNames::default(),
@@ -10908,6 +11573,7 @@ mod tests {
     fn the_rotation_input_path_receives_neither_selection_nor_visibility() {
         let (_directory, scene, chosen) = plate_with_a_chosen_face();
         let mut live = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body()],
             FaceNames::default(),
@@ -11124,6 +11790,7 @@ mod tests {
         let mut looking_at_the_face = ViewportInput::new();
         looking_at_the_face.resize(800, 600);
         let mut scene_with_face = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             Vec::new(),
             FaceNames::default(),
@@ -11142,6 +11809,7 @@ mod tests {
         let mut looking_at_the_part = ViewportInput::new();
         looking_at_the_part.resize(800, 600);
         let mut scene_with_part = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             Vec::new(),
             FaceNames::default(),
@@ -11166,6 +11834,7 @@ mod tests {
     fn a_chosen_face_survives_a_failed_open_and_not_a_successful_one() {
         let (_directory, scene, chosen) = plate_with_a_chosen_face();
         let mut live = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             vec![a_body()],
             FaceNames::default(),
@@ -11196,6 +11865,7 @@ mod tests {
             &mut live,
             &mut camera,
             Ok(PreparedLoad {
+                document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
                 catalogue: vec![a_body()],
@@ -11295,6 +11965,7 @@ mod tests {
             .expect("the picture draws something")
             .pick;
         let mut scene = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
@@ -11348,6 +12019,7 @@ mod tests {
             .expect("the picture draws something")
             .pick;
         let mut scene = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
@@ -11376,6 +12048,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
                 catalogue: vec![a_body()],
@@ -11416,6 +12089,7 @@ mod tests {
 
         let entries = vec![a_body(), a_body()];
         let mut scene = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: entries.clone(),
             faces: FaceNames::default(),
@@ -11500,6 +12174,7 @@ mod tests {
             geometry_omission: None,
         };
         let scene = LiveScene {
+            document: Some(PathBuf::from("shown.fcad")),
             prepared: (),
             catalogue: vec![entry],
             faces: FaceNames::default(),
@@ -11524,6 +12199,7 @@ mod tests {
         // what makes them two is their identity, and the list does not look at
         // what they are called to decide how many there are.
         let twins = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body(), a_body()],
             faces: FaceNames::default(),
@@ -11650,6 +12326,7 @@ mod tests {
 
         let entries = vec![a_body(), a_body()];
         let mut scene = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: entries.clone(),
             faces: FaceNames::default(),
@@ -11703,6 +12380,7 @@ mod tests {
         let picture = builder.build();
 
         let scene = LiveScene {
+            document: Some(PathBuf::from("shown.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
@@ -11766,6 +12444,7 @@ mod tests {
         let picture = builder.build();
 
         let scene = LiveScene {
+            document: Some(PathBuf::from("shown.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
@@ -11817,6 +12496,7 @@ mod tests {
         let picture = builder.build();
 
         let scene = LiveScene {
+            document: Some(PathBuf::from("shown.fcad")),
             prepared: (),
             catalogue: vec![a_body(), a_body()],
             faces: FaceNames::default(),
@@ -11882,6 +12562,7 @@ mod tests {
         let picture = builder.build();
 
         let scene = LiveScene {
+            document: Some(PathBuf::from("shown.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
@@ -11937,6 +12618,7 @@ mod tests {
         let picture = distant_scene();
         let elsewhere = scene_at(400.0);
         let scene = LiveScene {
+            document: Some(PathBuf::from("shown.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
@@ -11966,6 +12648,7 @@ mod tests {
 
         // Nothing chosen is the same answer, however often it is asked.
         let empty = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
@@ -12005,6 +12688,7 @@ mod tests {
     fn clicking_the_background_clears_the_inspector_as_well_as_the_highlight() {
         let picture = distant_scene();
         let mut scene = LiveScene {
+            document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
             faces: FaceNames::default(),
@@ -12071,6 +12755,7 @@ mod tests {
         // the definition and never the placement.
         for draw in picture.draws() {
             let scene = LiveScene {
+                document: Some(PathBuf::from("shown.fcad")),
                 prepared: (),
                 catalogue: vec![entry.clone()],
                 faces: FaceNames::default(),
@@ -12394,9 +13079,12 @@ mod tests {
         input.take_redraw();
         let before = *input.camera();
 
-        let error = prepare_load::<()>(&input, Ok(loaded(distant_scene())), |_, _| {
-            Err(CadError::rendering("the device refused the upload"))
-        })
+        let error = prepare_load::<()>(
+            &input,
+            Path::new("shown.fcad"),
+            Ok(loaded(distant_scene())),
+            |_, _| Err(CadError::rendering("the device refused the upload")),
+        )
         .expect_err("a failed upload must not become current");
 
         assert!(error.to_string().contains("refused the upload"), "{error}");
@@ -12964,7 +13652,7 @@ mod tests {
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
         let mut scene = empty_scene();
-        let prepared = prepare_load(&camera, Ok(loaded), |_, _| Ok(()));
+        let prepared = prepare_load(&camera, Path::new("shown.fcad"), Ok(loaded), |_, _| Ok(()));
         commit_scene(&mut scene, &mut camera, prepared).expect("the document commits");
         (scene, camera)
     }
@@ -12981,6 +13669,7 @@ mod tests {
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             Vec::new(),
             Vec::new(),
             FaceNames::default(),
@@ -12989,7 +13678,12 @@ mod tests {
             Visibility::default(),
             Vec::new(),
         );
-        let prepared = prepare_load(&camera, Ok(loaded), |_, drawings| Ok(drawings.to_vec()));
+        let prepared = prepare_load(
+            &camera,
+            Path::new("shown.fcad"),
+            Ok(loaded),
+            |_, drawings| Ok(drawings.to_vec()),
+        );
         commit_scene(&mut scene, &mut camera, prepared).expect("the document commits");
         (scene, camera)
     }
@@ -13428,7 +14122,7 @@ mod tests {
         assert_eq!(scene.sketch_solves[0].sketch(), old_sketch);
 
         let (new, new_sketch, new_repeated) = one_solved_sketch(&second, Some("New"));
-        let prepared = prepare_load(&camera, Ok(new), |_, _| Ok(()));
+        let prepared = prepare_load(&camera, Path::new("shown.fcad"), Ok(new), |_, _| Ok(()));
         commit_scene(&mut scene, &mut camera, prepared).expect("the second document commits");
 
         // One operation, both halves: the picture is the new one and so is
@@ -13463,7 +14157,12 @@ mod tests {
         // nothing to report about it.
         let path = second.path().join("plain.fcad");
         write_sketches(&path, vec![(Some("Plain"), solve_curves(), Vec::new())]);
-        let prepared = prepare_load(&camera, Ok(load_document(&path)), |_, _| Ok(()));
+        let prepared = prepare_load(
+            &camera,
+            Path::new("shown.fcad"),
+            Ok(load_document(&path)),
+            |_, _| Ok(()),
+        );
         commit_scene(&mut scene, &mut camera, prepared).expect("the plain document commits");
 
         assert!(
@@ -13499,6 +14198,7 @@ mod tests {
 
         let refused = prepare_load(
             &camera,
+            Path::new("shown.fcad"),
             Err(CadError::input("this is not a document")),
             |_, _| Ok(()),
         );
@@ -13554,7 +14254,9 @@ mod tests {
 
         let (abandoned, other, _) = one_solved_sketch(&second, Some("Abandoned"));
         if loads.accepts(stale) {
-            let prepared = prepare_load(&camera, Ok(abandoned), |_, _| Ok(()));
+            let prepared = prepare_load(&camera, Path::new("shown.fcad"), Ok(abandoned), |_, _| {
+                Ok(())
+            });
             commit_scene(&mut scene, &mut camera, prepared).expect("commits");
         }
         loads.stop_all();
@@ -13588,7 +14290,7 @@ mod tests {
         // refused the upload. Nothing of it becomes current: not the picture,
         // not the camera, and not what its solve found out.
         let (arriving, other, _) = one_solved_sketch(&second, Some("Refused"));
-        let prepared = prepare_load(&camera, Ok(arriving), |_, _| {
+        let prepared = prepare_load(&camera, Path::new("shown.fcad"), Ok(arriving), |_, _| {
             Err(CadError::rendering("the device refused the buffers"))
         });
         let error = commit_scene(&mut scene, &mut camera, prepared)
@@ -13670,7 +14372,12 @@ mod tests {
         );
 
         let (arriving, _) = plain_document(&second, "new.fcad", 2, 70.0);
-        let prepared = prepare_load(&camera, Ok(arriving), keep_drawings);
+        let prepared = prepare_load(
+            &camera,
+            Path::new("shown.fcad"),
+            Ok(arriving),
+            keep_drawings,
+        );
         commit_scene(&mut scene, &mut camera, prepared).expect("the second document commits");
 
         // Replaced whole, with the picture. A window holding the last
@@ -13697,6 +14404,7 @@ mod tests {
 
         let refused = prepare_load(
             &camera,
+            Path::new("shown.fcad"),
             Err(CadError::input("this is not a document")),
             keep_drawings,
         );
@@ -13740,7 +14448,12 @@ mod tests {
 
         let (abandoned, _) = plain_document(&second, "abandoned.fcad", 1, 70.0);
         if loads.accepts(stale) {
-            let prepared = prepare_load(&camera, Ok(abandoned), keep_drawings);
+            let prepared = prepare_load(
+                &camera,
+                Path::new("shown.fcad"),
+                Ok(abandoned),
+                keep_drawings,
+            );
             commit_scene(&mut scene, &mut camera, prepared).expect("commits");
         }
         loads.stop_all();
@@ -13766,7 +14479,7 @@ mod tests {
         // the upload. Nothing of it becomes current: not the picture, not the
         // camera, and not the drawings behind it.
         let (arriving, _) = plain_document(&second, "refused.fcad", 1, 70.0);
-        let prepared = prepare_load(&camera, Ok(arriving), |_, _| {
+        let prepared = prepare_load(&camera, Path::new("shown.fcad"), Ok(arriving), |_, _| {
             Err(CadError::rendering("the device refused the buffers"))
         });
         let error = commit_scene(&mut scene, &mut camera, prepared)
@@ -13892,6 +14605,7 @@ mod tests {
             .prepare(Arc::new(SnapshotBuilder::new().build()))
             .expect("an empty picture uploads");
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             empty,
             Vec::new(),
             FaceNames::default(),
@@ -13900,10 +14614,15 @@ mod tests {
             Visibility::default(),
             Vec::new(),
         );
-        let next = prepare_load(&camera, Ok(loaded), |snapshot, drawings| {
-            let prepared = renderer.prepare(snapshot)?;
-            renderer.prepare_sketches(prepared, drawings)
-        });
+        let next = prepare_load(
+            &camera,
+            Path::new("shown.fcad"),
+            Ok(loaded),
+            |snapshot, drawings| {
+                let prepared = renderer.prepare(snapshot)?;
+                renderer.prepare_sketches(prepared, drawings)
+            },
+        );
         commit_scene(&mut scene, &mut camera, next).expect("the document commits");
         (scene, camera)
     }
@@ -14118,7 +14837,7 @@ mod tests {
         // two files at once, and nothing on screen would say so.
         let second = tempfile::tempdir().expect("a temporary directory is available");
         let (arriving, _) = plain_document(&second, "refused.fcad", 1, 70.0);
-        let prepared = prepare_load(&camera, Ok(arriving), |_, _| {
+        let prepared = prepare_load(&camera, Path::new("shown.fcad"), Ok(arriving), |_, _| {
             Err(CadError::rendering("the device refused the drawings"))
         });
         let error = commit_scene(&mut scene, &mut camera, prepared)
@@ -14580,6 +15299,7 @@ mod tests {
         camera.resize(800, 600);
         let mut uploads = 0;
         let mut scene = LiveScene::new(
+            Some(PathBuf::from("shown.fcad")),
             (),
             Vec::new(),
             FaceNames::default(),
@@ -14588,7 +15308,7 @@ mod tests {
             Visibility::default(),
             Vec::new(),
         );
-        let prepared = prepare_load(&camera, Ok(loaded), |_, _| {
+        let prepared = prepare_load(&camera, Path::new("shown.fcad"), Ok(loaded), |_, _| {
             uploads += 1;
             Ok(())
         });
@@ -14725,10 +15445,15 @@ mod tests {
         // The route a real Open takes, minus the graphics device: the document
         // is read, rebuilt, refused, and the refusal is handed to the same
         // `prepare_load` that would otherwise have staged a picture.
-        let prepared = prepare_load(&camera, Err(refused_document(&path)), |_, _| {
-            uploads += 1;
-            Ok(())
-        });
+        let prepared = prepare_load(
+            &camera,
+            Path::new("shown.fcad"),
+            Err(refused_document(&path)),
+            |_, _| {
+                uploads += 1;
+                Ok(())
+            },
+        );
         let error = prepared.expect_err("a document that cannot be built has no picture to stage");
 
         let conflict = ferritecad_scene::SketchConflict::of(&error)
@@ -14767,7 +15492,12 @@ mod tests {
         let catalogue = scene.catalogue.clone();
 
         let (path, _, _) = impossible_document(&directory);
-        let refused = prepare_load(&camera, Err(refused_document(&path)), |_, _| Ok(()));
+        let refused = prepare_load(
+            &camera,
+            Path::new("shown.fcad"),
+            Err(refused_document(&path)),
+            |_, _| Ok(()),
+        );
         let error = commit_scene(&mut scene, &mut camera, refused)
             .expect_err("a refused document was committed");
 
@@ -14800,9 +15530,12 @@ mod tests {
     fn a_failure_that_is_not_a_conflict_stays_what_it_is() {
         let mut camera = ViewportInput::new();
         camera.resize(800, 600);
-        let error = prepare_load(&camera, Err(CadError::input("no such document")), |_, _| {
-            Ok(())
-        })
+        let error = prepare_load(
+            &camera,
+            Path::new("shown.fcad"),
+            Err(CadError::input("no such document")),
+            |_, _| Ok(()),
+        )
         .expect_err("a document that is not there has no picture");
 
         assert!(
