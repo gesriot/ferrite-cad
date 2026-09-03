@@ -6466,6 +6466,7 @@
         "path+crates/ferritecad-export#ferritecad-export@0.0.1",
         "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
         "path+crates/ferritecad-occt#ferritecad-occt@0.0.1",
+        "path+crates/ferritecad-scene#ferritecad-scene@0.0.1",
         "path+crates/ferritecad-types#ferritecad-types@0.0.1",
         "registry+https://github.com/rust-lang/crates.io-index#clap@4.6.6"
       ],
@@ -7625,7 +7626,7 @@
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/rust/rust-fragment-aarch64-apple-darwin.cdx.json@sha256:744e4fcaf029f105e0728b53e4f3668813cb67eca47b3bd7cd76f4eaad410dd9"
+        "value": "sbom/rust/rust-fragment-aarch64-apple-darwin.cdx.json@sha256:16ab65d443aa76d2df433c86e436c575caf7ec2c5d51e382b354dd496619ea3e"
       },
       {
         "name": "ferritecad:sbom:product-format",

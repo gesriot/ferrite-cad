@@ -6543,6 +6543,7 @@
         "path+crates/ferritecad-export#ferritecad-export@0.0.1",
         "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
         "path+crates/ferritecad-occt#ferritecad-occt@0.0.1",
+        "path+crates/ferritecad-scene#ferritecad-scene@0.0.1",
         "path+crates/ferritecad-types#ferritecad-types@0.0.1",
         "registry+https://github.com/rust-lang/crates.io-index#clap@4.6.6"
       ],
@@ -7719,7 +7720,7 @@
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/rust/rust-fragment-x86_64-pc-windows-msvc.cdx.json@sha256:c4522a31f5358cf5bbd86a457d086f36993172bad8943d4b4983baa2d0d6c6cc"
+        "value": "sbom/rust/rust-fragment-x86_64-pc-windows-msvc.cdx.json@sha256:1f452c6461a3af9e0f737be4526b71b463072309fa2a9d4f7512b9a6f57e1d92"
       },
       {
         "name": "ferritecad:sbom:product-format",
