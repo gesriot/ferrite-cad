@@ -13,10 +13,11 @@
 # placements are connected to one geometry object, and that `#2583` is a node
 # with no triangles carrying the omission properties.
 #
-# Needs Open CASCADE: the scene is built by importing the committed STEP
-# fixture through the shipped command and reopening the stored bytes. The
-# written file is a temporary artefact of one build's tessellation and is
-# never committed.
+# Needs Open CASCADE: the committed STEP fixture is imported through the
+# shipped `import-step`, the external file is deleted, and the FBX is written
+# by the shipped `export-fbx` from the stored bytes alone. So the bytes handed
+# to ufbx here are the bytes a person gets. The written file is a temporary
+# artefact of one build's tessellation and is never committed.
 #
 # Run from the repository root:
 #   tools/check-fbx-complex.sh

@@ -40,6 +40,61 @@ extrusion and the topology references naming that extrusion's faces. With Open
 CASCADE present, `rebuild --cold` evaluates it into geometry and `export-stl`
 writes it out; without one, the document still round-trips on its own.
 
+## Exporting to FBX
+
+```sh
+cargo run -p ferritecad-cli -- export-fbx part.fcad --output part.fbx
+```
+
+Writes the whole document as FBX 7.4 ASCII: every definition, every placement,
+and the assembly hierarchy with the local transforms the sources recorded.
+Geometry is shared rather than copied — one part placed four times is one mesh
+and four nodes — and the file is a model another program opens as a model,
+which is what makes it different from `export-stl`, whose format has no notion
+of a part at all.
+
+An imported part is read from the bytes the document stores, so the STEP file
+it came from need not exist any more:
+
+```sh
+cargo run -p ferritecad-cli -- import-step assembly.step --output assembly.fcad
+rm assembly.step
+cargo run -p ferritecad-cli -- export-fbx assembly.fcad --output assembly.fbx
+```
+
+The same document always produces the same bytes. Nothing in the file is a
+clock, a host name, a path or a random number, so two exports can be compared,
+diffed and checksummed.
+
+The output file appears in one step or not at all. It is built under a private
+scratch name beside the destination and published once, when the writer has
+finished and every byte is on the disk; a run that fails leaves the destination
+exactly as it found it and nothing beside it. An existing file is never
+replaced without `--force`, and no flag makes the `.fcad` an acceptable output
+for itself. The document is opened read-only and is not changed by being
+exported.
+
+### When some of it could not be exported
+
+A definition this build cannot turn into triangles is not dropped and is not
+invented. It keeps its place in the hierarchy as a node with no geometry, says
+so in properties an importer can read, and is described on standard error:
+
+```
+partial export: 1 definition could not be given triangles; each kept its place in the file
+
+  omission 1 of 1
+    definition  imported source 4e57…  key step.product_definition#2583
+    finding     problem while validating step.product_definition#2583: …
+    refusal     IncompleteFace
+    placements  2 in the file: node/57, node/58
+```
+
+Such an export **exits 6**. That is deliberately neither `0` nor a failure
+code: the file is real and was published, and it is not the whole model, so a
+script can tell the difference without reading prose. A clean export exits `0`
+and says nothing on standard error.
+
 ## Looking at a document
 
 ```sh
@@ -432,7 +487,7 @@ FerriteCAD is not a SolidWorks or KOMPAS-3D replacement and calling it one
 would be dishonest. The target for the first beta is narrower and worth
 stating plainly: **a fast local parametric part modeller** – sketch, extrude,
 revolve, cut, fillet, chamfer, shell, pattern; save, reopen and rebuild
-without cache; STEP in and out; STL out.
+without cache; STEP in and out; STL and FBX out.
 
 Assemblies, drawings, ESKD, sheet metal, scripting and plugins are all out of
 scope until that works.

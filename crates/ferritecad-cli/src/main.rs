@@ -7,6 +7,7 @@
 //! here first.
 
 mod export;
+mod export_fbx;
 mod import;
 mod publish;
 mod rebuild;
@@ -39,6 +40,15 @@ const EXIT_UNRESOLVED: u8 = 3;
 const EXIT_NOTICED: u8 = 4;
 /// A file the importer would not read at all. Nothing was written.
 const EXIT_REJECTED: u8 = 5;
+/// An export that produced a whole file, and could not give every definition
+/// of the document triangles.
+///
+/// Separate from success because the file is not the whole model and a script
+/// must be able to tell without parsing prose, and separate from failure
+/// because the file is there, was published, and every definition kept its
+/// place in it. Distinct from every code above: none of them means "there is
+/// an export, and here is what is missing from it".
+const EXIT_PARTIAL: u8 = 6;
 
 #[derive(Debug, Parser)]
 #[command(name = "ferritecad", version, about, long_about = None)]
@@ -61,6 +71,19 @@ enum Command {
     ClearCache(DocumentArgs),
     /// Rebuild a document and write one of its solids as binary STL.
     ExportStl(ExportStlArgs),
+    /// Rebuild a document and write the whole model as FBX 7.4 ASCII.
+    ///
+    /// Every definition and every placement, with the assembly hierarchy and
+    /// the local transforms the sources recorded, in one file another program
+    /// opens as a model rather than as a lump of triangles. An imported part is
+    /// read from the bytes the document stores, so the file it came from need
+    /// not exist any more.
+    ///
+    /// A definition this build cannot turn into triangles keeps its place in
+    /// the hierarchy, says so in the file, and is reported on standard error.
+    /// Such an export is published and exits 6 rather than 0: the file is real,
+    /// and it is not the whole model.
+    ExportFbx(ExportFbxArgs),
     /// Rebuild a document from scratch and report what it produced.
     Rebuild(RebuildArgs),
     /// Rebuild a document and report what each stored reference resolves to.
@@ -128,6 +151,22 @@ struct ExportStlArgs {
     angular_deflection: f64,
 
     /// Replace the output file if it already exists.
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Debug, Args)]
+struct ExportFbxArgs {
+    /// Path to the document. Opened read-only and never written to.
+    path: PathBuf,
+
+    /// Path to write the FBX to.
+    #[arg(long, short)]
+    output: PathBuf,
+
+    /// Replace the output file if it already exists.
+    ///
+    /// Never enough to make the document itself an acceptable output.
     #[arg(long)]
     force: bool,
 }
@@ -216,6 +255,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::ClearCache(args) => clear_cache(args),
         Command::ExportStl(args) => export::export_stl(args),
+        Command::ExportFbx(args) => export_fbx::export_fbx(args),
         Command::Rebuild(args) => rebuild::rebuild(args),
         Command::PrintTopology(args) => topology::print_topology(args),
         Command::ImportStep(args) => import::import_step(args),

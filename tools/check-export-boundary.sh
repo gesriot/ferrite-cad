@@ -297,8 +297,146 @@ do
     fi
 done
 
+# ------------------------------------------------------- the shipped route
+#
+# `export-fbx` is the one production route from a stored document to an FBX,
+# and everything that makes it that route rather than a second one is invisible
+# to the compiler. A command that reached for a flattened picture, opened the
+# document a second time, read the external STEP again, called the writer twice,
+# wrote straight into the destination, published before the writer finished or
+# worked out its own list of what is missing would all build.
+readonly ROUTE='crates/ferritecad-cli/src/export_fbx.rs'
+readonly MAIN='crates/ferritecad-cli/src/main.rs'
+
+[ -f "$ROUTE" ] || fail "the shipped FBX route ${ROUTE} is missing"
+[ -f "$MAIN" ] || fail "${MAIN} is missing"
+
+if [ -f "$ROUTE" ] && [ -f "$MAIN" ]; then
+    # The neutral model is built by the crate that knows a document and a
+    # kernel, so the command must actually depend on it rather than on a
+    # picture it assembled itself.
+    if ! awk '/^\[dev-dependencies\]/ { exit } { print }' \
+        crates/ferritecad-cli/Cargo.toml | grep -q 'ferritecad-scene'; then
+        fail "ferritecad-cli does not depend on ferritecad-scene, so export-fbx is not on the \
+production route"
+    fi
+
+    # A flattened picture multiplies every placement out and throws the
+    # assembly away. Handing one to the FBX writer would export the same model
+    # as a hundred and twelve unrelated draws.
+    for name in \
+        RenderSnapshot SnapshotBuilder LoadedScene load_scene CatalogueEntry \
+        sketch_drawing Camera PickId FacePickId EdgePickId VertexPickId \
+        ShapeHandle SubShapeHandle SessionId binary_stl export_stl \
+        SystemTime Instant now rand random
+    do
+        found="$(names "$ROUTE" "$name")"
+        if [ -n "$found" ]; then
+            echo "$found" >&2
+            fail "the shipped FBX route names ${name}"
+        fi
+    done
+
+    # Exactly one of each. A second document read, a second rebuild, a second
+    # reading of the stored STEP or a second call to the writer would each be a
+    # second answer to a question this command answers once.
+    for what in \
+        'export_scene(|builds the export scene|1' \
+        'write_fbx_ascii_7400(|calls the writer|1' \
+        'OcctKernel::new(|opens a kernel session|1' \
+        'Document::open|opens the document itself|0' \
+        'rebuild_cold(|rebuilds the document itself|0' \
+        'reopen_step_import(|reads a stored import itself|0' \
+        'std::fs::read(|reads a file of its own|0' \
+        'tessellate(|asks the kernel for geometry|0'
+    do
+        pattern="${what%%|*}"
+        rest="${what#*|}"
+        said="${rest%%|*}"
+        want="${rest##*|}"
+        count="$(shipped_count "$pattern" "$ROUTE")"
+        if [ "$count" != "$want" ]; then
+            fail "the shipped FBX route ${said} ${count} time(s), expected ${want}"
+        fi
+    done
+
+    # The scratch file is the only thing this opens, and publication is the
+    # shared one rather than a second implementation of it.
+    opened="$(shipped_count '.open(' "$ROUTE")"
+    scratch="$(shipped_count '.open(temporary.path())' "$ROUTE")"
+    if [ "$opened" != "1" ] || [ "$scratch" != "1" ]; then
+        fail "the shipped FBX route opens ${opened} path(s), of which ${scratch} is the scratch \
+file; it must open exactly the scratch file and nothing else"
+    fi
+    for pattern in 'std::fs::rename' 'hard_link' 'std::fs::write' 'std::fs::copy' 'File::create'; do
+        if [ "$(shipped_count "$pattern" "$ROUTE")" != "0" ]; then
+            fail "the shipped FBX route names ${pattern}; atomic publication has one implementation"
+        fi
+    done
+    for pattern in 'Temporary::beside(' 'create_new(true)' '.publish('; do
+        if [ "$(shipped_count "$pattern" "$ROUTE")" != "1" ]; then
+            fail "the shipped FBX route does not use ${pattern} exactly once"
+        fi
+    done
+
+    # And nothing is published until the writer has finished. Ordering, because
+    # a publication moved above the write would compile and would put a
+    # half-written file where the user asked for a finished one.
+    wrote="$(shipped "$ROUTE" | grep -n 'write_fbx_ascii_7400(' | head -1 | cut -d: -f1)"
+    published="$(shipped "$ROUTE" | grep -n '\.publish(' | head -1 | cut -d: -f1)"
+    if [ -z "$wrote" ] || [ -z "$published" ] || [ "$wrote" -ge "$published" ]; then
+        fail "the shipped FBX route publishes at line ${published:-none} and writes at line \
+${wrote:-none}; the writer must finish first"
+    fi
+
+    # The report is the writer's own record and not a second opinion. Reading
+    # the scene's completeness here would be a list that could disagree with
+    # the file that was published.
+    if [ "$(shipped_count 'report.omissions()' "$ROUTE")" -lt "1" ]; then
+        fail "the shipped FBX route does not report from FbxWriteReport::omissions()"
+    fi
+    if [ "$(shipped_count 'completeness()' "$ROUTE")" != "0" ]; then
+        fail "the shipped FBX route reads the scene's completeness; the writer already answered"
+    fi
+    # Neither a `Debug` rendering nor a refusal's message is a fact. The typed
+    # refusal has a stable name and that is what a report records.
+    if [ "$(shipped_count 'refusal.stable_name()' "$ROUTE")" != "1" ]; then
+        fail "the shipped FBX route does not record the typed refusal by its stable name"
+    fi
+    for pattern in '{:?}' 'refusal.to_string()' '{refusal}'; do
+        if [ "$(shipped_count "$pattern" "$ROUTE")" != "0" ]; then
+            fail "the shipped FBX route renders ${pattern} into its report"
+        fi
+    done
+    # An imported key is local to its file, so it never travels without the
+    # identity of the bytes it came from.
+    if [ "$(shipped_count 'definition_key' "$ROUTE")" -lt "1" ] \
+        || ! shipped "$ROUTE" | grep -q 'imported source {source}'; then
+        fail "the shipped FBX route does not qualify an imported key with its source"
+    fi
+
+    # The command is wired to this route and not to the STL one beside it.
+    if ! grep -q 'Command::ExportFbx(args) => export_fbx::export_fbx(args),' "$MAIN"; then
+        fail "${MAIN} does not route export-fbx to the FBX export"
+    fi
+
+    # And a partial export has a code of its own. Two constants sharing a value
+    # would make a script unable to tell "the file is not the whole model" from
+    # anything else.
+    codes="$(grep -oE '^const EXIT_[A-Z]+: u8 = [0-9]+;' "$MAIN" || true)"
+    values="$(printf '%s\n' "$codes" | grep -oE '= [0-9]+;' | tr -d '= ;')"
+    if [ "$(printf '%s\n' "$values" | sort -u | wc -l)" \
+        != "$(printf '%s\n' "$values" | wc -l)" ]; then
+        printf '%s\n' "$codes" >&2
+        fail "two exit codes share a value"
+    fi
+    if ! grep -q '^const EXIT_PARTIAL: u8 = 6;$' "$MAIN"; then
+        fail "${MAIN} does not define the partial export as exit code 6"
+    fi
+fi
+
 if [ "$problems" -ne 0 ]; then
     echo "export boundary: ${problems} problem(s)" >&2
     exit 1
 fi
-echo "export boundary: the model is neutral and there is one load path"
+echo "export boundary: the model is neutral, there is one load path and one shipped route"
