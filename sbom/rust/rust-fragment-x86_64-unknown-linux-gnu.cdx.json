@@ -6441,6 +6441,7 @@
         "path+crates/ferritecad-export#ferritecad-export@0.0.1",
         "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
         "path+crates/ferritecad-occt#ferritecad-occt@0.0.1",
+        "path+crates/ferritecad-scene#ferritecad-scene@0.0.1",
         "path+crates/ferritecad-types#ferritecad-types@0.0.1",
         "registry+https://github.com/rust-lang/crates.io-index#clap@4.6.6"
       ],
