@@ -146,17 +146,27 @@ identity is its `ObjectId`, and this slice does not extend that claim.
 Measured directly, because these candidates give the `Model` and the `Geometry`
 deliberately different names:
 
-| candidate | mesh named after its Model | after the FBX Geometry | after another placement |
+Each of the eight meshes an import publishes is compared with the name the file
+gives its own `Model` node and with the name the file gives its `Geometry`.
+
+| candidate | after its own node's `Model` name | after the FBX `Geometry` name | after neither |
 | --- | --- | --- | --- |
-| `a-control` | 8 | 0 | — |
+| `a-control` | 8 | 0 | 0 |
 | `b-ordinal`, `b-occurrence`, `c-property` | 6 | 0 | 2 |
-| `d-companion` | 0 | 0 | 8 (renamed) |
+| `d-companion` | 0 | 0 | 8 |
 
 **Not one Mesh in any candidate is named after the FBX `Geometry`.** §22B-1e1
 inferred this from a document whose geometry names happened to be unique; here
-the geometry carries a different name from every Model that places it, and the
-editor still ignores it. The two "after another placement" rows are the shared
-geometry, which takes the name of whichever placement comes first.
+the geometry carries a different name from every `Model` that places it, and the
+editor still ignores it.
+
+The two that match neither, under the machine-named candidates, are the two
+placements of the shared geometry: the mesh carries the *first* placement's
+`Model` name, so it matches that node and not the other. Under `a-control` both
+placements spell the same designation, so the same behaviour shows up as eight
+matches rather than six. Under the companion every mesh has been renamed to a
+designation and matches nothing the file spells, which is the point of that
+candidate.
 
 The imported model's own root is named after the **asset file**, in every
 candidate including the companion one — `d-companion_s01-byte-identical`, not
@@ -188,7 +198,10 @@ the control's two:
 2 x                                  '…/Alpha Part/MeshFilter, Type:MeshFilter'
 2 x                                  '…/Alpha Part/MeshRenderer, Type:MeshRenderer'
 2 x                                  '…/Alpha Part/Transform, Type:Transform'
-1 x                                  '…/Twin Part, …'  (the same four kinds)
+1 x                                  '…/Twin Part, Type:GameObject'
+1 x                                  '…/Twin Part/MeshFilter, Type:MeshFilter'
+1 x                                  '…/Twin Part/MeshRenderer, Type:MeshRenderer'
+1 x                                  '…/Twin Part/Transform, Type:Transform'
 1 x                                  'Name:Shell, Type:Material'
 1 x                                  'Name:Twin, Type:Material'
 ```
@@ -196,8 +209,10 @@ the control's two:
 Stock Unity disambiguates duplicate siblings itself — the control's hierarchy
 reads `Alpha Part`, `Alpha Part 1`, `Alpha Part 2`. The companion renames after
 that has happened, so three objects end up literally called `Alpha Part`, and
-the collision the machine names had removed comes back on **four more object
-kinds than the control ever warned about**.
+the collision the machine names had removed comes back — on `GameObject`,
+`Transform`, `MeshFilter`, `MeshRenderer` and `Material`, **five object kinds
+the control never warned about, and not on `Mesh`, which is the only kind the
+control did warn about**.
 
 ### Where the companion's rename lands, per kind
 
