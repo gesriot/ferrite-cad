@@ -368,6 +368,24 @@ impl Exports {
         self.pending.take().is_some()
     }
 
+    /// Replaces the current request with a refusal that already happened.
+    ///
+    /// A terminal refusal is a new answer, not merely a line of text. Any
+    /// older worker whose line it replaces must lose both the authority to
+    /// publish and the right to answer; otherwise the window says there is no
+    /// export to cancel while that worker can still put a file in place.
+    fn refuse(&mut self, destination: String, message: String) {
+        self.pending = None;
+        for exporting in &self.running {
+            exporting.cancel.cancel();
+        }
+        self.current = None;
+        self.status = ExportStatus::Failed {
+            destination,
+            message,
+        };
+    }
+
     /// Starts an export, abandoning whatever was already running.
     ///
     /// `spawn` is handed the destination, whether a replacement was
@@ -552,10 +570,10 @@ pub(crate) fn begin_export(
     match requested(source, chosen) {
         Ok(ExportRequest::Nothing) => None,
         Ok(ExportRequest::RefusedSource) => {
-            exports.status = ExportStatus::Failed {
-                destination: source.map(display).unwrap_or_default(),
-                message: SOURCE_IS_DESTINATION.to_owned(),
-            };
+            exports.refuse(
+                source.map(display).unwrap_or_default(),
+                SOURCE_IS_DESTINATION.to_owned(),
+            );
             input.request_redraw();
             None
         }
@@ -573,10 +591,7 @@ pub(crate) fn begin_export(
             Some(generation)
         }
         Err(error) => {
-            exports.status = ExportStatus::Failed {
-                destination: String::new(),
-                message: error.to_string(),
-            };
+            exports.refuse(String::new(), error.to_string());
             input.request_redraw();
             None
         }
@@ -617,18 +632,12 @@ pub(crate) fn confirm_export(
                     Some(generation)
                 }
                 Ok(true) => {
-                    exports.status = ExportStatus::Failed {
-                        destination: display(source),
-                        message: SOURCE_IS_DESTINATION.to_owned(),
-                    };
+                    exports.refuse(display(source), SOURCE_IS_DESTINATION.to_owned());
                     input.request_redraw();
                     None
                 }
                 Err(error) => {
-                    exports.status = ExportStatus::Failed {
-                        destination: display(&destination),
-                        message: error.to_string(),
-                    };
+                    exports.refuse(display(&destination), error.to_string());
                     input.request_redraw();
                     None
                 }
@@ -1571,6 +1580,69 @@ mod tests {
             }
             other => panic!("a stale answer replaced the current status with {other:?}"),
         }
+
+        exports.stop_all();
+    }
+
+    /// A request that is refused still replaces the export the user was
+    /// asking for before it. Otherwise the line and Cancel button describe a
+    /// finished failure while the old worker remains able to publish a file
+    /// nobody can see how to stop.
+    #[test]
+    fn a_refused_new_export_stops_the_old_one_it_replaced() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let document = plate(directory.path());
+        let first = directory.path().join("first.fbx");
+
+        let mut exports = Exports::default();
+        let mut input = input();
+        let mut started = Started::default();
+
+        let older = begin_export(
+            &mut exports,
+            &mut input,
+            Some(&document),
+            Some(first),
+            |destination, replace, _, cancel| started.held(destination, replace, cancel),
+        )
+        .expect("an export started");
+
+        let refused = begin_export(
+            &mut exports,
+            &mut input,
+            Some(&document),
+            Some(document.clone()),
+            |destination, replace, _, cancel| started.held(destination, replace, cancel),
+        );
+
+        assert!(refused.is_none(), "the document was exported over itself");
+        assert!(
+            started.cancels[0].is_cancelled(),
+            "the export hidden by the refusal was left able to publish"
+        );
+        assert!(
+            !exports.accepts(older),
+            "the hidden export still had an answer the window would accept"
+        );
+        assert!(
+            !exports.running(),
+            "Cancel was offered for a refused request"
+        );
+        assert!(exports.status().line().contains(SOURCE_IS_DESTINATION));
+        assert_eq!(
+            exports.running.len(),
+            1,
+            "the superseded worker was dropped instead of being joined later"
+        );
+
+        let refusal = exports.status().line();
+        let _ = input.take_redraw();
+        assert!(
+            !finish_export(&mut exports, &mut input, older, Err(CadError::Cancelled)),
+            "the answer from the hidden export replaced the refusal"
+        );
+        assert_eq!(exports.status().line(), refusal);
+        assert!(!input.take_redraw(), "the stale answer asked for a frame");
 
         exports.stop_all();
     }
