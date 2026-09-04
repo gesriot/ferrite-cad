@@ -1,0 +1,2259 @@
+{
+ "decision_table": [
+  {
+   "best_measured_variant": "g-flat-id",
+   "extra_game_objects_it_costs": 0,
+   "extra_renderers_it_costs": 0,
+   "human_names": true,
+   "measured": "five graphs on the production writer's bytes, twelve transitions each, with the source-qualified identity carried as invisible custom properties",
+   "mechanism": "1. pure FBX graph",
+   "multi_source_identity": true,
+   "needs_a_companion_package": false,
+   "needs_a_persistent_occurrence_id": true,
+   "needs_external_assets": false,
+   "not_measured": "graphs this slice did not write, binary FBX, and any importer setting other than the hierarchy sort",
+   "production_cost": "a writer change plus a persisted occurrence identity",
+   "public_api": "the FBX format itself",
+   "shared_mesh": true,
+   "stable_game_object_references": false,
+   "stable_material_references": false,
+   "stable_mesh_references": false,
+   "user_workflow": "none: the file is imported the way it is imported today"
+  },
+  {
+   "human_names": true,
+   "measured": "what 6000.4.10f1 writes into a model's .fbx.meta, what public API names it, what a direct edit does, and whether it survives a re-export, a real change, deleting the .meta and a sidecar written before the first import",
+   "mechanism": "2. .meta identity table",
+   "multi_source_identity": false,
+   "needs_a_companion_package": false,
+   "needs_a_persistent_occurrence_id": true,
+   "needs_external_assets": false,
+   "not_measured": "editor versions other than 6000.4.10f1, and any table Unity writes for asset types this slice does not import",
+   "production_cost": "no measured path writes it",
+   "public_api": "none found",
+   "shared_mesh": null,
+   "stable_game_object_references": false,
+   "stable_material_references": false,
+   "stable_mesh_references": false,
+   "user_workflow": "the sidecar has to travel with the file and stay in version control"
+  },
+  {
+   "human_names": true,
+   "measured": "SourceAssetIdentifier and AddRemap for Mesh, Material and GameObject separately, with a stored reference across each transition",
+   "mechanism": "3. AddRemap plus external assets",
+   "multi_source_identity": false,
+   "needs_a_companion_package": false,
+   "needs_a_persistent_occurrence_id": true,
+   "needs_external_assets": true,
+   "not_measured": "types other than those three, and remapping to assets a project already owns rather than to copies made here",
+   "production_cost": "not a writer change at all: a project-side convention plus a tool that maintains the map",
+   "public_api": "AssetImporter.AddRemap, public and documented",
+   "shared_mesh": true,
+   "stable_game_object_references": false,
+   "stable_material_references": true,
+   "stable_mesh_references": false,
+   "types_the_import_honoured": [
+    "Material"
+   ],
+   "user_workflow": "one external asset per remapped object, kept in the project and re-pointed by hand whenever a designation changes"
+  },
+  {
+   "human_names": true,
+   "measured": "AddObjectToAsset identifiers derived from the full durable identity, for GameObject, Mesh and Material, over the same transitions, plus a deliberate identifier collision and whether a ScriptedImporter can own .fbx",
+   "mechanism": "4. ScriptedImporter / custom extension",
+   "multi_source_identity": true,
+   "needs_a_companion_package": true,
+   "needs_a_persistent_occurrence_id": true,
+   "needs_external_assets": false,
+   "not_measured": "reading real FBX bytes from a ScriptedImporter, packaging, and anything about how such a package would be distributed or versioned",
+   "production_cost": "a Unity package, its own importer, and its own file format read on the Unity side",
+   "public_api": "UnityEditor.AssetImporters.ScriptedImporter and AssetImportContext.AddObjectToAsset, public and documented",
+   "shared_mesh": true,
+   "stable_game_object_references": false,
+   "stable_material_references": true,
+   "stable_mesh_references": true,
+   "user_workflow": "install a FerriteCAD Unity package, and export the extension it owns rather than .fbx"
+  },
+  {
+   "human_names": false,
+   "measured": "by \u00a722B-1e2a, on the flat graph: references kept except one shared Mesh under an earlier-sibling insert, and every name a person reads becomes a token",
+   "mechanism": "5. machine-visible names as a fallback",
+   "multi_source_identity": true,
+   "needs_a_companion_package": false,
+   "needs_a_persistent_occurrence_id": true,
+   "needs_external_assets": false,
+   "not_measured": "nothing new here; this row exists so the fallback sits in the same table as the mechanisms it competes with",
+   "production_cost": "a writer change plus a persisted occurrence identity",
+   "public_api": "the FBX format itself",
+   "shared_mesh": true,
+   "stable_game_object_references": true,
+   "stable_material_references": true,
+   "stable_mesh_references": false,
+   "user_workflow": "the hierarchy, the mesh list and the material list read as tokens"
+  },
+  {
+   "human_names": true,
+   "measured": "the control, here and in \u00a722B-1e1: the references that break are named and counted rather than described as a risk",
+   "mechanism": "6. human names without a durable-reference guarantee",
+   "multi_source_identity": false,
+   "needs_a_companion_package": false,
+   "needs_a_persistent_occurrence_id": false,
+   "needs_external_assets": false,
+   "not_measured": "nothing new here; it is the product as it ships",
+   "production_cost": "none",
+   "public_api": "the FBX format itself",
+   "shared_mesh": false,
+   "stable_game_object_references": false,
+   "stable_material_references": false,
+   "stable_mesh_references": false,
+   "user_workflow": "unchanged"
+  }
+ ],
+ "graph": {
+  "variants": [
+   {
+    "ambiguous_definitions": 1,
+    "anchors": 216,
+    "by_type": {
+     "GameObject": {
+      "ambiguous": 24,
+      "content_changed": 0,
+      "kept": 55,
+      "lost": 5
+     },
+     "Material": {
+      "ambiguous": 24,
+      "content_changed": 0,
+      "kept": 28,
+      "lost": 8
+     },
+     "Mesh": {
+      "ambiguous": 24,
+      "content_changed": 0,
+      "kept": 45,
+      "lost": 3
+     }
+    },
+    "carrier_material_slots": 0,
+    "carrier_renderers": 0,
+    "definition_join": "FerriteCADDefinitionKey",
+    "definitions_whose_placements_share_one_mesh": 2,
+    "definitions_with_a_split_mesh": [
+     "key:step.product_definition#42"
+    ],
+    "definitions_with_several_placements": 3,
+    "extra_game_objects_vs_control": 0,
+    "extra_mesh_renderers_vs_control": 0,
+    "extra_meshes_vs_control": 0,
+    "geometry_drawn_outside_any_placement": 0,
+    "human_names_only": true,
+    "import_root_is_synthetic": false,
+    "material_slots": 10,
+    "occurrence_join": "ordinal_in_scene_order",
+    "references_ambiguous": 72,
+    "references_kept": 128,
+    "references_kept_with_changed_content": 0,
+    "references_lost": 16,
+    "references_missing_though_still_exported": 9,
+    "references_retargeted": 5,
+    "shared_mesh_kept_for_every_definition": false,
+    "subassets_named_by_machine_token": 0,
+    "triangles": 23,
+    "triangles_equal_the_control": true,
+    "variant": "g-flat",
+    "visible_nodes_named_by_machine_token": 0,
+    "warnings": [
+     "1 x warning: Identifier uniqueness violation: 'Name:Alpha Part, Type:Mesh'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets.",
+     "1 x warning: Identifier uniqueness violation: 'Name:Twin Part, Type:Mesh'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets."
+    ]
+   },
+   {
+    "ambiguous_definitions": 0,
+    "anchors": 216,
+    "by_type": {
+     "GameObject": {
+      "ambiguous": 0,
+      "content_changed": 0,
+      "kept": 79,
+      "lost": 5
+     },
+     "Material": {
+      "ambiguous": 0,
+      "content_changed": 0,
+      "kept": 44,
+      "lost": 16
+     },
+     "Mesh": {
+      "ambiguous": 0,
+      "content_changed": 0,
+      "kept": 69,
+      "lost": 3
+     }
+    },
+    "carrier_material_slots": 0,
+    "carrier_renderers": 0,
+    "definition_join": "FerriteCADDefinitionId",
+    "definitions_whose_placements_share_one_mesh": 2,
+    "definitions_with_a_split_mesh": [],
+    "definitions_with_several_placements": 2,
+    "extra_game_objects_vs_control": 0,
+    "extra_mesh_renderers_vs_control": 0,
+    "extra_meshes_vs_control": 0,
+    "geometry_drawn_outside_any_placement": 0,
+    "human_names_only": true,
+    "import_root_is_synthetic": false,
+    "material_slots": 10,
+    "occurrence_join": "FerriteCADOccurrenceId",
+    "references_ambiguous": 0,
+    "references_kept": 192,
+    "references_kept_with_changed_content": 0,
+    "references_lost": 24,
+    "references_missing_though_still_exported": 13,
+    "references_retargeted": 9,
+    "shared_mesh_kept_for_every_definition": true,
+    "subassets_named_by_machine_token": 0,
+    "triangles": 23,
+    "triangles_equal_the_control": true,
+    "variant": "g-flat-id",
+    "visible_nodes_named_by_machine_token": 0,
+    "warnings": [
+     "1 x warning: Identifier uniqueness violation: 'Name:Alpha Part, Type:Mesh'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets.",
+     "1 x warning: Identifier uniqueness violation: 'Name:Twin Part, Type:Mesh'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets."
+    ]
+   },
+   {
+    "ambiguous_definitions": 0,
+    "anchors": 216,
+    "by_type": {
+     "GameObject": {
+      "ambiguous": 0,
+      "content_changed": 0,
+      "kept": 79,
+      "lost": 5
+     },
+     "Material": {
+      "ambiguous": 0,
+      "content_changed": 0,
+      "kept": 44,
+      "lost": 16
+     },
+     "Mesh": {
+      "ambiguous": 0,
+      "content_changed": 0,
+      "kept": 71,
+      "lost": 1
+     }
+    },
+    "carrier_material_slots": 6,
+    "carrier_renderers": 6,
+    "definition_join": "FerriteCADDefinitionId",
+    "definitions_whose_placements_share_one_mesh": 2,
+    "definitions_with_a_split_mesh": [],
+    "definitions_with_several_placements": 2,
+    "extra_game_objects_vs_control": 7,
+    "extra_mesh_renderers_vs_control": 6,
+    "extra_meshes_vs_control": 0,
+    "geometry_drawn_outside_any_placement": 6,
+    "human_names_only": false,
+    "import_root_is_synthetic": true,
+    "material_slots": 16,
+    "occurrence_join": "FerriteCADOccurrenceId",
+    "references_ambiguous": 0,
+    "references_kept": 194,
+    "references_kept_with_changed_content": 0,
+    "references_lost": 22,
+    "references_missing_though_still_exported": 12,
+    "references_retargeted": 8,
+    "shared_mesh_kept_for_every_definition": true,
+    "subassets_named_by_machine_token": 30,
+    "triangles": 23,
+    "triangles_equal_the_control": true,
+    "variant": "g-carrier",
+    "visible_nodes_named_by_machine_token": 6,
+    "warnings": [
+     "1 x error: The mesh of Alpha Part 2 has 1 sub meshes but the renderer is using 2 materials. Your mesh should use the same amount of sub meshes as materials.",
+     "1 x error: The mesh of Alpha Part has 1 sub meshes but the renderer is using 2 materials. Your mesh should use the same amount of sub meshes as materials."
+    ]
+   },
+   {
+    "ambiguous_definitions": 0,
+    "anchors": 216,
+    "by_type": {
+     "GameObject": {
+      "ambiguous": 0,
+      "content_changed": 0,
+      "kept": 79,
+      "lost": 5
+     },
+     "Material": {
+      "ambiguous": 0,
+      "content_changed": 0,
+      "kept": 44,
+      "lost": 16
+     },
+     "Mesh": {
+      "ambiguous": 0,
+      "content_changed": 0,
+      "kept": 69,
+      "lost": 3
+     }
+    },
+    "carrier_material_slots": 0,
+    "carrier_renderers": 0,
+    "definition_join": "FerriteCADDefinitionId",
+    "definitions_whose_placements_share_one_mesh": 2,
+    "definitions_with_a_split_mesh": [],
+    "definitions_with_several_placements": 2,
+    "extra_game_objects_vs_control": 0,
+    "extra_mesh_renderers_vs_control": 0,
+    "extra_meshes_vs_control": 0,
+    "geometry_drawn_outside_any_placement": 0,
+    "human_names_only": true,
+    "import_root_is_synthetic": false,
+    "material_slots": 10,
+    "occurrence_join": "FerriteCADOccurrenceId",
+    "references_ambiguous": 0,
+    "references_kept": 192,
+    "references_kept_with_changed_content": 0,
+    "references_lost": 24,
+    "references_missing_though_still_exported": 13,
+    "references_retargeted": 9,
+    "shared_mesh_kept_for_every_definition": true,
+    "subassets_named_by_machine_token": 0,
+    "triangles": 23,
+    "triangles_equal_the_control": true,
+    "variant": "g-carrier-detached",
+    "visible_nodes_named_by_machine_token": 0,
+    "warnings": [
+     "1 x warning: Identifier uniqueness violation: 'Name:Alpha Part, Type:Mesh'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets.",
+     "1 x warning: Identifier uniqueness violation: 'Name:Twin Part, Type:Mesh'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets."
+    ]
+   },
+   {
+    "ambiguous_definitions": 0,
+    "anchors": 216,
+    "by_type": {
+     "GameObject": {
+      "ambiguous": 0,
+      "content_changed": 0,
+      "kept": 79,
+      "lost": 5
+     },
+     "Material": {
+      "ambiguous": 0,
+      "content_changed": 0,
+      "kept": 44,
+      "lost": 16
+     },
+     "Mesh": {
+      "ambiguous": 0,
+      "content_changed": 0,
+      "kept": 71,
+      "lost": 1
+     }
+    },
+    "carrier_material_slots": 10,
+    "carrier_renderers": 8,
+    "definition_join": "FerriteCADDefinitionId",
+    "definitions_whose_placements_share_one_mesh": 2,
+    "definitions_with_a_split_mesh": [],
+    "definitions_with_several_placements": 2,
+    "extra_game_objects_vs_control": 8,
+    "extra_mesh_renderers_vs_control": 0,
+    "extra_meshes_vs_control": 0,
+    "geometry_drawn_outside_any_placement": 0,
+    "human_names_only": false,
+    "import_root_is_synthetic": false,
+    "material_slots": 10,
+    "occurrence_join": "FerriteCADOccurrenceId",
+    "references_ambiguous": 0,
+    "references_kept": 194,
+    "references_kept_with_changed_content": 0,
+    "references_lost": 22,
+    "references_missing_though_still_exported": 12,
+    "references_retargeted": 8,
+    "shared_mesh_kept_for_every_definition": true,
+    "subassets_named_by_machine_token": 38,
+    "triangles": 23,
+    "triangles_equal_the_control": true,
+    "variant": "g-two-level",
+    "visible_nodes_named_by_machine_token": 8,
+    "warnings": []
+   }
+  ]
+ },
+ "graph_transitions": [
+  {
+   "change": "the same bytes at the same asset path",
+   "files_are_byte_identical": true,
+   "scenario": "g-flat/s01-byte-identical",
+   "variant": "g-flat",
+   "verdicts": {
+    "ambiguous_join": 6,
+    "same_semantic": 12
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "ambiguous_join": 2,
+     "same_semantic": 5
+    },
+    "Material": {
+     "ambiguous_join": 2,
+     "same_semantic": 3
+    },
+    "Mesh": {
+     "ambiguous_join": 2,
+     "same_semantic": 4
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "an unchanged document exported again",
+   "files_are_byte_identical": true,
+   "scenario": "g-flat/s02-reexport-unchanged",
+   "variant": "g-flat",
+   "verdicts": {
+    "ambiguous_join": 6,
+    "same_semantic": 12
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "ambiguous_join": 2,
+     "same_semantic": 5
+    },
+    "Material": {
+     "ambiguous_join": 2,
+     "same_semantic": 3
+    },
+    "Mesh": {
+     "ambiguous_join": 2,
+     "same_semantic": 4
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "one designation; every durable identity unchanged",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat/s03-display-name-only",
+   "variant": "g-flat",
+   "verdicts": {
+    "ambiguous_join": 6,
+    "missing_though_object_still_exported": 3,
+    "retargeted_to_another_definition": 2,
+    "same_semantic": 7
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "ambiguous_join": 2,
+     "missing_though_object_still_exported": 2,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 2
+    },
+    "Material": {
+     "ambiguous_join": 2,
+     "same_semantic": 3
+    },
+    "Mesh": {
+     "ambiguous_join": 2,
+     "missing_though_object_still_exported": 1,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 2
+    }
+   },
+   "warning_transition": "warning_changed"
+  },
+  {
+   "change": "an unrelated definition added before the tracked ones",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat/s04a-insert-definition",
+   "variant": "g-flat",
+   "verdicts": {
+    "ambiguous_join": 6,
+    "missing_though_object_still_exported": 2,
+    "retargeted_to_another_definition": 1,
+    "same_semantic": 9
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "ambiguous_join": 2,
+     "same_semantic": 5
+    },
+    "Material": {
+     "ambiguous_join": 2,
+     "missing_though_object_still_exported": 2,
+     "retargeted_to_another_definition": 1
+    },
+    "Mesh": {
+     "ambiguous_join": 2,
+     "same_semantic": 4
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "an unrelated earlier definition removed",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat/s04b-remove-definition",
+   "variant": "g-flat",
+   "verdicts": {
+    "ambiguous_join": 6,
+    "missing_because_object_was_removed": 1,
+    "missing_though_object_still_exported": 2,
+    "retargeted_to_another_definition": 1,
+    "same_semantic": 8
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "ambiguous_join": 2,
+     "same_semantic": 5
+    },
+    "Material": {
+     "ambiguous_join": 2,
+     "missing_though_object_still_exported": 2,
+     "retargeted_to_another_definition": 1
+    },
+    "Mesh": {
+     "ambiguous_join": 2,
+     "missing_because_object_was_removed": 1,
+     "same_semantic": 3
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "two unrelated definitions swapped in export order",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat/s04c-reorder-definitions",
+   "variant": "g-flat",
+   "verdicts": {
+    "ambiguous_join": 6,
+    "missing_though_object_still_exported": 1,
+    "same_semantic": 11
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "ambiguous_join": 2,
+     "same_semantic": 5
+    },
+    "Material": {
+     "ambiguous_join": 2,
+     "missing_though_object_still_exported": 1,
+     "same_semantic": 2
+    },
+    "Mesh": {
+     "ambiguous_join": 2,
+     "same_semantic": 4
+    }
+   },
+   "warning_transition": "warning_changed"
+  },
+  {
+   "change": "a sibling occurrence added between two tracked ones",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat/s05a-insert-sibling",
+   "variant": "g-flat",
+   "verdicts": {
+    "ambiguous_join": 6,
+    "same_semantic": 12
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "ambiguous_join": 2,
+     "same_semantic": 5
+    },
+    "Material": {
+     "ambiguous_join": 2,
+     "same_semantic": 3
+    },
+    "Mesh": {
+     "ambiguous_join": 2,
+     "same_semantic": 4
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "a sibling occurrence removed",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat/s05b-remove-sibling",
+   "variant": "g-flat",
+   "verdicts": {
+    "ambiguous_join": 6,
+    "same_semantic": 12
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "ambiguous_join": 2,
+     "same_semantic": 5
+    },
+    "Material": {
+     "ambiguous_join": 2,
+     "same_semantic": 3
+    },
+    "Mesh": {
+     "ambiguous_join": 2,
+     "same_semantic": 4
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "two sibling occurrences swapped",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat/s05c-reorder-siblings",
+   "variant": "g-flat",
+   "verdicts": {
+    "ambiguous_join": 6,
+    "same_semantic": 12
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "ambiguous_join": 2,
+     "same_semantic": 5
+    },
+    "Material": {
+     "ambiguous_join": 2,
+     "same_semantic": 3
+    },
+    "Mesh": {
+     "ambiguous_join": 2,
+     "same_semantic": 4
+    }
+   },
+   "warning_transition": "warning_changed"
+  },
+  {
+   "change": "the tracked definition and its only placement removed",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat/s06-remove-tracked-definition",
+   "variant": "g-flat",
+   "verdicts": {
+    "ambiguous_join": 6,
+    "missing_because_object_was_removed": 1,
+    "missing_though_object_still_exported": 1,
+    "retargeted_to_another_definition": 1,
+    "same_semantic": 9
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "ambiguous_join": 2,
+     "missing_though_object_still_exported": 1,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 3
+    },
+    "Material": {
+     "ambiguous_join": 2,
+     "same_semantic": 3
+    },
+    "Mesh": {
+     "ambiguous_join": 2,
+     "missing_because_object_was_removed": 1,
+     "same_semantic": 3
+    }
+   },
+   "warning_transition": "warning_changed"
+  },
+  {
+   "change": "one material slot changes designation and colour",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat/s07-change-material",
+   "variant": "g-flat",
+   "verdicts": {
+    "ambiguous_join": 6,
+    "missing_because_object_was_removed": 1,
+    "same_semantic": 11
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "ambiguous_join": 2,
+     "same_semantic": 5
+    },
+    "Material": {
+     "ambiguous_join": 2,
+     "missing_because_object_was_removed": 1,
+     "same_semantic": 2
+    },
+    "Mesh": {
+     "ambiguous_join": 2,
+     "same_semantic": 4
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "a second definition gains a slot with an existing designation",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat/s08-reuse-material",
+   "variant": "g-flat",
+   "verdicts": {
+    "ambiguous_join": 6,
+    "same_semantic": 12
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "ambiguous_join": 2,
+     "same_semantic": 5
+    },
+    "Material": {
+     "ambiguous_join": 2,
+     "same_semantic": 3
+    },
+    "Mesh": {
+     "ambiguous_join": 2,
+     "same_semantic": 4
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "the same bytes at the same asset path",
+   "files_are_byte_identical": true,
+   "scenario": "g-flat-id/s01-byte-identical",
+   "variant": "g-flat-id",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "an unchanged document exported again",
+   "files_are_byte_identical": true,
+   "scenario": "g-flat-id/s02-reexport-unchanged",
+   "variant": "g-flat-id",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "one designation; every durable identity unchanged",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat-id/s03-display-name-only",
+   "variant": "g-flat-id",
+   "verdicts": {
+    "missing_though_object_still_exported": 3,
+    "retargeted_to_another_definition": 2,
+    "same_semantic": 13
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "missing_though_object_still_exported": 2,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 4
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "missing_though_object_still_exported": 1,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 4
+    }
+   },
+   "warning_transition": "warning_changed"
+  },
+  {
+   "change": "an unrelated definition added before the tracked ones",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat-id/s04a-insert-definition",
+   "variant": "g-flat-id",
+   "verdicts": {
+    "missing_though_object_still_exported": 3,
+    "retargeted_to_another_definition": 2,
+    "same_semantic": 13
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_though_object_still_exported": 3,
+     "retargeted_to_another_definition": 2
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "an unrelated earlier definition removed",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat-id/s04b-remove-definition",
+   "variant": "g-flat-id",
+   "verdicts": {
+    "missing_because_object_was_removed": 1,
+    "missing_though_object_still_exported": 3,
+    "retargeted_to_another_definition": 2,
+    "same_semantic": 12
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_though_object_still_exported": 3,
+     "retargeted_to_another_definition": 2
+    },
+    "Mesh": {
+     "missing_because_object_was_removed": 1,
+     "same_semantic": 5
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "two unrelated definitions swapped in export order",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat-id/s04c-reorder-definitions",
+   "variant": "g-flat-id",
+   "verdicts": {
+    "missing_though_object_still_exported": 1,
+    "same_semantic": 17
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_though_object_still_exported": 1,
+     "same_semantic": 4
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_changed"
+  },
+  {
+   "change": "a sibling occurrence added between two tracked ones",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat-id/s05a-insert-sibling",
+   "variant": "g-flat-id",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "a sibling occurrence removed",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat-id/s05b-remove-sibling",
+   "variant": "g-flat-id",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "two sibling occurrences swapped",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat-id/s05c-reorder-siblings",
+   "variant": "g-flat-id",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_changed"
+  },
+  {
+   "change": "the tracked definition and its only placement removed",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat-id/s06-remove-tracked-definition",
+   "variant": "g-flat-id",
+   "verdicts": {
+    "missing_because_object_was_removed": 1,
+    "missing_though_object_still_exported": 2,
+    "retargeted_to_another_definition": 2,
+    "same_semantic": 13
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "missing_though_object_still_exported": 1,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 5
+    },
+    "Material": {
+     "missing_though_object_still_exported": 1,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 3
+    },
+    "Mesh": {
+     "missing_because_object_was_removed": 1,
+     "same_semantic": 5
+    }
+   },
+   "warning_transition": "warning_changed"
+  },
+  {
+   "change": "one material slot changes designation and colour",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat-id/s07-change-material",
+   "variant": "g-flat-id",
+   "verdicts": {
+    "missing_because_object_was_removed": 1,
+    "same_semantic": 17
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_because_object_was_removed": 1,
+     "same_semantic": 4
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "a second definition gains a slot with an existing designation",
+   "files_are_byte_identical": false,
+   "scenario": "g-flat-id/s08-reuse-material",
+   "variant": "g-flat-id",
+   "verdicts": {
+    "missing_though_object_still_exported": 1,
+    "retargeted_to_another_definition": 1,
+    "same_semantic": 16
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_though_object_still_exported": 1,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 3
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "the same bytes at the same asset path",
+   "files_are_byte_identical": true,
+   "scenario": "g-carrier/s01-byte-identical",
+   "variant": "g-carrier",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "an unchanged document exported again",
+   "files_are_byte_identical": true,
+   "scenario": "g-carrier/s02-reexport-unchanged",
+   "variant": "g-carrier",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "one designation; every durable identity unchanged",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier/s03-display-name-only",
+   "variant": "g-carrier",
+   "verdicts": {
+    "missing_though_object_still_exported": 2,
+    "retargeted_to_another_definition": 1,
+    "same_semantic": 15
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "missing_though_object_still_exported": 2,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 4
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_changed"
+  },
+  {
+   "change": "an unrelated definition added before the tracked ones",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier/s04a-insert-definition",
+   "variant": "g-carrier",
+   "verdicts": {
+    "missing_though_object_still_exported": 3,
+    "retargeted_to_another_definition": 2,
+    "same_semantic": 13
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_though_object_still_exported": 3,
+     "retargeted_to_another_definition": 2
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "an unrelated earlier definition removed",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier/s04b-remove-definition",
+   "variant": "g-carrier",
+   "verdicts": {
+    "missing_because_object_was_removed": 1,
+    "missing_though_object_still_exported": 3,
+    "retargeted_to_another_definition": 2,
+    "same_semantic": 12
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_though_object_still_exported": 3,
+     "retargeted_to_another_definition": 2
+    },
+    "Mesh": {
+     "missing_because_object_was_removed": 1,
+     "same_semantic": 5
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "two unrelated definitions swapped in export order",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier/s04c-reorder-definitions",
+   "variant": "g-carrier",
+   "verdicts": {
+    "missing_though_object_still_exported": 1,
+    "same_semantic": 17
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_though_object_still_exported": 1,
+     "same_semantic": 4
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_changed"
+  },
+  {
+   "change": "a sibling occurrence added between two tracked ones",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier/s05a-insert-sibling",
+   "variant": "g-carrier",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "a sibling occurrence removed",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier/s05b-remove-sibling",
+   "variant": "g-carrier",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "two sibling occurrences swapped",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier/s05c-reorder-siblings",
+   "variant": "g-carrier",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_changed"
+  },
+  {
+   "change": "the tracked definition and its only placement removed",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier/s06-remove-tracked-definition",
+   "variant": "g-carrier",
+   "verdicts": {
+    "missing_because_object_was_removed": 1,
+    "missing_though_object_still_exported": 2,
+    "retargeted_to_another_definition": 2,
+    "same_semantic": 13
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "missing_though_object_still_exported": 1,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 5
+    },
+    "Material": {
+     "missing_though_object_still_exported": 1,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 3
+    },
+    "Mesh": {
+     "missing_because_object_was_removed": 1,
+     "same_semantic": 5
+    }
+   },
+   "warning_transition": "warning_changed"
+  },
+  {
+   "change": "one material slot changes designation and colour",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier/s07-change-material",
+   "variant": "g-carrier",
+   "verdicts": {
+    "missing_because_object_was_removed": 1,
+    "same_semantic": 17
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_because_object_was_removed": 1,
+     "same_semantic": 4
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "a second definition gains a slot with an existing designation",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier/s08-reuse-material",
+   "variant": "g-carrier",
+   "verdicts": {
+    "missing_though_object_still_exported": 1,
+    "retargeted_to_another_definition": 1,
+    "same_semantic": 16
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_though_object_still_exported": 1,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 3
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_changed"
+  },
+  {
+   "change": "the same bytes at the same asset path",
+   "files_are_byte_identical": true,
+   "scenario": "g-carrier-detached/s01-byte-identical",
+   "variant": "g-carrier-detached",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "an unchanged document exported again",
+   "files_are_byte_identical": true,
+   "scenario": "g-carrier-detached/s02-reexport-unchanged",
+   "variant": "g-carrier-detached",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "one designation; every durable identity unchanged",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier-detached/s03-display-name-only",
+   "variant": "g-carrier-detached",
+   "verdicts": {
+    "missing_though_object_still_exported": 3,
+    "retargeted_to_another_definition": 2,
+    "same_semantic": 13
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "missing_though_object_still_exported": 2,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 4
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "missing_though_object_still_exported": 1,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 4
+    }
+   },
+   "warning_transition": "warning_changed"
+  },
+  {
+   "change": "an unrelated definition added before the tracked ones",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier-detached/s04a-insert-definition",
+   "variant": "g-carrier-detached",
+   "verdicts": {
+    "missing_though_object_still_exported": 3,
+    "retargeted_to_another_definition": 2,
+    "same_semantic": 13
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_though_object_still_exported": 3,
+     "retargeted_to_another_definition": 2
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "an unrelated earlier definition removed",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier-detached/s04b-remove-definition",
+   "variant": "g-carrier-detached",
+   "verdicts": {
+    "missing_because_object_was_removed": 1,
+    "missing_though_object_still_exported": 3,
+    "retargeted_to_another_definition": 2,
+    "same_semantic": 12
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_though_object_still_exported": 3,
+     "retargeted_to_another_definition": 2
+    },
+    "Mesh": {
+     "missing_because_object_was_removed": 1,
+     "same_semantic": 5
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "two unrelated definitions swapped in export order",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier-detached/s04c-reorder-definitions",
+   "variant": "g-carrier-detached",
+   "verdicts": {
+    "missing_though_object_still_exported": 1,
+    "same_semantic": 17
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_though_object_still_exported": 1,
+     "same_semantic": 4
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_changed"
+  },
+  {
+   "change": "a sibling occurrence added between two tracked ones",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier-detached/s05a-insert-sibling",
+   "variant": "g-carrier-detached",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "a sibling occurrence removed",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier-detached/s05b-remove-sibling",
+   "variant": "g-carrier-detached",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "two sibling occurrences swapped",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier-detached/s05c-reorder-siblings",
+   "variant": "g-carrier-detached",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_changed"
+  },
+  {
+   "change": "the tracked definition and its only placement removed",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier-detached/s06-remove-tracked-definition",
+   "variant": "g-carrier-detached",
+   "verdicts": {
+    "missing_because_object_was_removed": 1,
+    "missing_though_object_still_exported": 2,
+    "retargeted_to_another_definition": 2,
+    "same_semantic": 13
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "missing_though_object_still_exported": 1,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 5
+    },
+    "Material": {
+     "missing_though_object_still_exported": 1,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 3
+    },
+    "Mesh": {
+     "missing_because_object_was_removed": 1,
+     "same_semantic": 5
+    }
+   },
+   "warning_transition": "warning_changed"
+  },
+  {
+   "change": "one material slot changes designation and colour",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier-detached/s07-change-material",
+   "variant": "g-carrier-detached",
+   "verdicts": {
+    "missing_because_object_was_removed": 1,
+    "same_semantic": 17
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_because_object_was_removed": 1,
+     "same_semantic": 4
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "a second definition gains a slot with an existing designation",
+   "files_are_byte_identical": false,
+   "scenario": "g-carrier-detached/s08-reuse-material",
+   "variant": "g-carrier-detached",
+   "verdicts": {
+    "missing_though_object_still_exported": 1,
+    "retargeted_to_another_definition": 1,
+    "same_semantic": 16
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_though_object_still_exported": 1,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 3
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_unchanged"
+  },
+  {
+   "change": "the same bytes at the same asset path",
+   "files_are_byte_identical": true,
+   "scenario": "g-two-level/s01-byte-identical",
+   "variant": "g-two-level",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "never_warned"
+  },
+  {
+   "change": "an unchanged document exported again",
+   "files_are_byte_identical": true,
+   "scenario": "g-two-level/s02-reexport-unchanged",
+   "variant": "g-two-level",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "never_warned"
+  },
+  {
+   "change": "one designation; every durable identity unchanged",
+   "files_are_byte_identical": false,
+   "scenario": "g-two-level/s03-display-name-only",
+   "variant": "g-two-level",
+   "verdicts": {
+    "missing_though_object_still_exported": 2,
+    "retargeted_to_another_definition": 1,
+    "same_semantic": 15
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "missing_though_object_still_exported": 2,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 4
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "never_warned"
+  },
+  {
+   "change": "an unrelated definition added before the tracked ones",
+   "files_are_byte_identical": false,
+   "scenario": "g-two-level/s04a-insert-definition",
+   "variant": "g-two-level",
+   "verdicts": {
+    "missing_though_object_still_exported": 3,
+    "retargeted_to_another_definition": 2,
+    "same_semantic": 13
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_though_object_still_exported": 3,
+     "retargeted_to_another_definition": 2
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "never_warned"
+  },
+  {
+   "change": "an unrelated earlier definition removed",
+   "files_are_byte_identical": false,
+   "scenario": "g-two-level/s04b-remove-definition",
+   "variant": "g-two-level",
+   "verdicts": {
+    "missing_because_object_was_removed": 1,
+    "missing_though_object_still_exported": 3,
+    "retargeted_to_another_definition": 2,
+    "same_semantic": 12
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_though_object_still_exported": 3,
+     "retargeted_to_another_definition": 2
+    },
+    "Mesh": {
+     "missing_because_object_was_removed": 1,
+     "same_semantic": 5
+    }
+   },
+   "warning_transition": "never_warned"
+  },
+  {
+   "change": "two unrelated definitions swapped in export order",
+   "files_are_byte_identical": false,
+   "scenario": "g-two-level/s04c-reorder-definitions",
+   "variant": "g-two-level",
+   "verdicts": {
+    "missing_though_object_still_exported": 1,
+    "same_semantic": 17
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_though_object_still_exported": 1,
+     "same_semantic": 4
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_appeared"
+  },
+  {
+   "change": "a sibling occurrence added between two tracked ones",
+   "files_are_byte_identical": false,
+   "scenario": "g-two-level/s05a-insert-sibling",
+   "variant": "g-two-level",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "never_warned"
+  },
+  {
+   "change": "a sibling occurrence removed",
+   "files_are_byte_identical": false,
+   "scenario": "g-two-level/s05b-remove-sibling",
+   "variant": "g-two-level",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "never_warned"
+  },
+  {
+   "change": "two sibling occurrences swapped",
+   "files_are_byte_identical": false,
+   "scenario": "g-two-level/s05c-reorder-siblings",
+   "variant": "g-two-level",
+   "verdicts": {
+    "same_semantic": 18
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "same_semantic": 5
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "warning_appeared"
+  },
+  {
+   "change": "the tracked definition and its only placement removed",
+   "files_are_byte_identical": false,
+   "scenario": "g-two-level/s06-remove-tracked-definition",
+   "variant": "g-two-level",
+   "verdicts": {
+    "missing_because_object_was_removed": 1,
+    "missing_though_object_still_exported": 2,
+    "retargeted_to_another_definition": 2,
+    "same_semantic": 13
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "missing_though_object_still_exported": 1,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 5
+    },
+    "Material": {
+     "missing_though_object_still_exported": 1,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 3
+    },
+    "Mesh": {
+     "missing_because_object_was_removed": 1,
+     "same_semantic": 5
+    }
+   },
+   "warning_transition": "never_warned"
+  },
+  {
+   "change": "one material slot changes designation and colour",
+   "files_are_byte_identical": false,
+   "scenario": "g-two-level/s07-change-material",
+   "variant": "g-two-level",
+   "verdicts": {
+    "missing_because_object_was_removed": 1,
+    "same_semantic": 17
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_because_object_was_removed": 1,
+     "same_semantic": 4
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "never_warned"
+  },
+  {
+   "change": "a second definition gains a slot with an existing designation",
+   "files_are_byte_identical": false,
+   "scenario": "g-two-level/s08-reuse-material",
+   "variant": "g-two-level",
+   "verdicts": {
+    "missing_though_object_still_exported": 1,
+    "retargeted_to_another_definition": 1,
+    "same_semantic": 16
+   },
+   "verdicts_by_type": {
+    "GameObject": {
+     "same_semantic": 7
+    },
+    "Material": {
+     "missing_though_object_still_exported": 1,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 3
+    },
+    "Mesh": {
+     "same_semantic": 6
+    }
+   },
+   "warning_transition": "never_warned"
+  }
+ ],
+ "joined_scenario_files": 120,
+ "meta": {
+  "a_public_api_writes_the_table": false,
+  "a_sidecar_written_first_was_honoured": true,
+  "an_invented_entry_created_an_object": false,
+  "class_ids": [],
+  "covers_game_objects": false,
+  "covers_materials": false,
+  "covers_meshes": false,
+  "direct_edit_changed_a_local_file_id": false,
+  "direct_edit_changed_a_visible_name": false,
+  "external_object_api_members_found": [
+   "AssetImporter.AddRemap",
+   "AssetImporter.GetExternalObjectMap",
+   "AssetImporter.RemoveRemap",
+   "AssetImporter.SupportsRemappedAssetType",
+   "ModelImporter.SearchAndRemapMaterials"
+  ],
+  "file_ids_unchanged_after_a_real_change": false,
+  "file_ids_unchanged_after_deleting_the_meta": true,
+  "file_ids_unchanged_after_reexport": true,
+  "internal_id_to_name_table_present": true,
+  "only_working_path": "no measured path writes the table at all",
+  "public_api_members_found": [],
+  "rebuilt_after_deleting_the_meta": false,
+  "survived_a_real_change": false,
+  "survived_a_reexport": true,
+  "table_entries": 0,
+  "undocumented_editing_is_the_only_working_path": false,
+  "what_the_table_maps": "nothing: the table is absent or empty for this import"
+ },
+ "placement_fidelity": {
+  "every_placement_draws_its_geometry_where_the_control_draws_it": true,
+  "every_placement_lands_where_the_control_puts_it": true,
+  "extra_nodes_under_placements": {
+   "g-carrier": 11,
+   "g-carrier-detached": 11,
+   "g-flat": 11,
+   "g-flat-id": 11,
+   "g-two-level": 28
+  },
+  "geometry_drawn_outside_any_placement": {
+   "g-carrier": 6,
+   "g-carrier-detached": 0,
+   "g-flat": 0,
+   "g-flat-id": 0,
+   "g-two-level": 0
+  },
+  "renderers_under_placements": {
+   "g-carrier": 17,
+   "g-carrier-detached": 17,
+   "g-flat": 17,
+   "g-flat-id": 17,
+   "g-two-level": 17
+  }
+ },
+ "rebuilt_variant_summaries": 5,
+ "remap": {
+  "ambiguous_keys": [
+   "GameObject:Beta Part x 2",
+   "Mesh:Alpha Part x 2",
+   "Mesh:Twin Part x 2",
+   "MeshFilter:Beta Part x 2",
+   "MeshRenderer:Beta Part x 2",
+   "Transform:Beta Part x 2"
+  ],
+  "external_assets_the_project_gained": 3,
+  "is_a_property_of_the_fbx": false,
+  "keys_that_name_more_than_one_object": 6,
+  "types": [
+   {
+    "accepted_but_ignored": true,
+    "add_remap_error": "",
+    "add_remap_threw": false,
+    "external_assets_required": 1,
+    "external_content_unchanged_after_the_fbx_changed": true,
+    "human_names_kept": true,
+    "key_shape": "SourceAssetIdentifier(type, unity visible name)",
+    "left_a_dangling_entry_after_removal": false,
+    "map_key_after_the_rename": "Mesh:Alpha Part -> external-mesh",
+    "one_shared_mesh_kept": true,
+    "silently_retargeted": false,
+    "stored_reference_verdict": "same_object",
+    "supported": false,
+    "survived_a_designation_rename": true,
+    "survived_a_reexport": true,
+    "survived_removing_the_definition": true,
+    "the_fbx_changed_this_object": false,
+    "the_scene_shows_content_the_fbx_no_longer_has": false,
+    "unity_type": "Mesh",
+    "warnings": [
+     "1 x warning: Identifier uniqueness violation: 'Name:Alpha Part, Type:Mesh'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets.",
+     "1 x warning: Identifier uniqueness violation: 'Name:Twin Part, Type:Mesh'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets."
+    ],
+    "what_the_scene_points_at_now": "imported sub-assets only"
+   },
+   {
+    "accepted_but_ignored": false,
+    "add_remap_error": "",
+    "add_remap_threw": false,
+    "external_assets_required": 1,
+    "external_content_unchanged_after_the_fbx_changed": true,
+    "human_names_kept": true,
+    "key_shape": "SourceAssetIdentifier(type, unity visible name)",
+    "left_a_dangling_entry_after_removal": true,
+    "map_key_after_the_rename": "Material:Shell #2 -> external-material",
+    "one_shared_mesh_kept": true,
+    "silently_retargeted": false,
+    "stored_reference_verdict": "missing",
+    "supported": true,
+    "survived_a_designation_rename": true,
+    "survived_a_reexport": true,
+    "survived_removing_the_definition": true,
+    "the_fbx_changed_this_object": true,
+    "the_scene_shows_content_the_fbx_no_longer_has": true,
+    "unity_type": "Material",
+    "warnings": [
+     "1 x warning: Identifier uniqueness violation: 'Name:Alpha Part, Type:Mesh'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets.",
+     "1 x warning: Identifier uniqueness violation: 'Name:Twin Part, Type:Mesh'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets."
+    ],
+    "what_the_scene_points_at_now": "external:external-material"
+   },
+   {
+    "accepted_but_ignored": true,
+    "add_remap_error": "",
+    "add_remap_threw": false,
+    "external_assets_required": 1,
+    "external_content_unchanged_after_the_fbx_changed": true,
+    "human_names_kept": true,
+    "key_shape": "SourceAssetIdentifier(type, unity visible name)",
+    "left_a_dangling_entry_after_removal": false,
+    "map_key_after_the_rename": "GameObject:Alpha Part -> external-object",
+    "one_shared_mesh_kept": true,
+    "silently_retargeted": false,
+    "stored_reference_verdict": "same_object",
+    "supported": false,
+    "survived_a_designation_rename": true,
+    "survived_a_reexport": true,
+    "survived_removing_the_definition": true,
+    "the_fbx_changed_this_object": false,
+    "the_scene_shows_content_the_fbx_no_longer_has": false,
+    "unity_type": "GameObject",
+    "warnings": [
+     "1 x warning: Identifier uniqueness violation: 'Name:Alpha Part, Type:Mesh'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets.",
+     "1 x warning: Identifier uniqueness violation: 'Name:Twin Part, Type:Mesh'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets."
+    ],
+    "what_the_scene_points_at_now": "imported sub-assets only"
+   }
+  ],
+  "what_it_is": "a project-side importer setting that replaces an imported sub-asset with an external asset of the same type"
+ },
+ "schema": "ferritecad.unity-graph-decision.v1",
+ "scripted": {
+  "a_scripted_importer_can_own_fbx": false,
+  "ambiguous_definitions": 0,
+  "claim_conclusion": "the native ModelImporter kept the extension; a ScriptedImporter needs its own",
+  "collision_materials_expected": 7,
+  "collision_materials_published": 7,
+  "collision_merged_two_objects_into_one": false,
+  "collision_messages": [
+   "6 x warning: Identifier uniqueness violation: 'Name:fcad|material|collision, Type:Material'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets.",
+   "2 x warning: Identifier uniqueness violation: 'Name:fcad|root/collision/Assembly Root/Alpha Part, Type:GameObject'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets.",
+   "2 x warning: Identifier uniqueness violation: 'Name:fcad|root/collision/Assembly Root/Alpha Part/MeshFilter, Type:MeshFilter'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets.",
+   "2 x warning: Identifier uniqueness violation: 'Name:fcad|root/collision/Assembly Root/Alpha Part/MeshRenderer, Type:MeshRenderer'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets.",
+   "2 x warning: Identifier uniqueness violation: 'Name:fcad|root/collision/Assembly Root/Alpha Part/MonoBehaviour-FerriteSyntheticTag, Type:MonoBehaviour'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets.",
+   "2 x warning: Identifier uniqueness violation: 'Name:fcad|root/collision/Assembly Root/Alpha Part/Transform, Type:Transform'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets.",
+   "1 x warning: Identifier uniqueness violation: 'Name:fcad|root/collision/Assembly Root/Twin Part, Type:GameObject'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets.",
+   "1 x warning: Identifier uniqueness violation: 'Name:fcad|root/collision/Assembly Root/Twin Part/MeshFilter, Type:MeshFilter'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets.",
+   "1 x warning: Identifier uniqueness violation: 'Name:fcad|root/collision/Assembly Root/Twin Part/MeshRenderer, Type:MeshRenderer'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets.",
+   "1 x warning: Identifier uniqueness violation: 'Name:fcad|root/collision/Assembly Root/Twin Part/MonoBehaviour-FerriteSyntheticTag, Type:MonoBehaviour'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets.",
+   "1 x warning: Identifier uniqueness violation: 'Name:fcad|root/collision/Assembly Root/Twin Part/Transform, Type:Transform'. Multiple Objects with the same name/type are generated by this Importer. There is no guarantee that subsequent imports of this asset will properly re-link to these targets."
+  ],
+  "collision_was_refused": false,
+  "definitions_whose_placements_share_one_mesh": 2,
+  "definitions_with_several_placements": 2,
+  "extension_it_owns": "fcadsyn",
+  "game_objects": 11,
+  "identifier_rows": 24,
+  "identifier_rows_by_type": {
+   "GameObject": 11,
+   "Material": 7,
+   "Mesh": 6
+  },
+  "importer_the_fbx_actually_got": "ModelImporter",
+  "is_a_property_of_the_fbx": false,
+  "materials": 7,
+  "meshes": 6,
+  "references_kept": 211,
+  "references_kept_with_changed_content": 1,
+  "references_lost": 4,
+  "rename": [
+   {
+    "identifiers_compared": 11,
+    "local_file_ids_that_moved": 3,
+    "the_identifier_alone_decides_the_local_file_id": false,
+    "unity_type": "GameObject"
+   },
+   {
+    "identifiers_compared": 6,
+    "local_file_ids_that_moved": 0,
+    "the_identifier_alone_decides_the_local_file_id": true,
+    "unity_type": "Mesh"
+   },
+   {
+    "identifiers_compared": 7,
+    "local_file_ids_that_moved": 0,
+    "the_identifier_alone_decides_the_local_file_id": true,
+    "unity_type": "Material"
+   }
+  ],
+  "shared_mesh_kept_for_every_definition": true,
+  "the_claiming_importer_compiled": true,
+  "the_claiming_importer_ran": false,
+  "the_importer_reads_fbx": false,
+  "the_model_importer_kept_fbx": true,
+  "transitions": [
+   {
+    "change": "the same bytes at the same asset path",
+    "scenario": "s01-byte-identical",
+    "verdicts": {
+     "same_semantic": 18
+    },
+    "warning_transition": "warning_unchanged"
+   },
+   {
+    "change": "an unchanged document exported again",
+    "scenario": "s02-reexport-unchanged",
+    "verdicts": {
+     "same_semantic": 18
+    },
+    "warning_transition": "warning_unchanged"
+   },
+   {
+    "change": "one designation; every durable identity unchanged",
+    "scenario": "s03-display-name-only",
+    "verdicts": {
+     "missing_though_object_still_exported": 2,
+     "retargeted_to_another_definition": 1,
+     "same_semantic": 15
+    },
+    "warning_transition": "warning_changed"
+   },
+   {
+    "change": "an unrelated definition added before the tracked ones",
+    "scenario": "s04a-insert-definition",
+    "verdicts": {
+     "same_semantic": 18
+    },
+    "warning_transition": "warning_unchanged"
+   },
+   {
+    "change": "an unrelated earlier definition removed",
+    "scenario": "s04b-remove-definition",
+    "verdicts": {
+     "missing_because_object_was_removed": 1,
+     "same_semantic": 17
+    },
+    "warning_transition": "warning_unchanged"
+   },
+   {
+    "change": "two unrelated definitions swapped in document order",
+    "scenario": "s04c-reorder-definitions",
+    "verdicts": {
+     "same_semantic": 18
+    },
+    "warning_transition": "warning_unchanged"
+   },
+   {
+    "change": "a sibling occurrence added between two tracked ones",
+    "scenario": "s05a-insert-sibling",
+    "verdicts": {
+     "same_semantic": 18
+    },
+    "warning_transition": "warning_changed"
+   },
+   {
+    "change": "a sibling occurrence removed",
+    "scenario": "s05b-remove-sibling",
+    "verdicts": {
+     "same_semantic": 18
+    },
+    "warning_transition": "warning_unchanged"
+   },
+   {
+    "change": "two sibling occurrences swapped",
+    "scenario": "s05c-reorder-siblings",
+    "verdicts": {
+     "same_semantic": 18
+    },
+    "warning_transition": "warning_unchanged"
+   },
+   {
+    "change": "the tracked definition and its only placement removed",
+    "scenario": "s06-remove-tracked-definition",
+    "verdicts": {
+     "missing_because_object_was_removed": 2,
+     "same_semantic": 16
+    },
+    "warning_transition": "warning_changed"
+   },
+   {
+    "change": "one material slot changes designation and colour",
+    "scenario": "s07-change-material",
+    "verdicts": {
+     "same_definition_other_occurrence": 1,
+     "same_semantic": 17
+    },
+    "warning_transition": "warning_unchanged"
+   },
+   {
+    "change": "a second definition gains a slot with an existing designation",
+    "scenario": "s08-reuse-material",
+    "verdicts": {
+     "same_semantic": 18
+    },
+    "warning_transition": "warning_unchanged"
+   }
+  ],
+  "types_whose_local_file_id_is_the_identifier": [
+   "Mesh",
+   "Material"
+  ],
+  "types_whose_local_file_id_moved_with_the_designation": [
+   "GameObject"
+  ],
+  "verdicts_by_type": {
+   "GameObject": {
+    "missing_because_object_was_removed": 1,
+    "missing_though_object_still_exported": 2,
+    "retargeted_to_another_definition": 1,
+    "same_semantic": 80
+   },
+   "Material": {
+    "same_definition_other_occurrence": 1,
+    "same_semantic": 59
+   },
+   "Mesh": {
+    "missing_because_object_was_removed": 2,
+    "same_semantic": 70
+   }
+  },
+  "visible_names_carrying_a_machine_token": 0,
+  "what_it_would_take_in_the_product": "a Unity package the user installs, owning an extension the ModelImporter does not, and reading FerriteCAD's own bytes"
+ },
+ "stop_conditions": {
+  "a_companion_package_would_be_required_for_the_scripted_mechanism": true,
+  "a_new_persisted_occurrence_id_is_still_required": true,
+  "a_public_api_writes_the_meta_identity_table": false,
+  "a_pure_fbx_graph_solves_it": false,
+  "a_scripted_importer_meets_the_whole_contract": false,
+  "add_remap_requires_external_assets": true,
+  "graphs_that_add_no_visible_object": [
+   "g-flat",
+   "g-flat-id",
+   "g-carrier-detached"
+  ],
+  "graphs_that_keep_every_reference": [],
+  "graphs_that_keep_shared_mesh_and_human_names": [
+   "g-flat-id",
+   "g-carrier-detached"
+  ],
+  "graphs_that_solve_it": [],
+  "no_measured_mechanism_keeps_shared_mesh_human_names_and_every_reference": true,
+  "no_measured_mechanism_meets_the_whole_contract": true,
+  "the_scripted_mechanism_needs_its_own_extension": true,
+  "two_clean_projects_diverged": false,
+  "types_add_remap_actually_replaced": [
+   "Material"
+  ],
+  "types_whose_scripted_identifier_decides_the_local_file_id": [
+   "Material",
+   "Mesh"
+  ],
+  "types_whose_scripted_local_file_id_moved_with_the_designation": [
+   "GameObject"
+  ],
+  "undocumented_meta_editing_is_the_only_working_path_for_that_mechanism": false
+ },
+ "transformer_fidelity": {
+  "documents": 12,
+  "variants": [
+   {
+    "control_object_numbers_all_present": true,
+    "control_world_transforms_unchanged": true,
+    "geometry_arrays_equal_the_control": true,
+    "material_colours_equal_the_control": true,
+    "objects_the_transformer_added": 0,
+    "variant": "g-flat"
+   },
+   {
+    "control_object_numbers_all_present": true,
+    "control_world_transforms_unchanged": true,
+    "geometry_arrays_equal_the_control": true,
+    "material_colours_equal_the_control": true,
+    "objects_the_transformer_added": 0,
+    "variant": "g-flat-id"
+   },
+   {
+    "control_object_numbers_all_present": true,
+    "control_world_transforms_unchanged": true,
+    "geometry_arrays_equal_the_control": true,
+    "material_colours_equal_the_control": true,
+    "objects_the_transformer_added": 71,
+    "variant": "g-carrier"
+   },
+   {
+    "control_object_numbers_all_present": true,
+    "control_world_transforms_unchanged": true,
+    "geometry_arrays_equal_the_control": true,
+    "material_colours_equal_the_control": true,
+    "objects_the_transformer_added": 71,
+    "variant": "g-carrier-detached"
+   },
+   {
+    "control_object_numbers_all_present": true,
+    "control_world_transforms_unchanged": true,
+    "geometry_arrays_equal_the_control": true,
+    "material_colours_equal_the_control": true,
+    "objects_the_transformer_added": 95,
+    "variant": "g-two-level"
+   }
+  ]
+ },
+ "unity_version": "6000.4.10f1"
+}

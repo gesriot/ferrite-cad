@@ -1,0 +1,373 @@
+{
+ "scenarios": [
+  {
+   "after": "synthetic/base.fcadsyn",
+   "before": "synthetic/base.fcadsyn",
+   "change": "the same bytes at the same asset path",
+   "material_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@1",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@0",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@0"
+   ],
+   "mesh_definitions": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#50",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42"
+   ],
+   "name": "s01-byte-identical",
+   "object_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000003",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000004",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300@019ffc72-2996-7000-9000-000000000006",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@019ffc72-2996-7000-9000-000000000007",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@019ffc72-2996-7000-9000-000000000008",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#400@019ffc72-2996-7000-9000-000000000009",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#2@019ffc72-2996-7000-9000-00000000000a"
+   ]
+  },
+  {
+   "after": "synthetic/reexport.fcadsyn",
+   "before": "synthetic/base.fcadsyn",
+   "change": "an unchanged document exported again",
+   "material_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@1",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@0",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@0"
+   ],
+   "mesh_definitions": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#50",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42"
+   ],
+   "name": "s02-reexport-unchanged",
+   "object_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000003",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000004",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300@019ffc72-2996-7000-9000-000000000006",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@019ffc72-2996-7000-9000-000000000007",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@019ffc72-2996-7000-9000-000000000008",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#400@019ffc72-2996-7000-9000-000000000009",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#2@019ffc72-2996-7000-9000-00000000000a"
+   ]
+  },
+  {
+   "after": "synthetic/renamed.fcadsyn",
+   "before": "synthetic/base.fcadsyn",
+   "change": "one designation; every durable identity unchanged",
+   "material_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@1",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@0",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@0"
+   ],
+   "mesh_definitions": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#50",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42"
+   ],
+   "name": "s03-display-name-only",
+   "object_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000003",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000004",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300@019ffc72-2996-7000-9000-000000000006",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@019ffc72-2996-7000-9000-000000000007",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@019ffc72-2996-7000-9000-000000000008",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#400@019ffc72-2996-7000-9000-000000000009",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#2@019ffc72-2996-7000-9000-00000000000a"
+   ]
+  },
+  {
+   "after": "synthetic/inserted-definition.fcadsyn",
+   "before": "synthetic/base.fcadsyn",
+   "change": "an unrelated definition added before the tracked ones",
+   "material_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@1",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@0",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@0"
+   ],
+   "mesh_definitions": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#50",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42"
+   ],
+   "name": "s04a-insert-definition",
+   "object_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000003",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000004",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300@019ffc72-2996-7000-9000-000000000006",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@019ffc72-2996-7000-9000-000000000007",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@019ffc72-2996-7000-9000-000000000008",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#400@019ffc72-2996-7000-9000-000000000009",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#2@019ffc72-2996-7000-9000-00000000000a"
+   ]
+  },
+  {
+   "after": "synthetic/remove-definition.fcadsyn",
+   "before": "synthetic/base.fcadsyn",
+   "change": "an unrelated earlier definition removed",
+   "material_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@1",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@0",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@0"
+   ],
+   "mesh_definitions": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#50",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42"
+   ],
+   "name": "s04b-remove-definition",
+   "object_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000003",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000004",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300@019ffc72-2996-7000-9000-000000000006",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@019ffc72-2996-7000-9000-000000000007",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@019ffc72-2996-7000-9000-000000000008",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#400@019ffc72-2996-7000-9000-000000000009",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#2@019ffc72-2996-7000-9000-00000000000a"
+   ]
+  },
+  {
+   "after": "synthetic/reorder-definitions.fcadsyn",
+   "before": "synthetic/base.fcadsyn",
+   "change": "two unrelated definitions swapped in document order",
+   "material_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@1",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@0",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@0"
+   ],
+   "mesh_definitions": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#50",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42"
+   ],
+   "name": "s04c-reorder-definitions",
+   "object_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000003",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000004",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300@019ffc72-2996-7000-9000-000000000006",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@019ffc72-2996-7000-9000-000000000007",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@019ffc72-2996-7000-9000-000000000008",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#400@019ffc72-2996-7000-9000-000000000009",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#2@019ffc72-2996-7000-9000-00000000000a"
+   ]
+  },
+  {
+   "after": "synthetic/insert-sibling.fcadsyn",
+   "before": "synthetic/base.fcadsyn",
+   "change": "a sibling occurrence added between two tracked ones",
+   "material_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@1",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@0",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@0"
+   ],
+   "mesh_definitions": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#50",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42"
+   ],
+   "name": "s05a-insert-sibling",
+   "object_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000003",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000004",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300@019ffc72-2996-7000-9000-000000000006",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@019ffc72-2996-7000-9000-000000000007",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@019ffc72-2996-7000-9000-000000000008",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#400@019ffc72-2996-7000-9000-000000000009",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#2@019ffc72-2996-7000-9000-00000000000a"
+   ]
+  },
+  {
+   "after": "synthetic/remove-sibling.fcadsyn",
+   "before": "synthetic/base.fcadsyn",
+   "change": "a sibling occurrence removed",
+   "material_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@1",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@0",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@0"
+   ],
+   "mesh_definitions": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#50",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42"
+   ],
+   "name": "s05b-remove-sibling",
+   "object_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000003",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000004",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300@019ffc72-2996-7000-9000-000000000006",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@019ffc72-2996-7000-9000-000000000007",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@019ffc72-2996-7000-9000-000000000008",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#400@019ffc72-2996-7000-9000-000000000009",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#2@019ffc72-2996-7000-9000-00000000000a"
+   ]
+  },
+  {
+   "after": "synthetic/reorder-siblings.fcadsyn",
+   "before": "synthetic/base.fcadsyn",
+   "change": "two sibling occurrences swapped",
+   "material_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@1",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@0",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@0"
+   ],
+   "mesh_definitions": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#50",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42"
+   ],
+   "name": "s05c-reorder-siblings",
+   "object_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000003",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000004",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300@019ffc72-2996-7000-9000-000000000006",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@019ffc72-2996-7000-9000-000000000007",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@019ffc72-2996-7000-9000-000000000008",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#400@019ffc72-2996-7000-9000-000000000009",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#2@019ffc72-2996-7000-9000-00000000000a"
+   ]
+  },
+  {
+   "after": "synthetic/remove-tracked-definition.fcadsyn",
+   "before": "synthetic/base.fcadsyn",
+   "change": "the tracked definition and its only placement removed",
+   "material_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@1",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@0",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@0"
+   ],
+   "mesh_definitions": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#50",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42"
+   ],
+   "name": "s06-remove-tracked-definition",
+   "object_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000003",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000004",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300@019ffc72-2996-7000-9000-000000000006",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@019ffc72-2996-7000-9000-000000000007",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@019ffc72-2996-7000-9000-000000000008",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#400@019ffc72-2996-7000-9000-000000000009",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#2@019ffc72-2996-7000-9000-00000000000a"
+   ]
+  },
+  {
+   "after": "synthetic/changed-material.fcadsyn",
+   "before": "synthetic/base.fcadsyn",
+   "change": "one material slot changes designation and colour",
+   "material_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@1",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@0",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@0"
+   ],
+   "mesh_definitions": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#50",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42"
+   ],
+   "name": "s07-change-material",
+   "object_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000003",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000004",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300@019ffc72-2996-7000-9000-000000000006",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@019ffc72-2996-7000-9000-000000000007",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@019ffc72-2996-7000-9000-000000000008",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#400@019ffc72-2996-7000-9000-000000000009",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#2@019ffc72-2996-7000-9000-00000000000a"
+   ]
+  },
+  {
+   "after": "synthetic/reuse-material.fcadsyn",
+   "before": "synthetic/base.fcadsyn",
+   "change": "a second definition gains a slot with an existing designation",
+   "material_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@1",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200@0",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@0",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@0"
+   ],
+   "mesh_definitions": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#50",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#200",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42"
+   ],
+   "name": "s08-reuse-material",
+   "object_bindings": [
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000003",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#100@019ffc72-2996-7000-9000-000000000004",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#300@019ffc72-2996-7000-9000-000000000006",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#42@019ffc72-2996-7000-9000-000000000007",
+    "019ffc72-2996-7000-8000-0000000000b2/step.product_definition#42@019ffc72-2996-7000-9000-000000000008",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#400@019ffc72-2996-7000-9000-000000000009",
+    "019ffc72-2996-7000-8000-0000000000a1/step.product_definition#2@019ffc72-2996-7000-9000-00000000000a"
+   ]
+  },
+  {
+   "after": "synthetic/collision.fcadsyn",
+   "before": "synthetic/collision.fcadsyn",
+   "change": "two durable identities given one AddObjectToAsset identifier; distinct-identifier material count=7",
+   "material_bindings": [],
+   "mesh_definitions": [],
+   "name": "collision",
+   "object_bindings": []
+  }
+ ]
+}

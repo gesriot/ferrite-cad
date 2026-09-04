@@ -69,6 +69,15 @@ jobs:
       # record itself is a gate.
       - run: tools/unity-identity-channel/scripts/check_channel_record.sh
 
+      # The §22B-1e2b graph and importer-API measurement, minus the editor, for
+      # the same reason. All five recorded editor runs are re-joined to the
+      # independent `ufbx` reading of the same bytes, the measurement-only
+      # structural transformer is held to its claim against the control —
+      # geometry arrays, material colours, node transforms and existing object
+      # numbers — the decision record is rebuilt and compared, and the semantic
+      # mutation campaign is run against the real verifier.
+      - run: tools/unity-identity-graph/scripts/check_graph_record.sh
+
       # One crate owns the sketch solver boundary. Both halves keep compiling
       # if a second copy appears, so this is checked rather than remembered.
       - run: tools/check-solver-ownership.sh
