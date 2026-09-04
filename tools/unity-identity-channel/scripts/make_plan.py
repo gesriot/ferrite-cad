@@ -3,7 +3,7 @@
 """Writes the §22B-1e2a measurement plan.
 
 Every candidate is measured on the same twelve document changes and tracks the
-same seventeen references, so a difference between two rows of the result is a
+same eighteen references, so a difference between two rows of the result is a
 difference between the two candidates and not between two experiments.
 
 The anchors are *source-qualified* definition identities — `<ImportedSourceId>/
@@ -174,6 +174,7 @@ def main() -> int:
         )
         + "\n",
         encoding="utf-8",
+        newline="\n",
     )
     print(f"planned {len(scenarios)} scenarios and {len(names)} name probes for {args.mode}")
     return 0

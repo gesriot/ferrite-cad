@@ -899,8 +899,13 @@ def main() -> int:
     if args.emit is not None:
         if not decision["transitions"]:
             raise SystemExit("the joined transition table is empty")
+        # `newline="\n"` because the committed record is compared byte for
+        # byte, and a Windows checkout would otherwise emit CRLF and refuse a
+        # measurement that is identical.
         args.emit.write_text(
-            json.dumps(decision, indent=1, sort_keys=True) + "\n", encoding="utf-8"
+            json.dumps(decision, indent=1, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
         )
     if args.expected is not None:
         if args.emit is None:
