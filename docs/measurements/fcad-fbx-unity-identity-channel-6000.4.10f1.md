@@ -234,9 +234,12 @@ identifier are the ones whose renamed name is unique; the other 71 differ only
 because stock Unity had appended a disambiguation suffix that the companion
 does not.
 
-**The three kinds need three different identity schemes.** That is not an
-inference from a mechanism; it is three different measured answers to one
-question asked three ways.
+**One postprocessor rename is not one identity scheme for all three kinds.**
+The three measured kinds give different answers to the rename question: the
+Mesh identifier is fixed before it, while GameObject and Material identifiers
+follow it. Machine-visible names still stabilise all three with one scheme;
+what this result rules out is treating a humanising rename as if it preserved
+all three kinds alike.
 
 ## 3 — Placement identity
 
@@ -271,16 +274,17 @@ after   node/3  …occ~…00d   mesh …occ~…00d     623818506449910774
         node/11 …occ~…00b   mesh …occ~…00d
 ```
 
-So **a shared Mesh's identity cannot be made a function of the FerriteCAD
-definition through the FBX name channel at all.** Unity derives it from a Model
-node, and a Model node's name has to distinguish placements. A durable
-occurrence identity is necessary for a *placement* to be nameable at all — the
-ordinal is positional and §22B-1e1 already showed positional keys move for no
-reason — but it does not fix, and here slightly worsens, the geometry it is
-attached to. Both candidates keep every placement reference in every scenario
-except the one whose definition the document removed, and the ordinal's
-stability under insertion is a coincidence of "first is always zero" rather
-than a measured property of ordinals in general.
+So **none of the flat, production-shaped name rewrites measured here makes a
+shared Mesh's identity a function of the FerriteCAD definition.** Unity derives
+it from a Model node in these files, and those Model names distinguish
+placements. This does not rule out a different FBX graph topology or a Unity
+remapping/importer API; neither was measured. A durable occurrence identity is
+necessary for a *placement* to be nameable at all: the ordinal is positional,
+and §22B-1e1 already showed positional keys move for no reason. But it does
+not fix, and here slightly worsens, the geometry it is attached to. Both
+candidates keep every surviving placement reference in every scenario, and
+the ordinal's stability under insertion is a coincidence of "first is always
+zero" rather than a measured property of ordinals in general.
 
 `b-ordinal` is therefore not evidence that the ordinal is durable. It is
 evidence that the two schemes cannot be told apart by placement references
@@ -492,15 +496,17 @@ on every push.
 
 ## Stop and report
 
-Every one of the brief's stop conditions is met, and several are met more
-strongly than expected. No product policy is chosen here.
+Five of the brief's seven stop conditions are met, which is already enough to
+stop. The token was neither truncated nor normalised, and the clean projects
+did not disagree. The collision row below is an additional unsafe outcome, not
+an eighth stop condition from the brief. No product policy is chosen here.
 
 | condition | met | what was measured |
 | --- | --- | --- |
-| vanilla FBX cannot separate a stable identity from the visible name | **yes** | a vanilla import shows exactly the FBX object name; a candidate that stabilises references shows machine tokens for every node, mesh and material |
+| the measured vanilla FBX channels do not separate a stable identity from the visible name | **yes** | a vanilla import shows exactly the FBX object name in every measured candidate; a candidate that stabilises references shows machine tokens for every node, mesh and material; other FBX graph topologies were not tested |
 | a FerriteCAD Unity companion postprocessor would be needed | **yes** | the designation reaches a person only through `OnPostprocessModel`; the custom property alone is invisible in a stock editor |
 | the postprocessor's rename moves local identifiers | **yes, for two kinds of three** | `GameObject` 239/239 moved, `Material` 191/191 moved, `Mesh` 0/191 moved |
-| Model, Mesh and Material need different identity schemes | **yes** | three different answers to the rename question, and a Mesh that is named after a Model node and cannot be named after its own definition |
+| one postprocessor rename cannot preserve Model, Mesh and Material alike | **yes** | three different answers to the rename question; in the measured flat graph a Mesh is named after a Model node rather than its own Geometry |
 | a new durable occurrence identity or a schema change is needed | **yes, and it is not sufficient** | a placement has no persisted identity at all today; adding one makes placements nameable and does not fix a shared mesh |
 | a source-qualified token is truncated or normalised | **no** | 271 bytes and Cyrillic survive intact; NFC and NFD stay two objects |
 | a token collision is safe | **no** | two materials with different colours merged onto one identifier, with one warning and no refusal |
@@ -515,15 +521,17 @@ user would see, and what it would take. **The choice is the user's.**
 
 `b-occurrence` or `c-property`, shipped as they are measured.
 
-* **Proved**: every reference the §22B-1e1 contract requires to survive does
-  survive, across all twelve changes; the source-qualified identity removes the
-  multi-source collision; the `Identifier uniqueness violation` disappears
-  entirely; a removed object becomes a null reference and never retargets; a
-  271-byte and a Cyrillic token pass through the editor unchanged; two clean
-  projects agree byte for byte.
-* **Not proved**: that a shared mesh survives a sibling insertion — it does not
-  under `c-property`; that anything works on a document with a native body; that
-  a `.meta` remapping or another importer hook could recover the designations.
+* **Proved**: the source-qualified identity removes the multi-source collision;
+  all references required to survive do so except one shared Mesh when an
+  earlier sibling is inserted; the `Identifier uniqueness violation`
+  disappears entirely; a removed object becomes a null reference and never
+  retargets; a 271-byte and a Cyrillic token pass through the editor unchanged;
+  two clean projects agree byte for byte.
+* **Proved against it**: the shared Mesh does not survive that sibling insertion
+  under `b-occurrence` or `c-property`.
+* **Not proved**: that anything works on a document with a native body; that a
+  different FBX graph, `.meta` remapping or another importer hook could recover
+  the designations and the missing shared-Mesh stability.
 * **What a user sees**: a hierarchy of
   `fcad~019ffc72-2996-7000-8000-0000000000a1~step.product_definition#100~occ~019ffc72-…`
   in the Project window, the Inspector, the scene, and every prefab they build.
@@ -578,7 +586,8 @@ Today's behaviour, `a-control`, left alone.
 * **Proved**: a placement has no persisted identity today; the ordinal used in
   its place is positional, and §22B-1e1 measured positional keys moving for no
   reason. A durable occurrence identity makes a placement nameable without an
-  ordinal, and every placement reference survives every scenario under it.
+  ordinal, and every surviving placement reference survives every scenario
+  under it.
 * **Proved against it as a complete answer**: it does not fix a shared Mesh, and
   in the one scenario that separates the two schemes it loses a mesh reference
   the ordinal keeps — because Unity names a Mesh after the first Model node that
@@ -592,7 +601,9 @@ Today's behaviour, `a-control`, left alone.
 
 ### What no option achieves
 
-None of the four gives a shared Mesh an identity that survives inserting an
-earlier placement while also showing a person its designation. That is a
-measured property of how Unity names a Mesh, and any policy chosen from this
-table has to say what it does about it.
+None of the four satisfies the whole reference-stability and human-name
+contract. In particular, the machine-name candidates that fix the other
+identity failures lose one shared Mesh when an earlier placement is inserted;
+the human-name control remains unstable elsewhere. That is what the measured
+flat FBX graph does. A different graph or Unity remapping/importer mechanism
+remains an unmeasured route rather than a proven impossibility.
