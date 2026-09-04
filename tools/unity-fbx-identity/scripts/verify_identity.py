@@ -13,7 +13,7 @@ of this shape can be wrong without looking wrong:
   * a Geometry result presented as a Model or Material result;
   * the Unity-side join between the custom-property callback and the finished
     hierarchy being wrong, which is checked against the geometry sharing `ufbx`
-    read for the same durable keys;
+    read for the same source-local keys;
   * a sub-asset identifier that is no longer the pair a project file stores,
     which would make the recorded tables an incomplete record;
   * the probe's one importer setting having moved anything.
@@ -131,7 +131,7 @@ def verify(unity: dict, oracle: dict, plan: dict, mode: str = "synthetic") -> in
         if not condition:
             raise Refused(message)
 
-    # The probe turns off Unity's hierarchy-by-name sort so a durable key can
+    # The probe turns off Unity's hierarchy-by-name sort so a reported key can
     # be joined to the object it belongs to. That is only allowed if it moves
     # nothing: if this control ever fails, every verdict below is an artefact
     # of the probe and the measurement is void.
@@ -209,7 +209,7 @@ def verify(unity: dict, oracle: dict, plan: dict, mode: str = "synthetic") -> in
     # The witness is which definitions share one geometry, not how many
     # vertices each has: Unity welds equal corners, so on a real assembly its
     # count is legitimately lower than the file's. The sharing partition is
-    # exact in both, and a join that put a durable key on the wrong object
+    # exact in both, and a join that put a reported key on the wrong object
     # would break it immediately.
     for name, scenario in scenarios.items():
         for side in ("before", "after"):
@@ -234,7 +234,7 @@ def verify(unity: dict, oracle: dict, plan: dict, mode: str = "synthetic") -> in
 
             editor_mesh: dict[str, set[int]] = {}
             for node in scenario[side]["nodes"]:
-                require(node["definition_key"] != "", f"{name}/{side}: an imported node has no durable key")
+                require(node["definition_key"] != "", f"{name}/{side}: an imported node has no definition key")
                 if node["mesh_vertex_count"] < 0:
                     continue
                 editor_mesh.setdefault(node["definition_key"], set()).add(

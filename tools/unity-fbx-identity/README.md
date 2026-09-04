@@ -31,10 +31,16 @@ For every tracked reference, on both sides of one document change:
 | FBX object number, hierarchy, geometry sharing | pinned `ufbx` 0.23.0, independently |
 | what a project file actually stored | the saved `.asset`, read back as text |
 
+`FerriteCADDefinitionKey` currently contains only the source-local definition
+key. It does not contain `ImportedSourceId`. The portable fixture and the real
+AP203 assembly each contain one imported source, so the key is unambiguous in
+these measurements; this tool does not establish a globally durable join for a
+document containing several sources with the same local key.
+
 Geometry, Model and Material are measured apart, and the measurement is the
-reason: they turn out to share one identity rule — Unity name plus type plus a
-collision counter — but to take that name from three different places, so a
-result about one of them is not a result about the others.
+reason: their identifiers behave as Unity name plus type plus a collision
+counter in these transitions, but they take that name from three different
+places, so a result about one of them is not a result about the others.
 
 ## How a reference is judged
 
@@ -46,8 +52,9 @@ editor reimports it, and the reference is resolved twice by two independent
 routes: through the reloaded asset, and by putting the stored identifier back
 through `GlobalObjectId`. The two must agree or the run is refused.
 
-The verdict is then decided on *meaning*, established from the durable key and
-cross-checked against a vertex count `ufbx` read from the same bytes:
+The verdict is then decided on *meaning*, established from the stable
+source-local key in these one-source files and cross-checked against a vertex
+count `ufbx` read from the same bytes:
 
 * `same_semantic` — still the same FerriteCAD definition, and for a placement
   still the same occurrence of it;
@@ -97,7 +104,7 @@ rather than making the portable one conditional on a kernel.
 The probe sets `ModelImporter.sortHierarchyByName = false`.
 
 Unity applies that sort *after* the custom-property callbacks have run, so the
-durable keys the callback reports would be attached to the wrong finished
+source-local keys the callback reports would be attached to the wrong finished
 objects — the first version of this probe did exactly that and put
 `step.product_definition#50` on a node whose geometry has four vertices instead
 of three. Turning the sort off makes the callback order and the finished order

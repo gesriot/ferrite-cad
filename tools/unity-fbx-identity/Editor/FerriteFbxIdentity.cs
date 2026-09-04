@@ -13,8 +13,8 @@
 // Three rules this probe follows, because breaking any of them would make the
 // result look better than it is:
 //
-//   1. Non-null is not survival. A resolved object must still be the same
-//      FerriteCAD definition, established from `FerriteCADDefinitionKey` and
+//   1. Non-null is not survival. In these one-source fixtures, a resolved
+//      object must still carry the same source-local `FerriteCADDefinitionKey`,
 //      cross-checked against a vertex count `ufbx` read from the same file.
 //   2. Geometry, Model and Material are measured separately. Unity gives them
 //      different names and may give them different identity rules.
@@ -49,8 +49,8 @@ internal static class FerriteFbxIdentity
         public string change = String.Empty;
         public string before = String.Empty;
         public string after = String.Empty;
-        // Durable keys the measurement tracks in this scenario, so the report
-        // asks the same questions of every variant.
+        // Stable source-local keys the measurement tracks in this one-source
+        // fixture, so the report asks the same questions of every variant.
         public List<string> mesh_definitions = new List<string>();
         public List<string> material_bindings = new List<string>();
         public List<string> object_bindings = new List<string>();
@@ -75,7 +75,7 @@ internal static class FerriteFbxIdentity
         public int subassets_whose_identifier_is_something_else;
         // Unity's model importer sorts a hierarchy by name, and it does that
         // after the custom-property callbacks have run, so the probe's join
-        // between a durable key and a finished object would land on the wrong
+        // between a reported key and a finished object would land on the wrong
         // object. The probe turns that display convenience off and measures
         // here whether doing so moved a single identifier. If it did, every
         // result below would be an artefact of the probe rather than of Unity.

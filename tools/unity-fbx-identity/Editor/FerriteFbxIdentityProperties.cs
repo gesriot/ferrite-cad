@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 //
-// Unity's own view of the durable keys the FBX writer put in the file.
+// Unity's own view of the source-local keys the FBX writer put in the file.
+// `FerriteCADDefinitionKey` does not currently include ImportedSourceId, so it
+// is not a globally durable definition identity in a multi-source document.
 //
 // The probe beside this one must not learn which FerriteCAD definition an
 // imported object came from by reading a display name: §22B-1c already

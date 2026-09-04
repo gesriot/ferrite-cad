@@ -41,6 +41,14 @@ custom properties. The editor is never asked which FerriteCAD definition an
 object is by name — §22B-1c already measured that several definitions of one
 real assembly carry the same designation.
 
+One boundary matters here. `FerriteCADDefinitionKey` currently contains only
+the source-local key returned by `definition_key`; the writer does not include
+the `ImportedSourceId` stored beside it in `ExportSource::Imported`. The
+portable fixture and the real AP203 assembly each contain one imported source,
+so that property is unambiguous inside both measured files. It is not a
+source-qualified durable identity for an arbitrary multi-source document, and
+this measurement does not claim that it is.
+
 Both programs hash the whole file with the same 64-bit FNV-1a, and the join
 verifier refuses a run in which they read different bytes. That is a content
 check between two programs, not a security digest.
@@ -75,7 +83,7 @@ this probe compared instances and called every kept reference broken.
 The probe sets `ModelImporter.sortHierarchyByName = false`.
 
 Unity applies that sort **after** the custom-property callbacks have run, so the
-durable keys the callback reports land on the wrong finished objects. The first
+source-local keys the callback reports land on the wrong finished objects. The first
 version of this probe did exactly that: it put `step.product_definition#50` — a
 one-slot definition — on the object holding the two-slot `#100`, and the run
 died asking for a material slot that was not there. That refusal is in the
@@ -102,8 +110,9 @@ refuses the whole run rather than reporting a result about the probe.
 
 ## The measured document
 
-One base document, and each variant one change away from it. Its counts, read
-by `ufbx` rather than assumed from the way it was built:
+One base document with one fixed `ImportedSourceId`, and each variant one change
+away from it. Its counts, read by `ufbx` rather than assumed from the way it was
+built:
 
 ```text
 base.fbx  10 273 bytes  fnv1a64 0886adebeb8088ba
@@ -240,7 +249,9 @@ tracked placement kept its meaning while every one of their node keys changed.
 
 The same is true of the FBX object numbers, which the writer derives from
 position: they moved in 4a, 4b, 5, 6a, 6c and 12 without, on their own,
-breaking anything. **Unity does not use the FBX object number as identity.**
+breaking anything. **The FBX object number is not a sufficient or load-bearing
+identity input in these measured transitions.** This finite experiment does
+not prove that the importer never consults it on any other path.
 
 ## The real AP203 assembly
 
@@ -274,9 +285,9 @@ definition beyond the first in each group, 25 + 3 + 2:
 ```
 
 This is the single clearest proof in the measurement that **Unity names a Mesh
-after a Model node and ignores the FBX Geometry name entirely**: every geometry
-name in this file is unique, and every mesh collision Unity reports is a node
-designation.
+after a Model node and does not use the FBX Geometry name as that Mesh name**:
+every geometry name in this file is unique, and every mesh collision Unity
+reports is a node designation.
 
 The anchors are chosen from the file by rule rather than by hand: the
 definitions whose designations repeat, the one with the most placements —
@@ -383,6 +394,16 @@ confirms a real copy of the version is still caught.
   identity, so nothing more durable was available to compare against. Scenarios
   6a and 6c are read with that in mind: they say the ordinal survived, not that
   a persisted occurrence identity did.
+* **The definition property is source-local, not source-qualified.** Both
+  measured documents have one imported source. Two sources may legally carry
+  the same `step.product_definition#...` key, and the current FBX property
+  cannot distinguish them. The reliable join measured here is therefore local
+  to these files, not yet the general export contract.
+* **The inferred name rule is a measured model, not Unity source code.** The
+  hundred transitions show that name and type changes explain the observed
+  local identifiers, and that moving FBX object numbers does not move them in
+  those cases. They do not prove that no other importer path ever contributes
+  to an identifier.
 * **The probe changes one importer setting**, and the control above shows it
   moves no identifier. It does not prove the setting is irrelevant to every
   other importer behaviour, only to the identifiers this slice measures.
@@ -402,14 +423,14 @@ confirms a real copy of the version is still caught.
 
 ## Stop and report
 
-Three of the conditions that require this slice to stop before designing
-§22B-1e2 are met, so it stops.
+Three conditions are met and the general definition join has an additional
+unresolved multi-source boundary, so this slice stops before choosing a fix.
 
 | condition | met | what was measured |
 | --- | --- | --- |
-| Unity cannot be matched to a durable FerriteCAD identity | **no** | the editor's own custom-property callback delivers `FerriteCADDefinitionKey`, and the join is verified against the geometry sharing `ufbx` read from the same bytes |
+| Unity cannot be matched to a durable FerriteCAD identity | **open outside one source** | the callback delivers only the source-local `FerriteCADDefinitionKey`; the join is verified in both one-source files, but a multi-source document may repeat that key and the property omits `ImportedSourceId` |
 | keeping references would need the visible names changed | **open** | identity *is* the visible name today; whether it can stop being that without changing what a user sees is precisely the §22B-1e2 question, and this slice does not answer it |
-| Unity ignores or unstably treats FBX object IDs | **yes** | it ignores them entirely; the numbers moved in six scenarios without, on their own, breaking anything |
+| Unity ignores or unstably treats FBX object IDs | **yes for the design decision** | changing the numbers did not move identifiers in six scenarios, so object numbers cannot preserve references on their own; no universal claim about every importer path is made |
 | Model, Mesh and Material need incompatible identity schemes | **no** | all three are name plus type plus a collision counter — but the *name* comes from three different places, which is a real complication rather than an incompatibility |
 | a new persisted occurrence identity or a schema change would be needed | **yes**, for Model | a placement's durable identity is (definition, occurrence) and FerriteCAD persists only the first half |
 | the warning reproduces but no gate shows a broken reference | **yes**, on the real assembly alone | the AP203 assembly warns thirty times and keeps all twenty-six references, because its bytes do not change; the portable document shows the same mechanism breaking references as soon as they do |
@@ -424,12 +445,14 @@ This is what the measurement supports. It is not implemented here.
 
 **What identity is, per kind.**
 
-* *Geometry (Unity `Mesh`)* — Unity's identity is the Unity name plus type plus
-  a collision counter. The Unity name comes from a Model node, so a definition's
+* *Geometry (Unity `Mesh`)*: the measured identifiers behave as the Unity name
+  plus type plus a collision counter. The Unity name comes from a Model node, so a definition's
   geometry is only stably identified if **some** node naming it has a name that
   is stable and unique in the file. The durable FerriteCAD identity available to
   put there is the definition's source-qualified key: `ImportedSourceId` plus
-  source-local key for an imported definition, `ObjectId` for a body.
+  source-local key for an imported definition, `ObjectId` for a body. The
+  current `FerriteCADDefinitionKey` property does **not** carry that full value;
+  §22B-1e2 must first choose and gate a canonical source-qualified export form.
 
   One thing this measurement found that a design would otherwise have assumed:
   an imported STEP definition in this corpus has **no display name at all**. The
@@ -468,7 +491,9 @@ hashes.
 **May FBX object numbers be derived from durable keys?** They may, but it would
 not fix anything on its own: this measurement shows Unity ignores them.
 Deriving them from durable keys is still worth doing for readers that do use
-them, and it would remove one thing that changes for no reason on reorder.
+them, and it would remove one thing that changes for no reason on reorder. The
+measured claim is that this cannot fix Unity references by itself, not that the
+editor can never inspect an FBX object number for any purpose.
 
 **Collision resolution.** If §22B-1e2 hashes a durable key into a name, the
 collision policy has to be stated, because Unity's own collision counter is
@@ -501,3 +526,5 @@ Whether Unity's identifier derivation is stable across editor versions; whether
 a name long enough to hold a hash is truncated before hashing; and whether the
 `GameObject`, `Transform`, `MeshFilter` and `MeshRenderer` of one node all
 follow the same rule, which this slice observed but did not vary independently.
+It must also measure a document containing two imported sources with the same
+source-local definition key; neither recorded file exercises that collision.

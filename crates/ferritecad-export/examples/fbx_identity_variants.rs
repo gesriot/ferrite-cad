@@ -39,6 +39,18 @@ const GAMMA: &str = "step.product_definition#300";
 const INSERTED: &str = "step.product_definition#10";
 const ROOT: &str = "step.product_definition#1";
 
+/// The one immutable imported source shared by every variant.
+///
+/// Minting a source inside `variant_scene` would make the underlying
+/// FerriteCAD identity change between files even though the current FBX
+/// property exposes only its source-local half. Keeping the source fixed makes
+/// the measurement's "same definition" premise true before the writer runs.
+fn measured_source() -> ImportedSourceId {
+    "019ffc72-2996-7000-8000-000000000001"
+        .parse()
+        .expect("the measured source is an RFC 4122 UUIDv7")
+}
+
 /// Which definition a variant leaves out, reorders or renames.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Variant {
@@ -112,7 +124,7 @@ fn alpha_slots() -> Vec<ExportMaterial> {
 }
 
 fn variant_scene(variant: Variant) -> ExportScene {
-    let source = ImportedSourceId::new();
+    let source = measured_source();
     let mut builder = ExportSceneBuilder::new();
     let provenance = ExportProvenance::default();
     let imported = |key: &str| ExportSource::Imported {

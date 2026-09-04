@@ -4,8 +4,10 @@
 
 Every scenario is one document change away from one base document, and every
 scenario tracks the same references, so the report answers the same question
-about Geometry, Model and Material each time. The tracked anchors are durable
-FerriteCAD keys, never display names and never positions.
+about Geometry, Model and Material each time. The tracked anchors are stable
+source-local keys in this one-source fixture, never display names or positions.
+The current FBX property omits ImportedSourceId, so this script does not call
+those anchors globally durable across a document containing several sources.
 """
 
 from __future__ import annotations
