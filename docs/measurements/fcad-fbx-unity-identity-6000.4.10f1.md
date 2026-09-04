@@ -353,6 +353,17 @@ every push. Unity itself stays local, on the one measured version, exactly as
 §22B-1a decided. A recorded measurement no gate ever reads is a file, not a
 result.
 
+## What the gates found
+
+One finding, and it is not in this slice. `tools/check-notice-ownership.sh`
+searched for the pinned `cargo-about` version as a **regular expression**, and
+the dots in a version are ordinary dots: `0.9.2` also matches the digits
+`05962`. Nothing in the repository had contained a long enough number for that
+to matter. A measured 64-bit local file identifier,
+`6663975157504405962`, does, and the gate reported a measurement file as a
+second copy of the pin. The pattern is escaped now, and a separate control
+confirms a real copy of the version is still caught.
+
 ## Honest limits
 
 * **The two "export again" scenarios are byte-identical to their base.** The

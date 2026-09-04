@@ -62,7 +62,12 @@ naming() { # pattern [extra-file-to-exclude]
 # --- the tool version -------------------------------------------------------
 
 check
-hits="$(naming "$CARGO_ABOUT_VERSION" tools/notices/pin.env)"
+# The dots in a version are literal dots. Left as a regular expression, 0.9.2
+# also matches the digits 05962, and a 64-bit identifier that happens to
+# contain them in a measurement file gets reported as a second copy of the pin.
+about_version_pattern="${CARGO_ABOUT_VERSION//./\\.}"
+about_version_pattern="${about_version_pattern//+/\\+}"
+hits="$(naming "$about_version_pattern" tools/notices/pin.env)"
 if [ -n "$hits" ]; then
     fail "the pinned cargo-about version $CARGO_ABOUT_VERSION is copied outside tools/notices/pin.env:"
     # One path per line is exactly what should be split here.
