@@ -61,6 +61,14 @@ jobs:
       # the real verifier. A recorded measurement no gate reads is a file.
       - run: tools/unity-fbx-identity/scripts/check_identity_record.sh
 
+      # The §22B-1e2a channel measurement, minus the editor, for the same
+      # reason. Both recorded editor runs are re-joined to the independent
+      # `ufbx` reading of the same bytes, the decision record is rebuilt and
+      # compared, and the semantic mutation campaign is run against the real
+      # verifier. The decision table read from that record is a document; the
+      # record itself is a gate.
+      - run: tools/unity-identity-channel/scripts/check_channel_record.sh
+
       # One crate owns the sketch solver boundary. Both halves keep compiling
       # if a second copy appears, so this is checked rather than remembered.
       - run: tools/check-solver-ownership.sh

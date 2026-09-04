@@ -1,0 +1,27 @@
+# The §22B-1e2a failing-first run
+
+Command:
+
+    tools/unity-identity-channel/scripts/run_channel_measurement.sh --expect-durable-join --runs 1
+
+`--expect-durable-join` asserts the optimistic contract: that the identity a
+candidate exports tells every definition of the measured document apart. The
+document contains two imported sources that use the same source-local key
+`step.product_definition#42`, so the current production property cannot.
+
+The editor really imported all 48 vanilla scenarios first; this is the assertion
+at the end of the run, on the real editor, not a stub:
+
+```text
+FCAD_CHANNEL_IDENTITY_FAILURE System.InvalidOperationException: the exported identity of a-control cannot tell two definitions apart: key:step.product_definition#42
+```
+
+The runner then refused the whole run:
+
+```text
+Unity exited 1
+```
+
+The same assertion passes for every candidate that carries `ImportedSourceId`
+beside the source-local key. That is the measurement, and it is recorded in
+`expected/channel-decision.json` rather than remembered.
