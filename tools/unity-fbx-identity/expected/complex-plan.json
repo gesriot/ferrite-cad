@@ -1,0 +1,54 @@
+{
+ "scenarios": [
+  {
+   "after": "complex-first.fbx",
+   "before": "complex-first.fbx",
+   "change": "the real AP203 assembly, the same bytes again",
+   "material_bindings": [
+    "step.product_definition#1006@0",
+    "step.product_definition#1124@0",
+    "step.product_definition#1187@0"
+   ],
+   "mesh_definitions": [
+    "step.product_definition#1006",
+    "step.product_definition#1124",
+    "step.product_definition#1187",
+    "step.product_definition#728",
+    "step.product_definition#2217",
+    "step.product_definition#817"
+   ],
+   "name": "s11a-complex-byte-identical",
+   "object_bindings": [
+    "step.product_definition#728@0",
+    "step.product_definition#728@1",
+    "step.product_definition#1006@0",
+    "step.product_definition#1124@0"
+   ]
+  },
+  {
+   "after": "complex-second.fbx",
+   "before": "complex-first.fbx",
+   "change": "the real AP203 assembly, exported again",
+   "material_bindings": [
+    "step.product_definition#1006@0",
+    "step.product_definition#1124@0",
+    "step.product_definition#1187@0"
+   ],
+   "mesh_definitions": [
+    "step.product_definition#1006",
+    "step.product_definition#1124",
+    "step.product_definition#1187",
+    "step.product_definition#728",
+    "step.product_definition#2217",
+    "step.product_definition#817"
+   ],
+   "name": "s11b-complex-reexported",
+   "object_bindings": [
+    "step.product_definition#728@0",
+    "step.product_definition#728@1",
+    "step.product_definition#1006@0",
+    "step.product_definition#1124@0"
+   ]
+  }
+ ]
+}

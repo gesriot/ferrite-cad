@@ -1,0 +1,224 @@
+{
+ "scenarios": [
+  {
+   "after": "base.fbx",
+   "before": "base.fbx",
+   "change": "the same bytes at the same asset path",
+   "material_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#200@0"
+   ],
+   "mesh_definitions": [
+    "step.product_definition#50",
+    "step.product_definition#100",
+    "step.product_definition#200",
+    "step.product_definition#300"
+   ],
+   "name": "s01-byte-identical-reimport",
+   "object_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#300@0"
+   ]
+  },
+  {
+   "after": "reexport.fbx",
+   "before": "base.fbx",
+   "change": "an unchanged document exported again",
+   "material_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#200@0"
+   ],
+   "mesh_definitions": [
+    "step.product_definition#50",
+    "step.product_definition#100",
+    "step.product_definition#200",
+    "step.product_definition#300"
+   ],
+   "name": "s02-reexport-unchanged-document",
+   "object_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#300@0"
+   ]
+  },
+  {
+   "after": "renamed.fbx",
+   "before": "base.fbx",
+   "change": "one display name; every durable key unchanged",
+   "material_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#200@0"
+   ],
+   "mesh_definitions": [
+    "step.product_definition#50",
+    "step.product_definition#100",
+    "step.product_definition#200",
+    "step.product_definition#300"
+   ],
+   "name": "s03-display-name-only",
+   "object_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#300@0"
+   ]
+  },
+  {
+   "after": "inserted-definition.fbx",
+   "before": "base.fbx",
+   "change": "an unrelated definition added before the tracked ones",
+   "material_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#200@0"
+   ],
+   "mesh_definitions": [
+    "step.product_definition#50",
+    "step.product_definition#100",
+    "step.product_definition#200",
+    "step.product_definition#300"
+   ],
+   "name": "s04a-insert-earlier-definition",
+   "object_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#300@0"
+   ]
+  },
+  {
+   "after": "removed-definition-earlier.fbx",
+   "before": "base.fbx",
+   "change": "an unrelated earlier definition removed",
+   "material_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#200@0"
+   ],
+   "mesh_definitions": [
+    "step.product_definition#50",
+    "step.product_definition#100",
+    "step.product_definition#200",
+    "step.product_definition#300"
+   ],
+   "name": "s04b-remove-earlier-definition",
+   "object_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#300@0"
+   ]
+  },
+  {
+   "after": "reordered-definitions.fbx",
+   "before": "base.fbx",
+   "change": "two unrelated definitions swapped in export order",
+   "material_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#200@0"
+   ],
+   "mesh_definitions": [
+    "step.product_definition#50",
+    "step.product_definition#100",
+    "step.product_definition#200",
+    "step.product_definition#300"
+   ],
+   "name": "s05-reorder-definitions",
+   "object_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#300@0"
+   ]
+  },
+  {
+   "after": "inserted-sibling.fbx",
+   "before": "base.fbx",
+   "change": "a sibling occurrence added between two tracked ones",
+   "material_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#200@0"
+   ],
+   "mesh_definitions": [
+    "step.product_definition#50",
+    "step.product_definition#100",
+    "step.product_definition#200",
+    "step.product_definition#300"
+   ],
+   "name": "s06a-insert-sibling",
+   "object_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#300@0"
+   ]
+  },
+  {
+   "after": "removed-sibling.fbx",
+   "before": "base.fbx",
+   "change": "a sibling occurrence removed",
+   "material_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#200@0"
+   ],
+   "mesh_definitions": [
+    "step.product_definition#50",
+    "step.product_definition#100",
+    "step.product_definition#200",
+    "step.product_definition#300"
+   ],
+   "name": "s06b-remove-sibling",
+   "object_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#300@0"
+   ]
+  },
+  {
+   "after": "reordered-siblings.fbx",
+   "before": "base.fbx",
+   "change": "two sibling occurrences swapped",
+   "material_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#200@0"
+   ],
+   "mesh_definitions": [
+    "step.product_definition#50",
+    "step.product_definition#100",
+    "step.product_definition#200",
+    "step.product_definition#300"
+   ],
+   "name": "s06c-reorder-siblings",
+   "object_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#300@0"
+   ]
+  },
+  {
+   "after": "removed-tracked-definition.fbx",
+   "before": "base.fbx",
+   "change": "one whole definition and its only placement removed",
+   "material_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#200@0"
+   ],
+   "mesh_definitions": [
+    "step.product_definition#50",
+    "step.product_definition#100",
+    "step.product_definition#200",
+    "step.product_definition#300"
+   ],
+   "name": "s12-remove-one-definition",
+   "object_bindings": [
+    "step.product_definition#100@0",
+    "step.product_definition#100@1",
+    "step.product_definition#300@0"
+   ]
+  }
+ ]
+}

@@ -52,6 +52,15 @@ jobs:
       # writer has finished, and reports from the writer's own record.
       - run: tools/check-export-boundary.sh
 
+      # The §22B-1e1 Unity identity measurement, minus the editor. Unity is run
+      # locally on the one measured version, exactly as the FBX writer gate
+      # below explains; what runs here is the half that needs neither an editor
+      # nor a kernel. The recorded canonical measurement is re-joined to the
+      # independent `ufbx` reading of the same bytes, the transition table is
+      # rebuilt and compared, and the semantic mutation campaign is run against
+      # the real verifier. A recorded measurement no gate reads is a file.
+      - run: tools/unity-fbx-identity/scripts/check_identity_record.sh
+
       # One crate owns the sketch solver boundary. Both halves keep compiling
       # if a second copy appears, so this is checked rather than remembered.
       - run: tools/check-solver-ownership.sh
