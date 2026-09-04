@@ -1,0 +1,27 @@
+# The §22B-1e1 failing-first baseline, verbatim from the editor log.
+#
+# Run before anything was recorded:
+#
+#   scripts/run_identity_measurement.sh --expect-stable --runs 1
+#
+# `--expect-stable` asserts the optimistic contract, that every tracked
+# reference still means the same FerriteCAD object after the reimport. Unity
+# 6000.4.10f1 exited 1 on the first scenario. Stack-trace lines are omitted:
+# they name line numbers in a version of the probe that no longer exists, and
+# the message is the measurement.
+
+FCAD_FBX_IDENTITY_FAILURE System.InvalidOperationException: a saved reference stopped meaning the same FerriteCAD object: s01-byte-identical-reimport mesh:definition=step.product_definition#50 -> retargeted_to_another_definition
+
+# That first failure was the probe's, not Unity's: it compared managed object
+# references, and a reimport hands back a different C# instance for the same
+# persisted object. The corrected probe compares the pair a project file
+# actually stores, and answers `same_semantic` for every reference in scenario
+# one. The failure is kept because the fix for it changed what this
+# measurement is allowed to conclude.
+#
+# The earlier refusal, from the run before that, was the other half of the same
+# defect: Unity sorts an imported hierarchy by name after the custom-property
+# callbacks have run, so the durable keys landed on the wrong finished objects.
+# It is recorded here in the same verbatim form.
+
+FCAD_FBX_IDENTITY_FAILURE System.InvalidOperationException: the tracked material slot step.product_definition#100@1 is not there; the imported node named Alpha Part 1 has 1 slots and 0 s01-byte-identical-reimport key=step.product_definition#1 mesh=none slots=0 | 0/0 Alpha Part key=step.product_definition#50 mesh=Alpha Part slots=2 | 0/1 Alpha Part 1 key=step.product_definition#100 mesh=Alpha Part slots=1 | 0/2 Alpha Part 2 key=step.product_definition#100 mesh=Alpha Part slots=2 | 0/3 Beta Part key=step.product_definition#200 mesh=Beta Part slots=1 | 0/4 Beta Part 1 key=step.product_definition#300 mesh=Beta Part slots=1 | 0/5 Early Part key=step.product_definition#200 mesh=Early Part slots=1
