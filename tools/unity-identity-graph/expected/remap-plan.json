@@ -1,0 +1,10 @@
+{
+ "changed_material": "g-flat/changed-material.fbx",
+ "control": "g-flat/base.fbx",
+ "game_object_to_remap": "Alpha Part",
+ "material_to_remap": "Shell #2",
+ "mesh_to_remap": "Alpha Part",
+ "reexport": "g-flat/reexport.fbx",
+ "removed_tracked_definition": "g-flat/removed-tracked-definition.fbx",
+ "renamed": "g-flat/renamed.fbx"
+}
