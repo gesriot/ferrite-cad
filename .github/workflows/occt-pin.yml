@@ -660,6 +660,7 @@ jobs:
           for gate in \
             the_command_exists_and_writes_an_fbx_the_format_recognises \
             a_nested_assembly_keeps_its_hierarchy_and_shares_one_geometry \
+            the_command_writes_exactly_what_the_shared_job_writes \
             the_complex_assembly_becomes_one_fbx_that_keeps_every_definition_and_says_what_is_missing
           do
             if ! grep -q "^test ${gate} \.\.\. ok$" cli-tests.log; then
@@ -667,6 +668,38 @@ jobs:
               exit 1
             fi
           done
+
+          # The window's export, which is the other interface over the same
+          # shared job. Everything about it that can be settled without a
+          # kernel is settled in ordinary CI, windowless, against a kernel that
+          # needs none; these two need a real one. The first is the whole route
+          # with the session the viewer really opens; the second is the complex
+          # AP203 assembly, imported here, its external STEP deleted, exported
+          # by the window's own worker and reported as a published file that is
+          # not the whole model.
+          #
+          # The application's gates skip themselves without Open CASCADE in the
+          # same words the command line's do, and the check above has already
+          # refused a run in which any of them did.
+          cargo test -p ferritecad-app --bin ferritecad-viewer -- --nocapture 2>&1 \
+            | tee app-tests.log
+          if grep -n 'skipped: this build has no Open CASCADE' app-tests.log; then
+            echo "::error::a window gate skipped itself on a run that requires the kernel"
+            exit 1
+          fi
+          for gate in \
+            exports::tests::an_export_writes_the_file_the_user_chose \
+            exports::tests::the_window_and_the_shared_job_write_the_same_bytes \
+            exports::tests::the_complex_assembly_exports_from_the_window_and_says_what_is_missing
+          do
+            if ! grep -q "^test ${gate} \.\.\. ok$" app-tests.log; then
+              echo "::error::${gate} did not run and pass on this platform"
+              exit 1
+            fi
+          done
+
+          # And the shared job itself, which is what both of them call.
+          cargo test -p ferritecad-jobs --lib -- --nocapture
 
           # And the loader, for the same reason one step further up: everything
           # about it is settled against the mock, which cannot say whether the

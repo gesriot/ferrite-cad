@@ -9,7 +9,6 @@
 mod export;
 mod export_fbx;
 mod import;
-mod publish;
 mod rebuild;
 mod render;
 mod sample;
@@ -20,6 +19,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use ferritecad_document::{CacheStore, DOCUMENT_EXTENSION, Document};
+use ferritecad_jobs::Existing;
 use ferritecad_kernel::TessellationParams;
 use ferritecad_types::{CadError, Result, Unit};
 
@@ -49,6 +49,29 @@ const EXIT_REJECTED: u8 = 5;
 /// place in it. Distinct from every code above: none of them means "there is
 /// an export, and here is what is missing from it".
 const EXIT_PARTIAL: u8 = 6;
+
+/// What this command tells a person to do about a file that is already there.
+///
+/// One sentence, in one place, for all three commands that publish a file. It
+/// travels with the publication rather than living inside it, because the
+/// window that publishes on exactly the same terms has no `--force` to offer
+/// and must not print one.
+const REPLACE_ADVICE: &str = "pass --force to replace it";
+
+/// What `--force` means at the moment a file is published.
+///
+/// Every command here publishes on the same terms: without the flag the
+/// publication is an atomic no-clobber that refuses in this command's own
+/// words, and with it the replacement is one the user asked for.
+fn replacing(force: bool) -> Existing<'static> {
+    if force {
+        Existing::Replace
+    } else {
+        Existing::Keep {
+            advice: REPLACE_ADVICE,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "ferritecad", version, about, long_about = None)]

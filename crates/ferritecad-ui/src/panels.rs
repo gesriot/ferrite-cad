@@ -25,8 +25,19 @@ pub struct Chosen {
     pub view: Option<StandardView>,
     /// The user wants to open a different document.
     pub open: bool,
+    /// The user wants the document on screen written out as FBX.
+    ///
+    /// A request and not a destination: where the file goes is chosen after
+    /// this is reported, by whatever owns a window, because a panel that could
+    /// name a path would be a panel that had already decided to write one.
+    pub export: bool,
     /// The user has stopped waiting for the document being read.
     pub cancel: bool,
+    /// The user has stopped waiting for the export being written.
+    ///
+    /// Its own field rather than a second meaning for `cancel`: reading and
+    /// writing happen at the same time and are given up on separately.
+    pub cancel_export: bool,
     /// The user wants to see what is chosen.
     pub frame: bool,
     /// The user wants to see the whole model.
@@ -640,6 +651,192 @@ pub fn open_failure_panel(ui: &mut egui::Ui, failure: Option<OpenFailure<'_>>) {
     ui.separator();
 }
 
+/// One definition an export could not give triangles to, in words.
+///
+/// Every field is text somebody else already wrote, from what the writer
+/// recorded about the file it published. This crate knows nothing of kernels,
+/// refusals, diagnostics or scenes and could not have worked any of it out;
+/// what it can do is put all of it on screen rather than the first line of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OmittedDefinition<'a> {
+    /// Which definition, qualified by where it came from. A key on its own
+    /// means nothing: the same one occurs in most files.
+    pub definition: &'a str,
+    /// What the document recorded about it when it was imported.
+    pub finding: &'a str,
+    /// What this build's kernel said about giving it triangles, by the stable
+    /// name of the refusal rather than by a sentence written for a person.
+    pub refusal: &'a str,
+    /// Every place it sits in the published file, named the way the file names
+    /// it. All of them: a definition placed six times is missing six times.
+    pub placements: &'a [String],
+}
+
+impl OmittedDefinition<'_> {
+    /// The lines to put on screen, in order.
+    ///
+    /// One row per placement rather than one row listing them, on the same
+    /// terms as a repeated constraint: a narrow row that ran them together
+    /// would be a row nobody can read a node key out of.
+    pub fn rows(&self) -> Vec<(&'static str, String)> {
+        let mut rows = vec![
+            ("Definition", self.definition.to_owned()),
+            ("Finding", self.finding.to_owned()),
+            ("Refusal", self.refusal.to_owned()),
+        ];
+        for placement in self.placements {
+            rows.push(("Placement", placement.clone()));
+        }
+        rows
+    }
+}
+
+/// A file an export published, in the terms the writer counted it in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublishedFile<'a> {
+    /// Where it is, as the user asked for it.
+    pub destination: &'a str,
+    pub bytes: u64,
+    pub models: u32,
+    pub geometries: u32,
+    pub materials: u32,
+}
+
+impl PublishedFile<'_> {
+    /// What was written, in terms that do not depend on how long it took.
+    pub fn rows(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("File", self.destination.to_owned()),
+            ("Bytes", self.bytes.to_string()),
+            ("Nodes", self.models.to_string()),
+            ("Geometries", self.geometries.to_string()),
+            ("Materials", self.materials.to_string()),
+        ]
+    }
+}
+
+/// What the last export asked for is doing, or did.
+///
+/// Not about the model on screen and not about opening one: an export that
+/// failed is not a document that failed to open, and the two are shown apart
+/// so that neither can be read as the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExportOutcome<'a> {
+    /// One finished sentence, written by whoever owns the export.
+    pub line: &'a str,
+    /// The file, once there is one. Absent while an export is running and
+    /// after one that published nothing.
+    pub file: Option<PublishedFile<'a>>,
+    /// Everything the published file has no triangles for, in scene order.
+    /// Empty for an export that is the whole document.
+    pub omissions: &'a [OmittedDefinition<'a>],
+}
+
+/// What a section reporting an export calls itself.
+const EXPORT: &str = "Export";
+
+/// What the part of that section listing what is not in the file calls itself.
+///
+/// Said as its own heading rather than folded into the line above: a file was
+/// published, which is one fact, and that it is not the whole document is
+/// another.
+const MISSING_GEOMETRY: &str = "Missing geometry";
+
+/// What the last export is doing or did, and nothing else.
+///
+/// Read-only, like every other section here: no row can be chosen and there is
+/// nothing to hand back. Nothing at all is drawn before the first export,
+/// because a permanent line saying that nobody has exported anything is a
+/// sentence with no use.
+pub fn export_panel(ui: &mut egui::Ui, outcome: Option<ExportOutcome<'_>>) {
+    let Some(outcome) = outcome else {
+        return;
+    };
+    ui.label(EXPORT);
+    ui.add(egui::Label::new(outcome.line).truncate());
+    if let Some(file) = outcome.file {
+        egui::Grid::new("ferritecad export file")
+            .num_columns(2)
+            .show(ui, |ui| {
+                for (label, value) in file.rows() {
+                    ui.label(label);
+                    ui.add(egui::Label::new(value).truncate());
+                    ui.end_row();
+                }
+            });
+    }
+    if !outcome.omissions.is_empty() {
+        ui.label(MISSING_GEOMETRY);
+        // Scrolled rather than cut short: a partial export of a large assembly
+        // can be missing more definitions than fit, and every one of them has
+        // to be reachable.
+        egui::ScrollArea::vertical()
+            .id_salt("ferritecad export omissions")
+            .max_height(200.0)
+            .show(ui, |ui| {
+                for (index, omission) in outcome.omissions.iter().enumerate() {
+                    egui::Grid::new(("ferritecad export omission", index))
+                        .num_columns(2)
+                        .show(ui, |ui| {
+                            for (label, value) in omission.rows() {
+                                ui.label(label);
+                                ui.add(egui::Label::new(value).truncate());
+                                ui.end_row();
+                            }
+                        });
+                }
+            });
+    }
+    ui.separator();
+}
+
+/// What the user said about a file that is already where they asked to write.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ReplaceChoice {
+    /// Nothing yet, which is the answer on almost every frame.
+    #[default]
+    Waiting,
+    /// Replace it. Said once, about the file named in the question.
+    Replace,
+    /// Leave it alone. The export does not happen.
+    Cancel,
+}
+
+/// What the question asks.
+pub const REPLACE_EXISTING: &str = "Replace existing file?";
+
+/// Asks whether a file that is already there may be replaced.
+///
+/// Owned by this application rather than left to the system dialog. A native
+/// save panel may or may not have asked, depending on the platform, the
+/// toolkit and how it was called, and "it probably asked" is not a basis for
+/// overwriting somebody's file. Nothing is written until this is answered.
+///
+/// Nothing at all is drawn when there is nothing to ask about, and neither
+/// answer is returned until the user gives one: a frame in which they did
+/// nothing means nothing has been decided.
+pub fn replace_confirmation(ui: &mut egui::Ui, destination: Option<&str>) -> ReplaceChoice {
+    let Some(destination) = destination else {
+        return ReplaceChoice::Waiting;
+    };
+
+    let mut choice = ReplaceChoice::Waiting;
+    ui.label(REPLACE_EXISTING);
+    // The whole path, because which file is about to be replaced is the only
+    // thing this question is asking.
+    ui.add(egui::Label::new(destination).truncate());
+    ui.horizontal(|ui| {
+        if ui.button("Replace").clicked() {
+            choice = ReplaceChoice::Replace;
+        }
+        if ui.button("Cancel").clicked() {
+            choice = ReplaceChoice::Cancel;
+        }
+    });
+    ui.separator();
+    choice
+}
+
 /// What an unnamed sketch is called on screen.
 ///
 /// Said rather than left blank. A row with an empty first line is
@@ -747,6 +944,12 @@ pub fn sketch_solves_panel(ui: &mut egui::Ui, sketches: &[SolvedSketch<'_>]) {
 pub struct Activity<'a> {
     pub line: &'a str,
     pub progress: Option<f32>,
+    /// Whether there is a document on screen that was accepted and can
+    /// therefore be written out. Not "a document was asked for": an Open that
+    /// failed or was given up on leaves nothing to export.
+    pub can_export: bool,
+    /// Whether an export is running and has not already been told to stop.
+    pub can_cancel_export: bool,
     /// Whether the picture can say where what is chosen actually is.
     pub can_frame_selection: bool,
     /// Whether the picture has any extent at all. A document with nothing in
@@ -785,6 +988,22 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
         // First, and separated: opening replaces everything else on screen,
         // where the buttons after it only change where it is seen from.
         chosen.open = ui.button("Open…").clicked();
+        // Beside it, because it is the other thing a person does to a whole
+        // document rather than to the view of one. Disabled rather than
+        // hidden, on the same terms as every other action here, and disabled
+        // exactly while there is no document that was accepted: an Open that
+        // failed or was given up on leaves nothing to write out.
+        chosen.export = ui
+            .add_enabled(activity.can_export, egui::Button::new(EXPORT_FBX))
+            .clicked();
+        // Offered only while there is an export to stop, for the reason the
+        // Cancel beside the reading progress is: a button that is there all
+        // the time and does nothing most of the time teaches people not to
+        // trust it. Named rather than called Cancel, because a window can be
+        // reading one document and writing another out at the same time.
+        if activity.can_cancel_export {
+            chosen.cancel_export = ui.button(CANCEL_EXPORT).clicked();
+        }
         ui.separator();
 
         // Offered only when there is something to show, and disabled rather
@@ -882,6 +1101,17 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
 ///
 /// One list, used by the panel here and available to whatever binds the keys,
 /// so a shortcut cannot end up printed on a button that does something else.
+/// What the button that writes the document out is called.
+///
+/// One place, read by the panel and by whatever gates it, so a press can be
+/// aimed at the words the toolbar really draws. Deliberately without a
+/// keyboard shortcut: this is the only toolbar action that writes a file, and
+/// a key that starts one is a key that can be hit by accident.
+pub const EXPORT_FBX: &str = "Export FBX…";
+
+/// What the button that stops an export is called.
+pub const CANCEL_EXPORT: &str = "Cancel export";
+
 /// The key that shows what is chosen, printed on its button.
 ///
 /// One place, read by the panel and by whatever binds the keys, for the same
@@ -1103,12 +1333,119 @@ mod tests {
         assert!(found_a_view, "no point along the toolbar reached a view");
     }
 
+    /// An export can be given up on exactly while one is running.
+    ///
+    /// The button is not there at all otherwise, on the same terms as the
+    /// Cancel beside a reading: what is being gated is that pressing where it
+    /// would be asks for nothing when there is nothing to stop.
+    #[test]
+    fn an_export_can_be_given_up_on_only_while_one_is_running() {
+        let context = egui::Context::default();
+        let running = |can_cancel_export| Activity {
+            line: "part.fcad",
+            progress: None,
+            can_export: true,
+            can_cancel_export,
+            can_frame_selection: false,
+            can_frame_scene: false,
+            can_hide: false,
+            can_show_all: false,
+            can_isolate: false,
+            can_undo_visibility: false,
+            orthographic: false,
+        };
+
+        let mut stop = None;
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.horizontal(|ui| {
+                let _ = ui.button("Open…");
+                let _ = ui.add_enabled(true, egui::Button::new(EXPORT_FBX));
+                stop = Some(ui.button(CANCEL_EXPORT).rect);
+            });
+        });
+        output.textures_delta.clear();
+        let centre = stop.expect("the reference row was laid out").center();
+
+        assert!(
+            click_on(&context, centre, running(true)).cancel_export,
+            "nothing there stops an export"
+        );
+        // With nothing running the button is not drawn, so the press lands on
+        // whatever the toolbar really has there — and that must not stop an
+        // export or start one.
+        let quiet = click_on(&context, centre, running(false));
+        assert!(!quiet.cancel_export, "an export was stopped that never ran");
+        assert!(!quiet.export, "the same press asked for a new export");
+
+        // Stopping an export is not giving up on a reading: the two happen at
+        // once and are given up on separately.
+        assert!(!click_on(&context, centre, running(true)).cancel);
+    }
+
+    /// Exporting is offered exactly when there is a document to export.
+    ///
+    /// The reference row is laid out the way the toolbar lays it out, so the
+    /// press below lands on whatever the toolbar really puts there. A toolbar
+    /// with no such button reports "not pressed" for ever, which is
+    /// indistinguishable from one whose button does nothing.
+    #[test]
+    fn the_way_to_export_is_offered_only_with_a_document_on_screen() {
+        let context = egui::Context::default();
+        let showing = |can_export| Activity {
+            line: "part.fcad",
+            progress: None,
+            can_export,
+            can_cancel_export: false,
+            can_frame_selection: false,
+            can_frame_scene: false,
+            can_hide: false,
+            can_show_all: false,
+            can_isolate: false,
+            can_undo_visibility: false,
+            orthographic: false,
+        };
+
+        let mut export = None;
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.horizontal(|ui| {
+                let _ = ui.button("Open…");
+                export = Some(ui.add_enabled(true, egui::Button::new(EXPORT_FBX)).rect);
+            });
+        });
+        output.textures_delta.clear();
+        let centre = export.expect("the reference row was laid out").center();
+
+        assert!(
+            click_on(&context, centre, showing(true)).export,
+            "nothing beside Open asks for the document to be written out"
+        );
+
+        // And with nothing accepted there is nothing to write. The press must
+        // ask for nothing rather than start an export of no document.
+        assert!(
+            !click_on(&context, centre, showing(false)).export,
+            "an export was asked for with no document on screen"
+        );
+
+        // Pressing it is not pressing Open: one press is one request.
+        assert!(!click_on(&context, centre, showing(true)).open);
+
+        let mut quiet = Chosen::default();
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            quiet = toolbar(ui, showing(true));
+        });
+        output.textures_delta.clear();
+        assert!(!quiet.export, "an untouched toolbar asked for an export");
+    }
+
     #[test]
     fn a_reading_can_be_given_up_on_and_nothing_else_can() {
         let context = egui::Context::default();
         let reading = Activity {
             line: "Opening part.fcad… 40%",
             progress: Some(0.4),
+            can_export: false,
+            can_cancel_export: false,
             can_frame_selection: false,
             can_frame_scene: false,
             can_hide: false,
@@ -1124,6 +1461,7 @@ mod tests {
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.horizontal(|ui| {
                 let _ = ui.button("Open…");
+                let _ = ui.add_enabled(true, egui::Button::new(EXPORT_FBX));
                 ui.separator();
                 let _ = ui.add_enabled(
                     reading.can_frame_selection,
@@ -1602,6 +1940,8 @@ mod tests {
         let state = |can_hide, can_show_all| Activity {
             line: "part.fcad",
             progress: None,
+            can_export: false,
+            can_cancel_export: false,
             can_frame_selection: false,
             can_frame_scene: false,
             can_hide,
@@ -1791,6 +2131,8 @@ mod tests {
         let state = |can_isolate| Activity {
             line: "part.fcad",
             progress: None,
+            can_export: false,
+            can_cancel_export: false,
             can_frame_selection: false,
             can_frame_scene: false,
             can_hide: true,
@@ -1853,6 +2195,8 @@ mod tests {
                 Activity {
                     line: "part.fcad",
                     progress: None,
+                    can_export: false,
+                    can_cancel_export: false,
                     can_frame_selection: false,
                     can_frame_scene: false,
                     can_hide: false,
@@ -1961,6 +2305,8 @@ mod tests {
         let state = |can_undo_visibility| Activity {
             line: "part.fcad",
             progress: None,
+            can_export: false,
+            can_cancel_export: false,
             can_frame_selection: false,
             can_frame_scene: false,
             can_hide: true,
@@ -2007,6 +2353,8 @@ mod tests {
         let state = |orthographic| Activity {
             line: "part.fcad",
             progress: None,
+            can_export: false,
+            can_cancel_export: false,
             can_frame_selection: false,
             can_frame_scene: false,
             can_hide: false,
@@ -2353,6 +2701,8 @@ mod tests {
         let can = |can_frame_selection| Activity {
             line: "part.fcad",
             progress: None,
+            can_export: false,
+            can_cancel_export: false,
             can_frame_selection,
             can_frame_scene: false,
             can_hide: false,
@@ -2367,6 +2717,7 @@ mod tests {
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.horizontal(|ui| {
                 let _ = ui.button("Open…");
+                let _ = ui.add_enabled(true, egui::Button::new(EXPORT_FBX));
                 ui.separator();
                 frame = Some(
                     ui.add_enabled(
@@ -2407,6 +2758,8 @@ mod tests {
         let with = |can_frame_scene| Activity {
             line: "part.fcad",
             progress: None,
+            can_export: false,
+            can_cancel_export: false,
             can_frame_selection: false,
             can_frame_scene,
             can_hide: false,
@@ -2421,6 +2774,7 @@ mod tests {
         let mut output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.horizontal(|ui| {
                 let _ = ui.button("Open…");
+                let _ = ui.add_enabled(true, egui::Button::new(EXPORT_FBX));
                 ui.separator();
                 let _ = ui.add_enabled(
                     false,

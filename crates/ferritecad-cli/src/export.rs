@@ -18,8 +18,8 @@ use ferritecad_kernel::{GeometryKernel, OperationContext, TessellationParams};
 use ferritecad_occt::OcctKernel;
 use ferritecad_types::{CadError, ObjectId, Result};
 
-use crate::ExportStlArgs;
-use crate::publish::{Temporary, path_entry_exists, refuse_source_as_destination};
+use crate::{ExportStlArgs, REPLACE_ADVICE, replacing};
+use ferritecad_jobs::{Temporary, path_entry_exists, refuse_source_as_destination};
 
 pub fn export_stl(args: ExportStlArgs) -> Result<ExitCode> {
     // This check takes precedence over the ordinary no-clobber message: the
@@ -35,7 +35,7 @@ pub fn export_stl(args: ExportStlArgs) -> Result<ExitCode> {
     // they could not have been told immediately.
     if !args.force && path_entry_exists(&args.output)? {
         return Err(CadError::input(format!(
-            "{} already exists; pass --force to replace it",
+            "{} already exists; {REPLACE_ADVICE}",
             args.output.display()
         )));
     }
@@ -175,7 +175,7 @@ fn list(bodies: &[ObjectRecord]) -> String {
 
 /// Writes `bytes` to `path` through a temporary file beside it.
 ///
-/// See [`crate::publish`] for why the scratch file lives where it does and what
+/// See [`ferritecad_jobs`] for why the scratch file lives where it does and what
 /// makes the last step atomic.
 fn write_atomically(path: &Path, bytes: &[u8], force: bool) -> Result<PathBuf> {
     let temporary = Temporary::beside(path)?;
@@ -193,7 +193,7 @@ fn write_atomically(path: &Path, bytes: &[u8], force: bool) -> Result<PathBuf> {
         .map_err(|e| CadError::io(format!("syncing {}", temporary.path().display()), e))?;
     drop(file);
 
-    temporary.publish(path, force)?;
+    temporary.publish(path, replacing(force))?;
     Ok(path.to_path_buf())
 }
 

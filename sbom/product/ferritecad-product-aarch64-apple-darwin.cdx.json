@@ -938,6 +938,33 @@
     },
     {
       "author": "FerriteCAD contributors",
+      "bom-ref": "path+crates/ferritecad-jobs#ferritecad-jobs@0.0.1",
+      "description": "The work an interface asks for: a stored document in, a published file out",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/ferrite-cad/ferrite-cad"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "ferritecad-jobs",
+      "properties": [
+        {
+          "name": "ferritecad:sbom:source",
+          "value": "workspace"
+        }
+      ],
+      "purl": "pkg:cargo/ferritecad-jobs@0.0.1",
+      "scope": "required",
+      "type": "library",
+      "version": "0.0.1"
+    },
+    {
+      "author": "FerriteCAD contributors",
       "bom-ref": "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
       "description": "Kernel-agnostic geometry contract: DTOs, history and the GeometryKernel trait, with no dependency on any geometry kernel",
       "externalReferences": [
@@ -6439,6 +6466,9 @@
         "native+occt@8.0.1",
         "native+planegcs@1.0.1",
         "path+crates/ferritecad-document#ferritecad-document@0.0.1",
+        "path+crates/ferritecad-exchange#ferritecad-exchange@0.0.1",
+        "path+crates/ferritecad-export#ferritecad-export@0.0.1",
+        "path+crates/ferritecad-jobs#ferritecad-jobs@0.0.1",
         "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
         "path+crates/ferritecad-occt#ferritecad-occt@0.0.1",
         "path+crates/ferritecad-scene#ferritecad-scene@0.0.1",
@@ -6464,6 +6494,7 @@
         "path+crates/ferritecad-eval#ferritecad-eval@0.0.1",
         "path+crates/ferritecad-exchange#ferritecad-exchange@0.0.1",
         "path+crates/ferritecad-export#ferritecad-export@0.0.1",
+        "path+crates/ferritecad-jobs#ferritecad-jobs@0.0.1",
         "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
         "path+crates/ferritecad-occt#ferritecad-occt@0.0.1",
         "path+crates/ferritecad-scene#ferritecad-scene@0.0.1",
@@ -6509,6 +6540,16 @@
         "path+crates/ferritecad-types#ferritecad-types@0.0.1"
       ],
       "ref": "path+crates/ferritecad-export#ferritecad-export@0.0.1"
+    },
+    {
+      "dependsOn": [
+        "path+crates/ferritecad-exchange#ferritecad-exchange@0.0.1",
+        "path+crates/ferritecad-export#ferritecad-export@0.0.1",
+        "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
+        "path+crates/ferritecad-scene#ferritecad-scene@0.0.1",
+        "path+crates/ferritecad-types#ferritecad-types@0.0.1"
+      ],
+      "ref": "path+crates/ferritecad-jobs#ferritecad-jobs@0.0.1"
     },
     {
       "dependsOn": [
@@ -7622,11 +7663,11 @@
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/native/native-assets-inventory.json@sha256:ae6a08b0bb17df02a65d186f16f8a1c9ffd9e671b2cf7a16b84fe314337af5aa"
+        "value": "sbom/native/native-assets-inventory.json@sha256:d33bfb6acf0a8ff479b5603fccc2c1d9d3f952ec66cb02d51da07f803dc8de80"
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/rust/rust-fragment-aarch64-apple-darwin.cdx.json@sha256:16ab65d443aa76d2df433c86e436c575caf7ec2c5d51e382b354dd496619ea3e"
+        "value": "sbom/rust/rust-fragment-aarch64-apple-darwin.cdx.json@sha256:543c1ac218ce1856f498347765b8fa8347964482e4473fd49bbcd77e2e4789a0"
       },
       {
         "name": "ferritecad:sbom:product-format",

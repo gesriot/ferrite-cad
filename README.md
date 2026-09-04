@@ -95,6 +95,53 @@ code: the file is real and was published, and it is not the whole model, so a
 script can tell the difference without reading prose. A clean export exits `0`
 and says nothing on standard error.
 
+### From the window
+
+The viewer offers the same export. With a document on screen, `Export FBX…`
+asks where to write it — beside the document, under the document's own name
+with an `.fbx` extension — and writes the same file the command above writes,
+byte for byte, because it is the same export: one route, shared by both, rather
+than two that agree until the day they do not.
+
+What is exported is the document on screen, always. That is not the same as the
+last file you asked for: opening another document replaces what the viewer will
+open next long before that document has been read, and an Open that failed or
+that you stopped waiting for never replaces the picture at all. So a viewer
+showing A while an attempt at B has just failed exports A.
+
+The export is a fresh read of the saved `.fcad`, not a copy of what is drawn.
+Nothing about the picture takes part in it, and nothing about the picture
+changes because of it: what is chosen, what is hidden, where the camera is
+pointing and what the last Open said are all left exactly as they were, whether
+the export finishes, fails or is given up on. This viewer cannot edit a
+document, so there is nothing unsaved to lose; what it does mean is that an
+export reads whatever is at that path when it runs, and a document replaced on
+disk behind the viewer's back is exported as it now is rather than as it is
+drawn.
+
+If something is already where you chose to write, the viewer asks
+`Replace existing file?` and writes nothing until you answer. That question is
+this application's own: whether the system's save panel asked as well depends
+on the platform, and "it probably asked" is not a reason to replace somebody's
+file. Answering `Cancel` leaves the file exactly as it is. The document itself
+is never an acceptable destination, whatever is confirmed.
+
+A large assembly takes minutes to export, and the window stays usable while it
+does: the work runs on a thread of its own with its own kernel session, the
+toolbar offers `Cancel export` while it runs, opening another document stops
+it, and closing the window stops and waits for it. An export that is given up
+on publishes nothing and leaves whatever was at the destination untouched.
+
+An `Export` section under the toolbar says what happened: `Exporting…`, and
+then the file with the bytes, nodes, geometry objects and materials the writer
+counted. If some of the document could not be given triangles it says
+`Exported with missing geometry` and lists every one of them — the definition
+with the source it came from, what the document recorded about it when it was
+imported, the typed refusal, and every place it sits in the file — while the
+file itself is published all the same. Exporting and opening are reported
+separately: an export that failed is not a document that failed to open, and
+the model in front of you is still the model.
+
 ## Looking at a document
 
 ```sh
@@ -465,12 +512,13 @@ Three properties the format commits to:
 crates/
   ferritecad-types/     identifiers, units, tolerances, errors, canonical hashing
   ferritecad-document/  SQLite container, CBOR envelopes, graph, cache sidecar
-  ferritecad-cli/       create, inspect, validate, dump-graph, clear-cache
+  ferritecad-cli/       create, inspect, validate, dump-graph, clear-cache, export
   ferritecad-kernel/    the geometry contract, and a mock that satisfies it
   ferritecad-occt/      Open CASCADE behind that contract, over a C ABI shim
   ferritecad-exchange/  STEP scenes: definitions, placements, diagnostics
   ferritecad-eval/      cold and cached rebuilds of a whole document
   ferritecad-scene/     a document read into a picture, and what its parts are
+  ferritecad-jobs/      the work an interface asks for: a document in, a file out
   ferritecad-viewport/  camera and immutable render snapshots, no GPU
   ferritecad-viewport-gpu/  wgpu renderer, offscreen and windowed
   ferritecad-ui/        panels and the input reducer, no window

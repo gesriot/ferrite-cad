@@ -17,12 +17,13 @@ ferritecad-document.workspace = true
 ferritecad-eval.workspace = true
 ferritecad-exchange.workspace = true
 ferritecad-export.workspace = true
+ferritecad-jobs.workspace = true
 ferritecad-kernel.workspace = true
 ferritecad-occt.workspace = true
 # The one crate that knows a document, a rebuild, a stored import and a kernel
 # at once, and so the one that builds the neutral `ExportScene` the FBX writer
-# is handed. `export-fbx` takes that route and no other: there is no flattened
-# picture on it, and nothing here rebuilds a scene of its own.
+# is handed. Reached through `ferritecad-jobs` on the export route, and named
+# here as well because the STL export and the topology report are built on it.
 ferritecad-scene.workspace = true
 ferritecad-types.workspace = true
 
@@ -41,7 +42,11 @@ tempfile = "3"
 # rebuild path. Same rule as the viewer: this crate re-decides nothing about
 # whether a library is there.
 [features]
-planegcs = ["ferritecad-eval/planegcs", "ferritecad-scene/planegcs"]
+planegcs = [
+    "ferritecad-eval/planegcs",
+    "ferritecad-jobs/planegcs",
+    "ferritecad-scene/planegcs",
+]
 
 [lints]
 workspace = true

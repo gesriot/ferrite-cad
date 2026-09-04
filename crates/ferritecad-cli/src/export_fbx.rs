@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: MIT
-//! Writing a whole document out as FBX, and saying what did not fit.
+//! The `export-fbx` command: what it refuses, what it prints and what it
+//! returns.
 //!
-//! The one route from a stored document to a file another program opens as a
-//! model rather than as a lump of triangles: the hierarchy, the placements and
-//! the definitions survive, because [`export_scene`] keeps what a picture
-//! throws away and [`write_fbx_ascii_7400`] is handed that and nothing else.
+//! The export itself is not here. It is
+//! [`ferritecad_jobs::export_document_as_fbx`], which is the one route from a
+//! stored document to a published FBX and is the same route the window takes.
+//! What is here is everything that is about *this* interface rather than about
+//! the work: which flag authorises a replacement, what a person reads on each
+//! stream, and which number the process leaves behind.
 //!
-//! # Nothing here is a second opinion
+//! # Two checks before the kernel is opened
 //!
-//! One read of the document, one cold rebuild, one reading of each stored STEP
-//! source and one call to the writer. This module never reopens the document,
-//! never asks the kernel for more geometry, never touches the STEP file the
-//! document was imported from — it no longer has to exist — and never works
-//! out for itself what the export left behind. That last one matters most: the
-//! report on standard error is built from [`FbxWriteReport::omissions`] and
-//! from nothing else, so there is no second list that could disagree with the
-//! file.
+//! Both are courtesies rather than decisions. The job refuses a document that
+//! is its own destination on its own account, and publication is what actually
+//! decides whether something already there may be replaced. Doing them here as
+//! well means a run that was never going to work says so at once, instead of
+//! after rebuilding and tessellating a whole assembly.
 //!
 //! # A partial export is a file, and says so
 //!
@@ -24,30 +24,28 @@
 //! than zero, because a script must be able to tell the two apart without
 //! reading prose, and rather than failing, because refusing to publish would
 //! throw away the forty-five definitions that were fine.
+//!
+//! The report on standard error is built from [`FbxWriteReport::omissions`]
+//! and from nothing else. There is no second list here that could disagree
+//! with the file that was published.
 
-use std::path::Path;
 use std::process::ExitCode;
 
-use ferritecad_export::{
-    ExportNodeId, ExportOmissionReport, ExportScene, ExportSource, FbxWriteReport,
-    write_fbx_ascii_7400,
+use ferritecad_export::{ExportNodeId, ExportOmissionReport, ExportSource, FbxWriteReport};
+use ferritecad_jobs::{
+    FbxExport, FbxExportRequest, SOURCE_IS_DESTINATION, export_document_as_fbx, path_entry_exists,
+    refuse_source_as_destination,
 };
 use ferritecad_kernel::{OperationContext, TessellationParams};
 use ferritecad_occt::OcctKernel;
-use ferritecad_scene::export_scene;
 use ferritecad_types::{CadError, Result};
 
-use crate::publish::{Temporary, path_entry_exists, refuse_source_as_destination};
-use crate::{EXIT_PARTIAL, ExportFbxArgs};
+use crate::{EXIT_PARTIAL, ExportFbxArgs, REPLACE_ADVICE, replacing};
 
 pub fn export_fbx(args: ExportFbxArgs) -> Result<ExitCode> {
     // This check takes precedence over the ordinary no-clobber message: the
     // document is not a destination `--force` can ever make acceptable.
-    refuse_source_as_destination(
-        &args.path,
-        &args.output,
-        "the native document cannot also be the FBX output",
-    )?;
+    refuse_source_as_destination(&args.path, &args.output, SOURCE_IS_DESTINATION)?;
 
     // Checked before the kernel is opened. Rebuilding and tessellating a whole
     // assembly only to refuse at the last step wastes the user's time and tells
@@ -56,31 +54,28 @@ pub fn export_fbx(args: ExportFbxArgs) -> Result<ExitCode> {
     // publication, where the decision is atomic.
     if !args.force && path_entry_exists(&args.output)? {
         return Err(CadError::input(format!(
-            "{} already exists; pass --force to replace it",
+            "{} already exists; {REPLACE_ADVICE}",
             args.output.display()
         )));
     }
 
-    // Cold on purpose, and the same reading a picture is built from with the
-    // hierarchy kept. The stored STEP bytes are what an imported definition is
-    // read from, so an export needs no file beside the document. Every shape
-    // this makes is released before it returns, whatever happens.
+    // The session belongs to this process and ends with it. Everything after
+    // this line is the shared job, which is what the window runs too.
     let mut kernel = OcctKernel::new()?;
-    let scene = export_scene(
-        &args.path,
+    let exported = export_document_as_fbx(
+        FbxExportRequest::new(&args.path, &args.output, replacing(args.force)),
         &mut kernel,
         |kernel, source| kernel.import_step(source),
         &TessellationParams::default(),
         &OperationContext::default(),
     )?;
 
-    let report = write_and_publish(&args.output, &scene, args.force)?;
-
-    print!("{}", summary(&args, &report));
+    print!("{}", summary(&args, &exported));
+    let report = exported.report();
     if !report.is_complete() {
         eprint!("{}", omission_report(report.omissions()));
     }
-    Ok(ExitCode::from(exit_code(&report)))
+    Ok(ExitCode::from(exit_code(report)))
 }
 
 /// What a finished export is worth to whatever ran it.
@@ -99,61 +94,16 @@ fn exit_code(report: &FbxWriteReport) -> u8 {
     }
 }
 
-/// Writes the scene into a scratch file beside the destination and publishes
-/// it once, after the writer has finished.
-///
-/// See [`crate::publish`] for why the scratch file lives where it does and what
-/// makes the last step atomic. Streamed rather than built in memory first: the
-/// complex assembly's FBX is hundreds of megabytes, almost all of it vertex and
-/// normal arrays, and holding a second copy of that would be the difference
-/// between a large export and one that cannot be done at all.
-fn write_and_publish(
-    destination: &Path,
-    scene: &ExportScene,
-    force: bool,
-) -> Result<FbxWriteReport> {
-    let temporary = Temporary::beside(destination)?;
-
-    // `create_new`, so this cannot open something already at that name and
-    // cannot follow a symlink to somewhere else.
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(temporary.path())
-        .map_err(|e| CadError::io(format!("creating {}", temporary.path().display()), e))?;
-
-    let mut sink = std::io::BufWriter::with_capacity(1 << 20, file);
-    // The one call. A writer invoked twice is a writer whose second file could
-    // differ from the report describing the first.
-    let report = write_fbx_ascii_7400(scene, &mut sink)?;
-
-    // `into_inner` flushes what the buffer still holds and hands back the
-    // error rather than swallowing it in a drop.
-    let file = sink.into_inner().map_err(|error| {
-        CadError::io(
-            format!("writing {}", temporary.path().display()),
-            error.into_error(),
-        )
-    })?;
-    file.sync_all()
-        .map_err(|e| CadError::io(format!("syncing {}", temporary.path().display()), e))?;
-    drop(file);
-
-    // Only now. Nothing is at the destination until the writer has said it
-    // finished and every byte of what it wrote is on the disk.
-    temporary.publish(destination, force)?;
-    Ok(report)
-}
-
 /// What was written, in terms that do not depend on how long it took.
-fn summary(args: &ExportFbxArgs, report: &FbxWriteReport) -> String {
+fn summary(args: &ExportFbxArgs, exported: &FbxExport) -> String {
     use std::fmt::Write as _;
 
+    let report = exported.report();
     let mut out = String::new();
     writeln!(
         out,
         "wrote {} from {}",
-        args.output.display(),
+        exported.destination().display(),
         args.path.display()
     )
     .expect("writing to a String cannot fail");
@@ -285,7 +235,7 @@ mod tests {
     use ferritecad_exchange::{Diagnostic, Severity, Stage};
     use ferritecad_export::{
         ExportColourOrigin, ExportGeometry, ExportMaterial, ExportMesh, ExportOmission,
-        ExportProvenance, ExportSceneBuilder, ExportTransform,
+        ExportProvenance, ExportScene, ExportSceneBuilder, ExportTransform,
     };
     use ferritecad_kernel::TessellationRefusal;
     use ferritecad_types::{ImportedSourceId, ObjectId};
@@ -342,124 +292,23 @@ mod tests {
         builder.finish().expect("a scene")
     }
 
-    fn leftovers(directory: &Path) -> Vec<std::path::PathBuf> {
-        std::fs::read_dir(directory)
-            .expect("lists the directory")
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|path| path.to_string_lossy().contains(".partial"))
-            .collect()
-    }
-
-    #[test]
-    fn a_writer_that_fails_after_it_has_started_publishes_nothing() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let destination = directory.path().join("part.fbx");
-
-        // A name FBX ASCII cannot spell. It is refused while the objects are
-        // being written, which is well after the header, the settings and the
-        // definitions have gone into the scratch file — so this is a failure
-        // with a half-written file behind it, not a refusal before any byte.
-        let scene = one_node(ExportGeometry::Mesh(mesh([0.5, 0.5, 0.5])), "bad\u{7}name");
-        let error = write_and_publish(&destination, &scene, false)
-            .expect_err("a name the format cannot spell must stop the write");
-
-        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Unsupported);
-        assert!(
-            !destination.exists(),
-            "a failed write published a destination"
-        );
-        assert!(
-            leftovers(directory.path()).is_empty(),
-            "a failed write left scratch space behind: {:?}",
-            leftovers(directory.path())
-        );
-    }
-
-    #[test]
-    fn a_colour_the_format_cannot_record_is_refused_before_anything_is_published() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let destination = directory.path().join("part.fbx");
-
-        // A linear intensity the export model accepts and FBX has no way of
-        // recording. The writer refuses it while working out what the file will
-        // say, which is before the scratch file is given a single byte.
-        let scene = one_node(ExportGeometry::Mesh(mesh([2.0, 0.0, 0.0])), "unremarkable");
-        let error = write_and_publish(&destination, &scene, false)
-            .expect_err("a colour outside the measured range must stop the export");
-        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Unsupported);
-
-        assert!(!destination.exists());
-        assert!(leftovers(directory.path()).is_empty());
-    }
-
-    /// A shear cannot even become a scene, so it can never reach the writer.
-    #[test]
-    fn a_placement_no_static_hierarchy_can_express_never_becomes_a_scene() {
-        let sheared = ExportTransform::new([
-            [1.0, 0.3, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-        ]);
-        assert!(sheared.is_err(), "a shear was accepted as a placement");
-    }
-
-    /// The early check is a courtesy; this is the decision.
+    /// The writer's own record of a scene, with no file anywhere.
     ///
-    /// A file that appears between the check at the top of the command and the
-    /// end of a long tessellation must not be overwritten, and the export that
-    /// lost the race must leave nothing of itself behind.
-    #[test]
-    fn a_destination_that_appears_while_the_writer_works_is_not_overwritten() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let destination = directory.path().join("part.fbx");
-        std::fs::write(&destination, b"arrived during the export").expect("writes");
-
-        let scene = one_node(ExportGeometry::Mesh(mesh([0.5, 0.5, 0.5])), "part");
-        let error = write_and_publish(&destination, &scene, false)
-            .expect_err("publishing without force must not replace anything");
-
-        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input);
-        assert_eq!(
-            std::fs::read(&destination).expect("the other file remains"),
-            b"arrived during the export"
-        );
-        assert!(leftovers(directory.path()).is_empty());
+    /// What this file decides is the number and the words, and both are
+    /// functions of that record. Where the bytes go is the job's business and
+    /// is gated where the job lives.
+    fn written(scene: &ExportScene) -> FbxWriteReport {
+        ferritecad_export::write_fbx_ascii_7400(scene, &mut Vec::new()).expect("writes")
     }
 
-    /// And with `--force`, the same race replaces the whole file rather than
-    /// the part of it the new one happens to reach.
+    /// Whether the file is the whole document decides the number, and
+    /// nothing else does.
     #[test]
-    fn force_replaces_a_destination_that_appeared_while_the_writer_worked() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let destination = directory.path().join("part.fbx");
-        let stale = vec![b'x'; 1 << 20];
-        std::fs::write(&destination, &stale).expect("writes");
+    fn a_partial_export_is_not_a_success_and_is_not_a_failure() {
+        let report = written(&one_node(omission(), "frame"));
 
-        let scene = one_node(ExportGeometry::Mesh(mesh([0.5, 0.5, 0.5])), "part");
-        write_and_publish(&destination, &scene, true).expect("force publishes");
-
-        let published = std::fs::read(&destination).expect("reads the replacement");
-        assert!(published.starts_with(b"; FBX 7.4.0 project file"));
-        assert!(published.len() < stale.len(), "the old tail survived");
-        assert!(leftovers(directory.path()).is_empty());
-    }
-
-    #[test]
-    fn a_partial_export_is_published_and_reported_and_is_not_a_success() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let destination = directory.path().join("part.fbx");
-
-        let scene = one_node(omission(), "frame");
-        let report =
-            write_and_publish(&destination, &scene, false).expect("an omission is still writable");
-
-        assert!(destination.exists(), "a partial export published nothing");
-        assert!(std::fs::metadata(&destination).expect("stats").len() > 0);
         assert!(!report.is_complete());
         assert_eq!(report.omissions().len(), 1);
-        assert!(leftovers(directory.path()).is_empty());
-
-        // And it is neither a success nor a failure.
         assert_eq!(exit_code(&report), EXIT_PARTIAL);
         assert_eq!(EXIT_PARTIAL, 6);
         assert_ne!(exit_code(&report), 0);
@@ -467,15 +316,13 @@ mod tests {
 
     #[test]
     fn a_complete_export_is_a_plain_success() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let destination = directory.path().join("part.fbx");
-
-        let scene = one_node(ExportGeometry::Mesh(mesh([0.5, 0.5, 0.5])), "part");
-        let report = write_and_publish(&destination, &scene, false).expect("writes");
+        let report = written(&one_node(
+            ExportGeometry::Mesh(mesh([0.5, 0.5, 0.5])),
+            "part",
+        ));
 
         assert!(report.is_complete());
         assert_eq!(exit_code(&report), 0);
-        assert!(destination.exists());
     }
 
     /// Two files may both call a definition `#31`, and they are not one thing.

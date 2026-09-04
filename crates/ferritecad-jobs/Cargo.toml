@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "ferritecad-jobs"
+description = "The work an interface asks for: a stored document in, a published file out"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# One piece of work, described once, for every interface that can ask for it.
+#
+# The command line and the window both turn "write this document out as FBX"
+# into the same three steps — build the neutral scene, hand it to the writer,
+# publish the result atomically — and a second copy of those steps is a second
+# file format, free to drift from the first without anything failing to
+# compile.
+#
+# No kernel implementation: the caller opens the session and hands it in, so
+# the worker that owns an Open CASCADE session is the thread that made it.
+# No window, no renderer, no event loop and no exit codes: what a finished
+# export is worth to whoever asked is the caller's to decide.
+[dependencies]
+ferritecad-exchange.workspace = true
+ferritecad-export.workspace = true
+ferritecad-kernel.workspace = true
+ferritecad-scene.workspace = true
+ferritecad-types.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+# Forwarded, never re-decided: whether there is a sketch solver is settled by
+# the crate that links one, exactly as it is for every other consumer.
+[features]
+planegcs = ["ferritecad-scene/planegcs"]
+
+[lints]
+workspace = true
