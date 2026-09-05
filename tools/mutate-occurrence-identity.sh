@@ -500,8 +500,8 @@ restore_mutation
 # export scene directly, without going through document validation.
 begin_mutation "$model"
 replace_once "$model" \
-  $'        if occurrence.is_recorded()\n            && let Some(earlier) = self.nodes.iter().find(|node| node.occurrence == occurrence)\n        {' \
-  $'        if false\n            && let Some(earlier) = self.nodes.iter().find(|node| node.occurrence == occurrence)\n        {'
+  $'        if occurrence.is_recorded()\n            && let Some(earlier) = self.recorded.get(&occurrence)\n        {' \
+  $'        if false\n            && let Some(earlier) = self.recorded.get(&occurrence)\n        {'
 expect_kill duplicate_identities_accepted_by_the_builder scene \
   one_identity_naming_two_placements_is_refused_at_the_export_boundary_too
 restore_mutation
