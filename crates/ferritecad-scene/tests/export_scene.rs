@@ -2221,7 +2221,7 @@ fn downgrade_to_version_2(path: &Path, object: ObjectId) {
 }
 
 #[test]
-fn placement_identities_that_were_swapped_or_stolen_are_refused_before_any_export() {
+fn duplicate_placement_identities_are_refused_before_any_export() {
     // Two placements answering to one identity, however it got that way. A
     // swap between neighbours is not detectable — two identities the document
     // wrote are two identities whichever place each sits at, and this slice
@@ -2289,11 +2289,119 @@ fn placement_identities_that_were_swapped_or_stolen_are_refused_before_any_expor
 }
 
 #[test]
+fn an_occurrence_stolen_from_another_object_is_refused_before_rebuild() {
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let mut document = ferritecad_fixtures::open_plate(directory.path()).expect("copies plate");
+    let path = document.path().to_owned();
+    let mut setup = MockKernel::new();
+    let first = ObjectId::new();
+    let second = ObjectId::new();
+    for object in [first, second] {
+        let scene = nested_assembly(&mut setup);
+        store_import(
+            &mut document,
+            &mut setup,
+            Stored {
+                object,
+                name: "Assembly",
+                source: SOURCE,
+                source_name: "assembly.step",
+                scene,
+                diagnostics: Vec::new(),
+            },
+        );
+    }
+    document.close().expect("closes");
+
+    // Establish that the native feature and both imported objects actually
+    // build before corrupting only the identity in the second payload.
+    let mut kernel = Counting::new();
+    let reads = AtomicUsize::new(0);
+    let exported = export_scene(
+        &path,
+        &mut kernel,
+        |kernel, _| {
+            reads.fetch_add(1, Ordering::Relaxed);
+            Ok(Import::Imported {
+                scene: nested_assembly(&mut kernel.inner),
+                diagnostics: Vec::new(),
+            })
+        },
+        &params(),
+        &OperationContext::default(),
+    )
+    .expect("the intact document exports");
+    assert_eq!(exported.nodes().len(), 15);
+    assert_eq!(kernel.extrusions, 1);
+    assert_eq!(reads.load(Ordering::Relaxed), 2);
+    // Read the first object's own ID: scene order need not be ObjectId order.
+    let stolen = {
+        let document = Document::open_read_only(&path).expect("reads the first object");
+        let record = document.object(first).expect("reads").expect("exists");
+        let ObjectPayload::ImportedStep(imported) = record.payload else {
+            panic!("an imported object");
+        };
+        let StoredScene::V3(scene) = imported.scene else {
+            panic!("current layout");
+        };
+        scene.instances[0].occurrence
+    };
+    rewrite_stored_scene(&path, second, 3, |scene| {
+        let mut damaged = scene.clone();
+        damaged.instances[0].occurrence = stolen;
+        damaged.validate().expect("each object is internally valid");
+        damaged
+    });
+
+    let mut kernel = Counting::new();
+    let reads = AtomicUsize::new(0);
+    let error = export_scene(
+        &path,
+        &mut kernel,
+        |kernel, _| {
+            reads.fetch_add(1, Ordering::Relaxed);
+            Ok(Import::Imported {
+                scene: nested_assembly(&mut kernel.inner),
+                diagnostics: Vec::new(),
+            })
+        },
+        &params(),
+        &OperationContext::default(),
+    )
+    .expect_err("a cross-object identity collision must be refused");
+    assert_eq!(
+        kernel.extrusions, 0,
+        "native rebuild ran before identity validation: {error}"
+    );
+    assert_eq!(
+        reads.load(Ordering::Relaxed),
+        0,
+        "the importer saw a damaged document"
+    );
+    assert!(kernel.tessellations.is_empty());
+    assert_eq!(kernel.inner.live_shape_count(), 0);
+    assert_eq!(error.kind(), ErrorKind::Input, "{error}");
+    assert!(
+        error.to_string().contains("occurrence.duplicate"),
+        "{error}"
+    );
+    let document = Document::open_read_only(&path).expect("opens for diagnosis");
+    let report = document.validate().expect("validates");
+    let collision = report
+        .errors()
+        .find(|d| d.code == "occurrence.duplicate")
+        .expect("document validation reports the collision too");
+    assert!(collision.message.contains(&first.to_string()));
+    assert!(collision.message.contains(&second.to_string()));
+    assert!(collision.message.contains(&stolen.to_string()));
+}
+
+#[test]
 fn one_identity_naming_two_placements_is_refused_at_the_export_boundary_too() {
     // The persistence boundary refuses this first, so a document can never
-    // reach the builder with it. The builder refuses it as well, because it is
-    // the boundary that sees the whole document at once: two imported objects
-    // could each be internally sound and still claim one identity between them.
+    // reach the builder with it. The builder refuses it as well, because it
+    // also accepts callers that construct a neutral scene directly, without
+    // going through document validation.
     let mut builder = ExportSceneBuilder::new();
     let definition = builder
         .definition(

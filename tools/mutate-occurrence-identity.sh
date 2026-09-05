@@ -311,9 +311,10 @@ baseline() {
   baseline_gate scene the_identity_of_each_node_is_the_one_stored_for_that_place
   baseline_gate scene a_fresh_reading_of_the_same_bytes_does_not_replace_the_stored_identities
   baseline_gate scene two_objects_storing_the_same_bytes_keep_their_own_placement_identities
+  baseline_gate scene an_occurrence_stolen_from_another_object_is_refused_before_rebuild
   baseline_gate scene a_native_body_is_identified_by_its_object_and_not_by_a_fresh_uuid
   baseline_gate scene a_document_written_before_placements_had_identities_says_so_and_still_exports
-  baseline_gate scene placement_identities_that_were_swapped_or_stolen_are_refused_before_any_export
+  baseline_gate scene duplicate_placement_identities_are_refused_before_any_export
   baseline_gate scene one_identity_naming_two_placements_is_refused_at_the_export_boundary_too
   baseline_gate scene \
     a_placement_of_a_definition_with_no_triangles_still_has_its_stored_identity
@@ -359,18 +360,13 @@ echo "harness control: an actual zero-test run was refused"
 
 # And a bytes gate that compares nothing is refused too, on its own terms: the
 # gate reads a list of digests, and an empty list would pass silently.
-saved_digests="$temporary/digests.tsv"
-cp "$digests" "$saved_digests"
+begin_mutation "$digests"
 : >"$digests"
 set +e
 cargo_gate bytes -
 empty_result=$?
 set -e
-cp "$saved_digests" "$digests"
-if [ "$(digest "$digests")" != "$(digest "$saved_digests")" ]; then
-  echo "the digest list was not restored" >&2
-  exit 1
-fi
+restore_mutation
 if [ "$empty_result" -ne 30 ]; then
   echo "zero-check bytes control was not refused, result $empty_result" >&2
   exit 1
@@ -486,12 +482,22 @@ replace_once "$persist" \
   $'            if let Some(earlier) = seen.insert(instance.occurrence, index) {' \
   $'            if let Some(earlier) = None::<usize> {\n                let _ = seen.insert(instance.occurrence, index);'
 expect_kill duplicate_identities_accepted_by_the_payload scene \
-  placement_identities_that_were_swapped_or_stolen_are_refused_before_any_export
+  duplicate_placement_identities_are_refused_before_any_export
 restore_mutation
 
-# 9. And the same thing at the export boundary, which is the only place that
-# sees the whole document at once: two imported objects can each be internally
-# sound and still claim one identity between them.
+# A different imported object may contain the same well-formed occurrence ID
+# without either payload containing a duplicate internally. The document must
+# reject that before rebuilding even its unrelated native feature.
+begin_mutation "$root/crates/ferritecad-document/src/validate.rs"
+replace_once "$root/crates/ferritecad-document/src/validate.rs" \
+  '    check_occurrence_ownership(&objects, &mut report);' \
+  '    if false { check_occurrence_ownership(&objects, &mut report); }'
+expect_kill cross_object_occurrence_ownership_unchecked scene \
+  an_occurrence_stolen_from_another_object_is_refused_before_rebuild
+restore_mutation
+
+# 9. The neutral builder also checks uniqueness for callers that construct an
+# export scene directly, without going through document validation.
 begin_mutation "$model"
 replace_once "$model" \
   $'        if occurrence.is_recorded()\n            && let Some(earlier) = self.nodes.iter().find(|node| node.occurrence == occurrence)\n        {' \
