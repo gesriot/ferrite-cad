@@ -1,0 +1,39 @@
+# §22B-1e3a failing-first evidence
+#
+# The end-to-end gate, run against the types laid but not yet fed: every
+# PreparedNode reported NodeIdentity::Unrecorded and the export boundary
+# therefore offered ExportOccurrence::Unrecorded for all 140 placements.
+#
+# Recorded with:
+#   cargo test -p ferritecad-cli --test occurrence_identity_complex \
+#     every_placement_of_the_reopened_complex_assembly_has_its_own_durable_identity
+#
+# git HEAD at the time: b189a7bd753300d2e61b135dbdb95ba8165094bf
+# rustc: rustc 1.96.0 (ac68faa20 2026-05-25)
+#
+# The three assertions before the failing one passed, which is what makes
+# this a measurement of the missing identity rather than of a missing
+# model: 46 definitions, 140 nodes and one root all arrived.
+
+     Running tests/occurrence_identity_complex.rs (target/debug/deps/occurrence_identity_complex-3cab8afcc9ecb293)
+
+running 1 test
+test every_placement_of_the_reopened_complex_assembly_has_its_own_durable_identity ... FAILED
+
+failures:
+
+---- every_placement_of_the_reopened_complex_assembly_has_its_own_durable_identity stdout ----
+
+thread 'every_placement_of_the_reopened_complex_assembly_has_its_own_durable_identity' (440308560) panicked at crates/ferritecad-cli/tests/occurrence_identity_complex.rs:219:5:
+assertion `left == right` failed: 140 of 140 placements reached the export boundary without an identity the document recorded
+  left: 0
+ right: 140
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    every_placement_of_the_reopened_complex_assembly_has_its_own_durable_identity
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 39.63s
+
+error: test failed, to rerun pass `-p ferritecad-cli --test occurrence_identity_complex`

@@ -785,8 +785,8 @@ mod tests {
     use std::time::Duration;
 
     use ferritecad_export::{
-        ExportGeometry, ExportOmission, ExportProvenance, ExportScene, ExportSceneBuilder,
-        ExportTransform,
+        ExportGeometry, ExportOccurrence, ExportOmission, ExportProvenance, ExportScene,
+        ExportSceneBuilder, ExportTransform,
     };
     use ferritecad_kernel::TessellationRefusal;
     use ferritecad_kernel::mock::MockKernel;
@@ -968,6 +968,7 @@ mod tests {
                         ExportTransform::IDENTITY,
                         Some((*key).to_owned()),
                         None,
+                        ExportOccurrence::Unrecorded,
                     )
                     .expect("a placement");
             }
@@ -1846,6 +1847,7 @@ mod tests {
                     ExportTransform::IDENTITY,
                     Some("part".to_owned()),
                     None,
+                    ExportOccurrence::Unrecorded,
                 )
                 .expect("a placement");
         }

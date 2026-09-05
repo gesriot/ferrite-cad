@@ -34,7 +34,7 @@
 
 use ferritecad_exchange::Diagnostic;
 use ferritecad_kernel::TessellationRefusal;
-use ferritecad_types::{CadError, ImportedSourceId, ObjectId, Result};
+use ferritecad_types::{CadError, ImportedSourceId, ObjectId, OccurrenceId, Result};
 
 /// How far from exact a placement may be and still be called representable.
 ///
@@ -63,6 +63,56 @@ pub enum ExportSource {
         source: ImportedSourceId,
         definition_key: String,
     },
+}
+
+/// The durable identity of one placement, in terms that outlive the export.
+///
+/// Read-only and neutral. A writer may carry one and may compare two of them,
+/// and there is nothing reachable through it: no document to reopen, no kernel
+/// session, no picture and no number a file format later assigns. It is what
+/// tells two placements of one definition apart when everything a source
+/// records about them — the name, the key, the shape and often the transform —
+/// is identical.
+///
+/// # Three states, not two
+///
+/// For the same reason [`ExportGeometry`] has three. A placement the document
+/// gave an identity and a placement whose document predates placement identity
+/// are different facts, and collapsing them would let a value invented at
+/// export time be presented as something the document recorded. There is
+/// deliberately no way to spell "make one up".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Closed on purpose: a placement is a body of this document, a recorded
+/// occurrence of an imported one, or a placement no identity was ever written
+/// for. A writer that could fall through to a wildcard would be a writer that
+/// silently treated the third as one of the first two.
+pub enum ExportOccurrence {
+    /// A native body, identified by the document object that holds it.
+    ///
+    /// Not an [`OccurrenceId`] beside it, and not a fresh one per export: the
+    /// object identifier is already durable and already unique in the document,
+    /// and minting a second identity over it would be two names for one thing
+    /// that nothing could later be sure were the same.
+    Object(ObjectId),
+    /// One placement of an imported scene, as its document recorded it.
+    Occurrence(OccurrenceId),
+    /// A placement from a document layout written before placements carried
+    /// identities.
+    ///
+    /// Not lost and not missing: never recorded. Such a document still exports
+    /// exactly what it always did; what it cannot do is answer a question about
+    /// which placement this is, and saying so is the whole of the difference.
+    Unrecorded,
+}
+
+impl ExportOccurrence {
+    /// Whether this is an identity a document actually wrote down.
+    ///
+    /// The one thing a caller may ask without matching, because it is the one
+    /// question with a stable meaning across all three states.
+    pub const fn is_recorded(self) -> bool {
+        !matches!(self, Self::Unrecorded)
+    }
 }
 
 /// What one definition is called, and where it came from.
@@ -484,6 +534,12 @@ pub struct ExportNode {
     pub display_name: Option<String>,
     /// Linear RGB set on this placement rather than on its definition.
     pub colour_override: Option<[f64; 3]>,
+    /// What this placement durably is, as the document recorded it.
+    ///
+    /// Beside [`Self::order`] and never instead of it: the order is where this
+    /// node came in one export and changes whenever anything before it does,
+    /// which is exactly why it is not an identity.
+    pub occurrence: ExportOccurrence,
     /// Where this placement came in the document and its source, counted from
     /// zero across the whole export.
     pub order: u32,
@@ -617,6 +673,15 @@ impl ExportSceneBuilder {
     }
 
     /// Adds a node below an already added parent.
+    ///
+    /// A recorded [`ExportOccurrence`] must be one no earlier node of this
+    /// scene claimed. Checked across the whole export rather than within one
+    /// source, because the ways an identity gets reused are exactly the ways
+    /// that cross a source boundary: two objects storing the same bytes, an
+    /// identity copied from one imported object into another, a stored payload
+    /// edited by hand. A scene in which two placements answer to one identity
+    /// is one where a reference to it resolves to whichever was looked at
+    /// first, and that is the failure this whole slice exists to prevent.
     pub fn node(
         &mut self,
         parent: Option<ExportNodeId>,
@@ -624,6 +689,7 @@ impl ExportSceneBuilder {
         local_transform: ExportTransform,
         display_name: Option<String>,
         colour_override: Option<[f64; 3]>,
+        occurrence: ExportOccurrence,
     ) -> Result<ExportNodeId> {
         if definition.index() >= self.definitions.len() {
             return Err(CadError::input(format!(
@@ -651,6 +717,16 @@ impl ExportSceneBuilder {
                  linear intensity"
             )));
         }
+        if occurrence.is_recorded()
+            && let Some(earlier) = self.nodes.iter().find(|node| node.occurrence == occurrence)
+        {
+            return Err(CadError::topology(format!(
+                "{occurrence:?} identifies node {} and is claimed again by node {}; one \
+                 placement identity names one placement",
+                earlier.id.index(),
+                self.nodes.len()
+            )));
+        }
         let order = u32::try_from(self.nodes.len()).map_err(|_| {
             CadError::input("an export cannot hold more nodes than uint32 can count")
         })?;
@@ -662,6 +738,7 @@ impl ExportSceneBuilder {
             local_transform,
             display_name: display_name.filter(|name| !name.trim().is_empty()),
             colour_override,
+            occurrence,
             order,
         });
         Ok(id)
@@ -1022,10 +1099,24 @@ mod tests {
             .expect("an omission");
 
         let root = builder
-            .node(None, frame, ExportTransform::IDENTITY, None, None)
+            .node(
+                None,
+                frame,
+                ExportTransform::IDENTITY,
+                None,
+                None,
+                ExportOccurrence::Unrecorded,
+            )
             .expect("a root");
         builder
-            .node(Some(root), part, ExportTransform::IDENTITY, None, None)
+            .node(
+                Some(root),
+                part,
+                ExportTransform::IDENTITY,
+                None,
+                None,
+                ExportOccurrence::Unrecorded,
+            )
             .expect("a placement");
         let second = builder
             .node(
@@ -1034,6 +1125,7 @@ mod tests {
                 ExportTransform::IDENTITY,
                 Some("first".to_owned()),
                 None,
+                ExportOccurrence::Unrecorded,
             )
             .expect("a placement of the omitted part");
         let third = builder
@@ -1043,6 +1135,7 @@ mod tests {
                 ExportTransform::IDENTITY,
                 Some("second".to_owned()),
                 Some([0.1, 0.2, 0.3]),
+                ExportOccurrence::Unrecorded,
             )
             .expect("another placement of it");
 
@@ -1118,11 +1211,25 @@ mod tests {
         let unplaced = ExportDefinitionId(7);
         assert!(
             builder
-                .node(None, unplaced, ExportTransform::IDENTITY, None, None)
+                .node(
+                    None,
+                    unplaced,
+                    ExportTransform::IDENTITY,
+                    None,
+                    None,
+                    ExportOccurrence::Unrecorded
+                )
                 .is_err()
         );
         let root = builder
-            .node(None, definition, ExportTransform::IDENTITY, None, None)
+            .node(
+                None,
+                definition,
+                ExportTransform::IDENTITY,
+                None,
+                None,
+                ExportOccurrence::Unrecorded,
+            )
             .expect("a root");
         assert!(
             builder
@@ -1132,6 +1239,7 @@ mod tests {
                     ExportTransform::IDENTITY,
                     None,
                     None,
+                    ExportOccurrence::Unrecorded,
                 )
                 .is_err(),
             "parents come before their children"

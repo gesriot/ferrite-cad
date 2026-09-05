@@ -253,6 +253,15 @@ readonly WRITER_SOURCES=(
 # What a writer must not name, over and above the transient identities the
 # model is already checked for.
 readonly FORBIDDEN_IN_WRITER=(
+    # The durable identity of a placement. §22B-1e3a gives every placement one
+    # and delivers it to the neutral boundary, and stops there: what a writer
+    # should do with it depends on what a name is in the target program, which
+    # §22B-1e1 and §22B-1e2a measured and no slice has yet acted on. A writer
+    # that started reading it would change the bytes of every existing export
+    # under a slice whose whole claim is that it changes none.
+    ExportOccurrence
+    OccurrenceId
+    occurrence
     # A document, a kernel, an importer or a picture.
     Document
     DocumentId
@@ -328,6 +337,26 @@ elif ! printf '%s' "$writer_signature" \
 then
     echo "$writer_signature" >&2
     fail "the FBX writer takes something other than a scene and a byte sink"
+fi
+
+# And the model does carry it, so the gate above is about a writer that
+# refuses to read something that is there rather than about a name nothing
+# defines yet.
+if ! grep -q 'pub occurrence: ExportOccurrence,' "$MODEL"; then
+    fail "the export model has no placement identity on its nodes"
+fi
+if ! grep -q 'pub enum ExportOccurrence {' "$MODEL"; then
+    fail "the export model does not define ExportOccurrence"
+fi
+# And it is delivered by the one load spine, from the stored payload and from
+# nowhere else. A `NodeIdentity::Occurrence` minted in the scene crate would be
+# a durable identity that is new on every export, and would compile.
+readonly SPINE="${SCENE}/src/prepare.rs"
+if [ "$(shipped_count 'OccurrenceId::new(' "$SPINE" "${SCENE}/src/export.rs")" != "0" ]; then
+    fail "${SCENE} mints a placement identity; identities come from the stored payload"
+fi
+if [ "$(shipped_count 'reopened.occurrences()' "$SPINE")" != "1" ]; then
+    fail "${SPINE} does not read the stored placement identities exactly once"
 fi
 
 # Nothing in the export model may be serialised.

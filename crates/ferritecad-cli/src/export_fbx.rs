@@ -234,8 +234,8 @@ mod tests {
     use super::*;
     use ferritecad_exchange::{Diagnostic, Severity, Stage};
     use ferritecad_export::{
-        ExportColourOrigin, ExportGeometry, ExportMaterial, ExportMesh, ExportOmission,
-        ExportProvenance, ExportScene, ExportSceneBuilder, ExportTransform,
+        ExportColourOrigin, ExportGeometry, ExportMaterial, ExportMesh, ExportOccurrence,
+        ExportOmission, ExportProvenance, ExportScene, ExportSceneBuilder, ExportTransform,
     };
     use ferritecad_kernel::TessellationRefusal;
     use ferritecad_types::{ImportedSourceId, ObjectId};
@@ -287,6 +287,7 @@ mod tests {
                 ExportTransform::IDENTITY,
                 Some(name.to_owned()),
                 None,
+                ExportOccurrence::Unrecorded,
             )
             .expect("a placement");
         builder.finish().expect("a scene")
@@ -352,6 +353,7 @@ mod tests {
                     ExportTransform::IDENTITY,
                     Some("part".to_owned()),
                     None,
+                    ExportOccurrence::Unrecorded,
                 )
                 .expect("a placement");
         }
@@ -399,6 +401,7 @@ mod tests {
                         ExportTransform::IDENTITY,
                         Some(key.to_owned()),
                         None,
+                        ExportOccurrence::Unrecorded,
                     )
                     .expect("a placement");
             }

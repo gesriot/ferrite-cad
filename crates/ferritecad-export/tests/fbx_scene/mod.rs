@@ -12,11 +12,12 @@ use std::collections::BTreeMap;
 
 use ferritecad_exchange::{Diagnostic, Severity, Stage};
 use ferritecad_export::{
-    ExportColourOrigin, ExportGeometry, ExportMaterial, ExportMesh, ExportOmission,
-    ExportProvenance, ExportScene, ExportSceneBuilder, ExportSource, ExportTransform,
+    ExportColourOrigin, ExportGeometry, ExportMaterial, ExportMesh, ExportOccurrence,
+    ExportOmission, ExportProvenance, ExportScene, ExportSceneBuilder, ExportSource,
+    ExportTransform,
 };
 use ferritecad_kernel::TessellationRefusal;
-use ferritecad_types::ImportedSourceId;
+use ferritecad_types::{ImportedSourceId, OccurrenceId};
 
 // ------------------------------------------------------------------ scenes
 
@@ -101,8 +102,33 @@ pub fn euler_xyz(degrees: [f64; 3]) -> [[f64; 3]; 3] {
 /// placed instances of one two-slot geometry, one of them recoloured, an
 /// omitted definition and four named control points below the first instance.
 pub fn measured_scene() -> ExportScene {
+    build_measured(Identify::No)
+}
+
+/// The same scene with a durable identity on every placement.
+///
+/// Held beside [`measured_scene`] rather than replacing it because the pair is
+/// the measurement: in this slice the FBX writer does not read a placement
+/// identity, so the bytes it produces must be the same whether one is there or
+/// not, and only two scenes that differ in exactly that can show it.
+pub fn measured_scene_with_identities() -> ExportScene {
+    build_measured(Identify::Yes)
+}
+
+/// Whether the built scene carries placement identities.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Identify {
+    Yes,
+    No,
+}
+
+fn build_measured(identify: Identify) -> ExportScene {
     let source = ImportedSourceId::new();
     let mut builder = ExportSceneBuilder::new();
+    let occurrence = move || match identify {
+        Identify::Yes => ExportOccurrence::Occurrence(OccurrenceId::new()),
+        Identify::No => ExportOccurrence::Unrecorded,
+    };
 
     let root = builder
         .definition(
@@ -160,6 +186,7 @@ pub fn measured_scene() -> ExportScene {
             ExportTransform::IDENTITY,
             Some("Assembly Root".to_owned()),
             None,
+            occurrence(),
         )
         .expect("the root");
     let frame_node = builder
@@ -169,6 +196,7 @@ pub fn measured_scene() -> ExportScene {
             placement([100.0, 200.0, 300.0], [11.0, 23.0, -17.0]),
             Some("Assembly Frame".to_owned()),
             None,
+            occurrence(),
         )
         .expect("the frame");
     let first = builder
@@ -178,6 +206,7 @@ pub fn measured_scene() -> ExportScene {
             placement([1200.0, -400.0, 800.0], [31.0, -19.0, 47.0]),
             Some("Repeated Part".to_owned()),
             None,
+            occurrence(),
         )
         .expect("the first placement");
     builder
@@ -188,6 +217,7 @@ pub fn measured_scene() -> ExportScene {
             // Deliberately the same display name, and deliberately recoloured.
             Some("Repeated Part".to_owned()),
             Some([0.216, 0.523, 0.052]),
+            occurrence(),
         )
         .expect("the second placement");
     builder
@@ -197,6 +227,7 @@ pub fn measured_scene() -> ExportScene {
             placement([400.0, 500.0, 600.0], [7.0, 13.0, 29.0]),
             Some("Omitted #2583".to_owned()),
             None,
+            occurrence(),
         )
         .expect("the omitted placement");
 
@@ -213,6 +244,7 @@ pub fn measured_scene() -> ExportScene {
                 placement(translation, [0.0, 0.0, 0.0]),
                 Some(name.to_owned()),
                 None,
+                occurrence(),
             )
             .expect("a control point");
     }
@@ -253,6 +285,7 @@ pub fn named_scene(names: &[Option<&str>]) -> ExportScene {
                 ExportTransform::IDENTITY,
                 name.map(str::to_owned),
                 None,
+                ExportOccurrence::Unrecorded,
             )
             .expect("a node");
         if parent.is_none() {

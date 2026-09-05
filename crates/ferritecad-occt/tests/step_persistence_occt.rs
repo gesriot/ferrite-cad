@@ -22,11 +22,11 @@ use ferritecad_document::{
     Document, ImportedDefinitionRef, ImportedStep, ImporterIdentity, ObjectPayload,
     StepImportRequest, StepImporter,
 };
-use ferritecad_exchange::StoredScene;
 use ferritecad_exchange::{Import, Severity, Stage};
+use ferritecad_exchange::{PersistedScene, StoredOccurrences, StoredScene};
 use ferritecad_kernel::{GeometryKernel, ShapeHandle};
 use ferritecad_occt::{OcctKernel, is_available};
-use ferritecad_types::{ContentHash, ErrorKind, ObjectId, Result};
+use ferritecad_types::{ContentHash, ErrorKind, ObjectId, OccurrenceId, Result};
 use tempfile::TempDir;
 
 /// The adapter behind the document's importer contract.
@@ -57,6 +57,32 @@ fn corpus(kind: &str, name: &str) -> Vec<u8> {
         .join(kind)
         .join(name);
     std::fs::read(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
+}
+
+/// The stored placement identities of a current-layout scene.
+fn stored_occurrences(stored: &StoredScene) -> Vec<OccurrenceId> {
+    match stored.occurrences() {
+        StoredOccurrences::Recorded(recorded) => recorded,
+        other => panic!("a current-layout scene records placement identities, found {other:?}"),
+    }
+}
+
+/// A re-projection of a reopened scene, with the stored placement identities
+/// put back in place of the ones this projection minted.
+///
+/// Re-persisting is minting: a projection is what a *new* import writes down,
+/// and every place it describes is a new place as far as it knows. Comparing
+/// the two directly would therefore compare identities that were never meant to
+/// match. What the comparison below is about is everything the source file
+/// said; the identities are checked separately, against what the document
+/// actually stored and handed back.
+fn re_identified(mut now: PersistedScene, stored: &StoredScene) -> PersistedScene {
+    let recorded = stored_occurrences(stored);
+    assert_eq!(recorded.len(), now.instances.len());
+    for (instance, occurrence) in now.instances.iter_mut().zip(recorded) {
+        instance.occurrence = occurrence;
+    }
+    now
 }
 
 fn release(kernel: &mut OcctKernel, import: &Import) {
@@ -168,10 +194,24 @@ fn every_sound_file_reopens_in_a_session_that_never_read_it() {
         // Binding already required this; asserting it names what was at stake.
         let now = reopened.scene.persist().expect("projects");
         assert_eq!(
-            StoredScene::V2(now.clone()),
+            StoredScene::V3(re_identified(now.clone(), &stored.scene)),
             stored.scene,
             "{name}: the scene changed"
         );
+        // The placement identities came back from the payload, unchanged, and
+        // are not the ones the re-projection above minted.
+        assert_eq!(
+            reopened.occurrences(),
+            &StoredOccurrences::Recorded(stored_occurrences(&stored.scene)),
+            "{name}: reopening did not hand back the stored placement identities"
+        );
+        for (fresh, kept) in now.instances.iter().zip(stored_occurrences(&stored.scene)) {
+            assert_ne!(
+                fresh.occurrence, kept,
+                "{name}: re-projecting a reopened scene returned the stored identity, so \
+                 something other than the payload is producing it"
+            );
+        }
         assert_eq!(now.source_unit, stored.scene.source_unit());
         assert_eq!(now.schema, stored.scene.schema());
         assert_eq!(
@@ -281,7 +321,15 @@ fn the_complex_ap203_scene_reopens_after_its_external_source_is_removed() {
         .scene
         .persist()
         .expect("projects the reopened scene");
-    assert_eq!(StoredScene::V2(now.clone()), stored.scene);
+    assert_eq!(
+        StoredScene::V3(re_identified(now.clone(), &stored.scene)),
+        stored.scene
+    );
+    assert_eq!(
+        reopened.occurrences(),
+        &StoredOccurrences::Recorded(stored_occurrences(&stored.scene)),
+        "reopening did not hand back the stored placement identities"
+    );
     assert_eq!(now.definitions.len(), 46);
     assert_eq!(now.instances.len(), 140);
     assert!(
@@ -362,8 +410,8 @@ fn names_units_colours_and_the_tree_are_what_survives() {
             .unwrap_or_else(|e| panic!("{name}: did not bind: {e}"));
         let now = reopened.scene.persist().expect("projects");
 
-        let StoredScene::V2(stored_scene) = &stored.scene else {
-            panic!("{name}: a fresh import must store a v2 scene");
+        let StoredScene::V3(stored_scene) = &stored.scene else {
+            panic!("{name}: a fresh import must store a current-layout scene");
         };
         for (before, after) in stored_scene.definitions.iter().zip(&now.definitions) {
             assert_eq!(before.name, after.name, "{name}: a name changed");
@@ -612,7 +660,7 @@ fn a_stored_scene_that_does_not_describe_the_file_is_refused() {
                     source_hash: ContentHash::of_bytes(&bytes),
                     source_byte_len: bytes.len() as u64,
                     source_name: None,
-                    scene: StoredScene::V2(persisted),
+                    scene: StoredScene::V3(persisted),
                     imported_by: ImporterIdentity::of(kernel.identity()),
                     diagnostics_at_import: Vec::new(),
                 },
@@ -697,11 +745,11 @@ fn a_durable_reference_survives_a_new_session_and_never_crosses_sources() {
         // own file and nowhere else, so both of these files describe a
         // definition keyed step.product_definition#5 — a plate in one and a
         // bracket in the other.
-        let StoredScene::V2(plate_scene) = &stored_plate.scene else {
-            panic!("a fresh import stores a v2 scene");
+        let StoredScene::V3(plate_scene) = &stored_plate.scene else {
+            panic!("a fresh import stores a current-layout scene");
         };
-        let StoredScene::V2(assembly_scene) = &stored_assembly.scene else {
-            panic!("a fresh import stores a v2 scene");
+        let StoredScene::V3(assembly_scene) = &stored_assembly.scene else {
+            panic!("a fresh import stores a current-layout scene");
         };
         let shared: Vec<&str> = plate_scene
             .definitions
@@ -812,8 +860,8 @@ fn a_reordered_reading_of_the_same_file_still_binds() {
     release(&mut kernel, &outcome);
     document.close().expect("closes");
 
-    let StoredScene::V2(scene) = &stored.scene else {
-        panic!("a fresh import stores a v2 scene");
+    let StoredScene::V3(scene) = &stored.scene else {
+        panic!("a fresh import stores a current-layout scene");
     };
     assert!(
         scene

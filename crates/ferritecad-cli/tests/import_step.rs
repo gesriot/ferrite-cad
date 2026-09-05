@@ -14,7 +14,7 @@
 // A test asserting the shape of a value has nowhere to return an error to.
 #![allow(clippy::panic)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -278,8 +278,8 @@ fn the_complex_ap203_assembly_becomes_a_durable_document() {
             _ => None,
         })
         .expect("the document carries an imported STEP object");
-    let StoredScene::V2(scene) = &imported.scene else {
-        panic!("a new import must carry source definition keys");
+    let StoredScene::V3(scene) = &imported.scene else {
+        panic!("a new import must carry source definition keys and placement identities");
     };
     assert!(
         imported.diagnostics_at_import.iter().any(|diagnostic| {
@@ -307,6 +307,16 @@ fn the_complex_ap203_assembly_becomes_a_durable_document() {
     );
     assert_eq!(scene.definitions.len(), 46);
     assert_eq!(scene.instances.len(), 140);
+    assert_eq!(
+        scene
+            .instances
+            .iter()
+            .map(|instance| instance.occurrence)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        140,
+        "a placement identity collided or went missing"
+    );
     assert_eq!(
         scene
             .instances
@@ -357,6 +367,17 @@ fn the_complex_ap203_assembly_becomes_a_durable_document() {
         .filter(|instance| instance.definition == "step.product_definition#2753")
         .collect();
     assert_eq!(repeated.len(), 8, "the repeated definition was not shared");
+    // §22B-1e3a: eight places, eight identities. They share a definition and
+    // nothing else the document could tell them apart by.
+    assert_eq!(
+        repeated
+            .iter()
+            .map(|instance| instance.occurrence)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        8,
+        "the eight placements of one definition do not have eight identities"
+    );
     assert!(
         repeated
             .iter()

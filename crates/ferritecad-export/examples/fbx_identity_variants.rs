@@ -19,8 +19,9 @@ use std::io::BufWriter;
 use std::path::PathBuf;
 
 use ferritecad_export::{
-    ExportColourOrigin, ExportGeometry, ExportMaterial, ExportMesh, ExportProvenance, ExportScene,
-    ExportSceneBuilder, ExportSource, ExportTransform, write_fbx_ascii_7400,
+    ExportColourOrigin, ExportGeometry, ExportMaterial, ExportMesh, ExportOccurrence,
+    ExportProvenance, ExportScene, ExportSceneBuilder, ExportSource, ExportTransform,
+    write_fbx_ascii_7400,
 };
 use ferritecad_types::ImportedSourceId;
 
@@ -232,6 +233,7 @@ fn variant_scene(variant: Variant) -> ExportScene {
             ExportTransform::IDENTITY,
             Some("Assembly Root".to_owned()),
             None,
+            ExportOccurrence::Unrecorded,
         )
         .expect("the root node");
     let under = Some(root_node);
@@ -244,6 +246,7 @@ fn variant_scene(variant: Variant) -> ExportScene {
                 placement([10.0, 20.0, 30.0], [0.0, 0.0, 0.0]),
                 Some("Inserted Part".to_owned()),
                 None,
+                ExportOccurrence::Unrecorded,
             )
             .expect("the inserted placement");
     }
@@ -255,6 +258,7 @@ fn variant_scene(variant: Variant) -> ExportScene {
                 placement([100.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
                 Some("Early Part".to_owned()),
                 None,
+                ExportOccurrence::Unrecorded,
             )
             .expect("the early placement");
     }
@@ -267,6 +271,7 @@ fn variant_scene(variant: Variant) -> ExportScene {
             placement([200.0, 0.0, 0.0], [11.0, 0.0, 0.0]),
             Some(alpha_name.to_owned()),
             None,
+            ExportOccurrence::Unrecorded,
         )
         .expect("the first tracked placement");
     if variant == Variant::InsertedSibling {
@@ -277,6 +282,7 @@ fn variant_scene(variant: Variant) -> ExportScene {
                 placement([250.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
                 Some("Inserted Sibling".to_owned()),
                 None,
+                ExportOccurrence::Unrecorded,
             )
             .expect("the inserted sibling");
     }
@@ -287,6 +293,7 @@ fn variant_scene(variant: Variant) -> ExportScene {
             placement([300.0, 0.0, 0.0], [0.0, 17.0, 0.0]),
             Some(alpha_name.to_owned()),
             None,
+            ExportOccurrence::Unrecorded,
         )
         .expect("the second tracked placement");
 
@@ -298,6 +305,7 @@ fn variant_scene(variant: Variant) -> ExportScene {
                 placement([400.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
                 Some("Beta Part".to_owned()),
                 None,
+                ExportOccurrence::Unrecorded,
             )
             .expect("the beta placement");
     };
@@ -310,6 +318,7 @@ fn variant_scene(variant: Variant) -> ExportScene {
                     placement([600.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
                     Some("Alpha Part".to_owned()),
                     None,
+                    ExportOccurrence::Unrecorded,
                 )
                 .expect("the same-named placement");
         }
@@ -332,6 +341,7 @@ fn variant_scene(variant: Variant) -> ExportScene {
                 placement([500.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
                 Some("Beta Part".to_owned()),
                 None,
+                ExportOccurrence::Unrecorded,
             )
             .expect("the second beta placement");
     }

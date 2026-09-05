@@ -462,8 +462,8 @@ fn the_complex_partial_import_reaches_repeatable_identified_pixels() {
                 _ => None,
             })
             .expect("the FCAD contains its imported STEP object");
-        let StoredScene::V2(scene) = &stored.scene else {
-            panic!("the import did not persist durable definition keys");
+        let StoredScene::V3(scene) = &stored.scene else {
+            panic!("the import did not persist durable definition keys and placement identities");
         };
 
         let validation: BTreeSet<&str> = stored
@@ -504,6 +504,18 @@ fn the_complex_partial_import_reaches_repeatable_identified_pixels() {
                 .count(),
             139,
             "a non-root occurrence was lost or invented"
+        );
+        // §22B-1e3a: every one of those places is also its own durable
+        // identity, written down once when the import was saved.
+        let occurrences: BTreeSet<_> = scene
+            .instances
+            .iter()
+            .map(|instance| instance.occurrence)
+            .collect();
+        assert_eq!(
+            occurrences.len(),
+            140,
+            "a placement identity collided or went missing"
         );
     }
 
