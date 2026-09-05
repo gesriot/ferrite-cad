@@ -13,12 +13,13 @@
 
 mod fbx_scene;
 
-use fbx_scene::{Fbx, escaping_scene, measured_scene};
+use fbx_scene::{Fbx, escaping_scene, measured_scene, measured_scene_with_identities};
 
 use ferritecad_exchange::{Diagnostic, Severity, Stage};
 use ferritecad_export::{
-    ExportColourOrigin, ExportGeometry, ExportMaterial, ExportMesh, ExportOmission,
-    ExportProvenance, ExportSceneBuilder, ExportSource, ExportTransform, write_fbx_ascii_7400,
+    ExportColourOrigin, ExportGeometry, ExportMaterial, ExportMesh, ExportOccurrence,
+    ExportOmission, ExportProvenance, ExportSceneBuilder, ExportSource, ExportTransform,
+    write_fbx_ascii_7400,
 };
 use ferritecad_kernel::TessellationRefusal;
 use ferritecad_types::{ErrorKind, ImportedSourceId, ObjectId};
@@ -396,7 +397,14 @@ fn two_sources_with_one_local_key_remain_distinct_in_the_report() {
             )
             .expect("a source-local omission");
         builder
-            .node(None, definition, ExportTransform::IDENTITY, None, None)
+            .node(
+                None,
+                definition,
+                ExportTransform::IDENTITY,
+                None,
+                None,
+                ExportOccurrence::Unrecorded,
+            )
             .expect("the omitted definition remains placed");
     }
 
@@ -462,6 +470,7 @@ fn scene_with_colour(
             ExportTransform::IDENTITY,
             None,
             override_colour,
+            ExportOccurrence::Unrecorded,
         )
         .expect("one placement");
     builder.finish().expect("one coloured triangle")
@@ -498,6 +507,77 @@ fn the_same_scene_always_produces_the_same_bytes() {
     let text = std::str::from_utf8(&first).expect("UTF-8");
     assert!(!text.contains("-0.0"), "a negative zero reached the file");
     assert!(!text.contains("-0,"), "a negative zero reached an array");
+}
+
+#[test]
+fn a_placement_identity_changes_nothing_the_writer_writes() {
+    // §22B-1e3a puts a durable identity on every placement and stops there.
+    // What Unity does with an identity is settled by what a *name* is, which
+    // the §22B-1e1 and §22B-1e2a measurements established and which this slice
+    // deliberately does not act on. So the writer must not have started reading
+    // it: the same scene with and without identities is the same file, byte for
+    // byte, and the report beside it says the same thing.
+    let (without, without_report) = written(&measured_scene());
+    let (with, with_report) = written(&measured_scene_with_identities());
+    assert_eq!(
+        with, without,
+        "a placement identity reached the FBX bytes, which this slice does not do"
+    );
+    // The report says the same thing too. Compared field by field rather than
+    // as a whole because each scene mints its own `ImportedSourceId`, which is
+    // what the report names an omission by and has nothing to do with this.
+    assert_eq!(with_report.bytes(), without_report.bytes());
+    assert_eq!(with_report.models(), without_report.models());
+    assert_eq!(with_report.geometries(), without_report.geometries());
+    assert_eq!(with_report.materials(), without_report.materials());
+    assert_eq!(
+        with_report.omissions().len(),
+        without_report.omissions().len()
+    );
+    for (left, right) in with_report
+        .omissions()
+        .iter()
+        .zip(without_report.omissions())
+    {
+        assert_eq!(left.definition, right.definition);
+        assert_eq!(left.nodes, right.nodes);
+        assert_eq!(left.omission, right.omission);
+    }
+
+    // And the identities really were there, so the comparison above is between
+    // two different scenes rather than two spellings of one.
+    let identified = measured_scene_with_identities();
+    assert!(
+        identified
+            .nodes()
+            .iter()
+            .all(|node| node.occurrence.is_recorded()),
+        "the identified scene carries no identities, so this gate measures nothing"
+    );
+    assert!(
+        measured_scene()
+            .nodes()
+            .iter()
+            .all(|node| !node.occurrence.is_recorded()),
+        "the control scene already carries identities"
+    );
+    // Two builds of the identified scene mint different identities, and still
+    // produce the same file: the writer is a function of everything except
+    // this.
+    let again = measured_scene_with_identities();
+    assert_ne!(
+        identified
+            .nodes()
+            .iter()
+            .map(|node| node.occurrence)
+            .collect::<Vec<_>>(),
+        again
+            .nodes()
+            .iter()
+            .map(|node| node.occurrence)
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(written(&again).0, with);
 }
 
 #[test]

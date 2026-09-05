@@ -34,9 +34,9 @@ use std::path::PathBuf;
 
 use ferritecad_exchange::{Diagnostic, Severity, Stage};
 use ferritecad_export::{
-    ExportColourOrigin, ExportGeometry, ExportMaterial, ExportMesh, ExportOmission,
-    ExportProvenance, ExportScene, ExportSceneBuilder, ExportSource, ExportTransform,
-    write_fbx_ascii_7400,
+    ExportColourOrigin, ExportGeometry, ExportMaterial, ExportMesh, ExportOccurrence,
+    ExportOmission, ExportProvenance, ExportScene, ExportSceneBuilder, ExportSource,
+    ExportTransform, write_fbx_ascii_7400,
 };
 use ferritecad_kernel::TessellationRefusal;
 use ferritecad_types::ImportedSourceId;
@@ -394,6 +394,7 @@ fn document(variant: Variant) -> (ExportScene, Vec<NodeFacts>) {
                 transform,
                 Some(display_name.to_owned()),
                 None,
+                ExportOccurrence::Unrecorded,
             )
             .expect("a measured channel placement");
         let about = &described[definition.index()];

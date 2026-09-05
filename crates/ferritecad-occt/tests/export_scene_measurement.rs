@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 
 use ferritecad_exchange::Import;
 use ferritecad_export::{
-    ExportGeometry, ExportProvenance, ExportSceneBuilder, ExportSource, ExportTransform,
-    TRANSFORM_TOLERANCE, write_fbx_ascii_7400,
+    ExportGeometry, ExportOccurrence, ExportProvenance, ExportSceneBuilder, ExportSource,
+    ExportTransform, TRANSFORM_TOLERANCE, write_fbx_ascii_7400,
 };
 use ferritecad_kernel::GeometryKernel;
 use ferritecad_occt::{OcctKernel, is_available};
@@ -75,6 +75,7 @@ fn writes_and_rebuilds(placement: &[f64; 12]) -> Result<(), String> {
             transform,
             Some("Placement".to_owned()),
             None,
+            ExportOccurrence::Unrecorded,
         )
         .map_err(|error| error.to_string())?;
     let scene = builder.finish().map_err(|error| error.to_string())?;

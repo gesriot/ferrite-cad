@@ -3,7 +3,9 @@ use std::collections::BTreeSet;
 use std::io::{ErrorKind as IoErrorKind, Read};
 use std::path::{Path, PathBuf};
 
-use ferritecad_exchange::{Diagnostic as ImportDiagnostic, Import, Scene, StoredScene};
+use ferritecad_exchange::{
+    Diagnostic as ImportDiagnostic, Import, Scene, StoredOccurrences, StoredScene,
+};
 use ferritecad_kernel::{KernelIdentity, ShapeHandle};
 use ferritecad_types::{
     CadError, ContentHash, Dimension, DocumentId, ImportedSourceId, ObjectId, Result,
@@ -161,6 +163,14 @@ pub struct ReopenedStepImport {
     /// Version 1 recorded no identities, so nothing it holds can answer a
     /// durable reference; see [`Self::resolve`].
     stored_version: u32,
+    /// The durable identity of each placement, taken from the stored payload
+    /// after the fresh reading was proven to be the same scene.
+    ///
+    /// Never from the fresh reading. A kernel that has just read the bytes
+    /// again knows the geometry and knows nothing about which occurrence this
+    /// document decided each place was, so a value taken from there would be
+    /// this session's traversal wearing an identity's name.
+    occurrences: StoredOccurrences,
     /// What the importer said when the file was first brought into this
     /// document. Historical; this build did not observe it.
     pub diagnostics_at_import: Vec<ImportDiagnostic>,
@@ -190,6 +200,22 @@ impl ReopenedStepImport {
     /// never recorded which key belonged to which definition.
     pub fn stored_version(&self) -> u32 {
         self.stored_version
+    }
+
+    /// The durable identity of every placement of this reading, in scene order,
+    /// or the fact that the stored layout recorded none.
+    ///
+    /// Positionally aligned with [`Self::scene`]'s instances, and that is sound
+    /// here and only here: this exists only after the binding above required
+    /// the fresh reading to hold the same instances, in the same order, with
+    /// the same parents, names, placements and colours as the stored scene. A
+    /// caller reading these off some other scene would be reading an index.
+    ///
+    /// Read-only for the same reason [`Self::source`] is. A caller able to
+    /// replace these could arrange for a placement to answer to an identity the
+    /// document never gave it, which is the whole of what this slice prevents.
+    pub fn occurrences(&self) -> &StoredOccurrences {
+        &self.occurrences
     }
 
     /// Finds the definition a durable reference names, in this reading.
@@ -642,7 +668,7 @@ impl Document {
                 source_hash,
                 source_byte_len,
                 source_name,
-                scene: StoredScene::V2(persisted),
+                scene: StoredScene::V3(persisted),
                 imported_by,
                 diagnostics_at_import,
             };
@@ -728,10 +754,15 @@ impl Document {
                 return Err(error);
             }
         };
+        // Read after the binding and not before: what the payload says about
+        // placements is only meaningful once the fresh reading has been proven
+        // to be the same scene the payload describes.
+        let occurrences = stored.imported.scene.occurrences();
         Ok(ReopenedStepImport {
             scene,
             source: stored.imported.source,
             stored_version: stored.imported.scene.version(),
+            occurrences,
             diagnostics_at_import: stored.imported.diagnostics_at_import,
             diagnostics_now,
             imported_by: stored.imported.imported_by,

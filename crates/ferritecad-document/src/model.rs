@@ -7,7 +7,7 @@
 //! those survive a rebuild.
 
 use ferritecad_exchange::{
-    Diagnostic as ImportDiagnostic, LegacyScene, PersistedScene, StoredScene,
+    Diagnostic as ImportDiagnostic, KeyedScene, LegacyScene, PersistedScene, StoredScene,
 };
 use ferritecad_kernel::KernelIdentity;
 use ferritecad_types::{
@@ -83,6 +83,18 @@ pub const SKETCH_CONSTRAINTS_CAPABILITY: &str = "sketch.constraints.v1";
 /// rather than rewriting a document whose source-of-truth bytes it has no idea
 /// are there. A pre-v3 binary is stricter still and refuses the newer SQL
 /// schema before it reaches capability negotiation.
+///
+/// # Still the only one, at payload layout 3
+///
+/// Placement identity arrived as a payload version rather than as a second
+/// capability beside this, and the two are not interchangeable. A capability
+/// says a reader must understand a vocabulary whose bytes are laid out as
+/// before; scene layout 3 adds a field to every stored placement, so a reader
+/// that has not heard of it cannot decode the payload at all. That reader is
+/// already stopped, by the layout, through
+/// [`ObjectKind::readable_schema_versions`] — the object is preserved verbatim
+/// and never rewritten. A capability naming the same fact would add a name and
+/// no refusal.
 pub const IMPORTED_STEP_CAPABILITY: &str = "exchange.step.imported.v1";
 
 /// The `format` tag written to `imported_sources` for STEP bytes.
@@ -170,8 +182,11 @@ impl ObjectKind {
         match self {
             // v2 gave every definition the identity its source file wrote
             // down, and made instances name theirs by it rather than by
-            // position. v1 objects are still read; see [`ImportedStep::scene`].
-            Self::ImportedStep => 2,
+            // position. v3 gave every *placement* a durable identity of its
+            // own, which no source file records and which nothing else in a
+            // scene can stand in for. v1 and v2 objects are still read and
+            // still written back as themselves; see [`ImportedStep::scene`].
+            Self::ImportedStep => 3,
             // v2 added the constraint list. v1 sketches are still read and
             // still written, because a sketch with no constraints is a v1
             // sketch; see [`Sketch::schema_version`].
@@ -186,7 +201,8 @@ impl ObjectKind {
     /// recoverable; anything else is preserved verbatim and not interpreted.
     pub fn readable_schema_versions(self) -> &'static [u32] {
         match self {
-            Self::ImportedStep | Self::Sketch => &[2, 1],
+            Self::ImportedStep => &[3, 2, 1],
+            Self::Sketch => &[2, 1],
             _ => &[1],
         }
     }
@@ -1358,9 +1374,10 @@ impl ObjectPayload {
             Self::Body(v) => Envelope::encode(name, version, capabilities, v)?,
             Self::Extrude(v) => Envelope::encode(name, version, capabilities, v)?,
             // Written back at the layout it was read at. A version 1 scene
-            // has no keys, and inventing them from positions would turn a
-            // document that honestly lacks identities into one that claims
-            // them.
+            // has no keys and a version 2 scene has no placement identities,
+            // and inventing either while writing would turn a document that
+            // honestly lacks them into one that claims them — with values
+            // indexed by the traversal that happened to be running.
             Self::ImportedStep(v) => match &v.scene {
                 StoredScene::V1(scene) => Envelope::encode(
                     name,
@@ -1369,6 +1386,12 @@ impl ObjectPayload {
                     &StoredImport::around(v, scene.clone()),
                 )?,
                 StoredScene::V2(scene) => Envelope::encode(
+                    name,
+                    version,
+                    capabilities,
+                    &StoredImport::around(v, scene.clone()),
+                )?,
+                StoredScene::V3(scene) => Envelope::encode(
                     name,
                     version,
                     capabilities,
@@ -1422,9 +1445,19 @@ impl ObjectPayload {
                     let scene = StoredScene::V1(stored.scene.clone());
                     stored.into_imported(scene)
                 }
+                2 => {
+                    let stored: StoredImport<KeyedScene> = envelope.decode()?;
+                    let scene = StoredScene::V2(stored.scene.clone());
+                    stored.into_imported(scene)
+                }
+                // Named layouts and no fall-through. A wildcard here would
+                // decode an unreadable future layout as the newest one this
+                // build knows, and the check above — which sends anything not
+                // in `readable_schema_versions` to `Unknown` — would have been
+                // the only thing standing in the way.
                 _ => {
                     let stored: StoredImport<PersistedScene> = envelope.decode()?;
-                    let scene = StoredScene::V2(stored.scene.clone());
+                    let scene = StoredScene::V3(stored.scene.clone());
                     stored.into_imported(scene)
                 }
             }),

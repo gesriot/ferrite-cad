@@ -162,6 +162,30 @@ define_id! {
 }
 
 define_id! {
+    /// Identifies one placement of a definition inside a document, for as long
+    /// as that placement exists.
+    ///
+    /// Its own type beside [`ObjectId`] and [`StableEntityId`], and the
+    /// distinction is the point rather than tidiness. An [`ObjectId`] names
+    /// something the document stores as an object; a [`StableEntityId`] names a
+    /// piece of geometry a feature produced; this names a *place* — one of the
+    /// many occurrences an imported assembly makes of a single definition. Two
+    /// placements of one part share a definition, a name, a key and often a
+    /// shape, and differ in nothing a file records. What tells them apart is
+    /// this, and nothing else may be substituted for it.
+    ///
+    /// # Not derived from anything
+    ///
+    /// Not from an ordinal, a parent index, a traversal order, a display name,
+    /// a transform, a definition key or anything a writer later numbers. Every
+    /// one of those changes when an unrelated part of the assembly changes,
+    /// which is precisely the failure the §22B-1e1 and §22B-1e2a measurements
+    /// recorded. It is minted once, when a placement is first written down, and
+    /// afterwards only ever read back from what was written.
+    OccurrenceId
+}
+
+define_id! {
     /// Identifies a semantically named piece of resulting geometry — the
     /// durable half of a topology reference.
     ///

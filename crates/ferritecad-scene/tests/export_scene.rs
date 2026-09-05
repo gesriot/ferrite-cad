@@ -14,14 +14,17 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ferritecad_document::{
-    Body, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Expression, Extrude,
-    ObjectPayload, Point2, Sketch, SketchCurve, SketchGeometry, SolidOperation, StepImportRequest,
+    Body, DatumPlane, Dependency, DependencyRole, Document, EndCondition, Envelope, Expression,
+    Extrude, IMPORTED_STEP_CAPABILITY, ImporterIdentity, ObjectPayload, Point2, Sketch,
+    SketchCurve, SketchGeometry, SolidOperation, StepImportRequest,
 };
 use ferritecad_exchange::{
-    ColourSource, Definition, Diagnostic, Import, Instance, Scene, Severity, Stage,
+    ColourSource, Definition, Diagnostic, Import, Instance, KeyedInstance, KeyedScene,
+    PersistedScene, Scene, Severity, Stage, StoredScene,
 };
 use ferritecad_export::{
-    ExportColourOrigin, ExportGeometry, ExportScene, ExportSource, TRANSFORM_TOLERANCE,
+    ExportColourOrigin, ExportGeometry, ExportOccurrence, ExportProvenance, ExportScene,
+    ExportSceneBuilder, ExportSource, ExportTransform, TRANSFORM_TOLERANCE,
 };
 use ferritecad_kernel::mock::MockKernel;
 use ferritecad_kernel::{
@@ -31,7 +34,9 @@ use ferritecad_kernel::{
     TessellationParams, TessellationRefusal,
 };
 use ferritecad_scene::{export_scene, snapshot_of};
-use ferritecad_types::{CadError, ErrorKind, ObjectId, Result, StableEntityId, Transform, Vec3};
+use ferritecad_types::{
+    CadError, ErrorKind, ObjectId, OccurrenceId, Result, StableEntityId, Transform, Vec3,
+};
 
 const SOURCE: &[u8] = b"ISO-10303-21; this is what the document stores";
 const OTHER_SOURCE: &[u8] = b"ISO-10303-21; a different file entirely";
@@ -1312,6 +1317,33 @@ fn matching_persisted_and_fresh_evidence_permits_the_known_omission() {
 }
 
 #[test]
+fn a_placement_of_a_definition_with_no_triangles_still_has_its_stored_identity() {
+    // The §22B-1c boundary from the other side. A definition this build cannot
+    // mesh is still placed, and its placements are held to exactly the rule
+    // every other placement is: dropping them would make a partial export look
+    // like a smaller complete one, and would slide every identity after them
+    // onto the wrong place.
+    let (result, live) = export_refused_part(MeshAnswer::Typed, true, true);
+    let scene = result.expect("both observations confirm the typed current refusal");
+
+    assert_eq!(live, 0);
+    assert!(
+        scene.definitions()[0].geometry.omission().is_some(),
+        "this gate is about a definition with no triangles, and this one has some"
+    );
+    assert_eq!(
+        scene.nodes().len(),
+        1,
+        "the placement of an omitted definition was dropped"
+    );
+    assert!(
+        scene.nodes()[0].occurrence.is_recorded(),
+        "the placement of a definition this build cannot mesh reached the export boundary \
+         without an identity"
+    );
+}
+
+#[test]
 fn a_current_refusal_without_matching_persisted_evidence_stops_the_build() {
     for (persisted, fresh, missing) in [
         (true, false, "fresh validation"),
@@ -1730,6 +1762,766 @@ fn one_export_solves_once_reads_each_source_once_and_meshes_each_definition_once
     assert_eq!(scene.nodes().len(), 8);
     assert_eq!(scene.definitions().len(), 4);
     assert_eq!(kernel.inner.live_shape_count(), 0);
+}
+
+// --------------------------------------------- occurrence identity
+
+/// Every node's durable identity, in scene order.
+fn occurrences(scene: &ExportScene) -> Vec<ExportOccurrence> {
+    scene.nodes().iter().map(|node| node.occurrence).collect()
+}
+
+/// The recorded identities of a scene, refusing one that has none.
+fn recorded(scene: &ExportScene) -> Vec<ExportOccurrence> {
+    let all = occurrences(scene);
+    assert!(
+        all.iter().copied().all(ExportOccurrence::is_recorded),
+        "a placement reached the export boundary without an identity: {all:?}"
+    );
+    all
+}
+
+/// One cold export of a document holding the nested assembly, in a session of
+/// its own.
+fn export_nested(path: &Path) -> ExportScene {
+    let mut kernel = MockKernel::new();
+    let scene = export_scene(
+        path,
+        &mut kernel,
+        |kernel, _| {
+            Ok(Import::Imported {
+                scene: nested_assembly(kernel),
+                diagnostics: Vec::new(),
+            })
+        },
+        &params(),
+        &OperationContext::default(),
+    )
+    .expect("exports");
+    assert_eq!(kernel.live_shape_count(), 0);
+    scene
+}
+
+#[test]
+fn two_placements_of_one_definition_are_two_identities_on_one_shared_mesh() {
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("shared.fcad");
+    let mut kernel = MockKernel::new();
+    let object = ObjectId::new();
+    let mut document = Document::create(&path).expect("creates a document");
+    let scene = flat_assembly(&mut kernel);
+    store_import(
+        &mut document,
+        &mut kernel,
+        Stored {
+            object,
+            name: "Flat",
+            source: SOURCE,
+            source_name: "02-flat-assembly.step",
+            scene,
+            diagnostics: Vec::new(),
+        },
+    );
+    document.close().expect("closes");
+
+    let exported = export_scene(
+        &path,
+        &mut kernel,
+        |kernel, _| {
+            Ok(Import::Imported {
+                scene: flat_assembly(kernel),
+                diagnostics: Vec::new(),
+            })
+        },
+        &params(),
+        &OperationContext::default(),
+    )
+    .expect("exports");
+
+    // The two placements agree about everything the file records: the same
+    // definition, the same parent, the same display name. Only the transform
+    // and the identity differ, and the identity is the half that would still
+    // tell them apart if the transforms were equal too.
+    let places: Vec<&_> = exported
+        .nodes()
+        .iter()
+        .filter(|node| node.display_name.as_deref() == Some("Repeated Part"))
+        .collect();
+    assert_eq!(places.len(), 2, "the shared part is not placed twice");
+    assert_eq!(
+        places[0].definition, places[1].definition,
+        "the two placements stopped sharing their definition"
+    );
+    assert_ne!(
+        places[0].occurrence, places[1].occurrence,
+        "two placements of one definition answer to one identity"
+    );
+
+    // And they still share one mesh: identity per placement must not have
+    // turned one definition into two.
+    assert_eq!(
+        exported.definitions().len(),
+        2,
+        "a definition was duplicated"
+    );
+    let shared = exported
+        .definition(places[0].definition)
+        .expect("the placed definition");
+    assert!(matches!(shared.geometry, ExportGeometry::Mesh(_)));
+
+    let all = recorded(&exported);
+    assert_eq!(all.len(), 3);
+    assert_eq!(
+        all.iter().collect::<BTreeSet<_>>().len(),
+        3,
+        "two of three placements share an identity"
+    );
+}
+
+#[test]
+fn identical_names_transforms_and_keys_do_not_collapse_two_placements() {
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("twins.fcad");
+    let mut kernel = MockKernel::new();
+
+    // Two placements a source file cannot tell apart at all: same definition,
+    // same parent, same name, same transform, same colour.
+    let twins = |kernel: &mut MockKernel| {
+        let mut scene = flat_assembly(kernel);
+        scene.instances[2].placement = scene.instances[1].placement;
+        scene
+    };
+
+    let object = ObjectId::new();
+    let mut document = Document::create(&path).expect("creates a document");
+    let scene = twins(&mut kernel);
+    store_import(
+        &mut document,
+        &mut kernel,
+        Stored {
+            object,
+            name: "Twins",
+            source: SOURCE,
+            source_name: "twins.step",
+            scene,
+            diagnostics: Vec::new(),
+        },
+    );
+    document.close().expect("closes");
+
+    let exported = export_scene(
+        &path,
+        &mut kernel,
+        |kernel, _| {
+            Ok(Import::Imported {
+                scene: twins(kernel),
+                diagnostics: Vec::new(),
+            })
+        },
+        &params(),
+        &OperationContext::default(),
+    )
+    .expect("exports");
+
+    assert_eq!(exported.nodes().len(), 3, "a placement was collapsed away");
+    let twins: Vec<&_> = exported
+        .nodes()
+        .iter()
+        .filter(|node| node.display_name.as_deref() == Some("Repeated Part"))
+        .collect();
+    assert_eq!(twins.len(), 2);
+    assert_eq!(twins[0].display_name, twins[1].display_name);
+    assert_eq!(
+        twins[0].local_transform.rows(),
+        twins[1].local_transform.rows()
+    );
+    assert_eq!(twins[0].definition, twins[1].definition);
+    assert_ne!(
+        twins[0].occurrence, twins[1].occurrence,
+        "two indistinguishable placements were given one identity"
+    );
+}
+
+#[test]
+fn the_same_identities_come_back_from_every_cold_rebuild_and_every_session() {
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("stable.fcad");
+    let mut setup = MockKernel::new();
+    document_with_nested_assembly(&path, &mut setup);
+
+    let first = recorded(&export_nested(&path));
+    assert_eq!(first.len(), 7);
+    assert_eq!(
+        first.iter().collect::<BTreeSet<_>>().len(),
+        7,
+        "two placements of one document share an identity"
+    );
+
+    // Twice more in the same session, and twice in sessions of their own. An
+    // identity minted at open, at rebuild or at export would move in at least
+    // one of these.
+    let mut kernel = MockKernel::new();
+    for _ in 0..2 {
+        let again = export_scene(
+            &path,
+            &mut kernel,
+            |kernel, _| {
+                Ok(Import::Imported {
+                    scene: nested_assembly(kernel),
+                    diagnostics: Vec::new(),
+                })
+            },
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("exports");
+        assert_eq!(
+            recorded(&again),
+            first,
+            "a repeated cold rebuild moved an identity"
+        );
+    }
+    assert_eq!(
+        recorded(&export_nested(&path)),
+        first,
+        "another kernel session read different identities"
+    );
+    assert_eq!(recorded(&export_nested(&path)), first);
+}
+
+#[test]
+fn the_identity_of_each_node_is_the_one_stored_for_that_place() {
+    // The strongest form of the claim, and the one that catches a shift or a
+    // swap: not merely that the identities are stable and distinct, but that
+    // node `n` carries the identity the document stored for placement `n`. A
+    // reader that rotated them would be stable, distinct and wrong.
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("aligned.fcad");
+    let mut setup = MockKernel::new();
+    let object = ObjectId::new();
+    let mut document = Document::create(&path).expect("creates a document");
+    let scene = nested_assembly(&mut setup);
+    store_import(
+        &mut document,
+        &mut setup,
+        Stored {
+            object,
+            name: "Assembly",
+            source: SOURCE,
+            source_name: "03-nested-assembly.step",
+            scene,
+            diagnostics: Vec::new(),
+        },
+    );
+    document.close().expect("closes");
+
+    let expected = {
+        let document = Document::open_read_only(&path).expect("opens read-only");
+        let record = document.object(object).expect("reads").expect("is there");
+        let ObjectPayload::ImportedStep(stored) = &record.payload else {
+            panic!("the object under test is an imported STEP file");
+        };
+        let StoredScene::V3(stored) = &stored.scene else {
+            panic!("a fresh import stores a current-layout scene");
+        };
+        stored
+            .instances
+            .iter()
+            .map(|instance| ExportOccurrence::Occurrence(instance.occurrence))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(expected.len(), 7);
+
+    assert_eq!(
+        occurrences(&export_nested(&path)),
+        expected,
+        "the identity a node carries is not the one the document stored for that place"
+    );
+}
+
+#[test]
+fn a_fresh_reading_of_the_same_bytes_does_not_replace_the_stored_identities() {
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("fresh.fcad");
+    let mut setup = MockKernel::new();
+    document_with_nested_assembly(&path, &mut setup);
+    let stored = recorded(&export_nested(&path));
+
+    // A second document holding the very same bytes, imported separately. Its
+    // placements are different places, so they are different identities — and
+    // the first document's identities are unmoved by the second existing.
+    let other_path = directory.path().join("fresh-again.fcad");
+    let mut other_setup = MockKernel::new();
+    document_with_nested_assembly(&other_path, &mut other_setup);
+    let other = recorded(&export_nested(&other_path));
+
+    assert_eq!(other.len(), stored.len());
+    assert!(
+        other.iter().all(|occurrence| !stored.contains(occurrence)),
+        "two documents holding the same bytes were given the same placement identities, so \\
+         the identity is derived from the bytes rather than owned by the document"
+    );
+    assert_eq!(
+        recorded(&export_nested(&path)),
+        stored,
+        "reading the second document moved the first document's identities"
+    );
+}
+
+#[test]
+fn two_objects_storing_the_same_bytes_keep_their_own_placement_identities() {
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("twice.fcad");
+    let mut kernel = MockKernel::new();
+    let mut document = Document::create(&path).expect("creates a document");
+    for (object, name) in [(ObjectId::new(), "First"), (ObjectId::new(), "Second")] {
+        let scene = nested_assembly(&mut kernel);
+        store_import(
+            &mut document,
+            &mut kernel,
+            Stored {
+                object,
+                name,
+                source: SOURCE,
+                source_name: "03-nested-assembly.step",
+                scene,
+                diagnostics: Vec::new(),
+            },
+        );
+    }
+    document.close().expect("closes");
+
+    let exported = export_nested(&path);
+    // One copy of the bytes, one set of definitions, and two sets of places.
+    assert_eq!(
+        exported.definitions().len(),
+        3,
+        "two objects storing the same bytes stopped sharing their definitions"
+    );
+    assert_eq!(exported.nodes().len(), 14);
+    let all = recorded(&exported);
+    assert_eq!(
+        all.iter().collect::<BTreeSet<_>>().len(),
+        14,
+        "two objects storing the same bytes shared a placement identity"
+    );
+}
+
+#[test]
+fn a_native_body_is_identified_by_its_object_and_not_by_a_fresh_uuid() {
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("bodies.fcad");
+    let bodies = several_bodies(&path, 2);
+
+    let export = || {
+        let mut kernel = MockKernel::new();
+        export_scene(
+            &path,
+            &mut kernel,
+            no_imports,
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("exports")
+    };
+
+    let scene = export();
+    assert_eq!(scene.nodes().len(), 2);
+    assert_eq!(
+        occurrences(&scene),
+        bodies
+            .iter()
+            .map(|body| ExportOccurrence::Object(*body))
+            .collect::<Vec<_>>(),
+        "a native body is identified by something other than the object that holds it"
+    );
+
+    // And it is the same next time. A body given an OccurrenceId of its own
+    // would need one minted somewhere, and the only place that could happen is
+    // here, once per export.
+    assert_eq!(occurrences(&export()), occurrences(&scene));
+}
+
+#[test]
+fn a_document_written_before_placements_had_identities_says_so_and_still_exports() {
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("legacy.fcad");
+    let mut kernel = MockKernel::new();
+    let object = ObjectId::new();
+    let mut document = Document::create(&path).expect("creates a document");
+    let scene = nested_assembly(&mut kernel);
+    store_import(
+        &mut document,
+        &mut kernel,
+        Stored {
+            object,
+            name: "Assembly",
+            source: SOURCE,
+            source_name: "03-nested-assembly.step",
+            scene,
+            diagnostics: Vec::new(),
+        },
+    );
+    document.close().expect("closes");
+
+    let current = export_nested(&path);
+    downgrade_to_version_2(&path, object);
+    let before = ferritecad_types::ContentHash::of_bytes(
+        &std::fs::read(&path).expect("snapshots the document"),
+    );
+    let after = export_nested(&path);
+
+    // Everything a user sees is unchanged.
+    assert_eq!(
+        described(&after),
+        described(&current),
+        "a version 2 document exports something other than what it always did"
+    );
+    // And the one thing it cannot answer is said rather than filled in.
+    assert_eq!(
+        occurrences(&after),
+        vec![ExportOccurrence::Unrecorded; 7],
+        "a document that never recorded placement identities was given some"
+    );
+
+    // Reading it did not rewrite it.
+    assert_eq!(
+        ferritecad_types::ContentHash::of_bytes(
+            &std::fs::read(&path).expect("re-reads the document")
+        ),
+        before,
+        "exporting a version 2 document rewrote it"
+    );
+}
+
+/// Rewrites an imported object's stored scene as a version 2 build left it.
+///
+/// There is no supported way to write one: a build that has placement
+/// identities must not produce a scene without them. This reaches past the
+/// writer for the one thing only a test needs — a document that predates the
+/// layout it is being read by.
+fn downgrade_to_version_2(path: &Path, object: ObjectId) {
+    rewrite_stored_scene(path, object, 2, |scene| KeyedScene {
+        source_unit: scene.source_unit.clone(),
+        schema: scene.schema.clone(),
+        definitions: scene.definitions.clone(),
+        instances: scene
+            .instances
+            .iter()
+            .map(|instance| KeyedInstance {
+                definition: instance.definition.clone(),
+                parent: instance.parent,
+                name: instance.name.clone(),
+                placement: instance.placement,
+                colour_source: instance.colour_source,
+                colour: instance.colour,
+            })
+            .collect(),
+    });
+}
+
+#[test]
+fn duplicate_placement_identities_are_refused_before_any_export() {
+    // Two placements answering to one identity, however it got that way. A
+    // swap between neighbours is not detectable — two identities the document
+    // wrote are two identities whichever place each sits at, and this slice
+    // has no reimport semantics that could say otherwise — so what is gated is
+    // the state that is detectable and is the one that does damage: one
+    // identity naming two places.
+    for (what, damage) in [
+        (
+            "an identity copied onto its neighbour",
+            Box::new(|scene: &mut PersistedScene| {
+                scene.instances[1].occurrence = scene.instances[0].occurrence;
+            }) as Box<dyn Fn(&mut PersistedScene)>,
+        ),
+        (
+            "an identity stolen from further down the scene",
+            Box::new(|scene: &mut PersistedScene| {
+                scene.instances[0].occurrence = scene.instances[6].occurrence;
+            }),
+        ),
+    ] {
+        let directory = tempfile::tempdir().expect("a temporary directory is available");
+        let path = directory.path().join("damaged.fcad");
+        let mut kernel = MockKernel::new();
+        let object = ObjectId::new();
+        let mut document = Document::create(&path).expect("creates a document");
+        let scene = nested_assembly(&mut kernel);
+        store_import(
+            &mut document,
+            &mut kernel,
+            Stored {
+                object,
+                name: "Assembly",
+                source: SOURCE,
+                source_name: "03-nested-assembly.step",
+                scene,
+                diagnostics: Vec::new(),
+            },
+        );
+        document.close().expect("closes");
+
+        rewrite_stored_scene(&path, object, 3, |scene| {
+            let mut damaged = scene.clone();
+            damage(&mut damaged);
+            damaged
+        });
+
+        let mut kernel = MockKernel::new();
+        let error = export_scene(
+            &path,
+            &mut kernel,
+            |kernel, _| {
+                Ok(Import::Imported {
+                    scene: nested_assembly(kernel),
+                    diagnostics: Vec::new(),
+                })
+            },
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect_err(&format!("{what} should not have exported"));
+        assert_eq!(error.kind(), ErrorKind::Input, "{what}: {error}");
+        assert!(error.to_string().contains("occurrence"), "{what}: {error}");
+        assert_eq!(kernel.live_shape_count(), 0, "{what} leaked shapes");
+    }
+}
+
+#[test]
+fn an_occurrence_stolen_from_another_object_is_refused_before_rebuild() {
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let mut document = ferritecad_fixtures::open_plate(directory.path()).expect("copies plate");
+    let path = document.path().to_owned();
+    let mut setup = MockKernel::new();
+    let first = ObjectId::new();
+    let second = ObjectId::new();
+    for object in [first, second] {
+        let scene = nested_assembly(&mut setup);
+        store_import(
+            &mut document,
+            &mut setup,
+            Stored {
+                object,
+                name: "Assembly",
+                source: SOURCE,
+                source_name: "assembly.step",
+                scene,
+                diagnostics: Vec::new(),
+            },
+        );
+    }
+    document.close().expect("closes");
+
+    // Establish that the native feature and both imported objects actually
+    // build before corrupting only the identity in the second payload.
+    let mut kernel = Counting::new();
+    let reads = AtomicUsize::new(0);
+    let exported = export_scene(
+        &path,
+        &mut kernel,
+        |kernel, _| {
+            reads.fetch_add(1, Ordering::Relaxed);
+            Ok(Import::Imported {
+                scene: nested_assembly(&mut kernel.inner),
+                diagnostics: Vec::new(),
+            })
+        },
+        &params(),
+        &OperationContext::default(),
+    )
+    .expect("the intact document exports");
+    assert_eq!(exported.nodes().len(), 15);
+    assert_eq!(kernel.extrusions, 1);
+    assert_eq!(reads.load(Ordering::Relaxed), 2);
+    // Read the first object's own ID: scene order need not be ObjectId order.
+    let stolen = {
+        let document = Document::open_read_only(&path).expect("reads the first object");
+        let record = document.object(first).expect("reads").expect("exists");
+        let ObjectPayload::ImportedStep(imported) = record.payload else {
+            panic!("an imported object");
+        };
+        let StoredScene::V3(scene) = imported.scene else {
+            panic!("current layout");
+        };
+        scene.instances[0].occurrence
+    };
+    rewrite_stored_scene(&path, second, 3, |scene| {
+        let mut damaged = scene.clone();
+        damaged.instances[0].occurrence = stolen;
+        damaged.validate().expect("each object is internally valid");
+        damaged
+    });
+
+    let mut kernel = Counting::new();
+    let reads = AtomicUsize::new(0);
+    let error = export_scene(
+        &path,
+        &mut kernel,
+        |kernel, _| {
+            reads.fetch_add(1, Ordering::Relaxed);
+            Ok(Import::Imported {
+                scene: nested_assembly(&mut kernel.inner),
+                diagnostics: Vec::new(),
+            })
+        },
+        &params(),
+        &OperationContext::default(),
+    )
+    .expect_err("a cross-object identity collision must be refused");
+    assert_eq!(
+        kernel.extrusions, 0,
+        "native rebuild ran before identity validation: {error}"
+    );
+    assert_eq!(
+        reads.load(Ordering::Relaxed),
+        0,
+        "the importer saw a damaged document"
+    );
+    assert!(kernel.tessellations.is_empty());
+    assert_eq!(kernel.inner.live_shape_count(), 0);
+    assert_eq!(error.kind(), ErrorKind::Input, "{error}");
+    assert!(
+        error.to_string().contains("occurrence.duplicate"),
+        "{error}"
+    );
+    let document = Document::open_read_only(&path).expect("opens for diagnosis");
+    let report = document.validate().expect("validates");
+    let collision = report
+        .errors()
+        .find(|d| d.code == "occurrence.duplicate")
+        .expect("document validation reports the collision too");
+    assert!(collision.message.contains(&first.to_string()));
+    assert!(collision.message.contains(&second.to_string()));
+    assert!(collision.message.contains(&stolen.to_string()));
+}
+
+#[test]
+fn one_identity_naming_two_placements_is_refused_at_the_export_boundary_too() {
+    // The persistence boundary refuses this first, so a document can never
+    // reach the builder with it. The builder refuses it as well, because it
+    // also accepts callers that construct a neutral scene directly, without
+    // going through document validation.
+    let mut builder = ExportSceneBuilder::new();
+    let definition = builder
+        .definition(
+            ExportSource::Body {
+                object: ObjectId::new(),
+            },
+            Some("Part".to_owned()),
+            ExportProvenance::default(),
+            ExportGeometry::Structural,
+        )
+        .expect("a definition");
+    let occurrence = ExportOccurrence::Occurrence(OccurrenceId::new());
+    builder
+        .node(
+            None,
+            definition,
+            ExportTransform::IDENTITY,
+            Some("First".to_owned()),
+            None,
+            occurrence,
+        )
+        .expect("the first placement");
+    let error = builder
+        .node(
+            None,
+            definition,
+            ExportTransform::IDENTITY,
+            Some("Second".to_owned()),
+            None,
+            occurrence,
+        )
+        .expect_err("one identity cannot name two placements");
+    assert_eq!(error.kind(), ErrorKind::Topology, "{error}");
+
+    // A placement with no identity recorded may of course repeat: that is not
+    // an identity, it is the absence of one, and a legacy document is full of
+    // them.
+    builder
+        .node(
+            None,
+            definition,
+            ExportTransform::IDENTITY,
+            Some("Third".to_owned()),
+            None,
+            ExportOccurrence::Unrecorded,
+        )
+        .expect("an unrecorded placement");
+    builder
+        .node(
+            None,
+            definition,
+            ExportTransform::IDENTITY,
+            Some("Fourth".to_owned()),
+            None,
+            ExportOccurrence::Unrecorded,
+        )
+        .expect("a second unrecorded placement");
+}
+
+/// Rewrites the stored scene of an imported object at a chosen layout.
+fn rewrite_stored_scene<S: serde::Serialize>(
+    path: &Path,
+    object: ObjectId,
+    version: u32,
+    rewrite: impl FnOnce(&PersistedScene) -> S,
+) {
+    #[derive(serde::Serialize)]
+    struct Payload<'a, S> {
+        source: ferritecad_types::ImportedSourceId,
+        source_hash: ferritecad_types::ContentHash,
+        source_byte_len: u64,
+        source_name: Option<String>,
+        scene: &'a S,
+        imported_by: ImporterIdentity,
+        diagnostics_at_import: Vec<Diagnostic>,
+    }
+
+    let document = Document::open_read_only(path).expect("opens");
+    let record = document.object(object).expect("reads").expect("is there");
+    let ObjectPayload::ImportedStep(stored) = &record.payload else {
+        panic!("the object under test is an imported STEP file");
+    };
+    let StoredScene::V3(current) = &stored.scene else {
+        panic!("a fresh import stores a current-layout scene");
+    };
+    let envelope = Envelope::encode(
+        "exchange.step.imported",
+        version,
+        vec![IMPORTED_STEP_CAPABILITY.to_owned()],
+        &Payload {
+            source: stored.source,
+            source_hash: stored.source_hash,
+            source_byte_len: stored.source_byte_len,
+            source_name: stored.source_name.clone(),
+            scene: &rewrite(current),
+            imported_by: stored.imported_by.clone(),
+            diagnostics_at_import: stored.diagnostics_at_import.clone(),
+        },
+    )
+    .expect("encodes")
+    .to_bytes()
+    .expect("serialises");
+    drop(document);
+
+    let connection = rusqlite::Connection::open(path).expect("opens the document as SQL");
+    connection
+        .execute(
+            "UPDATE objects SET schema_version = ?1, payload = ?2, payload_hash = ?3 \
+             WHERE id = ?4",
+            rusqlite::params![
+                version,
+                envelope.as_slice(),
+                ferritecad_types::ContentHash::of_bytes(&envelope)
+                    .as_bytes()
+                    .as_slice(),
+                object.to_bytes().as_slice()
+            ],
+        )
+        .expect("rewrites the stored payload");
+    connection.close().expect("closes the SQL connection");
 }
 
 // -------------------------------------------------------- architecture

@@ -10,6 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use ferritecad_exchange::StoredScene;
 use ferritecad_types::{ContentHash, ObjectId, Result};
 
 use crate::document::Document;
@@ -104,6 +105,7 @@ pub(crate) fn validate(document: &Document) -> Result<ValidationReport> {
     }
 
     let objects = document.objects()?;
+    check_occurrence_ownership(&objects, &mut report);
     let by_id: BTreeMap<ObjectId, &crate::document::ObjectRecord> =
         objects.iter().map(|o| (o.id, o)).collect();
 
@@ -191,6 +193,40 @@ pub(crate) fn validate(document: &Document) -> Result<ValidationReport> {
     }
 
     Ok(report)
+}
+
+/// Payload validation checks uniqueness inside each import. The document must
+/// also reject an ID copied between otherwise valid imports, before any native
+/// feature is rebuilt or any stored STEP is handed to an importer. Use the
+/// objects already decoded for validation; no second document or source read.
+fn check_occurrence_ownership(
+    objects: &[crate::document::ObjectRecord],
+    report: &mut ValidationReport,
+) {
+    let mut owners = BTreeMap::new();
+    for object in objects {
+        let ObjectPayload::ImportedStep(imported) = &object.payload else {
+            continue;
+        };
+        let StoredScene::V3(scene) = &imported.scene else {
+            continue;
+        };
+        for instance in &scene.instances {
+            if let Some(owner) = owners.insert(instance.occurrence, object.id)
+                && owner != object.id
+            {
+                report.error(
+                    "occurrence.duplicate",
+                    Some(object.id),
+                    format!(
+                        "occurrence {} is claimed by imported objects {owner} and {}; \
+                         one placement identity must belong to one object",
+                        instance.occurrence, object.id
+                    ),
+                );
+            }
+        }
+    }
 }
 
 fn check_payload_integrity(object: &crate::document::ObjectRecord, report: &mut ValidationReport) {

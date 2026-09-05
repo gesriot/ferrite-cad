@@ -28,12 +28,14 @@ use ferritecad_document::{
     Document, ImportedDefinitionRef, ObjectPayload, ObjectRecord, StepImporter,
 };
 use ferritecad_eval::{RebuildResult, rebuild_cold};
-use ferritecad_exchange::{ColourSource, Diagnostic, Import, Scene, Severity, Stage};
+use ferritecad_exchange::{
+    ColourSource, Diagnostic, Import, Scene, Severity, Stage, StoredOccurrences,
+};
 use ferritecad_kernel::{
     GeometryKernel, KernelIdentity, Mesh, OperationContext, ProgressSink, ShapeHandle,
     TessellationParams, TessellationRefusal,
 };
-use ferritecad_types::{CadError, ImportedSourceId, Result, Transform};
+use ferritecad_types::{CadError, ImportedSourceId, ObjectId, OccurrenceId, Result, Transform};
 
 use crate::{GeometryOmission, SceneItem};
 
@@ -267,6 +269,23 @@ pub(crate) enum Geometry<'a> {
     Structural,
 }
 
+/// What one placement durably is, in terms a document stores.
+///
+/// Three states, and the third is not an absence to be filled in. A document
+/// written before placements carried identities has none, and the only honest
+/// thing to hand on is that fact: a value invented here would be indexed by
+/// whatever this load happened to traverse, and would look like an identity
+/// while behaving like a position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NodeIdentity {
+    /// A native body, identified by the object that holds it.
+    Object(ObjectId),
+    /// One placement of an imported scene, read back from the stored payload.
+    Occurrence(OccurrenceId),
+    /// The stored layout this placement came from predates placement identity.
+    Unrecorded,
+}
+
 /// One place a definition appears, exactly as the source recorded it.
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedNode {
@@ -286,6 +305,9 @@ pub(crate) struct PreparedNode {
     pub(crate) structural: bool,
     /// What the document or the file called this placement.
     pub(crate) name: Option<String>,
+    /// What this placement durably is, taken from what the document stored and
+    /// from nowhere else.
+    pub(crate) identity: NodeIdentity,
     pub(crate) colour_source: ColourSource,
     /// Linear RGB. Meaningless when the source is [`ColourSource::None`].
     pub(crate) colour: [f64; 3],
@@ -431,6 +453,15 @@ where
                         world: Transform::IDENTITY,
                         structural: false,
                         name: object.name.clone(),
+                        // The object that holds the body, and no second
+                        // identifier over it. An `OccurrenceId` minted here
+                        // would be a new value every export, which is the one
+                        // thing a durable identity must never be; and a stored
+                        // one beside the object identifier would be two names
+                        // for one thing that nothing could later be sure were
+                        // the same. A body is placed exactly once, so the
+                        // object is already the place.
+                        identity: NodeIdentity::Object(object.id),
                         colour_source: ColourSource::None,
                         colour: [0.0; 3],
                     })?;
@@ -477,6 +508,7 @@ where
                         kernel,
                         Reading {
                             source: reopened.source(),
+                            occurrences: reopened.occurrences(),
                             file: source_file,
                             omittable: &omittable,
                             scene: &reopened.scene,
@@ -504,6 +536,11 @@ where
 struct Reading<'a> {
     /// The bytes this reading was verified against.
     source: ImportedSourceId,
+    /// What the document stored as the durable identity of each placement, or
+    /// the fact that its layout stored none. Positionally aligned with
+    /// `scene.instances`, which the binding above has already required to be
+    /// the same instances in the same order.
+    occurrences: &'a StoredOccurrences,
     /// What to call the file it came from. A name to read, never a path to
     /// open: the bytes in the document are the source, and the place they were
     /// read from years ago may hold something else entirely by now.
@@ -672,6 +709,21 @@ where
         }
     }
 
+    // One identity per placement or none at all, checked before a single node
+    // is reported. Two lists of different lengths cannot be aligned, and the
+    // failure of aligning them anyway is silent: every placement after the
+    // first missing one would carry its neighbour's identity.
+    if let StoredOccurrences::Recorded(recorded) = from.occurrences
+        && recorded.len() != scene.instances.len()
+    {
+        return Err(CadError::input(format!(
+            "the document stored {} placement identities for a scene of {} placements, so \
+             they cannot be the identities of these placements",
+            recorded.len(),
+            scene.instances.len()
+        )));
+    }
+
     let base = *nodes;
     for (index, instance) in scene.instances.iter().enumerate() {
         let definition = *registered.get(&instance.definition).ok_or_else(|| {
@@ -680,6 +732,31 @@ where
                 instance.definition
             ))
         })?;
+        // Read out of the stored payload, positionally, and derived from
+        // nothing. There is no arm here that falls back to the index, the
+        // parent, the name or the key: a placement the document never gave an
+        // identity says so all the way to the export boundary.
+        let identity = match from.occurrences {
+            StoredOccurrences::Unrecorded => NodeIdentity::Unrecorded,
+            StoredOccurrences::Recorded(recorded) => {
+                NodeIdentity::Occurrence(*recorded.get(index).ok_or_else(|| {
+                    CadError::input(format!(
+                        "instance {index} has no stored placement identity among the {} this \
+                         document recorded",
+                        recorded.len()
+                    ))
+                })?)
+            }
+            // A stored layout this build has not been measured against is not
+            // silently treated as having no identity: that would turn a
+            // document that recorded one into one that appears not to have.
+            _ => {
+                return Err(CadError::unsupported(
+                    "this document records placement identity in a way this build does not \
+                     know how to read",
+                ));
+            }
+        };
         sink.node(&PreparedNode {
             definition,
             parent: instance.parent.map(|parent| base + parent),
@@ -687,6 +764,7 @@ where
             world: world[index],
             structural: structural[index],
             name: Some(instance.name.clone()).filter(|name| !name.trim().is_empty()),
+            identity,
             colour_source: instance.colour_source,
             colour: instance.colour,
         })?;

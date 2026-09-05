@@ -13,11 +13,13 @@
 
 use ferritecad_document::{
     Access, Body, Document, IMPORTED_STEP_CAPABILITY, ImportedDefinitionRef, ImportedStep,
-    ImporterIdentity, ObjectPayload, STEP_SOURCE_FORMAT, StepImportRequest, StepImporter,
+    ImporterIdentity, ObjectKind, ObjectPayload, STEP_SOURCE_FORMAT, StepImportRequest,
+    StepImporter,
 };
 use ferritecad_exchange::{
-    ColourSource, Definition, Diagnostic, Import, Instance, LegacyDefinition, LegacyInstance,
-    LegacyScene, Scene, Severity, Stage, StoredScene,
+    ColourSource, Definition, Diagnostic, Import, Instance, KeyedInstance, KeyedScene,
+    LegacyDefinition, LegacyInstance, LegacyScene, PersistedScene, Scene, Severity, Stage,
+    StoredOccurrences, StoredScene,
 };
 use ferritecad_kernel::{KernelIdentity, SessionId, ShapeHandle};
 use ferritecad_types::{CadError, ContentHash, ErrorKind, ObjectId, Result};
@@ -46,6 +48,9 @@ fn moved(x: f64) -> [f64; 12] {
 }
 
 /// One assembly: a plate and two bolts, one of them recoloured.
+const PLATE: &str = "step.product_definition#5";
+const BOLT: &str = "step.product_definition#31";
+
 fn scene(session: SessionId) -> Scene {
     Scene {
         source_unit: "MM".to_owned(),
@@ -210,9 +215,27 @@ fn a_stored_import_reopens_into_a_new_session_with_that_session_s_handles() {
         "reopening handed back the handles of a session that is gone"
     );
 
-    // Everything portable came back as it went in.
-    let persisted = reopened.scene.persist().expect("projects");
-    assert_eq!(StoredScene::V2(persisted.clone()), stored.scene);
+    // Everything portable came back as it went in. The re-projection mints its
+    // own placement identities, because a projection is what a new import
+    // writes down; the stored ones are checked separately, below.
+    let mut persisted = reopened.scene.persist().expect("projects");
+    let StoredOccurrences::Recorded(recorded) = stored.scene.occurrences() else {
+        panic!("a current-layout scene records placement identities");
+    };
+    assert_eq!(
+        reopened.occurrences(),
+        &StoredOccurrences::Recorded(recorded.clone()),
+        "reopening did not hand back the stored placement identities"
+    );
+    for (instance, occurrence) in persisted.instances.iter_mut().zip(&recorded) {
+        assert_ne!(
+            instance.occurrence, *occurrence,
+            "re-projecting a reopened scene reproduced the stored identity, so something \
+             other than the payload is producing it"
+        );
+        instance.occurrence = *occurrence;
+    }
+    assert_eq!(StoredScene::V3(persisted.clone()), stored.scene);
     assert_eq!(persisted.source_unit, "MM");
     assert_eq!(persisted.definitions[1].name, "Bolt");
     assert_eq!(persisted.instances[2].colour_source, ColourSource::Instance);
@@ -507,37 +530,7 @@ fn a_document_written_before_identities_still_opens_and_binds() {
 
     // Rewrite the object as a version 1 build left it: the same import with a
     // scene that names its definitions by position and has no keys at all.
-    let StoredScene::V2(scene_v2) = &stored.scene else {
-        panic!("a fresh import stores a v2 scene");
-    };
-    let legacy = LegacyScene {
-        source_unit: scene_v2.source_unit.clone(),
-        schema: scene_v2.schema.clone(),
-        definitions: scene_v2
-            .definitions
-            .iter()
-            .map(|definition| LegacyDefinition {
-                name: definition.name.clone(),
-                solids: definition.solids,
-            })
-            .collect(),
-        instances: scene_v2
-            .instances
-            .iter()
-            .map(|instance| LegacyInstance {
-                definition: scene_v2
-                    .definitions
-                    .iter()
-                    .position(|definition| definition.key == instance.definition)
-                    .expect("the stored scene is consistent") as u32,
-                parent: instance.parent,
-                name: instance.name.clone(),
-                placement: instance.placement,
-                colour_source: instance.colour_source,
-                colour: instance.colour,
-            })
-            .collect(),
-    };
+    let legacy = as_version_1(current_scene(&stored));
     write_legacy_object(&path, object, &stored, &legacy);
 
     let document = Document::open(&path).expect("a version 1 document still opens");
@@ -602,6 +595,291 @@ fn a_document_written_before_identities_still_opens_and_binds() {
     );
 }
 
+#[test]
+fn a_document_written_before_placements_had_identities_still_opens_and_binds() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let (object, stored) =
+        store(&mut document, &imported(SessionId::new(), Vec::new())).expect("stores");
+    document.close().expect("closes");
+
+    // Rewrite the object as a version 2 build left it: keys on every
+    // definition, and nothing at all saying which placement is which.
+    let keyed = as_version_2(current_scene(&stored));
+    write_object_at_layout(&path, object, &stored, 2, &keyed);
+
+    let document = Document::open(&path).expect("a version 2 document still opens");
+    assert_eq!(
+        document.access(),
+        &Access::ReadWrite,
+        "a version 2 import is understood, not merely preserved"
+    );
+
+    let read = document
+        .step_import(object)
+        .expect("reads")
+        .expect("is there");
+    assert_eq!(read.imported.scene.version(), 2);
+    assert_eq!(
+        read.imported.scene.keys(),
+        Some(vec![PLATE, BOLT]),
+        "a version 2 scene keeps the definition identities it does have"
+    );
+    assert_eq!(
+        read.imported.scene.occurrences(),
+        StoredOccurrences::Unrecorded,
+        "a version 2 scene must not claim placement identities it never recorded"
+    );
+
+    // It still binds, and a durable reference to a definition still resolves:
+    // what version 2 lacks is placement identity and nothing else.
+    let mut importer = Importer::new(|_: &[u8]| Ok(imported(SessionId::new(), Vec::new())));
+    let reopened = document
+        .reopen_step_import(object, &mut importer)
+        .expect("a version 2 scene binds by key");
+    assert_eq!(reopened.stored_version(), 2);
+    assert_eq!(
+        reopened.occurrences(),
+        &StoredOccurrences::Unrecorded,
+        "reopening invented placement identities the document never had"
+    );
+    let reference = ImportedDefinitionRef::new(stored.source, PLATE).expect("valid");
+    reopened
+        .resolve(&reference)
+        .expect("a version 2 definition reference still resolves");
+
+    // Reading it did not rewrite it, and neither does an edit elsewhere in the
+    // document: the object goes back at the layout it came in at.
+    let before = std::fs::read(&path).expect("snapshots the document");
+    let record = document.object(object).expect("reads").expect("is there");
+    assert_eq!(record.payload.schema_version(), 2);
+    assert_eq!(
+        std::fs::read(&path).expect("re-reads the document"),
+        before,
+        "opening and reading a version 2 document rewrote it"
+    );
+    let written = record.payload.to_storage_bytes().expect("writes back");
+    let envelope = ferritecad_document::Envelope::from_bytes(&written).expect("decodes");
+    assert_eq!(
+        envelope.schema_version, 2,
+        "a version 2 import was written back claiming identities it does not have"
+    );
+}
+
+#[test]
+fn two_placements_answering_to_one_identity_are_refused_before_anything_is_read() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let (object, stored) =
+        store(&mut document, &imported(SessionId::new(), Vec::new())).expect("stores");
+    document.close().expect("closes");
+
+    // The one damaged state the current layout's types permit. A missing
+    // identity cannot be written at all — the field is not optional — and a
+    // malformed one is refused while the UUID is still being read.
+    let mut collided = current_scene(&stored).clone();
+    assert!(collided.instances.len() >= 2);
+    collided.instances[1].occurrence = collided.instances[0].occurrence;
+    write_object_at_layout(&path, object, &stored, 3, &collided);
+
+    let document = Document::open(&path).expect("the document still opens");
+    let error = document
+        .step_import(object)
+        .expect_err("a scene whose placements collide is not read");
+    assert_eq!(error.kind(), ErrorKind::Input, "{error}");
+    assert!(error.to_string().contains("occurrence"), "{error}");
+}
+
+#[test]
+fn a_placement_identity_that_is_not_a_uuidv7_is_refused_while_it_is_read() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let (object, stored) =
+        store(&mut document, &imported(SessionId::new(), Vec::new())).expect("stores");
+    document.close().expect("closes");
+
+    // A placement whose identity is a version 4 UUID. Written in the exact wire
+    // form a real identity takes — sixteen CBOR bytes, not text — so the
+    // refusal below is about the version nibble and not about a type mismatch
+    // the reader would have caught for any value at all. The first spelling of
+    // this gate got that wrong and a mutation campaign said so: a mutant that
+    // removed the version check survived it.
+    #[derive(serde::Serialize)]
+    struct LooseInstance {
+        occurrence: serde_bytes::ByteBuf,
+        definition: String,
+        parent: Option<u32>,
+        name: String,
+        placement: [f64; 12],
+        colour_source: ferritecad_exchange::ColourSource,
+        colour: [f64; 3],
+    }
+    #[derive(serde::Serialize)]
+    struct LooseScene {
+        source_unit: String,
+        schema: String,
+        definitions: Vec<ferritecad_exchange::PersistedDefinition>,
+        instances: Vec<LooseInstance>,
+    }
+
+    let current = current_scene(&stored);
+    let loose = LooseScene {
+        source_unit: current.source_unit.clone(),
+        schema: current.schema.clone(),
+        definitions: current.definitions.clone(),
+        instances: current
+            .instances
+            .iter()
+            .enumerate()
+            .map(|(index, instance)| LooseInstance {
+                occurrence: serde_bytes::ByteBuf::from(if index == 0 {
+                    // 550e8400-e29b-41d4-a716-446655440000, a version 4 UUID.
+                    [
+                        0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66,
+                        0x55, 0x44, 0x00, 0x00,
+                    ]
+                } else {
+                    instance.occurrence.to_bytes()
+                }),
+                definition: instance.definition.clone(),
+                parent: instance.parent,
+                name: instance.name.clone(),
+                placement: instance.placement,
+                colour_source: instance.colour_source,
+                colour: instance.colour,
+            })
+            .collect(),
+    };
+    write_object_at_layout(&path, object, &stored, 3, &loose);
+
+    let document = Document::open(&path).expect("the document still opens");
+    let error = document
+        .step_import(object)
+        .expect_err("a placement identity that is not a UUIDv7 is not read");
+    assert_eq!(error.kind(), ErrorKind::Input, "{error}");
+    assert!(
+        error.to_string().contains("UUIDv7") || format!("{error:?}").contains("UUIDv7"),
+        "refused, but not for being the wrong kind of identifier: {error:?}"
+    );
+}
+
+#[test]
+fn a_current_layout_payload_with_no_placement_identities_is_refused() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let (object, stored) =
+        store(&mut document, &imported(SessionId::new(), Vec::new())).expect("stores");
+    document.close().expect("closes");
+
+    // A version 2 payload under a version 3 header. This is the header/payload
+    // disagreement the format already refuses, and it is what stops a document
+    // from being read as though it had identities it never wrote.
+    let keyed = as_version_2(current_scene(&stored));
+    write_object_at_layout(&path, object, &stored, 3, &keyed);
+
+    let document = Document::open(&path).expect("the document still opens");
+    let error = document
+        .step_import(object)
+        .expect_err("a version 2 payload is not a version 3 scene");
+    assert_eq!(error.kind(), ErrorKind::Input, "{error}");
+}
+
+#[test]
+fn an_import_is_stored_at_the_current_layout_and_declares_no_new_capability() {
+    let (_dir, path) = workspace();
+    let mut document = Document::create(&path).expect("creates");
+    let (object, stored) =
+        store(&mut document, &imported(SessionId::new(), Vec::new())).expect("stores");
+
+    assert_eq!(stored.scene.version(), 3);
+    let record = document.object(object).expect("reads").expect("is there");
+    assert_eq!(record.payload.schema_version(), 3);
+    // Placement identity is a layout change, not a vocabulary one, so it
+    // arrives as a version and adds no capability beside the one an imported
+    // object has always required. A reader that cannot parse the layout is
+    // already stopped by the layout.
+    assert_eq!(
+        record.payload.required_capabilities(),
+        vec![IMPORTED_STEP_CAPABILITY.to_owned()]
+    );
+    assert_eq!(
+        ObjectKind::ImportedStep.known_capabilities(),
+        &[IMPORTED_STEP_CAPABILITY],
+        "a second capability appeared for a layout change"
+    );
+    assert_eq!(
+        ObjectKind::ImportedStep.readable_schema_versions(),
+        &[3, 2, 1],
+        "an older imported layout stopped being readable"
+    );
+}
+
+/// The current-layout scene of a stored import.
+fn current_scene(stored: &ImportedStep) -> &PersistedScene {
+    match &stored.scene {
+        StoredScene::V3(scene) => scene,
+        other => panic!(
+            "a fresh import stores a current-layout scene, found v{}",
+            other.version()
+        ),
+    }
+}
+
+/// The same scene as version 1 recorded it: definitions by position, no keys
+/// and no placement identities.
+fn as_version_1(scene: &PersistedScene) -> LegacyScene {
+    LegacyScene {
+        source_unit: scene.source_unit.clone(),
+        schema: scene.schema.clone(),
+        definitions: scene
+            .definitions
+            .iter()
+            .map(|definition| LegacyDefinition {
+                name: definition.name.clone(),
+                solids: definition.solids,
+            })
+            .collect(),
+        instances: scene
+            .instances
+            .iter()
+            .map(|instance| LegacyInstance {
+                definition: scene
+                    .definitions
+                    .iter()
+                    .position(|definition| definition.key == instance.definition)
+                    .expect("the stored scene is consistent") as u32,
+                parent: instance.parent,
+                name: instance.name.clone(),
+                placement: instance.placement,
+                colour_source: instance.colour_source,
+                colour: instance.colour,
+            })
+            .collect(),
+    }
+}
+
+/// The same scene as version 2 recorded it: keys, and nothing that says which
+/// placement is which.
+fn as_version_2(scene: &PersistedScene) -> KeyedScene {
+    KeyedScene {
+        source_unit: scene.source_unit.clone(),
+        schema: scene.schema.clone(),
+        definitions: scene.definitions.clone(),
+        instances: scene
+            .instances
+            .iter()
+            .map(|instance| KeyedInstance {
+                definition: instance.definition.clone(),
+                parent: instance.parent,
+                name: instance.name.clone(),
+                placement: instance.placement,
+                colour_source: instance.colour_source,
+                colour: instance.colour,
+            })
+            .collect(),
+    }
+}
+
 /// Rewrites an imported object's payload as a version 1 build would have.
 ///
 /// There is no supported way to write one, and there should not be: a build
@@ -614,22 +892,40 @@ fn write_legacy_object(
     stored: &ImportedStep,
     scene: &LegacyScene,
 ) {
+    write_object_at_layout(path, object, stored, 1, scene);
+}
+
+/// Rewrites an imported object's payload at a chosen layout, with a chosen
+/// scene.
+///
+/// There is no supported way to write an older layout, and there should not be:
+/// a build that has placement identities must not produce a scene without them.
+/// This reaches past the writer for the two things only a test needs — a
+/// document that predates the format it is being read by, and a document
+/// damaged in a way the writer would have refused.
+fn write_object_at_layout<S: serde::Serialize>(
+    path: &std::path::Path,
+    object: ObjectId,
+    stored: &ImportedStep,
+    version: u32,
+    scene: &S,
+) {
     #[derive(serde::Serialize)]
-    struct LegacyPayload<'a> {
+    struct Payload<'a, S> {
         source: ferritecad_types::ImportedSourceId,
         source_hash: ContentHash,
         source_byte_len: u64,
         source_name: Option<String>,
-        scene: &'a LegacyScene,
+        scene: &'a S,
         imported_by: ImporterIdentity,
         diagnostics_at_import: Vec<Diagnostic>,
     }
 
     let envelope = ferritecad_document::Envelope::encode(
         "exchange.step.imported",
-        1,
+        version,
         vec![IMPORTED_STEP_CAPABILITY.to_owned()],
-        &LegacyPayload {
+        &Payload {
             source: stored.source,
             source_hash: stored.source_hash,
             source_byte_len: stored.source_byte_len,
@@ -645,8 +941,10 @@ fn write_legacy_object(
 
     with_sql(path, |conn| {
         conn.execute(
-            "UPDATE objects SET schema_version = 1, payload = ?1, payload_hash = ?2 WHERE id = ?3",
+            "UPDATE objects SET schema_version = ?1, payload = ?2, payload_hash = ?3 \
+             WHERE id = ?4",
             rusqlite::params![
+                version,
                 envelope.as_slice(),
                 ContentHash::of_bytes(&envelope).as_bytes().as_slice(),
                 object.to_bytes().as_slice()
@@ -1102,7 +1400,7 @@ fn a_low_level_writer_cannot_pair_an_object_with_different_source_facts() {
                 source_hash: ContentHash::of_bytes(b"different"),
                 source_byte_len: SOURCE.len() as u64,
                 source_name: None,
-                scene: StoredScene::V2(scene(SessionId::new()).persist()?),
+                scene: StoredScene::V3(scene(SessionId::new()).persist()?),
                 imported_by: ImporterIdentity::of(&kernel()),
                 diagnostics_at_import: Vec::new(),
             },
@@ -1293,13 +1591,13 @@ fn a_newer_import_layout_with_a_known_capability_survives_an_edit() {
         store(&mut document, &imported(SessionId::new(), Vec::new())).expect("stores");
     document.close().expect("closes");
 
-    // Simulate exactly the compatibility decision made for scene v2 from the
+    // Simulate exactly the compatibility decision made for scene v3 from the
     // point of view of this reader: the capability is already understood but
     // the payload layout is newer. The envelope must be preserved as an
     // unknown object without making the whole document read-only.
     let future = ferritecad_document::Envelope::new(
         "exchange.step.imported",
-        3,
+        4,
         vec![IMPORTED_STEP_CAPABILITY.to_owned()],
         vec![0xf6],
     )
@@ -1307,7 +1605,7 @@ fn a_newer_import_layout_with_a_known_capability_survives_an_edit() {
     .expect("serialises");
     with_sql(&path, |conn| {
         conn.execute(
-            "UPDATE objects SET schema_version = 3, payload = ?1, payload_hash = ?2 WHERE id = ?3",
+            "UPDATE objects SET schema_version = 4, payload = ?1, payload_hash = ?2 WHERE id = ?3",
             rusqlite::params![
                 future.as_slice(),
                 ContentHash::of_bytes(&future).as_bytes().as_slice(),

@@ -1,0 +1,22 @@
+   Compiling ferritecad-occt v0.0.1 (/Users/drt/Desktop/github/ferrite-cad/crates/ferritecad-occt)
+   Compiling ferritecad-scene v0.0.1 (/Users/drt/Desktop/github/ferrite-cad/crates/ferritecad-scene)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.12s
+     Running tests/export_scene.rs (target/debug/deps/export_scene-7ee12c94958467a0)
+
+running 1 test
+
+thread 'an_occurrence_stolen_from_another_object_is_refused_before_rebuild' (443127167) panicked at crates/ferritecad-scene/tests/export_scene.rs:2369:5:
+assertion `left == right` failed: native rebuild ran before identity validation: unresolved topology reference: Occurrence(OccurrenceId(01a07235-1f55-7652-920a-8aff7de972a1)) identifies node 0 and is claimed again by node 7; one placement identity names one placement
+  left: 1
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test an_occurrence_stolen_from_another_object_is_refused_before_rebuild ... FAILED
+
+failures:
+
+failures:
+    an_occurrence_stolen_from_another_object_is_refused_before_rebuild
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 37 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p ferritecad-scene --test export_scene`

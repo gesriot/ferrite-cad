@@ -22,15 +22,15 @@ use std::path::Path;
 use ferritecad_exchange::{ColourSource, Import};
 use ferritecad_export::{
     ExportColourOrigin, ExportDefinitionId, ExportGeometry, ExportMaterial, ExportMesh,
-    ExportNodeId, ExportOmission, ExportProvenance, ExportScene, ExportSceneBuilder, ExportSource,
-    ExportTransform,
+    ExportNodeId, ExportOccurrence, ExportOmission, ExportProvenance, ExportScene,
+    ExportSceneBuilder, ExportSource, ExportTransform,
 };
 use ferritecad_kernel::{
     GeometryKernel, Mesh, OperationContext, TessellationParams, TessellationRefusal,
 };
 use ferritecad_types::{CadError, Result};
 
-use crate::prepare::{self, LoadSink, PreparedDefinition, PreparedNode};
+use crate::prepare::{self, LoadSink, NodeIdentity, PreparedDefinition, PreparedNode};
 use crate::{BODY_COLOUR, SceneItem};
 
 /// Reads a document and describes it for an interchange writer.
@@ -200,7 +200,14 @@ impl LoadSink for Export {
                     ));
                 }
             };
-            ids.push(builder.node(parent, definition, local, node.name.clone(), colour)?);
+            ids.push(builder.node(
+                parent,
+                definition,
+                local,
+                node.name.clone(),
+                colour,
+                occurrence_of(node.identity),
+            )?);
         }
 
         builder.finish()
@@ -304,6 +311,19 @@ fn material_of(prepared: &PreparedDefinition, places: &[&PreparedNode]) -> Resul
     match colour {
         Some(colour) => ExportMaterial::new(name, colour, ExportColourOrigin::Source),
         None => ExportMaterial::new(name, BODY_COLOUR, ExportColourOrigin::Default),
+    }
+}
+
+/// The load's identity for one placement, in the neutral terms a writer sees.
+///
+/// A translation and nothing more. There is no arm here that invents a value,
+/// because the three states of the load's identity and the three states a
+/// writer is offered are the same three facts, deliberately.
+fn occurrence_of(identity: NodeIdentity) -> ExportOccurrence {
+    match identity {
+        NodeIdentity::Object(object) => ExportOccurrence::Object(object),
+        NodeIdentity::Occurrence(occurrence) => ExportOccurrence::Occurrence(occurrence),
+        NodeIdentity::Unrecorded => ExportOccurrence::Unrecorded,
     }
 }
 
