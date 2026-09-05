@@ -32,6 +32,8 @@
 //! axis and unit conversion a particular format wants belongs to that
 //! format's writer, because two writers want different ones.
 
+use std::collections::BTreeMap;
+
 use ferritecad_exchange::Diagnostic;
 use ferritecad_kernel::TessellationRefusal;
 use ferritecad_types::{CadError, ImportedSourceId, ObjectId, OccurrenceId, Result};
@@ -632,6 +634,10 @@ impl ExportScene {
 pub struct ExportSceneBuilder {
     definitions: Vec<ExportDefinition>,
     nodes: Vec<ExportNode>,
+    /// First node that claimed each recorded identity. Unrecorded placements
+    /// are absent: any number of them is lawful. The finished scene does not
+    /// carry this map.
+    recorded: BTreeMap<ExportOccurrence, ExportNodeId>,
 }
 
 impl ExportSceneBuilder {
@@ -718,12 +724,12 @@ impl ExportSceneBuilder {
             )));
         }
         if occurrence.is_recorded()
-            && let Some(earlier) = self.nodes.iter().find(|node| node.occurrence == occurrence)
+            && let Some(earlier) = self.recorded.get(&occurrence)
         {
             return Err(CadError::topology(format!(
                 "{occurrence:?} identifies node {} and is claimed again by node {}; one \
                  placement identity names one placement",
-                earlier.id.index(),
+                earlier.index(),
                 self.nodes.len()
             )));
         }
@@ -731,6 +737,9 @@ impl ExportSceneBuilder {
             CadError::input("an export cannot hold more nodes than uint32 can count")
         })?;
         let id = ExportNodeId(order);
+        if occurrence.is_recorded() {
+            self.recorded.insert(occurrence, id);
+        }
         self.nodes.push(ExportNode {
             id,
             parent,
@@ -1245,6 +1254,90 @@ mod tests {
             "parents come before their children"
         );
         assert_eq!(root.index(), 0);
+    }
+
+    #[test]
+    fn a_failed_node_does_not_reserve_its_occurrence_or_its_id() {
+        let mut builder = ExportSceneBuilder::new();
+        let definition = builder
+            .definition(
+                imported("step.product_definition#5"),
+                None,
+                ExportProvenance::default(),
+                ExportGeometry::Structural,
+            )
+            .expect("a definition");
+        let occurrence = ExportOccurrence::Occurrence(OccurrenceId::new());
+
+        assert!(
+            builder
+                .node(
+                    None,
+                    ExportDefinitionId(7),
+                    ExportTransform::IDENTITY,
+                    Some("Missing definition".to_owned()),
+                    None,
+                    occurrence,
+                )
+                .is_err(),
+            "the definition has not been added"
+        );
+        assert!(
+            builder
+                .node(
+                    Some(ExportNodeId(9)),
+                    definition,
+                    ExportTransform::IDENTITY,
+                    Some("Missing parent".to_owned()),
+                    None,
+                    occurrence,
+                )
+                .is_err(),
+            "the parent has not been added"
+        );
+        assert!(
+            builder
+                .node(
+                    None,
+                    definition,
+                    ExportTransform::IDENTITY,
+                    Some("Broken colour".to_owned()),
+                    Some([-1.0, 0.0, 0.0]),
+                    occurrence,
+                )
+                .is_err(),
+            "a negative intensity is not a colour"
+        );
+
+        let first = builder
+            .node(
+                None,
+                definition,
+                ExportTransform::IDENTITY,
+                Some("First".to_owned()),
+                None,
+                occurrence,
+            )
+            .expect("a refused attempt must not keep the identity");
+        assert_eq!(first.index(), 0, "a refused attempt must not keep an id");
+
+        assert!(
+            builder
+                .node(
+                    None,
+                    definition,
+                    ExportTransform::IDENTITY,
+                    Some("Again".to_owned()),
+                    None,
+                    occurrence,
+                )
+                .is_err(),
+            "the successful insert is the one that occupies the identity"
+        );
+        let scene = builder.finish().expect("the first placement remains");
+        assert_eq!(scene.nodes().len(), 1);
+        assert_eq!(scene.nodes()[0].id, first);
+        assert_eq!(scene.nodes()[0].occurrence, occurrence);
     }
 
     #[test]

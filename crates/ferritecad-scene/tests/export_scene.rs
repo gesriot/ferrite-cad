@@ -2461,6 +2461,180 @@ fn one_identity_naming_two_placements_is_refused_at_the_export_boundary_too() {
         .expect("a second unrecorded placement");
 }
 
+#[test]
+fn both_recorded_identity_domains_refuse_a_second_claim() {
+    let mut builder = ExportSceneBuilder::new();
+    let definition = builder
+        .definition(
+            ExportSource::Body {
+                object: ObjectId::new(),
+            },
+            Some("Part".to_owned()),
+            ExportProvenance::default(),
+            ExportGeometry::Structural,
+        )
+        .expect("a definition");
+    let object = ExportOccurrence::Object(ObjectId::new());
+    let occurrence = ExportOccurrence::Occurrence(OccurrenceId::new());
+    builder
+        .node(
+            None,
+            definition,
+            ExportTransform::IDENTITY,
+            Some("Object".to_owned()),
+            None,
+            object,
+        )
+        .expect("the first object placement");
+    builder
+        .node(
+            None,
+            definition,
+            ExportTransform::IDENTITY,
+            Some("Occurrence".to_owned()),
+            None,
+            occurrence,
+        )
+        .expect("the first occurrence placement");
+
+    let object_again = builder
+        .node(
+            None,
+            definition,
+            ExportTransform::IDENTITY,
+            Some("Object again".to_owned()),
+            None,
+            object,
+        )
+        .expect_err("Object is its own domain");
+    assert_eq!(object_again.kind(), ErrorKind::Topology, "{object_again}");
+    assert!(
+        object_again.to_string().contains("node 0") && object_again.to_string().contains("node 2"),
+        "{object_again}"
+    );
+
+    let occurrence_again = builder
+        .node(
+            None,
+            definition,
+            ExportTransform::IDENTITY,
+            Some("Occurrence again".to_owned()),
+            None,
+            occurrence,
+        )
+        .expect_err("Occurrence is its own domain");
+    assert_eq!(
+        occurrence_again.kind(),
+        ErrorKind::Topology,
+        "{occurrence_again}"
+    );
+    assert!(
+        occurrence_again.to_string().contains("node 1")
+            && occurrence_again.to_string().contains("node 2"),
+        "{occurrence_again}"
+    );
+    assert_eq!(
+        builder.finish().expect("two placements").nodes().len(),
+        2,
+        "a refused duplicate must not add a node"
+    );
+}
+
+#[test]
+fn the_same_sixteen_bytes_in_different_domains_are_not_a_collision() {
+    let bytes = ObjectId::new().to_bytes();
+    let object = ExportOccurrence::Object(ObjectId::from_bytes(bytes).expect("UUIDv7"));
+    let occurrence = ExportOccurrence::Occurrence(OccurrenceId::from_bytes(bytes).expect("UUIDv7"));
+    assert_ne!(
+        object, occurrence,
+        "the typed domain is part of the identity"
+    );
+
+    let mut builder = ExportSceneBuilder::new();
+    let definition = builder
+        .definition(
+            ExportSource::Body {
+                object: ObjectId::new(),
+            },
+            None,
+            ExportProvenance::default(),
+            ExportGeometry::Structural,
+        )
+        .expect("a definition");
+    builder
+        .node(
+            None,
+            definition,
+            ExportTransform::IDENTITY,
+            Some("Native".to_owned()),
+            None,
+            object,
+        )
+        .expect("an Object identity");
+    builder
+        .node(
+            None,
+            definition,
+            ExportTransform::IDENTITY,
+            Some("Imported".to_owned()),
+            None,
+            occurrence,
+        )
+        .expect("the same bytes as an Occurrence");
+    let scene = builder.finish().expect("two domains, two placements");
+    assert_eq!(scene.nodes().len(), 2);
+    assert_eq!(scene.nodes()[0].occurrence, object);
+    assert_eq!(scene.nodes()[1].occurrence, occurrence);
+}
+
+#[test]
+fn nodes_keep_the_order_they_were_added_in() {
+    let mut builder = ExportSceneBuilder::new();
+    let definition = builder
+        .definition(
+            ExportSource::Body {
+                object: ObjectId::new(),
+            },
+            None,
+            ExportProvenance::default(),
+            ExportGeometry::Structural,
+        )
+        .expect("a definition");
+    let expected = [
+        ExportOccurrence::Occurrence(OccurrenceId::new()),
+        ExportOccurrence::Unrecorded,
+        ExportOccurrence::Object(ObjectId::new()),
+        ExportOccurrence::Unrecorded,
+        ExportOccurrence::Occurrence(OccurrenceId::new()),
+        ExportOccurrence::Object(ObjectId::new()),
+    ];
+    for (index, occurrence) in expected.iter().copied().enumerate() {
+        let id = builder
+            .node(
+                None,
+                definition,
+                ExportTransform::IDENTITY,
+                Some(format!("n{index}")),
+                None,
+                occurrence,
+            )
+            .expect("each placement is distinct or unrecorded");
+        assert_eq!(id.index(), index);
+    }
+
+    let scene = builder.finish().expect("every definition is placed");
+    let nodes = scene.nodes();
+    assert_eq!(nodes.len(), expected.len());
+    for (index, occurrence) in expected.iter().copied().enumerate() {
+        assert_eq!(nodes[index].occurrence, occurrence);
+        assert_eq!(
+            nodes[index].order,
+            u32::try_from(index).expect("a handful of nodes")
+        );
+        assert_eq!(nodes[index].display_name, Some(format!("n{index}")));
+    }
+}
+
 /// Rewrites the stored scene of an imported object at a chosen layout.
 fn rewrite_stored_scene<S: serde::Serialize>(
     path: &Path,
