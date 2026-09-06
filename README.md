@@ -40,6 +40,10 @@ extrusion and the topology references naming that extrusion's faces. With Open
 CASCADE present, `rebuild --cold` evaluates it into geometry and `export-stl`
 writes it out; without one, the document still round-trips on its own.
 
+What the window can do, what the command line can do, and which library actually
+owns the work — including recipes with expected exit codes — is
+[`docs/cli-capabilities.md`](docs/cli-capabilities.md).
+
 ## Exporting to FBX
 
 ```sh
