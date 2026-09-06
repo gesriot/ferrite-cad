@@ -11,8 +11,13 @@
 # away, does the layout start at all, and is what it says coming from the files
 # beside it?
 #
-# Four things have to be true at once, and each of them fails in a way that
+# Five things have to be true at once, and each of them fails in a way that
 # looks like success if it is not asked about separately.
+#
+#   On macOS the layout has to be an application. Everything else here starts a
+#   binary by naming it on a command line, and a directory that is missing the
+#   one file the desktop reads passes all of it while starting nothing when it
+#   is opened.
 #
 #   The environment must really be empty. LD_LIBRARY_PATH, DYLD_LIBRARY_PATH
 #   and a PATH still holding a build directory are each enough to make a
@@ -44,8 +49,11 @@
 set -euo pipefail
 
 RUNTIME_PROBE_TOOL='check-staged-layout'
+MACOS_BUNDLE_TOOL='check-staged-layout'
 # shellcheck source=tools/runtime-probe.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime-probe.sh"
+# shellcheck source=tools/macos-bundle.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/macos-bundle.sh"
 
 platform=''
 staging=''
@@ -152,6 +160,33 @@ viewer="$staging/$expected_bin/ferritecad-viewer$suffix"
 cli="$staging/$expected_bin/ferritecad$suffix"
 [ -f "$viewer" ] || die "no staged viewer at $viewer"
 [ -f "$cli" ] || die "no staged command line tool at $cli"
+
+# And on macOS, that the layout is an application the desktop can start rather
+# than a directory whose name ends in `.app`. Everything else in this file
+# names an executable on a command line, which is what a measurement needs and
+# is exactly the question a user opening the delivery does not ask. The version
+# is not compared here: this gate has no authoritative one, and the gate on the
+# extracted archive, which does, compares it there.
+if [ "$platform" = macos ]; then
+    macos_bundle_check "$staging/FerriteCAD.app" \
+        || die 'the staged layout is not an application bundle'
+    [ "$macos_bundle_executable" = "$(basename "$viewer")" ] \
+        || die "the bundle says the application is $macos_bundle_executable and the staged \
+viewer is $(basename "$viewer")"
+    fact "layout macos-bundle executable=$macos_bundle_executable"
+
+    # And that the ad-hoc signature the stager wrote still answers for the
+    # bundle. Every image in here had its load commands rewritten and was
+    # signed again afterwards; the bundle was signed after that, and a seal
+    # that had stopped covering the shipped libraries would verify at the top
+    # level and be wrong underneath.
+    macos_bundle_signed_ok "$staging/FerriteCAD.app" "$work/codesign.txt"
+    case $? in
+        0) fact "layout macos-bundle ad-hoc-signature=verified" ;;
+        2) die 'there is no codesign on this host, so the staged bundle cannot be verified' ;;
+        *) die 'the staged bundle does not verify against its own ad-hoc signature' ;;
+    esac
+fi
 
 case "$platform" in
     macos)   planegcs="$staging/$expected_lib/libplanegcs.dylib" ;;

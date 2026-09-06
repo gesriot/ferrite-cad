@@ -1,12 +1,13 @@
 <!-- SPDX-License-Identifier: MIT -->
 # The runtime closure of a FerriteCAD release
 
-**Status:** measured on Linux, macOS and Windows by the
+**Status:** historical baseline measured on Linux, macOS and Windows by the
 [combined runtime layout](../.github/workflows/runtime-layout.yml) workflow in
-[run 32666664382](https://github.com/gesriot/ferrite-cad/actions/runs/32666664382),
-which is where every number below comes from. A candidate layout has been chosen
-and started from a clean environment on all three. Nothing here is a release, and
-no packager exists yet: that is section 21A-2b2b.
+[run 32666664382](https://github.com/gesriot/ferrite-cad/actions/runs/32666664382).
+The counts and sizes below describe that run. Packaging and desktop launch have
+since been implemented; §23B adds `Info.plist` and `CodeResources` to the macOS
+layout. For the current build and launch instructions, see
+[the application section in README](../README.md#an-application-you-can-open-without-a-terminal).
 
 ## Why this needed its own slice
 
@@ -187,9 +188,17 @@ afterwards. That is measured and recorded here because it is a fact about
 running the layout at all. It is not a notarisation claim and not a distribution
 signature, and this slice makes neither.
 
-The candidate bundle has no `Info.plist`. It is started by path, which is what
-the measurement needs; whether a released bundle needs one is a packaging
-question and belongs to 21A-2b2b.
+The candidate bundle had no `Info.plist` while this was only a measurement: it
+is started by path, which is all a measurement needs. §23B answered the
+packaging question the paragraph above deferred, and the answer was that a
+directory shaped like a bundle is not one. With two executables beside each
+other in `Contents/MacOS` and nothing saying which is the application,
+LaunchServices starts neither — `open` returns success, no process appears and
+nothing is logged. The stager now writes `Contents/Info.plist` naming
+`ferritecad-viewer`, and then signs the bundle ad hoc, because once that file
+exists `codesign` reads the directory as a bundle and a signature sealing no
+resources stops verifying. Both files are delivered files with an owner, a
+digest in the package manifest and a place in the extracted archive.
 
 **Windows.** `bin/`, with the executables and the DLLs beside them, which is the
 only layout the loader resolves without an environment variable. There is no run

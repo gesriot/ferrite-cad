@@ -175,8 +175,10 @@ cargo run -p ferritecad-app --bin ferritecad-viewer
 ```
 
 Opens an empty window. Open chooses a `.fcad` through the system dialog; cancelling
-leaves the window empty. Export is offered once a document is on screen. Double-click
-from Finder and the rest of application packaging are still the next step.
+leaves the window empty. Export is offered once a document is on screen. On macOS
+the same window opens by double-clicking a built `FerriteCAD.app`, with no terminal
+involved; [An application you can open without a terminal](#an-application-you-can-open-without-a-terminal)
+is how one is built.
 
 ```sh
 cargo run -p ferritecad-app --bin ferritecad-viewer -- part.fcad
@@ -476,6 +478,89 @@ those describe the document that did open, and this describes the one that did
 not. Asking for another document takes it down at once, and a document that
 opens, or a failure with nothing of this kind to say, replaces it. A failure
 that is not about constraints is still the one line it has always been.
+
+## An application you can open without a terminal
+
+On macOS the delivered layout is a real application bundle: double-clicking
+`FerriteCAD.app` opens the empty window, and `Open` chooses a `.fcad` from
+there. Everything below was run on an Apple silicon machine with the pinned
+Open CASCADE installed under `vendor/install` and the pinned planegcs built
+into `vendor/planegcs`, which are what [`docs/build-occt.md`](docs/build-occt.md)
+and [`docs/build-planegcs.md`](docs/build-planegcs.md) produce.
+
+The packaging checks use Python 3, jq and GNU tar (`gtar` on macOS). These are
+build tools; the finished application needs none of them to start.
+
+```sh
+# The two product binaries, against the pinned kernel and the pinned solver.
+FERRITECAD_REQUIRE_OCCT=1 FERRITECAD_REQUIRE_PLANEGCS=1 \
+FCAD_PLANEGCS_DIR="$PWD/vendor/planegcs" \
+OpenCASCADE_DIR="$PWD/vendor/install/lib/cmake/opencascade" \
+cargo build --release --features planegcs \
+  -p ferritecad-app --bin ferritecad-viewer \
+  -p ferritecad-cli --bin ferritecad
+
+# What each of them loads.
+staging="${TMPDIR:-/tmp}/ferritecad-layout"
+for half in viewer:ferritecad-viewer cli:ferritecad; do
+  tools/runtime-closure.sh --platform macos --label "${half%%:*}" \
+    --binary "$PWD/target/release/${half#*:}" \
+    --search "$PWD/vendor/install/lib" --search "$PWD/vendor/planegcs" \
+    --output "closure-${half%%:*}.txt"
+done
+
+# Laid out as a bundle: the executables, the libraries they need, the
+# Info.plist that says which of the two the desktop starts, and an ad-hoc
+# signature over the result.
+tools/stage-runtime-layout.sh --platform macos --staging "$staging" \
+  --occt-lib-dir "$PWD/vendor/install/lib" --planegcs-dir "$PWD/vendor/planegcs" \
+  --product-version "$(jq -r .productVersion sbom/native/native-assets-inventory.json)" \
+  --gui-executable ferritecad-viewer \
+  --closure closure-viewer.txt --closure closure-cli.txt \
+  --executable "$PWD/target/release/ferritecad-viewer" \
+  --executable "$PWD/target/release/ferritecad"
+
+# One versioned archive, and then the archive checked where it landed: the
+# staging directory has to be gone first, or a package that cannot stand on
+# its own passes.
+out="$HOME/Desktop/FerriteCAD Local Build"
+tools/package-release.sh --platform macos --staging "$staging" \
+  --output-dir "$out" --source-revision "$(git rev-parse HEAD)"
+rm -rf "$staging"
+tools/check-release-package.sh --platform macos \
+  --archive "$out/ferritecad-0.0.1-aarch64-apple-darwin.tar.gz" \
+  --extract-to "$out/extracted" \
+  --document crates/ferritecad-fixtures/plate/plate.fcad \
+  --forbidden "$staging" --output "$out/package-facts.txt"
+```
+
+What that leaves is
+`~/Desktop/FerriteCAD Local Build/extracted/ferritecad-0.0.1-aarch64-apple-darwin/FerriteCAD.app`.
+Open it from the Finder. The directory it sits in may be moved or renamed and
+may have spaces in its name; the bundle finds its own libraries and needs no
+environment variable, no `PATH` entry and no working directory of yours. The
+archive beside it is the thing to copy to another machine.
+
+The command line tool travels in the same bundle, at
+`FerriteCAD.app/Contents/MacOS/ferritecad`, and works from anywhere:
+
+```sh
+"$out/extracted/ferritecad-0.0.1-aarch64-apple-darwin/FerriteCAD.app/Contents/MacOS/ferritecad" \
+  export-fbx part.fcad --output part.fbx
+```
+
+What this is not. There is no installer and no update mechanism. The signature
+is ad hoc: it is what lets a bundle whose load commands were rewritten start at
+all, and it is not a Developer ID signature and not notarised, so a copy that
+arrives with a quarantine attribute — downloaded rather than built or copied
+locally — is Gatekeeper's to refuse. Double-clicking a `.fcad` does not open it
+in FerriteCAD: the bundle deliberately declares no document type, because
+handing the application a file that way is an event it does not yet handle.
+Open the application and use `Open`.
+
+Linux and Windows have no launcher in this slice. Their layouts are the same
+`bin/` and `lib/` directories the runtime-layout workflow measures, and the
+viewer there is started by naming it.
 
 ## Which sketch solver this build has
 

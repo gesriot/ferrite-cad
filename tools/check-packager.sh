@@ -13,7 +13,8 @@
 # directory, and waiting for a runner to build Open CASCADE before asking about
 # them would mean asking about them roughly never.
 #
-# So this builds a staging directory with the real names and fake bytes, runs
+# So this builds a staging directory with the real names and invented bytes -
+# tools/package/fixture.sh, which the release set builder's gate shares - runs
 # the real packager over it, and then breaks the result in one specific way at
 # a time and requires the real gate to say which way. Nothing here runs a
 # product binary: --no-execute says so in the facts, and the workflow's
@@ -28,9 +29,12 @@
 set -euo pipefail
 
 PACKAGE_TOOL='check-packager'
+MACOS_BUNDLE_TOOL='check-packager'
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tools/package/lib.sh
 . tools/package/lib.sh
+# shellcheck source=tools/package/fixture.sh
+. tools/package/fixture.sh
 
 platforms=("${NATIVE_PLATFORMS[@]}")
 while [ $# -gt 0 ]; do
@@ -110,33 +114,6 @@ expect_fail() { # description expected-substring command...
 }
 
 # ---------------------------------------------------------------------------
-# A staging directory with the real names in it.
-#
-# The names come from the inventory rather than from a list here, so a target
-# that gains or loses a library is a fixture that gains or loses it too. The
-# bytes are made up and are not pretending otherwise: what is being gated is
-# the arithmetic over the directory, and the three-platform workflow packs the
-# real ones.
-# ---------------------------------------------------------------------------
-
-make_fixture() { # platform directory
-    local platform="$1" directory="$2" triple path
-    triple="$(package_triple_for "$platform")"
-    rm -rf "$directory"
-    jq -r --arg t "$triple" \
-        '.targets[] | select(.triple == $t) | .stagedFiles[] | .path' \
-        "$NATIVE_INVENTORY" | native_strip_cr | LC_ALL=C sort > "$work/fixture-paths"
-    [ -s "$work/fixture-paths" ] || package_die "the inventory stages nothing for $triple"
-    while IFS= read -r path; do
-        mkdir -p "$directory/$(dirname "$path")"
-        # Distinct per path, so a gate that mixed two files up would see two
-        # different digests rather than one that happened to match.
-        printf 'fixture bytes for %s\n' "$path" > "$directory/$path"
-        chmod 755 "$directory/$path"
-    done < "$work/fixture-paths"
-}
-
-# ---------------------------------------------------------------------------
 # One platform, from a staging directory to an archive and then to every way
 # the archive can be wrong.
 # ---------------------------------------------------------------------------
@@ -153,7 +130,7 @@ gate_platform() { # platform
     local scratch="$work/$platform/scratch"
     rm -rf "${work:?}/$platform"
     mkdir -p "$out" "$scratch"
-    make_fixture "$platform" "$staging"
+    package_fixture_staging "$platform" "$staging" "$version"
 
     echo "== $platform ($triple)"
 
@@ -423,6 +400,180 @@ gate_platform() { # platform
     break_archive mutate_wrong_sbom
     expect_fail "another target's product SBOM inside the package is caught" \
         'byte for byte' check_bad
+
+    # ---- the bundle, on the platform that has one -------------------------
+    #
+    # Every case above is about a file's bytes or a file's owner. These are
+    # about whether the delivery is an application: a package whose Info.plist
+    # is gone, unreadable, or naming an executable that is not the application
+    # is a package that is internally consistent, passes every digest, and
+    # starts nothing when a recipient opens it. A compile error would not be
+    # evidence of any of that, so each is packed into a real archive and handed
+    # to the real gate.
+    #
+    # The manifest is corrected after each edit rather than left disagreeing,
+    # so that the gate fails on the bundle rather than on a digest and the case
+    # tests what it says it does.
+
+    local plist='' candidate cli_binary
+    while IFS= read -r candidate; do
+        case "$candidate" in *"/$MACOS_BUNDLE_PLIST") plist="$candidate" ;; esac
+    done < <(native_bundle_files_for "$platform")
+    if [ -n "$plist" ]; then
+        cli_binary="$(jq -r '.productRoots[] | select(.package == "ferritecad-cli") | .binary' \
+            "$NATIVE_INVENTORY" | native_strip_cr)"
+        rehash() { # relative-path
+            edit_manifest "$(printf '(.runtimeFiles[] | select(.path == "%s")) |= (.sha256 = "%s" | .size = %s)' \
+                "$1" "$(package_sha256 "$tree/$root/$1")" "$(package_size "$tree/$root/$1")")"
+        }
+
+        mutate_no_plist() {
+            rm -f "$tree/$root/$plist"
+            edit_manifest "$(printf '.runtimeFiles |= map(select(.path != "%s"))' "$plist")"
+        }
+        mutate_bad_plist() {
+            printf 'this is not a property list\n' > "$tree/$root/$plist"
+            rehash "$plist"
+        }
+        # Still a property list, and still not an application: plutil is only
+        # on one of the three hosts this gate runs on, so the case that has to
+        # read the same everywhere is the one where the document parses and
+        # the answer is missing.
+        mutate_no_key() {
+            awk '/<key>CFBundleExecutable<\/key>/ { getline; next } { print }' \
+                "$tree/$root/$plist" > "$work/plist.xml"
+            mv "$work/plist.xml" "$tree/$root/$plist"
+            rehash "$plist"
+        }
+        mutate_absent_exe() {
+            awk '/<key>CFBundleExecutable<\/key>/ { print; getline; print "\t<string>nothing-is-called-this</string>"; next } { print }' \
+                "$tree/$root/$plist" > "$work/plist.xml"
+            mv "$work/plist.xml" "$tree/$root/$plist"
+            rehash "$plist"
+        }
+        mutate_other_exe() {
+            awk -v other="$cli_binary" \
+                '/<key>CFBundleExecutable<\/key>/ { print; getline; print "\t<string>" other "</string>"; next } { print }' \
+                "$tree/$root/$plist" > "$work/plist.xml"
+            mv "$work/plist.xml" "$tree/$root/$plist"
+            rehash "$plist"
+        }
+
+        # A key in unrelated nested metadata is not a launch instruction.
+        # Put it first so a tag scanner picks it instead of the root key.
+        mutate_nested_exe() {
+            awk -v other="$cli_binary" '
+                /^<dict>/ {
+                    print
+                    print "<key>ReviewMetadata</key><dict>"
+                    print "<key>CFBundleExecutable</key><string>ferritecad-viewer</string>"
+                    print "</dict>"
+                    next
+                }
+                /<key>CFBundleExecutable<\/key>/ {
+                    print; getline; print "<string>" other "</string>"; next
+                }
+                { print }
+            ' "$tree/$root/$plist" > "$work/plist.xml"
+            mv "$work/plist.xml" "$tree/$root/$plist"
+            rehash "$plist"
+        }
+        mutate_duplicate_exe() {
+            awk -v other="$cli_binary" '
+                /<key>CFBundleExecutable<\/key>/ {
+                    print; getline; print
+                    print "<key>CFBundleExecutable</key><string>" other "</string>"
+                    next
+                }
+                { print }
+            ' "$tree/$root/$plist" > "$work/plist.xml"
+            mv "$work/plist.xml" "$tree/$root/$plist"
+            rehash "$plist"
+        }
+        mutate_nested_metadata() {
+            awk -v other="$cli_binary" '
+                /^<dict>/ {
+                    print
+                    print "<key>ReviewMetadata</key><dict>"
+                    print "<key>CFBundleExecutable</key><string>" other "</string>"
+                    print "</dict>"
+                    next
+                }
+                { print }
+            ' "$tree/$root/$plist" > "$work/plist.xml"
+            mv "$work/plist.xml" "$tree/$root/$plist"
+            rehash "$plist"
+        }
+        mutate_unclosed_plist() {
+            sed '/<\/plist>/d' "$tree/$root/$plist" > "$work/plist.xml"
+            mv "$work/plist.xml" "$tree/$root/$plist"
+            rehash "$plist"
+        }
+        mutate_control_in_exe() {
+            awk '
+                /<key>CFBundleExecutable<\/key>/ {
+                    print; getline
+                    sub(/<\/string>/, "")
+                    print; print "</string>"; next
+                }
+                { print }
+            ' "$tree/$root/$plist" > "$work/plist.xml"
+            mv "$work/plist.xml" "$tree/$root/$plist"
+            rehash "$plist"
+        }
+        mutate_binary_plist() {
+            python3 - "$tree/$root/$plist" <<'PYTHON'
+import plistlib
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+path.write_bytes(plistlib.dumps(plistlib.loads(path.read_bytes()), fmt=plistlib.FMT_BINARY))
+PYTHON
+            rehash "$plist"
+        }
+
+        break_archive mutate_no_plist
+        expect_fail 'a package whose bundle carries no Info.plist is caught' \
+            'carries no' check_bad
+
+        break_archive mutate_bad_plist
+        expect_fail 'a package whose Info.plist is not a property list is caught' \
+            'not an application bundle' check_bad
+
+        break_archive mutate_no_key
+        expect_fail 'a bundle that says nothing about which executable to start is caught' \
+            'says nothing for CFBundleExecutable' check_bad
+
+        break_archive mutate_absent_exe
+        expect_fail 'a bundle naming an executable the package does not carry is caught' \
+            'no such file' check_bad
+
+        break_archive mutate_other_exe
+        expect_fail 'a bundle naming the other executable of the delivery is caught' \
+            'the bundle says the application is' check_bad
+
+        break_archive mutate_nested_exe
+        expect_fail 'a nested executable key cannot mask the wrong root executable' \
+            'the bundle says the application is' check_bad
+
+        break_archive mutate_duplicate_exe
+        expect_fail 'duplicate executable keys are refused rather than choosing one' \
+            'duplicate dictionary key' check_bad
+
+        break_archive mutate_nested_metadata
+        expect_pass 'unrelated nested executable metadata does not change the root application' check_bad
+
+        break_archive mutate_unclosed_plist
+        expect_fail 'unclosed XML with all required keys is still not a property list' \
+            'not a readable property list' check_bad
+
+        break_archive mutate_control_in_exe
+        expect_fail 'a newline in the executable is refused rather than trimmed' \
+            'control character in CFBundleExecutable' check_bad
+
+        break_archive mutate_binary_plist
+        expect_pass 'the same bundle contract in a binary plist is accepted' check_bad
+    fi
 
     # ---- archives no packager would write, and the gate must still refuse ---
     #
