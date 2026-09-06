@@ -16431,7 +16431,7 @@ mod tests {
         );
         assert_eq!(
             loads.status().line(),
-            "gone.fcad: invalid input: no such document",
+            "Could not open gone.fcad: invalid input: no such document",
             "the ordinary line about the ordinary failure changed"
         );
     }
@@ -16590,7 +16590,7 @@ mod tests {
         // grew it would be a second place the wording lives.
         let line = loads.status().line();
         assert!(
-            line.starts_with("impossible.fcad: "),
+            line.starts_with("Could not open impossible.fcad: "),
             "the line stopped being one sentence about one file: {line}"
         );
         // The sentence a person reads on screen is written for a screen. A
