@@ -171,10 +171,18 @@ the model in front of you is still the model.
 ## Looking at a document
 
 ```sh
+cargo run -p ferritecad-app --bin ferritecad-viewer
+```
+
+Opens an empty window. Open chooses a `.fcad` through the system dialog; cancelling
+leaves the window empty. Export is offered once a document is on screen. Double-click
+from Finder and the rest of application packaging are still the next step.
+
+```sh
 cargo run -p ferritecad-app --bin ferritecad-viewer -- part.fcad
 ```
 
-The viewer opens the document read-only, rebuilds it, and draws it: orbit, pan
+The viewer opens that document read-only, rebuilds it, and draws it: orbit, pan
 and zoom, the standard views, and a click selects what is under it and describes
 it in portable terms. Clicking a face of a native body the document has a
 durable name for selects that face, and the inspector says what the document

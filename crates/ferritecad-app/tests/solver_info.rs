@@ -332,3 +332,30 @@ fn a_document_argument_still_reaches_the_window() {
         answer.said()
     );
 }
+
+/// No arguments still go to the window, and not to usage or the diagnostic.
+///
+/// Linux-only for the same reason as a named document: with no display the
+/// viewer gets as far as asking for a window and fails there. That is the
+/// evidence wanted. On a machine with a display it would open an empty window
+/// and wait.
+#[cfg(target_os = "linux")]
+#[test]
+fn no_arguments_still_reach_the_window() {
+    let answer = run(&[]);
+    assert_ne!(
+        answer.code, EXIT_USAGE,
+        "an empty command line was refused as a usage error\nstderr:\n{}",
+        answer.stderr
+    );
+    assert_ne!(
+        answer.code, EXIT_NO_SOLVER,
+        "an empty command line was answered as a question about the solver\nstdout:\n{}",
+        answer.stdout
+    );
+    assert!(
+        !answer.said().contains("sketch solver"),
+        "opening an empty window answered a question nobody asked:\n{}",
+        answer.said()
+    );
+}
