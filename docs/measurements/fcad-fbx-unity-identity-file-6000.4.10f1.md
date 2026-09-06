@@ -37,7 +37,7 @@ Nine imported objects in `fcad-measured.fbx`, four of which place one shared
 definition. Every question below was asked of the real editor by the probe and
 again from outside by
 [`verify_file.py`](../../tools/unity-identity-file/scripts/verify_file.py), and
-every one of them came back true. The probe performed 78 checks and both clean
+every one of them came back true. The probe performed 82 checks and both clean
 projects produced byte-identical canonical reports.
 
 | question | answer |
@@ -154,8 +154,9 @@ bytes": the file the channel is asserted on replaced by the one that has no
 channel; the control of the pair replaced by a file whose designations really
 did move; the property callback that records nothing; the rename variant
 replaced by a rename that never happened; the join across the rename made by
-name instead of by identity; and the editor shown bytes the production writer
-did not produce. All six killed; a non-compiling probe is refused and is not
+name instead of by identity; the editor shown bytes the production writer
+did not produce; and a previous project's capture reused when the new import
+publishes none. All seven killed; a non-compiling probe is refused and is not
 credited as a kill.
 
 Every one of those is a defect the measurement must *notice*, rather than a
@@ -169,6 +170,27 @@ is the half CI runs on every push: it rebuilds the decision record from the
 recorded report, compares it with the committed one, runs the semantic
 campaign, and refuses if a measurement left anything Unity produced inside the
 repository.
+
+## Review: fresh property captures
+
+The original probe stored captures in the global temporary directory under an
+asset-path key. Independent review reproduced a false success: after one good
+project, another fresh project with the capture write removed still passed all
+78 checks and produced a byte-identical report. Deleting the Unity project had
+not deleted this other cache.
+
+Captures now live under that project's `Library`, are cleared before each
+import, and must be published again by the measured import. This also separates
+the final measured import from the preliminary imports used to configure the
+importer. The same no-write mutant now fails with `the measured import
+published no fresh property capture`. The regression campaign first runs a
+successful baseline and then applies the mutant with the expected-report
+comparison disabled; it requires that named failure, not a compile error.
+
+Two fresh projects passed again. The only change in the report and decision is
+the check count, 78 to 82: one new check per file. All twelve answers, measured
+file IDs and production bytes remain unchanged. The reproduction transcript is
+in [`review-capture.log`](../../tools/unity-identity-file/evidence/review-capture.log).
 
 ## Raw measurement
 

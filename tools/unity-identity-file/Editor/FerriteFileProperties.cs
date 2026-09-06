@@ -22,11 +22,21 @@ using UnityEngine;
 
 internal sealed class FerriteFileProperties : AssetPostprocessor
 {
-    // Where the probe reads what this callback saw, one file per asset path.
+    // This project's Library is removed with the temporary project. A global
+    // temp file keyed only by asset path would let a later project read a
+    // previous project's successful capture when its own callback stopped.
     internal static string CachePath(string assetPath)
     {
         string safe = assetPath.Replace('/', '_').Replace('\\', '_').Replace(':', '_');
-        return Path.Combine(Path.GetTempPath(), "ferritecad-file-props-" + safe + ".tsv");
+        return Path.GetFullPath(Path.Combine("Library", "FerriteCADFileIdentity", safe + ".tsv"));
+    }
+
+    internal static void BeginCapture(string assetPath)
+    {
+        string cache = CachePath(assetPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(cache));
+        File.Delete(cache);
+        Seen.Clear();
     }
 
     private static readonly Dictionary<GameObject, List<KeyValuePair<string, string>>> Seen =
@@ -49,7 +59,9 @@ internal sealed class FerriteFileProperties : AssetPostprocessor
     {
         StringBuilder text = new StringBuilder();
         Walk(root, "0", text);
-        File.WriteAllText(CachePath(assetPath), text.ToString(), new UTF8Encoding(false));
+        string cache = CachePath(assetPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(cache));
+        File.WriteAllText(cache, text.ToString(), new UTF8Encoding(false));
         Seen.Clear();
     }
 

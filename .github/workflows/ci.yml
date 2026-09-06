@@ -82,7 +82,7 @@ jobs:
       # channel in the shipped file, minus the editor. The decision record is
       # rebuilt from the recorded report and compared with the committed one,
       # and the semantic mutation campaign is run against the real verifier —
-      # including the three metamorphic controls that must survive, because a
+      # including the four metamorphic controls that must survive, because a
       # record that refused them would be asserting a local-file-identifier
       # stability no property in an FBX can deliver.
       - run: tools/unity-identity-file/scripts/check_file_record.sh

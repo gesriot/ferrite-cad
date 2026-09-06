@@ -84,6 +84,7 @@ run_measurement() {
 
 expect_refusal() {
   local name="$1"
+  local reason="${2:-}"
   set +e
   run_measurement >"$logs/mutant.log" 2>&1
   local status=$?
@@ -95,6 +96,10 @@ expect_refusal() {
   fi
   if grep -q 'error CS' "$tool/measurement-output"/unity-file-1.log 2>/dev/null; then
     echo "compile refusal (not a runtime kill): $name" >&2
+    exit 1
+  fi
+  if [ -n "$reason" ] && ! grep -Fq "$reason" "$tool/measurement-output"/unity-file-1.log; then
+    echo "refused for the wrong reason: $name (expected: $reason)" >&2
     exit 1
   fi
   echo "killed against the real editor: $name"
@@ -156,6 +161,17 @@ replace_once "$properties" \
   '        Seen.Remove(target);'
 expect_refusal the_property_callback_records_nothing
 
+# A successful previous project must not supply the capture a new import
+# failed to publish. This survived before the review fix: the global temp
+# cache supplied every value and all 78 original checks still passed.
+run_measurement >"$logs/capture-baseline.log" 2>&1
+begin "$properties"
+replace_once "$properties" \
+  '        File.WriteAllText(cache, text.ToString(), new UTF8Encoding(false));' \
+  '        // Mutant: no property capture is published by this import.'
+expect_refusal a_previous_project_supplies_the_missing_capture \
+  'the measured import published no fresh property capture'
+
 # The rename variant is the measured file, so the one question the channel
 # exists to answer is asked of a rename that never happened.
 begin "$probe"
@@ -179,6 +195,8 @@ expect_refusal the_rename_join_is_by_name_instead_of_by_identity
 # notice is the runner's comparison with the recorded digests, before Unity is
 # started at all.
 begin "$runner"
+# The replacement is shell source for the runner, expanded only in that run.
+# shellcheck disable=SC2016
 replace_once "$runner" \
   '"$artefacts" "$staging" | tee "$output/artefacts.log"' \
   $'"$artefacts" "$staging" | tee "$output/artefacts.log"\nprintf \'\\n\' >>"$staging/fcad-measured.fbx"'

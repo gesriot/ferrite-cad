@@ -367,6 +367,7 @@ public static class FerriteFileIdentity
         // custom properties sees the tree *before* the sort and the finished
         // asset is the tree *after* it, and a measurement whose two halves are
         // two different orderings of one import is measuring its own bookkeeping.
+        FerriteFileProperties.BeginCapture(assetPath);
         AssetDatabase.ImportAsset(
             assetPath,
             ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport);
@@ -376,6 +377,7 @@ public static class FerriteFileIdentity
         if (importer != null && importer.sortHierarchyByName)
         {
             importer.sortHierarchyByName = false;
+            FerriteFileProperties.BeginCapture(assetPath);
             importer.SaveAndReimport();
         }
 
@@ -399,6 +401,7 @@ public static class FerriteFileIdentity
         Application.logMessageReceived += capture;
         try
         {
+            FerriteFileProperties.BeginCapture(assetPath);
             AssetDatabase.ImportAsset(
                 assetPath,
                 ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport);
@@ -407,6 +410,10 @@ public static class FerriteFileIdentity
         {
             Application.logMessageReceived -= capture;
         }
+
+        Require(
+            File.Exists(FerriteFileProperties.CachePath(assetPath)),
+            "the measured import published no fresh property capture for " + name);
 
         FileReport report = new FileReport
         {

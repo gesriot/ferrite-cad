@@ -12,13 +12,14 @@ The real production bytes. `fbx_gate_artefacts` writes them through
 the way in. There is no transformer here and no second serializer: earlier
 slices measured candidates, and this one measures what a person gets.
 
-Three files, and the first two are a pair:
+Four files, and the first two are a pair:
 
 | file | what it is |
 | --- | --- |
 | `fcad-measured.fbx` | the scene as a current-layout document exports it |
 | `fcad-legacy.fbx` | the same scene as a document that recorded no identities exports it — byte for byte the file this repository committed before §22B-1e3b |
 | `fcad-identity-escaping.fbx` | definition keys chosen to break the wire grammar: the value separator, the escape character, an already-escaped-looking key, whitespace and a multi-byte code point |
+| `fcad-renamed.fbx` | the current scene with changed display names and the same durable identities |
 
 Comparing the first two imports is what makes "nothing else moved" a
 measurement rather than a claim.
@@ -59,6 +60,9 @@ tools/unity-identity-file/scripts/check_file_record.sh               # the half 
 
 Each run happens in a freshly created temporary project outside the
 repository, twice, and the two canonical reports must be byte-identical.
+Property captures live in that project's `Library`, are cleared before each
+import and must be published again by the measured import. A missing callback
+cannot reuse a successful earlier capture, including one from another project.
 Nothing imported is left behind, and `check_repository_clean.sh` is what would
 notice if it were.
 

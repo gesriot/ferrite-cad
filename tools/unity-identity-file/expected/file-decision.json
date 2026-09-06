@@ -13,7 +13,7 @@
     "the join is unambiguous": true,
     "the properties §22B-1b2 already wrote did not move": true
   },
-  "checks": 78,
+  "checks": 82,
   "failures": [],
   "limits": [
     "A local file identifier in this editor is a function of the visible name, the type and a collision counter, or of the hierarchy path. No property in an FBX changes that, so the three counts above are reported and none of them is asserted. The presence of the channel is not a claim that a serialised reference survives an edit.",
