@@ -78,7 +78,7 @@ fn main() -> Result<()> {
         // session: which solver a build has must be answerable on a machine
         // with no display and no GPU, by somebody who is not opening a model.
         Request::SolverInfo => std::process::exit(solver_info()),
-        Request::Document(document) => document,
+        Request::Window(document) => document,
     };
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
@@ -111,12 +111,12 @@ const EXIT_NO_SOLVER: i32 = 3;
 /// What the command line asked this binary to do.
 ///
 /// Two commands, not a command with options: `--solver-info` answers a
-/// question about the build and opens nothing, and a document opens a window.
-/// Nothing takes both.
+/// question about the build and opens nothing, and a window opens either empty
+/// or on the document named beside it. Nothing takes both.
 #[derive(Debug, PartialEq, Eq)]
 enum Request {
-    /// Open this document in a window.
-    Document(PathBuf),
+    /// Open a window, and start reading this document if one was named.
+    Window(Option<PathBuf>),
     /// Say which sketch solver this build has, and exit.
     SolverInfo,
 }
@@ -124,7 +124,7 @@ enum Request {
 /// The name of the diagnostic command, spelled once.
 const SOLVER_INFO: &str = "--solver-info";
 
-const USAGE: &str = "usage: ferritecad-viewer <file.fcad>, or ferritecad-viewer --solver-info";
+const USAGE: &str = "usage: ferritecad-viewer [file.fcad], or ferritecad-viewer --solver-info";
 
 /// Which of the two commands was typed.
 ///
@@ -142,7 +142,7 @@ fn request(arguments: impl Iterator<Item = OsString>) -> Result<Request> {
         }
         return Ok(Request::SolverInfo);
     }
-    document_argument(arguments).map(Request::Document)
+    document_argument(arguments).map(Request::Window)
 }
 
 /// Says which sketch solver this build has, and answers with an exit code.
@@ -172,13 +172,14 @@ fn solver_info() -> i32 {
 
 /// The document to look at, from the command line.
 ///
-/// One argument and no options: a viewer that guessed which of several files
-/// was meant, or opened the current directory, would be doing something the
-/// user did not ask for with a file they may not have meant.
-fn document_argument(arguments: impl Iterator<Item = OsString>) -> Result<PathBuf> {
+/// Zero or one path, and no options. Naming none opens an empty window; naming
+/// one opens that document. A viewer that guessed which of several files was
+/// meant, or opened the current directory as a document, would be doing
+/// something the user did not ask for.
+fn document_argument(arguments: impl Iterator<Item = OsString>) -> Result<Option<PathBuf>> {
     let mut arguments = arguments;
     let Some(path) = arguments.next() else {
-        return Err(CadError::input(USAGE));
+        return Ok(None);
     };
     if arguments.next().is_some() {
         return Err(CadError::input(format!("{USAGE}; one document at a time")));
@@ -189,7 +190,7 @@ fn document_argument(arguments: impl Iterator<Item = OsString>) -> Result<PathBu
     if path.as_encoded_bytes().first() == Some(&b'-') {
         return Err(CadError::input(USAGE));
     }
-    Ok(PathBuf::from(path))
+    Ok(Some(PathBuf::from(path)))
 }
 
 /// A wake-up requested from outside winit's event-loop thread.
@@ -435,7 +436,7 @@ impl Status {
                 format!("Opening {file}… {:.0}%", fraction * 100.0)
             }
             Self::Ready { file } => file.clone(),
-            Self::Failed { file, message } => format!("{file}: {message}"),
+            Self::Failed { file, message } => format!("Could not open {file}: {message}"),
         }
     }
 }
@@ -2025,10 +2026,11 @@ struct App {
     proxy: EventLoopProxy<AppEvent>,
     frames: FrameScheduler,
     /// The last document the user named, which is what the file dialogs open
-    /// beside. Deliberately not what an export reads: this changes the moment
-    /// Open is pressed, and the document on screen changes only when one has
-    /// been accepted.
-    document: PathBuf,
+    /// beside. `None` until one has been named: an empty start is that state,
+    /// not an invented path. Deliberately not what an export reads: this
+    /// changes the moment Open is pressed, and the document on screen changes
+    /// only when one has been accepted.
+    document: Option<PathBuf>,
     loads: Loads,
     exports: exports::Exports,
 }
@@ -2056,9 +2058,12 @@ impl ApplicationHandler<AppEvent> for App {
         match self.start(event_loop) {
             Ok(live) => {
                 self.live = Some(live);
-                // The window is up and empty; reading the document starts now
-                // and finishes whenever it finishes.
-                self.open(self.document.clone());
+                // The window is up. Reading starts only if a document was
+                // named; otherwise the window stays empty until Open, with
+                // no invented path and no load in flight.
+                if let Some(document) = self.document.clone() {
+                    self.open(document);
+                }
                 // Construction, resize and framing all owe the first picture.
                 // Do not depend on a platform happening to send another event
                 // after `resumed` before the window first becomes visible.
@@ -2373,7 +2378,7 @@ impl ApplicationHandler<AppEvent> for App {
 }
 
 impl App {
-    fn new(proxy: EventLoopProxy<AppEvent>, document: PathBuf) -> Self {
+    fn new(proxy: EventLoopProxy<AppEvent>, document: Option<PathBuf>) -> Self {
         Self {
             live: None,
             input: ViewportInput::new(),
@@ -2407,7 +2412,8 @@ impl App {
             .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
             .set_directory(
                 self.document
-                    .parent()
+                    .as_deref()
+                    .and_then(Path::parent)
                     .filter(|parent| !parent.as_os_str().is_empty())
                     .unwrap_or(Path::new(".")),
             )
@@ -2504,11 +2510,10 @@ impl App {
         // no longer on screen. Stopping it here means the check the job makes
         // before it publishes finds a withdrawn request.
         exports::cancel_export(&mut self.exports, &mut self.input);
-        self.document = path;
-        let path = self.document.clone();
+        self.document = Some(path.clone());
         let proxy = self.proxy.clone();
         let waking = self.proxy.clone();
-        let chosen = self.document.clone();
+        let chosen = path.clone();
 
         // One relay per load: the worker writes the newest fraction into it,
         // the event loop reads it when it gets there, and the two of them wake
@@ -2922,9 +2927,10 @@ impl App {
         let (width, height) = self.input.resize(size.width, size.height);
         let window_surface = WindowSurface::new(&renderer, surface, width, height)?;
 
-        // Empty until the document arrives. The window is worth opening before
-        // then: it is how the user learns that the file is being read rather
-        // than that nothing happened.
+        // Empty until a document is accepted. The window is worth opening
+        // before then: it is how the user opens one, and, when a file was
+        // named, how they learn that it is being read rather than that nothing
+        // happened.
         let prepared = renderer.prepare(Arc::new(SnapshotBuilder::new().build()))?;
 
         let egui = egui::Context::default();
@@ -3706,6 +3712,82 @@ mod tests {
             can_export(&scene),
             "an accepted document cannot be written out"
         );
+
+        loads.stop_all();
+    }
+
+    /// The first Open from an empty window, in the order a person actually
+    /// tries it: cancel, fail, try again, succeed.
+    ///
+    /// Each step uses the same helpers the event loop uses. A cancelled dialog
+    /// is `Loads::open(None)`, not a path that could not be found.
+    #[test]
+    fn the_first_open_from_an_empty_window_can_be_cancelled_retried_and_accepted() {
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+
+        assert_eq!(*loads.status(), Status::Idle);
+        assert_eq!(loads.status().line(), "No document");
+        assert_eq!(scene.document, None);
+        assert!(!can_export(&scene));
+
+        assert!(
+            loads
+                .open(None, relay(), |_, _| {
+                    panic!("cancelling Open started a load")
+                })
+                .is_none()
+        );
+        assert_eq!(*loads.status(), Status::Idle);
+        assert_eq!(scene.document, None);
+        assert!(!can_export(&scene));
+
+        let failed = loads
+            .open(Some(Path::new("gone.fcad")), relay(), |_, _| {
+                std::thread::spawn(|| {})
+            })
+            .expect("a named document starts a load");
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            failed,
+            Err(CadError::input("no such document")),
+        );
+        assert!(
+            matches!(loads.status(), Status::Failed { file, .. } if file == "gone.fcad"),
+            "{}",
+            loads.status().line()
+        );
+        assert_eq!(
+            loads.status().line(),
+            "Could not open gone.fcad: invalid input: no such document"
+        );
+        assert_eq!(scene.document, None);
+        assert!(!can_export(&scene));
+
+        let opened = loads
+            .open(Some(Path::new("part.fcad")), relay(), |_, _| {
+                std::thread::spawn(|| {})
+            })
+            .expect("Open can be asked again after a failure");
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            opened,
+            Ok(loaded(scene_at(0.0))),
+        );
+        assert_eq!(
+            *loads.status(),
+            Status::Ready {
+                file: "part.fcad".to_owned()
+            }
+        );
+        assert_eq!(scene.document.as_deref(), Some(Path::new("part.fcad")));
+        assert!(can_export(&scene));
 
         loads.stop_all();
     }
@@ -12962,7 +13044,11 @@ mod tests {
         );
         assert_eq!(
             request(["part.fcad".into()].into_iter()).expect("a document is still a document"),
-            Request::Document(PathBuf::from("part.fcad"))
+            Request::Window(Some(PathBuf::from("part.fcad")))
+        );
+        assert_eq!(
+            request(std::iter::empty()).expect("no arguments open a window"),
+            Request::Window(None)
         );
 
         // Not an option that modifies opening a document. A line naming both a
@@ -12980,7 +13066,6 @@ mod tests {
 
         // And everything the document route refused, it still refuses. The
         // flag is recognised as itself and not as a prefix or a spelling.
-        assert!(request(std::iter::empty()).is_err());
         for flag in [
             "--help",
             "-h",
@@ -12998,10 +13083,10 @@ mod tests {
     #[test]
     fn one_document_is_asked_for_and_one_is_accepted() {
         let path = document_argument(["part.fcad".into()].into_iter()).expect("one path is enough");
-        assert_eq!(path, PathBuf::from("part.fcad"));
+        assert_eq!(path.as_deref(), Some(Path::new("part.fcad")));
 
-        let missing = document_argument(std::iter::empty()).expect_err("no document was named");
-        assert!(missing.to_string().contains("usage"), "{missing}");
+        let missing = document_argument(std::iter::empty()).expect("no document was named");
+        assert_eq!(missing, None);
 
         // Two files is a request this viewer cannot honour, and opening the
         // first silently would be honouring half of it.
@@ -13019,6 +13104,39 @@ mod tests {
                 .expect_err("an option is not a document");
             assert!(asked.to_string().contains("usage"), "{flag}: {asked}");
         }
+    }
+
+    #[test]
+    fn a_command_line_document_is_the_only_load_an_empty_line_starts_none() {
+        let unnamed = match request(std::iter::empty()).expect("an empty line is a window") {
+            Request::Window(path) => path,
+            Request::SolverInfo => panic!("no arguments opened no window"),
+        };
+        assert_eq!(unnamed, None);
+
+        let named = match request(["part.fcad".into()].into_iter()).expect("a path is a window") {
+            Request::Window(path) => path,
+            Request::SolverInfo => panic!("a document was answered as a diagnostic"),
+        };
+        assert_eq!(named.as_deref(), Some(Path::new("part.fcad")));
+
+        let mut loads = Loads::default();
+        assert!(
+            loads
+                .open(unnamed.as_deref(), relay(), |_, _| {
+                    panic!("an empty start loaded a document")
+                })
+                .is_none()
+        );
+        assert_eq!(*loads.status(), Status::Idle);
+        assert_eq!(loads.status().line(), "No document");
+
+        let generation = loads
+            .open(named.as_deref(), relay(), |_, _| std::thread::spawn(|| {}))
+            .expect("a named document starts one load");
+        assert_eq!(loads.status().line(), "Opening part.fcad… 0%");
+        assert!(loads.accepts(generation));
+        loads.stop_all();
     }
 
     #[test]
@@ -16313,7 +16431,7 @@ mod tests {
         );
         assert_eq!(
             loads.status().line(),
-            "gone.fcad: invalid input: no such document",
+            "Could not open gone.fcad: invalid input: no such document",
             "the ordinary line about the ordinary failure changed"
         );
     }
@@ -16472,7 +16590,7 @@ mod tests {
         // grew it would be a second place the wording lives.
         let line = loads.status().line();
         assert!(
-            line.starts_with("impossible.fcad: "),
+            line.starts_with("Could not open impossible.fcad: "),
             "the line stopped being one sentence about one file: {line}"
         );
         // The sentence a person reads on screen is written for a screen. A

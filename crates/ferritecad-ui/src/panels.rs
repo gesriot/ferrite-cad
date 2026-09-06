@@ -984,7 +984,7 @@ pub struct Activity<'a> {
 /// on.
 pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
     let mut chosen = Chosen::default();
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         // First, and separated: opening replaces everything else on screen,
         // where the buttons after it only change where it is seen from.
         chosen.open = ui.button("Open…").clicked();
@@ -1080,20 +1080,17 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
                 chosen.view = Some(*view);
             }
         }
+    });
 
-        // Last, and given whatever room is left: the line is the one thing
-        // here that can be any length, and a long file name must push no
-        // button off the toolbar.
-        ui.separator();
-        if let Some(fraction) = activity.progress {
-            // Offered only while there is something to stop. A button that is
-            // there all the time and does nothing most of the time teaches
-            // people not to trust it.
+    // Keep activity below the controls so a failed first Open remains visible
+    // even in a narrow window. File names and errors may need several lines.
+    if let Some(fraction) = activity.progress {
+        ui.horizontal(|ui| {
             chosen.cancel = ui.button("Cancel").clicked();
             ui.add(egui::ProgressBar::new(fraction).desired_width(80.0));
-        }
-        ui.add(egui::Label::new(activity.line).truncate());
-    });
+        });
+    }
+    ui.add(egui::Label::new(activity.line).wrap());
     chosen
 }
 
@@ -1438,6 +1435,91 @@ mod tests {
         assert!(!quiet.export, "an untouched toolbar asked for an export");
     }
 
+    fn toolbar_at_width(
+        context: &egui::Context,
+        activity: Activity<'_>,
+        width: f32,
+    ) -> egui::FullOutput {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, 768.0),
+            )),
+            ..Default::default()
+        };
+        let mut output = context.run_ui(input, |ui| {
+            let _ = toolbar(ui, activity);
+        });
+        output.textures_delta.clear();
+        output
+    }
+
+    fn visible_toolbar_text(output: &egui::FullOutput, label: &str, width: f32) -> egui::Rect {
+        let (clipped, text) = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => Some((clipped, text)),
+                _ => None,
+            })
+            .expect("toolbar did not paint the expected label");
+        // Text meshes include a one-pixel antialiasing fringe.
+        let bounds = text.visual_bounding_rect();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 768.0));
+        assert!(
+            !text.galley.elided,
+            "toolbar truncated {label:?} at width {width}"
+        );
+        assert!(
+            screen
+                .intersect(clipped.clip_rect)
+                .expand(1.0)
+                .contains_rect(bounds),
+            "toolbar clipped {label:?} at width {width}: {bounds:?} in {:?}",
+            clipped.clip_rect,
+        );
+        bounds
+    }
+
+    #[test]
+    fn toolbar_status_and_controls_remain_visible_in_an_ordinary_window() {
+        let failure = "Could not open /Users/example/Models/a-long-document-name.fcad: invalid document header";
+        for width in [988.0, 800.0, 360.0] {
+            for (line, progress) in [
+                ("No document", None),
+                (failure, None),
+                ("Opening part.fcad… 40%", Some(0.4)),
+            ] {
+                let context = egui::Context::default();
+                let activity = Activity {
+                    line,
+                    progress,
+                    can_cancel_export: true,
+                    ..Default::default()
+                };
+                let output = toolbar_at_width(&context, activity, width);
+                visible_toolbar_text(&output, line, width);
+                for label in ["Open…", EXPORT_FBX, CANCEL_EXPORT, "Undo visibility"] {
+                    visible_toolbar_text(&output, label, width);
+                }
+                for (_, name, key) in VIEWS {
+                    visible_toolbar_text(&output, &format!("{name} ({key})"), width);
+                }
+                if progress.is_some() {
+                    let cancel = visible_toolbar_text(&output, "Cancel", width).center();
+                    assert_eq!(
+                        click_on(&context, cancel, activity),
+                        Chosen {
+                            cancel: true,
+                            ..Default::default()
+                        },
+                        "the visible Cancel must stop only the reading at width {width}",
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_reading_can_be_given_up_on_and_nothing_else_can() {
         let context = egui::Context::default();
@@ -1455,58 +1537,10 @@ mod tests {
             orthographic: false,
         };
 
-        // Where the Cancel button is: after the views, so the row up to it is
-        // laid out the same either way and the difference is this button.
-        let mut cancel = None;
-        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            ui.horizontal(|ui| {
-                let _ = ui.button("Open…");
-                let _ = ui.add_enabled(true, egui::Button::new(EXPORT_FBX));
-                ui.separator();
-                let _ = ui.add_enabled(
-                    reading.can_frame_selection,
-                    egui::Button::new(format!("Frame selected ({FRAME_KEY})")),
-                );
-                let _ = ui.add_enabled(
-                    reading.can_frame_scene,
-                    egui::Button::new(format!("Frame all ({FRAME_ALL_KEY})")),
-                );
-                let _ = ui.add_enabled(
-                    reading.can_hide,
-                    egui::Button::new(format!("Hide selected ({HIDE_KEY})")),
-                );
-                let _ = ui.add_enabled(
-                    reading.can_isolate,
-                    egui::Button::new(format!("Isolate selected ({ISOLATE_KEY})")),
-                );
-                let _ = ui.add_enabled(
-                    reading.can_show_all,
-                    egui::Button::new(format!("Show all ({SHOW_ALL_KEY})")),
-                );
-                let _ = ui.add_enabled(
-                    reading.can_undo_visibility,
-                    egui::Button::new("Undo visibility"),
-                );
-                ui.separator();
-                let _ = ui.button(format!(
-                    "{} ({PROJECTION_KEY})",
-                    if reading.orthographic {
-                        "Orthographic"
-                    } else {
-                        "Perspective"
-                    }
-                ));
-                ui.separator();
-                ui.label("View");
-                for (_, name, key) in VIEWS {
-                    let _ = ui.button(format!("{name} ({key})"));
-                }
-                ui.separator();
-                cancel = Some(ui.button("Cancel").rect);
-            });
-        });
-        output.textures_delta.clear();
-        let centre = cancel.expect("the reference row was laid out").center();
+        // Locate the real button's painted label; do not reconstruct the
+        // toolbar in a second layout that could drift away from it.
+        let output = toolbar_at_width(&context, reading, 988.0);
+        let centre = visible_toolbar_text(&output, "Cancel", 988.0).center();
 
         assert!(
             click_on(&context, centre, reading).cancel,
