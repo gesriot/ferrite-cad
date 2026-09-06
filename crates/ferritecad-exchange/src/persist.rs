@@ -158,6 +158,30 @@ pub enum StoredOccurrences {
     Recorded(Vec<OccurrenceId>),
 }
 
+/// What a stored scene can say about the durable identity of its definitions.
+///
+/// Two states and no third, for the same reason [`StoredOccurrences`] has two:
+/// a layout either recorded the key of every definition or recorded none. The
+/// keys themselves are not carried here, because a binding has already proven
+/// the fresh reading holds exactly those definitions with exactly those keys —
+/// what is missing from a legacy layout is not the text but the promise that
+/// the text means the same thing next time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StoredDefinitionIdentities {
+    /// This scene was stored at a layout written before definitions carried
+    /// keys, so the keys a reading shows come from the importer that has just
+    /// run and the document never confirmed any of them.
+    ///
+    /// Not lost and not missing: never recorded. A caller that needs a durable
+    /// definition identity has to say so rather than pass this reading's keys
+    /// off as one.
+    Unrecorded,
+    /// The document stored the key of every definition, and a binding proved
+    /// the fresh reading has the same ones.
+    Recorded,
+}
+
 /// A stored scene, at whichever layout it was written with.
 ///
 /// Version 1 and version 2 documents keep working. They were written under
@@ -208,6 +232,19 @@ impl StoredScene {
                     .map(|instance| instance.occurrence)
                     .collect(),
             ),
+        }
+    }
+
+    /// Whether this layout recorded the identity of its definitions at all.
+    ///
+    /// The typed half of [`Self::keys`], for a caller that needs the fact
+    /// rather than the text. Derived from the layout and computed from nothing
+    /// else: there is deliberately no arm here that decides a legacy scene has
+    /// identities because its fresh reading happens to show keys.
+    pub fn definition_identities(&self) -> StoredDefinitionIdentities {
+        match self {
+            Self::V1(_) => StoredDefinitionIdentities::Unrecorded,
+            Self::V2(_) | Self::V3(_) => StoredDefinitionIdentities::Recorded,
         }
     }
 

@@ -56,6 +56,12 @@ static const char *user_string(ufbx_node *node, const char *name)
     return prop->value_str.data;
 }
 
+// The two §22B-1e3b identity properties, by the names the wire contract gives
+// them. Spelled here so this reader depends on the written contract rather than
+// on the writer's constants.
+#define IDENTITY_DEFINITION "FerriteCADDefinitionId"
+#define IDENTITY_OCCURRENCE "FerriteCADOccurrenceId"
+
 // ------------------------------------------------------------ the contract
 
 // (x, y, z) -> (x, z, -y): the one measured axis map, written out here rather
@@ -319,6 +325,52 @@ static void check_measured(ufbx_scene *scene)
         require(user_string(node, "FerriteCADNodeKey") != NULL,
             "a structural node has a key");
     }
+
+    // §22B-1e3b. The exact values, written out here from the specification and
+    // from the scene's fixed identifiers rather than asked of the writer: a
+    // reader that computed the expected string the way the writer does would
+    // agree with whatever the writer spelled. Structural frames and the
+    // omitted definition's placement are held to the same rule as the parts.
+    static const char *MEASURED_DEFINITIONS[9] = {
+        "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%231",
+        "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%237",
+        "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%232428",
+        "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%232428",
+        "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%232583",
+        "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%239",
+        "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%239",
+        "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%239",
+        "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%239",
+    };
+    static const char *MEASURED_PLACEMENTS[9] = {
+        "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a0",
+        "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a1",
+        "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a2",
+        "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a3",
+        "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a4",
+        "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a5",
+        "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a6",
+        "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a7",
+        "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a8",
+    };
+    size_t at = 0;
+    for (size_t i = 0; i < scene->nodes.count && at < 9; i++) {
+        ufbx_node *node = scene->nodes.data[i];
+        if (node->is_root) continue;
+        const char *definition = user_string(node, IDENTITY_DEFINITION);
+        const char *placement = user_string(node, IDENTITY_OCCURRENCE);
+        require(definition && strcmp(definition, MEASURED_DEFINITIONS[at]) == 0,
+            "a node carries the definition identity its scene recorded");
+        require(placement && strcmp(placement, MEASURED_PLACEMENTS[at]) == 0,
+            "a node carries the placement identity its scene recorded");
+        at++;
+    }
+    require(at == 9, "every node was asked for its identities");
+    // Two placements of one definition are one definition identity and two
+    // placement identities, which is the whole of what the channel is for.
+    require(strcmp(MEASURED_DEFINITIONS[2], MEASURED_DEFINITIONS[3]) == 0
+        && strcmp(MEASURED_PLACEMENTS[2], MEASURED_PLACEMENTS[3]) != 0,
+        "the measured scene no longer places one definition twice");
 }
 
 // ------------------------------------------------------------ the escaping file
@@ -352,6 +404,37 @@ static void check_escaping(ufbx_scene *scene)
         seen++;
     }
     require(seen == 5, "every named node was visited");
+
+    // §22B-1e3b. Ordinary keys, so the only thing this file gained is the two
+    // properties; the keys chosen to break the grammar live in their own file
+    // and are read by --escaped-keys below.
+    static const char *ESCAPED_DEFINITIONS[5] = {
+        "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000002:step.product_definition%230",
+        "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000002:step.product_definition%231",
+        "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000002:step.product_definition%232",
+        "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000002:step.product_definition%233",
+        "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000002:step.product_definition%234",
+    };
+    static const char *ESCAPED_PLACEMENTS[5] = {
+        "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000b0",
+        "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000b1",
+        "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000b2",
+        "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000b3",
+        "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000b4",
+    };
+    size_t at = 0;
+    for (size_t i = 0; i < scene->nodes.count && at < 5; i++) {
+        ufbx_node *node = scene->nodes.data[i];
+        if (node->is_root) continue;
+        const char *definition = user_string(node, IDENTITY_DEFINITION);
+        const char *placement = user_string(node, IDENTITY_OCCURRENCE);
+        require(definition && strcmp(definition, ESCAPED_DEFINITIONS[at]) == 0,
+            "a node of the escaping file carries the identity its scene recorded");
+        require(placement && strcmp(placement, ESCAPED_PLACEMENTS[at]) == 0,
+            "a node of the escaping file carries the placement its scene recorded");
+        at++;
+    }
+    require(at == 5, "every named node was asked for its identities");
 }
 
 // ------------------------------------------------------------ the complex assembly
@@ -450,6 +533,247 @@ static void check_complex(ufbx_scene *scene)
         scene->meshes.count, definitions, triangles, real_nodes);
 }
 
+// ------------------------------------------------------------ the identity channel
+
+// §22B-1e3b. The file is read from the outside and every node's identity
+// properties are printed in file order, so an independent join can compare
+// them with what the document recorded. Nothing here knows the grammar of the
+// values: it prints them verbatim and lets the joiner parse them, because a
+// reader that re-implemented the encoding would be agreeing with the writer
+// rather than reading it.
+
+static void print_field(const char *value)
+{
+    // Tab separated, and a tab or a newline inside a value would break the
+    // join silently. Neither can occur: every value is percent-escaped down to
+    // an unreserved alphabet before it reaches the file. Refused rather than
+    // assumed.
+    for (const char *at = value; *at; at++) {
+        if (*at == '\t' || *at == '\n' || *at == '\r') {
+            require(false, "an identity value contains a separator");
+            return;
+        }
+    }
+    fputs(value, stdout);
+}
+
+static void check_identity(ufbx_scene *scene)
+{
+    require(scene->metadata.ascii, "the identity file is ASCII");
+    require(scene->metadata.version == 7400, "the identity file is FBX 7400");
+    require(scene->metadata.warnings.count == 0, "the identity file read with no warning");
+
+    size_t seen = 0, roots = 0, definitions = 0, occurrences = 0;
+    for (size_t i = 0; i < scene->nodes.count; i++) {
+        ufbx_node *node = scene->nodes.data[i];
+        if (node->is_root) continue;
+        if (!node->parent || node->parent->is_root) roots++;
+        const char *definition = user_string(node, IDENTITY_DEFINITION);
+        const char *occurrence = user_string(node, IDENTITY_OCCURRENCE);
+        if (definition) definitions++;
+        if (occurrence) occurrences++;
+        // Keyed by the writer's own positional node key rather than by this
+        // reader's traversal: ufbx is free to present nodes in whatever order
+        // it likes, and a join that depended on that order would be measuring
+        // the reader. The key is what §22B-1b2 already writes, and it is the
+        // position the document's payload is listed in.
+        const char *key = user_string(node, "FerriteCADNodeKey");
+        require(key != NULL, "a node carries no FerriteCADNodeKey to join on");
+        printf("FCAD_IDENTITY\t");
+        print_field(key ? key : "-");
+        fputs("\t", stdout);
+        print_field(node->name.data ? node->name.data : "");
+        fputs("\t", stdout);
+        print_field(definition ? definition : "-");
+        fputs("\t", stdout);
+        print_field(occurrence ? occurrence : "-");
+        fputs("\n", stdout);
+        seen++;
+    }
+    require(seen > 0, "the identity file has no nodes at all");
+    require(roots == 1, "the identity file does not have exactly one root");
+    printf("FCAD_IDENTITY_SUMMARY nodes=%zu definitions=%zu occurrences=%zu meshes=%zu\n",
+        seen, definitions, occurrences, scene->meshes.count);
+}
+
+// ------------------------------------------- definition keys that fight the grammar
+
+// §22B-1e3b. Five definition keys chosen to make the identity value ambiguous
+// if the escaping rule were wrong: the value separator, the escape character
+// itself, an already-escaped-looking key, whitespace and a multi-byte code
+// point. The expected values are written out here from the specification, byte
+// for byte, so agreement means two independent readings of one written rule.
+static const char *KEYED_NAMES[5] = {
+    "Plain", "Separators", "Unicode", "Already escaped", "Whitespace",
+};
+
+static const char *KEYED_DEFINITIONS[5] = {
+    "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000003:step.product_definition%231",
+    "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000003:a%3Ab%3Ac",
+    ("fcad1:def:source:019ffc72-1e3b-7000-8000-000000000003:"
+     "%D0%BA%D0%BB%D1%8E%D1%87%20%E2%80%94%20100%25"),
+    "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000003:already%253Aescaped",
+    "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000003:space%20and%09tab",
+};
+
+// The unescaped keys, as the property §22B-1b2 added must still carry them.
+static const char *KEYED_SOURCE_KEYS[5] = {
+    "step.product_definition#1",
+    "a:b:c",
+    "\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87 \xe2\x80\x94 100%",
+    "already%3Aescaped",
+    "space and\ttab",
+};
+
+static void check_escaped_keys(ufbx_scene *scene)
+{
+    require(scene->metadata.ascii, "the keyed file is ASCII");
+    require(scene->metadata.version == 7400, "the keyed file is FBX 7400");
+    require(scene->metadata.warnings.count == 0, "the keyed file read with no warning");
+    require(scene->nodes.count - 1 == 5, "five keyed nodes");
+
+    size_t at = 0;
+    for (size_t i = 0; i < scene->nodes.count && at < 5; i++) {
+        ufbx_node *node = scene->nodes.data[i];
+        if (node->is_root) continue;
+        require(name_is(node->name, KEYED_NAMES[at]), "a keyed node kept its display name");
+        const char *definition = user_string(node, IDENTITY_DEFINITION);
+        require(definition && strcmp(definition, KEYED_DEFINITIONS[at]) == 0,
+            "an escaped definition identity survived exactly");
+        if (definition && strcmp(definition, KEYED_DEFINITIONS[at]) != 0) {
+            fprintf(stderr, "  read [%s]\n", definition);
+            fprintf(stderr, "  want [%s]\n", KEYED_DEFINITIONS[at]);
+        }
+        // Plain ASCII, and exactly five parts however many separators the key
+        // it came from carried.
+        if (definition) {
+            size_t parts = 1, high = 0;
+            for (const char *scan = definition; *scan; scan++) {
+                if (*scan == ':') parts++;
+                if ((unsigned char)*scan > 127) high++;
+            }
+            require(parts == 5, "an identity value is not five parts");
+            require(high == 0, "an identity value is not ASCII");
+        }
+        // And the source-local key property still says what the file said,
+        // unescaped: the new contract is beside the old one and not over it.
+        const char *key = user_string(node, "FerriteCADDefinitionKey");
+        require(key && strcmp(key, KEYED_SOURCE_KEYS[at]) == 0,
+            "the existing definition key property was rewritten by the new one");
+        require(user_string(node, IDENTITY_OCCURRENCE) != NULL,
+            "a keyed node carries no placement identity");
+        at++;
+    }
+    require(at == 5, "every keyed node was visited");
+}
+
+// ------------------------------------------------- the legacy layout, beside it
+
+// §22B-1e3b. Two files written from one scene, differing only in whether the
+// document recorded durable identities. Everything a person gets must be the
+// same in both, and the identity properties must be present in exactly one of
+// them: a legacy layout is told apart by their absence and by nothing else.
+static bool same_string(ufbx_string a, ufbx_string b)
+{
+    return a.length == b.length && memcmp(a.data, b.data, a.length) == 0;
+}
+
+static const char *or_absent(const char *value)
+{
+    return value ? value : "";
+}
+
+static void check_legacy_pair(ufbx_scene *current, ufbx_scene *legacy)
+{
+    require(current->nodes.count == legacy->nodes.count,
+        "the two layouts do not have the same number of nodes");
+    require(current->meshes.count == legacy->meshes.count,
+        "the two layouts do not have the same number of geometries");
+    require(current->materials.count == legacy->materials.count,
+        "the two layouts do not have the same number of materials");
+
+    size_t identified = 0, unidentified = 0;
+    size_t nodes = current->nodes.count < legacy->nodes.count
+        ? current->nodes.count : legacy->nodes.count;
+    for (size_t i = 0; i < nodes; i++) {
+        ufbx_node *a = current->nodes.data[i];
+        ufbx_node *b = legacy->nodes.data[i];
+        require(a->is_root == b->is_root, "the two layouts disagree about the root");
+        if (a->is_root) continue;
+        require(same_string(a->name, b->name), "a display name differs between the two layouts");
+        require((a->parent == NULL) == (b->parent == NULL), "a parent differs");
+        if (a->parent && b->parent) {
+            require(same_string(a->parent->name, b->parent->name),
+                "a parent name differs between the two layouts");
+        }
+        require((a->mesh == NULL) == (b->mesh == NULL),
+            "one layout gave a node triangles the other did not");
+        require(a->materials.count == b->materials.count, "a material binding count differs");
+        for (int r = 0; r < 3; r++) {
+            for (int c = 0; c < 4; c++) {
+                require_near(element(&a->node_to_parent, r, c),
+                    element(&b->node_to_parent, r, c), 1e-12,
+                    "a local transform differs between the two layouts");
+            }
+        }
+        // The properties §22B-1b2 and §22B-1c already wrote are untouched.
+        static const char *CARRIED[5] = {
+            "FerriteCADNodeKey", "FerriteCADDefinitionKey", "FerriteCADGeometryOmission",
+            "FerriteCADOmissionFinding", "FerriteCADOmissionRefusal",
+        };
+        for (int k = 0; k < 5; k++) {
+            require(strcmp(or_absent(user_string(a, CARRIED[k])),
+                    or_absent(user_string(b, CARRIED[k]))) == 0,
+                "an existing FerriteCAD property differs between the two layouts");
+        }
+        require(user_string(b, IDENTITY_DEFINITION) == NULL,
+            "a legacy layout carries a definition identity it never recorded");
+        require(user_string(b, IDENTITY_OCCURRENCE) == NULL,
+            "a legacy layout carries a placement identity it never recorded");
+        if (user_string(a, IDENTITY_OCCURRENCE)) identified++; else unidentified++;
+    }
+    require(identified > 0, "the current layout carried no placement identity at all");
+    require(unidentified == 0, "the current layout left a placement without an identity");
+
+    // The geometry itself, array for array.
+    size_t meshes = current->meshes.count < legacy->meshes.count
+        ? current->meshes.count : legacy->meshes.count;
+    for (size_t i = 0; i < meshes; i++) {
+        ufbx_mesh *a = current->meshes.data[i];
+        ufbx_mesh *b = legacy->meshes.data[i];
+        require(a->num_vertices == b->num_vertices, "a vertex count differs");
+        require(a->num_indices == b->num_indices, "an index count differs");
+        require(a->num_faces == b->num_faces, "a polygon count differs");
+        for (size_t v = 0; v < a->num_vertices && v < b->num_vertices; v++) {
+            require_near(a->vertices.data[v].x, b->vertices.data[v].x, 1e-12, "a vertex differs");
+            require_near(a->vertices.data[v].y, b->vertices.data[v].y, 1e-12, "a vertex differs");
+            require_near(a->vertices.data[v].z, b->vertices.data[v].z, 1e-12, "a vertex differs");
+        }
+        for (size_t n = 0; n < a->num_indices && n < b->num_indices; n++) {
+            ufbx_vec3 an = ufbx_get_vertex_vec3(&a->vertex_normal, n);
+            ufbx_vec3 bn = ufbx_get_vertex_vec3(&b->vertex_normal, n);
+            require_near(an.x, bn.x, 1e-12, "an authored normal differs");
+            require_near(an.y, bn.y, 1e-12, "an authored normal differs");
+            require_near(an.z, bn.z, 1e-12, "an authored normal differs");
+        }
+    }
+
+    size_t materials = current->materials.count < legacy->materials.count
+        ? current->materials.count : legacy->materials.count;
+    for (size_t i = 0; i < materials; i++) {
+        ufbx_material *a = current->materials.data[i];
+        ufbx_material *b = legacy->materials.data[i];
+        require(same_string(a->name, b->name), "a material name differs");
+        ufbx_vec3 ac = a->fbx.diffuse_color.value_vec3;
+        ufbx_vec3 bc = b->fbx.diffuse_color.value_vec3;
+        require_near(ac.x, bc.x, 1e-12, "a material colour differs");
+        require_near(ac.y, bc.y, 1e-12, "a material colour differs");
+        require_near(ac.z, bc.z, 1e-12, "a material colour differs");
+    }
+    printf("legacy pair: nodes=%zu identified=%zu meshes=%zu materials=%zu\n",
+        nodes - 1, identified, meshes, materials);
+}
+
 // ------------------------------------------------------------ driver
 
 static ufbx_scene *load(const char *path)
@@ -478,9 +802,16 @@ static ufbx_scene *load(const char *path)
 int main(int argc, char **argv)
 {
     bool complex_mode = argc == 3 && strcmp(argv[1], "--complex") == 0;
-    if (argc != 3 || (!complex_mode && argv[1][0] == '-')) {
+    bool identity_mode = argc == 3 && strcmp(argv[1], "--identity") == 0;
+    bool legacy_mode = argc == 4 && strcmp(argv[1], "--legacy") == 0;
+    bool keyed_mode = argc == 3 && strcmp(argv[1], "--escaped-keys") == 0;
+    if ((argc != 3 && argc != 4) || (!complex_mode && !identity_mode && !legacy_mode
+            && !keyed_mode && argv[1][0] == '-')) {
         fprintf(stderr, "usage: read_production MEASURED.fbx ESCAPING.fbx\n");
         fprintf(stderr, "       read_production --complex COMPLEX.fbx\n");
+        fprintf(stderr, "       read_production --identity FILE.fbx\n");
+        fprintf(stderr, "       read_production --legacy MEASURED.fbx LEGACY.fbx\n");
+        fprintf(stderr, "       read_production --escaped-keys KEYED.fbx\n");
         return 2;
     }
 
@@ -497,6 +828,29 @@ int main(int argc, char **argv)
             check_complex(scene);
             ufbx_free_scene(scene);
         }
+    } else if (identity_mode) {
+        minimum = 5;
+        ufbx_scene *scene = load(argv[2]);
+        if (scene) {
+            check_identity(scene);
+            ufbx_free_scene(scene);
+        }
+    } else if (keyed_mode) {
+        minimum = 30;
+        ufbx_scene *scene = load(argv[2]);
+        if (scene) {
+            check_escaped_keys(scene);
+            ufbx_free_scene(scene);
+        }
+    } else if (legacy_mode) {
+        minimum = 10;
+        ufbx_scene *current = load(argv[2]);
+        ufbx_scene *legacy = load(argv[3]);
+        if (current && legacy) {
+            check_legacy_pair(current, legacy);
+        }
+        if (current) ufbx_free_scene(current);
+        if (legacy) ufbx_free_scene(legacy);
     } else {
         ufbx_scene *measured = load(argv[1]);
         if (measured) {

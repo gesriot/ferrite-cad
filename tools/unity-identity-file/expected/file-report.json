@@ -1,0 +1,722 @@
+{
+    "unity_version": "6000.4.10f1",
+    "checks": 82,
+    "files": [
+        {
+            "file": "fcad-measured.fbx",
+            "sorted_by_name_by_default": true,
+            "root_designation": "fcad-measured",
+            "objects": 9,
+            "meshes": 1,
+            "materials": 4,
+            "objects_with_definition_id": 9,
+            "objects_with_occurrence_id": 9,
+            "distinct_definition_ids": 5,
+            "distinct_occurrence_ids": 9,
+            "identifier_uniqueness_violations": 0,
+            "import_errors": 0,
+            "nodes": [
+                {
+                    "path": "0",
+                    "name": "fcad-measured",
+                    "parent": "",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%231",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a0",
+                    "definition_key": "step.product_definition#1",
+                    "node_key": "node/0",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "919132149155446097"
+                },
+                {
+                    "path": "0/0",
+                    "name": "Assembly Frame",
+                    "parent": "0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%237",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a1",
+                    "definition_key": "step.product_definition#7",
+                    "node_key": "node/1",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "16938007628121109091"
+                },
+                {
+                    "path": "0/0/0",
+                    "name": "Repeated Part",
+                    "parent": "0/0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%232428",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a2",
+                    "definition_key": "step.product_definition#2428",
+                    "node_key": "node/2",
+                    "mesh": "Repeated Part#20730",
+                    "material_count": 2,
+                    "file_id": "6443708151119350964"
+                },
+                {
+                    "path": "0/0/0/0",
+                    "name": "CP Origin",
+                    "parent": "0/0/0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%239",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a5",
+                    "definition_key": "step.product_definition#9",
+                    "node_key": "node/5",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "15698797935478819133"
+                },
+                {
+                    "path": "0/0/0/1",
+                    "name": "CP X1000",
+                    "parent": "0/0/0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%239",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a6",
+                    "definition_key": "step.product_definition#9",
+                    "node_key": "node/6",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "17782079227441412934"
+                },
+                {
+                    "path": "0/0/0/2",
+                    "name": "CP Y2000",
+                    "parent": "0/0/0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%239",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a7",
+                    "definition_key": "step.product_definition#9",
+                    "node_key": "node/7",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "15671475821280498587"
+                },
+                {
+                    "path": "0/0/0/3",
+                    "name": "CP Z3000",
+                    "parent": "0/0/0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%239",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a8",
+                    "definition_key": "step.product_definition#9",
+                    "node_key": "node/8",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "17001227642035997952"
+                },
+                {
+                    "path": "0/0/1",
+                    "name": "Repeated Part 1",
+                    "parent": "0/0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%232428",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a3",
+                    "definition_key": "step.product_definition#2428",
+                    "node_key": "node/3",
+                    "mesh": "Repeated Part#20730",
+                    "material_count": 2,
+                    "file_id": "16553518234351226953"
+                },
+                {
+                    "path": "0/0/2",
+                    "name": "Omitted #2583",
+                    "parent": "0/0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%232583",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a4",
+                    "definition_key": "step.product_definition#2583",
+                    "node_key": "node/4",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "1743210847258902230"
+                }
+            ],
+            "subassets": [
+                {
+                    "kind": "GameObject",
+                    "name": "Assembly Frame",
+                    "file_id": "16938007628121109091"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "CP Origin",
+                    "file_id": "15698797935478819133"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "CP X1000",
+                    "file_id": "17782079227441412934"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "CP Y2000",
+                    "file_id": "15671475821280498587"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "CP Z3000",
+                    "file_id": "17001227642035997952"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "Omitted #2583",
+                    "file_id": "1743210847258902230"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "Repeated Part",
+                    "file_id": "6443708151119350964"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "Repeated Part 1",
+                    "file_id": "16553518234351226953"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "fcad-measured",
+                    "file_id": "919132149155446097"
+                },
+                {
+                    "kind": "Material",
+                    "name": "Ferrite Blue #1",
+                    "file_id": "1016534892231277287"
+                },
+                {
+                    "kind": "Material",
+                    "name": "Ferrite Blue #3",
+                    "file_id": "2845056276687586866"
+                },
+                {
+                    "kind": "Material",
+                    "name": "Ferrite Red #0",
+                    "file_id": "11838072810871556198"
+                },
+                {
+                    "kind": "Material",
+                    "name": "Ferrite Red #2",
+                    "file_id": "4841559787194781591"
+                },
+                {
+                    "kind": "Mesh",
+                    "name": "Repeated Part",
+                    "file_id": "14015010845024521784"
+                }
+            ]
+        },
+        {
+            "file": "fcad-legacy.fbx",
+            "sorted_by_name_by_default": true,
+            "root_designation": "fcad-legacy",
+            "objects": 9,
+            "meshes": 1,
+            "materials": 4,
+            "objects_with_definition_id": 0,
+            "objects_with_occurrence_id": 0,
+            "distinct_definition_ids": 0,
+            "distinct_occurrence_ids": 0,
+            "identifier_uniqueness_violations": 0,
+            "import_errors": 0,
+            "nodes": [
+                {
+                    "path": "0",
+                    "name": "fcad-legacy",
+                    "parent": "",
+                    "definition_id": "",
+                    "occurrence_id": "",
+                    "definition_key": "step.product_definition#1",
+                    "node_key": "node/0",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "919132149155446097"
+                },
+                {
+                    "path": "0/0",
+                    "name": "Assembly Frame",
+                    "parent": "0",
+                    "definition_id": "",
+                    "occurrence_id": "",
+                    "definition_key": "step.product_definition#7",
+                    "node_key": "node/1",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "16938007628121109091"
+                },
+                {
+                    "path": "0/0/0",
+                    "name": "Repeated Part",
+                    "parent": "0/0",
+                    "definition_id": "",
+                    "occurrence_id": "",
+                    "definition_key": "step.product_definition#2428",
+                    "node_key": "node/2",
+                    "mesh": "Repeated Part#20788",
+                    "material_count": 2,
+                    "file_id": "6443708151119350964"
+                },
+                {
+                    "path": "0/0/0/0",
+                    "name": "CP Origin",
+                    "parent": "0/0/0",
+                    "definition_id": "",
+                    "occurrence_id": "",
+                    "definition_key": "step.product_definition#9",
+                    "node_key": "node/5",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "15698797935478819133"
+                },
+                {
+                    "path": "0/0/0/1",
+                    "name": "CP X1000",
+                    "parent": "0/0/0",
+                    "definition_id": "",
+                    "occurrence_id": "",
+                    "definition_key": "step.product_definition#9",
+                    "node_key": "node/6",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "17782079227441412934"
+                },
+                {
+                    "path": "0/0/0/2",
+                    "name": "CP Y2000",
+                    "parent": "0/0/0",
+                    "definition_id": "",
+                    "occurrence_id": "",
+                    "definition_key": "step.product_definition#9",
+                    "node_key": "node/7",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "15671475821280498587"
+                },
+                {
+                    "path": "0/0/0/3",
+                    "name": "CP Z3000",
+                    "parent": "0/0/0",
+                    "definition_id": "",
+                    "occurrence_id": "",
+                    "definition_key": "step.product_definition#9",
+                    "node_key": "node/8",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "17001227642035997952"
+                },
+                {
+                    "path": "0/0/1",
+                    "name": "Repeated Part 1",
+                    "parent": "0/0",
+                    "definition_id": "",
+                    "occurrence_id": "",
+                    "definition_key": "step.product_definition#2428",
+                    "node_key": "node/3",
+                    "mesh": "Repeated Part#20788",
+                    "material_count": 2,
+                    "file_id": "16553518234351226953"
+                },
+                {
+                    "path": "0/0/2",
+                    "name": "Omitted #2583",
+                    "parent": "0/0",
+                    "definition_id": "",
+                    "occurrence_id": "",
+                    "definition_key": "step.product_definition#2583",
+                    "node_key": "node/4",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "1743210847258902230"
+                }
+            ],
+            "subassets": [
+                {
+                    "kind": "GameObject",
+                    "name": "Assembly Frame",
+                    "file_id": "16938007628121109091"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "CP Origin",
+                    "file_id": "15698797935478819133"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "CP X1000",
+                    "file_id": "17782079227441412934"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "CP Y2000",
+                    "file_id": "15671475821280498587"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "CP Z3000",
+                    "file_id": "17001227642035997952"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "Omitted #2583",
+                    "file_id": "1743210847258902230"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "Repeated Part",
+                    "file_id": "6443708151119350964"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "Repeated Part 1",
+                    "file_id": "16553518234351226953"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "fcad-legacy",
+                    "file_id": "919132149155446097"
+                },
+                {
+                    "kind": "Material",
+                    "name": "Ferrite Blue #1",
+                    "file_id": "1016534892231277287"
+                },
+                {
+                    "kind": "Material",
+                    "name": "Ferrite Blue #3",
+                    "file_id": "2845056276687586866"
+                },
+                {
+                    "kind": "Material",
+                    "name": "Ferrite Red #0",
+                    "file_id": "11838072810871556198"
+                },
+                {
+                    "kind": "Material",
+                    "name": "Ferrite Red #2",
+                    "file_id": "4841559787194781591"
+                },
+                {
+                    "kind": "Mesh",
+                    "name": "Repeated Part",
+                    "file_id": "14015010845024521784"
+                }
+            ]
+        },
+        {
+            "file": "fcad-identity-escaping.fbx",
+            "sorted_by_name_by_default": true,
+            "root_designation": "fcad-identity-escaping",
+            "objects": 5,
+            "meshes": 0,
+            "materials": 0,
+            "objects_with_definition_id": 5,
+            "objects_with_occurrence_id": 5,
+            "distinct_definition_ids": 5,
+            "distinct_occurrence_ids": 5,
+            "identifier_uniqueness_violations": 0,
+            "import_errors": 0,
+            "nodes": [
+                {
+                    "path": "0",
+                    "name": "fcad-identity-escaping",
+                    "parent": "",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000003:step.product_definition%231",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000b0",
+                    "definition_key": "step.product_definition#1",
+                    "node_key": "node/0",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "919132149155446097"
+                },
+                {
+                    "path": "0/0",
+                    "name": "Separators",
+                    "parent": "0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000003:a%3Ab%3Ac",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000b1",
+                    "definition_key": "a:b:c",
+                    "node_key": "node/1",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "14100362052737388526"
+                },
+                {
+                    "path": "0/1",
+                    "name": "Unicode",
+                    "parent": "0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000003:%D0%BA%D0%BB%D1%8E%D1%87%20%E2%80%94%20100%25",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000b2",
+                    "definition_key": "ключ — 100%",
+                    "node_key": "node/2",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "13731232917959133350"
+                },
+                {
+                    "path": "0/2",
+                    "name": "Already escaped",
+                    "parent": "0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000003:already%253Aescaped",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000b3",
+                    "definition_key": "already%3Aescaped",
+                    "node_key": "node/3",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "13384070632883897267"
+                },
+                {
+                    "path": "0/3",
+                    "name": "Whitespace",
+                    "parent": "0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000003:space%20and%09tab",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000b4",
+                    "definition_key": "space and\ttab",
+                    "node_key": "node/4",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "3037736925270364775"
+                }
+            ],
+            "subassets": [
+                {
+                    "kind": "GameObject",
+                    "name": "Already escaped",
+                    "file_id": "13384070632883897267"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "Separators",
+                    "file_id": "14100362052737388526"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "Unicode",
+                    "file_id": "13731232917959133350"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "Whitespace",
+                    "file_id": "3037736925270364775"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "fcad-identity-escaping",
+                    "file_id": "919132149155446097"
+                }
+            ]
+        },
+        {
+            "file": "fcad-renamed.fbx",
+            "sorted_by_name_by_default": true,
+            "root_designation": "fcad-renamed",
+            "objects": 9,
+            "meshes": 1,
+            "materials": 4,
+            "objects_with_definition_id": 9,
+            "objects_with_occurrence_id": 9,
+            "distinct_definition_ids": 5,
+            "distinct_occurrence_ids": 9,
+            "identifier_uniqueness_violations": 0,
+            "import_errors": 0,
+            "nodes": [
+                {
+                    "path": "0",
+                    "name": "fcad-renamed",
+                    "parent": "",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%231",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a0",
+                    "definition_key": "step.product_definition#1",
+                    "node_key": "node/0",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "919132149155446097"
+                },
+                {
+                    "path": "0/0",
+                    "name": "Assembly Frame renamed",
+                    "parent": "0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%237",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a1",
+                    "definition_key": "step.product_definition#7",
+                    "node_key": "node/1",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "18440355972608369252"
+                },
+                {
+                    "path": "0/0/0",
+                    "name": "Repeated Part renamed",
+                    "parent": "0/0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%232428",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a2",
+                    "definition_key": "step.product_definition#2428",
+                    "node_key": "node/2",
+                    "mesh": "Repeated Part renamed#20870",
+                    "material_count": 2,
+                    "file_id": "13768028344738842506"
+                },
+                {
+                    "path": "0/0/0/0",
+                    "name": "CP Origin renamed",
+                    "parent": "0/0/0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%239",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a5",
+                    "definition_key": "step.product_definition#9",
+                    "node_key": "node/5",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "15636722707015801544"
+                },
+                {
+                    "path": "0/0/0/1",
+                    "name": "CP X1000 renamed",
+                    "parent": "0/0/0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%239",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a6",
+                    "definition_key": "step.product_definition#9",
+                    "node_key": "node/6",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "7532392701872305217"
+                },
+                {
+                    "path": "0/0/0/2",
+                    "name": "CP Y2000 renamed",
+                    "parent": "0/0/0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%239",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a7",
+                    "definition_key": "step.product_definition#9",
+                    "node_key": "node/7",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "12097742485949169473"
+                },
+                {
+                    "path": "0/0/0/3",
+                    "name": "CP Z3000 renamed",
+                    "parent": "0/0/0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%239",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a8",
+                    "definition_key": "step.product_definition#9",
+                    "node_key": "node/8",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "10668182115832795813"
+                },
+                {
+                    "path": "0/0/1",
+                    "name": "Repeated Part renamed 1",
+                    "parent": "0/0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%232428",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a3",
+                    "definition_key": "step.product_definition#2428",
+                    "node_key": "node/3",
+                    "mesh": "Repeated Part renamed#20870",
+                    "material_count": 2,
+                    "file_id": "7983599113777016077"
+                },
+                {
+                    "path": "0/0/2",
+                    "name": "Omitted #2583 renamed",
+                    "parent": "0/0",
+                    "definition_id": "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%232583",
+                    "occurrence_id": "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a4",
+                    "definition_key": "step.product_definition#2583",
+                    "node_key": "node/4",
+                    "mesh": "",
+                    "material_count": 0,
+                    "file_id": "1987968084402698623"
+                }
+            ],
+            "subassets": [
+                {
+                    "kind": "GameObject",
+                    "name": "Assembly Frame renamed",
+                    "file_id": "18440355972608369252"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "CP Origin renamed",
+                    "file_id": "15636722707015801544"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "CP X1000 renamed",
+                    "file_id": "7532392701872305217"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "CP Y2000 renamed",
+                    "file_id": "12097742485949169473"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "CP Z3000 renamed",
+                    "file_id": "10668182115832795813"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "Omitted #2583 renamed",
+                    "file_id": "1987968084402698623"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "Repeated Part renamed",
+                    "file_id": "13768028344738842506"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "Repeated Part renamed 1",
+                    "file_id": "7983599113777016077"
+                },
+                {
+                    "kind": "GameObject",
+                    "name": "fcad-renamed",
+                    "file_id": "919132149155446097"
+                },
+                {
+                    "kind": "Material",
+                    "name": "Ferrite Blue #1",
+                    "file_id": "1016534892231277287"
+                },
+                {
+                    "kind": "Material",
+                    "name": "Ferrite Blue #3",
+                    "file_id": "2845056276687586866"
+                },
+                {
+                    "kind": "Material",
+                    "name": "Ferrite Red #0",
+                    "file_id": "11838072810871556198"
+                },
+                {
+                    "kind": "Material",
+                    "name": "Ferrite Red #2",
+                    "file_id": "4841559787194781591"
+                },
+                {
+                    "kind": "Mesh",
+                    "name": "Repeated Part renamed",
+                    "file_id": "8911263529470615016"
+                }
+            ]
+        }
+    ],
+    "against_legacy": {
+        "against": "fcad-legacy.fbx",
+        "objects_compared": 9,
+        "names_that_moved": 0,
+        "roots_excluded_from_the_name_comparison": 1,
+        "parents_that_moved": 0,
+        "mesh_bindings_that_moved": 0,
+        "material_counts_that_moved": 0,
+        "existing_properties_that_moved": 0,
+        "gameobject_file_ids_that_moved": 0,
+        "mesh_file_ids_that_moved": 0,
+        "material_file_ids_that_moved": 0
+    },
+    "across_a_rename": {
+        "objects_compared": 9,
+        "joined_by_placement_identity": 9,
+        "designations_that_changed": 8,
+        "roots_excluded_from_the_name_comparison": 1,
+        "gameobject_file_ids_that_moved": 8,
+        "meshes_before": 1,
+        "meshes_after": 1,
+        "materials_before": 4,
+        "materials_after": 4
+    },
+    "findings": []
+}

@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 
 use ferritecad_exchange::Import;
 use ferritecad_export::{
-    ExportGeometry, ExportOccurrence, ExportProvenance, ExportSceneBuilder, ExportSource,
-    ExportTransform, TRANSFORM_TOLERANCE, write_fbx_ascii_7400,
+    ExportDefinitionIdentity, ExportGeometry, ExportOccurrence, ExportProvenance,
+    ExportSceneBuilder, ExportSource, ExportTransform, TRANSFORM_TOLERANCE, write_fbx_ascii_7400,
 };
 use ferritecad_kernel::GeometryKernel;
 use ferritecad_occt::{OcctKernel, is_available};
@@ -63,6 +63,10 @@ fn writes_and_rebuilds(placement: &[f64; 12]) -> Result<(), String> {
                 source: ImportedSourceId::new(),
                 definition_key: "placement".to_owned(),
             },
+            // This measurement is about transforms; the identity channel plays
+            // no part in it, and a recorded one would only put a value into a
+            // property nothing here reads.
+            ExportDefinitionIdentity::Unrecorded,
             Some("Placement".to_owned()),
             ExportProvenance::default(),
             ExportGeometry::Structural,

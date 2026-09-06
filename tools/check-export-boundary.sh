@@ -248,20 +248,19 @@ readonly WRITER_SOURCES=(
     crates/ferritecad-export/src/fbx/mod.rs
     crates/ferritecad-export/src/fbx/contract.rs
     crates/ferritecad-export/src/fbx/syntax.rs
+    crates/ferritecad-export/src/fbx/identity.rs
 )
 
 # What a writer must not name, over and above the transient identities the
 # model is already checked for.
+#
+# §22B-1e3a forbade the writer to name a placement identity at all, because it
+# delivered one to the neutral boundary and deliberately did not act on it.
+# §22B-1e3b acts on it, so that historical prohibition is replaced below by the
+# contract it stood in for: the writer reads the identities the scene carries,
+# spells them in one contained module, and mints nothing. Everything else the
+# prohibition protected is unchanged.
 readonly FORBIDDEN_IN_WRITER=(
-    # The durable identity of a placement. §22B-1e3a gives every placement one
-    # and delivers it to the neutral boundary, and stops there: what a writer
-    # should do with it depends on what a name is in the target program, which
-    # §22B-1e1 and §22B-1e2a measured and no slice has yet acted on. A writer
-    # that started reading it would change the bytes of every existing export
-    # under a slice whose whole claim is that it changes none.
-    ExportOccurrence
-    OccurrenceId
-    occurrence
     # A document, a kernel, an importer or a picture.
     Document
     DocumentId
@@ -339,24 +338,121 @@ then
     fail "the FBX writer takes something other than a scene and a byte sink"
 fi
 
-# And the model does carry it, so the gate above is about a writer that
-# refuses to read something that is there rather than about a name nothing
-# defines yet.
+# And the model does carry both halves of the identity a placement has, so the
+# gates above and below are about values that are there rather than about names
+# nothing defines yet.
 if ! grep -q 'pub occurrence: ExportOccurrence,' "$MODEL"; then
     fail "the export model has no placement identity on its nodes"
 fi
 if ! grep -q 'pub enum ExportOccurrence {' "$MODEL"; then
     fail "the export model does not define ExportOccurrence"
 fi
-# And it is delivered by the one load spine, from the stored payload and from
-# nowhere else. A `NodeIdentity::Occurrence` minted in the scene crate would be
-# a durable identity that is new on every export, and would compile.
+if ! grep -q 'pub identity: ExportDefinitionIdentity,' "$MODEL"; then
+    fail "the export model has no durable identity on its definitions"
+fi
+if ! grep -q 'pub enum ExportDefinitionIdentity {' "$MODEL"; then
+    fail "the export model does not define ExportDefinitionIdentity"
+fi
+# Both enums keep their third state. Without it a legacy layout could only be
+# reported as an identity somebody invented or as an identity that got lost,
+# and §22B-1e3b's whole legacy policy is that it is neither.
+for enum in ExportOccurrence ExportDefinitionIdentity; do
+    if ! shipped "$MODEL" | awk "/pub enum ${enum} \{/,/^\}/" | grep -q '^    Unrecorded'; then
+        fail "${enum} has no Unrecorded state, so a legacy layout cannot be told apart"
+    fi
+done
+
+# ---------------------------------------------------- the identity channel
+#
+# §22B-1e3b. The writer now reads the durable identities and writes them into
+# two invisible properties. What must stay true is that the value is a function
+# of the identity alone: not of where the node sits, what it is called, where
+# it is placed or what it is made of. Every one of those would compile, so the
+# containment is checked here.
+readonly IDENTITY='crates/ferritecad-export/src/fbx/identity.rs'
+[ -f "$IDENTITY" ] || fail "the identity wire contract ${IDENTITY} is missing"
+
+# The module that spells an identity may see the identity and nothing else.
+readonly FORBIDDEN_IN_IDENTITY=(
+    ExportNode
+    ExportNodeId
+    ExportScene
+    ExportDefinition
+    ExportProvenance
+    ExportGeometry
+    ExportMaterial
+    ExportSource
+    ExportTransform
+    display_name
+    local_transform
+    colour_override
+    parent
+    order
+    index
+    node
+)
+for name in "${FORBIDDEN_IN_IDENTITY[@]}"; do
+    [ -f "$IDENTITY" ] || continue
+    found="$(names "$IDENTITY" "$name")"
+    if [ -n "$found" ]; then
+        echo "$found" >&2
+        fail "the identity wire contract names ${name}, so a value could depend on it"
+    fi
+done
+
+# And it is the only place a value is spelled. A second spelling in the writer
+# would be a second contract, and the one nobody was looking at would drift.
+if [ "$(shipped_count 'fcad1' crates/ferritecad-export/src/fbx/mod.rs)" != "0" ]; then
+    fail "the FBX writer spells an identity value outside the wire contract module"
+fi
+for token in 'fcad1' 'FerriteCADDefinitionId' 'FerriteCADOccurrenceId'; do
+    if [ "$(shipped_count "$token" "$IDENTITY")" -lt 1 ]; then
+        fail "the identity wire contract does not define ${token}"
+    fi
+done
+
+# Nothing anywhere in the export crate mints an identity. A writer that could
+# make one up would produce a durable identity that is new on every export,
+# which is the one thing a durable identity must never be.
+readonly EXPORT_SOURCES=(
+    crates/ferritecad-export/src/lib.rs
+    crates/ferritecad-export/src/scene.rs
+    "${WRITER_SOURCES[@]}"
+)
+for minted in 'OccurrenceId::new(' 'ObjectId::new(' 'ImportedSourceId::new(' 'Uuid::' 'now_v7'; do
+    if [ "$(shipped_count "$minted" "${EXPORT_SOURCES[@]}")" != "0" ]; then
+        fail "${EXPORT} mints an identity with ${minted}"
+    fi
+done
+
+# The writer reads each half from the scene, once, and from nowhere else.
+if [ "$(shipped_count 'identity::occurrence(&node.occurrence)' \
+    crates/ferritecad-export/src/fbx/mod.rs)" != "1" ]; then
+    fail "the FBX writer does not take the placement identity from the node exactly once"
+fi
+if [ "$(shipped_count 'identity::definition(&definition.identity)' \
+    crates/ferritecad-export/src/fbx/mod.rs)" != "1" ]; then
+    fail "the FBX writer does not take the definition identity from the definition exactly once"
+fi
+
+# And they are delivered by the one load spine, from the stored payload and
+# from nowhere else. A `NodeIdentity::Occurrence` minted in the scene crate
+# would be a durable identity that is new on every export, and would compile.
 readonly SPINE="${SCENE}/src/prepare.rs"
 if [ "$(shipped_count 'OccurrenceId::new(' "$SPINE" "${SCENE}/src/export.rs")" != "0" ]; then
     fail "${SCENE} mints a placement identity; identities come from the stored payload"
 fi
 if [ "$(shipped_count 'reopened.occurrences()' "$SPINE")" != "1" ]; then
     fail "${SPINE} does not read the stored placement identities exactly once"
+fi
+# The same for the definition half: read from the layout the payload was
+# stored at, once, and never inferred from the fact that a fresh reading shows
+# keys. Every reading shows keys; only some documents wrote them down.
+if [ "$(shipped_count 'reopened.definition_identities()' "$SPINE")" != "1" ]; then
+    fail "${SPINE} does not read the stored definition identity state exactly once"
+fi
+if [ "$(shipped_count 'StoredDefinitionIdentities::Recorded' "$SPINE")" != "1" ]; then
+    fail "${SPINE} decides that definitions are identified in more than one place"
 fi
 
 # Nothing in the export model may be serialised.

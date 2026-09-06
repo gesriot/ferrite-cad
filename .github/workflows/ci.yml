@@ -78,6 +78,22 @@ jobs:
       # mutation campaign is run against the real verifier.
       - run: tools/unity-identity-graph/scripts/check_graph_record.sh
 
+      # The §22B-1e3b measurement of what the real editor makes of the identity
+      # channel in the shipped file, minus the editor. The decision record is
+      # rebuilt from the recorded report and compared with the committed one,
+      # and the semantic mutation campaign is run against the real verifier —
+      # including the four metamorphic controls that must survive, because a
+      # record that refused them would be asserting a local-file-identifier
+      # stability no property in an FBX can deliver.
+      - run: tools/unity-identity-file/scripts/check_file_record.sh
+
+      # The §22B-1e3b wire grammar has two implementations on purpose: the
+      # writer's, and the independent one the outside join uses. This gate is
+      # what keeps the second one able to tell a wrong file from a right one —
+      # one transcript that must be accepted and one per defect that must be
+      # refused by name. It needs no editor, no kernel and no compiler.
+      - run: tools/fbx-identity/scripts/check_join.py
+
       # One crate owns the sketch solver boundary. Both halves keep compiling
       # if a second copy appears, so this is checked rather than remembered.
       - run: tools/check-solver-ownership.sh

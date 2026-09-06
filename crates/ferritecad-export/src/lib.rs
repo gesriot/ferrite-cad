@@ -32,10 +32,10 @@ mod scene;
 
 pub use fbx::{FbxWriteReport, write_fbx_ascii_7400};
 pub use scene::{
-    ExportColourOrigin, ExportCompleteness, ExportDefinition, ExportDefinitionId, ExportGeometry,
-    ExportMaterial, ExportMesh, ExportNode, ExportNodeId, ExportOccurrence, ExportOmission,
-    ExportOmissionReport, ExportProvenance, ExportScene, ExportSceneBuilder, ExportSource,
-    ExportTransform, TRANSFORM_TOLERANCE,
+    ExportColourOrigin, ExportCompleteness, ExportDefinition, ExportDefinitionId,
+    ExportDefinitionIdentity, ExportGeometry, ExportMaterial, ExportMesh, ExportNode, ExportNodeId,
+    ExportOccurrence, ExportOmission, ExportOmissionReport, ExportProvenance, ExportScene,
+    ExportSceneBuilder, ExportSource, ExportTransform, TRANSFORM_TOLERANCE,
 };
 
 use ferritecad_kernel::Mesh;

@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 #
-# Applies the §22B-1e3a occurrence-identity mutations. Every edit is restored
+# Applies the §22B-1e3a and §22B-1e3b identity mutations. Every edit is restored
 # byte-for-byte; compile failures, zero-test runs and zero-check runs are
 # refused rather than credited as mutation kills.
 #
-# What is under test is the one claim of the slice: after the first save of a
-# newly imported STEP document, every placement has a durable identity that the
-# *document* owns, that reaches the neutral export boundary, and that is derived
-# from nothing — not an ordinal, a parent, a traversal order, a display name, a
-# transform, a definition key, or anything a writer later numbers. Every way of
-# getting that wrong compiles.
+# §22B-1e3a: after the first save of a newly imported STEP document, every
+# placement has a durable identity that the *document* owns, that reaches the
+# neutral export boundary, and that is derived from nothing — not an ordinal, a
+# parent, a traversal order, a display name, a transform, a definition key, or
+# anything a writer later numbers.
+#
+# §22B-1e3b: that identity, and the definition identity beside it, reach the
+# shipped FBX as two invisible properties whose values are a function of the
+# identity alone; a layout that recorded no identity carries no property; and
+# nothing else about the file moves. §22B-1e3a forbade the writer to read a
+# placement identity at all, which was that slice's boundary rather than a
+# permanent rule; that prohibition is replaced here by the contract it stood in
+# for, and every other guarantee it protected is kept.
+#
+# Every way of getting any of that wrong compiles.
 #
 # No Open CASCADE anywhere in this campaign. Every gate here runs against the
 # mock kernel or against pure arithmetic, which is what lets the whole campaign
@@ -28,6 +37,8 @@ spine="$root/crates/ferritecad-scene/src/prepare.rs"
 builder="$root/crates/ferritecad-scene/src/export.rs"
 model="$root/crates/ferritecad-export/src/scene.rs"
 writer="$root/crates/ferritecad-export/src/fbx/mod.rs"
+wire="$root/crates/ferritecad-export/src/fbx/identity.rs"
+joiner="$root/tools/fbx-identity/scripts/join_identity.py"
 digests="$root/tools/fbx/digests.tsv"
 temporary="$(mktemp -d "${TMPDIR:-/tmp}/ferritecad-occurrence-mutations.XXXXXX")"
 
@@ -177,6 +188,21 @@ cargo_gate() {
       cargo test -p ferritecad-export --test fbx_ascii "$test_name" -- --exact --nocapture \
         >"$log" 2>&1
       ;;
+    model)
+      # The neutral model and the wire contract beside it, both of which live in
+      # the export crate's own unit tests.
+      cargo test -p ferritecad-export --lib "$test_name" -- --exact --nocapture >"$log" 2>&1
+      ;;
+    join)
+      # The independent implementation of the wire grammar, run over one
+      # transcript that must be accepted and one per defect that must be
+      # refused *by name*. Requiring the name is what makes each of the
+      # joiner's checks separately necessary; a gate that only looked at the
+      # exit status would let one of two overlapping checks be deleted
+      # unnoticed, which is exactly what it did in the first edition of this
+      # campaign.
+      "$root/tools/fbx-identity/scripts/check_join.py" "$temporary/join" >"$log" 2>&1
+      ;;
     bytes)
       # The committed digests of the production FBX bytes, recomputed from the
       # writer through the same example the shell gate uses. A slice that
@@ -190,11 +216,28 @@ cargo_gate() {
   esac
   status=$?
 
+  if [ "$gate" = "join" ]; then
+    # Python has no compile step, so the honest analogue of a mutant that does
+    # not build is one the interpreter cannot even start: a `SyntaxError`. A
+    # traceback from the joiner running as a subprocess is a runtime outcome
+    # and is not excused here.
+    if grep -q 'SyntaxError' "$log"; then
+      return 20
+    fi
+    if ! grep -q '^FCAD_IDENTITY_JOIN_CHECKED 12 failures=' "$log"; then
+      return 30
+    fi
+    if [ "$status" -eq 0 ]; then
+      return 0
+    fi
+    return 10
+  fi
+
   if [ "$gate" = "bytes" ]; then
     if grep -q 'could not compile\|error: building' "$log"; then
       return 20
     fi
-    if ! grep -q '^FCAD_FBX_BYTES_CHECKED 2$' "$log"; then
+    if ! grep -q '^FCAD_FBX_BYTES_CHECKED 5$' "$log"; then
       return 30
     fi
     if [ "$status" -eq 0 ]; then
@@ -320,7 +363,28 @@ baseline() {
     a_placement_of_a_definition_with_no_triangles_still_has_its_stored_identity
   baseline_gate scene one_export_solves_once_reads_each_source_once_and_meshes_each_definition_once
   baseline_gate scene a_nested_assembly_keeps_every_parent_and_exact_local_transform
-  baseline_gate writer a_placement_identity_changes_nothing_the_writer_writes
+  baseline_gate scene \
+    a_document_written_before_definitions_had_keys_says_so_and_still_exports
+  baseline_gate scene \
+    a_version_2_document_keeps_its_definition_identities_and_has_no_placement_ones
+  baseline_gate scene a_native_body_is_its_object_in_both_identity_domains
+  baseline_gate scene two_sources_that_gave_one_definition_the_same_key_keep_two_identities
+  baseline_gate scene a_definition_reached_through_a_legacy_object_as_well_is_not_identified
+  baseline_gate model fbx::identity::tests::the_escaping_rule_has_exactly_these_golden_vectors
+  baseline_gate model fbx::identity::tests::the_wire_contract_has_exactly_these_golden_values
+  baseline_gate model fbx::identity::tests::an_unrecorded_identity_has_no_spelling_at_all
+  baseline_gate model fbx::identity::tests::one_object_gives_two_values_that_cannot_be_confused
+  baseline_gate model fbx::identity::tests::two_sources_with_one_local_key_are_two_values
+  baseline_gate model fbx::identity::tests::no_field_can_smuggle_a_separator_into_a_value
+  baseline_gate model fbx::identity::tests::the_encoding_is_injective_over_the_keys_it_is_given
+  baseline_gate model \
+    scene::tests::a_definition_identity_that_describes_something_else_is_refused
+  baseline_gate model scene::tests::one_recorded_definition_identity_cannot_name_two_definitions
+  baseline_gate writer the_durable_identities_are_the_only_thing_the_identity_channel_adds
+  baseline_gate writer every_node_carries_the_identity_its_scene_recorded_for_it
+  baseline_gate writer \
+    a_definition_key_that_could_break_the_grammar_is_escaped_and_survives_both_rules
+  baseline_gate join -
   baseline_gate bytes -
 }
 
@@ -648,16 +712,6 @@ expect_kill identity_leaked_into_the_display_name scene \
   a_document_written_before_placements_had_identities_says_so_and_still_exports
 restore_mutation
 
-# 24. The FBX writer reading the identity in this slice, which would change
-# every file this build has ever produced.
-begin_mutation "$writer"
-replace_once "$writer" \
-  '        let name = node.display_name.as_deref().unwrap_or_default();' \
-  $'        let owned = match node.occurrence {\n            crate::ExportOccurrence::Occurrence(occurrence) => occurrence.to_string(),\n            _ => node.display_name.as_deref().unwrap_or_default().to_owned(),\n        };\n        let name = &owned[..];'
-expect_kill the_writer_consumes_the_identity writer \
-  a_placement_identity_changes_nothing_the_writer_writes
-restore_mutation
-
 # 25. And the bytes changed at all, in a slice whose whole claim is that the
 # file a person gets is the file they already had.
 begin_mutation "$writer"
@@ -665,6 +719,362 @@ replace_once "$writer" \
   'const CREATOR: &str = "FerriteCAD FBX 7.4 ASCII writer";' \
   'const CREATOR: &str = "FerriteCAD FBX 7.4 ASCII writer.";'
 expect_kill existing_fbx_bytes_changed bytes -
+restore_mutation
+
+# ================================================ §22B-1e3b: the file's channel
+
+# 26. The definition identity never reaches the file.
+begin_mutation "$writer"
+replace_once "$writer" \
+  '        if let Some(value) = identity::definition(&definition.identity) {' \
+  '        if let Some(value) = None::<String> {'
+expect_kill the_definition_property_never_written writer \
+  the_durable_identities_are_the_only_thing_the_identity_channel_adds
+restore_mutation
+
+# 27. The placement identity never reaches the file.
+begin_mutation "$writer"
+replace_once "$writer" \
+  '        if let Some(value) = identity::occurrence(&node.occurrence) {' \
+  '        if let Some(value) = None::<String> {'
+expect_kill the_occurrence_property_never_written writer \
+  the_durable_identities_are_the_only_thing_the_identity_channel_adds
+restore_mutation
+
+# 28. The source identity dropped from the definition value, leaving the local
+# key alone. This is exactly the `ambiguous_join` §22B-1e2a measured: `#42`
+# occurs in most STEP files and names something different in each.
+begin_mutation "$wire"
+replace_once "$wire" \
+  '            &[&source.to_string(), definition_key],' \
+  '            &[definition_key],'
+expect_kill the_imported_source_id_dropped_from_the_value model \
+  fbx::identity::tests::two_sources_with_one_local_key_are_two_values
+restore_mutation
+
+# 29. Two sources with one local key made to share one value another way: the
+# source is there, and it is the same one for everybody.
+begin_mutation "$wire"
+replace_once "$wire" \
+  '            &[&source.to_string(), definition_key],' \
+  '            &[&String::from("one-source"), definition_key],'
+expect_kill two_sources_collapsed_onto_one_identity model \
+  fbx::identity::tests::two_sources_with_one_local_key_are_two_values
+restore_mutation
+
+# 30. The two domains stop being two, so a definition identity and a placement
+# identity of one native body become one string that nothing can tell apart.
+begin_mutation "$wire"
+replace_once "$wire" \
+  'const OCCURRENCE_DOMAIN: &str = "occ";' \
+  'const OCCURRENCE_DOMAIN: &str = "def";'
+expect_kill the_two_identity_domains_share_one_tag model \
+  fbx::identity::tests::one_object_gives_two_values_that_cannot_be_confused
+restore_mutation
+
+# 31. The placement property carries the definition identity, so every
+# placement of one part answers to one value — the §22B-1e1 failure exactly.
+begin_mutation "$writer"
+replace_once "$writer" \
+  '        if let Some(value) = identity::occurrence(&node.occurrence) {' \
+  '        if let Some(value) = identity::definition(&definition.identity) {'
+expect_kill the_definition_identity_written_as_the_placement writer \
+  every_node_carries_the_identity_its_scene_recorded_for_it
+restore_mutation
+
+# 32. The escaping rule leaves the value separator alone, so a key that
+# contains one silently becomes two fields.
+begin_mutation "$wire"
+replace_once "$wire" \
+  "    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')" \
+  "    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b':')"
+expect_kill the_separator_left_unescaped model \
+  fbx::identity::tests::no_field_can_smuggle_a_separator_into_a_value
+restore_mutation
+
+# 33. The escape character itself left unescaped, so `a%3Ab` and `a:b` become
+# one value: an encoding that is no longer injective.
+begin_mutation "$wire"
+replace_once "$wire" \
+  "    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')" \
+  "    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'%')"
+expect_kill the_escape_character_left_unescaped model \
+  fbx::identity::tests::the_encoding_is_injective_over_the_keys_it_is_given
+restore_mutation
+
+# 34. Two spellings of one escape, which is a canonical encoding that is not.
+begin_mutation "$wire"
+replace_once "$wire" \
+  "    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'," \
+  "    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',"
+expect_kill the_escaping_hex_is_not_canonical model \
+  fbx::identity::tests::the_escaping_rule_has_exactly_these_golden_vectors
+restore_mutation
+
+# 35. The wire contract version dropped, so no reader can tell which contract a
+# value was written under.
+begin_mutation "$wire"
+replace_once "$wire" \
+  'const VERSION: &str = "fcad1";' \
+  'const VERSION: &str = "fcad";'
+expect_kill the_wire_contract_version_changed_silently model \
+  fbx::identity::tests::the_wire_contract_has_exactly_these_golden_values
+restore_mutation
+
+# 36. A durable identity invented for a layout that recorded none, in the one
+# place a file could invent it.
+begin_mutation "$wire"
+replace_once "$wire" \
+  '        ExportDefinitionIdentity::Unrecorded => None,' \
+  $'        ExportDefinitionIdentity::Unrecorded => {\n            Some(value(DEFINITION_DOMAIN, SOURCE_KIND, &["unknown", "unknown"]))\n        }'
+expect_kill a_legacy_layout_given_a_synthetic_value_in_the_file writer \
+  the_durable_identities_are_the_only_thing_the_identity_channel_adds
+restore_mutation
+
+# 37. The placement value taken from the ordinal the node happens to sit at,
+# which is what §22B-1e1 measured breaking on every insertion.
+begin_mutation "$writer"
+replace_once "$writer" \
+  $'        if let Some(value) = identity::occurrence(&node.occurrence) {\n            ascii.property(\n                identity::OCCURRENCE_PROPERTY,\n                "KString",\n                "",\n                "U",\n                &[Value::Text(&value)],\n            )?;\n        }' \
+  $'        if identity::occurrence(&node.occurrence).is_some() {\n            ascii.property(\n                identity::OCCURRENCE_PROPERTY,\n                "KString",\n                "",\n                "U",\n                &[Value::Text(&format!("fcad1:occ:place:{}", node.id.index()))],\n            )?;\n        }'
+expect_kill the_placement_value_taken_from_the_ordinal writer \
+  every_node_carries_the_identity_its_scene_recorded_for_it
+restore_mutation
+
+# 38. The placement value taken from what a person reads, which is the one
+# thing that must change independently of identity.
+begin_mutation "$writer"
+replace_once "$writer" \
+  $'        if let Some(value) = identity::occurrence(&node.occurrence) {\n            ascii.property(\n                identity::OCCURRENCE_PROPERTY,\n                "KString",\n                "",\n                "U",\n                &[Value::Text(&value)],\n            )?;\n        }' \
+  $'        if identity::occurrence(&node.occurrence).is_some() {\n            ascii.property(\n                identity::OCCURRENCE_PROPERTY,\n                "KString",\n                "",\n                "U",\n                &[Value::Text(&format!("fcad1:occ:place:{name}"))],\n            )?;\n        }'
+expect_kill the_placement_value_taken_from_the_display_name writer \
+  every_node_carries_the_identity_its_scene_recorded_for_it
+restore_mutation
+
+# 39. The placement value taken from where the part sits, which two placements
+# of one assembly frequently share.
+begin_mutation "$writer"
+replace_once "$writer" \
+  $'        if let Some(value) = identity::occurrence(&node.occurrence) {\n            ascii.property(\n                identity::OCCURRENCE_PROPERTY,\n                "KString",\n                "",\n                "U",\n                &[Value::Text(&value)],\n            )?;\n        }' \
+  $'        if identity::occurrence(&node.occurrence).is_some() {\n            ascii.property(\n                identity::OCCURRENCE_PROPERTY,\n                "KString",\n                "",\n                "U",\n                &[Value::Text(&format!(\n                    "fcad1:occ:place:{:?}",\n                    node.local_transform.translation()\n                ))],\n            )?;\n        }'
+expect_kill the_placement_value_taken_from_the_transform writer \
+  every_node_carries_the_identity_its_scene_recorded_for_it
+restore_mutation
+
+# 40. The placement value taken from the definition key, so every placement of
+# one part answers to one value.
+begin_mutation "$writer"
+replace_once "$writer" \
+  $'        if let Some(value) = identity::occurrence(&node.occurrence) {\n            ascii.property(\n                identity::OCCURRENCE_PROPERTY,\n                "KString",\n                "",\n                "U",\n                &[Value::Text(&value)],\n            )?;\n        }' \
+  $'        if identity::occurrence(&node.occurrence).is_some() {\n            ascii.property(\n                identity::OCCURRENCE_PROPERTY,\n                "KString",\n                "",\n                "U",\n                &[Value::Text(&format!("fcad1:occ:place:{key}"))],\n            )?;\n        }'
+expect_kill the_placement_value_taken_from_the_definition_key writer \
+  every_node_carries_the_identity_its_scene_recorded_for_it
+restore_mutation
+
+# 41. A fresh value minted in the writer, one per node, which is a durable
+# identity that is new on every export.
+begin_mutation "$writer"
+replace_once "$writer" \
+  $'        if let Some(value) = identity::occurrence(&node.occurrence) {\n            ascii.property(\n                identity::OCCURRENCE_PROPERTY,\n                "KString",\n                "",\n                "U",\n                &[Value::Text(&value)],\n            )?;\n        }' \
+  $'        if identity::occurrence(&node.occurrence).is_some() {\n            static MINTED: std::sync::atomic::AtomicUsize =\n                std::sync::atomic::AtomicUsize::new(0);\n            let minted = MINTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);\n            ascii.property(\n                identity::OCCURRENCE_PROPERTY,\n                "KString",\n                "",\n                "U",\n                &[Value::Text(&format!("fcad1:occ:place:{minted}"))],\n            )?;\n        }'
+expect_kill a_fresh_value_minted_in_the_writer writer \
+  every_node_carries_the_identity_its_scene_recorded_for_it
+restore_mutation
+
+# 42. Two neighbouring placements given each other's identities: stable,
+# distinct and wrong, which is the failure a set comparison cannot see.
+begin_mutation "$writer"
+replace_once "$writer" \
+  '        if let Some(value) = identity::occurrence(&node.occurrence) {' \
+  $'        let swapped = self\n            .scene\n            .nodes()\n            .get(node.id.index() ^ 1)\n            .unwrap_or(node);\n        if let Some(value) = identity::occurrence(&swapped.occurrence) {'
+expect_kill two_neighbouring_placements_swapped_in_the_file writer \
+  every_node_carries_the_identity_its_scene_recorded_for_it
+restore_mutation
+
+# 43. Structural frames left without identities, which is the §22B-1c boundary
+# eroded from the other side: a partial description that looks complete.
+begin_mutation "$writer"
+replace_once "$writer" \
+  '        if let Some(value) = identity::occurrence(&node.occurrence) {' \
+  '        if let Some(value) = identity::occurrence(&node.occurrence).filter(|_| has_mesh) {'
+expect_kill structural_nodes_left_without_identities_in_the_file writer \
+  the_durable_identities_are_the_only_thing_the_identity_channel_adds
+restore_mutation
+
+# 44. The placements of a definition this build could not mesh left without
+# identities, so a partial export starts to look like a complete one.
+begin_mutation "$writer"
+replace_once "$writer" \
+  '        if let Some(value) = identity::occurrence(&node.occurrence) {' \
+  $'        let omitted = matches!(definition.geometry, ExportGeometry::Omitted(_));\n        if let Some(value) = identity::occurrence(&node.occurrence).filter(|_| !omitted) {'
+expect_kill omitted_nodes_left_without_identities_in_the_file writer \
+  the_durable_identities_are_the_only_thing_the_identity_channel_adds
+restore_mutation
+
+# 45. The escape marker dropped, so an escaped byte is written as bare
+# hexadecimal. The value is then neither canonical nor injective — `a#b` and
+# `a23b` become one string — and it still looks like a plausible identity.
+#
+# The first edition of this mutant put the `%` case into the *unreserved*
+# branch of the escaper, where `%` never arrives, and it therefore changed
+# nothing at all. It survived, and it survived because it was observationally
+# equivalent rather than because a gate was weak; it is replaced here rather
+# than explained away.
+begin_mutation "$wire"
+replace_once "$wire" \
+  $'            out.push(\'%\');\n            out.push(HEX[usize::from(byte >> 4)]);' \
+  "            out.push(HEX[usize::from(byte >> 4)]);"
+expect_kill the_escape_marker_dropped_from_the_value model \
+  fbx::identity::tests::the_escaping_rule_has_exactly_these_golden_vectors
+restore_mutation
+
+# ====================================== §22B-1e3b: which layout recorded what
+
+# 46. A durable definition identity invented for a layout that recorded none,
+# at the point the load decides.
+begin_mutation "$spine"
+replace_once "$spine" \
+  '                StoredDefinitionIdentities::Unrecorded => Identified::No,' \
+  '                StoredDefinitionIdentities::Unrecorded => Identified::Yes,'
+expect_kill a_legacy_document_given_a_synthetic_definition_identity scene \
+  a_document_written_before_definitions_had_keys_says_so_and_still_exports
+restore_mutation
+
+# 47. The same conclusion reached in the persistence layer instead: version 1
+# declared to have recorded what it never recorded.
+begin_mutation "$persist"
+replace_once "$persist" \
+  '            Self::V1(_) => StoredDefinitionIdentities::Unrecorded,' \
+  '            Self::V1(_) => StoredDefinitionIdentities::Recorded,'
+expect_kill version_1_declared_to_have_recorded_its_keys scene \
+  a_document_written_before_definitions_had_keys_says_so_and_still_exports
+restore_mutation
+
+# 48. Version 2 declared to have recorded nothing, which would lose the
+# definition identity it really does have. The two halves are separate
+# questions, and this is the other way of confusing them.
+begin_mutation "$persist"
+replace_once "$persist" \
+  '            Self::V2(_) | Self::V3(_) => StoredDefinitionIdentities::Recorded,' \
+  $'            Self::V2(_) => StoredDefinitionIdentities::Unrecorded,\n            Self::V3(_) => StoredDefinitionIdentities::Recorded,'
+expect_kill version_2_stripped_of_the_keys_it_did_record scene \
+  a_version_2_document_keeps_its_definition_identities_and_has_no_placement_ones
+restore_mutation
+
+# 49. Two sightings of one definition merged by disjunction, so one
+# current-layout object is enough to promise an identity for a definition a
+# legacy object also holds.
+begin_mutation "$spine"
+replace_once "$spine" \
+  '            entry.identified &= seen.identified == Identified::Yes;' \
+  '            entry.identified |= seen.identified == Identified::Yes;'
+expect_kill sightings_of_one_definition_merged_by_disjunction scene \
+  a_definition_reached_through_a_legacy_object_as_well_is_not_identified
+restore_mutation
+
+# 50. A native definition identified by something other than the object that
+# holds it.
+begin_mutation "$spine"
+replace_once "$spine" \
+  '        SceneItem::Body(object) => DefinitionIdentity::Object(*object),' \
+  '        SceneItem::Body(_) => DefinitionIdentity::Unrecorded,'
+expect_kill a_native_definition_not_identified_by_its_object scene \
+  a_native_body_is_its_object_in_both_identity_domains
+restore_mutation
+
+# 51. The definition identity dropped on the way to the neutral boundary.
+begin_mutation "$builder"
+replace_once "$builder" \
+  '                definition_identity_of(&prepared.identity),' \
+  '                ExportDefinitionIdentity::Unrecorded,'
+expect_kill definition_identity_dropped_at_the_export_builder scene \
+  a_version_2_document_keeps_its_definition_identities_and_has_no_placement_ones
+restore_mutation
+
+# 52. The definition identity taken from the fresh reading's key rather than
+# from what the stored layout recorded — the exact slip the typed state exists
+# to prevent, because every reading shows keys.
+begin_mutation "$spine"
+replace_once "$spine" \
+  '        SceneItem::Imported(_) if !identified => DefinitionIdentity::Unrecorded,' \
+  '        SceneItem::Imported(_) if false => DefinitionIdentity::Unrecorded,'
+expect_kill the_definition_identity_read_off_the_fresh_keys scene \
+  a_document_written_before_definitions_had_keys_says_so_and_still_exports
+restore_mutation
+
+# 53. The neutral builder stops checking that a recorded definition identity
+# describes the definition it is attached to, so a body could answer to an
+# imported definition and an imported definition to another source.
+begin_mutation "$model"
+replace_once "$model" \
+  '        agrees(&source, &identity)?;' \
+  '        let _ = agrees(&source, &identity);'
+expect_kill a_definition_identity_from_another_domain_accepted model \
+  scene::tests::a_definition_identity_that_describes_something_else_is_refused
+restore_mutation
+
+# ============================================ §22B-1e3b: the outside reading
+
+# 55. The independent join stops comparing the placement values it was given.
+begin_mutation "$joiner"
+replace_once "$joiner" \
+  '        elif row["occurrence"] != wanted_occurrence:' \
+  '        elif False:'
+expect_kill the_join_never_compares_the_placement_values join -
+restore_mutation
+
+# 56. The same for the definition half.
+begin_mutation "$joiner"
+replace_once "$joiner" \
+  '        elif row["definition"] != wanted_definition:' \
+  '        elif False:'
+expect_kill the_join_never_compares_the_definition_values join -
+restore_mutation
+
+# 57. A value the file does not carry accepted, which is the silent skip every
+# outside gate is built to prevent.
+begin_mutation "$joiner"
+replace_once "$joiner" \
+  '        if row["occurrence"] == "-":' \
+  '        if False:'
+expect_kill a_placement_carrying_no_value_accepted join -
+restore_mutation
+
+# 58. A reader that found nothing at all skipped in silence, which is the
+# quiet version of the same defect: the joiner still runs, still prints, and
+# still says nothing about the placements it never saw.
+begin_mutation "$joiner"
+replace_once "$joiner" \
+  $'            failures.append(f"placement {position} has no node carrying {key}")\n            continue' \
+  '            continue'
+expect_kill a_reader_that_found_nothing_accepted join -
+restore_mutation
+
+# 59. The join stops noticing that the file calls a placement something the
+# document does not, so it is joining two things it never lined up.
+begin_mutation "$joiner"
+replace_once "$joiner" \
+  '        if row["name"] != recorded["name"]:' \
+  '        if False:'
+expect_kill the_join_never_notices_a_renamed_placement join -
+restore_mutation
+
+# 60. Two placements answering to one value accepted: stable, distinct-looking
+# and ambiguous.
+begin_mutation "$joiner"
+replace_once "$joiner" \
+  '    if len(distinct_occurrences) != arguments.expect_nodes:' \
+  '    if False:'
+expect_kill two_placements_answering_to_one_value_accepted join -
+restore_mutation
+
+# 61. The independent grammar drifts from the written contract, so agreement
+# would stop meaning that two implementations of one rule agree.
+begin_mutation "$joiner"
+replace_once "$joiner" \
+  '            out.append(f"%{byte:02X}")' \
+  '            out.append(f"%{byte:02x}")'
+expect_kill the_independent_grammar_drifted_from_the_contract join -
 restore_mutation
 
 # ========================================================= metamorphic control

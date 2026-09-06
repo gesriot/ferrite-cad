@@ -234,8 +234,9 @@ mod tests {
     use super::*;
     use ferritecad_exchange::{Diagnostic, Severity, Stage};
     use ferritecad_export::{
-        ExportColourOrigin, ExportGeometry, ExportMaterial, ExportMesh, ExportOccurrence,
-        ExportOmission, ExportProvenance, ExportScene, ExportSceneBuilder, ExportTransform,
+        ExportColourOrigin, ExportDefinitionIdentity, ExportGeometry, ExportMaterial, ExportMesh,
+        ExportOccurrence, ExportOmission, ExportProvenance, ExportScene, ExportSceneBuilder,
+        ExportTransform,
     };
     use ferritecad_kernel::TessellationRefusal;
     use ferritecad_types::{ImportedSourceId, ObjectId};
@@ -270,11 +271,11 @@ mod tests {
     /// A scene of one definition with one placement, called `name`.
     fn one_node(geometry: ExportGeometry, name: &str) -> ExportScene {
         let mut builder = ExportSceneBuilder::new();
+        let object = ObjectId::new();
         let definition = builder
             .definition(
-                ExportSource::Body {
-                    object: ObjectId::new(),
-                },
+                ExportSource::Body { object },
+                ExportDefinitionIdentity::Object(object),
                 Some("part".to_owned()),
                 ExportProvenance::default(),
                 geometry,
@@ -341,6 +342,10 @@ mod tests {
                         source,
                         definition_key: "step.product_definition#31".to_owned(),
                     },
+                    ExportDefinitionIdentity::Source {
+                        source,
+                        definition_key: "step.product_definition#31".to_owned(),
+                    },
                     Some("part".to_owned()),
                     ExportProvenance::default(),
                     omission(),
@@ -385,6 +390,10 @@ mod tests {
             let definition = builder
                 .definition(
                     ExportSource::Imported {
+                        source,
+                        definition_key: key.to_owned(),
+                    },
+                    ExportDefinitionIdentity::Source {
                         source,
                         definition_key: key.to_owned(),
                     },

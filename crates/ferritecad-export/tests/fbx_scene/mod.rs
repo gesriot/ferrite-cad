@@ -12,12 +12,62 @@ use std::collections::BTreeMap;
 
 use ferritecad_exchange::{Diagnostic, Severity, Stage};
 use ferritecad_export::{
-    ExportColourOrigin, ExportGeometry, ExportMaterial, ExportMesh, ExportOccurrence,
-    ExportOmission, ExportProvenance, ExportScene, ExportSceneBuilder, ExportSource,
-    ExportTransform,
+    ExportColourOrigin, ExportDefinitionIdentity, ExportGeometry, ExportMaterial, ExportMesh,
+    ExportOccurrence, ExportOmission, ExportProvenance, ExportScene, ExportSceneBuilder,
+    ExportSource, ExportTransform,
 };
 use ferritecad_kernel::TessellationRefusal;
 use ferritecad_types::{ImportedSourceId, OccurrenceId};
+
+// ----------------------------------------------------------- fixed identities
+//
+// Spelled out rather than minted. §22B-1e3b puts the durable identities into
+// the file, so a scene that made up a fresh `ImportedSourceId` or
+// `OccurrenceId` would write different bytes on every run, and the committed
+// digests would be a record of one process rather than of the writer. Every
+// one of these is a well-formed UUIDv7, which is what the identifier types
+// require, and none of them is derived from anything in the scene.
+
+/// The one source the measured assembly was imported from.
+const MEASURED_SOURCE: &str = "019ffc72-1e3b-7000-8000-000000000001";
+/// The source of the escaping scene, which is a different file.
+const ESCAPING_SOURCE: &str = "019ffc72-1e3b-7000-8000-000000000002";
+
+/// One durable placement identity per node of the measured scene, in the order
+/// the nodes are added.
+const MEASURED_OCCURRENCES: [&str; 9] = [
+    "019ffc72-1e3b-7000-8000-0000000000a0",
+    "019ffc72-1e3b-7000-8000-0000000000a1",
+    "019ffc72-1e3b-7000-8000-0000000000a2",
+    "019ffc72-1e3b-7000-8000-0000000000a3",
+    "019ffc72-1e3b-7000-8000-0000000000a4",
+    "019ffc72-1e3b-7000-8000-0000000000a5",
+    "019ffc72-1e3b-7000-8000-0000000000a6",
+    "019ffc72-1e3b-7000-8000-0000000000a7",
+    "019ffc72-1e3b-7000-8000-0000000000a8",
+];
+
+/// The source of the identity-escaping scene, which is a third file.
+const KEYED_SOURCE: &str = "019ffc72-1e3b-7000-8000-000000000003";
+
+/// The escaping scene's placement identities, one per named node. The
+/// identity-escaping scene beside it uses the same five, because it is a
+/// different file and its identities are qualified by its own source.
+const ESCAPING_OCCURRENCES: [&str; 5] = [
+    "019ffc72-1e3b-7000-8000-0000000000b0",
+    "019ffc72-1e3b-7000-8000-0000000000b1",
+    "019ffc72-1e3b-7000-8000-0000000000b2",
+    "019ffc72-1e3b-7000-8000-0000000000b3",
+    "019ffc72-1e3b-7000-8000-0000000000b4",
+];
+
+pub fn source_of(text: &str) -> ImportedSourceId {
+    text.parse().expect("a fixed UUIDv7")
+}
+
+pub fn occurrence_of(text: &str) -> OccurrenceId {
+    text.parse().expect("a fixed UUIDv7")
+}
 
 // ------------------------------------------------------------------ scenes
 
@@ -25,6 +75,18 @@ fn imported(source: ImportedSourceId, key: &str) -> ExportSource {
     ExportSource::Imported {
         source,
         definition_key: key.to_owned(),
+    }
+}
+
+/// The durable identity of an imported definition, or the fact that a legacy
+/// layout recorded none.
+fn identified(source: ImportedSourceId, key: &str, identify: Identify) -> ExportDefinitionIdentity {
+    match identify {
+        Identify::Yes | Identify::Renamed => ExportDefinitionIdentity::Source {
+            source,
+            definition_key: key.to_owned(),
+        },
+        Identify::No => ExportDefinitionIdentity::Unrecorded,
     }
 }
 
@@ -101,39 +163,81 @@ pub fn euler_xyz(degrees: [f64; 3]) -> [[f64; 3]; 3] {
 /// The measured scene: an assembly root, a transformed frame, two differently
 /// placed instances of one two-slot geometry, one of them recoloured, an
 /// omitted definition and four named control points below the first instance.
-pub fn measured_scene() -> ExportScene {
-    build_measured(Identify::No)
-}
-
-/// The same scene with a durable identity on every placement.
 ///
-/// Held beside [`measured_scene`] rather than replacing it because the pair is
-/// the measurement: in this slice the FBX writer does not read a placement
-/// identity, so the bytes it produces must be the same whether one is there or
-/// not, and only two scenes that differ in exactly that can show it.
-pub fn measured_scene_with_identities() -> ExportScene {
+/// Every definition and every placement carries the durable identity a
+/// current-layout document records, spelled out as fixed identifiers.
+pub fn measured_scene() -> ExportScene {
     build_measured(Identify::Yes)
 }
 
-/// Whether the built scene carries placement identities.
+/// The same scene as a document written before identities would export it.
+///
+/// Held beside [`measured_scene`] rather than derived from it because the pair
+/// is the measurement: §22B-1e3b changes exactly two properties per node and
+/// nothing else, and only two scenes that differ in exactly the identities can
+/// show that a legacy document still gets the file it always got.
+pub fn legacy_scene() -> ExportScene {
+    build_measured(Identify::No)
+}
+
+/// The measured scene with every designation changed and every durable
+/// identity kept.
+///
+/// A neutral test variant, and its provenance is exactly that: it is built
+/// here by naming different strings, and it is **not** a STEP reimport. This
+/// build has no reimport semantics and nothing here pretends otherwise. What
+/// it is for is the one question the channel exists to answer — after a
+/// rename, does the identity still name the same placement — and the one
+/// question it cannot answer, which is what the target program's own
+/// references do when the name they were derived from moves.
+pub fn renamed_scene() -> ExportScene {
+    build_measured(Identify::Renamed)
+}
+
+/// Whether the built scene carries the durable identities a document recorded,
+/// and whether the designations beside them are the measured ones.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Identify {
     Yes,
     No,
+    /// The identities of [`Identify::Yes`] under different designations.
+    Renamed,
+}
+
+/// What a definition or a placement is called in the scene being built.
+fn called(name: &str, identify: Identify) -> Option<String> {
+    Some(match identify {
+        Identify::Renamed => format!("{name} renamed"),
+        Identify::Yes | Identify::No => name.to_owned(),
+    })
 }
 
 fn build_measured(identify: Identify) -> ExportScene {
-    let source = ImportedSourceId::new();
+    let source = source_of(MEASURED_SOURCE);
     let mut builder = ExportSceneBuilder::new();
-    let occurrence = move || match identify {
-        Identify::Yes => ExportOccurrence::Occurrence(OccurrenceId::new()),
+    // One fixed identity per node, handed out in the order the nodes are
+    // added. Not minted, and not derived from anything about the node: a fresh
+    // identifier would make the writer's bytes different on every run, and a
+    // derived one would be the very thing §22B-1e3a forbids.
+    let mut next = 0usize;
+    let mut occurrence = move || match identify {
+        Identify::Yes | Identify::Renamed => {
+            let at = next;
+            next += 1;
+            ExportOccurrence::Occurrence(occurrence_of(
+                MEASURED_OCCURRENCES
+                    .get(at)
+                    .unwrap_or_else(|| panic!("the measured scene has more nodes than identities")),
+            ))
+        }
         Identify::No => ExportOccurrence::Unrecorded,
     };
 
     let root = builder
         .definition(
             imported(source, "step.product_definition#1"),
-            Some("Assembly Root".to_owned()),
+            identified(source, "step.product_definition#1", identify),
+            called("Assembly Root", identify),
             provenance(),
             ExportGeometry::Structural,
         )
@@ -141,7 +245,8 @@ fn build_measured(identify: Identify) -> ExportScene {
     let frame = builder
         .definition(
             imported(source, "step.product_definition#7"),
-            Some("Assembly Frame".to_owned()),
+            identified(source, "step.product_definition#7", identify),
+            called("Assembly Frame", identify),
             provenance(),
             ExportGeometry::Structural,
         )
@@ -149,7 +254,8 @@ fn build_measured(identify: Identify) -> ExportScene {
     let part = builder
         .definition(
             imported(source, "step.product_definition#2428"),
-            Some("Repeated Part".to_owned()),
+            identified(source, "step.product_definition#2428", identify),
+            called("Repeated Part", identify),
             provenance(),
             ExportGeometry::Mesh(asymmetric_mesh()),
         )
@@ -157,7 +263,8 @@ fn build_measured(identify: Identify) -> ExportScene {
     let missing = builder
         .definition(
             imported(source, "step.product_definition#2583"),
-            Some("Omitted #2583".to_owned()),
+            identified(source, "step.product_definition#2583", identify),
+            called("Omitted #2583", identify),
             provenance(),
             ExportGeometry::Omitted(ExportOmission::new(
                 Diagnostic {
@@ -173,7 +280,8 @@ fn build_measured(identify: Identify) -> ExportScene {
     let point = builder
         .definition(
             imported(source, "step.product_definition#9"),
-            Some("Control Point".to_owned()),
+            identified(source, "step.product_definition#9", identify),
+            called("Control Point", identify),
             provenance(),
             ExportGeometry::Structural,
         )
@@ -184,7 +292,7 @@ fn build_measured(identify: Identify) -> ExportScene {
             None,
             root,
             ExportTransform::IDENTITY,
-            Some("Assembly Root".to_owned()),
+            called("Assembly Root", identify),
             None,
             occurrence(),
         )
@@ -194,7 +302,7 @@ fn build_measured(identify: Identify) -> ExportScene {
             Some(root_node),
             frame,
             placement([100.0, 200.0, 300.0], [11.0, 23.0, -17.0]),
-            Some("Assembly Frame".to_owned()),
+            called("Assembly Frame", identify),
             None,
             occurrence(),
         )
@@ -204,7 +312,7 @@ fn build_measured(identify: Identify) -> ExportScene {
             Some(frame_node),
             part,
             placement([1200.0, -400.0, 800.0], [31.0, -19.0, 47.0]),
-            Some("Repeated Part".to_owned()),
+            called("Repeated Part", identify),
             None,
             occurrence(),
         )
@@ -215,7 +323,7 @@ fn build_measured(identify: Identify) -> ExportScene {
             part,
             placement([-700.0, 900.0, 1300.0], [-13.0, 29.0, -37.0]),
             // Deliberately the same display name, and deliberately recoloured.
-            Some("Repeated Part".to_owned()),
+            called("Repeated Part", identify),
             Some([0.216, 0.523, 0.052]),
             occurrence(),
         )
@@ -225,7 +333,7 @@ fn build_measured(identify: Identify) -> ExportScene {
             Some(frame_node),
             missing,
             placement([400.0, 500.0, 600.0], [7.0, 13.0, 29.0]),
-            Some("Omitted #2583".to_owned()),
+            called("Omitted #2583", identify),
             None,
             occurrence(),
         )
@@ -242,7 +350,7 @@ fn build_measured(identify: Identify) -> ExportScene {
                 Some(first),
                 point,
                 placement(translation, [0.0, 0.0, 0.0]),
-                Some(name.to_owned()),
+                called(name, identify),
                 None,
                 occurrence(),
             )
@@ -252,27 +360,55 @@ fn build_measured(identify: Identify) -> ExportScene {
     builder.finish().expect("the measured scene is complete")
 }
 
-/// Names that exercise the one escaping rule: quotes, a backslash, a tab, a
-/// line break, a carriage return, an empty name and non-ASCII UTF-8.
+/// Names that exercise the one FBX ASCII escaping rule: quotes, a backslash, a
+/// tab, a line break, a carriage return, an empty name and non-ASCII UTF-8.
+///
+/// The keys are the ordinary ones this fixture has always used, so the only
+/// thing §22B-1e3b changes about this file is the two properties it adds.
 pub fn escaping_scene() -> ExportScene {
-    named_scene(&[
-        Some("a \"quoted\" name"),
-        Some("back\\slash and\ttab"),
-        Some("Кириллица и юникод — ok"),
-        None,
-        Some("line\nbreak and\rreturn"),
-    ])
+    named_scene(
+        source_of(ESCAPING_SOURCE),
+        &[
+            (Some("a \"quoted\" name"), "step.product_definition#0"),
+            (Some("back\\slash and\ttab"), "step.product_definition#1"),
+            (Some("Кириллица и юникод — ok"), "step.product_definition#2"),
+            (None, "step.product_definition#3"),
+            (Some("line\nbreak and\rreturn"), "step.product_definition#4"),
+        ],
+    )
+}
+
+/// The §22B-1e3b escaping rule, on keys chosen to break it.
+///
+/// The value separator, the escape character itself, an already-escaped-looking
+/// key, whitespace and a multi-byte code point. Held apart from
+/// [`escaping_scene`] because these keys are also written to the properties
+/// §22B-1b2 added and to the object names of definitions with no display name,
+/// so putting them in that fixture would change a committed file for a reason
+/// that has nothing to do with this slice. The two escaping rules still meet
+/// here: the names are ordinary, and the keys are not.
+pub fn identity_escaping_scene() -> ExportScene {
+    named_scene(
+        source_of(KEYED_SOURCE),
+        &[
+            (Some("Plain"), "step.product_definition#1"),
+            (Some("Separators"), "a:b:c"),
+            (Some("Unicode"), "ключ — 100%"),
+            (Some("Already escaped"), "already%3Aescaped"),
+            (Some("Whitespace"), "space and\ttab"),
+        ],
+    )
 }
 
 /// A scene of structural nodes, one per name, all below the first.
-pub fn named_scene(names: &[Option<&str>]) -> ExportScene {
-    let source = ImportedSourceId::new();
+pub fn named_scene(source: ImportedSourceId, nodes: &[(Option<&str>, &str)]) -> ExportScene {
     let mut builder = ExportSceneBuilder::new();
     let mut parent = None;
-    for (index, name) in names.iter().enumerate() {
+    for (index, (name, key)) in nodes.iter().enumerate() {
         let definition = builder
             .definition(
-                imported(source, &format!("step.product_definition#{index}")),
+                imported(source, key),
+                identified(source, key, Identify::Yes),
                 name.map(str::to_owned),
                 ExportProvenance::default(),
                 ExportGeometry::Structural,
@@ -285,7 +421,11 @@ pub fn named_scene(names: &[Option<&str>]) -> ExportScene {
                 ExportTransform::IDENTITY,
                 name.map(str::to_owned),
                 None,
-                ExportOccurrence::Unrecorded,
+                ExportOccurrence::Occurrence(occurrence_of(
+                    ESCAPING_OCCURRENCES
+                        .get(index)
+                        .unwrap_or_else(|| panic!("a named scene of at most five nodes")),
+                )),
             )
             .expect("a node");
         if parent.is_none() {

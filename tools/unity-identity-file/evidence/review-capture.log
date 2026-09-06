@@ -1,0 +1,34 @@
+Independent review, 2026-09-06, Unity 6000.4.10f1.
+Original code: d1a12d8b56fa67743ce5e7798dbad00181c66241.
+
+Baseline: fresh temporary project, production FBX artefacts.
+exit=0
+FCAD_FILE_IDENTITY_EXECUTED checks=78
+
+Mutant: another fresh temporary project; remove only File.WriteAllText
+from FerriteFileProperties.OnPostprocessModel. No capture is published.
+exit=0
+FCAD_FILE_IDENTITY_EXECUTED checks=78
+Baseline and mutant reports: byte-identical.
+SHA256=a94af90c568f8c139667f0be5733363483a1e90a5156815eeac6a9a500a02a81
+Unexpected survivor: property captures in the global temp directory were
+keyed by asset path alone and survived deletion of the previous project.
+
+Fix: use this project's Library, clear the capture before every import,
+and require a fresh capture after the measured import.
+The same no-write mutant in another fresh project:
+exit=1
+FCAD_FILE_IDENTITY_FAILURE the measured import published no fresh property capture for fcad-measured.fbx
+FCAD_FILE_IDENTITY_FAILURE the measured import published no fresh property capture for fcad-legacy.fbx
+FCAD_FILE_IDENTITY_FAILURE the measured import published no fresh property capture for fcad-identity-escaping.fbx
+FCAD_FILE_IDENTITY_FAILURE the measured import published no fresh property capture for fcad-renamed.fbx
+No C# compile error; no success execution anchor.
+
+Unmutated fixed probe, official runner --record, two fresh projects:
+FCAD_FILE_BYTES_ARE_THE_RECORDED_PRODUCTION_BYTES files=5
+FCAD_UNITY_RUN_PROVEN checks=82
+FCAD_UNITY_RUN_PROVEN checks=82
+FCAD_FILE_REPEATABLE_ACROSS_2_CLEAN_PROJECTS
+FCAD_IDENTITY_REPOSITORY_CLEAN
+The only change in each committed report: checks 78 -> 82.
+Production bytes, all twelve answers and all measured file IDs unchanged.

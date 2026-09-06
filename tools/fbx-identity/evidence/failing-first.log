@@ -1,0 +1,76 @@
+§22B-1e3b failing-first evidence: the shipped FBX carries no document identity channel.
+
+repository:  c6259ab91bf12f5767e4d204bf2c24569f75ae66 (branch unity-identity-22b-1e3b)
+base:        origin/main c6259ab91bf12f5767e4d204bf2c24569f75ae66
+recorded:    2026-09-05T17:29:26Z
+platform:    Darwin 24.6.0 arm64
+rustc:       rustc 1.96.0 (ac68faa20 2026-05-25)
+cargo:       cargo 1.96.0 (30a34c682 2026-05-25)
+compiler:    Apple clang version 17.0.0 (clang-1700.6.4.2)
+reader:      reader ufbx 0.23.0 strict (pinned by tools/unity-fbx-smoke/scripts/fetch_ufbx.sh)
+fixture:     fixtures/step/interoperability/c3d-ap203-complex-assembly.stp (1896140 bytes)
+
+command:     tools/check-fbx-identity.sh
+
+The model was proved to have arrived before a single identity was looked at:
+46 definitions, 140 nodes, one root, the omitted definition still placed, the
+same display name on model n as the document reports for placement n, and two
+cold exports in two processes byte-identical. Only then did both readers refuse,
+and they refused on the identity channel and on nothing else. The independent
+reader accepted the bytes over 145 of its own checks and still found the channel
+empty: definitions=0 occurrences=0 over 140 nodes.
+
+================================ in-process gate ================================
+
+running 1 test
+test every_placement_of_the_exported_complex_assembly_carries_the_identity_its_document_recorded has been running for over 60 seconds
+FCAD_EXPORT_FBX_IDENTITY_ARTEFACT /var/folders/yd/qbk3h_lj5xzckgq2dqf74tcw0000gn/T//ferritecad-fbx-identity.NI3eC3/identity.fbx
+
+thread 'every_placement_of_the_exported_complex_assembly_carries_the_identity_its_document_recorded' (443772553) panicked at crates/ferritecad-cli/tests/export_fbx_identity.rs:366:5:
+assertion `left == right` failed: 140 of 140 placements reached the file without a FerriteCADOccurrenceId the document recorded
+  left: 140
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test every_placement_of_the_exported_complex_assembly_carries_the_identity_its_document_recorded ... FAILED
+
+failures:
+
+failures:
+    every_placement_of_the_exported_complex_assembly_carries_the_identity_its_document_recorded
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 125.00s
+
+error: test failed, to rerun pass `-p ferritecad-cli --test export_fbx_identity`
+
+=========================== independent ufbx reader ============================
+
+reader ufbx 0.23.0 strict
+FCAD_IDENTITY_SUMMARY nodes=140 definitions=0 occurrences=0 meshes=34
+FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=145 failures=0
+
+First and last ten refusals of the independent join, of 280:
+
+FAIL node/0 (''): carries no FerriteCADOccurrenceId
+FAIL node/0 (''): carries no FerriteCADDefinitionId
+FAIL node/1 ('ANY'): carries no FerriteCADOccurrenceId
+FAIL node/1 ('ANY'): carries no FerriteCADDefinitionId
+FAIL node/2 ('ANY'): carries no FerriteCADOccurrenceId
+FAIL node/2 ('ANY'): carries no FerriteCADDefinitionId
+FAIL node/3 ('ANY'): carries no FerriteCADOccurrenceId
+FAIL node/3 ('ANY'): carries no FerriteCADDefinitionId
+FAIL node/4 ('ANY'): carries no FerriteCADOccurrenceId
+FAIL node/4 ('ANY'): carries no FerriteCADDefinitionId
+  ...
+FAIL node/135 ('УДШ-3 из ШД-БП'): carries no FerriteCADOccurrenceId
+FAIL node/135 ('УДШ-3 из ШД-БП'): carries no FerriteCADDefinitionId
+FAIL node/136 ('ANY'): carries no FerriteCADOccurrenceId
+FAIL node/136 ('ANY'): carries no FerriteCADDefinitionId
+FAIL node/137 ('ANY'): carries no FerriteCADOccurrenceId
+FAIL node/137 ('ANY'): carries no FerriteCADDefinitionId
+FAIL node/138 ('ANY'): carries no FerriteCADOccurrenceId
+FAIL node/138 ('ANY'): carries no FerriteCADDefinitionId
+FAIL node/139 ('ANY'): carries no FerriteCADOccurrenceId
+FAIL node/139 ('ANY'): carries no FerriteCADDefinitionId
+
+FCAD_FBX_IDENTITY_JOIN nodes=140 joined=0 definitions=0 occurrences=0 failures=280
+error: the in-process identity gate failed

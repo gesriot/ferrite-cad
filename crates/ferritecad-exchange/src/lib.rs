@@ -41,7 +41,8 @@ pub use decode::decode;
 pub use keyed::{KeyedInstance, KeyedScene};
 pub use legacy::{LegacyDefinition, LegacyInstance, LegacyScene};
 pub use persist::{
-    PersistedDefinition, PersistedInstance, PersistedScene, StoredOccurrences, StoredScene,
+    PersistedDefinition, PersistedInstance, PersistedScene, StoredDefinitionIdentities,
+    StoredOccurrences, StoredScene,
 };
 
 use std::fmt;
