@@ -47,6 +47,7 @@ on:
       - 'tools/stage-runtime-layout.sh'
       - 'tools/check-staged-layout.sh'
       - 'tools/macos-bundle.sh'
+      - 'tools/macos-bundle-plist.py'
       - 'tools/build-planegcs.sh'
       - 'tools/planegcs/**'
       # And everything the native/assets inventory is checked against. This

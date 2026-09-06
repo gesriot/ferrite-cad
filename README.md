@@ -488,6 +488,9 @@ Open CASCADE installed under `vendor/install` and the pinned planegcs built
 into `vendor/planegcs`, which are what [`docs/build-occt.md`](docs/build-occt.md)
 and [`docs/build-planegcs.md`](docs/build-planegcs.md) produce.
 
+The packaging checks use Python 3, jq and GNU tar (`gtar` on macOS). These are
+build tools; the finished application needs none of them to start.
+
 ```sh
 # The two product binaries, against the pinned kernel and the pinned solver.
 FERRITECAD_REQUIRE_OCCT=1 FERRITECAD_REQUIRE_PLANEGCS=1 \

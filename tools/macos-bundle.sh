@@ -60,28 +60,14 @@ macos_bundle_say() {
     echo "${MACOS_BUNDLE_TOOL:-macos-bundle}: $*" >&2
 }
 
-# One `<string>` value out of an XML property list.
-#
-# Read with awk rather than with plutil, because two of the three gates that
-# need the answer run on hosts that have no plutil: tools/check-packager.sh
-# gates all three platforms' packaging arithmetic wherever it runs, and a check
-# that could only be asked on macOS would be a check that mostly is not.
-# Where plutil does exist it is used as well, and for the thing awk cannot do -
-# saying whether the document is a property list at all.
-macos_bundle_string() { # plist key
-    # One tag per line first, so the answer does not depend on how the document
-    # was laid out. `tr` rather than a `sed` that inserts a newline: BSD sed
-    # writes a literal `n` for `\n` in a replacement, and this has to give the
-    # same answer on all three runners.
-    tr '<' '\n' < "$1" | awk -v want="$2" '
-        /^key>/    { found = (substr($0, 5) == want); next }
-        /^string>/ { if (found) { print substr($0, 8); exit } next }
-        /^\// || /^[[:space:]]*$/ { next }
-        # Any other opening tag between the key and a string is the value, and
-        # it is not a string. The pairing ends there rather than running on to
-        # whatever string comes next.
-        /^[A-Za-z]/ { found = 0 }
-    '
+# The parsed root dictionary is read once, on every host, with the same plist
+# parser. Python 3 and jq are build/check tools; neither is shipped or needed
+# to launch the application. Python is already used by the archive gates.
+MACOS_BUNDLE_READER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/macos-bundle-plist.py"
+readonly MACOS_BUNDLE_READER
+
+macos_bundle_string() { # parsed-json key
+    jq -j --arg key "$2" '.[$key]' <<< "$1"
 }
 
 # Whether a bundle is an application the desktop can start, and whether the
@@ -96,7 +82,7 @@ macos_bundle_string() { # plist key
 macos_bundle_executable=''
 macos_bundle_check() { # bundle-directory [product-version]
     local bundle="$1" version="${2:-}"
-    local plist name value expected bad=0
+    local plist properties name value expected bad=0
 
     macos_bundle_executable=''
     case "$bundle" in
@@ -113,8 +99,17 @@ that says it is an application or which executable beside it to start"
     fi
     [ -s "$plist" ] || { macos_bundle_say "$plist is empty"; return 1; }
 
-    # The only question awk cannot answer: is this a property list at all.
-    # Absent off macOS, where a malformed document still fails every key below.
+    for name in python3 jq; do
+        command -v "$name" >/dev/null 2>&1 || {
+            macos_bundle_say "there is no $name on this host, so Info.plist cannot be read"
+            return 1
+        }
+    done
+    properties="$(python3 "$MACOS_BUNDLE_READER" "$plist" "${MACOS_BUNDLE_REQUIRED_KEYS[@]}")" \
+        || return 1
+
+    # Also ask the native reader where it exists. The root keys above have
+    # already been parsed structurally, including on hosts without plutil.
     if command -v plutil >/dev/null 2>&1; then
         if ! plutil -lint "$plist" > /dev/null 2>&1; then
             macos_bundle_say "$plist is not a readable property list:"
@@ -123,23 +118,14 @@ that says it is an application or which executable beside it to start"
         fi
     fi
 
-    for name in "${MACOS_BUNDLE_REQUIRED_KEYS[@]}"; do
-        value="$(macos_bundle_string "$plist" "$name")"
-        if [ -z "$value" ]; then
-            macos_bundle_say "$plist says nothing for $name"
-            bad=1
-        fi
-    done
-    [ "$bad" -eq 0 ] || return 1
-
-    value="$(macos_bundle_string "$plist" CFBundlePackageType)"
+    value="$(macos_bundle_string "$properties" CFBundlePackageType)"
     [ "$value" = APPL ] || {
         macos_bundle_say "$plist calls the bundle a '$value' and an application is APPL"
         bad=1
     }
 
     expected="$(basename "$bundle")"; expected="${expected%.app}"
-    value="$(macos_bundle_string "$plist" CFBundleName)"
+    value="$(macos_bundle_string "$properties" CFBundleName)"
     [ "$value" = "$expected" ] || {
         macos_bundle_say "$plist names the bundle '$value' and it is $expected.app"
         bad=1
@@ -147,7 +133,7 @@ that says it is an application or which executable beside it to start"
 
     # A reverse-DNS identity, which is what the desktop keys an application on.
     # Its exact value is the writer's to choose; that it is one is not.
-    value="$(macos_bundle_string "$plist" CFBundleIdentifier)"
+    value="$(macos_bundle_string "$properties" CFBundleIdentifier)"
     case "$value" in
         *' '*) macos_bundle_say "the bundle identifier '$value' holds a space"; bad=1 ;;
         *.*.*) ;;
@@ -157,7 +143,7 @@ reverse-DNS name"; bad=1 ;;
 
     if [ -n "$version" ]; then
         for name in CFBundleShortVersionString CFBundleVersion; do
-            value="$(macos_bundle_string "$plist" "$name")"
+            value="$(macos_bundle_string "$properties" "$name")"
             [ "$value" = "$version" ] || {
                 macos_bundle_say "$plist gives $name as '$value' and this is version $version"
                 bad=1
@@ -169,7 +155,7 @@ reverse-DNS name"; bad=1 ;;
     # something that is not there starts nothing, and the two executables of
     # this delivery sit beside each other, so naming the wrong one starts the
     # command line tool with no terminal to write to.
-    value="$(macos_bundle_string "$plist" CFBundleExecutable)"
+    value="$(macos_bundle_string "$properties" CFBundleExecutable)"
     case "$value" in
         */* | '') macos_bundle_say "$plist gives CFBundleExecutable as '$value', which is not \
 a file name in $MACOS_BUNDLE_MACOS_DIR"; bad=1 ;;

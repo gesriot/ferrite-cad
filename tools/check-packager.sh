@@ -459,6 +459,79 @@ gate_platform() { # platform
             rehash "$plist"
         }
 
+        # A key in unrelated nested metadata is not a launch instruction.
+        # Put it first so a tag scanner picks it instead of the root key.
+        mutate_nested_exe() {
+            awk -v other="$cli_binary" '
+                /^<dict>/ {
+                    print
+                    print "<key>ReviewMetadata</key><dict>"
+                    print "<key>CFBundleExecutable</key><string>ferritecad-viewer</string>"
+                    print "</dict>"
+                    next
+                }
+                /<key>CFBundleExecutable<\/key>/ {
+                    print; getline; print "<string>" other "</string>"; next
+                }
+                { print }
+            ' "$tree/$root/$plist" > "$work/plist.xml"
+            mv "$work/plist.xml" "$tree/$root/$plist"
+            rehash "$plist"
+        }
+        mutate_duplicate_exe() {
+            awk -v other="$cli_binary" '
+                /<key>CFBundleExecutable<\/key>/ {
+                    print; getline; print
+                    print "<key>CFBundleExecutable</key><string>" other "</string>"
+                    next
+                }
+                { print }
+            ' "$tree/$root/$plist" > "$work/plist.xml"
+            mv "$work/plist.xml" "$tree/$root/$plist"
+            rehash "$plist"
+        }
+        mutate_nested_metadata() {
+            awk -v other="$cli_binary" '
+                /^<dict>/ {
+                    print
+                    print "<key>ReviewMetadata</key><dict>"
+                    print "<key>CFBundleExecutable</key><string>" other "</string>"
+                    print "</dict>"
+                    next
+                }
+                { print }
+            ' "$tree/$root/$plist" > "$work/plist.xml"
+            mv "$work/plist.xml" "$tree/$root/$plist"
+            rehash "$plist"
+        }
+        mutate_unclosed_plist() {
+            sed '/<\/plist>/d' "$tree/$root/$plist" > "$work/plist.xml"
+            mv "$work/plist.xml" "$tree/$root/$plist"
+            rehash "$plist"
+        }
+        mutate_control_in_exe() {
+            awk '
+                /<key>CFBundleExecutable<\/key>/ {
+                    print; getline
+                    sub(/<\/string>/, "")
+                    print; print "</string>"; next
+                }
+                { print }
+            ' "$tree/$root/$plist" > "$work/plist.xml"
+            mv "$work/plist.xml" "$tree/$root/$plist"
+            rehash "$plist"
+        }
+        mutate_binary_plist() {
+            python3 - "$tree/$root/$plist" <<'PYTHON'
+import plistlib
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+path.write_bytes(plistlib.dumps(plistlib.loads(path.read_bytes()), fmt=plistlib.FMT_BINARY))
+PYTHON
+            rehash "$plist"
+        }
+
         break_archive mutate_no_plist
         expect_fail 'a package whose bundle carries no Info.plist is caught' \
             'carries no' check_bad
@@ -478,6 +551,28 @@ gate_platform() { # platform
         break_archive mutate_other_exe
         expect_fail 'a bundle naming the other executable of the delivery is caught' \
             'the bundle says the application is' check_bad
+
+        break_archive mutate_nested_exe
+        expect_fail 'a nested executable key cannot mask the wrong root executable' \
+            'the bundle says the application is' check_bad
+
+        break_archive mutate_duplicate_exe
+        expect_fail 'duplicate executable keys are refused rather than choosing one' \
+            'duplicate dictionary key' check_bad
+
+        break_archive mutate_nested_metadata
+        expect_pass 'unrelated nested executable metadata does not change the root application' check_bad
+
+        break_archive mutate_unclosed_plist
+        expect_fail 'unclosed XML with all required keys is still not a property list' \
+            'not a readable property list' check_bad
+
+        break_archive mutate_control_in_exe
+        expect_fail 'a newline in the executable is refused rather than trimmed' \
+            'control character in CFBundleExecutable' check_bad
+
+        break_archive mutate_binary_plist
+        expect_pass 'the same bundle contract in a binary plist is accepted' check_bad
     fi
 
     # ---- archives no packager would write, and the gate must still refuse ---

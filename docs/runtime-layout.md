@@ -1,12 +1,13 @@
 <!-- SPDX-License-Identifier: MIT -->
 # The runtime closure of a FerriteCAD release
 
-**Status:** measured on Linux, macOS and Windows by the
+**Status:** historical baseline measured on Linux, macOS and Windows by the
 [combined runtime layout](../.github/workflows/runtime-layout.yml) workflow in
-[run 32666664382](https://github.com/gesriot/ferrite-cad/actions/runs/32666664382),
-which is where every number below comes from. A candidate layout has been chosen
-and started from a clean environment on all three. Nothing here is a release, and
-no packager exists yet: that is section 21A-2b2b.
+[run 32666664382](https://github.com/gesriot/ferrite-cad/actions/runs/32666664382).
+The counts and sizes below describe that run. Packaging and desktop launch have
+since been implemented; §23B adds `Info.plist` and `CodeResources` to the macOS
+layout. For the current build and launch instructions, see
+[the application section in README](../README.md#an-application-you-can-open-without-a-terminal).
 
 ## Why this needed its own slice
 

@@ -57,7 +57,7 @@ native_lib_dir_for() { # platform
 # The delivered files of a platform's layout that are neither an executable nor
 # a shared library.
 #
-# macOS has one and the other two have none. `Contents/Info.plist` is what
+# macOS has two and the other platforms have none. `Contents/Info.plist` is what
 # makes the staged directory an application the desktop can start rather than a
 # folder whose name ends in `.app`: two executables sit beside each other in
 # `Contents/MacOS` and nothing else in the delivery says which of them to

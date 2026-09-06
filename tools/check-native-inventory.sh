@@ -39,7 +39,7 @@
 #   tools/check-native-inventory.sh
 #   tools/check-native-inventory.sh --platform macos --staging DIR \
 #       --closure closure-viewer.txt --closure closure-cli.txt \
-#       --binary viewer:path/to/ferritecad-viewer --binary cli:path/to/ferritecad
+#       --binary ferritecad-viewer:path/to/ferritecad-viewer --binary ferritecad:path/to/ferritecad
 
 set -euo pipefail
 
