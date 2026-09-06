@@ -14,7 +14,7 @@
 # asking any of those would mean asking them roughly never.
 #
 # So this builds the three archives from staging fixtures with the real names
-# and made-up bytes, assembles them, and then breaks the result one way at a
+# and invented bytes, assembles them, and then breaks the result one way at a
 # time and requires the real builder or the real checker to name what broke.
 #
 # The revision the fixtures are packed with is made up and is deliberately not
@@ -35,6 +35,8 @@ PACKAGE_TOOL='check-release-set-builder'
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tools/package/lib.sh
 . tools/package/lib.sh
+# shellcheck source=tools/package/fixture.sh
+. tools/package/fixture.sh
 
 [ $# -eq 0 ] || package_die "unknown argument: $1"
 
@@ -123,28 +125,19 @@ expect_fail() { # description expected-substring command...
 # Three archives, made the way the real ones are made.
 # ---------------------------------------------------------------------------
 #
-# The staged names come from the inventory, so a target that gains or loses a
-# library is a fixture that gains or loses it too. The bytes are invented and
-# do not pretend otherwise.
+# The staging directories come from tools/package/fixture.sh, which
+# tools/check-packager.sh shares: the names are the inventory's, the bytes are
+# invented, and the macOS bundle carries a real Info.plist because the gate on
+# an extracted package reads that one rather than only hashing it.
 
 version="$(jq -r '.productVersion' "$NATIVE_INVENTORY" | native_strip_cr)"
 [ -n "$version" ] && [ "$version" != null ] \
     || package_die "$NATIVE_INVENTORY does not say what version the product is"
 
 pack_fixture() { # platform revision output-dir
-    local platform="$1" revision="$2" out="$3" triple staging path
-    triple="$(package_triple_for "$platform")"
+    local platform="$1" revision="$2" out="$3" staging
     staging="$work/staging-$platform-$revision"
-    rm -rf "$staging"
-    jq -r --arg t "$triple" \
-        '.targets[] | select(.triple == $t) | .stagedFiles[] | .path' \
-        "$NATIVE_INVENTORY" | native_strip_cr | LC_ALL=C sort > "$work/fixture-paths"
-    [ -s "$work/fixture-paths" ] || package_die "the inventory stages nothing for $triple"
-    while IFS= read -r path; do
-        mkdir -p "$staging/$(dirname "$path")"
-        printf 'fixture bytes for %s\n' "$path" > "$staging/$path"
-        chmod 755 "$staging/$path"
-    done < "$work/fixture-paths"
+    package_fixture_staging "$platform" "$staging" "$version"
     mkdir -p "$out"
     tools/package-release.sh --platform "$platform" --staging "$staging" \
         --output-dir "$out" --source-revision "$revision" > /dev/null

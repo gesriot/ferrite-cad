@@ -13,7 +13,8 @@
 # directory, and waiting for a runner to build Open CASCADE before asking about
 # them would mean asking about them roughly never.
 #
-# So this builds a staging directory with the real names and fake bytes, runs
+# So this builds a staging directory with the real names and invented bytes -
+# tools/package/fixture.sh, which the release set builder's gate shares - runs
 # the real packager over it, and then breaks the result in one specific way at
 # a time and requires the real gate to say which way. Nothing here runs a
 # product binary: --no-execute says so in the facts, and the workflow's
@@ -32,8 +33,8 @@ MACOS_BUNDLE_TOOL='check-packager'
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tools/package/lib.sh
 . tools/package/lib.sh
-# shellcheck source=tools/macos-bundle.sh
-. tools/macos-bundle.sh
+# shellcheck source=tools/package/fixture.sh
+. tools/package/fixture.sh
 
 platforms=("${NATIVE_PLATFORMS[@]}")
 while [ $# -gt 0 ]; do
@@ -113,89 +114,6 @@ expect_fail() { # description expected-substring command...
 }
 
 # ---------------------------------------------------------------------------
-# A staging directory with the real names in it.
-#
-# The names come from the inventory rather than from a list here, so a target
-# that gains or loses a library is a fixture that gains or loses it too. The
-# bytes are made up and are not pretending otherwise: what is being gated is
-# the arithmetic over the directory, and the three-platform workflow packs the
-# real ones.
-# ---------------------------------------------------------------------------
-
-# The bundle metadata a platform's layout carries.
-#
-# Made-up bytes are enough for everything this gate asks except one file: the
-# Info.plist is read rather than only hashed, so a fixture of nonsense there
-# would only ever fail. It is written here rather than borrowed from
-# tools/stage-runtime-layout.sh on purpose: a fixture that called the real
-# writer could not tell a checker that had stopped checking from a writer that
-# had stopped writing, which is the same reason tools/native/lib.sh restates
-# the layout directories instead of importing them.
-#
-# The ad-hoc bundle signature is not reproduced. Nothing this gate asks reads
-# it, because a signature is a statement about the real product: the workflow
-# that stages the real bundle is where it is written and verified.
-write_fixture_bundle_file() { # path destination version
-    local executable version="$3"
-    case "$1" in
-        *"/$MACOS_BUNDLE_PLIST")
-            executable="$(jq -r '.productRoots[] | select(.package == "ferritecad-app") | .binary' \
-                "$NATIVE_INVENTORY" | native_strip_cr)"
-            cat > "$2" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>CFBundleExecutable</key>
-	<string>$executable</string>
-	<key>CFBundleIdentifier</key>
-	<string>example.fixture.FerriteCAD</string>
-	<key>CFBundleInfoDictionaryVersion</key>
-	<string>6.0</string>
-	<key>CFBundleName</key>
-	<string>FerriteCAD</string>
-	<key>CFBundlePackageType</key>
-	<string>APPL</string>
-	<key>CFBundleShortVersionString</key>
-	<string>$version</string>
-	<key>CFBundleVersion</key>
-	<string>$version</string>
-</dict>
-</plist>
-PLIST
-            ;;
-        *) printf 'fixture bytes for %s\n' "$1" > "$2" ;;
-    esac
-    # Not a program, and the manifest has to say so. A fixture that made every
-    # delivered file executable would hide exactly the ambiguity this slice
-    # introduced: a product root that owns three files, one of which is its
-    # application.
-    chmod 644 "$2"
-}
-
-make_fixture() { # platform directory version
-    local platform="$1" directory="$2" version="$3" triple path
-    triple="$(package_triple_for "$platform")"
-    rm -rf "$directory"
-    native_bundle_files_for "$platform" > "$work/fixture-bundle-files"
-    jq -r --arg t "$triple" \
-        '.targets[] | select(.triple == $t) | .stagedFiles[] | .path' \
-        "$NATIVE_INVENTORY" | native_strip_cr | LC_ALL=C sort > "$work/fixture-paths"
-    [ -s "$work/fixture-paths" ] || package_die "the inventory stages nothing for $triple"
-    while IFS= read -r path; do
-        mkdir -p "$directory/$(dirname "$path")"
-        if grep -Fxq "$path" "$work/fixture-bundle-files"; then
-            write_fixture_bundle_file "$path" "$directory/$path" "$version"
-            continue
-        fi
-        # Distinct per path, so a gate that mixed two files up would see two
-        # different digests rather than one that happened to match.
-        printf 'fixture bytes for %s\n' "$path" > "$directory/$path"
-        chmod 755 "$directory/$path"
-    done < "$work/fixture-paths"
-}
-
-# ---------------------------------------------------------------------------
 # One platform, from a staging directory to an archive and then to every way
 # the archive can be wrong.
 # ---------------------------------------------------------------------------
@@ -212,7 +130,7 @@ gate_platform() { # platform
     local scratch="$work/$platform/scratch"
     rm -rf "${work:?}/$platform"
     mkdir -p "$out" "$scratch"
-    make_fixture "$platform" "$staging" "$version"
+    package_fixture_staging "$platform" "$staging" "$version"
 
     echo "== $platform ($triple)"
 

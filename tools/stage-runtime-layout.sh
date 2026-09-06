@@ -107,9 +107,14 @@ done
 # The application has to be one of the executables that are staged. A bundle
 # naming something the delivery does not carry starts nothing, and the failure
 # looks like a missing library.
+#
+# Compared with the extension taken off, because the name is the product root's
+# and the file's is the platform's: the inventory calls the application
+# `ferritecad-viewer` everywhere and Windows stages `ferritecad-viewer.exe`.
 gui_staged=no
 for executable in "${executables[@]}"; do
-    [ "$(basename "$executable")" = "$gui_executable" ] || continue
+    staged_name="$(basename "$executable")"
+    [ "${staged_name%.exe}" = "$gui_executable" ] || continue
     gui_staged=yes
 done
 [ "$gui_staged" = yes ] \
