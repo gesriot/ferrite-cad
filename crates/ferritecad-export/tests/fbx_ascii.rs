@@ -13,13 +13,15 @@
 
 mod fbx_scene;
 
-use fbx_scene::{Fbx, escaping_scene, measured_scene, measured_scene_with_identities};
+use std::collections::BTreeSet;
+
+use fbx_scene::{Fbx, escaping_scene, identity_escaping_scene, legacy_scene, measured_scene};
 
 use ferritecad_exchange::{Diagnostic, Severity, Stage};
 use ferritecad_export::{
-    ExportColourOrigin, ExportGeometry, ExportMaterial, ExportMesh, ExportOccurrence,
-    ExportOmission, ExportProvenance, ExportSceneBuilder, ExportSource, ExportTransform,
-    write_fbx_ascii_7400,
+    ExportColourOrigin, ExportDefinitionIdentity, ExportGeometry, ExportMaterial, ExportMesh,
+    ExportOccurrence, ExportOmission, ExportProvenance, ExportSceneBuilder, ExportSource,
+    ExportTransform, write_fbx_ascii_7400,
 };
 use ferritecad_kernel::TessellationRefusal;
 use ferritecad_types::{ErrorKind, ImportedSourceId, ObjectId};
@@ -383,6 +385,10 @@ fn two_sources_with_one_local_key_remain_distinct_in_the_report() {
                     source,
                     definition_key: key.to_owned(),
                 },
+                ExportDefinitionIdentity::Source {
+                    source,
+                    definition_key: key.to_owned(),
+                },
                 None,
                 ExportProvenance::default(),
                 ExportGeometry::Omitted(ExportOmission::new(
@@ -453,11 +459,11 @@ fn scene_with_colour(
     let mut builder = ExportSceneBuilder::new();
     let material = ExportMaterial::new("colour", material, ExportColourOrigin::Source)
         .expect("the neutral scene can carry an HDR linear value");
+    let object = ObjectId::new();
     let definition = builder
         .definition(
-            ExportSource::Body {
-                object: ObjectId::new(),
-            },
+            ExportSource::Body { object },
+            ExportDefinitionIdentity::Object(object),
             None,
             ExportProvenance::default(),
             ExportGeometry::Mesh(one_triangle(material)),
@@ -510,74 +516,242 @@ fn the_same_scene_always_produces_the_same_bytes() {
 }
 
 #[test]
-fn a_placement_identity_changes_nothing_the_writer_writes() {
-    // §22B-1e3a puts a durable identity on every placement and stops there.
-    // What Unity does with an identity is settled by what a *name* is, which
-    // the §22B-1e1 and §22B-1e2a measurements established and which this slice
-    // deliberately does not act on. So the writer must not have started reading
-    // it: the same scene with and without identities is the same file, byte for
-    // byte, and the report beside it says the same thing.
-    let (without, without_report) = written(&measured_scene());
-    let (with, with_report) = written(&measured_scene_with_identities());
-    assert_eq!(
-        with, without,
-        "a placement identity reached the FBX bytes, which this slice does not do"
+fn the_durable_identities_are_the_only_thing_the_identity_channel_adds() {
+    // §22B-1e3b puts the two durable identities into the file. What it must
+    // not do is move anything else: §22B-1e1 and §22B-1e2a measured that the
+    // target program's identity *is* the visible name, so a slice that touched
+    // a name, a parent, a transform, a colour or an object number would break
+    // the references it exists to keep. The pair of scenes differs in exactly
+    // the identities and in nothing else, so the diff between the two files is
+    // exactly what this slice added.
+    let (current, current_report) = written(&measured_scene());
+    let (legacy, legacy_report) = written(&legacy_scene());
+    assert_ne!(
+        current, legacy,
+        "the identity channel changed nothing, so the file cannot carry it"
     );
-    // The report says the same thing too. Compared field by field rather than
-    // as a whole because each scene mints its own `ImportedSourceId`, which is
-    // what the report names an omission by and has nothing to do with this.
-    assert_eq!(with_report.bytes(), without_report.bytes());
-    assert_eq!(with_report.models(), without_report.models());
-    assert_eq!(with_report.geometries(), without_report.geometries());
-    assert_eq!(with_report.materials(), without_report.materials());
+
+    let with = parsed(&current);
+    let without = parsed(&legacy);
+    let identified = with.all("Objects/Model");
+    let plain = without.all("Objects/Model");
     assert_eq!(
-        with_report.omissions().len(),
-        without_report.omissions().len()
+        identified.len(),
+        plain.len(),
+        "a model appeared or vanished"
     );
-    for (left, right) in with_report
+    assert_eq!(identified.len(), 9);
+    for (index, (a, b)) in identified.iter().zip(&plain).enumerate() {
+        assert_eq!(a.object_id(), b.object_id(), "model {index} was renumbered");
+        assert_eq!(
+            a.object_name(),
+            b.object_name(),
+            "model {index} was renamed"
+        );
+        assert_eq!(a.class(), b.class(), "model {index} changed kind");
+        for property in ["Lcl Translation", "Lcl Rotation", "Lcl Scaling"] {
+            assert_eq!(
+                a.at_property(property).numbers(),
+                b.at_property(property).numbers(),
+                "model {index} moved"
+            );
+        }
+        // Every property that already existed says exactly what it said, and
+        // the only difference is the two this slice adds.
+        let mut extra = a.user_properties();
+        let existing = b.user_properties();
+        for name in ["FerriteCADDefinitionId", "FerriteCADOccurrenceId"] {
+            assert!(
+                extra.remove(name).is_some(),
+                "model {index} carries no {name}"
+            );
+            assert!(
+                !existing.contains_key(name),
+                "a legacy layout carries {name}, which its document never recorded"
+            );
+        }
+        assert_eq!(
+            extra, existing,
+            "model {index} changed an existing property"
+        );
+    }
+
+    // The rest of the file is untouched: the same geometries with the same
+    // arrays, the same materials with the same colours, the same connections.
+    assert_eq!(
+        with.all("Objects/Geometry").len(),
+        without.all("Objects/Geometry").len()
+    );
+    for (a, b) in with
+        .all("Objects/Geometry")
+        .iter()
+        .zip(without.all("Objects/Geometry"))
+    {
+        assert_eq!(a.object_id(), b.object_id());
+        assert_eq!(a.object_name(), b.object_name());
+        for array in ["Vertices", "PolygonVertexIndex"] {
+            assert_eq!(a.child(array).numbers(), b.child(array).numbers());
+        }
+        assert_eq!(
+            a.child("LayerElementNormal").child("Normals").numbers(),
+            b.child("LayerElementNormal").child("Normals").numbers()
+        );
+    }
+    assert_eq!(
+        with.all("Objects/Material").len(),
+        without.all("Objects/Material").len()
+    );
+    for (a, b) in with
+        .all("Objects/Material")
+        .iter()
+        .zip(without.all("Objects/Material"))
+    {
+        assert_eq!(a.object_id(), b.object_id());
+        assert_eq!(a.object_name(), b.object_name());
+        assert_eq!(
+            a.at_property("DiffuseColor").numbers(),
+            b.at_property("DiffuseColor").numbers()
+        );
+    }
+    assert_eq!(with.parents(), without.parents(), "the hierarchy moved");
+    assert_eq!(
+        with.all("Connections/C").len(),
+        without.all("Connections/C").len(),
+        "a connection appeared or vanished"
+    );
+
+    // And the report says the same thing, except for the byte count.
+    assert_eq!(current_report.models(), legacy_report.models());
+    assert_eq!(current_report.geometries(), legacy_report.geometries());
+    assert_eq!(current_report.materials(), legacy_report.materials());
+    assert_eq!(
+        current_report.omissions().len(),
+        legacy_report.omissions().len()
+    );
+    for (left, right) in current_report
         .omissions()
         .iter()
-        .zip(without_report.omissions())
+        .zip(legacy_report.omissions())
     {
         assert_eq!(left.definition, right.definition);
         assert_eq!(left.nodes, right.nodes);
         assert_eq!(left.omission, right.omission);
     }
+    assert!(current_report.bytes() > legacy_report.bytes());
+}
 
-    // And the identities really were there, so the comparison above is between
-    // two different scenes rather than two spellings of one.
-    let identified = measured_scene_with_identities();
+#[test]
+fn every_node_carries_the_identity_its_scene_recorded_for_it() {
+    // Not "a stable unique value on every node": the value on node `n` is the
+    // identity the scene holds for placement `n` and for that placement alone.
+    // A set that was stable and distinct and shifted by one would satisfy the
+    // weaker claim and be wrong.
+    let scene = measured_scene();
+    let (bytes, _) = written(&scene);
+    let file = parsed(&bytes);
+    let models = file.all("Objects/Model");
+    assert_eq!(models.len(), scene.nodes().len());
+
+    let mut occurrences: BTreeSet<String> = BTreeSet::new();
+    let mut definitions: BTreeSet<String> = BTreeSet::new();
+    for (model, node) in models.iter().zip(scene.nodes()) {
+        let properties = model.user_properties();
+        let occurrence = properties
+            .get("FerriteCADOccurrenceId")
+            .unwrap_or_else(|| panic!("node {} carries no placement identity", node.id.index()));
+        let ExportOccurrence::Occurrence(expected) = node.occurrence else {
+            panic!("the measured scene is an imported one");
+        };
+        assert_eq!(
+            occurrence,
+            &format!("fcad1:occ:place:{expected}"),
+            "node {} carries another placement's identity",
+            node.id.index()
+        );
+        occurrences.insert(occurrence.clone());
+
+        let definition = properties
+            .get("FerriteCADDefinitionId")
+            .unwrap_or_else(|| panic!("node {} carries no definition identity", node.id.index()));
+        let source = scene
+            .definition(node.definition)
+            .expect("the node places a definition of its own scene");
+        let ExportSource::Imported {
+            source,
+            definition_key,
+        } = &source.source
+        else {
+            panic!("the measured scene is an imported one");
+        };
+        assert_eq!(
+            definition,
+            &format!("fcad1:def:source:{source}:{}", escaped(definition_key)),
+            "node {} names another definition",
+            node.id.index()
+        );
+        definitions.insert(definition.clone());
+    }
+    assert_eq!(occurrences.len(), 9, "two placements share an identity");
+    assert_eq!(definitions.len(), 5, "two definitions share an identity");
     assert!(
-        identified
-            .nodes()
-            .iter()
-            .all(|node| node.occurrence.is_recorded()),
-        "the identified scene carries no identities, so this gate measures nothing"
+        occurrences.is_disjoint(&definitions),
+        "the two domains produced one value"
     );
-    assert!(
-        measured_scene()
-            .nodes()
-            .iter()
-            .all(|node| !node.occurrence.is_recorded()),
-        "the control scene already carries identities"
-    );
-    // Two builds of the identified scene mint different identities, and still
-    // produce the same file: the writer is a function of everything except
-    // this.
-    let again = measured_scene_with_identities();
-    assert_ne!(
-        identified
-            .nodes()
-            .iter()
-            .map(|node| node.occurrence)
-            .collect::<Vec<_>>(),
-        again
-            .nodes()
-            .iter()
-            .map(|node| node.occurrence)
-            .collect::<Vec<_>>(),
-    );
-    assert_eq!(written(&again).0, with);
+}
+
+/// The identity escaping rule, written here from the specification rather than
+/// called from the writer: a gate that asked the writer how to spell a value
+/// would agree with it whatever it spelled.
+fn escaped(field: &str) -> String {
+    let mut out = String::new();
+    for byte in field.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+#[test]
+fn a_definition_key_that_could_break_the_grammar_is_escaped_and_survives_both_rules() {
+    // The identity escaping rule and the FBX ASCII escaping rule meet on the
+    // same nodes. Neither may undo the other: the value must be splittable
+    // back into exactly five parts however many separators the key carried,
+    // and the display name must still be the text a person wrote.
+    let scene = identity_escaping_scene();
+    let (bytes, _) = written(&scene);
+    let file = parsed(&bytes);
+    let models = file.all("Objects/Model");
+    assert_eq!(models.len(), 5);
+
+    let keys = [
+        "step.product_definition#1",
+        "a:b:c",
+        "ключ — 100%",
+        "already%3Aescaped",
+        "space and\ttab",
+    ];
+    for (model, key) in models.iter().zip(keys) {
+        let properties = model.user_properties();
+        let value = properties
+            .get("FerriteCADDefinitionId")
+            .expect("every node of this scene has a recorded definition identity");
+        assert!(value.is_ascii(), "{value} is not ASCII");
+        assert_eq!(value.split(':').count(), 5, "{value} is not five parts");
+        assert!(
+            value.ends_with(&escaped(key)),
+            "{value} does not end with the escaped {key:?}"
+        );
+        // And the source-local key property is untouched: it keeps saying what
+        // the file said, unescaped, exactly as §22B-1b2 wrote it.
+        assert_eq!(
+            properties.get("FerriteCADDefinitionKey"),
+            Some(&key.to_owned()),
+            "the existing definition key property was rewritten"
+        );
+    }
 }
 
 #[test]

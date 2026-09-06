@@ -92,7 +92,8 @@ if [ -z "$artefacts" ] || [ ! -x "$artefacts" ]; then
 fi
 
 "$artefacts" "$(native "$work")"
-for name in fcad-measured.fbx fcad-escaping.fbx; do
+for name in fcad-measured.fbx fcad-escaping.fbx fcad-legacy.fbx fcad-identity-escaping.fbx \
+    fcad-renamed.fbx; do
     if [ ! -s "$work/$name" ]; then
         echo "error: the writer produced no bytes for $name" >&2
         exit 1
@@ -121,7 +122,8 @@ reader="$work/read_production$suffix"
 # Written twice from one scene, and the second copy must be the same bytes.
 mkdir -p "$work/again"
 "$artefacts" "$(native "$work/again")" >/dev/null
-for name in fcad-measured.fbx fcad-escaping.fbx; do
+for name in fcad-measured.fbx fcad-escaping.fbx fcad-legacy.fbx fcad-identity-escaping.fbx \
+    fcad-renamed.fbx; do
     if ! cmp -s "$work/$name" "$work/again/$name"; then
         echo "error: two writes of one scene produced different $name" >&2
         exit 1
@@ -143,7 +145,8 @@ digest() {
 }
 if [ "$record" -eq 1 ]; then
     {
-        for name in fcad-measured.fbx fcad-escaping.fbx; do
+        for name in fcad-measured.fbx fcad-escaping.fbx fcad-legacy.fbx fcad-identity-escaping.fbx \
+    fcad-renamed.fbx; do
             printf '%s\t%s\n' "$(digest "$work/$name")" "$name"
         done
     } >"$DIGESTS"
@@ -167,6 +170,44 @@ if ! "$reader" "$(native "$work/fcad-measured.fbx")" "$(native "$work/fcad-escap
     echo "error: the independent reader refused the production bytes" >&2
     exit 1
 fi
+
+# And the §22B-1e3b pair, held up against each other by the same outside
+# reader: one scene written at the current layout and at a layout that recorded
+# no identities. Everything a person gets must be the same in both, and the two
+# identity properties must be present in exactly one of them.
+legacy="$work/legacy.txt"
+if ! "$reader" --legacy "$(native "$work/fcad-measured.fbx")" \
+    "$(native "$work/fcad-legacy.fbx")" | tee "$legacy"; then
+    echo "error: the independent reader refused the identity pair" >&2
+    exit 1
+fi
+legacy_anchor="$(grep -c '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED ' "$legacy" || true)"
+if [ "$legacy_anchor" != "1" ]; then
+    echo "error: the identity pair reader did not run to the end" >&2
+    exit 1
+fi
+legacy_count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) .*$/\1/p' "$legacy")"
+if [ -z "$legacy_count" ] || [ "$legacy_count" -lt 100 ]; then
+    echo "error: the identity pair reader performed ${legacy_count:-0} checks" >&2
+    exit 1
+fi
+echo "identity pair: pinned ufbx confirmed the channel is the only difference \
+over $legacy_count checks"
+
+# And the definition keys chosen to break the identity grammar, read back by the
+# same outside program against the values the written contract says they must
+# have.
+keyed="$work/keyed.txt"
+if ! "$reader" --escaped-keys "$(native "$work/fcad-identity-escaping.fbx")" | tee "$keyed"; then
+    echo "error: the independent reader refused the escaped identity keys" >&2
+    exit 1
+fi
+keyed_count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) .*$/\1/p' "$keyed")"
+if [ -z "$keyed_count" ] || [ "$keyed_count" -lt 30 ]; then
+    echo "error: the escaped-key reader performed ${keyed_count:-0} checks" >&2
+    exit 1
+fi
+echo "escaped keys: pinned ufbx read every identity value over $keyed_count checks"
 
 # A report without the live anchor, or with no checks, is not a result.
 anchor="$(grep -c '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED ' "$output" || true)"

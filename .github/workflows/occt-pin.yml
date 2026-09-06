@@ -720,6 +720,15 @@ jobs:
           # tessellation and is never committed.
           tools/check-fbx-complex.sh
 
+          # And the §22B-1e3b identity channel in that same shipped route: the
+          # document is published by `import-step`, the STEP is deleted,
+          # `export-fbx` is run twice in two processes, and pinned ufbx plus an
+          # independent implementation of the wire grammar join every node's
+          # identity properties to what the document says it recorded. The two
+          # readers share nothing, which is the whole point of running this
+          # beside the Rust gate rather than instead of it.
+          tools/check-fbx-identity.sh
+
       - name: Generate the STEP corpus and compare two runs
         env:
           FCAD_OCCT_CONFIG_DIR: ${{ steps.occt.outputs.config_dir }}

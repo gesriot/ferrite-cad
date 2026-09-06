@@ -34,9 +34,9 @@ use std::path::PathBuf;
 
 use ferritecad_exchange::{Diagnostic, Severity, Stage};
 use ferritecad_export::{
-    ExportColourOrigin, ExportGeometry, ExportMaterial, ExportMesh, ExportOccurrence,
-    ExportOmission, ExportProvenance, ExportScene, ExportSceneBuilder, ExportSource,
-    ExportTransform, write_fbx_ascii_7400,
+    ExportColourOrigin, ExportDefinitionIdentity, ExportGeometry, ExportMaterial, ExportMesh,
+    ExportOccurrence, ExportOmission, ExportProvenance, ExportScene, ExportSceneBuilder,
+    ExportSource, ExportTransform, write_fbx_ascii_7400,
 };
 use ferritecad_kernel::TessellationRefusal;
 use ferritecad_types::ImportedSourceId;
@@ -228,6 +228,7 @@ fn document(variant: Variant) -> (ExportScene, Vec<NodeFacts>) {
                     source: source_of(source),
                     definition_key: key.to_owned(),
                 },
+                ExportDefinitionIdentity::Unrecorded,
                 Some(display_name.to_owned()),
                 provenance.clone(),
                 geometry,

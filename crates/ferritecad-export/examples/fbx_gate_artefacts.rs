@@ -29,6 +29,22 @@ fn main() -> std::process::ExitCode {
     let scenes = [
         ("fcad-measured.fbx", fbx_scene::measured_scene()),
         ("fcad-escaping.fbx", fbx_scene::escaping_scene()),
+        // The same scene as a document written before identities would export
+        // it. Beside the measured one rather than instead of it, so an outside
+        // reader can hold the pair up against each other and say that the
+        // §22B-1e3b channel is the only difference between them.
+        ("fcad-legacy.fbx", fbx_scene::legacy_scene()),
+        // Keys chosen to break the identity grammar if it were wrong. A file
+        // of its own, so the two files above change only by the properties
+        // this slice adds.
+        (
+            "fcad-identity-escaping.fbx",
+            fbx_scene::identity_escaping_scene(),
+        ),
+        // The same identities under different designations. A neutral test
+        // variant and nothing more: this build has no STEP reimport, and this
+        // file does not pretend to be the output of one.
+        ("fcad-renamed.fbx", fbx_scene::renamed_scene()),
     ];
     for (name, scene) in scenes {
         let path = directory.join(name);

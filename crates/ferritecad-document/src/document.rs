@@ -4,7 +4,8 @@ use std::io::{ErrorKind as IoErrorKind, Read};
 use std::path::{Path, PathBuf};
 
 use ferritecad_exchange::{
-    Diagnostic as ImportDiagnostic, Import, Scene, StoredOccurrences, StoredScene,
+    Diagnostic as ImportDiagnostic, Import, Scene, StoredDefinitionIdentities, StoredOccurrences,
+    StoredScene,
 };
 use ferritecad_kernel::{KernelIdentity, ShapeHandle};
 use ferritecad_types::{
@@ -163,6 +164,12 @@ pub struct ReopenedStepImport {
     /// Version 1 recorded no identities, so nothing it holds can answer a
     /// durable reference; see [`Self::resolve`].
     stored_version: u32,
+    /// Whether the stored layout recorded the identity of its definitions.
+    ///
+    /// The keys a reading shows always exist, because the importer that has
+    /// just run produced them. Whether the *document* ever wrote them down is
+    /// this, and a layout that did not is why [`Self::resolve`] refuses.
+    definitions: StoredDefinitionIdentities,
     /// The durable identity of each placement, taken from the stored payload
     /// after the fresh reading was proven to be the same scene.
     ///
@@ -200,6 +207,17 @@ impl ReopenedStepImport {
     /// never recorded which key belonged to which definition.
     pub fn stored_version(&self) -> u32 {
         self.stored_version
+    }
+
+    /// Whether the stored layout recorded the identity of its definitions, or
+    /// the fact that it recorded none.
+    ///
+    /// Read-only for the same reason [`Self::stored_version`] is: a caller able
+    /// to replace it could make a legacy reading's fresh importer keys pass for
+    /// identities the document confirmed, which is the whole of what this
+    /// distinction prevents.
+    pub fn definition_identities(&self) -> StoredDefinitionIdentities {
+        self.definitions
     }
 
     /// The durable identity of every placement of this reading, in scene order,
@@ -758,10 +776,12 @@ impl Document {
         // placements is only meaningful once the fresh reading has been proven
         // to be the same scene the payload describes.
         let occurrences = stored.imported.scene.occurrences();
+        let definitions = stored.imported.scene.definition_identities();
         Ok(ReopenedStepImport {
             scene,
             source: stored.imported.source,
             stored_version: stored.imported.scene.version(),
+            definitions,
             occurrences,
             diagnostics_at_import: stored.imported.diagnostics_at_import,
             diagnostics_now,

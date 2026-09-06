@@ -1,0 +1,108 @@
+§22B-1e3b: the whole diff between the committed FBX baseline and this slice's output.
+
+repository:  c6259ab91bf12f5767e4d204bf2c24569f75ae66 (branch unity-identity-22b-1e3b)
+baseline:    origin/main c6259ab91bf12f5767e4d204bf2c24569f75ae66, built in a clean worktree
+recorded:    2026-09-05T18:32:18Z
+command:     cargo run --example fbx_gate_artefacts -p ferritecad-export -- <dir>
+
+Digests before and after.
+
+  fcad-measured.fbx before       0d1a5ba1e7bded87f1c9aa76f2e7d66575f5e986ac45f6a089f1c58adcd9a721
+  fcad-measured.fbx after        6e69a2330de05b503c2db199f4b6379e8039cc568bdd9667084201a016ff92cf
+  fcad-escaping.fbx before       1ba4ec2fe9e79cd6e950308c7ed3d40dba221a5bd0967ae2114eb984d1b19c80
+  fcad-escaping.fbx after        77c5961ed4a5e092ca91bb89539c8cea613b9c4abb87cae48e3a36125bc845c6
+  fcad-legacy.fbx (new file)     0d1a5ba1e7bded87f1c9aa76f2e7d66575f5e986ac45f6a089f1c58adcd9a721
+  fcad-identity-escaping (new)   c71190f189e9caed674c80335570a467b308e496ab64c4c8f4aa2998bba75698
+  fcad-renamed.fbx (new file)    0244538b4d27ac8210a7c9bc23c87236cf4e025f03aaecb70942484a54d0ded9
+
+The strongest of those lines is the third. fcad-legacy.fbx is the measured
+scene as a document that recorded no identities exports it, and its digest is
+0d1a5ba1... — byte for byte the file this repository already committed as
+fcad-measured.fbx. The writer therefore produces exactly the bytes it always
+did for everything except the channel, and the two digests that changed are
+explained line by line below.
+
+==================== fcad-measured.fbx: every changed line ====================
+
+lines added: 18
+lines removed: 0
+
+112a113,114
+> 			P: "FerriteCADDefinitionId", "KString", "", "U", "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%231"
+> 			P: "FerriteCADOccurrenceId", "KString", "", "U", "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a0"
+125a128,129
+> 			P: "FerriteCADDefinitionId", "KString", "", "U", "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%237"
+> 			P: "FerriteCADOccurrenceId", "KString", "", "U", "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a1"
+138a143,144
+> 			P: "FerriteCADDefinitionId", "KString", "", "U", "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%232428"
+> 			P: "FerriteCADOccurrenceId", "KString", "", "U", "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a2"
+150a157,158
+> 			P: "FerriteCADDefinitionId", "KString", "", "U", "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%232428"
+> 			P: "FerriteCADOccurrenceId", "KString", "", "U", "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a3"
+162a171,172
+> 			P: "FerriteCADDefinitionId", "KString", "", "U", "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%232583"
+> 			P: "FerriteCADOccurrenceId", "KString", "", "U", "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a4"
+179a190,191
+> 			P: "FerriteCADDefinitionId", "KString", "", "U", "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%239"
+> 			P: "FerriteCADOccurrenceId", "KString", "", "U", "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a5"
+192a205,206
+> 			P: "FerriteCADDefinitionId", "KString", "", "U", "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%239"
+> 			P: "FerriteCADOccurrenceId", "KString", "", "U", "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a6"
+205a220,221
+> 			P: "FerriteCADDefinitionId", "KString", "", "U", "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%239"
+> 			P: "FerriteCADOccurrenceId", "KString", "", "U", "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a7"
+218a235,236
+> 			P: "FerriteCADDefinitionId", "KString", "", "U", "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000001:step.product_definition%239"
+> 			P: "FerriteCADOccurrenceId", "KString", "", "U", "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000a8"
+
+==================== fcad-escaping.fbx: every changed line ====================
+
+lines added: 10
+lines removed: 0
+
+66a67,68
+> 			P: "FerriteCADDefinitionId", "KString", "", "U", "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000002:step.product_definition%230"
+> 			P: "FerriteCADOccurrenceId", "KString", "", "U", "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000b0"
+79a82,83
+> 			P: "FerriteCADDefinitionId", "KString", "", "U", "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000002:step.product_definition%231"
+> 			P: "FerriteCADOccurrenceId", "KString", "", "U", "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000b1"
+92a97,98
+> 			P: "FerriteCADDefinitionId", "KString", "", "U", "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000002:step.product_definition%232"
+> 			P: "FerriteCADOccurrenceId", "KString", "", "U", "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000b2"
+105a112,113
+> 			P: "FerriteCADDefinitionId", "KString", "", "U", "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000002:step.product_definition%233"
+> 			P: "FerriteCADOccurrenceId", "KString", "", "U", "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000b3"
+118a127,128
+> 			P: "FerriteCADDefinitionId", "KString", "", "U", "fcad1:def:source:019ffc72-1e3b-7000-8000-000000000002:step.product_definition%234"
+> 			P: "FerriteCADOccurrenceId", "KString", "", "U", "fcad1:occ:place:019ffc72-1e3b-7000-8000-0000000000b4"
+
+======================== what that adds up to ========================
+
+Twenty-eight added lines in total, no removed line and no changed line. Two
+per Model object, in both files, and nothing outside a Properties70 block.
+Every existing property, object number, name, transform, geometry array,
+material colour and connection is at the same place with the same value.
+
+fcad-legacy.fbx, fcad-identity-escaping.fbx and fcad-renamed.fbx are new
+artefacts and have no baseline to differ from: the first is the pair the legacy
+policy is measured with, the second carries the definition keys chosen to break
+the identity grammar, and the third is the neutral test variant the Unity
+measurement uses — the same identities under different designations, built by
+naming different strings and not by any reimport, which this build does not
+have. None of them replaces a committed file.
+
+======================= the measurement inputs did not move ====================
+
+The §22B-1e2a and §22B-1e2b documents are written by the same production writer
+through `fbx_channel_documents` and `fbx_identity_variants`, and those two
+examples hand their synthetic documents `ExportDefinitionIdentity::Unrecorded`
+and `ExportOccurrence::Unrecorded`, so they carry no identity property at all.
+Both examples were run from this branch and from a clean worktree of
+origin/main and compared file for file:
+
+  diff -rq  fbx_channel_documents   before/after   ->  no differences (13 files)
+  diff -rq  fbx_identity_variants   before/after   ->  no differences (10 files)
+
+The recorded editor runs of those two measurements are therefore still runs of
+the bytes they were taken from, and no historical conclusion has been rewritten
+under this slice's code.

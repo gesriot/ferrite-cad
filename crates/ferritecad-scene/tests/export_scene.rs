@@ -20,11 +20,13 @@ use ferritecad_document::{
 };
 use ferritecad_exchange::{
     ColourSource, Definition, Diagnostic, Import, Instance, KeyedInstance, KeyedScene,
-    PersistedScene, Scene, Severity, Stage, StoredScene,
+    LegacyDefinition, LegacyInstance, LegacyScene, PersistedScene, Scene, Severity, Stage,
+    StoredScene,
 };
 use ferritecad_export::{
-    ExportColourOrigin, ExportGeometry, ExportOccurrence, ExportProvenance, ExportScene,
-    ExportSceneBuilder, ExportSource, ExportTransform, TRANSFORM_TOLERANCE,
+    ExportColourOrigin, ExportDefinitionIdentity, ExportGeometry, ExportOccurrence,
+    ExportProvenance, ExportScene, ExportSceneBuilder, ExportSource, ExportTransform,
+    TRANSFORM_TOLERANCE,
 };
 use ferritecad_kernel::mock::MockKernel;
 use ferritecad_kernel::{
@@ -40,6 +42,17 @@ use ferritecad_types::{
 
 const SOURCE: &[u8] = b"ISO-10303-21; this is what the document stores";
 const OTHER_SOURCE: &[u8] = b"ISO-10303-21; a different file entirely";
+
+/// The one object the builder gates below hang a native definition on.
+///
+/// Fixed rather than minted: a definition's durable identity has to be the
+/// object its source names, and a gate that made up two of them would be
+/// asserting against values it could not name.
+fn owner() -> ObjectId {
+    "019ffc72-1e3b-7000-8000-0000000000f1"
+        .parse()
+        .expect("a fixed UUIDv7")
+}
 
 fn params() -> TessellationParams {
     TessellationParams::new(
@@ -2194,6 +2207,373 @@ fn a_document_written_before_placements_had_identities_says_so_and_still_exports
     );
 }
 
+#[test]
+fn a_document_written_before_definitions_had_keys_says_so_and_still_exports() {
+    // Version 1 identified its definitions by position, so the keys a reading
+    // of it shows came out of the importer that has just run. They are still
+    // written to `FerriteCADDefinitionKey`, exactly as they always were; what
+    // must not happen is that they are presented as a durable identity the
+    // document confirmed, because nothing confirmed them.
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("v1.fcad");
+    let mut kernel = MockKernel::new();
+    let object = ObjectId::new();
+    let mut document = Document::create(&path).expect("creates a document");
+    let scene = nested_assembly(&mut kernel);
+    store_import(
+        &mut document,
+        &mut kernel,
+        Stored {
+            object,
+            name: "Assembly",
+            source: SOURCE,
+            source_name: "03-nested-assembly.step",
+            scene,
+            diagnostics: Vec::new(),
+        },
+    );
+    document.close().expect("closes");
+
+    let current = export_nested(&path);
+    assert!(
+        current
+            .definitions()
+            .iter()
+            .all(|definition| definition.identity.is_recorded()),
+        "a current-layout document did not record its definition identities"
+    );
+
+    downgrade_to_version_1(&path, object);
+    let before = ferritecad_types::ContentHash::of_bytes(
+        &std::fs::read(&path).expect("snapshots the document"),
+    );
+    let after = export_nested(&path);
+
+    // Everything a user sees is unchanged, keys included.
+    assert_eq!(
+        described(&after),
+        described(&current),
+        "a version 1 document exports something other than what it always did"
+    );
+    // And both halves of the identity say what they are rather than being
+    // filled in from the fresh reading.
+    assert!(
+        after
+            .definitions()
+            .iter()
+            .all(|definition| definition.identity == ExportDefinitionIdentity::Unrecorded),
+        "a document that never recorded definition identities was given some"
+    );
+    assert_eq!(
+        occurrences(&after),
+        vec![ExportOccurrence::Unrecorded; 7],
+        "a document that never recorded placement identities was given some"
+    );
+    assert_eq!(
+        ferritecad_types::ContentHash::of_bytes(
+            &std::fs::read(&path).expect("re-reads the document")
+        ),
+        before,
+        "exporting a version 1 document rewrote it"
+    );
+}
+
+#[test]
+fn a_version_2_document_keeps_its_definition_identities_and_has_no_placement_ones() {
+    // The two halves are recorded by different layouts, and a document in
+    // between has one and not the other. Collapsing them into one question
+    // would either lose the definition identity version 2 really does have, or
+    // invent the placement identity it really does not.
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("v2.fcad");
+    let mut kernel = MockKernel::new();
+    let object = ObjectId::new();
+    let mut document = Document::create(&path).expect("creates a document");
+    let scene = nested_assembly(&mut kernel);
+    store_import(
+        &mut document,
+        &mut kernel,
+        Stored {
+            object,
+            name: "Assembly",
+            source: SOURCE,
+            source_name: "03-nested-assembly.step",
+            scene,
+            diagnostics: Vec::new(),
+        },
+    );
+    document.close().expect("closes");
+
+    let current = export_nested(&path);
+    downgrade_to_version_2(&path, object);
+    let after = export_nested(&path);
+
+    assert_eq!(described(&after), described(&current));
+    assert!(
+        after
+            .definitions()
+            .iter()
+            .all(|definition| definition.identity.is_recorded()),
+        "a version 2 document lost the definition identities it did record"
+    );
+    for definition in after.definitions() {
+        let ExportSource::Imported {
+            source,
+            definition_key,
+        } = &definition.source
+        else {
+            panic!("this document holds no native body");
+        };
+        assert_eq!(
+            definition.identity,
+            ExportDefinitionIdentity::Source {
+                source: *source,
+                definition_key: definition_key.clone(),
+            },
+            "a definition identity names something other than its own source and key"
+        );
+    }
+    assert_eq!(
+        occurrences(&after),
+        vec![ExportOccurrence::Unrecorded; 7],
+        "a version 2 document was given placement identities it never recorded"
+    );
+}
+
+#[test]
+fn a_native_body_is_its_object_in_both_identity_domains() {
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("body.fcad");
+    let bodies = several_bodies(&path, 1);
+    let object = bodies[0];
+    let mut kernel = MockKernel::new();
+    let scene = export_scene(
+        &path,
+        &mut kernel,
+        no_imports,
+        &params(),
+        &OperationContext::default(),
+    )
+    .expect("a native document exports");
+
+    assert_eq!(scene.definitions().len(), 1);
+    assert_eq!(
+        scene.definitions()[0].identity,
+        ExportDefinitionIdentity::Object(object),
+        "a native definition is identified by something other than its object"
+    );
+    assert_eq!(
+        scene.nodes()[0].occurrence,
+        ExportOccurrence::Object(object),
+        "a native placement is identified by something other than its object"
+    );
+}
+
+#[test]
+fn two_sources_that_gave_one_definition_the_same_key_keep_two_identities() {
+    // The `ambiguous_join` the §22B-1e2a measurement recorded, asked of the
+    // neutral boundary rather than of a rewritten file: two documents' worth of
+    // bytes in one document, each calling its own definition `#42`, must arrive
+    // as two identities that name their own source.
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("two-sources.fcad");
+    let mut kernel = MockKernel::new();
+    let first = ObjectId::new();
+    let second = ObjectId::new();
+    let mut document = Document::create(&path).expect("creates a document");
+    for (object, source, name) in [(first, SOURCE, "First"), (second, OTHER_SOURCE, "Second")] {
+        let scene = flat_assembly(&mut kernel);
+        store_import(
+            &mut document,
+            &mut kernel,
+            Stored {
+                object,
+                name,
+                source,
+                source_name: "flat.step",
+                scene,
+                diagnostics: Vec::new(),
+            },
+        );
+    }
+    document.close().expect("closes");
+
+    let mut kernel = MockKernel::new();
+    let scene = export_scene(
+        &path,
+        &mut kernel,
+        |kernel, _| {
+            Ok(Import::Imported {
+                scene: flat_assembly(kernel),
+                diagnostics: Vec::new(),
+            })
+        },
+        &params(),
+        &OperationContext::default(),
+    )
+    .expect("exports both stored files");
+    assert_eq!(kernel.live_shape_count(), 0);
+    let mut sources = std::collections::BTreeSet::new();
+    let mut identities = std::collections::BTreeSet::new();
+    let mut keys = std::collections::BTreeSet::new();
+    for definition in scene.definitions() {
+        let ExportDefinitionIdentity::Source {
+            source,
+            definition_key,
+        } = &definition.identity
+        else {
+            panic!("an imported definition of a current-layout document has no identity");
+        };
+        sources.insert(*source);
+        keys.insert(definition_key.clone());
+        identities.insert(definition.identity.clone());
+    }
+    assert_eq!(sources.len(), 2, "the two files became one source");
+    assert!(
+        keys.len() < scene.definitions().len(),
+        "the two files share no key, so this gate measures nothing"
+    );
+    assert_eq!(
+        identities.len(),
+        scene.definitions().len(),
+        "two definitions of two files answer to one identity"
+    );
+}
+
+#[test]
+fn a_definition_reached_through_a_legacy_object_as_well_is_not_identified() {
+    // One canonical definition, two imported objects storing the same bytes,
+    // and one of those objects written at a layout that recorded no definition
+    // keys. The sightings are merged the way every repeated fact in the load
+    // is, and the merge is a conjunction on purpose: an identity is either
+    // something every stored layout that holds this definition wrote down, or
+    // it is not something an export may promise. A disjunction here would
+    // promise a durable identity on the strength of a document that never
+    // recorded one.
+    let directory = tempfile::tempdir().expect("a temporary directory is available");
+    let path = directory.path().join("mixed.fcad");
+    let mut kernel = MockKernel::new();
+    let legacy = ObjectId::new();
+    {
+        let mut document = Document::create(&path).expect("creates a document");
+        for (object, name) in [(legacy, "left"), (ObjectId::new(), "right")] {
+            let scene = flat_assembly(&mut kernel);
+            store_import(
+                &mut document,
+                &mut kernel,
+                Stored {
+                    object,
+                    name,
+                    source: SOURCE,
+                    source_name: "flat.step",
+                    scene,
+                    diagnostics: Vec::new(),
+                },
+            );
+        }
+    }
+
+    let export = |path: &Path| -> ExportScene {
+        let mut kernel = MockKernel::new();
+        let scene = export_scene(
+            path,
+            &mut kernel,
+            |kernel, _| {
+                Ok(Import::Imported {
+                    scene: flat_assembly(kernel),
+                    diagnostics: Vec::new(),
+                })
+            },
+            &params(),
+            &OperationContext::default(),
+        )
+        .expect("exports");
+        assert_eq!(kernel.live_shape_count(), 0);
+        scene
+    };
+
+    let before = export(&path);
+    assert_eq!(before.definitions().len(), 2);
+    assert!(
+        before
+            .definitions()
+            .iter()
+            .all(|definition| definition.identity.is_recorded()),
+        "two current-layout objects did not record their definition identities"
+    );
+
+    downgrade_to_version_1(&path, legacy);
+    let after = export(&path);
+
+    assert_eq!(
+        described(&after),
+        described(&before),
+        "downgrading one object changed what the export describes"
+    );
+    assert_eq!(
+        after.definitions().len(),
+        2,
+        "the two objects stopped sharing definitions"
+    );
+    assert!(
+        after
+            .definitions()
+            .iter()
+            .all(|definition| definition.identity == ExportDefinitionIdentity::Unrecorded),
+        "a definition one of whose stored layouts recorded no key was still identified"
+    );
+    // And the placements of the object that is still at the current layout keep
+    // their own identities: the two halves are separate questions and one
+    // downgraded object does not answer the other.
+    assert_eq!(
+        occurrences(&after)
+            .iter()
+            .filter(|occurrence| occurrence.is_recorded())
+            .count(),
+        3,
+        "downgrading one object took the other object's placement identities"
+    );
+}
+
+/// Rewrites an imported object's stored scene as a version 1 build left it.
+///
+/// Version 1 named its definitions by position and stored no key at all, which
+/// is the layout that has no durable definition identity to hand on.
+fn downgrade_to_version_1(path: &Path, object: ObjectId) {
+    rewrite_stored_scene(path, object, 1, |scene| LegacyScene {
+        source_unit: scene.source_unit.clone(),
+        schema: scene.schema.clone(),
+        definitions: scene
+            .definitions
+            .iter()
+            .map(|definition| LegacyDefinition {
+                name: definition.name.clone(),
+                solids: definition.solids,
+            })
+            .collect(),
+        instances: scene
+            .instances
+            .iter()
+            .enumerate()
+            .map(|(index, instance)| LegacyInstance {
+                definition: u32::try_from(
+                    scene
+                        .definitions
+                        .iter()
+                        .position(|definition| definition.key == instance.definition)
+                        .unwrap_or_else(|| panic!("instance {index} names a stored definition")),
+                )
+                .expect("a handful of definitions"),
+                parent: instance.parent,
+                name: instance.name.clone(),
+                placement: instance.placement,
+                colour_source: instance.colour_source,
+                colour: instance.colour,
+            })
+            .collect(),
+    });
+}
+
 /// Rewrites an imported object's stored scene as a version 2 build left it.
 ///
 /// There is no supported way to write one: a build that has placement
@@ -2405,9 +2785,8 @@ fn one_identity_naming_two_placements_is_refused_at_the_export_boundary_too() {
     let mut builder = ExportSceneBuilder::new();
     let definition = builder
         .definition(
-            ExportSource::Body {
-                object: ObjectId::new(),
-            },
+            ExportSource::Body { object: owner() },
+            ExportDefinitionIdentity::Object(owner()),
             Some("Part".to_owned()),
             ExportProvenance::default(),
             ExportGeometry::Structural,
@@ -2466,9 +2845,8 @@ fn both_recorded_identity_domains_refuse_a_second_claim() {
     let mut builder = ExportSceneBuilder::new();
     let definition = builder
         .definition(
-            ExportSource::Body {
-                object: ObjectId::new(),
-            },
+            ExportSource::Body { object: owner() },
+            ExportDefinitionIdentity::Object(owner()),
             Some("Part".to_owned()),
             ExportProvenance::default(),
             ExportGeometry::Structural,
@@ -2553,9 +2931,8 @@ fn the_same_sixteen_bytes_in_different_domains_are_not_a_collision() {
     let mut builder = ExportSceneBuilder::new();
     let definition = builder
         .definition(
-            ExportSource::Body {
-                object: ObjectId::new(),
-            },
+            ExportSource::Body { object: owner() },
+            ExportDefinitionIdentity::Object(owner()),
             None,
             ExportProvenance::default(),
             ExportGeometry::Structural,
@@ -2592,9 +2969,8 @@ fn nodes_keep_the_order_they_were_added_in() {
     let mut builder = ExportSceneBuilder::new();
     let definition = builder
         .definition(
-            ExportSource::Body {
-                object: ObjectId::new(),
-            },
+            ExportSource::Body { object: owner() },
+            ExportDefinitionIdentity::Object(owner()),
             None,
             ExportProvenance::default(),
             ExportGeometry::Structural,

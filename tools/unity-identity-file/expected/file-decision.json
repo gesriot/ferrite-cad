@@ -1,0 +1,51 @@
+{
+  "answered": {
+    "a layout that recorded nothing carries no property": true,
+    "a placement is found again by its identity after every designation changed": true,
+    "a vanilla ModelImporter reads both properties on every object": true,
+    "an escaped key survives the editor unchanged": true,
+    "every value stayed in the domain it was written in": true,
+    "placements of one definition share one Mesh": true,
+    "the designations a person reads did not move": true,
+    "the geometry and material bindings did not move": true,
+    "the hierarchy did not move": true,
+    "the import says nothing it did not say before": true,
+    "the join is unambiguous": true,
+    "the properties §22B-1b2 already wrote did not move": true
+  },
+  "checks": 78,
+  "failures": [],
+  "limits": [
+    "A local file identifier in this editor is a function of the visible name, the type and a collision counter, or of the hierarchy path. No property in an FBX changes that, so the three counts above are reported and none of them is asserted. The presence of the channel is not a claim that a serialised reference survives an edit.",
+    "The existing Identifier uniqueness violation is the finding §22B-1e1 recorded and is not fixed here. What is measured is that the channel does not add one.",
+    "No companion package, ScriptedImporter, .meta edit or AddRemap takes part. The probe reads and reports; it renames nothing and publishes nothing.",
+    "A Mesh and a Material are sub-assets and carry no custom properties of their own: this editor hands properties to a callback about a GameObject and to nothing else. There is therefore no identity on them for anything to join two imports by, whatever the file says, and the rename comparison counts them rather than joining them.",
+    "fcad-renamed.fbx is a neutral test variant built by naming different strings. It is not a STEP reimport: this build has no reimport semantics, and nothing here presents it as one.",
+    "This editor names an imported model's root after the asset file rather than after anything the document said, so the root's designation differs between two files of two names however identical their contents. It is excluded from the designation comparison and reported instead. Its identity properties are read like any other object's.",
+    "This editor sorts an imported hierarchy by name by default, which reorders it relative to the file. The probe turns that off, because the callback that hands over the custom properties sees the tree before the sort and the finished asset is the tree after it. The default is recorded above rather than hidden."
+  ],
+  "measured_and_not_judged": {
+    "GameObject local file identifiers that moved": 0,
+    "GameObject local file identifiers that moved across the rename": 8,
+    "Material local file identifiers that moved": 0,
+    "Mesh local file identifiers that moved": 0,
+    "identifier uniqueness violations, current": 0,
+    "identifier uniqueness violations, legacy": 0,
+    "materials": 4,
+    "materials before and after the rename": [
+      4,
+      4
+    ],
+    "meshes": 1,
+    "meshes before and after the rename": [
+      1,
+      1
+    ],
+    "placements of one definition, in this scene": 4,
+    "the designation this editor gives the model root, current": "fcad-measured",
+    "the designation this editor gives the model root, legacy": "fcad-legacy",
+    "the editor sorts an imported hierarchy by name by default": true
+  },
+  "objects": 9,
+  "unity_version": "6000.4.10f1"
+}

@@ -785,8 +785,8 @@ mod tests {
     use std::time::Duration;
 
     use ferritecad_export::{
-        ExportGeometry, ExportOccurrence, ExportOmission, ExportProvenance, ExportScene,
-        ExportSceneBuilder, ExportTransform,
+        ExportDefinitionIdentity, ExportGeometry, ExportOccurrence, ExportOmission,
+        ExportProvenance, ExportScene, ExportSceneBuilder, ExportTransform,
     };
     use ferritecad_kernel::TessellationRefusal;
     use ferritecad_kernel::mock::MockKernel;
@@ -952,6 +952,10 @@ mod tests {
             let definition = builder
                 .definition(
                     ExportSource::Imported {
+                        source,
+                        definition_key: (*key).to_owned(),
+                    },
+                    ExportDefinitionIdentity::Source {
                         source,
                         definition_key: (*key).to_owned(),
                     },
@@ -1832,6 +1836,10 @@ mod tests {
             let definition = builder
                 .definition(
                     ExportSource::Imported {
+                        source,
+                        definition_key: "step.product_definition#31".to_owned(),
+                    },
+                    ExportDefinitionIdentity::Source {
                         source,
                         definition_key: "step.product_definition#31".to_owned(),
                     },

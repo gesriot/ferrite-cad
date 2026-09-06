@@ -27,6 +27,22 @@
 //! keep them apart. The deterministic key travels beside the name as a
 //! property, where an importer can read it.
 //!
+//! # The durable identities travel as properties, and change nothing else
+//!
+//! §22B-1e3b adds two invisible properties per `Model`: what the document
+//! recorded as the definition's durable identity and as this placement's. Both
+//! come from the scene and are spelled by [`identity`], which can see nothing
+//! but the identity it is handed — no ordinal, no parent, no name, no
+//! transform. The writer mints nothing: an identity a document never recorded
+//! has no property, and there is no arm anywhere here that makes one up.
+//!
+//! Nothing else moves. Display names, the hierarchy, the transforms, the
+//! geometry, the material bindings, the object numbers, the omission
+//! properties and the report are exactly what they were, because §22B-1e2a
+//! measured what happens when identity is put where a person reads: the
+//! target program renames, merges and renumbers, and the user loses the
+//! designation they recognise.
+//!
 //! # A partial export says so in the file and in the report
 //!
 //! A definition with no triangles keeps its hierarchy node and carries
@@ -37,6 +53,7 @@
 //! missing, and so no way for it to call a partial export complete.
 
 mod contract;
+mod identity;
 mod syntax;
 
 use std::io::Write;
@@ -554,6 +571,31 @@ impl<'a> Plan<'a> {
             "U",
             &[Value::Text(&key)],
         )?;
+        // The two durable identities, in their own two domains, exactly as the
+        // document recorded them. Written after the two keys above, which keep
+        // the meaning they were given in §22B-1b2 and §22B-1c: the node key is
+        // where this node sits and the definition key is what the source called
+        // this part, and neither is source-qualified or durable. A layout that
+        // recorded no identity gets no property here, which is the only way
+        // this file says "never recorded".
+        if let Some(value) = identity::definition(&definition.identity) {
+            ascii.property(
+                identity::DEFINITION_PROPERTY,
+                "KString",
+                "",
+                "U",
+                &[Value::Text(&value)],
+            )?;
+        }
+        if let Some(value) = identity::occurrence(&node.occurrence) {
+            ascii.property(
+                identity::OCCURRENCE_PROPERTY,
+                "KString",
+                "",
+                "U",
+                &[Value::Text(&value)],
+            )?;
+        }
         // Structure carries no marker: an assembly frame that never had its
         // own geometry and a part that went missing are different facts, and
         // marking both would make the second invisible.

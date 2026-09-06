@@ -21,16 +21,18 @@ use std::path::Path;
 
 use ferritecad_exchange::{ColourSource, Import};
 use ferritecad_export::{
-    ExportColourOrigin, ExportDefinitionId, ExportGeometry, ExportMaterial, ExportMesh,
-    ExportNodeId, ExportOccurrence, ExportOmission, ExportProvenance, ExportScene,
-    ExportSceneBuilder, ExportSource, ExportTransform,
+    ExportColourOrigin, ExportDefinitionId, ExportDefinitionIdentity, ExportGeometry,
+    ExportMaterial, ExportMesh, ExportNodeId, ExportOccurrence, ExportOmission, ExportProvenance,
+    ExportScene, ExportSceneBuilder, ExportSource, ExportTransform,
 };
 use ferritecad_kernel::{
     GeometryKernel, Mesh, OperationContext, TessellationParams, TessellationRefusal,
 };
 use ferritecad_types::{CadError, Result};
 
-use crate::prepare::{self, LoadSink, NodeIdentity, PreparedDefinition, PreparedNode};
+use crate::prepare::{
+    self, DefinitionIdentity, LoadSink, NodeIdentity, PreparedDefinition, PreparedNode,
+};
 use crate::{BODY_COLOUR, SceneItem};
 
 /// Reads a document and describes it for an interchange writer.
@@ -162,6 +164,7 @@ impl LoadSink for Export {
             let geometry = self.geometry_of(index, prepared, &places)?;
             definition_ids.push(builder.definition(
                 source_of(prepared),
+                definition_identity_of(&prepared.identity),
                 prepared.name.clone(),
                 provenance_of(prepared),
                 geometry,
@@ -324,6 +327,27 @@ fn occurrence_of(identity: NodeIdentity) -> ExportOccurrence {
         NodeIdentity::Object(object) => ExportOccurrence::Object(object),
         NodeIdentity::Occurrence(occurrence) => ExportOccurrence::Occurrence(occurrence),
         NodeIdentity::Unrecorded => ExportOccurrence::Unrecorded,
+    }
+}
+
+/// The load's durable identity for one definition, in the neutral terms a
+/// writer sees.
+///
+/// A translation and nothing more, for the same reason [`occurrence_of`] is
+/// one: the three states of the load's definition identity and the three a
+/// writer is offered are the same three facts, deliberately, and there is no
+/// arm here that invents a value.
+fn definition_identity_of(identity: &DefinitionIdentity) -> ExportDefinitionIdentity {
+    match identity {
+        DefinitionIdentity::Object(object) => ExportDefinitionIdentity::Object(*object),
+        DefinitionIdentity::Source {
+            source,
+            definition_key,
+        } => ExportDefinitionIdentity::Source {
+            source: *source,
+            definition_key: definition_key.clone(),
+        },
+        DefinitionIdentity::Unrecorded => ExportDefinitionIdentity::Unrecorded,
     }
 }
 

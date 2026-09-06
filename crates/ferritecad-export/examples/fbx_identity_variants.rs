@@ -19,9 +19,9 @@ use std::io::BufWriter;
 use std::path::PathBuf;
 
 use ferritecad_export::{
-    ExportColourOrigin, ExportGeometry, ExportMaterial, ExportMesh, ExportOccurrence,
-    ExportProvenance, ExportScene, ExportSceneBuilder, ExportSource, ExportTransform,
-    write_fbx_ascii_7400,
+    ExportColourOrigin, ExportDefinitionIdentity, ExportGeometry, ExportMaterial, ExportMesh,
+    ExportOccurrence, ExportProvenance, ExportScene, ExportSceneBuilder, ExportSource,
+    ExportTransform, write_fbx_ascii_7400,
 };
 use ferritecad_types::ImportedSourceId;
 
@@ -144,6 +144,7 @@ fn variant_scene(variant: Variant) -> ExportScene {
     let root = builder
         .definition(
             imported(ROOT),
+            ExportDefinitionIdentity::Unrecorded,
             Some("Assembly Root".to_owned()),
             provenance.clone(),
             ExportGeometry::Structural,
@@ -154,6 +155,7 @@ fn variant_scene(variant: Variant) -> ExportScene {
         builder
             .definition(
                 imported(INSERTED),
+                ExportDefinitionIdentity::Unrecorded,
                 Some("Inserted Part".to_owned()),
                 provenance.clone(),
                 ExportGeometry::Mesh(mesh(7, vec![slot("Inserted", [0.5, 0.5, 0.5])])),
@@ -165,6 +167,7 @@ fn variant_scene(variant: Variant) -> ExportScene {
         builder
             .definition(
                 imported(EARLY),
+                ExportDefinitionIdentity::Unrecorded,
                 Some("Early Part".to_owned()),
                 provenance.clone(),
                 ExportGeometry::Mesh(mesh(3, vec![slot("Early", [0.9, 0.1, 0.1])])),
@@ -175,6 +178,7 @@ fn variant_scene(variant: Variant) -> ExportScene {
     let alpha = builder
         .definition(
             imported(ALPHA),
+            ExportDefinitionIdentity::Unrecorded,
             Some(alpha_name.to_owned()),
             provenance.clone(),
             ExportGeometry::Mesh(mesh(4, alpha_slots())),
@@ -188,6 +192,7 @@ fn variant_scene(variant: Variant) -> ExportScene {
             builder
                 .definition(
                     imported(GAMMA),
+                    ExportDefinitionIdentity::Unrecorded,
                     // Deliberately the same display name as the tracked one.
                     Some("Alpha Part".to_owned()),
                     provenance.clone(),
@@ -198,6 +203,7 @@ fn variant_scene(variant: Variant) -> ExportScene {
         let beta = builder
             .definition(
                 imported(BETA),
+                ExportDefinitionIdentity::Unrecorded,
                 Some("Beta Part".to_owned()),
                 provenance.clone(),
                 ExportGeometry::Mesh(mesh(5, vec![slot("Beta", [0.1, 0.2, 0.9])])),
@@ -208,6 +214,7 @@ fn variant_scene(variant: Variant) -> ExportScene {
         let beta = builder
             .definition(
                 imported(BETA),
+                ExportDefinitionIdentity::Unrecorded,
                 Some("Beta Part".to_owned()),
                 provenance.clone(),
                 ExportGeometry::Mesh(mesh(5, vec![slot("Beta", [0.1, 0.2, 0.9])])),
@@ -217,6 +224,7 @@ fn variant_scene(variant: Variant) -> ExportScene {
             builder
                 .definition(
                     imported(GAMMA),
+                    ExportDefinitionIdentity::Unrecorded,
                     Some("Alpha Part".to_owned()),
                     provenance.clone(),
                     ExportGeometry::Mesh(mesh(6, vec![slot("Gamma", [0.2, 0.7, 0.3])])),

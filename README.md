@@ -66,6 +66,32 @@ The same document always produces the same bytes. Nothing in the file is a
 clock, a host name, a path or a random number, so two exports can be compared,
 diffed and checksummed.
 
+### What the file carries about which part is which
+
+Every node of the file carries two invisible properties beside the ones a
+person sees. `FerriteCADDefinitionId` names the definition — the identity of
+the bytes it was imported from together with the key those bytes gave it, or
+the object of a native body — and `FerriteCADOccurrenceId` names *this*
+placement of it. One part placed four times is one definition identity and four
+placement identities, and the two live in separate namespaces so a reader
+cannot mistake a part for a place.
+
+Nothing else about the file changed: the names, the hierarchy, the transforms,
+the geometry, the materials and the properties an earlier release already wrote
+are exactly what they were. Values are escaped so a definition key can hold any
+text at all, including a colon or a percent sign, and nothing is truncated or
+hashed.
+
+A document saved by a build that did not record these identities carries
+neither property. That is the only way the file says so: there is no
+placeholder value, because a value that said "none" would be a value invented
+for a document that never recorded one.
+
+These properties say what a part *is*. They are not a promise about how any
+particular importing program will renumber its own references when a file is
+imported again; what such a program keys its references on is its own business,
+and FerriteCAD does not claim to change it.
+
 The output file appears in one step or not at all. It is built under a private
 scratch name beside the destination and published once, when the writer has
 finished and every byte is on the disk; a run that fails leaves the destination

@@ -117,6 +117,57 @@ impl ExportOccurrence {
     }
 }
 
+/// The durable identity of one definition, in terms that outlive the export.
+///
+/// The other half of the pair §22B-1e1 named: a placement is "this definition,
+/// this occurrence", and this is the first half. Read-only and neutral for the
+/// same reasons [`ExportOccurrence`] is, and with the same three states for the
+/// same reason.
+///
+/// # Why this is not [`ExportSource`]
+///
+/// [`ExportSource`] says what a definition *is* and is always available:
+/// every imported definition has a source-local key, because the file being
+/// read has just given it one. Whether the *document* ever wrote that key down
+/// is a different question, and a layout written before definitions carried
+/// keys never did. Passing that fresh key off as a durable identity would hand
+/// a reader something that looks like an identity and behaves like whatever
+/// the importer produced this time.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Closed on purpose, exactly as [`ExportOccurrence`] is: a definition is a
+/// body of this document, a keyed definition of an imported file, or one whose
+/// document predates definition identity.
+pub enum ExportDefinitionIdentity {
+    /// A native body, identified by the document object that holds it.
+    Object(ObjectId),
+    /// One definition of one imported file: the identity of the bytes, and the
+    /// key those bytes gave it.
+    ///
+    /// Never the key alone. `#42` occurs in most STEP files and names something
+    /// different in each, so a reader handed only the key cannot tell two
+    /// definitions of two sources apart — which is exactly what the §22B-1e2a
+    /// measurement recorded as `ambiguous_join`.
+    Source {
+        source: ImportedSourceId,
+        definition_key: String,
+    },
+    /// A definition from a document layout written before definitions carried
+    /// keys.
+    ///
+    /// Not lost and not missing: never recorded. Such a document still exports
+    /// exactly what it always did, under the key the importer produced just
+    /// now; what it cannot do is promise that key means the same thing next
+    /// time.
+    Unrecorded,
+}
+
+impl ExportDefinitionIdentity {
+    /// Whether this is an identity a document actually wrote down.
+    pub const fn is_recorded(&self) -> bool {
+        !matches!(self, Self::Unrecorded)
+    }
+}
+
 /// What one definition is called, and where it came from.
 ///
 /// Display facts only. Nothing here is identity, and nothing here may be
@@ -422,6 +473,13 @@ pub struct ExportDefinition {
     pub id: ExportDefinitionId,
     /// What this is, in terms that outlive the export.
     pub source: ExportSource,
+    /// What the document recorded as this definition's durable identity, or
+    /// the fact that its layout recorded none.
+    ///
+    /// Beside [`Self::source`] rather than inside it: the two answer different
+    /// questions, and a document that never wrote a key down still has a
+    /// source.
+    pub identity: ExportDefinitionIdentity,
     /// What the document or the file called it. Never identity.
     pub display_name: Option<String>,
     pub provenance: ExportProvenance,
@@ -646,9 +704,28 @@ impl ExportSceneBuilder {
     }
 
     /// Adds a definition, refusing a second one with the same durable source.
+    ///
+    /// `identity` is what the *document* recorded, and it must describe the
+    /// same thing `source` does: a native body is identified by the object
+    /// that holds it, and an imported definition either by the pair its
+    /// document stored or by nothing at all. The two disagreeing would be a
+    /// definition answering to an identity from another domain, which is the
+    /// one confusion a two-domain wire contract exists to make impossible.
+    ///
+    /// # Why one recorded identity names one definition without a check for it
+    ///
+    /// Because the two refusals above already say so together. A recorded
+    /// identity has to describe its own source, so it is a function of that
+    /// source; and a second definition with that source is refused outright.
+    /// A separate index of claimed identities would therefore be a branch
+    /// nothing can reach, and an unreachable refusal is not a guarantee — it is
+    /// a line that looks like one. [`ExportOccurrence`] is genuinely different:
+    /// two placements of two objects can carry one identity, which is why the
+    /// node side does keep an index.
     pub fn definition(
         &mut self,
         source: ExportSource,
+        identity: ExportDefinitionIdentity,
         display_name: Option<String>,
         provenance: ExportProvenance,
         geometry: ExportGeometry,
@@ -665,12 +742,14 @@ impl ExportSceneBuilder {
                 self.definitions.len()
             )));
         }
+        agrees(&source, &identity)?;
         let id = ExportDefinitionId(u32::try_from(self.definitions.len()).map_err(|_| {
             CadError::input("an export cannot hold more definitions than uint32 can count")
         })?);
         self.definitions.push(ExportDefinition {
             id,
             source,
+            identity,
             display_name: display_name.filter(|name| !name.trim().is_empty()),
             provenance,
             geometry,
@@ -798,6 +877,44 @@ impl ExportSceneBuilder {
             completeness: ExportCompleteness { omissions },
         })
     }
+}
+
+/// Whether a recorded definition identity describes the same definition its
+/// source does.
+///
+/// A native body has exactly one durable identity — the object that holds it —
+/// and there is nothing else it could honestly be. An imported definition is
+/// identified by the source it belongs to together with the key that source
+/// gave it, or by nothing; naming a different source or a different key would
+/// be an identity for another definition, and naming an object would be an
+/// identity from the other domain entirely.
+fn agrees(source: &ExportSource, identity: &ExportDefinitionIdentity) -> Result<()> {
+    let agrees = match (source, identity) {
+        (ExportSource::Body { object }, ExportDefinitionIdentity::Object(identified)) => {
+            object == identified
+        }
+        (
+            ExportSource::Imported {
+                source,
+                definition_key,
+            },
+            ExportDefinitionIdentity::Source {
+                source: identified,
+                definition_key: key,
+            },
+        ) => source == identified && definition_key == key,
+        (ExportSource::Imported { .. }, ExportDefinitionIdentity::Unrecorded) => true,
+        // A native body always has its object, so `Unrecorded` there would be a
+        // document claiming not to know which object it stores; and the two
+        // remaining pairs cross the domain boundary outright.
+        _ => false,
+    };
+    if agrees {
+        return Ok(());
+    }
+    Err(CadError::input(format!(
+        "{source:?} was given the durable identity {identity:?}, which describes something else"
+    )))
 }
 
 #[cfg(test)]
@@ -1082,6 +1199,7 @@ mod tests {
         let frame = builder
             .definition(
                 imported("step.product_definition#1"),
+                ExportDefinitionIdentity::Unrecorded,
                 Some("Assembly".to_owned()),
                 ExportProvenance::default(),
                 ExportGeometry::Structural,
@@ -1090,6 +1208,7 @@ mod tests {
         let part = builder
             .definition(
                 imported("step.product_definition#2428"),
+                ExportDefinitionIdentity::Unrecorded,
                 Some("Part".to_owned()),
                 ExportProvenance::new(None, Some("MILLIMETRE".to_owned()), None, Some(1)),
                 ExportGeometry::Mesh(asymmetric()),
@@ -1098,6 +1217,7 @@ mod tests {
         let missing = builder
             .definition(
                 imported("step.product_definition#2583"),
+                ExportDefinitionIdentity::Unrecorded,
                 Some("Missing".to_owned()),
                 ExportProvenance::default(),
                 ExportGeometry::Omitted(ExportOmission::new(
@@ -1178,6 +1298,187 @@ mod tests {
     }
 
     #[test]
+    fn a_definition_identity_that_describes_something_else_is_refused() {
+        // The two domains and the pair inside the imported one. A definition
+        // answering to an identity from the other domain, or to another
+        // source's, or to another key's, is a definition a reader would join to
+        // the wrong thing — and every one of those compiles.
+        let source = ImportedSourceId::new();
+        let other = ImportedSourceId::new();
+        let object = ObjectId::new();
+        let key = "step.product_definition#5".to_owned();
+        let imported_source = || ExportSource::Imported {
+            source,
+            definition_key: key.clone(),
+        };
+
+        for (source_of, identity, why) in [
+            (
+                imported_source(),
+                ExportDefinitionIdentity::Object(object),
+                "an imported definition identified by an object",
+            ),
+            (
+                imported_source(),
+                ExportDefinitionIdentity::Source {
+                    source: other,
+                    definition_key: key.clone(),
+                },
+                "an imported definition identified by another source",
+            ),
+            (
+                imported_source(),
+                ExportDefinitionIdentity::Source {
+                    source,
+                    definition_key: "step.product_definition#6".to_owned(),
+                },
+                "an imported definition identified by another key",
+            ),
+            (
+                ExportSource::Body { object },
+                ExportDefinitionIdentity::Unrecorded,
+                "a body that claims not to know its own object",
+            ),
+            (
+                ExportSource::Body { object },
+                ExportDefinitionIdentity::Object(ObjectId::new()),
+                "a body identified by another object",
+            ),
+            (
+                ExportSource::Body { object },
+                ExportDefinitionIdentity::Source {
+                    source,
+                    definition_key: key.clone(),
+                },
+                "a body identified by an imported definition",
+            ),
+        ] {
+            let mut builder = ExportSceneBuilder::new();
+            assert!(
+                builder
+                    .definition(
+                        source_of,
+                        identity,
+                        None,
+                        ExportProvenance::default(),
+                        ExportGeometry::Structural,
+                    )
+                    .is_err(),
+                "{why} was accepted"
+            );
+        }
+
+        // And the two pairs that do agree are accepted, so the gate is about a
+        // rule rather than about refusing everything.
+        for (source_of, identity) in [
+            (
+                imported_source(),
+                ExportDefinitionIdentity::Source {
+                    source,
+                    definition_key: key.clone(),
+                },
+            ),
+            (imported_source(), ExportDefinitionIdentity::Unrecorded),
+            (
+                ExportSource::Body { object },
+                ExportDefinitionIdentity::Object(object),
+            ),
+        ] {
+            let mut builder = ExportSceneBuilder::new();
+            builder
+                .definition(
+                    source_of,
+                    identity,
+                    None,
+                    ExportProvenance::default(),
+                    ExportGeometry::Structural,
+                )
+                .expect("an identity that describes its own definition");
+        }
+    }
+
+    #[test]
+    fn one_recorded_definition_identity_cannot_name_two_definitions() {
+        // Not by a check, but because two refusals already say so together: a
+        // recorded identity has to describe its own source, and one source is
+        // one definition. What that leaves reachable is any number of
+        // unrecorded definitions, which a document written before definition
+        // keys really may have.
+        let source = ImportedSourceId::new();
+        let key = "step.product_definition#5".to_owned();
+        let mut builder = ExportSceneBuilder::new();
+        builder
+            .definition(
+                ExportSource::Imported {
+                    source,
+                    definition_key: key.clone(),
+                },
+                ExportDefinitionIdentity::Source {
+                    source,
+                    definition_key: key.clone(),
+                },
+                None,
+                ExportProvenance::default(),
+                ExportGeometry::Structural,
+            )
+            .expect("the first");
+        // A second definition of another source cannot even be given that
+        // identity: it does not describe it.
+        assert!(
+            builder
+                .definition(
+                    ExportSource::Imported {
+                        source: ImportedSourceId::new(),
+                        definition_key: key.clone(),
+                    },
+                    ExportDefinitionIdentity::Source {
+                        source,
+                        definition_key: key.clone(),
+                    },
+                    None,
+                    ExportProvenance::default(),
+                    ExportGeometry::Structural,
+                )
+                .is_err(),
+            "a definition answering to another definition's identity"
+        );
+        // And one that does describe it is the same source, which is refused
+        // as a duplicate source before identity is looked at.
+        assert!(
+            builder
+                .definition(
+                    ExportSource::Imported {
+                        source,
+                        definition_key: key.clone(),
+                    },
+                    ExportDefinitionIdentity::Source {
+                        source,
+                        definition_key: key.clone(),
+                    },
+                    None,
+                    ExportProvenance::default(),
+                    ExportGeometry::Structural,
+                )
+                .is_err(),
+            "one source added twice"
+        );
+        for _ in 0..3 {
+            builder
+                .definition(
+                    ExportSource::Imported {
+                        source: ImportedSourceId::new(),
+                        definition_key: key.clone(),
+                    },
+                    ExportDefinitionIdentity::Unrecorded,
+                    None,
+                    ExportProvenance::default(),
+                    ExportGeometry::Structural,
+                )
+                .expect("any number of unrecorded definitions is lawful");
+        }
+    }
+
+    #[test]
     fn one_durable_identity_is_one_definition() {
         let source = ImportedSourceId::new();
         let same = || ExportSource::Imported {
@@ -1188,6 +1489,7 @@ mod tests {
         builder
             .definition(
                 same(),
+                ExportDefinitionIdentity::Unrecorded,
                 Some("Bracket".to_owned()),
                 ExportProvenance::default(),
                 ExportGeometry::Structural,
@@ -1197,6 +1499,7 @@ mod tests {
             builder
                 .definition(
                     same(),
+                    ExportDefinitionIdentity::Unrecorded,
                     Some("Support".to_owned()),
                     ExportProvenance::default(),
                     ExportGeometry::Mesh(asymmetric()),
@@ -1212,6 +1515,7 @@ mod tests {
         let definition = builder
             .definition(
                 imported("step.product_definition#5"),
+                ExportDefinitionIdentity::Unrecorded,
                 None,
                 ExportProvenance::default(),
                 ExportGeometry::Mesh(asymmetric()),
@@ -1262,6 +1566,7 @@ mod tests {
         let definition = builder
             .definition(
                 imported("step.product_definition#5"),
+                ExportDefinitionIdentity::Unrecorded,
                 None,
                 ExportProvenance::default(),
                 ExportGeometry::Structural,
@@ -1346,6 +1651,7 @@ mod tests {
         builder
             .definition(
                 imported("step.product_definition#5"),
+                ExportDefinitionIdentity::Unrecorded,
                 None,
                 ExportProvenance::default(),
                 ExportGeometry::Mesh(asymmetric()),

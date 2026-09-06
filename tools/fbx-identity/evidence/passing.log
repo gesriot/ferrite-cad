@@ -1,0 +1,20 @@
+§22B-1e3b: the identity channel, after the implementation.
+
+repository:  c6259ab91bf12f5767e4d204bf2c24569f75ae66 (branch unity-identity-22b-1e3b)
+recorded:    2026-09-06T03:52:34Z
+platform:    Darwin 24.6.0 arm64
+command:     tools/check-fbx-identity.sh
+
+The same gate that refused in failing-first.log, on the same fixture, through
+the same shipped commands. Both readers now agree, and the join is against the
+document's own payload rather than against the writer's opinion of it. The
+first line is the gate on the independent grammar itself: twelve transcripts,
+one that must be accepted and eleven that must be refused by name.
+
+FCAD_EXPORT_FBX_IDENTITY nodes=140 definitions=46 occurrences=140 shared_places=12
+FCAD_IDENTITY_JOIN_CHECKED 12 failures=0
+reader ufbx 0.23.0 strict
+FCAD_IDENTITY_SUMMARY nodes=140 definitions=140 occurrences=140 meshes=34
+FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=145 failures=0
+FCAD_FBX_IDENTITY_JOIN nodes=140 joined=140 definitions=46 occurrences=140 failures=0
+identity FBX: pinned ufbx and an independent grammar joined all 140 placements
