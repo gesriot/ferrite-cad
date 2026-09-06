@@ -31,14 +31,14 @@
 #            directory; it is not a notarisation claim and not a distribution
 #            signature.
 #            <name>.app/Contents/Info.plist, because a directory shaped like a
-#            bundle is not one. Two executables sit beside each other in
+#            bundle is not one: two executables sit beside each other in
 #            Contents/MacOS and nothing else in the delivery says which of
-#            them the desktop should start; without that file, opening the
-#            layout from the Finder starts no process and reports nothing
+#            them the desktop should start, so opening the layout from the
+#            Finder starts no process and reports nothing.
 #            <name>.app/Contents/_CodeSignature/CodeResources, from signing
-#            the bundle ad hoc once the plist exists. codesign then reads the
-#            directory as a bundle, and a signature sealing no resources stops
-#            verifying
+#            the bundle ad hoc once the plist exists, because codesign then
+#            reads the directory as a bundle and a signature sealing no
+#            resources stops verifying.
 #            Both are delivered files like any other: one owner each in the
 #            inventory, a digest each in the package manifest, and both in the
 #            extracted archive.
