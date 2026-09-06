@@ -28,6 +28,11 @@
 #   version of this question that a lost executable bit, a truncated file or a
 #   manifest describing a different build can fail.
 #
+#   On macOS what came out is an application. Every other question here starts
+#   a binary by naming it on a command line; a recipient opens the delivery
+#   instead, and a `.app` with no Info.plist starts nothing while passing all
+#   of them.
+#
 #   Both halves of the product run. `--solver-info` says a great deal about
 #   planegcs and nothing whatever about Open CASCADE; a rebuild says the
 #   opposite.
@@ -58,11 +63,14 @@ set -euo pipefail
 
 PACKAGE_TOOL='check-release-package'
 RUNTIME_PROBE_TOOL='check-release-package'
+MACOS_BUNDLE_TOOL='check-release-package'
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tools/package/lib.sh
 . tools/package/lib.sh
 # shellcheck source=tools/runtime-probe.sh
 . tools/runtime-probe.sh
+# shellcheck source=tools/macos-bundle.sh
+. tools/macos-bundle.sh
 
 platform=''
 archive=''
@@ -580,17 +588,29 @@ component_for_key() { # key
 planegcs_owner="$(component_for_key planegcs)"
 occt_owner="$(component_for_key occt)"
 
-one_file_owned_by() { # owner description
-    local owner="$1" what="$2" found
-    found="$(awk -F'\t' -v o="$owner" '$1 == "runtime" && $6 == o { print $2 }' "$work/claimed")"
+one_file_owned_by() { # owner description [executable-only]
+    local owner="$1" what="$2" only="${3:-}" found
+    found="$(awk -F'\t' -v o="$owner" -v only="$only" \
+        '$1 == "runtime" && $6 == o && (only == "" || $5 == "true") { print $2 }' \
+        "$work/claimed")"
     [ -n "$found" ] || package_die "the package carries no $what (nothing is owned by $owner)"
     [ "$(printf '%s\n' "$found" | wc -l | tr -d ' ')" -eq 1 ] \
         || package_die "the package carries more than one $what"
     printf '%s\n' "$found"
 }
 
-viewer="$root/$(one_file_owned_by "$viewer_root" 'shipped application')"
-cli="$root/$(one_file_owned_by "$cli_root" 'shipped command line tool')"
+# A product root's own program, rather than the only file it owns.
+#
+# Those were the same thing until the macOS bundle gained an Info.plist, which
+# the delivery carries, which the manifest describes, and which belongs to the
+# executable it tells the desktop to start. So the executable is picked by the
+# property the manifest already records about every payload file and that the
+# gate already re-measured against the extracted bytes: whether the file system
+# says it may be run. Nothing new is written down and no filename rule is
+# introduced; a package whose application arrived without its executable bit
+# has already failed above.
+viewer="$root/$(one_file_owned_by "$viewer_root" 'shipped application' executable)"
+cli="$root/$(one_file_owned_by "$cli_root" 'shipped command line tool' executable)"
 planegcs="$root/$(one_file_owned_by "$planegcs_owner" 'sketch solver library')"
 
 awk -F'\t' -v o="$occt_owner" '$1 == "runtime" && $6 == o { print $2 }' "$work/claimed" \
@@ -607,6 +627,46 @@ for binary in "$viewer" "$cli"; do
 done
 fact "package executables-extracted-runnable=true"
 
+# ---------------------------------------------------------------------------
+# And on macOS, that what came out is an application.
+# ---------------------------------------------------------------------------
+#
+# Everything above and everything below names an executable on a command line.
+# A recipient does not: they open the delivery. A `.app` with no Info.plist in
+# it, or one naming an executable it does not carry, passes every other check
+# in this file and starts nothing at all when it is double-clicked, which is
+# the defect §23B exists to close.
+#
+# The bundle is found from the application the manifest's owners already
+# identified rather than from a name written here, and the file it reads is one
+# of the payload files this gate re-hashed against the manifest a few hundred
+# lines above.
+
+if [ "$platform" = macos ]; then
+    bundle="$(dirname "$(dirname "$(dirname "$viewer")")")"
+    case "$bundle" in
+        *.app) ;;
+        *) package_die "the shipped application is at $viewer, which is not inside a bundle" ;;
+    esac
+
+    macos_bundle_check "$bundle" "$said_version" \
+        || package_die 'what came out of the archive is not an application bundle'
+    [ "$macos_bundle_executable" = "$(basename "$viewer")" ] \
+        || package_die "the bundle says the application is $macos_bundle_executable and the \
+package's application is $(basename "$viewer")"
+
+    # The file it read is a delivered file with an owner, not something the
+    # extraction happened to leave lying about. It belongs to the executable it
+    # starts, which is the same root the manifest gave the application.
+    plist_relative="${bundle#"$root"/}/$MACOS_BUNDLE_PLIST"
+    plist_owner="$(awk -F'\t' -v p="$plist_relative" '$1 == "runtime" && $2 == p { print $6 }' \
+        "$work/claimed")"
+    [ "$plist_owner" = "$viewer_root" ] || package_die \
+        "$plist_relative is what the desktop reads to start this package and the manifest \
+gives it the owner '$plist_owner' rather than $viewer_root"
+    fact "package macos-bundle executable=$macos_bundle_executable owner=$viewer_root"
+fi
+
 if [ "$execute" = no ]; then
     fact "package execution=skipped"
     echo "--- facts ---"
@@ -622,6 +682,25 @@ fi
 # ---------------------------------------------------------------------------
 
 runtime_probe_require_inspector "$platform"
+
+# The ad-hoc signature the delivery carries, asked of the bundle that came out
+# of the archive rather than of the one that went in. Editing load commands
+# invalidated every image's signature, staging wrote them again and then signed
+# the bundle; an archive that lost any of that produces a package the kernel
+# refuses before dyld gets a turn, which looks exactly like a missing library.
+#
+# Here rather than beside the other bundle questions because this one is about
+# the real product: tools/check-packager.sh gates the packaging arithmetic on
+# fixtures of made-up bytes, which no signature covers and none should, and it
+# passes --no-execute.
+if [ "$platform" = macos ]; then
+    macos_bundle_signed_ok "$bundle" "$work/codesign.txt"
+    case $? in
+        0) fact "package macos-bundle ad-hoc-signature=verified-after-extraction" ;;
+        2) package_die 'there is no codesign on this host, so the extracted bundle cannot be verified' ;;
+        *) package_die 'the extracted bundle does not verify against its own ad-hoc signature' ;;
+    esac
+fi
 
 set +e
 runtime_probe_run_with_deadline 60 "$work/solver-info.txt" "$viewer" --solver-info

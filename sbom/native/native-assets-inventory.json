@@ -440,6 +440,8 @@
       "rustFragmentRef": "path+crates/ferritecad-app#ferritecad-app@0.0.1",
       "stagedFilenames": {
         "aarch64-apple-darwin": [
+          "CodeResources",
+          "Info.plist",
           "ferritecad-viewer"
         ],
         "x86_64-pc-windows-msvc": [
@@ -738,6 +740,11 @@
           "path": "FerriteCAD.app/Contents/Frameworks/libplanegcs.dylib"
         },
         {
+          "owner": "ferritecad-viewer",
+          "ownerKind": "product-root",
+          "path": "FerriteCAD.app/Contents/Info.plist"
+        },
+        {
           "owner": "ferritecad",
           "ownerKind": "product-root",
           "path": "FerriteCAD.app/Contents/MacOS/ferritecad"
@@ -746,6 +753,11 @@
           "owner": "ferritecad-viewer",
           "ownerKind": "product-root",
           "path": "FerriteCAD.app/Contents/MacOS/ferritecad-viewer"
+        },
+        {
+          "owner": "ferritecad-viewer",
+          "ownerKind": "product-root",
+          "path": "FerriteCAD.app/Contents/_CodeSignature/CodeResources"
         }
       ],
       "systemLibraries": {

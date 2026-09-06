@@ -14,11 +14,24 @@
 # Two columns, tab separated: the owning component's key, and the path
 # relative to the root of the staged layout. Sorted in the C locale.
 #
+# `Contents/Info.plist` and `Contents/_CodeSignature/CodeResources` are
+# delivered files and are owned by the product root the first of them names.
+# Neither is an executable and neither is a library: the plist is what tells
+# the desktop that this directory is an application and which of the two
+# executables beside each other to start, and CodeResources is the ad-hoc
+# bundle signature that the plist makes necessary. Both belong to the
+# executable the bundle starts. A file here whose owner is a product root is
+# therefore no longer necessarily that root's executable, and the gates that
+# need the executable pick it by what it is rather than by being the only
+# thing the root owns.
+#
 # The owner key is deliberately unversioned. What version of Open CASCADE this
 # is belongs to tools/occt/pin.env, and repeating it per file would make a
 # patch bump edit every line of a file that measures something else.
 ferritecad	FerriteCAD.app/Contents/MacOS/ferritecad
+ferritecad-viewer	FerriteCAD.app/Contents/Info.plist
 ferritecad-viewer	FerriteCAD.app/Contents/MacOS/ferritecad-viewer
+ferritecad-viewer	FerriteCAD.app/Contents/_CodeSignature/CodeResources
 occt	FerriteCAD.app/Contents/Frameworks/libTKBO.8.0.dylib
 occt	FerriteCAD.app/Contents/Frameworks/libTKBRep.8.0.dylib
 occt	FerriteCAD.app/Contents/Frameworks/libTKBin.8.0.dylib

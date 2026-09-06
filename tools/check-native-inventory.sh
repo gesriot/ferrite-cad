@@ -20,7 +20,9 @@
 #   runs of the generator reproduce the committed bytes, every version and
 #   digest agrees with the one file that owns it, every embedded asset exists
 #   and hashes to what is written down, the product graph embeds no asset the
-#   inventory has missed, and the Rust fragments are byte for byte the ones the
+#   inventory has missed, every file a platform's layout carries that is
+#   neither an executable nor a library is delivered and owned by the product
+#   root it starts, and the Rust fragments are byte for byte the ones the
 #   inventory was written against.
 #
 #   With --staging it asks the questions only a measurement can answer: every
@@ -634,11 +636,14 @@ if [ -z "$staging" ]; then
         bin_dir="$(native_bin_dir_for "$p")"
         lib_dir="$(native_lib_dir_for "$p")"
         pattern="$(native_library_pattern_for "$p")"
+        native_bundle_files_for "$p" > "$work/bundle-files.txt"
         while IFS=$'\t' read -r t path owner kind; do
             [ "$t" = "$triple" ] || continue
             case "$path" in
                 "$bin_dir"/* | "$lib_dir"/*) ;;
-                *) fail "$triple: $path is under neither $bin_dir nor $lib_dir" ;;
+                *) grep -Fxq "$path" "$work/bundle-files.txt" \
+                    || fail "$triple: $path is under neither $bin_dir nor $lib_dir and is not \
+one of this layout's bundle files" ;;
             esac
             [ "$kind" = component ] || continue
             # shellcheck disable=SC2254
@@ -647,6 +652,23 @@ if [ -z "$staging" ]; then
                 *) fail "$triple: ${path##*/} is not a $p shared library, so it is a file from another target" ;;
             esac
         done < "$work/owned.tsv"
+
+        # And every bundle file this layout has is really delivered, and
+        # belongs to the executable it exists to start. A delivered file that
+        # quietly stopped being in the inventory would be a package the
+        # manifest cannot describe and the extracted archive cannot account
+        # for, and every check above would still pass.
+        check
+        while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            kind="$(awk -F'\t' -v t="$triple" -v p="$path" \
+                '$1 == t && $2 == p { print $4 }' "$work/owned.tsv")"
+            case "$kind" in
+                product-root) ;;
+                '') fail "$triple: $path is part of this layout and the inventory stages nothing at that path" ;;
+                *) fail "$triple: $path is owned as a $kind, and a bundle file belongs to the product root it starts" ;;
+            esac
+        done < "$work/bundle-files.txt"
     done
 
     # Three targets that staged the same set would mean the target sections

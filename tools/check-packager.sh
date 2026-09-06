@@ -28,9 +28,12 @@
 set -euo pipefail
 
 PACKAGE_TOOL='check-packager'
+MACOS_BUNDLE_TOOL='check-packager'
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tools/package/lib.sh
 . tools/package/lib.sh
+# shellcheck source=tools/macos-bundle.sh
+. tools/macos-bundle.sh
 
 platforms=("${NATIVE_PLATFORMS[@]}")
 while [ $# -gt 0 ]; do
@@ -119,16 +122,72 @@ expect_fail() { # description expected-substring command...
 # real ones.
 # ---------------------------------------------------------------------------
 
-make_fixture() { # platform directory
-    local platform="$1" directory="$2" triple path
+# The bundle metadata a platform's layout carries.
+#
+# Made-up bytes are enough for everything this gate asks except one file: the
+# Info.plist is read rather than only hashed, so a fixture of nonsense there
+# would only ever fail. It is written here rather than borrowed from
+# tools/stage-runtime-layout.sh on purpose: a fixture that called the real
+# writer could not tell a checker that had stopped checking from a writer that
+# had stopped writing, which is the same reason tools/native/lib.sh restates
+# the layout directories instead of importing them.
+#
+# The ad-hoc bundle signature is not reproduced. Nothing this gate asks reads
+# it, because a signature is a statement about the real product: the workflow
+# that stages the real bundle is where it is written and verified.
+write_fixture_bundle_file() { # path destination version
+    local executable version="$3"
+    case "$1" in
+        *"/$MACOS_BUNDLE_PLIST")
+            executable="$(jq -r '.productRoots[] | select(.package == "ferritecad-app") | .binary' \
+                "$NATIVE_INVENTORY" | native_strip_cr)"
+            cat > "$2" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>$executable</string>
+	<key>CFBundleIdentifier</key>
+	<string>example.fixture.FerriteCAD</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>FerriteCAD</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$version</string>
+	<key>CFBundleVersion</key>
+	<string>$version</string>
+</dict>
+</plist>
+PLIST
+            ;;
+        *) printf 'fixture bytes for %s\n' "$1" > "$2" ;;
+    esac
+    # Not a program, and the manifest has to say so. A fixture that made every
+    # delivered file executable would hide exactly the ambiguity this slice
+    # introduced: a product root that owns three files, one of which is its
+    # application.
+    chmod 644 "$2"
+}
+
+make_fixture() { # platform directory version
+    local platform="$1" directory="$2" version="$3" triple path
     triple="$(package_triple_for "$platform")"
     rm -rf "$directory"
+    native_bundle_files_for "$platform" > "$work/fixture-bundle-files"
     jq -r --arg t "$triple" \
         '.targets[] | select(.triple == $t) | .stagedFiles[] | .path' \
         "$NATIVE_INVENTORY" | native_strip_cr | LC_ALL=C sort > "$work/fixture-paths"
     [ -s "$work/fixture-paths" ] || package_die "the inventory stages nothing for $triple"
     while IFS= read -r path; do
         mkdir -p "$directory/$(dirname "$path")"
+        if grep -Fxq "$path" "$work/fixture-bundle-files"; then
+            write_fixture_bundle_file "$path" "$directory/$path" "$version"
+            continue
+        fi
         # Distinct per path, so a gate that mixed two files up would see two
         # different digests rather than one that happened to match.
         printf 'fixture bytes for %s\n' "$path" > "$directory/$path"
@@ -153,7 +212,7 @@ gate_platform() { # platform
     local scratch="$work/$platform/scratch"
     rm -rf "${work:?}/$platform"
     mkdir -p "$out" "$scratch"
-    make_fixture "$platform" "$staging"
+    make_fixture "$platform" "$staging" "$version"
 
     echo "== $platform ($triple)"
 
@@ -423,6 +482,85 @@ gate_platform() { # platform
     break_archive mutate_wrong_sbom
     expect_fail "another target's product SBOM inside the package is caught" \
         'byte for byte' check_bad
+
+    # ---- the bundle, on the platform that has one -------------------------
+    #
+    # Every case above is about a file's bytes or a file's owner. These are
+    # about whether the delivery is an application: a package whose Info.plist
+    # is gone, unreadable, or naming an executable that is not the application
+    # is a package that is internally consistent, passes every digest, and
+    # starts nothing when a recipient opens it. A compile error would not be
+    # evidence of any of that, so each is packed into a real archive and handed
+    # to the real gate.
+    #
+    # The manifest is corrected after each edit rather than left disagreeing,
+    # so that the gate fails on the bundle rather than on a digest and the case
+    # tests what it says it does.
+
+    local plist='' candidate cli_binary
+    while IFS= read -r candidate; do
+        case "$candidate" in *"/$MACOS_BUNDLE_PLIST") plist="$candidate" ;; esac
+    done < <(native_bundle_files_for "$platform")
+    if [ -n "$plist" ]; then
+        cli_binary="$(jq -r '.productRoots[] | select(.package == "ferritecad-cli") | .binary' \
+            "$NATIVE_INVENTORY" | native_strip_cr)"
+        rehash() { # relative-path
+            edit_manifest "$(printf '(.runtimeFiles[] | select(.path == "%s")) |= (.sha256 = "%s" | .size = %s)' \
+                "$1" "$(package_sha256 "$tree/$root/$1")" "$(package_size "$tree/$root/$1")")"
+        }
+
+        mutate_no_plist() {
+            rm -f "$tree/$root/$plist"
+            edit_manifest "$(printf '.runtimeFiles |= map(select(.path != "%s"))' "$plist")"
+        }
+        mutate_bad_plist() {
+            printf 'this is not a property list\n' > "$tree/$root/$plist"
+            rehash "$plist"
+        }
+        # Still a property list, and still not an application: plutil is only
+        # on one of the three hosts this gate runs on, so the case that has to
+        # read the same everywhere is the one where the document parses and
+        # the answer is missing.
+        mutate_no_key() {
+            awk '/<key>CFBundleExecutable<\/key>/ { getline; next } { print }' \
+                "$tree/$root/$plist" > "$work/plist.xml"
+            mv "$work/plist.xml" "$tree/$root/$plist"
+            rehash "$plist"
+        }
+        mutate_absent_exe() {
+            awk '/<key>CFBundleExecutable<\/key>/ { print; getline; print "\t<string>nothing-is-called-this</string>"; next } { print }' \
+                "$tree/$root/$plist" > "$work/plist.xml"
+            mv "$work/plist.xml" "$tree/$root/$plist"
+            rehash "$plist"
+        }
+        mutate_other_exe() {
+            awk -v other="$cli_binary" \
+                '/<key>CFBundleExecutable<\/key>/ { print; getline; print "\t<string>" other "</string>"; next } { print }' \
+                "$tree/$root/$plist" > "$work/plist.xml"
+            mv "$work/plist.xml" "$tree/$root/$plist"
+            rehash "$plist"
+        }
+
+        break_archive mutate_no_plist
+        expect_fail 'a package whose bundle carries no Info.plist is caught' \
+            'carries no' check_bad
+
+        break_archive mutate_bad_plist
+        expect_fail 'a package whose Info.plist is not a property list is caught' \
+            'not an application bundle' check_bad
+
+        break_archive mutate_no_key
+        expect_fail 'a bundle that says nothing about which executable to start is caught' \
+            'says nothing for CFBundleExecutable' check_bad
+
+        break_archive mutate_absent_exe
+        expect_fail 'a bundle naming an executable the package does not carry is caught' \
+            'no such file' check_bad
+
+        break_archive mutate_other_exe
+        expect_fail 'a bundle naming the other executable of the delivery is caught' \
+            'the bundle says the application is' check_bad
+    fi
 
     # ---- archives no packager would write, and the gate must still refuse ---
     #

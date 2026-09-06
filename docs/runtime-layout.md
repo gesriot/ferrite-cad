@@ -187,9 +187,17 @@ afterwards. That is measured and recorded here because it is a fact about
 running the layout at all. It is not a notarisation claim and not a distribution
 signature, and this slice makes neither.
 
-The candidate bundle has no `Info.plist`. It is started by path, which is what
-the measurement needs; whether a released bundle needs one is a packaging
-question and belongs to 21A-2b2b.
+The candidate bundle had no `Info.plist` while this was only a measurement: it
+is started by path, which is all a measurement needs. §23B answered the
+packaging question the paragraph above deferred, and the answer was that a
+directory shaped like a bundle is not one. With two executables beside each
+other in `Contents/MacOS` and nothing saying which is the application,
+LaunchServices starts neither — `open` returns success, no process appears and
+nothing is logged. The stager now writes `Contents/Info.plist` naming
+`ferritecad-viewer`, and then signs the bundle ad hoc, because once that file
+exists `codesign` reads the directory as a bundle and a signature sealing no
+resources stops verifying. Both files are delivered files with an owner, a
+digest in the package manifest and a place in the extracted archive.
 
 **Windows.** `bin/`, with the executables and the DLLs beside them, which is the
 only layout the loader resolves without an environment variable. There is no run

@@ -46,6 +46,7 @@ on:
       - 'tools/runtime-closure.sh'
       - 'tools/stage-runtime-layout.sh'
       - 'tools/check-staged-layout.sh'
+      - 'tools/macos-bundle.sh'
       - 'tools/build-planegcs.sh'
       - 'tools/planegcs/**'
       # And everything the native/assets inventory is checked against. This
@@ -594,10 +595,26 @@ jobs:
           # Nothing here is a release: no version, no archive, no signature
           # anyone should rely on, and it is deleted with the runner.
           staging="${RUNNER_TEMP}/ferritecad-layout"
+
+          # The version and the application, from the document that owns both.
+          # The packager already reads the version out of the same file, and a
+          # stager that worked either of them out for itself would be a second
+          # opinion about which release this is and which of the two staged
+          # executables a desktop should start.
+          version="$(jq -r '.productVersion' sbom/native/native-assets-inventory.json | tr -d '\r')"
+          gui="$(jq -r '.productRoots[] | select(.package == "ferritecad-app") | .binary' \
+            sbom/native/native-assets-inventory.json | tr -d '\r')"
+          [ -n "$version" ] && [ "$version" != null ] \
+            || { echo "::error::the inventory does not say what version the product is"; exit 1; }
+          [ "$(printf '%s\n' "$gui" | wc -l | tr -d ' ')" = 1 ] && [ -n "$gui" ] \
+            || { echo "::error::the inventory does not name one product root built from ferritecad-app"; exit 1; }
+
           tools/stage-runtime-layout.sh --platform '${{ matrix.name }}' \
             --staging "$staging" \
             --occt-lib-dir '${{ steps.occt.outputs.lib_dir }}' \
             --planegcs-dir "$PWD/vendor/planegcs" \
+            --product-version "$version" \
+            --gui-executable "$gui" \
             --closure closure-viewer.txt --closure closure-cli.txt \
             --executable '${{ steps.build.outputs.viewer }}' \
             --executable '${{ steps.build.outputs.cli }}' \

@@ -54,6 +54,32 @@ native_lib_dir_for() { # platform
     esac
 }
 
+# The delivered files of a platform's layout that are neither an executable nor
+# a shared library.
+#
+# macOS has one and the other two have none. `Contents/Info.plist` is what
+# makes the staged directory an application the desktop can start rather than a
+# folder whose name ends in `.app`: two executables sit beside each other in
+# `Contents/MacOS` and nothing else in the delivery says which of them to
+# start, and `Contents/_CodeSignature/CodeResources` is the ad-hoc bundle
+# signature that the presence of the first one makes necessary: once there is
+# an Info.plist, codesign reads the directory as a bundle and a signature
+# sealing no resources stops verifying. Both are delivered files like any
+# other - one owner each, a digest in the package manifest, present in the
+# extracted archive - and this is the list that says which paths are allowed
+# to be one. Windows and Linux carry no launcher and no association in this
+# slice, so their lists are empty and a file appearing in one of those layouts
+# is still the failure it was.
+native_bundle_files_for() { # platform
+    case "$1" in
+        macos)
+            printf 'FerriteCAD.app/Contents/Info.plist\n'
+            printf 'FerriteCAD.app/Contents/_CodeSignature/CodeResources\n' ;;
+        linux | windows) ;;
+        *) native_die "unknown platform $1" ;;
+    esac
+}
+
 # What a shared library is called on each platform, as a shell pattern. A
 # staged library that does not match its platform's pattern is a file from
 # another target, which is the failure this catches.
