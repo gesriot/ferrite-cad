@@ -7,8 +7,8 @@ account, no proprietary container you cannot read back.
 through Open CASCADE, STEP import, and a viewer window that opens a `.fcad`
 file, draws what it describes – solids and the sketches they were raised from –
 and lets a definition be selected and inspected.
-There is no modelling in the interface: nothing can be created or edited there
-yet, and everything is built through the command line. See
+The window can create an empty native document or a sample plate from a template;
+arbitrary modelling and editing existing documents are still unavailable. See
 [`docs/implementation-plan.md`](docs/implementation-plan.md) for what comes when,
 and please read the honest scope note at the end of this file before forming
 expectations.
@@ -40,8 +40,18 @@ extrusion and the topology references naming that extrusion's faces. With Open
 CASCADE present, `rebuild --cold` evaluates it into geometry and `export-stl`
 writes it out; without one, the document still round-trips on its own.
 
+Both clients use `ferritecad_jobs::create_document`. It writes the native feature
+graph without a geometry kernel, in a SQLite transaction under a private scratch
+directory beside the destination, closes SQLite, then publishes once with atomic
+no-clobber. Errors and cancellation observed before that publication leave no
+new destination or scratch, and preserve an existing destination even if it
+appeared during the operation. Successful publication completes the operation.
+This fixes the former `create --sample --size NaN 50 12` failure that returned
+exit 2 but left an empty `.fcad`; the process regression test first fails on the
+old implementation specifically because the file remains.
+
 What the window can do, what the command line can do, and which library actually
-owns the work — including recipes with expected exit codes — is
+owns the work — including recipes with expected exit codes — is documented in
 [`docs/cli-capabilities.md`](docs/cli-capabilities.md).
 
 ## Exporting to FBX
@@ -178,8 +188,23 @@ the model in front of you is still the model.
 cargo run -p ferritecad-app --bin ferritecad-viewer
 ```
 
-Opens an empty window. Open chooses a `.fcad` through the system dialog; cancelling
-leaves the window empty. Export is offered once a document is on screen. On macOS
+Opens an empty window. `New…` offers an empty document or a sample plate template.
+Plate dimensions are in **millimetres**, initially 60 × 40 × 10, just like
+`ferritecad create --sample`. Choose its `.fcad` name in the system save dialog;
+the viewer creates the file on a worker and then opens it through the ordinary
+asynchronous loader. An existing file is refused: choose a different name.
+`Open…` chooses an existing `.fcad`. Export is offered once a document is accepted,
+including a saved empty document (which has no bodies to export as STL).
+
+New is available when no Open or Export is pending. While its form or creation
+is active, Open and Export wait; camera and visibility controls remain usable.
+Cancelling the form or save dialog writes nothing. `Cancel creation` asks the
+worker to stop before publication; the window reports its actual result, since
+a cancellation arriving after publication cannot undo a file already created.
+A creation error or a failed/cancelled subsequent Open preserves the previous
+accepted scene and its export source. If creation succeeded but Open failed,
+both facts are shown. New does not introduce an unsaved model, Save/Save As,
+or a parameter editor. On macOS
 the same window opens by double-clicking a built `FerriteCAD.app`, with no terminal
 involved; [An application you can open without a terminal](#an-application-you-can-open-without-a-terminal)
 is how one is built.

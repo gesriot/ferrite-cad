@@ -147,6 +147,8 @@ jobs:
           # 2 is a full dump, which is what makes a stack readable afterwards.
           Set-ItemProperty -Path $key -Name DumpType -Value 2 -Type DWord
 
+      # Includes real CLI create processes, the UI New command and cancellation/
+      # accepted-scene gates. The build above supplies both client executables.
       - run: cargo test --workspace
 
       # The production FBX writer, read by pinned ufbx 0.23.0 in strict mode on

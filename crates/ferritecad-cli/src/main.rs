@@ -11,7 +11,6 @@ mod export_fbx;
 mod import;
 mod rebuild;
 mod render;
-mod sample;
 mod topology;
 
 use std::path::PathBuf;
@@ -19,8 +18,8 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use ferritecad_document::{CacheStore, DOCUMENT_EXTENSION, Document};
-use ferritecad_jobs::Existing;
-use ferritecad_kernel::TessellationParams;
+use ferritecad_jobs::{CreateDocumentRequest, Existing, NewDocument, PlateSize, create_document};
+use ferritecad_kernel::{OperationContext, TessellationParams};
 use ferritecad_types::{CadError, Result, Unit};
 
 /// Exit code for a document that failed validation, as opposed to a command
@@ -57,6 +56,14 @@ const EXIT_PARTIAL: u8 = 6;
 /// window that publishes on exactly the same terms has no `--force` to offer
 /// and must not print one.
 const REPLACE_ADVICE: &str = "pass --force to replace it";
+
+/// What this command tells a person about a destination `create` will not take.
+///
+/// Deliberately not [`REPLACE_ADVICE`]: `create` has no `--force`, so naming
+/// one would send somebody looking for a flag that does not exist. The sentence
+/// is the one this command has always printed, now finishing the refusal the
+/// shared publication makes rather than a check inside the document layer.
+const CREATE_TAKEN_ADVICE: &str = "creating would destroy it";
 
 /// What `--force` means at the moment a file is published.
 ///
@@ -220,7 +227,7 @@ struct CreateArgs {
 
     /// Sample plate size in millimetres, as width, depth and height.
     #[arg(long, num_args = 3, value_names = ["WIDTH", "DEPTH", "HEIGHT"],
-          default_values_t = [60.0, 40.0, 10.0])]
+          default_values_t = [PlateSize::DEFAULT.width, PlateSize::DEFAULT.depth, PlateSize::DEFAULT.height])]
     size: Vec<f64>,
 }
 
@@ -295,20 +302,36 @@ fn create(args: CreateArgs) -> Result<ExitCode> {
 
     let length_unit: Unit = args.length_unit.parse()?;
     let angle_unit: Unit = args.angle_unit.parse()?;
-    let mut document = Document::create_with(&args.path, length_unit, angle_unit)?;
 
-    if args.sample {
+    let content = if args.sample {
         let [width, depth, height] = args.size.as_slice() else {
             return Err(CadError::input("--size takes exactly three numbers"));
         };
-        sample::populate(&mut document, *width, *depth, *height)?;
-    }
+        NewDocument::SamplePlate(PlateSize {
+            width: *width,
+            depth: *depth,
+            height: *height,
+        })
+    } else {
+        NewDocument::Empty
+    };
 
-    let path = document.path().to_path_buf();
-    let id = document.meta().document_id;
-    document.close()?;
+    // The default context: this command offers no way to change its mind part
+    // way through, so there is nothing to withdraw the request with. The
+    // operation takes one anyway because the window does have such a way, and
+    // a second entry point for the interface that does not would be a second
+    // creation.
+    let created = create_document(
+        CreateDocumentRequest::new(&args.path, content, CREATE_TAKEN_ADVICE)
+            .displaying(length_unit, angle_unit),
+        &OperationContext::default(),
+    )?;
 
-    println!("created {} ({id})", path.display());
+    println!(
+        "created {} ({})",
+        created.destination().display(),
+        created.document_id()
+    );
     Ok(ExitCode::SUCCESS)
 }
 

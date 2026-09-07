@@ -6620,6 +6620,7 @@
     },
     {
       "dependsOn": [
+        "path+crates/ferritecad-document#ferritecad-document@0.0.1",
         "path+crates/ferritecad-exchange#ferritecad-exchange@0.0.1",
         "path+crates/ferritecad-export#ferritecad-export@0.0.1",
         "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
@@ -7757,11 +7758,11 @@
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/native/native-assets-inventory.json@sha256:7a1aac1485191ea94437b1beec5cf79833d16fc0605d84392eae35a49e4263be"
+        "value": "sbom/native/native-assets-inventory.json@sha256:a6e6a4705b7d6a2f279fdddb2265bbe248849bbd6e7f0ea3abff6dea1ff5006b"
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/rust/rust-fragment-x86_64-pc-windows-msvc.cdx.json@sha256:356f92be568bb33543fce3e5d01a64a6b830d1238be1f010014f3a129de8ac3a"
+        "value": "sbom/rust/rust-fragment-x86_64-pc-windows-msvc.cdx.json@sha256:445af2463f57354cc9669fcf5be7e1c350985e863ee48532f3a6c85d56b71b35"
       },
       {
         "name": "ferritecad:sbom:product-format",

@@ -25,6 +25,15 @@ pub struct Chosen {
     pub view: Option<StandardView>,
     /// The user wants to open a different document.
     pub open: bool,
+    /// The user wants to make a new document.
+    ///
+    /// A request to be asked what it should contain, and nothing more. What
+    /// goes in it and where it is written are both decided afterwards, by the
+    /// form and by a system dialog, because a panel that could name a path
+    /// would be a panel that had already decided to write one.
+    pub new_document: bool,
+    /// Request cancellation, waiting for the actual publication outcome.
+    pub cancel_create: bool,
     /// The user wants the document on screen written out as FBX.
     ///
     /// A request and not a destination: where the file goes is chosen after
@@ -790,6 +799,171 @@ pub fn export_panel(ui: &mut egui::Ui, outcome: Option<ExportOutcome<'_>>) {
     ui.separator();
 }
 
+/// What the button that asks for a new document is called.
+pub const NEW_DOCUMENT: &str = "New…";
+
+/// What the form that asks what a new document should contain calls itself.
+pub const NEW_DOCUMENT_TITLE: &str = "New document";
+
+/// What the plate is called on screen.
+///
+/// A template, said in the words a person reads. It is one fixed shape with
+/// three sizes, not a drawing anybody can edit yet, and a window that called it
+/// "your part" would be promising a modeller that does not exist.
+pub const SAMPLE_PLATE: &str = "Sample plate (a template with a fixed shape)";
+
+/// What an empty document is called on screen.
+///
+/// Named rather than left as the absence of a plate: a document with nothing in
+/// it is a document, and it is not the same thing as the empty window somebody
+/// sees before they have opened anything.
+pub const EMPTY_DOCUMENT: &str = "Empty document";
+
+/// What the button that goes on to the system dialog is called.
+///
+/// Says what happens next rather than "Create", because nothing is created by
+/// pressing it: the next thing the person sees is their own save dialog, and a
+/// button that promised a file would be lying about the step in between.
+pub const CHOOSE_LOCATION: &str = "Choose where to save…";
+
+/// The unit every size on this form is in.
+///
+/// Shown beside each field rather than assumed. A number with no unit beside it
+/// is a number somebody has to guess about, and lengths are stored in
+/// millimetres whatever the document is later asked to display.
+pub const LENGTH_UNIT: &str = "mm";
+
+/// What a section reporting a new document calls itself.
+const CREATED: &str = "New document";
+
+/// What a new document is to contain, as far as the form is concerned.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum NewContent {
+    /// Metadata and nothing else.
+    #[default]
+    Empty,
+    /// The sample plate, at whatever size the form holds.
+    SamplePlate,
+}
+
+/// The form's state, owned by whoever put it on screen.
+///
+/// The sizes are text rather than numbers on purpose. A field being filled in
+/// passes through states that are not numbers — empty, `-`, `1.` — and a form
+/// that parsed on every keystroke would either refuse them or snap the field
+/// back to the last value it liked, which is the thing that makes a size box
+/// unusable. What a size means is decided once, when the person says they are
+/// finished, and by whoever knows what a document will accept.
+///
+/// This crate knows nothing of documents, jobs or units beyond the word it
+/// prints beside each field: it draws the form and reports what is in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewDocumentForm {
+    pub content: NewContent,
+    /// Width in millimetres, as typed.
+    pub width: String,
+    /// Depth in millimetres, as typed.
+    pub depth: String,
+    /// Height in millimetres, as typed.
+    pub height: String,
+    /// What the last attempt to act on this form was refused for, if it was.
+    ///
+    /// Shown inside the form because that is where the answer is: a size that
+    /// is not a number is fixed by typing another one, and a refusal filed in
+    /// a section further down the window would be an answer somewhere the
+    /// question is not.
+    pub refusal: Option<String>,
+}
+
+/// What the user said about the form.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum NewChoice {
+    /// Nothing yet, which is the answer on almost every frame.
+    #[default]
+    Waiting,
+    /// Go on to choosing where to save it.
+    Create,
+    /// Never mind. Nothing is made and nothing on screen changes.
+    Cancel,
+}
+
+/// Asks what a new document should contain.
+///
+/// Nothing at all is drawn when nobody has asked for one, and neither answer is
+/// returned until the user gives one: a frame in which they did nothing means
+/// nothing has been decided. Nothing here creates anything — pressing
+/// [`CHOOSE_LOCATION`] reports that the person is finished with the form, and
+/// where the file goes is a question their own system dialog asks next.
+pub fn new_document_form(ui: &mut egui::Ui, form: Option<&mut NewDocumentForm>) -> NewChoice {
+    let Some(form) = form else {
+        return NewChoice::Waiting;
+    };
+
+    let mut choice = NewChoice::Waiting;
+    ui.label(NEW_DOCUMENT_TITLE);
+    ui.add(
+        egui::Label::new(
+            "Create a new .fcad file. Existing files cannot be replaced; choose a different name.",
+        )
+        .wrap(),
+    );
+    ui.radio_value(&mut form.content, NewContent::Empty, EMPTY_DOCUMENT);
+    ui.radio_value(&mut form.content, NewContent::SamplePlate, SAMPLE_PLATE);
+
+    // The sizes belong to the plate and are shown only when one is being
+    // asked for. Three boxes greyed out beside "Empty document" would be three
+    // boxes a person wonders what to do about.
+    if form.content == NewContent::SamplePlate {
+        egui::Grid::new("ferritecad new document size")
+            .num_columns(3)
+            .show(ui, |ui| {
+                for (label, value) in [
+                    ("Width", &mut form.width),
+                    ("Depth", &mut form.depth),
+                    ("Height", &mut form.height),
+                ] {
+                    ui.label(label);
+                    ui.add(egui::TextEdit::singleline(value).desired_width(80.0));
+                    ui.label(LENGTH_UNIT);
+                    ui.end_row();
+                }
+            });
+    }
+
+    if let Some(refusal) = &form.refusal {
+        ui.add(egui::Label::new(refusal).wrap());
+    }
+
+    ui.horizontal(|ui| {
+        if ui.button(CHOOSE_LOCATION).clicked() {
+            choice = NewChoice::Create;
+        }
+        if ui.button("Cancel").clicked() {
+            choice = NewChoice::Cancel;
+        }
+    });
+    ui.separator();
+    choice
+}
+
+/// What the last New did, and nothing else.
+///
+/// Its own section rather than a second sentence in the status line, and
+/// deliberately apart from what the window says about opening a document: a
+/// file that was created and then could not be shown is two facts, and a
+/// window with one place to say them would have to drop one of them.
+///
+/// Nothing at all is drawn when nothing has been asked for, which is the usual
+/// state of a window.
+pub fn create_panel(ui: &mut egui::Ui, line: Option<&str>) {
+    let Some(line) = line else {
+        return;
+    };
+    ui.label(CREATED);
+    ui.add(egui::Label::new(line).wrap());
+    ui.separator();
+}
+
 /// What the user said about a file that is already where they asked to write.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ReplaceChoice {
@@ -944,6 +1118,12 @@ pub fn sketch_solves_panel(ui: &mut egui::Ui, sketches: &[SolvedSketch<'_>]) {
 pub struct Activity<'a> {
     pub line: &'a str,
     pub progress: Option<f32>,
+    /// Whether a new document may be asked for.
+    ///
+    /// The application serializes New with its load and export operations.
+    pub can_create_document: bool,
+    pub can_open: bool,
+    pub can_cancel_create: bool,
     /// Whether there is a document on screen that was accepted and can
     /// therefore be written out. Not "a document was asked for": an Open that
     /// failed or was given up on leaves nothing to export.
@@ -987,7 +1167,23 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
     ui.horizontal_wrapped(|ui| {
         // First, and separated: opening replaces everything else on screen,
         // where the buttons after it only change where it is seen from.
-        chosen.open = ui.button("Open…").clicked();
+        chosen.open = ui
+            .add_enabled(activity.can_open, egui::Button::new("Open…"))
+            .clicked();
+        // Beside it, because making a document and opening one are the two
+        // ways of arriving at the model this window shows. Disabled rather
+        // than hidden, on the same terms as every other action here, and
+        // disabled exactly while a document is being made: pressing it again
+        // would start a second one.
+        chosen.new_document = ui
+            .add_enabled(
+                activity.can_create_document,
+                egui::Button::new(NEW_DOCUMENT),
+            )
+            .clicked();
+        if activity.can_cancel_create {
+            chosen.cancel_create = ui.button("Cancel creation").clicked();
+        }
         // Beside it, because it is the other thing a person does to a whole
         // document rather than to the view of one. Disabled rather than
         // hidden, on the same terms as every other action here, and disabled
@@ -1258,7 +1454,15 @@ mod tests {
     /// simulates the toolbar itself: the widget under that point is whichever
     /// one really got laid out there.
     fn click_at(context: &egui::Context, at: egui::Pos2) -> Chosen {
-        click_on(context, at, Activity::default())
+        click_on(
+            context,
+            at,
+            Activity {
+                can_open: true,
+                can_create_document: true,
+                ..Default::default()
+            },
+        )
     }
 
     /// The same, for a window that is in the middle of reading something.
@@ -1294,18 +1498,13 @@ mod tests {
     fn the_way_to_open_a_document_is_where_it_can_be_pressed() {
         let context = egui::Context::default();
 
-        // Laid out first in the row, so the first thing the pointer meets is
-        // it. A toolbar whose button was never added would report "not
-        // pressed" for ever and look, to every other test here, identical to
-        // one that works.
-        let mut first = None;
-        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            ui.horizontal(|ui| {
-                first = Some(ui.button("Open…").rect);
-            });
-        });
-        output.textures_delta.clear();
-        let open = first.expect("the reference row was laid out");
+        let activity = Activity {
+            can_open: true,
+            can_create_document: true,
+            ..Default::default()
+        };
+        let output = toolbar_at_width(&context, activity, 1600.0);
+        let open = visible_toolbar_text(&output, "Open…", 1600.0);
         let centre = open.center();
 
         assert!(
@@ -1313,21 +1512,13 @@ mod tests {
             "nothing at the front of the toolbar opens a document"
         );
 
-        // And the rest of the toolbar is not that button: pressing where the
-        // views are must not open a file dialog. Found by walking the row
-        // rather than by assuming how far along it they sit, so adding a
-        // button to the toolbar cannot quietly turn this into a test that
-        // presses empty space.
-        let mut found_a_view = false;
-        for step in 1..200 {
-            let along = egui::Pos2::new(open.right() + step as f32 * 8.0, centre.y);
-            let chosen = click_at(&context, along);
-            assert!(!chosen.open, "something other than Open opened a document");
-            if chosen.view.is_some() {
-                found_a_view = true;
-            }
+        // Click the actual view labels, beyond Open's padded hit rectangle.
+        for (view, name, key) in VIEWS {
+            let at = visible_toolbar_text(&output, &format!("{name} ({key})"), 1600.0).center();
+            let chosen = click_at(&context, at);
+            assert!(!chosen.open, "a view opened a document");
+            assert_eq!(chosen.view, Some(*view));
         }
-        assert!(found_a_view, "no point along the toolbar reached a view");
     }
 
     /// An export can be given up on exactly while one is running.
@@ -1339,6 +1530,9 @@ mod tests {
     fn an_export_can_be_given_up_on_only_while_one_is_running() {
         let context = egui::Context::default();
         let running = |can_cancel_export| Activity {
+            can_create_document: true,
+            can_open: true,
+            can_cancel_create: false,
             line: "part.fcad",
             progress: None,
             can_export: true,
@@ -1352,16 +1546,8 @@ mod tests {
             orthographic: false,
         };
 
-        let mut stop = None;
-        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            ui.horizontal(|ui| {
-                let _ = ui.button("Open…");
-                let _ = ui.add_enabled(true, egui::Button::new(EXPORT_FBX));
-                stop = Some(ui.button(CANCEL_EXPORT).rect);
-            });
-        });
-        output.textures_delta.clear();
-        let centre = stop.expect("the reference row was laid out").center();
+        let output = toolbar_at_width(&context, running(true), 1600.0);
+        let centre = visible_toolbar_text(&output, CANCEL_EXPORT, 1600.0).center();
 
         assert!(
             click_on(&context, centre, running(true)).cancel_export,
@@ -1389,6 +1575,9 @@ mod tests {
     fn the_way_to_export_is_offered_only_with_a_document_on_screen() {
         let context = egui::Context::default();
         let showing = |can_export| Activity {
+            can_create_document: true,
+            can_open: true,
+            can_cancel_create: false,
             line: "part.fcad",
             progress: None,
             can_export,
@@ -1402,15 +1591,8 @@ mod tests {
             orthographic: false,
         };
 
-        let mut export = None;
-        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            ui.horizontal(|ui| {
-                let _ = ui.button("Open…");
-                export = Some(ui.add_enabled(true, egui::Button::new(EXPORT_FBX)).rect);
-            });
-        });
-        output.textures_delta.clear();
-        let centre = export.expect("the reference row was laid out").center();
+        let output = toolbar_at_width(&context, showing(true), 1600.0);
+        let centre = visible_toolbar_text(&output, EXPORT_FBX, 1600.0).center();
 
         assert!(
             click_on(&context, centre, showing(true)).export,
@@ -1492,6 +1674,9 @@ mod tests {
             ] {
                 let context = egui::Context::default();
                 let activity = Activity {
+                    can_create_document: true,
+                    can_open: true,
+                    can_cancel_create: false,
                     line,
                     progress,
                     can_cancel_export: true,
@@ -1524,6 +1709,9 @@ mod tests {
     fn a_reading_can_be_given_up_on_and_nothing_else_can() {
         let context = egui::Context::default();
         let reading = Activity {
+            can_create_document: true,
+            can_open: true,
+            can_cancel_create: false,
             line: "Opening part.fcad… 40%",
             progress: Some(0.4),
             can_export: false,
@@ -1972,6 +2160,9 @@ mod tests {
     fn hiding_and_showing_are_offered_exactly_when_they_would_do_something() {
         let context = egui::Context::default();
         let state = |can_hide, can_show_all| Activity {
+            can_create_document: true,
+            can_open: true,
+            can_cancel_create: false,
             line: "part.fcad",
             progress: None,
             can_export: false,
@@ -2163,6 +2354,9 @@ mod tests {
     fn isolating_is_offered_exactly_when_something_else_is_still_drawn() {
         let context = egui::Context::default();
         let state = |can_isolate| Activity {
+            can_create_document: true,
+            can_open: true,
+            can_cancel_create: false,
             line: "part.fcad",
             progress: None,
             can_export: false,
@@ -2227,6 +2421,9 @@ mod tests {
             let _ = toolbar(
                 ui,
                 Activity {
+                    can_create_document: true,
+                    can_open: true,
+                    can_cancel_create: false,
                     line: "part.fcad",
                     progress: None,
                     can_export: false,
@@ -2337,6 +2534,9 @@ mod tests {
     fn taking_a_change_back_is_offered_only_when_there_is_one() {
         let context = egui::Context::default();
         let state = |can_undo_visibility| Activity {
+            can_create_document: true,
+            can_open: true,
+            can_cancel_create: false,
             line: "part.fcad",
             progress: None,
             can_export: false,
@@ -2385,6 +2585,9 @@ mod tests {
     fn the_projection_control_says_which_one_is_in_use() {
         let context = egui::Context::default();
         let state = |orthographic| Activity {
+            can_create_document: true,
+            can_open: true,
+            can_cancel_create: false,
             line: "part.fcad",
             progress: None,
             can_export: false,
@@ -2733,6 +2936,9 @@ mod tests {
     fn showing_what_is_chosen_is_offered_only_when_there_is_somewhere_to_go() {
         let context = egui::Context::default();
         let can = |can_frame_selection| Activity {
+            can_create_document: true,
+            can_open: true,
+            can_cancel_create: false,
             line: "part.fcad",
             progress: None,
             can_export: false,
@@ -2746,24 +2952,10 @@ mod tests {
             orthographic: false,
         };
 
-        // Where the button is, laid out exactly as the toolbar lays it out.
-        let mut frame = None;
-        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            ui.horizontal(|ui| {
-                let _ = ui.button("Open…");
-                let _ = ui.add_enabled(true, egui::Button::new(EXPORT_FBX));
-                ui.separator();
-                frame = Some(
-                    ui.add_enabled(
-                        true,
-                        egui::Button::new(format!("Frame selected ({FRAME_KEY})")),
-                    )
-                    .rect,
-                );
-            });
-        });
-        output.textures_delta.clear();
-        let centre = frame.expect("the reference row was laid out").center();
+        let output = toolbar_at_width(&context, can(true), 1600.0);
+        let centre =
+            visible_toolbar_text(&output, &format!("Frame selected ({FRAME_KEY})"), 1600.0)
+                .center();
 
         assert!(
             click_on(&context, centre, can(true)).frame,
@@ -2790,6 +2982,9 @@ mod tests {
     fn showing_everything_is_offered_only_when_there_is_anything_to_show() {
         let context = egui::Context::default();
         let with = |can_frame_scene| Activity {
+            can_create_document: true,
+            can_open: true,
+            can_cancel_create: false,
             line: "part.fcad",
             progress: None,
             can_export: false,
@@ -2803,28 +2998,9 @@ mod tests {
             orthographic: false,
         };
 
-        // Where the button is, laid out exactly as the toolbar lays it out.
-        let mut all = None;
-        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            ui.horizontal(|ui| {
-                let _ = ui.button("Open…");
-                let _ = ui.add_enabled(true, egui::Button::new(EXPORT_FBX));
-                ui.separator();
-                let _ = ui.add_enabled(
-                    false,
-                    egui::Button::new(format!("Frame selected ({FRAME_KEY})")),
-                );
-                all = Some(
-                    ui.add_enabled(
-                        true,
-                        egui::Button::new(format!("Frame all ({FRAME_ALL_KEY})")),
-                    )
-                    .rect,
-                );
-            });
-        });
-        output.textures_delta.clear();
-        let centre = all.expect("the reference row was laid out").center();
+        let output = toolbar_at_width(&context, with(true), 1600.0);
+        let centre =
+            visible_toolbar_text(&output, &format!("Frame all ({FRAME_ALL_KEY})"), 1600.0).center();
 
         assert!(
             click_on(&context, centre, with(true)).frame_all,
@@ -3527,6 +3703,82 @@ mod tests {
                     ),
                 }
             }
+        }
+    }
+    #[test]
+    fn new_controls_follow_creation_availability() {
+        let context = egui::Context::default();
+        let ready = Activity {
+            can_open: true,
+            can_create_document: true,
+            can_export: true,
+            ..Default::default()
+        };
+        let busy = Activity {
+            can_cancel_create: true,
+            ..Default::default()
+        };
+        for width in [360.0, 988.0] {
+            let output = toolbar_at_width(&context, ready, width);
+            let new = visible_toolbar_text(&output, NEW_DOCUMENT, width).center();
+            assert!(click_on(&context, new, ready).new_document);
+            let output = toolbar_at_width(&context, busy, width);
+            let new = visible_toolbar_text(&output, NEW_DOCUMENT, width).center();
+            let open = visible_toolbar_text(&output, "Open…", width).center();
+            let export = visible_toolbar_text(&output, EXPORT_FBX, width).center();
+            let cancel = visible_toolbar_text(&output, "Cancel creation", width).center();
+            assert!(!click_on(&context, new, busy).new_document);
+            assert!(!click_on(&context, open, busy).open);
+            assert!(!click_on(&context, export, busy).export);
+            assert!(click_on(&context, cancel, busy).cancel_create);
+        }
+    }
+
+    #[test]
+    fn new_form_shows_millimetres_and_reports_its_real_buttons() {
+        let context = egui::Context::default();
+        let mut form = NewDocumentForm {
+            content: NewContent::SamplePlate,
+            width: "60".into(),
+            depth: "40".into(),
+            height: "10".into(),
+            refusal: None,
+        };
+        for (label, expected) in [
+            (CHOOSE_LOCATION, NewChoice::Create),
+            ("Cancel", NewChoice::Cancel),
+        ] {
+            let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+                assert_eq!(new_document_form(ui, Some(&mut form)), NewChoice::Waiting);
+            });
+            output.textures_delta.clear();
+            let units = output.shapes.iter().filter(|clipped| matches!(&clipped.shape, egui::Shape::Text(text) if text.galley.text() == LENGTH_UNIT)).count();
+            assert_eq!(units, 3);
+            let at = visible_toolbar_text(&output, label, 10000.0).center();
+            let raw = egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::default(),
+                    },
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::default(),
+                    },
+                ],
+                ..Default::default()
+            };
+            let mut choice = NewChoice::Waiting;
+            let mut output = context.run_ui(raw, |ui| {
+                choice = new_document_form(ui, Some(&mut form));
+            });
+            output.textures_delta.clear();
+            assert_eq!(choice, expected);
         }
     }
 }
