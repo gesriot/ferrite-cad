@@ -59,8 +59,12 @@ non-finite values and non-positive extrusion heights remain refused.
 Rust 1.96.0, macOS arm64. Native inputs are the existing local OCCT 8.0.1 and
 planegcs deliveries. No C++, FFI headers, native source pins or assets changed.
 The only dependency change is jobs → document (an existing workspace crate).
-The three Rust fragments and three product SBOMs were regenerated with
-`tools/generate-rust-sbom.sh --all` / `tools/generate-product-sbom.sh --all`.
+The three Rust fragments, their digest references in the native inventory,
+and the three product SBOMs were regenerated with the repository generators:
+`generate-rust-sbom.sh`, `generate-native-inventory.sh`, `generate-product-sbom.sh`.
+The first CI SBOM job identified stale Rust-fragment digests in the native
+inventory; regenerating those references fixes that measured failure without
+changing a native component, asset, pin or ownership map.
 
 - `cargo fmt --all -- --check`, workspace all-target/all-feature clippy with
   `-D warnings`, and `git diff --check`.

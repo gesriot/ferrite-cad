@@ -7664,7 +7664,7 @@
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/native/native-assets-inventory.json@sha256:7a1aac1485191ea94437b1beec5cf79833d16fc0605d84392eae35a49e4263be"
+        "value": "sbom/native/native-assets-inventory.json@sha256:a6e6a4705b7d6a2f279fdddb2265bbe248849bbd6e7f0ea3abff6dea1ff5006b"
       },
       {
         "name": "ferritecad:sbom:merged-from",
