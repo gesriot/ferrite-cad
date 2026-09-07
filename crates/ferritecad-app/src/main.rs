@@ -530,6 +530,22 @@ fn short_name(path: &Path) -> String {
         .into_owned()
 }
 
+/// The name of an empty window, and the suffix of one that has a document.
+const PRODUCT_NAME: &str = "FerriteCAD";
+
+/// What the native window is named for the picture it is showing.
+///
+/// The file's own name, with its extension, rather than the path it was found
+/// at or the last Open that was asked for. An empty window has no document,
+/// and that is the product's name rather than an invented file. A path that
+/// is not UTF-8 is shown with replacement characters, not by panicking.
+fn window_title(document: Option<&Path>) -> String {
+    match document {
+        None => PRODUCT_NAME.to_owned(),
+        Some(path) => format!("{} — {PRODUCT_NAME}", short_name(path)),
+    }
+}
+
 impl Loads {
     /// Opens what the user chose, if they chose anything.
     ///
@@ -3095,7 +3111,13 @@ impl App {
             let prepared = live.renderer.prepare(snapshot)?;
             live.renderer.prepare_sketches(prepared, drawings)
         });
-        commit_scene(&mut live.scene, &mut self.input, next)
+        commit_scene(&mut live.scene, &mut self.input, next)?;
+        // The picture is current; the name on the window is the same fact.
+        // Not asked of `App::document`, which already names the request in
+        // flight, and not said again every frame.
+        live.window
+            .set_title(&window_title(live.scene.document.as_deref()));
+        Ok(())
     }
 
     fn request_frame_now(&mut self, event_loop: &ActiveEventLoop) {
@@ -3122,7 +3144,7 @@ impl App {
             event_loop
                 .create_window(
                     Window::default_attributes()
-                        .with_title("FerriteCAD")
+                        .with_title(PRODUCT_NAME)
                         .with_inner_size(winit::dpi::LogicalSize::new(1024.0, 768.0)),
                 )
                 .map_err(|error| {
@@ -3878,7 +3900,8 @@ mod tests {
         // call a document ready before the frame that put it there.
         let outcome = match loads.accepted_path(generation) {
             // Exactly what the event loop does: the picture and the name of
-            // the document it came from are committed by one statement.
+            // the document it came from are committed by one statement. The
+            // native window is named from that same field afterwards.
             Some(path) => {
                 let path = path.to_path_buf();
                 let next = prepare_load(input, &path, result, |_, _| Ok(()));
@@ -3917,6 +3940,7 @@ mod tests {
         let mut holds = Vec::new();
 
         assert_eq!(scene.document, None, "an empty window named a document");
+        assert_eq!(window_title(scene.document.as_deref()), PRODUCT_NAME);
         assert!(
             !can_export(&scene),
             "a window with nothing on screen offered to write it out"
@@ -3932,6 +3956,11 @@ mod tests {
         assert_eq!(
             scene.document, None,
             "asking for a document made it exportable before it arrived"
+        );
+        assert_eq!(
+            window_title(scene.document.as_deref()),
+            PRODUCT_NAME,
+            "asking for a document renamed the window before it arrived"
         );
         assert!(
             !can_export(&scene),
@@ -3949,6 +3978,10 @@ mod tests {
             scene.document.as_deref(),
             Some(Path::new("a.fcad")),
             "an accepted document is not what an export would read"
+        );
+        assert_eq!(
+            window_title(scene.document.as_deref()),
+            "a.fcad — FerriteCAD"
         );
         assert!(
             can_export(&scene),
@@ -3973,6 +4006,7 @@ mod tests {
         assert_eq!(*loads.status(), Status::Idle);
         assert_eq!(loads.status().line(), "No document");
         assert_eq!(scene.document, None);
+        assert_eq!(window_title(scene.document.as_deref()), PRODUCT_NAME);
         assert!(!can_export(&scene));
 
         assert!(
@@ -3984,6 +4018,7 @@ mod tests {
         );
         assert_eq!(*loads.status(), Status::Idle);
         assert_eq!(scene.document, None);
+        assert_eq!(window_title(scene.document.as_deref()), PRODUCT_NAME);
         assert!(!can_export(&scene));
 
         let failed = loads
@@ -4008,6 +4043,7 @@ mod tests {
             "Could not open gone.fcad: invalid input: no such document"
         );
         assert_eq!(scene.document, None);
+        assert_eq!(window_title(scene.document.as_deref()), PRODUCT_NAME);
         assert!(!can_export(&scene));
 
         let opened = loads
@@ -4029,6 +4065,10 @@ mod tests {
             }
         );
         assert_eq!(scene.document.as_deref(), Some(Path::new("part.fcad")));
+        assert_eq!(
+            window_title(scene.document.as_deref()),
+            "part.fcad — FerriteCAD"
+        );
         assert!(can_export(&scene));
 
         loads.stop_all();
@@ -4085,6 +4125,11 @@ mod tests {
             scene.document.as_deref(),
             Some(Path::new("a.fcad")),
             "an export would have written out the document that failed to open"
+        );
+        assert_eq!(
+            window_title(scene.document.as_deref()),
+            "a.fcad — FerriteCAD",
+            "a failed Open renamed the window"
         );
         // And the two accounts stay apart: the reading failed, and that is a
         // fact about opening rather than about the model on screen.
@@ -4151,6 +4196,11 @@ mod tests {
             "a reading that was given up on arrived and renamed the export source"
         );
         assert_eq!(
+            window_title(scene.document.as_deref()),
+            "a.fcad — FerriteCAD",
+            "a reading that was given up on renamed the window"
+        );
+        assert_eq!(
             *input.camera(),
             framing,
             "a reading that was given up on arrived and moved the camera"
@@ -4205,6 +4255,146 @@ mod tests {
             scene.document.as_deref(),
             Some(Path::new("quick.fcad")),
             "a stale answer renamed the document an export would read"
+        );
+        assert_eq!(
+            window_title(scene.document.as_deref()),
+            "quick.fcad — FerriteCAD",
+            "a stale answer renamed the window"
+        );
+
+        loads.stop_all();
+    }
+
+    /// The name on the window is the accepted file's own name. Asking for
+    /// another file, and a reading that then fails, leave it where it is.
+    #[test]
+    fn the_window_is_named_for_the_document_on_screen() {
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+        let mut holds = Vec::new();
+        let mut spawn = |cancel: &CancelToken| {
+            let (worker, release) = held_worker(cancel);
+            holds.push(release);
+            worker
+        };
+
+        assert_eq!(window_title(scene.document.as_deref()), PRODUCT_NAME);
+
+        let plate = Path::new("models with spaces/Плита 91×53×17.fcad");
+        let asked = loads
+            .open(Some(plate), relay(), |_, cancel| spawn(cancel))
+            .expect("a load started");
+        assert_eq!(
+            window_title(scene.document.as_deref()),
+            PRODUCT_NAME,
+            "a load in flight renamed the window"
+        );
+
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            asked,
+            Ok(loaded(scene_at(0.0))),
+        );
+        assert_eq!(
+            scene.document.as_deref(),
+            Some(plate),
+            "the accepted path is not the one the title would read"
+        );
+        assert_eq!(
+            window_title(scene.document.as_deref()),
+            "Плита 91×53×17.fcad — FerriteCAD"
+        );
+
+        let next = loads
+            .open(Some(Path::new("other.fcad")), relay(), |_, cancel| {
+                spawn(cancel)
+            })
+            .expect("a second load started");
+        assert_eq!(
+            window_title(scene.document.as_deref()),
+            "Плита 91×53×17.fcad — FerriteCAD",
+            "asking for another document renamed the window before it arrived"
+        );
+
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            next,
+            Err(CadError::input("no such document")),
+        );
+        assert_eq!(
+            window_title(scene.document.as_deref()),
+            "Плита 91×53×17.fcad — FerriteCAD",
+            "a failed Open renamed the window"
+        );
+
+        loads.stop_all();
+    }
+
+    /// A saved empty document is still a document: no geometry is not the
+    /// same as no file, and the window is named for the file.
+    #[test]
+    fn a_saved_empty_document_still_names_the_window() {
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+
+        let opened = loads
+            .open(Some(Path::new("empty.fcad")), relay(), |_, _| {
+                std::thread::spawn(|| {})
+            })
+            .expect("a load started");
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            opened,
+            Ok(loaded(SnapshotBuilder::new().build())),
+        );
+        assert_eq!(scene.document.as_deref(), Some(Path::new("empty.fcad")));
+        assert_eq!(
+            window_title(scene.document.as_deref()),
+            "empty.fcad — FerriteCAD"
+        );
+        assert!(can_export(&scene), "an empty document is not a document");
+
+        loads.stop_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_name_that_is_not_utf8_still_titles_the_window() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let mut loads = Loads::default();
+        let mut input = ViewportInput::new();
+        input.resize(800, 600);
+        let mut scene = empty_scene();
+        let path = Path::new(OsStr::from_bytes(b"bad\xff.fcad"));
+        let asked = loads
+            .open(Some(path), relay(), |_, _| std::thread::spawn(|| {}))
+            .expect("a load started");
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            asked,
+            Ok(loaded(scene_at(0.0))),
+        );
+        let title = window_title(scene.document.as_deref());
+        assert!(
+            title.contains('\u{FFFD}'),
+            "a non-UTF-8 name was dropped rather than shown: {title}"
+        );
+        assert!(
+            title.ends_with(" — FerriteCAD"),
+            "a non-UTF-8 name was not titled as a document: {title}"
         );
 
         loads.stop_all();
@@ -14660,6 +14850,11 @@ mod tests {
         assert_eq!(scene.sketch_solves, kept);
         assert_eq!(scene.sketch_solves[0].sketch(), sketch);
         assert_eq!(*camera.camera(), framing);
+        assert_eq!(
+            window_title(scene.document.as_deref()),
+            "shown.fcad — FerriteCAD",
+            "a document whose picture was refused renamed the window"
+        );
         let page = section_page(&scene.sketch_solves);
         assert!(
             !page.contains(&other.to_string()),
@@ -15883,6 +16078,11 @@ mod tests {
         assert_eq!(
             scene.catalogue, catalogue,
             "a refused document changed the catalogue of the picture on screen"
+        );
+        assert_eq!(
+            window_title(scene.document.as_deref()),
+            "shown.fcad — FerriteCAD",
+            "a refused document renamed the window"
         );
     }
 
