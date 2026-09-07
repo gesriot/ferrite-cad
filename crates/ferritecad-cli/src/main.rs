@@ -227,7 +227,7 @@ struct CreateArgs {
 
     /// Sample plate size in millimetres, as width, depth and height.
     #[arg(long, num_args = 3, value_names = ["WIDTH", "DEPTH", "HEIGHT"],
-          default_values_t = [60.0, 40.0, 10.0])]
+          default_values_t = [PlateSize::DEFAULT.width, PlateSize::DEFAULT.depth, PlateSize::DEFAULT.height])]
     size: Vec<f64>,
 }
 

@@ -51,7 +51,7 @@ exit 2 but left an empty `.fcad`; the process regression test first fails on the
 old implementation specifically because the file remains.
 
 What the window can do, what the command line can do, and which library actually
-owns the work — including recipes with expected exit codes — is
+owns the work — including recipes with expected exit codes — is documented in
 [`docs/cli-capabilities.md`](docs/cli-capabilities.md).
 
 ## Exporting to FBX

@@ -211,6 +211,21 @@ fn the_sample_plate_still_defaults_to_sixty_by_forty_by_ten() {
         corners(&destination),
         vec![(0.0, 0.0), (60.0, 0.0), (60.0, 40.0), (0.0, 40.0)]
     );
+    let document = Document::open_read_only(&destination).expect("opens the default plate");
+    let extrude = document
+        .objects()
+        .expect("reads objects")
+        .into_iter()
+        .find_map(|object| match object.payload {
+            ObjectPayload::Extrude(extrude) => Some(extrude),
+            _ => None,
+        })
+        .expect("the default plate has an extrusion");
+    let ferritecad_document::EndCondition::Blind { distance } = extrude.end_condition else {
+        panic!("the default extrusion is not blind");
+    };
+    assert_eq!(distance.value(), 10.0, "the default height changed");
+    document.close().expect("closes the default plate");
 }
 
 /// A size that was accepted before is accepted now, and stored in millimetres

@@ -167,4 +167,52 @@ so the native pin workflows are not dispatched again for this report update.
 
 §24 remains partial: edits to existing models, an unsaved document, Save/Save As,
 dirty state, arbitrary modelling, structured public results and stdin/batch are
-outside §24B. The PR must remain unmerged for independent review.
+outside §24B. The independent review requested before merging is recorded below.
+
+## Independent review, 2026-09-07
+
+Reviewed the transaction/publication boundary, worker cancellation and shutdown,
+accepted-scene transitions, and the UI/CLI semantic and native comparison gates.
+No blocking creation or scene-state defect was found. Review changes:
+
+- CLI defaults now read `PlateSize::DEFAULT`, the same source used by the UI,
+  instead of repeating the three numeric literals.
+- The real CLI default-size regression now checks the stored Blind extrusion
+  height as well as the profile corners. Temporarily changing only the CLI height
+  default to 11 built successfully and failed the test on `the default height
+  changed` (11 versus 10); the restored source passes.
+- The capability map now distinguishes cancellation observed before publication
+  from late cancellation, and documents the native macOS Replace prompt followed
+  by the application's no-clobber refusal.
+
+Independent local checks after the code correction: 512 tests passed (document
+122, jobs 29, UI 102, viewer 247, solver-info 3, CLI create 9). OCCT 8.0.1,
+planegcs and GPU were required; an uncaptured-output run confirmed zero skip
+messages. A separate no-OCCT target records `OpenCASCADE_DIR-NOTFOUND` in its CMake
+cache and passes all 9 CLI create tests. Formatting, workspace all-target/all-feature
+clippy with `-D warnings`, export/solver ownership boundaries, licence headers
+(292 files) and `git diff --check` passed. Review logs are outside the checkout in
+`/tmp/ferrite-pr14-review`.
+
+The reviewer independently launched the staged bundle named above; its viewer
+and the locally rebuilt viewer both report Mach-O UUID
+`A81D95D1-B55B-3F29-A346-DCBD4879E905`. Review changes do not modify viewer code.
+Observed real GUI actions: empty start, New sample plate with default values
+visible, entering 91/53/17 mm, native Save in a path with spaces, accepted visible
+plate, Iso, and native FBX export. Form Cancel and native Save Cancel both preserve
+the plate, directory contents and existing file hashes. The wider implementation
+smoke above remains separate evidence; this review did not repeat every row.
+
+The CLI from that same staged bundle inspected and validated the GUI-created
+document, cold-rebuilt 4 objects / 1 shape / 3 of 3 refs, and exported FBX. Both
+GUI and CLI FBX files are 4128 bytes with SHA-256
+`5404e15e514f1ffb8c880ba023220e786ce9b88c84d072e2d8e4cfb9347715c3`.
+The source document remains unchanged, SHA-256
+`52ff6261ca2377fcb7213acc734087a8a4dd2fd798c84e2754464a2741ce988a`.
+Outputs are in `/tmp/ferrite-pr14-review/UI results with spaces`. The updated
+CLI executable is separately covered by the 9 process tests above.
+
+Applicable CI on the review head and merge revision is recorded in PR #14. The
+native pin runs on `fd2efccf01aa513edc245f3ce171768f81ebd6d3` remain evidence for
+that revision, not newly dispatched runs on the review commit. No native input,
+dependency edge or shared creation algorithm changed during this review.
