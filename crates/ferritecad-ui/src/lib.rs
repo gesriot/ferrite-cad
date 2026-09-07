@@ -21,10 +21,12 @@ mod panels;
 
 pub use input::{Hover, PointerButton, ViewportEvent, ViewportInput};
 pub use panels::{
-    Activity, CANCEL_EXPORT, Chosen, ConflictingRule, EXPORT_FBX, EdgeName, ExportOutcome,
-    FRAME_ALL_KEY, FRAME_KEY, FaceName, GeometryUnavailable, HIDE_KEY, ISOLATE_KEY,
-    OmittedDefinition, OpenFailure, PROJECTION_KEY, PublishedFile, REPLACE_EXISTING,
-    RedundantExplanation, ReplaceChoice, RowVisibility, Rows, SHOW_ALL_KEY, Selected, SolvedSketch,
-    TopologyName, VIEWS, VertexName, definitions_panel, export_panel, open_failure_panel,
-    replace_confirmation, selection_inspector, sketch_solves_panel, toolbar,
+    Activity, CANCEL_EXPORT, CHOOSE_LOCATION, Chosen, ConflictingRule, EMPTY_DOCUMENT, EXPORT_FBX,
+    EdgeName, ExportOutcome, FRAME_ALL_KEY, FRAME_KEY, FaceName, GeometryUnavailable, HIDE_KEY,
+    ISOLATE_KEY, LENGTH_UNIT, NEW_DOCUMENT, NEW_DOCUMENT_TITLE, NewChoice, NewContent,
+    NewDocumentForm, OmittedDefinition, OpenFailure, PROJECTION_KEY, PublishedFile,
+    REPLACE_EXISTING, RedundantExplanation, ReplaceChoice, RowVisibility, Rows, SAMPLE_PLATE,
+    SHOW_ALL_KEY, Selected, SolvedSketch, TopologyName, VIEWS, VertexName, create_panel,
+    definitions_panel, export_panel, new_document_form, open_failure_panel, replace_confirmation,
+    selection_inspector, sketch_solves_panel, toolbar,
 };

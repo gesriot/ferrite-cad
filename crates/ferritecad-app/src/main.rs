@@ -27,6 +27,7 @@
 //! its own thread and comes back as one more event. The window opens on an
 //! empty scene and gains the model when the model is ready.
 
+mod creates;
 mod exports;
 
 use std::ffi::{OsStr, OsString};
@@ -39,6 +40,7 @@ use ferritecad_document::{
     CapSide, DOCUMENT_EXTENSION, SelectionRule, SemanticRole, SketchConstraintRule,
     SketchSegmentRef,
 };
+use ferritecad_jobs::NewDocument;
 use ferritecad_kernel::{CancelToken, OperationContext, ProgressSink, TessellationParams};
 use ferritecad_occt::OcctKernel;
 use ferritecad_scene::{
@@ -48,8 +50,8 @@ use ferritecad_scene::{
 use ferritecad_types::{CadError, Result};
 use ferritecad_ui::{
     Activity, Chosen, FRAME_ALL_KEY, FRAME_KEY, GeometryUnavailable, HIDE_KEY, Hover, ISOLATE_KEY,
-    PROJECTION_KEY, PointerButton, RowVisibility, SHOW_ALL_KEY, Selected, SolvedSketch, VIEWS,
-    ViewportEvent, ViewportInput,
+    NewChoice, PROJECTION_KEY, PointerButton, RowVisibility, SHOW_ALL_KEY, Selected, SolvedSketch,
+    VIEWS, ViewportEvent, ViewportInput,
 };
 use ferritecad_viewport::{
     Camera, EdgePickId, FacePickId, Hovered, Marked, PickId, Projection, RenderSnapshot,
@@ -213,6 +215,15 @@ enum AppEvent {
     Exported {
         generation: exports::ExportGeneration,
         result: Box<Result<ferritecad_jobs::FbxExport>>,
+    },
+    /// A new document has been made, or has finished failing to be.
+    ///
+    /// Not boxed: what a creation answers with is a path and an identifier,
+    /// which is the smallest answer this application moves rather than the
+    /// largest.
+    Created {
+        generation: creates::CreateGeneration,
+        result: Result<ferritecad_jobs::CreatedDocument>,
     },
     /// A load has something new to say about how far along it is.
     ///
@@ -478,6 +489,30 @@ fn spawner(
                     generation,
                     result: Box::new(result),
                 });
+            },
+        )
+    }
+}
+
+/// What a started creation runs, and where its answer goes.
+///
+/// No kernel session and no picture: writing the feature graph of a new
+/// document needs neither, and a window that opened a session here would make
+/// New impossible on a build with no Open CASCADE for no reason at all.
+fn creator(
+    proxy: EventLoopProxy<AppEvent>,
+) -> impl FnOnce(&Path, NewDocument, creates::CreateGeneration, &CancelToken) -> JoinHandle<()> {
+    move |destination, content, generation, cancel| {
+        let destination = destination.to_path_buf();
+        // The one thing the event loop hands the worker beyond the two values:
+        // how to be told to stop.
+        let context = OperationContext::default().with_cancel(cancel.clone());
+        creates::spawn_create(
+            move || creates::run_create(&destination, content, &context),
+            move |result| {
+                // A closed event loop is an ordinary end state, and there is
+                // nowhere useful to report a failed wake-up after it.
+                let _ = proxy.send_event(AppEvent::Created { generation, result });
             },
         )
     }
@@ -767,6 +802,59 @@ fn cancel_load(loads: &mut Loads, input: &mut ViewportInput) -> bool {
         input.request_redraw();
     }
     changed
+}
+
+/// New is serialized with document loads and exports. Viewing remains available.
+fn can_begin_new(creates: &creates::Creates, loads: &Loads, exports: &exports::Exports) -> bool {
+    !creates.busy() && loads.current.is_none() && !exports.running() && exports.pending().is_none()
+}
+
+fn ask_new(
+    creates: &mut creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+    input: &mut ViewportInput,
+) -> bool {
+    can_begin_new(creates, loads, exports) && creates::open_form(creates, input)
+}
+
+/// The UI command after the save dialog. An absent destination changes nothing.
+fn start_new(
+    creates: &mut creates::Creates,
+    loads: &Loads,
+    exports: &exports::Exports,
+    input: &mut ViewportInput,
+    content: NewDocument,
+    chosen: Option<PathBuf>,
+    spawn: impl FnOnce(&Path, NewDocument, creates::CreateGeneration, &CancelToken) -> JoinHandle<()>,
+) -> Option<creates::CreateGeneration> {
+    if loads.current.is_some() || exports.running() || exports.pending().is_some() {
+        return None;
+    }
+    creates::begin_create(creates, input, content, chosen, spawn)
+}
+
+/// What the sections under the toolbar show this frame.
+///
+/// One argument rather than five, because they are one thing: everything the
+/// window has to say that is not the picture. Every field is borrowed from
+/// words the application wrote down when an answer arrived, so all of it lives
+/// exactly as long as the frame that draws it and none of it is worked out
+/// again per frame.
+#[derive(Debug)]
+struct Sections<'a> {
+    /// Why the last attempt to open a document failed, when it failed over
+    /// something with parts.
+    failure: Option<ferritecad_ui::OpenFailure<'a>>,
+    /// What the last export did.
+    export: Option<ferritecad_ui::ExportOutcome<'a>>,
+    /// A destination an export is waiting to be told it may replace.
+    replacing: Option<&'a str>,
+    /// The new-document form, while one is on screen. Borrowed mutably
+    /// because it is the one thing here the user types into.
+    form: Option<&'a mut ferritecad_ui::NewDocumentForm>,
+    /// What the last New did.
+    created: Option<&'a str>,
 }
 
 /// What accepting or discarding an answer did at the application boundary.
@@ -2033,6 +2121,7 @@ struct App {
     document: Option<PathBuf>,
     loads: Loads,
     exports: exports::Exports,
+    creates: creates::Creates,
 }
 
 impl ApplicationHandler<AppEvent> for App {
@@ -2085,9 +2174,10 @@ impl ApplicationHandler<AppEvent> for App {
     /// one place a load in flight can be stopped without listing the ways a
     /// window can end.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // Signal creation before waiting for any older kernel worker: waiting
+        // first could let a new document publish after the window was closed.
+        self.creates.stop_all();
         self.loads.stop_all();
-        // On the same terms and for the same reason: an export worker owns a
-        // kernel session, and a detached one is a session nobody ends.
         self.exports.stop_all();
     }
 
@@ -2096,6 +2186,25 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::RepaintAt(deadline) => self.request_frame_at(event_loop, deadline),
             AppEvent::Progress { generation } => {
                 advance_load(&mut self.loads, &mut self.input, generation);
+                if self.input.take_redraw() {
+                    self.request_frame_now(event_loop);
+                }
+            }
+            AppEvent::Created { generation, result } => {
+                // An answer to a creation the user has since replaced changes
+                // nothing at all, and above all does not send this window off
+                // to open a document nobody is waiting for.
+                //
+                // A document that was made is then opened the ordinary way,
+                // on the thread every other document is read on. Until that
+                // Open is accepted the picture, what is chosen in it and the
+                // document an export reads are all what they were: a creation
+                // publishes a file and nothing else.
+                if let Some(path) =
+                    creates::finish_create(&mut self.creates, &mut self.input, generation, result)
+                {
+                    self.open(path);
+                }
                 if self.input.take_redraw() {
                     self.request_frame_now(event_loop);
                 }
@@ -2175,7 +2284,7 @@ impl ApplicationHandler<AppEvent> for App {
                     // Exactly when there is a document that was accepted. The
                     // picture is what knows: a document asked for is not a
                     // document on screen.
-                    can_export: can_export(&live.scene),
+                    can_export: can_export(&live.scene) && !self.creates.busy(),
                     // And offered a way to stop only while there is one to
                     // stop. Separate from the reading's Cancel: a window can
                     // be reading one document and writing another out at once.
@@ -2201,6 +2310,10 @@ impl ApplicationHandler<AppEvent> for App {
                         .visibility
                         .can_undo(live.scene.prepared.snapshot()),
                     orthographic: self.input.projection() == Projection::Orthographic,
+                    // One document-changing action at a time; viewing remains available.
+                    can_create_document: can_begin_new(&self.creates, &self.loads, &self.exports),
+                    can_open: !self.creates.busy(),
+                    can_cancel_create: self.creates.can_cancel(),
                 };
                 // The words of the last failed attempt, borrowed for this
                 // frame from the application's own account of it. Nothing is
@@ -2220,10 +2333,25 @@ impl ApplicationHandler<AppEvent> for App {
                     .exports
                     .pending()
                     .map(|path| path.display().to_string());
-                match live.draw(&self.input, activity, failure, export, replacing.as_deref()) {
+                // And what the last New did, on the same terms as the export
+                // beside it: written when its answer arrived and borrowed for
+                // this frame.
+                let create_line = creates::words(self.creates.status());
+                let created = creates::shown(self.creates.status(), &create_line);
+                match live.draw(
+                    &self.input,
+                    activity,
+                    Sections {
+                        failure,
+                        export,
+                        replacing: replacing.as_deref(),
+                        form: self.creates.form(),
+                        created,
+                    },
+                ) {
                     // A button pressed during this frame reaches the camera
                     // the same way a keystroke does, through the reducer.
-                    Ok((chosen, replace, pointed_row, interface_has_pointer)) => {
+                    Ok((chosen, replace, asked, pointed_row, interface_has_pointer)) => {
                         if let Some(view) = chosen.view {
                             self.input.handle(ViewportEvent::Look(view), false);
                         }
@@ -2234,6 +2362,27 @@ impl ApplicationHandler<AppEvent> for App {
                         // as long as the user browsed.
                         if chosen.open {
                             self.ask_for_a_document();
+                        }
+                        // A new document is asked about before it is made:
+                        // the form says what goes in it, and the system dialog
+                        // says where it goes. Both happen after the frame was
+                        // published, for the reason opening does — a modal
+                        // dialog runs its own event loop.
+                        if chosen.new_document {
+                            ask_new(
+                                &mut self.creates,
+                                &self.loads,
+                                &self.exports,
+                                &mut self.input,
+                            );
+                        }
+                        if chosen.cancel_create {
+                            self.creates.cancel(&mut self.input);
+                        }
+                        if let Some(content) =
+                            creates::answer_form(&mut self.creates, &mut self.input, asked)
+                        {
+                            self.ask_where_to_create(content);
                         }
                         // Asked for after the frame for the same reason, and
                         // before the answer to the replace question, because
@@ -2387,6 +2536,7 @@ impl App {
             document,
             loads: Loads::default(),
             exports: exports::Exports::default(),
+            creates: creates::Creates::default(),
         }
     }
 
@@ -2400,6 +2550,9 @@ impl App {
     /// A cancelled dialog is an answer, not a failure, and leaves the document
     /// already on screen exactly as it was.
     fn ask_for_a_document(&mut self) {
+        if self.creates.busy() {
+            return;
+        }
         // A toolbar cannot be drawn without a live window, so reaching this
         // without one would be a wiring error. Do not silently turn that into
         // an unowned top-level dialog: its parent is what keeps it in front of
@@ -2436,6 +2589,9 @@ impl App {
     /// path comes back. A cancelled dialog is an answer and does nothing at
     /// all.
     fn ask_where_to_export(&mut self) {
+        if self.creates.busy() {
+            return;
+        }
         // A toolbar cannot be drawn without a live window, and the document to
         // export is the one that window is showing. Both are read here and the
         // decision is made somewhere it can be exercised without either.
@@ -2464,11 +2620,70 @@ impl App {
         self.export_to(chosen);
     }
 
+    /// Asks where the new document should go, and starts making it there.
+    ///
+    /// Blocking on purpose, exactly as the Open and Export dialogs are: while
+    /// it is up the user is choosing a file, and every toolkit runs the
+    /// window's events for the duration. What must not block is the creation
+    /// itself, and that has its own thread.
+    ///
+    /// Choosing the name is part of making the document rather than a step
+    /// after it: nothing is built until a path comes back, and a cancelled
+    /// dialog creates nothing at all and leaves the form as it was.
+    fn ask_where_to_create(&mut self, content: NewDocument) {
+        // A toolbar cannot be drawn without a live window, so reaching this
+        // without one would be a wiring error. Do not silently turn that into
+        // an unowned top-level dialog: its parent is what keeps it in front of
+        // this viewer and gives the XDG portal a non-empty window identifier.
+        let Some(live) = &self.live else {
+            return;
+        };
+
+        let chosen = rfd::FileDialog::new()
+            .set_title("New document")
+            .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
+            // Beside the last document this window was pointed at, which is
+            // where somebody making another one is most likely to want it.
+            .set_directory(
+                self.document
+                    .as_deref()
+                    .and_then(Path::parent)
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or(Path::new(".")),
+            )
+            .set_file_name(format!("untitled.{DOCUMENT_EXTENSION}"))
+            .set_parent(live.window.as_ref())
+            .save_file();
+
+        self.create_at(content, chosen);
+    }
+
+    /// Acts on a chosen destination, whether or not a dialog produced it.
+    ///
+    /// Split from the dialog so that everything this decides can be exercised
+    /// with an injected `Option<PathBuf>`, exactly as opening and exporting
+    /// are. This is the whole of what pressing New reaches.
+    fn create_at(&mut self, content: NewDocument, chosen: Option<PathBuf>) {
+        let proxy = self.proxy.clone();
+        start_new(
+            &mut self.creates,
+            &self.loads,
+            &self.exports,
+            &mut self.input,
+            content,
+            chosen,
+            creator(proxy),
+        );
+    }
+
     /// Acts on a chosen destination, whether or not a dialog produced it.
     ///
     /// Split from the dialog so that everything this decides can be exercised
     /// with an injected `Option<PathBuf>`, exactly as opening a document is.
     fn export_to(&mut self, chosen: Option<PathBuf>) {
+        if self.creates.busy() {
+            return;
+        }
         let document = self
             .live
             .as_ref()
@@ -2485,6 +2700,9 @@ impl App {
 
     /// Acts on the answer to the window's own replace question.
     fn answer_replace(&mut self, choice: ferritecad_ui::ReplaceChoice) {
+        if self.creates.busy() {
+            return;
+        }
         let document = self
             .live
             .as_ref()
@@ -2505,6 +2723,9 @@ impl App {
     /// the only one whose answer can reach the screen, however the two
     /// readings finish relative to each other.
     fn open(&mut self, path: PathBuf) {
+        if self.creates.busy() {
+            return;
+        }
         // The export in flight was of the document being left behind, and its
         // answer would describe a file nobody asked for beside a model that is
         // no longer on screen. Stopping it here means the check the job makes
@@ -2998,10 +3219,14 @@ impl Live {
         &mut self,
         input: &ViewportInput,
         activity: Activity<'_>,
-        failure: Option<ferritecad_ui::OpenFailure<'_>>,
-        export: Option<ferritecad_ui::ExportOutcome<'_>>,
-        replacing: Option<&str>,
-    ) -> Result<(Chosen, ferritecad_ui::ReplaceChoice, Option<usize>, bool)> {
+        sections: Sections<'_>,
+    ) -> Result<(
+        Chosen,
+        ferritecad_ui::ReplaceChoice,
+        NewChoice,
+        Option<usize>,
+        bool,
+    )> {
         // Taken apart so the picture can be read while the surface is being
         // drawn into: these are different fields, and only the compiler needs
         // telling. It also means the list below describes the catalogue itself
@@ -3062,6 +3287,7 @@ impl Live {
             return Ok((
                 Chosen::default(),
                 ferritecad_ui::ReplaceChoice::default(),
+                NewChoice::default(),
                 None,
                 false,
             ));
@@ -3077,6 +3303,14 @@ impl Live {
         let raw_input = egui_state.take_egui_input(window);
         let mut chosen = Chosen::default();
         let mut replace = ferritecad_ui::ReplaceChoice::default();
+        let mut asked = NewChoice::default();
+        let Sections {
+            failure,
+            export,
+            replacing,
+            mut form,
+            created,
+        } = sections;
         let mut pointed_row = None;
         let mut output = egui.run_ui(raw_input, |ui| {
             // The panel returns what was asked for and applies nothing. What a
@@ -3089,6 +3323,14 @@ impl Live {
             // button that was just pressed and nothing is written until it is
             // answered.
             replace = ferritecad_ui::replace_confirmation(ui, replacing);
+            // Directly under the toolbar as well, and for the same reason: it
+            // is the question the button that was just pressed asked, and
+            // nothing is made until it is answered.
+            asked = ferritecad_ui::new_document_form(ui, form.as_deref_mut());
+            // What the last New did. Its own section rather than a second
+            // sentence in the status line: a document that was written and
+            // then could not be shown is two facts, and both are needed.
+            ferritecad_ui::create_panel(ui, created);
             // What the last export did. Its own section rather than a second
             // sentence in the status line: an export that failed is not a
             // document that failed to open, and the two must not be read as
@@ -3175,7 +3417,7 @@ impl Live {
 
         free_textures(&mut textures, |id| egui_renderer.free_texture(id));
         frame.present();
-        Ok((chosen, replace, pointed_row, interface_has_pointer))
+        Ok((chosen, replace, asked, pointed_row, interface_has_pointer))
     }
 }
 
@@ -16611,5 +16853,194 @@ mod tests {
                 "the status line was given {presentation:?}, which belongs to the section:\n{line}"
             );
         }
+    }
+    #[test]
+    fn new_waits_for_load_export_and_export_confirmation() {
+        let dir = tempfile::tempdir().expect("directory");
+        let source = dir.path().join("source.fcad");
+        let destination = dir.path().join("model.fbx");
+        std::fs::write(&source, b"source").expect("source");
+        let mut creates = creates::Creates::default();
+        let mut loads = Loads::default();
+        let mut exports = exports::Exports::default();
+        let mut input = ViewportInput::new();
+        assert!(can_begin_new(&creates, &loads, &exports));
+        loads.open(Some(&source), relay(), |_, _| std::thread::spawn(|| {}));
+        assert!(!ask_new(&mut creates, &loads, &exports, &mut input));
+        assert!(
+            start_new(
+                &mut creates,
+                &loads,
+                &exports,
+                &mut input,
+                NewDocument::Empty,
+                Some(dir.path().join("forbidden.fcad")),
+                |_, _, _, _| panic!("New started during Open")
+            )
+            .is_none()
+        );
+        loads.cancel_current();
+        exports::begin_export(
+            &mut exports,
+            &mut input,
+            Some(&source),
+            Some(destination.clone()),
+            |_, _, _, _| std::thread::spawn(|| {}),
+        )
+        .expect("export started");
+        assert!(!ask_new(&mut creates, &loads, &exports, &mut input));
+        exports::cancel_export(&mut exports, &mut input);
+        std::fs::write(&destination, b"existing export").expect("destination");
+        exports::begin_export(
+            &mut exports,
+            &mut input,
+            Some(&source),
+            Some(destination.clone()),
+            |_, _, _, _| panic!("export replaced without confirmation"),
+        );
+        assert!(exports.pending().is_some());
+        assert!(!ask_new(&mut creates, &loads, &exports, &mut input));
+        assert!(!dir.path().join("forbidden.fcad").exists());
+        assert_eq!(
+            std::fs::read(&destination).expect("destination"),
+            b"existing export"
+        );
+        loads.stop_all();
+        exports.stop_all();
+    }
+
+    #[test]
+    fn new_command_preserves_accepted_scene_until_open_succeeds() {
+        let dir = tempfile::tempdir().expect("directory");
+        let old = dir.path().join("old.fcad");
+        let new = dir.path().join("new.fcad");
+        let mut scene = empty_scene();
+        let mut input = ViewportInput::new();
+        let mut loads = Loads::default();
+        let mut creates = creates::Creates::default();
+        let exports = exports::Exports::default();
+        let generation = loads
+            .open(Some(&old), relay(), |_, _| std::thread::spawn(|| {}))
+            .expect("old");
+        deliver_into(
+            &mut scene,
+            &mut loads,
+            &mut input,
+            generation,
+            Ok(loaded(scene_at(10.0))),
+        );
+        let before = *input.camera();
+        assert!(ask_new(&mut creates, &loads, &exports, &mut input));
+        assert!(!can_begin_new(&creates, &loads, &exports));
+        assert!(
+            start_new(
+                &mut creates,
+                &loads,
+                &exports,
+                &mut input,
+                NewDocument::Empty,
+                None,
+                |_, _, _, _| panic!("cancelled dialog spawned work")
+            )
+            .is_none()
+        );
+        assert_eq!(scene.document.as_ref(), Some(&old));
+        assert_eq!(*input.camera(), before);
+        creates::answer_form(&mut creates, &mut input, NewChoice::Cancel);
+        for (destination, failure) in [(old.clone(), true), (new.clone(), false)] {
+            if failure {
+                std::fs::write(&destination, b"old document sentinel").expect("sentinel");
+            }
+            let (send, recv) = std::sync::mpsc::channel();
+            start_new(
+                &mut creates,
+                &loads,
+                &exports,
+                &mut input,
+                NewDocument::Empty,
+                Some(destination),
+                |path, content, generation, cancel| {
+                    let path = path.to_path_buf();
+                    let context = OperationContext::default().with_cancel(cancel.clone());
+                    creates::spawn_create(
+                        move || creates::run_create(&path, content, &context),
+                        move |result| {
+                            send.send((generation, result)).expect("answer");
+                        },
+                    )
+                },
+            )
+            .expect("new started");
+            assert!(creates.busy());
+            let (generation, result) = recv.recv().expect("answer");
+            let path = creates::finish_create(&mut creates, &mut input, generation, result);
+            assert_eq!(scene.document.as_ref(), Some(&old));
+            assert_eq!(*input.camera(), before);
+            if failure {
+                assert!(path.is_none());
+                assert_eq!(
+                    std::fs::read(&old).expect("sentinel"),
+                    b"old document sentinel"
+                );
+                continue;
+            }
+            assert_eq!(path.as_ref(), Some(&new));
+            let generation = loads
+                .open(path.as_deref(), relay(), |_, _| std::thread::spawn(|| {}))
+                .expect("open new");
+            assert!(!can_begin_new(&creates, &loads, &exports));
+            deliver_into(
+                &mut scene,
+                &mut loads,
+                &mut input,
+                generation,
+                Err(CadError::input("cannot show created document")),
+            );
+            assert!(new.is_file());
+            assert!(matches!(
+                creates.status(),
+                creates::CreateStatus::Made { .. }
+            ));
+            assert!(loads.status().line().contains("Could not open"));
+            assert_eq!(scene.document.as_ref(), Some(&old));
+            assert_eq!(*input.camera(), before);
+            // A newer Open supersedes a pending Open of the created file.
+            let stale = loads
+                .open(Some(&new), relay(), |_, _| std::thread::spawn(|| {}))
+                .expect("stale open");
+            let accepted = loads
+                .open(Some(&old), relay(), |_, _| std::thread::spawn(|| {}))
+                .expect("latest open");
+            deliver_into(
+                &mut scene,
+                &mut loads,
+                &mut input,
+                stale,
+                Ok(loaded(scene_at(200.0))),
+            );
+            assert_eq!(scene.document.as_ref(), Some(&old));
+            deliver_into(
+                &mut scene,
+                &mut loads,
+                &mut input,
+                accepted,
+                Ok(loaded(scene_at(10.0))),
+            );
+            // Successfully loading an empty saved document still accepts its export source.
+            let empty = loads
+                .open(Some(&new), relay(), |_, _| std::thread::spawn(|| {}))
+                .expect("empty open");
+            deliver_into(
+                &mut scene,
+                &mut loads,
+                &mut input,
+                empty,
+                Ok(loaded(SnapshotBuilder::new().build())),
+            );
+            assert_eq!(scene.document.as_ref(), Some(&new));
+            assert!(can_export(&scene));
+        }
+        creates.stop_all();
+        loads.stop_all();
     }
 }

@@ -799,6 +799,7 @@ dependencies = [
 name = "ferritecad-jobs"
 version = "0.0.1"
 dependencies = [
+ "ferritecad-document",
  "ferritecad-exchange",
  "ferritecad-export",
  "ferritecad-kernel",

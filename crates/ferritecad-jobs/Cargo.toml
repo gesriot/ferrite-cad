@@ -22,6 +22,7 @@ authors.workspace = true
 # No window, no renderer, no event loop and no exit codes: what a finished
 # export is worth to whoever asked is the caller's to decide.
 [dependencies]
+ferritecad-document.workspace = true
 ferritecad-exchange.workspace = true
 ferritecad-export.workspace = true
 ferritecad-kernel.workspace = true

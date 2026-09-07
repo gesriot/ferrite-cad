@@ -7,6 +7,10 @@
 //! is done — which scene is built, which writer is handed it, what makes the
 //! last step atomic — is the same in both cases and lives here.
 //!
+//! Making a document is the same shape of question and is here for the same
+//! reason: what a new document contains, and when a file appears at the path
+//! the user chose, must not be two answers. See [`create_document`].
+//!
 //! # Why this crate exists at all
 //!
 //! It exists so that there is one of it. The command line had the whole route
@@ -31,9 +35,11 @@
 //! is written: an export is a cold read of the stored document, so the file is
 //! a function of what was saved rather than of what a viewer happens to hold.
 
+mod create;
 mod fbx;
 mod publish;
 
+pub use create::{CreateDocumentRequest, CreatedDocument, NewDocument, PlateSize, create_document};
 pub use fbx::{FbxExport, FbxExportRequest, SOURCE_IS_DESTINATION, export_document_as_fbx};
 pub use publish::{
     Existing, Temporary, is_same_entry, path_entry_exists, refuse_source_as_destination,
