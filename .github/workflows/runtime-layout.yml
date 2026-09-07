@@ -498,6 +498,43 @@ jobs:
           echo "$(wc -l < test-binaries.txt) test executable(s) exist, and neither product"
           echo "binary is one of them"
 
+      - name: Edit existing extrusions through both native clients
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          # These already-built release tests invoke the actual CLI binary and
+          # the window's worker. Both native libraries must be available; this
+          # is the regular three-platform gate, not a no-kernel skip or --no-run.
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          cargo test --release --features planegcs -p ferritecad-app \
+            --bin ferritecad-viewer edits::tests:: -- --nocapture 2>&1 | tee edit-tests.log
+          if grep -q 'skipped:' edit-tests.log; then
+            echo "::error::a native edit gate skipped itself"
+            exit 1
+          fi
+          for gate in \
+            one_source_ui_and_cli_preserve_all_ids_rebuild_and_export_the_changed_model \
+            imported_blobs_unknown_tables_and_unselected_payloads_survive_edit \
+            cancellation_before_and_after_publish_and_stale_answers_keep_honest_outcomes \
+            published_output_and_open_failure_are_separate_from_the_accepted_scene \
+            cancelling_the_form_and_a_closed_save_dialog_do_no_work \
+            shutdown_cancels_and_joins_the_edit_worker_before_it_can_publish
+          do
+            if ! grep -q "^test edits::tests::${gate} \.\.\. ok$" edit-tests.log; then
+              echo "::error::${gate} did not run and pass on this platform"
+              exit 1
+            fi
+          done
+
       - name: Require the application to import both runtime component families
         run: |
           set -euo pipefail
@@ -1013,6 +1050,7 @@ jobs:
           name: runtime-layout-${{ matrix.name }}
           path: |
             runtime-layout-${{ matrix.name }}.txt
+            edit-tests.log
             closure-viewer.txt
             closure-cli.txt
             layout-${{ matrix.name }}.txt

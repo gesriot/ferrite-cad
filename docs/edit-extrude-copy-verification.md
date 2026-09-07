@@ -178,7 +178,7 @@ dependencies отражены штатными генераторами: Rust SB
 Mach-O UUID viewer — `FB148CD6-FF3E-3987-80DA-7C685CF7EBBB`, SHA-256 —
 `ae906967421690b5fcd9e18522ecde185920ae1ffbd6b2d36b346c2de1683092`.
 Bundled CLI SHA-256 — `43fdf8919bd658978ccb72a0efb13f867315e550d16fac266dde2012e42bff5d`.
-После staging менялись только комментарии production кода, дополнительные тесты и docs;
+После staging менялись только комментарии production кода, дополнительные тесты, docs и workflows;
 модели в `/private/tmp/ferrite-24c-evidence/Модели с пробелами`, вне checkout.
 Через native Open принят `Плита 80×50×12.fcad`, через форму выбран Extrude1 с UUID
 `01a07cdf-cb6d-7571-8e6b-c41023818d71`, введено 27, Save создал
@@ -196,6 +196,12 @@ FBX: `3e2e0adbae0d4d65b5452c9ba3b81efd7e895ad2c949e1cc997abd4aa4a2a2f7`.
 source/output hashes и заголовок сохранились; повторный GUI export побайтово совпал
 с прежним. Scratch не остался. Это реальная проверка диалогов, не тест форматтера.
 
-Windows/Linux GUI вручную не наблюдались; native путь там проверяет OCCT pin workflow.
+Windows/Linux GUI вручную не наблюдались. Все шесть native edit tests обязательно
+исполняются в обычном combined runtime layout workflow на трёх платформах, с обоими
+нативными компонентами и release-клиентами; имена каждого теста проверяются в логе,
+skip и `--no-run` не считаются прохождением. Ручной OCCT pin также содержит три
+ключевых edit gates. Его дополнительный запуск на первом коммите PR был остановлен
+во время сборки OCCT из исходников после переноса обязательной проверки в обычный
+workflow; он не является успешным evidence. Точный head и ссылки CI записаны в PR.
 Новых release/install/association гарантий, in-place Save, dirty state, sketch/parameter
 editor, STEP UI, batch/JSON/RPC/DSL, assemblies или drawings этот PR не добавляет.
