@@ -4628,6 +4628,47 @@
       "version": "2.1.3"
     },
     {
+      "author": "Andrew Gallant <jamslam@gmail.com>",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#same-file@1.0.6",
+      "description": "A simple crate for determining whether two file paths point to the same file. ",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/same-file"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/BurntSushi/same-file"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/BurntSushi/same-file"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unlicense OR MIT"
+        }
+      ],
+      "name": "same-file",
+      "properties": [
+        {
+          "name": "ferritecad:sbom:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/same-file@1.0.6",
+      "scope": "required",
+      "type": "library",
+      "version": "1.0.6"
+    },
+    {
       "author": "bluss",
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#scopeguard@1.2.0",
       "description": "A RAII scope guard that will run a given closure when it goes out of scope, even if the code between panics (assuming unwinding panic).  Defines the macros `defer!`, `defer_on_unwind!`, `defer_on_success!` as shorthands for guards with one of the implemented strategies. ",
@@ -5882,6 +5923,47 @@
       "version": "30.0.0"
     },
     {
+      "author": "Andrew Gallant <jamslam@gmail.com>",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#winapi-util@0.1.11",
+      "description": "A dumping ground for high level safe wrappers over windows-sys.",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/winapi-util"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/BurntSushi/winapi-util"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/BurntSushi/winapi-util"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unlicense OR MIT"
+        }
+      ],
+      "name": "winapi-util",
+      "properties": [
+        {
+          "name": "ferritecad:sbom:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/winapi-util@0.1.11",
+      "scope": "required",
+      "type": "library",
+      "version": "0.1.11"
+    },
+    {
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#windows-collections@0.3.2",
       "description": "Windows collection types",
       "externalReferences": [
@@ -6621,11 +6703,13 @@
     {
       "dependsOn": [
         "path+crates/ferritecad-document#ferritecad-document@0.0.1",
+        "path+crates/ferritecad-eval#ferritecad-eval@0.0.1",
         "path+crates/ferritecad-exchange#ferritecad-exchange@0.0.1",
         "path+crates/ferritecad-export#ferritecad-export@0.0.1",
         "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
         "path+crates/ferritecad-scene#ferritecad-scene@0.0.1",
-        "path+crates/ferritecad-types#ferritecad-types@0.0.1"
+        "path+crates/ferritecad-types#ferritecad-types@0.0.1",
+        "registry+https://github.com/rust-lang/crates.io-index#same-file@1.0.6"
       ],
       "ref": "path+crates/ferritecad-jobs#ferritecad-jobs@0.0.1"
     },
@@ -7338,6 +7422,12 @@
       "ref": "registry+https://github.com/rust-lang/crates.io-index#rustc-hash@2.1.3"
     },
     {
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#winapi-util@0.1.11"
+      ],
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#same-file@1.0.6"
+    },
+    {
       "dependsOn": [],
       "ref": "registry+https://github.com/rust-lang/crates.io-index#scopeguard@1.2.0"
     },
@@ -7605,6 +7695,12 @@
     },
     {
       "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#windows-sys@0.61.2"
+      ],
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#winapi-util@0.1.11"
+    },
+    {
+      "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#windows-core@0.62.2"
       ],
       "ref": "registry+https://github.com/rust-lang/crates.io-index#windows-collections@0.3.2"
@@ -7758,11 +7854,11 @@
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/native/native-assets-inventory.json@sha256:a6e6a4705b7d6a2f279fdddb2265bbe248849bbd6e7f0ea3abff6dea1ff5006b"
+        "value": "sbom/native/native-assets-inventory.json@sha256:21d4747a64dfbeed7546413517fdb97fd375d9976c4291a711df3372dad9dc8e"
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/rust/rust-fragment-x86_64-pc-windows-msvc.cdx.json@sha256:445af2463f57354cc9669fcf5be7e1c350985e863ee48532f3a6c85d56b71b35"
+        "value": "sbom/rust/rust-fragment-x86_64-pc-windows-msvc.cdx.json@sha256:fca0dfc2e1e24814b3f73737eed8cf8c4c8b7c7eee78c6a5c3dd925fc3ddea5b"
       },
       {
         "name": "ferritecad:sbom:product-format",

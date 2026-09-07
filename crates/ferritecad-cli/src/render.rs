@@ -14,6 +14,7 @@ pub fn inspect(document: &Document) -> Result<()> {
 
     println!("document {}", document.path().display());
     println!("  id                 {}", meta.document_id);
+    println!("  content version    {}", document.content_version()?);
     println!(
         "  format             v{} (needs reader v{}+)",
         meta.format_version, meta.minimum_reader_version

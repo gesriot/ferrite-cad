@@ -9,8 +9,8 @@ use ferritecad_exchange::{
 };
 use ferritecad_kernel::{KernelIdentity, ShapeHandle};
 use ferritecad_types::{
-    CadError, ContentHash, Dimension, DocumentId, ImportedSourceId, ObjectId, Result,
-    StableEntityId, Unit,
+    CadError, CanonicalHasher, ContentHash, Dimension, DocumentId, ImportedSourceId, ObjectId,
+    Result, StableEntityId, Unit,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 
@@ -416,6 +416,10 @@ impl Document {
         let path = path.as_ref().to_path_buf();
         refuse_wal_journal(&path)?;
         let conn = open_connection(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        // Pin one SQLite reading for every query (metadata, geometry and edit
+        // identity alike). A concurrent commit cannot split a load in two.
+        conn.execute_batch("BEGIN")
+            .map_err(|e| CadError::io("starting document snapshot", e))?;
         schema::check_application_id(&conn, DOCUMENT_APPLICATION_ID, "document")?;
         schema::require_current_document_schema(&conn)?;
 
@@ -441,6 +445,100 @@ impl Document {
 
     pub fn access(&self) -> &Access {
         &self.access
+    }
+
+    /// Whether a copy can be edited without discarding unsupported meaning.
+    /// Explicit read-only connection access is separate from format capability.
+    pub fn copy_access(&self) -> Result<Access> {
+        determine_access(&self.conn)
+    }
+
+    /// A complete logical content version, including unknown tables/envelopes
+    /// and imported BLOBs. No filesystem clock or SQLite page layout enters it.
+    /// Read this from `open_read_only`, whose transaction pins the whole reading.
+    pub fn content_version(&self) -> Result<ContentHash> {
+        fn quoted(name: &str) -> String {
+            format!("\"{}\"", name.replace('"', "\"\""))
+        }
+        let read = || -> rusqlite::Result<ContentHash> {
+            let mut hash = CanonicalHasher::new("document.logical-content");
+            hash.algorithm_version(1);
+            let mut schema = self.conn.prepare(
+                "SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name",
+            )?;
+            let mut rows = schema.query([])?;
+            let mut tables = Vec::new();
+            while let Some(row) = rows.next()? {
+                for column in 0..4 {
+                    let value: Option<String> = row.get(column)?;
+                    hash.bool(value.is_some())
+                        .str(value.as_deref().unwrap_or_default());
+                }
+                if row.get::<_, String>(0)? == "table" {
+                    tables.push(row.get::<_, String>(1)?);
+                }
+            }
+            for table in tables {
+                hash.field(&table);
+                let select = format!("SELECT * FROM {}", quoted(&table));
+                let count = self.conn.prepare(&select)?.column_count();
+                let order = (1..=count)
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let mut statement = self.conn.prepare(&format!("{select} ORDER BY {order}"))?;
+                let mut rows = statement.query([])?;
+                while let Some(row) = rows.next()? {
+                    hash.field("row");
+                    for column in 0..count {
+                        use rusqlite::types::ValueRef;
+                        match row.get_ref(column)? {
+                            ValueRef::Null => {
+                                hash.field("null");
+                            }
+                            ValueRef::Integer(v) => {
+                                hash.field("integer").bytes(&v.to_be_bytes());
+                            }
+                            ValueRef::Real(v) => {
+                                hash.field("real").bytes(&v.to_bits().to_be_bytes());
+                            }
+                            ValueRef::Text(v) => {
+                                hash.field("text").bytes(v);
+                            }
+                            ValueRef::Blob(v) => {
+                                hash.field("blob").bytes(v);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(hash.finish())
+        };
+        read().map_err(|e| CadError::io("reading complete document version", e))
+    }
+
+    /// Copies this pinned reading through SQLite's online backup API. The
+    /// destination must be inside caller-owned private storage and absent.
+    /// All pages are copied, including data this build does not decode.
+    pub fn snapshot_to(&self, destination: &Path) -> Result<()> {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)
+            .map_err(|e| CadError::io("reserving document snapshot", e))?;
+        let mut target = open_connection(destination, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        let backup = rusqlite::backup::Backup::new(&self.conn, &mut target)
+            .map_err(|e| CadError::io("starting SQLite backup", e))?;
+        let step = backup
+            .step(-1)
+            .map_err(|e| CadError::io("copying SQLite snapshot", e))?;
+        if step != rusqlite::backup::StepResult::Done {
+            return Err(CadError::input("source is busy; reopen it and try again"));
+        }
+        drop(backup);
+        target
+            .close()
+            .map_err(|(_, e)| CadError::io("closing SQLite snapshot", e))
     }
 
     /// Where this document's regenerable cache sidecar lives.

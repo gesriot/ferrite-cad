@@ -66,6 +66,8 @@ use serde::{Deserialize, Serialize};
 /// document can store.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoadedScene {
+    /// Edit facts from the same pinned reading as the picture.
+    pub edit_source: Option<ferritecad_document::ExtrudeEditSource>,
     pub snapshot: RenderSnapshot,
     /// What each packed mesh is, indexed the way the snapshot indexes them.
     pub catalogue: Vec<CatalogueEntry>,
@@ -812,6 +814,7 @@ where
 
 /// What a picture keeps from one reading of a document.
 struct Picture {
+    edit_source: Option<ferritecad_document::ExtrudeEditSource>,
     builder: SnapshotBuilder,
     /// Every stored reference that names exactly one entity of this rebuild,
     /// paired with the handle it named.
@@ -839,6 +842,7 @@ struct Picture {
 impl Picture {
     fn new() -> Self {
         Self {
+            edit_source: None,
             builder: SnapshotBuilder::new(),
             named: Vec::new(),
             packed: HashMap::new(),
@@ -931,6 +935,7 @@ impl prepare::LoadSink for Picture {
         objects: &[ObjectRecord],
         built: &ferritecad_eval::RebuildResult,
     ) -> Result<()> {
+        self.edit_source = Some(ferritecad_document::ExtrudeEditSource::read(document)?);
         // Resolved once, in the order the document stores its references, so
         // what an entity is called does not depend on the order faces, edges
         // or vertices happen to be tessellated in.
@@ -1066,6 +1071,7 @@ impl prepare::LoadSink for Picture {
             });
         }
         Ok(LoadedScene {
+            edit_source: self.edit_source,
             faces: face_names(&snapshot, self.names)?,
             edges: edge_names(&snapshot, self.edge_named)?,
             vertices: vertex_names(&snapshot, self.vertex_named)?,

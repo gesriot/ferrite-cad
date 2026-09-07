@@ -28,8 +28,8 @@ policy in ADR 0002.
   - `ferritecad`, built from `crates/ferritecad-cli/Cargo.toml` with default features
 - dependency kinds: normal and build. Dev-dependencies are excluded, so the
   solver bench, the fixtures and the test-only crates are not listed here.
-- third-party packages: 153
-- distinct licence texts: 73
+- third-party packages: 154
+- distinct licence texts: 74
 
 ## Packages
 
@@ -149,6 +149,7 @@ policy in ADR 0002.
 | `rusqlite` | 0.37.0 | `165ca6e57b20e1351573e3729b958bc62f0e48025386970b6e4d29e7a7e71f3f` | `MIT` | `MIT` | text below |
 | `rustc-hash` | 1.1.0 | `08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2` | `Apache-2.0 OR MIT` | `MIT` | text below |
 | `rustc-hash` | 2.1.3 | `6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d` | `Apache-2.0 OR MIT` | `MIT` | text below |
+| `same-file` | 1.0.6 | `93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502` | `Unlicense OR MIT` | `MIT` | text below |
 | `scopeguard` | 1.2.0 | `94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `self_cell` | 1.3.0 | `2ab42ca02749e120097e328d91d415325bdf43b1c72c4c8badf37375fe40a813` | `Apache-2.0 OR GPL-2.0-only` | `Apache-2.0` | text below |
 | `serde` | 1.0.229 | `4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba` | `MIT OR Apache-2.0` | `MIT` | text below |
@@ -3200,6 +3201,36 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Applies to:
 
+- `same-file` 1.0.6
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2017 Andrew Gallant
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### 58. MIT
+
+Applies to:
+
 - `pollster` 0.4.0
 
 ```text
@@ -3230,7 +3261,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 58. MIT
+### 59. MIT
 
 Applies to:
 
@@ -3267,7 +3298,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 59. MIT
+### 60. MIT
 
 Applies to:
 
@@ -3301,7 +3332,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 60. MIT
+### 61. MIT
 
 Applies to:
 
@@ -3335,7 +3366,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 61. MIT
+### 62. MIT
 
 Applies to:
 
@@ -3370,7 +3401,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 62. MIT
+### 63. MIT
 
 Applies to:
 
@@ -3400,7 +3431,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 63. MIT
+### 64. MIT
 
 Applies to:
 
@@ -3427,7 +3458,7 @@ WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 64. MIT
+### 65. MIT
 
 Applies to:
 
@@ -3461,7 +3492,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 65. MIT
+### 66. MIT
 
 Applies to:
 
@@ -3491,7 +3522,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 66. MIT
+### 67. MIT
 
 Applies to:
 
@@ -3525,7 +3556,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 67. MIT
+### 68. MIT
 
 Applies to:
 
@@ -3551,7 +3582,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 68. MIT
+### 69. MIT
 
 Applies to:
 
@@ -3585,7 +3616,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 69. MIT
+### 70. MIT
 
 Applies to:
 
@@ -3620,7 +3651,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 70. OFL-1.1
+### 71. OFL-1.1
 
 Applies to:
 
@@ -3721,7 +3752,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
 
-### 71. Ubuntu-font-1.0
+### 72. Ubuntu-font-1.0
 
 Applies to:
 
@@ -3826,7 +3857,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM OTHER
 DEALINGS IN THE FONT SOFTWARE.
 ```
 
-### 72. Unicode-3.0
+### 73. Unicode-3.0
 
 Applies to:
 
@@ -3874,7 +3905,7 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ```
 
-### 73. Zlib
+### 74. Zlib
 
 Applies to:
 

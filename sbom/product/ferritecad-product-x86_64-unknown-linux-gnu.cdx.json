@@ -5018,6 +5018,47 @@
       "version": "1.1.4"
     },
     {
+      "author": "Andrew Gallant <jamslam@gmail.com>",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#same-file@1.0.6",
+      "description": "A simple crate for determining whether two file paths point to the same file. ",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/same-file"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/BurntSushi/same-file"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/BurntSushi/same-file"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unlicense OR MIT"
+        }
+      ],
+      "name": "same-file",
+      "properties": [
+        {
+          "name": "ferritecad:sbom:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/same-file@1.0.6",
+      "scope": "required",
+      "type": "library",
+      "version": "1.0.6"
+    },
+    {
       "author": "Alex Crichton <alex@alexcrichton.com>",
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#scoped-tls@1.0.1",
       "description": "Library implementation of the standard library's old `scoped_thread_local!` macro for providing scoped access to thread local storage (TLS) so any type can be stored into TLS. ",
@@ -7238,11 +7279,13 @@
     {
       "dependsOn": [
         "path+crates/ferritecad-document#ferritecad-document@0.0.1",
+        "path+crates/ferritecad-eval#ferritecad-eval@0.0.1",
         "path+crates/ferritecad-exchange#ferritecad-exchange@0.0.1",
         "path+crates/ferritecad-export#ferritecad-export@0.0.1",
         "path+crates/ferritecad-kernel#ferritecad-kernel@0.0.1",
         "path+crates/ferritecad-scene#ferritecad-scene@0.0.1",
-        "path+crates/ferritecad-types#ferritecad-types@0.0.1"
+        "path+crates/ferritecad-types#ferritecad-types@0.0.1",
+        "registry+https://github.com/rust-lang/crates.io-index#same-file@1.0.6"
       ],
       "ref": "path+crates/ferritecad-jobs#ferritecad-jobs@0.0.1"
     },
@@ -8034,6 +8077,10 @@
     },
     {
       "dependsOn": [],
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#same-file@1.0.6"
+    },
+    {
+      "dependsOn": [],
       "ref": "registry+https://github.com/rust-lang/crates.io-index#scoped-tls@1.0.1"
     },
     {
@@ -8526,11 +8573,11 @@
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/native/native-assets-inventory.json@sha256:a6e6a4705b7d6a2f279fdddb2265bbe248849bbd6e7f0ea3abff6dea1ff5006b"
+        "value": "sbom/native/native-assets-inventory.json@sha256:21d4747a64dfbeed7546413517fdb97fd375d9976c4291a711df3372dad9dc8e"
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/rust/rust-fragment-x86_64-unknown-linux-gnu.cdx.json@sha256:a7f6a52b9f72901c733accf39facd5da1439b60ed600a5f07d80f858a3959945"
+        "value": "sbom/rust/rust-fragment-x86_64-unknown-linux-gnu.cdx.json@sha256:7811adca2b62538c498a49ab14fa7548d2d1c5b399bad0d10a7697c7aa63aa71"
       },
       {
         "name": "ferritecad:sbom:product-format",

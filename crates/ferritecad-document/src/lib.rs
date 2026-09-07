@@ -51,6 +51,7 @@
 
 mod cache;
 mod document;
+mod edit;
 mod envelope;
 mod graph;
 mod model;
@@ -62,6 +63,7 @@ pub use document::{
     Access, Document, DocumentMeta, DocumentWriter, ObjectRecord, ReopenedStepImport,
     StepImportRequest, StepImporter, StoredStepImport, StoredTopologyRef,
 };
+pub use edit::{DocumentVersion, ExtrudeChoice, ExtrudeEditSource, editable_extrude};
 pub use envelope::{Envelope, UnknownObject};
 pub use graph::{Dependency, DependencyRole, evaluation_order};
 pub use model::{

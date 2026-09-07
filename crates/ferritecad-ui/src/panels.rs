@@ -21,6 +21,7 @@ use ferritecad_viewport::{PickId, StandardView};
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Chosen {
+    pub edit: crate::EditChoice,
     /// A direction to look from.
     pub view: Option<StandardView>,
     /// The user wants to open a different document.

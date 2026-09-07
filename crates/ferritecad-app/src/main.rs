@@ -28,6 +28,7 @@
 //! empty scene and gains the model when the model is ready.
 
 mod creates;
+mod edits;
 mod exports;
 
 use std::ffi::{OsStr, OsString};
@@ -215,6 +216,11 @@ enum AppEvent {
     Exported {
         generation: exports::ExportGeneration,
         result: Box<Result<ferritecad_jobs::FbxExport>>,
+    },
+    /// A saved edit has finished; opening its output is a separate event.
+    Edited {
+        generation: u64,
+        result: Result<ferritecad_jobs::EditedDocument>,
     },
     /// A new document has been made, or has finished failing to be.
     ///
@@ -859,6 +865,8 @@ fn start_new(
 /// again per frame.
 #[derive(Debug)]
 struct Sections<'a> {
+    edits: &'a mut edits::Edits,
+    can_edit: bool,
     /// Why the last attempt to open a document failed, when it failed over
     /// something with parts.
     failure: Option<ferritecad_ui::OpenFailure<'a>>,
@@ -983,6 +991,7 @@ fn spawn_load(
 /// one document replaces another, not an interface anything else uses.
 #[derive(Debug)]
 struct PreparedLoad<P> {
+    edit_source: Option<ferritecad_document::ExtrudeEditSource>,
     /// The document this arrival was read from, carried so that it becomes
     /// current with the picture rather than before it.
     document: PathBuf,
@@ -1041,6 +1050,7 @@ fn prepare_load<P>(
     let drawings = ferritecad_scene::sketch_drawings(&loaded.sketch_presentations)?;
     let prepared = prepare(Arc::new(snapshot), &drawings)?;
     Ok(PreparedLoad {
+        edit_source: loaded.edit_source,
         document: document.to_path_buf(),
         framed: input,
         prepared,
@@ -1146,6 +1156,7 @@ struct Live {
 /// produce byte-identical geometry: the same raw pick beside a different
 /// catalogue could otherwise silently name another document object.
 struct LiveScene<P> {
+    edit_source: Option<ferritecad_document::ExtrudeEditSource>,
     /// The document this picture was read from, exactly as it was read.
     ///
     /// `None` until a reading has been accepted, which is what makes writing
@@ -1223,6 +1234,7 @@ impl<P> LiveScene<P> {
         sketch_solves: Vec<SketchSolveFacts>,
     ) -> Self {
         Self {
+            edit_source: None,
             document,
             prepared,
             catalogue,
@@ -1312,6 +1324,7 @@ fn commit_scene<P>(
         next.visibility,
         next.sketch_solves,
     );
+    scene.edit_source = next.edit_source;
     *camera = next.framed;
     Ok(())
 }
@@ -2138,6 +2151,7 @@ struct App {
     loads: Loads,
     exports: exports::Exports,
     creates: creates::Creates,
+    edits: edits::Edits,
 }
 
 impl ApplicationHandler<AppEvent> for App {
@@ -2192,6 +2206,7 @@ impl ApplicationHandler<AppEvent> for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         // Signal creation before waiting for any older kernel worker: waiting
         // first could let a new document publish after the window was closed.
+        self.edits.stop_all();
         self.creates.stop_all();
         self.loads.stop_all();
         self.exports.stop_all();
@@ -2205,6 +2220,13 @@ impl ApplicationHandler<AppEvent> for App {
                 if self.input.take_redraw() {
                     self.request_frame_now(event_loop);
                 }
+            }
+            AppEvent::Edited { generation, result } => {
+                if let Some(path) = self.edits.finish(generation, result) {
+                    self.open(path);
+                }
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
             }
             AppEvent::Created { generation, result } => {
                 // An answer to a creation the user has since replaced changes
@@ -2300,7 +2322,9 @@ impl ApplicationHandler<AppEvent> for App {
                     // Exactly when there is a document that was accepted. The
                     // picture is what knows: a document asked for is not a
                     // document on screen.
-                    can_export: can_export(&live.scene) && !self.creates.busy(),
+                    can_export: can_export(&live.scene)
+                        && !self.creates.busy()
+                        && !self.edits.busy(),
                     // And offered a way to stop only while there is one to
                     // stop. Separate from the reading's Cancel: a window can
                     // be reading one document and writing another out at once.
@@ -2327,8 +2351,9 @@ impl ApplicationHandler<AppEvent> for App {
                         .can_undo(live.scene.prepared.snapshot()),
                     orthographic: self.input.projection() == Projection::Orthographic,
                     // One document-changing action at a time; viewing remains available.
-                    can_create_document: can_begin_new(&self.creates, &self.loads, &self.exports),
-                    can_open: !self.creates.busy(),
+                    can_create_document: !self.edits.busy()
+                        && can_begin_new(&self.creates, &self.loads, &self.exports),
+                    can_open: !self.creates.busy() && !self.edits.busy(),
                     can_cancel_create: self.creates.can_cancel(),
                 };
                 // The words of the last failed attempt, borrowed for this
@@ -2358,6 +2383,9 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.input,
                     activity,
                     Sections {
+                        can_edit: !self.edits.busy()
+                            && can_begin_new(&self.creates, &self.loads, &self.exports),
+                        edits: &mut self.edits,
                         failure,
                         export,
                         replacing: replacing.as_deref(),
@@ -2384,13 +2412,22 @@ impl ApplicationHandler<AppEvent> for App {
                         // says where it goes. Both happen after the frame was
                         // published, for the reason opening does — a modal
                         // dialog runs its own event loop.
-                        if chosen.new_document {
+                        if chosen.new_document && !self.edits.busy() {
                             ask_new(
                                 &mut self.creates,
                                 &self.loads,
                                 &self.exports,
                                 &mut self.input,
                             );
+                        }
+                        match chosen.edit {
+                            ferritecad_ui::EditChoice::Begin => self.begin_edit(),
+                            ferritecad_ui::EditChoice::Save => self.ask_where_to_edit(),
+                            ferritecad_ui::EditChoice::Cancel => {
+                                self.edits.cancel();
+                                self.input.request_redraw();
+                            }
+                            _ => {}
                         }
                         if chosen.cancel_create {
                             self.creates.cancel(&mut self.input);
@@ -2553,6 +2590,7 @@ impl App {
             loads: Loads::default(),
             exports: exports::Exports::default(),
             creates: creates::Creates::default(),
+            edits: edits::Edits::default(),
         }
     }
 
@@ -2566,7 +2604,7 @@ impl App {
     /// A cancelled dialog is an answer, not a failure, and leaves the document
     /// already on screen exactly as it was.
     fn ask_for_a_document(&mut self) {
-        if self.creates.busy() {
+        if self.creates.busy() || self.edits.busy() {
             return;
         }
         // A toolbar cannot be drawn without a live window, so reaching this
@@ -2605,7 +2643,7 @@ impl App {
     /// path comes back. A cancelled dialog is an answer and does nothing at
     /// all.
     fn ask_where_to_export(&mut self) {
-        if self.creates.busy() {
+        if self.creates.busy() || self.edits.busy() {
             return;
         }
         // A toolbar cannot be drawn without a live window, and the document to
@@ -2674,12 +2712,56 @@ impl App {
         self.create_at(content, chosen);
     }
 
+    /// The form describes only the document whose scene was accepted.
+    fn begin_edit(&mut self) {
+        if !can_begin_new(&self.creates, &self.loads, &self.exports) {
+            return;
+        }
+        if let Some(live) = &self.live
+            && let (Some(path), Some(source)) = (&live.scene.document, &live.scene.edit_source)
+        {
+            self.edits.begin(path, source);
+            self.input.request_redraw();
+        }
+    }
+
+    fn ask_where_to_edit(&mut self) {
+        let Some(mut request) = self.edits.request(PathBuf::new()) else {
+            self.input.request_redraw();
+            return;
+        };
+        let Some(live) = &self.live else {
+            return;
+        };
+        let chosen = rfd::FileDialog::new()
+            .set_title("Save edited model as a new file")
+            .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
+            .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+            .set_file_name("edited.fcad")
+            .set_parent(live.window.as_ref())
+            .save_file();
+        if let Some(destination) = chosen {
+            request.destination = destination;
+            let proxy = self.proxy.clone();
+            self.edits
+                .start(request, move |request, generation, cancel| {
+                    edits::spawn_edit(request, cancel, move |result| {
+                        let _ = proxy.send_event(AppEvent::Edited { generation, result });
+                    })
+                });
+        }
+        self.input.request_redraw();
+    }
+
     /// Acts on a chosen destination, whether or not a dialog produced it.
     ///
     /// Split from the dialog so that everything this decides can be exercised
     /// with an injected `Option<PathBuf>`, exactly as opening and exporting
     /// are. This is the whole of what pressing New reaches.
     fn create_at(&mut self, content: NewDocument, chosen: Option<PathBuf>) {
+        if self.edits.busy() {
+            return;
+        }
         let proxy = self.proxy.clone();
         start_new(
             &mut self.creates,
@@ -2697,7 +2779,7 @@ impl App {
     /// Split from the dialog so that everything this decides can be exercised
     /// with an injected `Option<PathBuf>`, exactly as opening a document is.
     fn export_to(&mut self, chosen: Option<PathBuf>) {
-        if self.creates.busy() {
+        if self.creates.busy() || self.edits.busy() {
             return;
         }
         let document = self
@@ -2716,7 +2798,7 @@ impl App {
 
     /// Acts on the answer to the window's own replace question.
     fn answer_replace(&mut self, choice: ferritecad_ui::ReplaceChoice) {
-        if self.creates.busy() {
+        if self.creates.busy() || self.edits.busy() {
             return;
         }
         let document = self
@@ -2739,7 +2821,7 @@ impl App {
     /// the only one whose answer can reach the screen, however the two
     /// readings finish relative to each other.
     fn open(&mut self, path: PathBuf) {
-        if self.creates.busy() {
+        if self.creates.busy() || self.edits.busy() {
             return;
         }
         // The export in flight was of the document being left behind, and its
@@ -3327,6 +3409,8 @@ impl Live {
         let mut replace = ferritecad_ui::ReplaceChoice::default();
         let mut asked = NewChoice::default();
         let Sections {
+            edits,
+            can_edit,
             failure,
             export,
             replacing,
@@ -3341,6 +3425,12 @@ impl Live {
             // apart.
             chosen = ferritecad_ui::toolbar(ui, activity);
             ui.separator();
+            let unavailable = scene
+                .edit_source
+                .as_ref()
+                .map(|source| source.unavailable_reason())
+                .unwrap_or(Some("Open a document to edit an extrusion."));
+            chosen.edit = edits.draw(ui, can_edit, unavailable);
             // Directly under the toolbar, because it is a question about the
             // button that was just pressed and nothing is written until it is
             // answered.
@@ -3702,6 +3792,7 @@ mod tests {
 
     fn loaded(snapshot: RenderSnapshot) -> LoadedScene {
         LoadedScene {
+            edit_source: None,
             faces: FaceNames::default(),
             edges: EdgeNames::default(),
             vertices: VertexNames::default(),
@@ -4414,6 +4505,7 @@ mod tests {
             .expect("the picture draws something")
             .pick;
         let scene = LiveScene {
+            edit_source: None,
             document: Some(document.clone()),
             prepared: (),
             catalogue: vec![a_body()],
@@ -4985,6 +5077,7 @@ mod tests {
             .expect("the picture draws something")
             .pick;
         let old = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
@@ -5029,6 +5122,7 @@ mod tests {
             .pick;
         let mine = a_body();
         let mut scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![mine.clone()],
@@ -5075,6 +5169,7 @@ mod tests {
             .expect("the picture draws something")
             .pick;
         let mut scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
@@ -5097,6 +5192,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                edit_source: None,
                 document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
@@ -5123,6 +5219,7 @@ mod tests {
         let elsewhere = scene_at(50.0);
         let mine = a_body();
         let scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("shown.fcad")),
             prepared: (),
             catalogue: vec![mine.clone()],
@@ -5157,6 +5254,7 @@ mod tests {
         // A catalogue that does not run that far answers nothing rather than
         // whatever is at the end of it.
         let short = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: Vec::new(),
@@ -5181,6 +5279,7 @@ mod tests {
             .expect("the picture draws something")
             .pick;
         let mut scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
@@ -5299,6 +5398,7 @@ mod tests {
         // decided elsewhere and stay where they were.
         let entries = vec![a_body(), a_body()];
         let mut scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: entries.clone(),
@@ -5521,6 +5621,7 @@ mod tests {
 
         // A choice already made, and a question about an edge of it.
         let mut scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
@@ -7502,6 +7603,7 @@ mod tests {
         assert!(matches!(chosen, Selection::Vertex(_)), "{chosen:?}");
 
         let mut scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: loaded.catalogue.clone(),
@@ -7538,6 +7640,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                edit_source: None,
                 document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
@@ -7580,6 +7683,7 @@ mod tests {
         // Isolate keeps the corner chosen exactly as that corner, and takes
         // the other body off screen.
         let mut scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: loaded.catalogue.clone(),
@@ -7878,6 +7982,7 @@ mod tests {
         );
 
         let mut scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: loaded.catalogue.clone(),
@@ -7913,6 +8018,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                edit_source: None,
                 document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
@@ -8054,6 +8160,7 @@ mod tests {
         );
 
         let mut scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: loaded.catalogue.clone(),
@@ -8090,6 +8197,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                edit_source: None,
                 document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
@@ -8735,6 +8843,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                edit_source: None,
                 document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
@@ -9436,6 +9545,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                edit_source: None,
                 document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
@@ -9835,6 +9945,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                edit_source: None,
                 document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
@@ -10132,6 +10243,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                edit_source: None,
                 document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
@@ -10522,6 +10634,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                edit_source: None,
                 document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
@@ -12379,6 +12492,7 @@ mod tests {
             &mut live,
             &mut camera,
             Ok(PreparedLoad {
+                edit_source: None,
                 document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
@@ -12479,6 +12593,7 @@ mod tests {
             .expect("the picture draws something")
             .pick;
         let mut scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
@@ -12533,6 +12648,7 @@ mod tests {
             .expect("the picture draws something")
             .pick;
         let mut scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
@@ -12562,6 +12678,7 @@ mod tests {
             &mut scene,
             &mut camera,
             Ok(PreparedLoad {
+                edit_source: None,
                 document: PathBuf::from("shown.fcad"),
                 framed,
                 prepared: (),
@@ -12603,6 +12720,7 @@ mod tests {
 
         let entries = vec![a_body(), a_body()];
         let mut scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: entries.clone(),
@@ -12688,6 +12806,7 @@ mod tests {
             geometry_omission: None,
         };
         let scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("shown.fcad")),
             prepared: (),
             catalogue: vec![entry],
@@ -12713,6 +12832,7 @@ mod tests {
         // what makes them two is their identity, and the list does not look at
         // what they are called to decide how many there are.
         let twins = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body(), a_body()],
@@ -12840,6 +12960,7 @@ mod tests {
 
         let entries = vec![a_body(), a_body()];
         let mut scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: entries.clone(),
@@ -12894,6 +13015,7 @@ mod tests {
         let picture = builder.build();
 
         let scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("shown.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
@@ -12958,6 +13080,7 @@ mod tests {
         let picture = builder.build();
 
         let scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("shown.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
@@ -13010,6 +13133,7 @@ mod tests {
         let picture = builder.build();
 
         let scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("shown.fcad")),
             prepared: (),
             catalogue: vec![a_body(), a_body()],
@@ -13076,6 +13200,7 @@ mod tests {
         let picture = builder.build();
 
         let scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("shown.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
@@ -13132,6 +13257,7 @@ mod tests {
         let picture = distant_scene();
         let elsewhere = scene_at(400.0);
         let scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("shown.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
@@ -13162,6 +13288,7 @@ mod tests {
 
         // Nothing chosen is the same answer, however often it is asked.
         let empty = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
@@ -13202,6 +13329,7 @@ mod tests {
     fn clicking_the_background_clears_the_inspector_as_well_as_the_highlight() {
         let picture = distant_scene();
         let mut scene = LiveScene {
+            edit_source: None,
             document: Some(PathBuf::from("a.fcad")),
             prepared: (),
             catalogue: vec![a_body()],
@@ -13269,6 +13397,7 @@ mod tests {
         // the definition and never the placement.
         for draw in picture.draws() {
             let scene = LiveScene {
+                edit_source: None,
                 document: Some(PathBuf::from("shown.fcad")),
                 prepared: (),
                 catalogue: vec![entry.clone()],
