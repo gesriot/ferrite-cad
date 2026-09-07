@@ -94,21 +94,76 @@ its log. Dispatching that workflow covers the changed Rust creation/loader/expor
 route on the three native platforms; it does not establish a new kernel pin.
 The planegcs pin workflow's native inputs and solver integration did not change.
 
-## Manual GUI observation unavailable
+## Manual GUI smoke completed
 
-A temporary `.app` was prepared outside the checkout with the repository's
-runtime-closure and staging tools, containing the built viewer, CLI and native
-libraries. The available UI tool was asked to launch it with no arguments, but
-reported that the Mac was locked and automatic unlock failed. The user was asked
-to unlock it. **No New/Save dialog click or rendered model is claimed from that
-attempt.**
+2026-09-07, after the user unlocked the Mac. The earlier locked-screen attempt
+provided no GUI evidence. The previously staged bundle also predated the final
+build, so its preliminary plate/export observation was repeated using a fresh
+bundle from `fd2efccf01aa513edc245f3ce171768f81ebd6d3`.
 
-Still unobserved manually: empty start → New plate with nondefault dimensions →
-system Save in a path with spaces → model → FBX; New empty; form/save cancellation;
-refusal of an existing destination; Open of an existing document afterwards.
-Automated worker/state tests above are separate evidence and do not substitute
-for those observations. No distribution-signing, notarization or new packaging
-claim is made.
+`cargo build -p ferritecad-app -p ferritecad-cli --all-features` completed against
+the existing OCCT/planegcs inputs in the isolated native target. The repository's
+`runtime-closure.sh` and `stage-runtime-layout.sh` prepared
+`/private/tmp/Ferrite 24B final GUI/staged/FerriteCAD.app`. The staged viewer and
+current build have the same Mach-O UUID
+`A81D95D1-B55B-3F29-A346-DCBD4879E905` and identical `__text` dumps; staging only
+relocates/signs the delivery. The GUI tool launched this bundle without arguments.
+Native dialogs were operated through accessibility controls, and egui controls
+through clicks located from current screenshots. The following are observed UI
+actions and results, separate from the automated command tests above.
+
+All outputs below are in
+`/private/tmp/Ferrite 24B final GUI/results with spaces`, outside the checkout.
+
+| GUI action | Observed result and filesystem check |
+| --- | --- |
+| Empty start | `No document`, Open/New available, Export FBX disabled. |
+| New → Sample plate | Defaults 60/40/10 and mm labels visible; entered 83/47/13. |
+| Choose where to save → system Save as `plate 83x47x13.fcad` | `Created` names the saved path; document name and Plate row appear; solid visible, including after clicking Iso. |
+| Export FBX → system Save | `plate 83x47x13.fbx`: success, 4127 bytes, 1 node, 1 geometry, 1 material. |
+| New → form Cancel | Form closes; accepted plate and view remain. No new file or scratch; existing hashes unchanged. |
+| New → system Save named `cancelled dialog.fcad` → Cancel | Returns to the form with the plate still visible; named file absent, directory contents and existing hashes unchanged. |
+| New empty → choose existing `plate 83x47x13.fcad` | macOS shows its standard Replace confirmation. After clicking Replace for this test file, FerriteCAD refuses with `already exists; choose a different file name`. Plate/view remain; document bytes unchanged; no scratch/sidecars. |
+| Export after the cancellations and refusal | `after refusal.fbx` is byte-identical to the first plate export, confirming the accepted export source remains the plate. |
+| New → Empty → Save as `empty document.fcad` | Saved filename and Created status appear; `No definitions`, empty viewport, Export FBX available. This is an accepted document. |
+| Export the empty document | `empty document.fbx`: success, 1218 bytes, 0 nodes/geometries/materials. |
+| Open → system dialog → existing plate | Plate filename, same Plate identity and visible solid return. `after reopen.fbx` is byte-identical to the initial plate export. |
+
+The CLI **from that same staged bundle** subsequently inspected, validated and
+cold-rebuilt both GUI-created documents. Both validate with zero warnings; the
+plate rebuild evaluates 4 objects, builds 1 shape and resolves 3/3 stored refs;
+the empty document has 0 objects/shapes/refs. CLI FBX exports are byte-identical
+to the GUI exports of each saved document. The original plate document hash is
+unchanged after cancellation, refused replacement, Open and export. No scratch
+directory or SQLite/cache sidecar remains in the output directory.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Plate `.fcad` | 86016 | `9b21521e9dfb66168f047b82bc512ab9e4263f0250ae0410c125f65a31c1648d` |
+| Plate FBX, all four GUI/CLI exports | 4127 | `868d6f2ba35123c84d007e81d2f9056e536724c87fc43b5f08860c2574a1e2ee` |
+| Empty `.fcad` | 86016 | `80f5f1fd6c70e28de2802a86a4aa2fc5fd6e0e2fc611a3aef30822b6146bf42a` |
+| Empty FBX, GUI and CLI | 1218 | `63a08e22c5355facca0786ef460aaa8cc8e76c80d341bf2dd84539dd492922c9` |
+
+The CLI commands and outcomes are retained locally in
+`/private/tmp/ferrite-24b-final-gui-artifacts.log`. Screenshots and native-dialog
+observations are in the task's UI-tool results. The required GUI smoke has no
+remaining unavailable observation. Cancellation during the short-running worker
+and stale-result races retain their deterministic automated coverage; they were
+not simulated by GUI timing. This temporary local bundle does not establish
+distribution signing, notarization or a new release-packaging claim.
+
+## Remote verification and report follow-up
+
+On the tested application revision `fd2efccf01aa513edc245f3ce171768f81ebd6d3`, all
+7 workflows and 33 jobs succeeded, including Windows. The native creation gate
+passed on all three platforms in OCCT run `34117820084`, with zero OCCT skips.
+Each OCCT job reports 49 solver-test skips because that workflow does not link
+planegcs; the separate linked-solver workflow passed. The combined local native
+run passed all 579 relevant tests with zero skips.
+
+This GUI follow-up changes documentation only. Applicable checks on its final
+head and their links are recorded in PR #14. Native build inputs did not change,
+so the native pin workflows are not dispatched again for this report update.
 
 §24 remains partial: edits to existing models, an unsaved document, Save/Save As,
 dirty state, arbitrary modelling, structured public results and stdin/batch are
