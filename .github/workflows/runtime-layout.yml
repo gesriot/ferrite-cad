@@ -559,6 +559,38 @@ jobs:
             exit 1
           fi
 
+      - name: Export one native Body through both STL clients
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          cargo test --release --features planegcs -p ferritecad-app \
+            --bin ferritecad-viewer exports::stl::tests::native_ -- --nocapture 2>&1 | tee stl-tests.log
+          if grep -q 'skipped:' stl-tests.log; then
+            echo "::error::a native STL gate skipped itself"
+            exit 1
+          fi
+          for gate in \
+            native_stl_ui_and_cli_choose_the_same_body_and_write_identical_bytes \
+            native_stl_refusals_and_saved_source_changes_are_honest \
+            native_stl_owned_workers_keep_publication_and_stale_answers_honest \
+            native_stl_dialog_choices_and_unavailable_documents_do_no_unrequested_work
+          do
+            if ! grep -q "^test exports::stl::tests::${gate} \.\.\. ok$" stl-tests.log; then
+              echo "::error::${gate} did not execute and pass"
+              exit 1
+            fi
+          done
+
       - name: Require the application to import both runtime component families
         run: |
           set -euo pipefail

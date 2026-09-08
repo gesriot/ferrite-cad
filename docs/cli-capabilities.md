@@ -36,7 +36,7 @@
 | Граф зависимостей | Нет. Список определений во вьюере — не dump графа. | `ferritecad dump-graph <path> [--format <text\|dot>]` | [`Document::evaluation_order`](../crates/ferritecad-document/src/document.rs), [`evaluation_order`](../crates/ferritecad-document/src/graph.rs), печать — [`render::graph_text` / `graph_dot`](../crates/ferritecad-cli/src/render.rs). | `dot` — Graphviz, не JSON-контракт всех команд. `--format json` нет (**измерено**, clap exit 2). |
 | Topology references: что документ назвал и держится ли это | Клик по именованной грани/ребру/углу нативного тела показывает переносимое имя в инспекторе. Это просмотр, не отчёт по всем ссылкам. | `ferritecad print-topology <path>` | Хранение — [`Document::topology_refs`](../crates/ferritecad-document/src/document.rs). Разрешение — `RebuildResult::resolve` после `rebuild_cold`. Отчёт и коды — [`topology::print_topology`](../crates/ferritecad-cli/src/topology.rs). *Из кода:* lost → exit 3, invalid → 1, unsupported/прочее → 2. | Нет команды «добавить/изменить ссылку». Роль сегмента эскиза как самостоятельной ссылки в плане помечена как граница, не упущение CLI. Импортированная топология не именуется durably. |
 | STEP → новый `.fcad` (байты источника внутри) | Нет. Open принимает `.fcad`, не STEP. Отдельное продолжение после §23 это признаёт. | `ferritecad import-step <file.step> -o <out.fcad> [--name <name>] [--force]` | Чтение байтов — CLI. Ядро — [`OcctKernel::import_step`](../crates/ferritecad-occt/src/kernel.rs) → [`ferritecad_exchange::decode`](../crates/ferritecad-exchange/src/lib.rs) / `Import`. Запись — [`Document::store_step_import`](../crates/ferritecad-document/src/document.rs). Публикация файла — [`Temporary`](../crates/ferritecad-jobs/src/publish.rs). | UI не импортирует STEP. Импорт не делает сборку редактируемой. Нет STEP-экспорта (команды `export-step` нет). |
-| Binary STL одного тела | Нет. | `ferritecad export-stl <path> -o <file.stl> [--solid <name-or-id>] [--linear-deflection <mm>] [--angular-deflection <rad>] [--force]` | Холодный rebuild; выбор `Body` — приватный `choose` в [`export.rs`](../crates/ferritecad-cli/src/export.rs) CLI, не публичный библиотечный API; сетка — `GeometryKernel::tessellate`; байты — [`binary_stl`](../crates/ferritecad-export/src/lib.rs); публикация — `ferritecad-jobs::Temporary`. Это **не** общий job, в отличие от FBX: второй клиент (UI) не подключён. | UI не экспортирует STL. Документ только с `ImportedStep` тел `Body` не содержит: `export-stl` отказывает «contains no bodies» (**измерено**). |
+| Binary STL одного тела | `Export STL…` → явный UUID при нескольких Body → параметры → `Save STL…`; Cancel и подтверждение Replace. | `ferritecad export-stl <path> -o <file.stl> [--solid <name-or-id>] [--linear-deflection <mm>] [--angular-deflection <rad>] [--force]` | Общий [`export_document_as_stl`](../crates/ferritecad-jobs/src/stl.rs): выбор Body, одно read-only чтение, cold rebuild, `GeometryKernel::tessellate`, `binary_stl`, `Temporary`. CLI — адаптер, UI — owned worker. | Только один native Body; imported-only, сборки и несколько тел одним STL не поддерживаются. JSON нет. [§24E: протокол и границы наблюдения](stl-export-verification.md). |
 | FBX 7.4 ASCII всей модели | `Export FBX…` при принятой сцене. Замена существующего файла — вопрос окна, не `--force`. Отмена есть. | `ferritecad export-fbx <path> -o <file.fbx> [--force]` | Один маршрут: [`ferritecad_jobs::export_document_as_fbx`](../crates/ferritecad-jobs/src/fbx.rs) ← [`export_scene`](../crates/ferritecad-scene/src/export.rs) ← `prepare::load`. CLI: [`export_fbx::export_fbx`](../crates/ferritecad-cli/src/export_fbx.rs). UI: [`exports::export_into`](../crates/ferritecad-app/src/exports.rs). | Это уже два клиента одной операции. Нет JSON-отчёта. CLI не выставляет отмену; UI — выставляет. Частичный файл и exit 6 — *из README/кода*, в этом срезе на плите и `01-single-part` не наблюдался. |
 | Диагностика sketch solver (что слинковано) | Не панель. Команда бинаря вьюера. | Нет у `ferritecad`. Есть `ferritecad-viewer --solver-info` (окно не открывается). | [`ferritecad_sketch_solver::provenance`](../crates/ferritecad-sketch-solver/src/lib.rs), маршрутизация — [`solver_info`](../crates/ferritecad-app/src/main.rs). Что rebuild нашёл по constrained sketch — `SketchSolveReport` в `ferritecad-eval`; во вьюере панель `Sketch solves` после Open. | CLI документа эту диагностику не печатает. Нет команды «решить эскиз отдельно от rebuild». Сборка без planegcs отвечает unavailable и exit 3 (*из README/кода*). В этом срезе solver **available**, exit 0 (**измерено**). |
 | Удалить регенерируемый `.fcad-cache` | Нет. Viewer/CLI cold-путь sidecar не пишут. | `ferritecad clear-cache <path>` | [`CacheStore::discard`](../crates/ferritecad-document/src/cache.rs). | Пользовательского warm rebuild нет, поэтому после `rebuild --cold` sidecar обычно отсутствует (**измерено**: «no cache sidecar»). Библиотечный `rebuild_cached` кэш писать умеет — это не пользовательская операция. |
@@ -267,7 +267,7 @@
 | Нет произвольной правки параметров/эскиза/фич | Есть только изменение постоянной Blind-высоты в новой копии (§24C) |
 | Нет UI/CLI STEP-экспорта | факт |
 | `export-stl` только для `Body`; imported-only документ не экспортируется в STL | факт, **измерено** |
-| STL, inspect, validate, graph, topology, rebuild, import, cache — один клиент (CLI), не два | факт |
+| inspect, validate, graph, topology, rebuild, import, cache — один клиент (CLI), не два | STL с §24E имеет два клиента общей jobs-операции |
 | `rebuild_cached` есть в библиотеке, пользовательского warm rebuild нет | факт |
 | Нет JSON всех команд, stdin/batch/отмены CLI | JSON v1 ограничен inspect/edit-extrude/create (§24D/§24D-1) |
 | `create` без `--force` и с другим текстом отказа, чем publish-команды | факт |
@@ -361,3 +361,24 @@ UI доступен по принятой сцене; форма и worker бл�
 общая операция, no-clobber и правила размеров те же. Рецепт агента начинается с
 JSON create, затем JSON inspect/edit, без заранее известного UUID. JSON остальных
 команд по-прежнему нет.
+
+## §24E: общий STL export и Export STL…
+
+UI и существующий `export-stl` вызывают одну jobs-операцию. Форма берёт Body из
+принятых фактов LiveScene без повторного открытия БД; захватывает путь принятой
+сцены, UUID и параметры до Save. При нескольких Body автоматического выбора нет.
+Имена показываются вместе с UUID; отсутствующее имя не мешает выбору. Defaults —
+0.01 mm linear / 0.5 rad angular, файл — binary STL в mm. Камера и скрытие тела
+не влияют на результат. ImportedStep не считается native Body.
+
+Worker заново читает сохранённый файл одним read-only снимком и cold rebuild;
+изменения с момента Open попадают в экспорт, исчезнувший UUID вызывает отказ.
+Здесь нет `--expect-version`. Cancel до publish сохраняет исходник и назначение,
+поздняя отмена оставляет готовый файл. Source aliases запрещены даже с Replace;
+no-clobber повторяется при атомарной публикации. Окно присоединяет свои workers
+при закрытии и игнорирует устаревшие ответы после смены документа/заявки.
+STL показывает путь/Body/triangles/bytes, без специфичного для FBX списка omissions.
+
+[Протокол §24E](stl-export-verification.md) содержит рецепт, локальные native и
+no-native результаты, направленные поломки и отдельный статус наблюдения GUI.
+JSON STL, сборки, imported-only и несколько тел одним файлом остаются недоступны.

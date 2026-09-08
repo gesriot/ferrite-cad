@@ -785,9 +785,17 @@ publishes at line ${published}; the last check must come first"
     # is what makes it happen.
     stopped="$(shipped crates/ferritecad-app/src/main.rs \
         | grep -A 8 -F 'fn open(&mut self, path: PathBuf) {' \
-        | grep -F 'exports::cancel_export(' || true)"
+        | grep -F 'exports::leave_document(' || true)"
     if [ -z "$stopped" ]; then
         fail "beginning an Open does not stop the export of the document being left behind"
+    fi
+
+    # Leaving also withdraws the old answer's authority; Cancel alone keeps it
+    # current so a publication that won the race can still be reported honestly.
+    withdrawn="$(shipped "$WINDOW" | grep -A 8 -F 'pub(crate) fn leave_document(')"
+    if ! printf '%s\n' "$withdrawn" | grep -qF 'exports.cancel_current();' || \
+       ! printf '%s\n' "$withdrawn" | grep -qF 'exports.current = None;'; then
+        fail "leaving a document must cancel the worker and invalidate its answer"
     fi
 
     # And the window offers the action from the picture rather than from the

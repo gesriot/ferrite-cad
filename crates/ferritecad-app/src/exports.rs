@@ -3,10 +3,10 @@
 //!
 //! # The work is not here
 //!
-//! What an export *is* — the cold read of the document, the neutral scene, the
-//! one call to the writer, the atomic publication — is
-//! [`ferritecad_jobs::export_document_as_fbx`], which is the same route the
-//! shipped command takes. Nothing in this file writes a byte of FBX, decides
+//! What an export *is* — the cold read, geometry, serialization and atomic
+//! publication — belongs to [`ferritecad_jobs::export_document_as_fbx`] and
+//! [`ferritecad_jobs::export_document_as_stl`], the same operations the
+//! shipped commands call. Nothing in this file writes a byte of FBX or STL, decides
 //! what a file should contain, or knows what an exit code is. What is here is
 //! everything that is about a *window*: when the action is offered, which
 //! document it applies to, what happens while it runs, and what the user is
@@ -37,6 +37,11 @@
 //! An export of a real assembly is minutes of rebuilding and tessellation. It
 //! runs on a thread that owns its own kernel session, reports back as one more
 //! event, and is cancelled — and joined — before this process ends.
+
+mod stl;
+pub(crate) use stl::{
+    StlIntent, begin_stl_export, confirm_stl_export, finish_stl_export, run_stl_export,
+};
 
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
@@ -217,6 +222,13 @@ pub(crate) enum ExportStatus {
         file: WroteFile,
         omissions: Vec<OmittedWords>,
     },
+    /// A complete STL of one native Body; FBX omissions do not apply.
+    WroteStl {
+        destination: String,
+        body: String,
+        triangles: usize,
+        bytes: usize,
+    },
     /// Given up on. Nothing was published and nothing at the destination
     /// changed.
     Cancelled { destination: String },
@@ -268,6 +280,7 @@ impl ExportStatus {
             Self::Wrote { destination, .. } => {
                 format!("{EXPORTED_WITH_OMISSIONS}: {destination}")
             }
+            Self::WroteStl { destination, .. } => format!("Exported STL {destination}"),
             Self::Cancelled { destination } => format!("{EXPORT_CANCELLED}: {destination}"),
             Self::Failed {
                 destination,
@@ -299,6 +312,20 @@ impl ExportStatus {
         }
         Some(ExportOutcome {
             line,
+            stl: match self {
+                Self::WroteStl {
+                    destination,
+                    body,
+                    triangles,
+                    bytes,
+                } => Some(ferritecad_ui::PublishedStl {
+                    destination,
+                    body,
+                    triangles: *triangles,
+                    bytes: *bytes,
+                }),
+                _ => None,
+            },
             file: match self {
                 Self::Wrote {
                     destination, file, ..
@@ -329,10 +356,13 @@ pub(crate) struct Exports {
     /// list: a second choice replaces the first, because the question is about
     /// the file the user just named.
     pending: Option<PathBuf>,
+    stl_form: Option<stl::StlForm>,
+    pending_stl: Option<StlIntent>,
 }
 
 impl Exports {
     /// What the window should be saying about exporting.
+    #[cfg(test)]
     pub(crate) fn status(&self) -> &ExportStatus {
         &self.status
     }
@@ -360,12 +390,16 @@ impl Exports {
     /// changes: this is a question, and a question that is never answered must
     /// leave the window exactly as it was.
     fn ask(&mut self, destination: PathBuf) {
+        self.stl_form = None;
+        self.pending_stl = None;
         self.pending = Some(destination);
     }
 
     /// Takes back the question without answering it.
     fn dismiss(&mut self) -> bool {
-        self.pending.take().is_some()
+        self.pending_stl = None;
+        let form = self.stl_form.take().is_some();
+        self.pending.take().is_some() || form
     }
 
     /// Replaces the current request with a refusal that already happened.
@@ -375,7 +409,7 @@ impl Exports {
     /// publish and the right to answer; otherwise the window says there is no
     /// export to cancel while that worker can still put a file in place.
     fn refuse(&mut self, destination: String, message: String) {
-        self.pending = None;
+        self.dismiss();
         for exporting in &self.running {
             exporting.cancel.cancel();
         }
@@ -403,7 +437,7 @@ impl Exports {
         }
         // A question about some other file is over: this is the export the
         // user is asking for now.
-        self.pending = None;
+        self.dismiss();
 
         self.issued += 1;
         let generation = ExportGeneration(self.issued);
@@ -427,9 +461,10 @@ impl Exports {
     /// Asks the export in flight to stop, and says so.
     ///
     /// The request stays current: it is still the export the window is
-    /// describing, and it is its own answer — a cancellation — that will say
-    /// so. A pending question about replacing a file goes too, because it was
-    /// about the document that is being left behind.
+    /// describing, and its answer reports whether cancellation beat publication.
+    /// Success after publication remains success. A pending file question or
+    /// STL form is dismissed too. Leaving a document also abandons its answer
+    /// through `leave_document`.
     ///
     /// Returns whether the line changed.
     fn cancel_current(&mut self) -> bool {
@@ -454,7 +489,7 @@ impl Exports {
     /// of what is missing.
     ///
     /// Returns whether the line changed.
-    fn answered(&mut self, generation: ExportGeneration, outcome: Result<FbxExport>) -> bool {
+    fn answered(&mut self, generation: ExportGeneration, outcome: Result<ExportStatus>) -> bool {
         let changed = match &self.status {
             ExportStatus::Running {
                 generation: waiting,
@@ -463,7 +498,7 @@ impl Exports {
             } if *waiting == generation => {
                 let destination = destination.clone();
                 self.status = match outcome {
-                    Ok(exported) => ExportStatus::of(destination, exported.report()),
+                    Ok(published) => published,
                     // Giving up is not a failure, and a window that reported
                     // it as one would be complaining about something the user
                     // asked for.
@@ -503,7 +538,7 @@ impl Exports {
     /// would make the one path that releases geometry the one nobody takes.
     pub(crate) fn stop_all(&mut self) {
         self.current = None;
-        self.pending = None;
+        self.dismiss();
         for exporting in &self.running {
             exporting.cancel.cancel();
         }
@@ -512,6 +547,16 @@ impl Exports {
             let _ = exporting.worker.join();
         }
     }
+}
+
+/// Leaving a document abandons its answer as well as requesting cancellation.
+/// Any publication that won the race remains on disk; no "nothing happened"
+/// outcome is manufactured for a worker whose answer is no longer relevant.
+pub(crate) fn leave_document(exports: &mut Exports, input: &mut ViewportInput) {
+    exports.cancel_current();
+    exports.current = None;
+    exports.status = ExportStatus::Idle;
+    input.request_redraw();
 }
 
 /// What a chosen destination means, before any work begins.
@@ -567,12 +612,23 @@ pub(crate) fn begin_export(
     chosen: Option<PathBuf>,
     spawn: impl FnOnce(&Path, bool, ExportGeneration, &CancelToken) -> JoinHandle<()>,
 ) -> Option<ExportGeneration> {
+    begin_export_for(exports, input, source, chosen, SOURCE_IS_DESTINATION, spawn)
+}
+
+fn begin_export_for(
+    exports: &mut Exports,
+    input: &mut ViewportInput,
+    source: Option<&Path>,
+    chosen: Option<PathBuf>,
+    source_refusal: &str,
+    spawn: impl FnOnce(&Path, bool, ExportGeneration, &CancelToken) -> JoinHandle<()>,
+) -> Option<ExportGeneration> {
     match requested(source, chosen) {
         Ok(ExportRequest::Nothing) => None,
         Ok(ExportRequest::RefusedSource) => {
             exports.refuse(
                 source.map(display).unwrap_or_default(),
-                SOURCE_IS_DESTINATION.to_owned(),
+                source_refusal.to_owned(),
             );
             input.request_redraw();
             None
@@ -612,6 +668,17 @@ pub(crate) fn confirm_export(
     choice: ReplaceChoice,
     spawn: impl FnOnce(&Path, bool, ExportGeneration, &CancelToken) -> JoinHandle<()>,
 ) -> Option<ExportGeneration> {
+    confirm_export_for(exports, input, source, choice, SOURCE_IS_DESTINATION, spawn)
+}
+
+fn confirm_export_for(
+    exports: &mut Exports,
+    input: &mut ViewportInput,
+    source: Option<&Path>,
+    choice: ReplaceChoice,
+    source_refusal: &str,
+    spawn: impl FnOnce(&Path, bool, ExportGeneration, &CancelToken) -> JoinHandle<()>,
+) -> Option<ExportGeneration> {
     match choice {
         // The usual answer on any given frame.
         ReplaceChoice::Waiting => None,
@@ -632,7 +699,7 @@ pub(crate) fn confirm_export(
                     Some(generation)
                 }
                 Ok(true) => {
-                    exports.refuse(display(source), SOURCE_IS_DESTINATION.to_owned());
+                    exports.refuse(display(source), source_refusal.to_owned());
                     input.request_redraw();
                     None
                 }
@@ -648,8 +715,8 @@ pub(crate) fn confirm_export(
 
 /// Stops the export in flight, whoever asked for it to stop.
 ///
-/// Nothing on screen changes: the model is the model, and the file that was
-/// being written never reaches its destination.
+/// The accepted model is unchanged. Cancellation before publication keeps the
+/// destination untouched; a publication that already succeeded stays published.
 pub(crate) fn cancel_export(exports: &mut Exports, input: &mut ViewportInput) -> bool {
     let changed = exports.cancel_current();
     if changed {
@@ -667,6 +734,21 @@ pub(crate) fn finish_export(
     input: &mut ViewportInput,
     generation: ExportGeneration,
     outcome: Result<FbxExport>,
+) -> bool {
+    finish_outcome(
+        exports,
+        input,
+        generation,
+        outcome
+            .map(|exported| ExportStatus::of(display(exported.destination()), exported.report())),
+    )
+}
+
+fn finish_outcome(
+    exports: &mut Exports,
+    input: &mut ViewportInput,
+    generation: ExportGeneration,
+    outcome: Result<ExportStatus>,
 ) -> bool {
     let changed = exports.answered(generation, outcome);
     if changed {
@@ -703,9 +785,9 @@ fn display(path: &Path) -> String {
 /// Both halves are arguments so that this can be shown to return while the
 /// export is still running, which is the whole property: the window stays
 /// alive while a document is written out.
-pub(crate) fn spawn_export(
-    export: impl FnOnce() -> Result<FbxExport> + Send + 'static,
-    deliver: impl FnOnce(Result<FbxExport>) + Send + 'static,
+pub(crate) fn spawn_export<T: Send + 'static>(
+    export: impl FnOnce() -> Result<T> + Send + 'static,
+    deliver: impl FnOnce(Result<T>) + Send + 'static,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || deliver(export()))
 }
@@ -1401,7 +1483,7 @@ mod tests {
                 let _ = held.recv_timeout(Duration::from_secs(2));
                 Err(ferritecad_types::CadError::Cancelled)
             },
-            move |result| {
+            move |result: Result<FbxExport>| {
                 let _ = answers.send(result);
             },
         );
