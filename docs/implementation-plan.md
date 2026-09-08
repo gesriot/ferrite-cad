@@ -2262,18 +2262,49 @@ timing benchmark ignored. Отдельная stub-сборка дала 52 harne
 исполнены. Оба публичных рецепта извлечены заново из Markdown и выполнены.
 Production-код исправлений не потребовал; уточнена формулировка README.
 
-**§24H — pending: общий STEP import с владением геометрией и публикацией.**
-Перенести предметный маршрут из CLI import.rs в ferritecad-jobs: одно чтение
-source, один import, typed published/rejected outcome, запись и закрытие scratch
-Document, атомарный publish, освобождение всех live shapes на каждом исходе.
-Сохранить существующий текстовый CLI, коды 0/4/5/2, байты STEP, диагностику и
-сохраняемые identities. Добавить фазовую отмену через OperationContext с честной
-границей блокирующего OCCT import; поздняя отмена не отзывает публикацию.
-Защита source/aliases, no-clobber/replace и cleanup проверяются общими job gates.
-UI import и import-step --json в этот срез не входят; они смогут использовать
-готовую операцию позже. Приёмка — native/stub CLI/job tests и независимый FBX
-reader без окон. Следующие задания тоже не требуют экрана, GUI/Unity/GPU или
-участия пользователя; исполнитель — только Codex.
+**§24H — реализовано: общий STEP import.**
+`import_step_document` в jobs владеет preflight, одним чтением bytes, kernel
+factory/import callback, записью/закрытием scratch и атомарным publish. Текстовый
+CLI готовит request, печатает owned outcome и сохраняет прежние коды 0/4/5/2.
+`Published` содержит destination/document/object/source identity, source hash/len,
+basename, kernel identity, точную сохранённую scene V3 и diagnostics; `Rejected`
+содержит только факты чтения/отказа, без выдуманной публикации. Handles не выходят
+из job: guard освобождает каждый уникальный handle в исходном kernel при успехе,
+ошибке и отмене. Проекция не создаётся заново ради результата.
+
+Progress различает read/import, открытый/записанный scratch, закрытый scratch и
+publish. Блокирующий OCCT import не прерывается внутри; отмена проверяется на
+границах. После публикации поздняя отмена сохраняет Published и файл. Alias recheck
+перед publish обнаруживает подмену путей за время импорта; Keep сохраняет появившийся файл,
+Replace заменяет только готовым закрытым документом. `Temporary` не изменён.
+
+Прямой job и peer CLI сравниваются на native source bytes с явным сопоставлением
+независимых UUID. Ownership проверяется до деструктора OCCT, включая реальный
+SQLite trigger refusal. Детерминированные gates проверяют фазовые отмены,
+ошибки storage/publication, Keep/Replace и подмену aliases; две временные поломки
+cleanup/alias recheck пойманы исполняемыми тестами и восстановлены. Новый exact
+native gate добавлен в существующий runtime layout для трёх ОС; прежние 48
+edit/JSON/FBX/STL gates и strict pinned ufbx сохранены.
+
+[API, ownership, отмена и публичный рецепт](shared-step-import.md),
+[локальная матрица и передача](shared-step-import-verification.md) отделяют
+native/stub результаты от CI базы. UI import, import-step JSON, CLI cancellation,
+C++/FFI, schema, зависимости и FBX wire contract не менялись. Работа полностью
+без окон. Независимое ревью подтвердило порядок владения и закрытия SQLite,
+однократную сохраняемую проекцию и прежний текстовый CLI. Локально повторены
+native/stub проверки и публичный рецепт; результаты CI опубликованного head и
+merge фиксируются отдельно от локальной передачи.
+
+**§24I — pending: import-step --json через общий STEP job.**
+Добавить opt-in JSON v1 с явным различием опубликованного документа без/с
+diagnostics, reader rejection без публикации и operational error. Сохранить
+коды 0/4/5/2; потеря JSON-отчёта возвращает 7 и не отзывает готовый документ.
+Типизированные diagnostics и факты результата брать из §24H без повторного
+чтения STEP/SQLite или import. Текстовый CLI и пять прежних JSON-команд сохраняют
+контракт. Приёмка полностью без окон: native/stub process tests, сохранность
+source/output, закрытые pipes, рецепт import → удалить приватный STEP → JSON FBX
+с независимым reader. UI import, batch и новые геометрические операции отдельно;
+исполнитель следующего среза — Codex, diff оставляется незакоммиченным для ревью.
 
 ## 15. Чего не делать до beta
 

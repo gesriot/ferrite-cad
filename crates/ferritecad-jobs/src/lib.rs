@@ -38,12 +38,17 @@
 mod create;
 mod edit;
 mod fbx;
+mod import;
 mod publish;
 mod stl;
 
 pub use create::{CreateDocumentRequest, CreatedDocument, NewDocument, PlateSize, create_document};
 pub use edit::{EditExtrudeRequest, EditedDocument, edit_extrude_copy, read_extrude_source};
 pub use fbx::{FbxExport, FbxExportRequest, SOURCE_IS_DESTINATION, export_document_as_fbx};
+pub use import::{
+    ImportStepRequest, PublishedStepImport, STEP_SOURCE_IS_DESTINATION, StepImportOutcome,
+    StepReadFacts, import_step_document,
+};
 pub use publish::{
     Existing, Temporary, is_same_entry, path_entry_exists, refuse_source_as_destination,
 };
