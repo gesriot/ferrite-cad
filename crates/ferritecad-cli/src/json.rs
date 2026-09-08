@@ -12,6 +12,9 @@ use ferritecad_document::{Document, ExtrudeEditSource};
 use ferritecad_types::{CadError, ContentHash, DocumentId, ObjectId, Result};
 use serde::Serialize;
 
+mod fbx;
+pub use fbx::ExportedFbx;
+
 const SCHEMA_VERSION: u32 = 1;
 /// Delivery failed. An operation may have published; never retry it here.
 const EXIT_REPORT_DELIVERY: u8 = 7;
@@ -23,6 +26,7 @@ pub enum Operation {
     EditExtrude,
     Create,
     ExportStl,
+    ExportFbx,
 }
 
 #[derive(Serialize)]
@@ -216,8 +220,14 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
 /// Runs after the operation has completed, even when stdout is already closed.
 /// Serializing or delivering its report cannot undo publication or rerun work.
 pub fn emit<T: Serialize>(operation: Operation, result: Result<T>) -> ExitCode {
+    emit_with_exit(operation, result.map(|result| (result, 0)))
+}
+
+/// A published partial FBX is a successful result with exit 6. Delivery failure
+/// still takes precedence, through exactly the same envelope and fallible I/O.
+pub fn emit_with_exit<T: Serialize>(operation: Operation, result: Result<(T, u8)>) -> ExitCode {
     let (outcome, exit) = match result {
-        Ok(result) => (Outcome::Success { ok: true, result }, ExitCode::SUCCESS),
+        Ok((result, exit)) => (Outcome::Success { ok: true, result }, ExitCode::from(exit)),
         Err(error) => {
             // Diagnostics are best-effort. A closed stderr must not prevent
             // the operation error from reaching a still-readable JSON stdout.

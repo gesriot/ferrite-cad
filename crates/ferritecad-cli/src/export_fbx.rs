@@ -43,6 +43,21 @@ use ferritecad_types::{CadError, Result};
 use crate::{EXIT_PARTIAL, ExportFbxArgs, REPLACE_ADVICE, replacing};
 
 pub fn export_fbx(args: ExportFbxArgs) -> Result<ExitCode> {
+    let exported = export_fbx_result(&args)?;
+    print!("{}", summary(&args, &exported));
+    let report = exported.report();
+    if !report.is_complete() {
+        eprint!("{}", omission_report(report.omissions()));
+    }
+    Ok(ExitCode::from(exit_code(report)))
+}
+
+/// The single preparation and publication route for both CLI presentations.
+pub fn export_fbx_result(args: &ExportFbxArgs) -> Result<FbxExport> {
+    if args.json {
+        crate::json::require_utf8_path(&args.path)?;
+        crate::json::require_utf8_path(&args.output)?;
+    }
     // This check takes precedence over the ordinary no-clobber message: the
     // document is not a destination `--force` can ever make acceptable.
     refuse_source_as_destination(&args.path, &args.output, SOURCE_IS_DESTINATION)?;
@@ -62,20 +77,13 @@ pub fn export_fbx(args: ExportFbxArgs) -> Result<ExitCode> {
     // The session belongs to this process and ends with it. Everything after
     // this line is the shared job, which is what the window runs too.
     let mut kernel = OcctKernel::new()?;
-    let exported = export_document_as_fbx(
+    export_document_as_fbx(
         FbxExportRequest::new(&args.path, &args.output, replacing(args.force)),
         &mut kernel,
         |kernel, source| kernel.import_step(source),
         &TessellationParams::default(),
         &OperationContext::default(),
-    )?;
-
-    print!("{}", summary(&args, &exported));
-    let report = exported.report();
-    if !report.is_complete() {
-        eprint!("{}", omission_report(report.omissions()));
-    }
-    Ok(ExitCode::from(exit_code(report)))
+    )
 }
 
 /// What a finished export is worth to whatever ran it.
@@ -86,7 +94,7 @@ pub fn export_fbx(args: ExportFbxArgs) -> Result<ExitCode> {
 /// definition the document holds kept its place in it. So it has a code of its
 /// own, and the choice lives in one place rather than being spelled out at
 /// every return.
-fn exit_code(report: &FbxWriteReport) -> u8 {
+pub(crate) fn exit_code(report: &FbxWriteReport) -> u8 {
     if report.is_complete() {
         0
     } else {

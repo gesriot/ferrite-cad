@@ -1,6 +1,6 @@
 # Карта предметных возможностей: UI ↔ CLI ↔ общий API
 
-Срез §24A, обновлён срезами §24B/§24C/§24D/§24D-1. Это описание **текущих** команд и владельцев, а не проект нового протокола.
+Срез §24A, обновлён срезами §24B–§24G. Это описание **текущих** команд и владельцев, а не проект нового протокола.
 
 Документ нужен агенту и человеку, которым дали задачу и публичный CLI: что уже можно получить тем же предметным результатом, что в UI, что умеет только один клиент, и где библиотечный метод ещё не является пользовательской операцией. Архитектурное правило — [§4.5 плана](implementation-plan.md): UI и CLI — два клиента общих операций; равенство считается по сохранённой модели и экспортируемым артефактам, а не по hover, жестам мыши или промежуточным кадрам.
 
@@ -20,7 +20,7 @@
 
 ## Что этот срез сознательно не делает
 
-§24D/§24D-1/§24F задают [JSON v1](cli-json-v1.md) только для opt-in `inspect --json`, `edit-extrude --json`, `create --json` и `export-stl --json`. Общего JSON всех команд, DSL, RPC/MCP server, универсального dispatcher и библиотеки «всех операций» нет. Stdin, отмена CLI и пакетный ввод остаются будущими требованиями §4.5.
+§24D/§24D-1/§24F/§24G задают [JSON v1](cli-json-v1.md) только для opt-in `inspect --json`, `edit-extrude --json`, `create --json`, `export-stl --json` и `export-fbx --json`. Общего JSON всех команд, DSL, RPC/MCP server, универсального dispatcher и библиотеки «всех операций» нет. Stdin, отмена CLI и пакетный ввод остаются будущими требованиями §4.5.
 
 §24B добавил ровно одну общую операцию — создание документа — и её второго клиента (`New…` во вьюере). Новых команд и флагов у `ferritecad` нет. Остальные возможности сохраняют прежних клиентов.
 
@@ -37,7 +37,7 @@
 | Topology references: что документ назвал и держится ли это | Клик по именованной грани/ребру/углу нативного тела показывает переносимое имя в инспекторе. Это просмотр, не отчёт по всем ссылкам. | `ferritecad print-topology <path>` | Хранение — [`Document::topology_refs`](../crates/ferritecad-document/src/document.rs). Разрешение — `RebuildResult::resolve` после `rebuild_cold`. Отчёт и коды — [`topology::print_topology`](../crates/ferritecad-cli/src/topology.rs). *Из кода:* lost → exit 3, invalid → 1, unsupported/прочее → 2. | Нет команды «добавить/изменить ссылку». Роль сегмента эскиза как самостоятельной ссылки в плане помечена как граница, не упущение CLI. Импортированная топология не именуется durably. |
 | STEP → новый `.fcad` (байты источника внутри) | Нет. Open принимает `.fcad`, не STEP. Отдельное продолжение после §23 это признаёт. | `ferritecad import-step <file.step> -o <out.fcad> [--name <name>] [--force]` | Чтение байтов — CLI. Ядро — [`OcctKernel::import_step`](../crates/ferritecad-occt/src/kernel.rs) → [`ferritecad_exchange::decode`](../crates/ferritecad-exchange/src/lib.rs) / `Import`. Запись — [`Document::store_step_import`](../crates/ferritecad-document/src/document.rs). Публикация файла — [`Temporary`](../crates/ferritecad-jobs/src/publish.rs). | UI не импортирует STEP. Импорт не делает сборку редактируемой. Нет STEP-экспорта (команды `export-step` нет). |
 | Binary STL одного тела | `Export STL…` → явный UUID при нескольких Body → параметры → `Save STL…`; Cancel и подтверждение Replace. | `ferritecad export-stl <path> -o <file.stl> [--solid <name-or-id>] [--linear-deflection <mm>] [--angular-deflection <rad>] [--force] [--json]` | Общий [`export_document_as_stl`](../crates/ferritecad-jobs/src/stl.rs): выбор Body, одно read-only чтение, cold rebuild, `GeometryKernel::tessellate`, `binary_stl`, `Temporary`. CLI — адаптер, UI — owned worker. | Только один native Body; imported-only, сборки и несколько тел одним STL не поддерживаются. JSON сообщает опубликованные destination/Body/triangles/bytes (§24F). [§24E: протокол и границы наблюдения](stl-export-verification.md). |
-| FBX 7.4 ASCII всей модели | `Export FBX…` при принятой сцене. Замена существующего файла — вопрос окна, не `--force`. Отмена есть. | `ferritecad export-fbx <path> -o <file.fbx> [--force]` | Один маршрут: [`ferritecad_jobs::export_document_as_fbx`](../crates/ferritecad-jobs/src/fbx.rs) ← [`export_scene`](../crates/ferritecad-scene/src/export.rs) ← `prepare::load`. CLI: [`export_fbx::export_fbx`](../crates/ferritecad-cli/src/export_fbx.rs). UI: [`exports::export_into`](../crates/ferritecad-app/src/exports.rs). | Это уже два клиента одной операции. Нет JSON-отчёта. CLI не выставляет отмену; UI — выставляет. Частичный файл и exit 6 — *из README/кода*, в этом срезе на плите и `01-single-part` не наблюдался. |
+| FBX 7.4 ASCII всей модели | `Export FBX…` при принятой сцене. Замена существующего файла — вопрос окна, не `--force`. Отмена есть. | `ferritecad export-fbx <path> -o <file.fbx> [--force] [--json]` | Один маршрут: [`ferritecad_jobs::export_document_as_fbx`](../crates/ferritecad-jobs/src/fbx.rs) ← [`export_scene`](../crates/ferritecad-scene/src/export.rs) ← `prepare::load`. CLI: [`export_fbx::export_fbx`](../crates/ferritecad-cli/src/export_fbx.rs). UI: [`exports::export_into`](../crates/ferritecad-app/src/exports.rs). | Это два клиента одной операции. JSON v1 сообщает опубликованный полный/частичный результат, счётчики и typed omissions; partial — ok:true и exit 6 (§24G). CLI не выставляет отмену; UI — выставляет. |
 | Диагностика sketch solver (что слинковано) | Не панель. Команда бинаря вьюера. | Нет у `ferritecad`. Есть `ferritecad-viewer --solver-info` (окно не открывается). | [`ferritecad_sketch_solver::provenance`](../crates/ferritecad-sketch-solver/src/lib.rs), маршрутизация — [`solver_info`](../crates/ferritecad-app/src/main.rs). Что rebuild нашёл по constrained sketch — `SketchSolveReport` в `ferritecad-eval`; во вьюере панель `Sketch solves` после Open. | CLI документа эту диагностику не печатает. Нет команды «решить эскиз отдельно от rebuild». Сборка без planegcs отвечает unavailable и exit 3 (*из README/кода*). В этом срезе solver **available**, exit 0 (**измерено**). |
 | Удалить регенерируемый `.fcad-cache` | Нет. Viewer/CLI cold-путь sidecar не пишут. | `ferritecad clear-cache <path>` | [`CacheStore::discard`](../crates/ferritecad-document/src/cache.rs). | Пользовательского warm rebuild нет, поэтому после `rebuild --cold` sidecar обычно отсутствует (**измерено**: «no cache sidecar»). Библиотечный `rebuild_cached` кэш писать умеет — это не пользовательская операция. |
 
@@ -102,7 +102,7 @@
 - `dump-graph --format dot` — Graphviz DOT, только эта команда;
 - STL — бинарный, 80-байтовый заголовок без даты (**измерено**: `FerriteCAD binary STL. Units are millimetres. No timestamp, by design.`);
 - FBX — ASCII 7.4;
-- `inspect --json`, `edit-extrude --json` и `create --json` — один объект JSON v1 + LF, [точный контракт](cli-json-v1.md).
+- `inspect --json`, `edit-extrude --json`, `create --json`, `export-stl --json` и `export-fbx --json` — один объект JSON v1 + LF, [точный контракт](cli-json-v1.md).
 
 **Нет:** общего JSON всех команд, stdin как входа документа, пакетного списка задач, флага отмены у `ferritecad`. `inspect -` открывает файл с именем `-`, а не стандартный ввод (**измерено**). Существующий DOT не означает JSON-контракта остальных команд.
 
@@ -117,7 +117,7 @@
 | 4 | `import-step`: документ записан целиком, чтение что-то сообщило | *из кода / README* |
 | 5 | `import-step`: ничего не записано (отказ читать); отчёт находится на stdout | **измерено при ревью** на файле, не являющемся STEP |
 | 6 | `export-fbx`: файл опубликован и неполон | *из кода / README* |
-| 7 | Только JSON v1: отчёт не доставлен; созданный документ или копия правки уже могли быть опубликованы, автоматический повтор недопустим | **измерено** реальным закрытым stdout |
+| 7 | Только JSON v1: отчёт не доставлен; документ, копия правки, STL или полный/частичный FBX уже могли быть опубликованы, автоматический повтор недопустим | **измерено** реальным закрытым stdout |
 
 Скрипт не должен считать 4 или 6 нулём и не должен считать 6 ошибкой «файла нет».
 
@@ -269,7 +269,7 @@
 | `export-stl` только для `Body`; imported-only документ не экспортируется в STL | факт, **измерено** |
 | inspect, validate, graph, topology, rebuild, import, cache — один клиент (CLI), не два | STL с §24E имеет два клиента общей jobs-операции |
 | `rebuild_cached` есть в библиотеке, пользовательского warm rebuild нет | факт |
-| Нет JSON всех команд, stdin/batch/отмены CLI | JSON v1 ограничен inspect/edit-extrude/create/export-stl (§24D/§24D-1/§24F) |
+| Нет JSON всех команд, stdin/batch/отмены CLI | JSON v1 ограничен inspect/edit-extrude/create/export-stl/export-fbx (§24D/§24D-1/§24F/§24G) |
 | `create` без `--force` и с другим текстом отказа, чем publish-команды | факт |
 | Случайные UUID независимых `create` не равны | обещание §4.5, не баг |
 | Временная видимость и камера не в CLI | не предметный разрыв; см. выше |
@@ -304,7 +304,7 @@ STL и FBX после сопоставления identity, а CLI/UI FBX одн�
 Обычный CI запускает CLI/app/UI/jobs/document gates; OCCT pin включает native gate.
 
 §24 целиком не завершён. Ограниченная правка существующей модели добавлена §24C,
-JSON четырёх команд — §24D/§24D-1/§24F. Stdin/batch, произвольный редактор и STEP из UI остаются недоступны.
+JSON пяти команд — §24D/§24D-1/§24F/§24G. Stdin/batch, произвольный редактор и STEP из UI остаются недоступны.
 
 
 ## §24C: edit-extrude и Edit extrusion
@@ -360,7 +360,7 @@ UI доступен по принятой сцене; форма и worker бл�
 `destination` и `document_id` новой модели. Текстовый create и UI New не меняются;
 общая операция, no-clobber и правила размеров те же. Рецепт агента начинается с
 JSON create, затем JSON inspect/edit, без заранее известного UUID. §24F ниже
-добавляет JSON STL; JSON остальных команд по-прежнему нет.
+добавляет JSON STL, §24G — JSON FBX; JSON остальных команд по-прежнему нет.
 
 ## §24E: общий STL export и Export STL…
 
@@ -407,3 +407,25 @@ inspect и export нет snapshot/version guard, `--expect-version` не доб�
 стандартным JSON/STL parser, без заранее известного UUID.
 [Матрица и протокол §24F](body-stl-json-verification.md) отделяют native от stub,
 реальные процессные отказы/pipe cases от skips. UI/renderer и runtime edges не менялись.
+
+
+## §24G: export-fbx --json
+
+Один `export_fbx_result` готовит запрос и вызывает прежний FBX job для text/JSON.
+Explicit CLI DTO содержит destination, bytes, models, geometries, materials,
+complete и omissions из опубликованного FbxExport/FbxWriteReport. Source identity
+передаётся tagged object (Body UUID либо imported source UUID + definition_key),
+finding сохраняет stage/severity/entity/message, refusal — typed stable name,
+placements — локальные `FerriteCADNodeKey` этого файла, не durable occurrence ID.
+
+Полная публикация — ok:true/exit 0; частичная — ok:true/complete:false/exit 6;
+отказ — error/exit 2; потеря доставки — 7 без rollback полного/partial файла или
+force-замены. В JSON-режиме partial stderr пуст, execution diagnostics fallible.
+UTF-8 пути проверяются до файловой работы. Старый текст, ASCII 7400 writer,
+метры/оси, hierarchy/instances/materials и identity wire contract сохранены.
+
+[Точный контракт и Python-рецепт](cli-json-v1.md) не парсят человеческий отчёт,
+явно обрабатывают partial и независимо читают FBX. Inspect и export — отдельные
+снимки актуального сохранённого файла; FBX не имеет --expect-version/selection.
+[Безоконный протокол §24G](fbx-json-publication-verification.md) отделяет
+native/stub, skips и базовый CI от ещё не опубликованного diff.

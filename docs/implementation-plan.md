@@ -2222,17 +2222,58 @@ Stub-процессы проверены отдельно: восемь явны
 геометрией; discovery и structured unsupported действительно исполнены.
 Дефектов, требующих изменения production-кода, ревью не выявило.
 
-**§24G — pending: JSON FBX с честным результатом частичного экспорта.**
-Добавить opt-in `export-fbx --json` через существующий общий FBX job и JSON v1.
-Результат должен различать опубликованный полный файл (exit 0), опубликованный
-частичный файл (exit 6) и отказ без публикации (exit 2); потеря доставки отчёта
-остаётся exit 7 без отката файла. Счётчики и типизированные omissions берутся
-только из завершённого `FbxWriteReport`, со source-qualified identity и всеми
-placements. Сохранить текстовый CLI, FBX-байты и identity wire contract.
-Приёмка полностью безоконная: реальные CLI-процессы, native/stub, независимый
-FBX reader и обязательный CI gate трёх платформ. UI/Unity и GPU не нужны.
-Пока пользователь отсутствует, следующие задания тоже не должны требовать
-ручных диалогов или наблюдения включённого экрана; исполнитель — только Codex.
+**§24G — сделано: JSON FBX; независимое ревью Codex пройдено.**
+Opt-in `export-fbx --json [--force]` использует один `export_fbx_result` и прежний
+`export_document_as_fbx`. Explicit CLI DTO строится только из опубликованного
+FbxExport/FbxWriteReport: destination, bytes, models, geometries, materials,
+complete и omissions. Jobs, kernel/import/rebuild/writer/publish и FBX identity
+wire contract не менялись; второго чтения документа/STEP/output ради JSON нет.
+
+Полный publish — ok:true/complete:true/exit 0; partial — ok:true/complete:false,
+непустой typed отчёт и exit 6. Минимальное расширение общего json::emit принимает
+код успешного результата; delivery failure переопределяет его на 7 без отката
+нового файла или force-замены. Execution refusal — error/exit 2. UTF-8 preflight,
+source/alias protection, no-clobber до ядра и атомарная повторная проверка сохранены.
+Clap usage/help остаются текстовыми. Partial JSON не дублирует прозу на stderr;
+execution diagnostics и ошибка доставки пишутся fallibly.
+
+Каждый omission сохраняет source-qualified tagged identity, отдельный finding
+stage/severity/entity/message, typed refusal и все placements в исходном порядке.
+`node/<n>` — локальный FerriteCADNodeKey конкретного FBX, не durable occurrence ID;
+legacy unrecorded identity не выдумывается. Нет selection, новых geometry flags,
+--expect-version, JSON других команд, stdin/batch/RPC. Inspect/export — отдельные
+снимки текущего сохранённого файла, UI/renderer/C++/FFI и runtime edges не менялись.
+
+Реальные complete native/STEP и partial STEP process routes расширяют существующую
+FBX кампанию с независимым pinned ufbx. Runtime layout Linux/macOS/Windows требует
+точные имена, route markers и отсутствие skips; прежние JSON, 4 STL и 8 edit gates
+сохранены. Две временные поломки complete/source qualification пойманы
+исполняемыми process assertions, исходник восстановлен и положительные проверки
+повторены. [Контракт и публичный Python-рецепт](cli-json-v1.md) явно обрабатывают
+partial и независимо читают FBX. [Протокол передачи](fbx-json-publication-verification.md)
+отделяет базовый CI от незакоммиченного diff и native результаты от stub/skips.
+Работа полностью без окон, GUI/Unity/GPU не запускались; следующий срез не начат.
+
+Независимое ревью повторило native document 132 / jobs 41 / export 60 / CLI 49,
+4 STL + 8 edit headless gates и три FBX process tests. Strict pinned ufbx:
+256 + 6 + 6 + 256 checks, ноль отказов. Native skips отсутствуют; один старый
+timing benchmark ignored. Отдельная stub-сборка дала 52 harness passes с 17
+явными geometry skips; preflight/unsupported/delivery отказы действительно
+исполнены. Оба публичных рецепта извлечены заново из Markdown и выполнены.
+Production-код исправлений не потребовал; уточнена формулировка README.
+
+**§24H — pending: общий STEP import с владением геометрией и публикацией.**
+Перенести предметный маршрут из CLI import.rs в ferritecad-jobs: одно чтение
+source, один import, typed published/rejected outcome, запись и закрытие scratch
+Document, атомарный publish, освобождение всех live shapes на каждом исходе.
+Сохранить существующий текстовый CLI, коды 0/4/5/2, байты STEP, диагностику и
+сохраняемые identities. Добавить фазовую отмену через OperationContext с честной
+границей блокирующего OCCT import; поздняя отмена не отзывает публикацию.
+Защита source/aliases, no-clobber/replace и cleanup проверяются общими job gates.
+UI import и import-step --json в этот срез не входят; они смогут использовать
+готовую операцию позже. Приёмка — native/stub CLI/job tests и независимый FBX
+reader без окон. Следующие задания тоже не требуют экрана, GUI/Unity/GPU или
+участия пользователя; исполнитель — только Codex.
 
 ## 15. Чего не делать до beta
 

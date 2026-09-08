@@ -38,6 +38,11 @@ use ferritecad_kernel::{OperationContext, TessellationParams};
 use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_scene::export_scene;
 
+#[path = "export_fbx_complex/json.rs"]
+mod json;
+#[path = "support/pipe.rs"]
+mod pipe;
+
 const NOTICED: i32 = 4;
 /// A published export that is not the whole model.
 const PARTIAL: i32 = 6;
@@ -116,6 +121,7 @@ struct Written {
     unit_scale_factor: f64,
     axes: BTreeMap<String, i64>,
     geometries: Vec<WrittenGeometry>,
+    materials: usize,
     models: Vec<WrittenModel>,
     connections: Vec<(i64, i64)>,
 }
@@ -173,6 +179,7 @@ impl Written {
                     });
                 }
                 "Material" => {
+                    out.materials += 1;
                     in_model = false;
                     in_geometry = false;
                 }
@@ -762,6 +769,8 @@ fn the_complex_assembly_becomes_one_fbx_that_keeps_every_definition_and_says_wha
         "the committed fixture changed"
     );
     assert!(!input.exists(), "the external STEP came back");
+
+    json::partial_contract(&document, &written_path, &scene);
 
     // Left for the independent reader when a gate script asked for it. Never
     // committed: this is one build's tessellation, not a fixture.

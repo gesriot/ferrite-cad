@@ -4,7 +4,7 @@
 
 use std::ffi::OsString;
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 
 use ferritecad_document::{
     Dependency, DependencyRole, Document, EndCondition, Envelope, Expression, ExtrudeEditSource,
@@ -21,6 +21,10 @@ mod stl;
 fn cli() -> Command {
     Command::new(env!("CARGO_BIN_EXE_ferritecad"))
 }
+
+#[path = "support/pipe.rs"]
+mod pipe;
+use pipe::closed_pipe;
 
 fn run(command: &mut Command) -> Output {
     command.output().expect("real CLI process")
@@ -1001,16 +1005,6 @@ fn stl_bounds(bytes: &[u8]) -> ([f64; 3], f64) {
     }
     assert_eq!(low, [0.0; 3]);
     (high, volume.abs())
-}
-
-fn closed_pipe() -> Stdio {
-    // A direct OS pipe whose only reader is already closed. Converting a
-    // ChildStdin to Stdio on Windows inserts a relay thread and another pipe:
-    // that live relay can accept bytes after the ultimate reader has exited.
-    // PipeWriter goes directly to the child, with no intermediate reader.
-    let (reader, writer) = std::io::pipe().expect("OS pipe");
-    drop(reader);
-    Stdio::from(writer)
 }
 
 #[test]
