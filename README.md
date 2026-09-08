@@ -55,12 +55,12 @@ What the window can do, what the command line can do, and which library actually
 owns the work — including recipes with expected exit codes — is documented in
 [`docs/cli-capabilities.md`](docs/cli-capabilities.md).
 
-The opt-in `create --json`, `inspect --json` and `edit-extrude --json` commands
-expose a versioned contract for publishing a new document, discovering an
-extrusion UUID and content version, editing its height in a new copy, and
-inspecting the result. See the exact
+The opt-in `create --json`, `inspect --json`, `edit-extrude --json` and
+`export-stl --json` commands expose a versioned contract for publishing a document,
+discovering Extrude and native Body UUIDs, editing a height in a new copy, and
+exporting one Body to binary STL. See the exact
 [JSON v1 schema and runnable agent recipe](docs/cli-json-v1.md). This contract
-covers those three commands; the other commands retain their existing text output.
+covers those four commands; the other commands retain their existing text output.
 
 ## Exporting to FBX
 
@@ -219,7 +219,13 @@ shutdown follow the export rules above. Cancel in the Save dialog starts no work
 
 An empty document or one containing only imported STEP has no supported native
 Body to export. STL does not combine bodies, export assembly occurrences or
-selected faces, and has no JSON mode. See the [STL verification recipe and local
+selected faces. Agents can discover `result.bodies` with `inspect --json`, select
+one `body_id`, then call `export-stl --solid <uuid> --json`. Its result reports the
+published destination, body UUID/name, triangles, bytes and `length_unit: "mm"`.
+Body UUIDs differ from Extrude UUIDs used for editing. Inspect and export read
+separate snapshots: export uses the current saved file, with no `--expect-version`
+guard; a missing selected Body is refused. See the [JSON recipe](docs/cli-json-v1.md)
+and the [STL verification recipe and local
 results](docs/stl-export-verification.md).
 
 ## Looking at a document

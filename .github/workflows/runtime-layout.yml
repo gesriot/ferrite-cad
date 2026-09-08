@@ -537,7 +537,7 @@ jobs:
             fi
           done
 
-      - name: Inspect and edit through the JSON v1 CLI contract
+      - name: Create, discover, edit and export through the JSON v1 CLI contract
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
           FERRITECAD_REQUIRE_PLANEGCS: '1'

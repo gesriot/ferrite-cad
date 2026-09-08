@@ -13,7 +13,7 @@ use ferritecad_types::{CadError, ContentHash, DocumentId, ObjectId, Result};
 use serde::Serialize;
 
 const SCHEMA_VERSION: u32 = 1;
-/// Delivery failed. A create or edit may have published; never retry it here.
+/// Delivery failed. An operation may have published; never retry it here.
 const EXIT_REPORT_DELIVERY: u8 = 7;
 
 #[derive(Clone, Copy, Serialize)]
@@ -22,6 +22,7 @@ pub enum Operation {
     Inspect,
     EditExtrude,
     Create,
+    ExportStl,
 }
 
 #[derive(Serialize)]
@@ -70,6 +71,36 @@ pub struct Inspection {
     distance_unit: &'static str,
     edit_extrude: EditAvailability,
     features: Vec<Feature>,
+    bodies: Vec<Body>,
+}
+
+#[derive(Serialize)]
+struct Body {
+    body_id: ObjectId,
+    name: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct ExportedStl {
+    destination: PathBuf,
+    body_id: ObjectId,
+    body_name: Option<String>,
+    triangles: usize,
+    bytes: usize,
+    length_unit: &'static str,
+}
+
+impl From<ferritecad_jobs::StlExport> for ExportedStl {
+    fn from(exported: ferritecad_jobs::StlExport) -> Self {
+        Self {
+            destination: exported.destination,
+            body_id: exported.body.id,
+            body_name: exported.body.name,
+            triangles: exported.triangles,
+            bytes: exported.bytes,
+            length_unit: "mm",
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -168,6 +199,13 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 distance_mm: feature.distance_mm,
                 editable: source.refusal.is_none() && feature.refusal.is_none(),
                 refusal: feature.refusal,
+            })
+            .collect(),
+        bodies: ferritecad_jobs::stl_bodies(&document)?
+            .into_iter()
+            .map(|body| Body {
+                body_id: body.id,
+                name: body.name,
             })
             .collect(),
     };

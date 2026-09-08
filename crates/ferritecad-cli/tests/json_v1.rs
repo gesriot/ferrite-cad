@@ -15,6 +15,9 @@ use ferritecad_kernel::OperationContext;
 use ferritecad_types::{Dimension, ObjectId, Unit};
 use serde_json::Value;
 
+#[path = "json_v1/stl.rs"]
+mod stl;
+
 fn cli() -> Command {
     Command::new(env!("CARGO_BIN_EXE_ferritecad"))
 }
@@ -77,6 +80,10 @@ fn inspect(path: &Path) -> Value {
         for field in ["feature_id", "name", "distance_mm", "editable", "refusal"] {
             assert!(feature.get(field).is_some(), "{field}");
         }
+    }
+    for body in value["bodies"].as_array().expect("required Body catalog") {
+        assert!(body["body_id"].is_string());
+        assert!(body.get("name").is_some(), "explicit null for unnamed Body");
     }
     value
 }
@@ -192,6 +199,7 @@ fn empty_inspect_is_a_read_with_an_unavailable_edit_and_no_sidecars() {
     let before = std::fs::read(&source).expect("before");
     let catalog = inspect(&source);
     assert_eq!(catalog["features"], serde_json::json!([]));
+    assert_eq!(catalog["bodies"], serde_json::json!([]));
     assert_eq!(catalog["distance_unit"], "mm");
     assert_eq!(
         catalog["display_units"],
@@ -679,6 +687,27 @@ fn clap_usage_help_and_flag_shaped_values_do_not_guess_a_global_json_mode() {
         vec!["validate", "source.fcad", "--json"],
         vec!["--json", "inspect", "source.fcad"],
         vec!["create", "--json"],
+        vec!["export-stl", "source.fcad", "--json"],
+        vec![
+            "export-stl",
+            "source.fcad",
+            "-o",
+            "out.stl",
+            "--json",
+            "--solid",
+            &valid_feature,
+            "--linear-deflection",
+            "not-number",
+        ],
+        vec![
+            "export-stl",
+            "source.fcad",
+            "-o",
+            "out.stl",
+            "--json",
+            "--expect-version",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        ],
         vec![
             "create",
             "dest.fcad",
@@ -718,6 +747,7 @@ fn clap_usage_help_and_flag_shaped_values_do_not_guess_a_global_json_mode() {
         vec!["inspect", "--json", "--help"],
         vec!["edit-extrude", "--json", "--help"],
         vec!["create", "--json", "--help"],
+        vec!["export-stl", "--json", "--help"],
         vec!["--version"],
     ] {
         let output = success(cli().args(args));
@@ -833,6 +863,16 @@ fn non_utf8_paths_refuse_before_reading_or_publishing() {
                 .expect("message")
                 .contains("UTF-8")
         );
+        let body = reading["bodies"][0]["body_id"].as_str().expect("Body");
+        let output = run(&mut stl::export(from, to, Some(body), true));
+        let value = reply(&output, "export-stl", 2);
+        assert_eq!(value["error"]["kind"], "input");
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("UTF-8")
+        );
     }
     assert_eq!(before, std::fs::read(&source).expect("after"));
     assert_eq!(
@@ -862,11 +902,32 @@ fn no_native_inspection_succeeds_and_edit_reports_unavailable_without_publicatio
         reply(&output, "edit-extrude", 2)["error"]["kind"],
         "unsupported"
     );
+    let body = reading["bodies"][0]["body_id"]
+        .as_str()
+        .expect("discovered Body");
+    let destination = root.path().join("out.stl");
+    let output = run(&mut stl::export(&source, &destination, Some(body), true));
+    assert_eq!(
+        reply(&output, "export-stl", 2)["error"]["kind"],
+        "unsupported"
+    );
     assert_eq!(before, std::fs::read(&source).expect("after"));
     assert_eq!(
         entries(root.path()),
         vec![source.file_name().expect("name")]
     );
+    std::fs::write(&destination, b"stub keeps output").expect("sentinel");
+    let output = run(stl::export(&source, &destination, Some(body), true).arg("--force"));
+    assert_eq!(
+        reply(&output, "export-stl", 2)["error"]["kind"],
+        "unsupported"
+    );
+    assert_eq!(
+        std::fs::read(&destination).expect("kept"),
+        b"stub keeps output"
+    );
+    assert_eq!(std::fs::read(&source).expect("source unchanged"), before);
+    assert_eq!(entries(root.path()).len(), 2, "no scratch or sidecars");
 }
 
 /// Compare complete typed SQL content of two copies of ONE source. Only the
@@ -957,7 +1018,7 @@ fn closed_stderr_does_not_prevent_structured_errors_or_delivery_exit() {
     let root = tempfile::tempdir().expect("dir");
     let missing = root.path().join("missing.fcad");
     let feature = ObjectId::new().to_string();
-    for operation in ["inspect", "edit-extrude"] {
+    for operation in ["inspect", "edit-extrude", "export-stl"] {
         let command = || {
             let mut command = cli();
             command.arg(operation).arg(&missing).arg("--json");
@@ -965,6 +1026,11 @@ fn closed_stderr_does_not_prevent_structured_errors_or_delivery_exit() {
                 command
                     .args(["--feature", &feature, "--distance-mm", "27", "-o"])
                     .arg(root.path().join("output.fcad"));
+            }
+            if operation == "export-stl" {
+                command
+                    .args(["--solid", &feature, "-o"])
+                    .arg(root.path().join("output.stl"));
             }
             command
         };
@@ -1014,9 +1080,10 @@ fn native_json_inspect_edit_contract() {
             Ok("1"),
             "native JSON gate requires OCCT"
         );
-        eprintln!("skipped: this build has no Open CASCADE (JSON edit process gate)");
+        eprintln!("skipped: this build has no Open CASCADE (JSON edit/STL process gate)");
         return;
     }
+    stl::native_contract();
     for (index, size) in [["80", "50", "12"], ["91", "53", "17"]]
         .into_iter()
         .enumerate()

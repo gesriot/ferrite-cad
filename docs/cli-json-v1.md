@@ -1,12 +1,14 @@
-# CLI JSON v1: inspect, edit-extrude и create
+# CLI JSON v1: inspect, edit-extrude, create и export-stl
 
 §24D задаёт opt-in контракт inspect и edit-extrude. §24D-1 добавляет третью
-существующую команду, `create`, через тот же конверт v1:
+существующую команду, `create`, через тот же конверт v1. §24F добавляет Body
+discovery и `export-stl --json` совместимо, без изменения `schema_version`:
 
 ```text
 ferritecad inspect <source.fcad> --json
 ferritecad edit-extrude <source.fcad> --json --feature <uuid> --distance-mm <n> -o <new.fcad> [--expect-version <token>]
 ferritecad create <path> --json [--sample] [--size W D H] [--length-unit <u>] [--angle-unit <u>]
+ferritecad export-stl <source.fcad> -o <out.stl> --json [--solid <name-or-id>] [--linear-deflection <mm>] [--angular-deflection <rad>] [--force]
 ```
 
 Обычный текстовый режим сохраняется. Общие document/jobs операции остаются
@@ -24,7 +26,7 @@ stdout-логов рядом нет. Диагностика для челове�
 | Поле | Тип и правило |
 | --- | --- |
 | `schema_version` | integer, сейчас ровно `1` |
-| `operation` | string: `inspect`, `edit-extrude` или `create` |
+| `operation` | string: `inspect`, `edit-extrude`, `create` или `export-stl` |
 | `ok` | boolean |
 | `result` | объект соответствующей операции, присутствует только при `ok: true` |
 | `error` | объект ошибки, присутствует только при `ok: false` |
@@ -50,7 +52,7 @@ hex-символа. Не вычисляйте токен самостоятел�
 
 ## Результат inspect
 
-Это срез чтения для выбора Extrude, а не сериализация всей БД, геометрии,
+Это срез чтения для выбора Extrude и native Body, а не сериализация всей БД, геометрии,
 результата validate или полного текстового inspect.
 
 | Поле `result` | Тип и смысл |
@@ -61,11 +63,29 @@ hex-символа. Не вычисляйте токен самостоятел�
 | `distance_unit` | строка `mm`; все `distance_mm` всегда миллиметры, независимо от display units |
 | `edit_extrude` | объект общей доступности ниже |
 | `features` | массив существующих нативных Extrude; другие типы объектов сюда не входят |
+| `bodies` | массив сохранённых native Body; обязательное поле, добавлено в §24F |
 
 `features` сохраняет порядок общего каталога: порядок объектов по parent UUID,
 ordinal, UUID (корневые parent `null` идут первыми), отфильтрованный до Extrude.
 Это порядок представления, не адресация фич. Выбирайте UUID явно; имена могут
 повторяться или отсутствовать. При неоднозначности рецепт ниже отказывает.
+
+`bodies` сохраняет тот же общий `objects()` порядок после фильтра до Body:
+parent UUID (сначала null), ordinal, UUID. Это не сортировка по имени. Пустой и
+imported-only документ возвращают `bodies: []` с `ok: true`. Каталог включает
+сохранённые Body без tip feature; наличие записи не обещает геометрию, успешный
+rebuild или наличие ядра. ImportedStep, Extrude и GPU pick ids в него не входят.
+
+| Поле элемента `bodies` | Тип и смысл |
+| --- | --- |
+| `body_id` | канонический UUIDv7 конкретного native Body для `export-stl --solid` |
+| `name` | string или явный `null`, точное сохранённое имя, включая Unicode/кавычки/LF |
+
+Body и Extrude — разные объекты: `features[].feature_id` адресует правку
+выдавливания, `bodies[].body_id` адресует экспорт тела. Extrude UUID в `--solid`
+отказывает; команда не ищет его Body автоматически. Имя может отсутствовать или
+совпадать с другими именами и UUID, поэтому агент выбирает конкретный Body UUID.
+Прежние `features`, доступность правки и content version сохраняют свой смысл.
 
 | Поле элемента `features` | Тип и смысл |
 | --- | --- |
@@ -87,8 +107,9 @@ ordinal, UUID (корневые parent `null` идут первыми), отфи
 правки. Поддерживается только Blind с числовым литералом без зависимости
 Parameter. Formula, Parameter, Symmetric и ThroughAll отказывают.
 
-Чтение использует один `Document::open_read_only` и `ExtrudeEditSource` на том же
-закреплённом снимке, с одним вычислением content hash. Не открывает файл повторно
+Чтение использует один `Document::open_read_only`, `ExtrudeEditSource` и общий
+`stl_bodies(&Document)` на том же закреплённом снимке, с одним вычислением content
+hash. Metadata, version, features и bodies согласованы. Не открывает файл повторно
 ради каталога, не мигрирует, не пишет sidecars, не вызывает kernel/rebuild. Старую
 SQL-схему, WAL-состояние и несовместимость read-only open команда отказывает.
 Успешный inspect **не обещает**, что геометрия перестроится или что OCCT доступен.
@@ -96,7 +117,7 @@ SQL-схему, WAL-состояние и несовместимость read-on
 Пример успешного чтения (UUID и токен иллюстративные):
 
 ```json
-{"schema_version":1,"operation":"inspect","ok":true,"result":{"document_id":"019ecc22-0841-7c0e-ad61-374b404f7219","content_version":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","display_units":{"length":"in","angle":"deg"},"distance_unit":"mm","edit_extrude":{"available":true,"refusal":null,"document_refusal":null},"features":[{"feature_id":"019ecc22-43cb-7c1d-8da9-f386566b9f19","name":"Extrude1","distance_mm":12.0,"editable":true,"refusal":null}]}}
+{"schema_version":1,"operation":"inspect","ok":true,"result":{"document_id":"019ecc22-0841-7c0e-ad61-374b404f7219","content_version":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","display_units":{"length":"in","angle":"deg"},"distance_unit":"mm","edit_extrude":{"available":true,"refusal":null,"document_refusal":null},"features":[{"feature_id":"019ecc22-43cb-7c1d-8da9-f386566b9f19","name":"Extrude1","distance_mm":12.0,"editable":true,"refusal":null}],"bodies":[{"body_id":"019ecc22-84cf-71a0-95e2-2f475f395fff","name":"Plate"}]}}
 ```
 
 ## Результат edit-extrude
@@ -150,6 +171,44 @@ create и UI New. Размеры по-прежнему в миллиметрах
 на stderr и пишется fallibly: закрытый диагностический канал не вызывает panic
 и не портит JSON на stdout.
 
+## Результат export-stl
+
+| Поле `result` | Тип и смысл |
+| --- | --- |
+| `destination` | string: путь реально опубликованного STL, без канонизации |
+| `body_id` | канонический UUIDv7 выбранного native Body |
+| `body_name` | string или явный `null`: точное имя Body из снимка экспорта |
+| `triangles` | неотрицательное целое JSON number: число записанных треугольников |
+| `bytes` | неотрицательное целое JSON number: полный размер опубликованного binary STL в байтах |
+| `length_unit` | фиксированная string `mm`: единица координат STL |
+
+JSON и текст готовят один `StlExportRequest` и вызывают существующий
+`export_document_as_stl`: выбор, kernel factory, cold rebuild, тесселяция и
+атомарная публикация общие. Result берётся из завершённого `StlExport`, output
+не открывается повторно. Defaults: linear deflection `0.01` mm, angular `0.5` rad;
+display units документа не масштабируют STL. Счётчики — числа, не строки.
+
+Без `--solid` допустим ровно один Body. При нескольких нужен явный выбор;
+канонический UUID имеет приоритет перед совпадающим именем другого Body.
+Неоднозначное имя, отсутствующий UUID, пустой/imported-only документ отказывают.
+Экспортируется одно полное native Body, не сборка, несколько тел или выбранные грани.
+Без `--force` существующее назначение сохраняется, в том числе при гонке перед
+publish. Source и его aliases запрещены даже с `--force`.
+
+Inspect и export — **отдельные снимки**. Экспорт читает актуальный сохранённый файл,
+снова выбирает заданный UUID и возвращает актуальное имя. Изменения после inspect
+попадут в STL; исчезнувший UUID отказывает без подстановки другого Body.
+`--expect-version` у export-stl нет; `content_version` из inspect не является
+автоматическим guard экспорта. Успех означает завершённый publish.
+
+```json
+{"schema_version":1,"operation":"export-stl","ok":true,"result":{"destination":"Плита.stl","body_id":"019ecc22-84cf-71a0-95e2-2f475f395fff","body_name":"Plate","triangles":12,"bytes":684,"length_unit":"mm"}}
+```
+
+```json
+{"schema_version":1,"operation":"export-stl","ok":false,"error":{"kind":"input","message":"invalid input: empty.fcad contains no bodies to export","causes":[]}}
+```
+
 ## Ошибки, clap и доставка
 
 `error` всегда содержит `kind: string`, `message: string`, `causes: string[]`.
@@ -172,12 +231,16 @@ create и UI New. Размеры по-прежнему в миллиметрах
 | Успех корректно разобранной JSON-команды | JSON result / возможный note о расширении при create | 0 |
 | Отказ выполнения корректно разобранной JSON-команды | JSON error / диагностика | 2 |
 | Ошибка аргументов до успешного clap parse | пусто / обычная текстовая usage-ошибка | 2 |
-| `inspect --json --help`, `edit-extrude --json --help`, `create --json --help` | текст help / пусто | 0 |
+| `inspect --json --help`, `edit-extrude --json --help`, `create --json --help`, `export-stl --json --help` | текст help / пусто | 0 |
 | Корневой `--version` | текст версии / пусто | 0 |
 | Ошибка сериализации или доставки отчёта, включая BrokenPipe | JSON может отсутствовать или быть неполным / диагностика по возможности | 7 |
 
 JSON не обещан до успешного разбора аргументов. Пропущенный путь, синтаксически
-неверный UUID, нечисловое расстояние и неверный формат токена — ошибки clap.
+неверный UUID `--feature`, нечисловое расстояние/deflection и неверный формат
+токена — ошибки clap. `export-stl --solid` — строка name-or-id: несуществующее имя
+или UUID дают структурированный execution refusal, а не UUID-ошибку clap.
+Нечисловой deflection — clap; `NaN`, `inf`, ноль и отрицательное число, если они
+разобраны clap (например `--linear-deflection=-1`), — execution `input`.
 У `edit-extrude --distance-mm` значения `NaN`, `inf`, ноль и отрицательное число
 разбираются как число, но отказываются при выполнении. У `create --size` действуют
 правила создания: нечисловые и бесконечные значения недопустимы; высота должна
@@ -191,12 +254,16 @@ JSON не обещан до успешного разбора аргументо
 для JSON-чтения такого имени используйте `inspect --json -- --json`. То же для
 create: `create -- --json` создаёт файл `--json` текстом; JSON-режим —
 `create --json -- --json`.
+У export-stl `export-stl -o out.stl -- --json` читает источник с именем `--json`
+в текстовом режиме. Значение `--solid=--json` тоже не включает JSON-протокол.
 
 Exit 7 — **ошибка доставки отчёта**, не обещание отката операции. Если stdout
-закрыт после публикации, созданный документ или копия правки остаются целыми;
+закрыт после публикации, созданный документ, копия правки или STL остаются целыми;
 процесс не паникует, не удаляет файл и не запускает операцию снова. Не повторяйте
-create или edit автоматически: проверьте назначение отдельным inspect и при
-необходимости validate/rebuild. Даже если клиент не получил ответ, завершённая
+create, edit или export автоматически: проверьте назначение отдельно. Для `.fcad`
+используйте inspect и при необходимости validate/rebuild; для STL — независимый
+binary STL parser. Подтверждённая `--force` замена STL также не откатывается ради
+отчёта. Даже если клиент не получил ответ, завершённая
 публикация остаётся завершённой.
 
 ## Строки и пути
@@ -227,6 +294,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import tempfile
 
 cli = os.environ.get("FCAD_CLI", "ferritecad")
@@ -278,9 +346,27 @@ matching = [f for f in verified["features"] if f["feature_id"] == feature_id]
 assert len(matching) == 1 and matching[0]["distance_mm"] == 27
 text_command("validate", destination)
 text_command("rebuild", destination, "--cold")
-text_command("export-stl", destination, "-o", root / "plate.stl")
+body_choices = [b for b in verified["bodies"] if b["name"] == "Plate"]
+if len(body_choices) != 1:
+    raise RuntimeError("Select one explicit Body UUID; name is absent or ambiguous")
+body_id = body_choices[0]["body_id"]
+assert body_id != feature_id
+stl_path = root / "plate.stl"
+exported = json_command("export-stl", destination, "--solid", body_id, "-o", stl_path)
+for field, expected in {"destination": str(stl_path), "body_id": body_id,
+                        "body_name": body_choices[0]["name"], "triangles": 12,
+                        "bytes": 684, "length_unit": "mm"}.items():
+    assert exported[field] == expected  # Unknown additive fields are ignored.
+data = stl_path.read_bytes()
+count, = struct.unpack_from("<I", data, 80)
+assert count == exported["triangles"] == 12
+assert len(data) == exported["bytes"] == 84 + 50 * count == 684
+vertices = [struct.unpack_from("<3f", data, 84 + 50*t + 12 + 12*v)
+            for t in range(count) for v in range(3)]
+assert [max(p[a] for p in vertices) - min(p[a] for p in vertices)
+        for a in range(3)] == [80, 50, 27]
 text_command("export-fbx", destination, "-o", root / "plate.fbx")
 assert source.read_bytes() == before
-print("Verified JSON edit and native CLI checks:", root)
+print("Verified JSON edit, Body discovery and STL publication:", root)
 PY
 ```
