@@ -55,12 +55,13 @@ What the window can do, what the command line can do, and which library actually
 owns the work — including recipes with expected exit codes — is documented in
 [`docs/cli-capabilities.md`](docs/cli-capabilities.md).
 
-The opt-in `create --json`, `inspect --json`, `edit-extrude --json` and
-`export-stl --json` commands expose a versioned contract for publishing a document,
+The opt-in `create --json`, `inspect --json`, `edit-extrude --json`,
+`export-stl --json` and `export-fbx --json` commands expose a versioned contract
+for publishing a document,
 discovering Extrude and native Body UUIDs, editing a height in a new copy, and
-exporting one Body to binary STL. See the exact
+exporting one Body to binary STL or the whole scene to FBX. See the exact
 [JSON v1 schema and runnable agent recipe](docs/cli-json-v1.md). This contract
-covers those four commands; the other commands retain their existing text output.
+covers those five commands; the other commands retain their existing text output.
 
 ## Exporting to FBX
 
@@ -87,6 +88,15 @@ cargo run -p ferritecad-cli -- export-fbx assembly.fcad --output assembly.fbx
 The same document always produces the same bytes. Nothing in the file is a
 clock, a host name, a path or a random number, so two exports can be compared,
 diffed and checksummed.
+
+`export-fbx --json` reports the published destination, byte/object counts and
+source-qualified typed omissions through JSON v1. Complete publication exits 0;
+partial publication still has `ok:true`, with `complete:false` and exit 6.
+Execution refusal exits 2. Report delivery failure exits 7 and keeps the published
+file, including an authorised replacement. Inspect and export read separate
+saved snapshots; FBX has no `--expect-version` guard. The
+[headless Python recipe](docs/cli-json-v1.md#рецепт-fbx-полнота-и-отдельная-проверка-файла)
+handles partial output explicitly without parsing the human CLI report.
 
 ### What the file carries about which part is which
 

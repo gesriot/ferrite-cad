@@ -227,6 +227,10 @@ struct ExportStlArgs {
 
 #[derive(Debug, Args)]
 struct ExportFbxArgs {
+    /// Emit the versioned JSON publication report (partial publication exits 6).
+    #[arg(long)]
+    json: bool,
+
     /// Path to the document. Opened read-only and never written to.
     path: PathBuf,
 
@@ -347,6 +351,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
             export::export_stl_result(args).map(json::ExportedStl::from),
         )),
         Command::ExportStl(args) => export::export_stl(args),
+        Command::ExportFbx(args) if args.json => Ok(json::emit_with_exit(
+            json::Operation::ExportFbx,
+            export_fbx::export_fbx_result(&args).map(|exported| {
+                let exit = export_fbx::exit_code(exported.report());
+                (json::ExportedFbx::from(&exported), exit)
+            }),
+        )),
         Command::ExportFbx(args) => export_fbx::export_fbx(args),
         Command::Rebuild(args) => rebuild::rebuild(args),
         Command::PrintTopology(args) => topology::print_topology(args),

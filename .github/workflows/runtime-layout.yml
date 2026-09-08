@@ -559,6 +559,25 @@ jobs:
             exit 1
           fi
 
+      - name: Publish complete and partial JSON FBX and read them with pinned ufbx
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          # Reuse the existing real partial STEP campaign; its script requires
+          # exact complete/partial test names, route markers and no green skip.
+          # Source keeps DYLD_* across the macOS system-shell boundary.
+          source tools/check-fbx-complex.sh --release --features planegcs 2>&1 | tee fbx-json-tests.log
+
       - name: Export one native Body through both STL clients
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
@@ -1107,6 +1126,7 @@ jobs:
           path: |
             runtime-layout-${{ matrix.name }}.txt
             edit-tests.log
+            fbx-json-tests.log
             closure-viewer.txt
             closure-cli.txt
             layout-${{ matrix.name }}.txt
