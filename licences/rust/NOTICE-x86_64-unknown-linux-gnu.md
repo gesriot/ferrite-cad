@@ -22,7 +22,7 @@ policy in ADR 0002.
   - `ferritecad`, built from `crates/ferritecad-cli/Cargo.toml` with default features
 - dependency kinds: normal and build. Dev-dependencies are excluded, so the
   solver bench, the fixtures and the test-only crates are not listed here.
-- third-party packages: 177
+- third-party packages: 180
 - distinct licence texts: 100
 
 ## Packages
@@ -102,6 +102,7 @@ policy in ADR 0002.
 | `indexmap` | 2.14.0 | `d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9` | `Apache-2.0 OR MIT` | `MIT` | text below |
 | `is_terminal_polyfill` | 1.70.2 | `a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `itertools` | 0.15.0 | `8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc` | `MIT OR Apache-2.0` | `MIT` | text below |
+| `itoa` | 1.0.18 | `8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `khronos-egl` | 6.0.0 | `6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `kurbo` | 0.13.1 | `4b60dfc32f652b926df6192e55525b16d186c69d47876c3ead4da5cc9f8450e2` | `Apache-2.0 OR MIT` | `MIT` | text below |
 | `libc` | 0.2.189 | `3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2` | `MIT OR Apache-2.0` | `MIT` | text below |
@@ -153,6 +154,7 @@ policy in ADR 0002.
 | `serde_bytes` | 0.11.19 | `a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `serde_core` | 1.0.229 | `67dca2c9c51e58a4791a4b1ed58308b39c64224d349a935ab5039aa360942a48` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `serde_derive` | 1.0.229 | `e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348` | `MIT OR Apache-2.0` | `MIT` | text below |
+| `serde_json` | 1.0.151 | `c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `shlex` | 2.0.1 | `f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `skrifa` | 0.44.0 | `819ab7d62b1d3e72d9d9dea5650bac30424f9111364bb94928dbf5ecad1baa68` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `slab` | 0.4.12 | `0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5` | `MIT` | `MIT` | text below |
@@ -206,6 +208,7 @@ policy in ADR 0002.
 | `xkeysym` | 0.2.1 | `b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56` | `MIT OR Apache-2.0 OR Zlib` | `MIT` | text below |
 | `zerocopy` | 0.8.56 | `556764e583adb45a9f8d413c2a147fa7e8d821e48e12b14fd560b607998b75eb` | `BSD-2-Clause OR Apache-2.0 OR MIT` | `MIT` | text below |
 | `zerocopy-derive` | 0.8.56 | `f2ab42fc20575779bd240faa45f94a74256f755c0fa9e89f0ede20d91d0cdfc1` | `BSD-2-Clause OR Apache-2.0 OR MIT` | `MIT` | text below |
+| `zmij` | 1.0.23 | `29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b` | `MIT` | `MIT` | text below |
 
 Every package above is published at `registry+https://github.com/rust-lang/crates.io-index`
 and is identified by the SHA-256 in the checksum column, which is the one `Cargo.lock` pins.
@@ -2220,6 +2223,7 @@ DEALINGS IN THE SOFTWARE.
 Applies to:
 
 - `accesskit` 0.24.1
+- `itoa` 1.0.18
 - `khronos-egl` 6.0.0
 - `linux-raw-sys` 0.12.1
 - `linux-raw-sys` 0.4.15
@@ -2234,6 +2238,7 @@ Applies to:
 - `serde_bytes` 0.11.19
 - `serde_core` 1.0.229
 - `serde_derive` 1.0.229
+- `serde_json` 1.0.151
 - `serde` 1.0.229
 - `smol_str` 0.2.2
 - `syn` 2.0.119
@@ -2244,6 +2249,7 @@ Applies to:
 - `thiserror` 2.0.19
 - `unicode-ident` 1.0.24
 - `x11-dl` 2.21.0
+- `zmij` 1.0.23
 
 ```text
 Permission is hereby granted, free of charge, to any

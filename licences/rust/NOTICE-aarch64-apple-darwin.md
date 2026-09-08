@@ -28,8 +28,8 @@ policy in ADR 0002.
   - `ferritecad`, built from `crates/ferritecad-cli/Cargo.toml` with default features
 - dependency kinds: normal and build. Dev-dependencies are excluded, so the
   solver bench, the fixtures and the test-only crates are not listed here.
-- third-party packages: 154
-- distinct licence texts: 74
+- third-party packages: 158
+- distinct licence texts: 75
 
 ## Packages
 
@@ -107,6 +107,7 @@ policy in ADR 0002.
 | `indexmap` | 2.14.0 | `d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9` | `Apache-2.0 OR MIT` | `MIT` | text below |
 | `is_terminal_polyfill` | 1.70.2 | `a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `itertools` | 0.15.0 | `8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc` | `MIT OR Apache-2.0` | `MIT` | text below |
+| `itoa` | 1.0.18 | `8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `kurbo` | 0.13.1 | `4b60dfc32f652b926df6192e55525b16d186c69d47876c3ead4da5cc9f8450e2` | `Apache-2.0 OR MIT` | `MIT` | text below |
 | `libc` | 0.2.189 | `3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `libm` | 0.2.16 | `b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981` | `MIT` | `MIT` | text below |
@@ -115,6 +116,7 @@ policy in ADR 0002.
 | `litrs` | 1.0.0 | `11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `lock_api` | 0.4.14 | `224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `log` | 0.4.33 | `0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad` | `MIT OR Apache-2.0` | `MIT` | text below |
+| `memchr` | 2.8.3 | `cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98` | `Unlicense OR MIT` | `MIT` | text below |
 | `naga` | 30.0.0 | `23bf0a141a9ab6f07dbb492db53245e464bc9db42f407772d9ae03d83a2c1033` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `naga-types` | 30.0.0 | `658200ddc25c6c7b860747516d132d1b284c0fafb7a380233acee9a72fb30e11` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `nohash-hasher` | 0.2.0 | `2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451` | `Apache-2.0 OR MIT` | `MIT` | text below |
@@ -156,6 +158,7 @@ policy in ADR 0002.
 | `serde_bytes` | 0.11.19 | `a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `serde_core` | 1.0.229 | `67dca2c9c51e58a4791a4b1ed58308b39c64224d349a935ab5039aa360942a48` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `serde_derive` | 1.0.229 | `e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348` | `MIT OR Apache-2.0` | `MIT` | text below |
+| `serde_json` | 1.0.151 | `c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `shlex` | 2.0.1 | `f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `skrifa` | 0.44.0 | `819ab7d62b1d3e72d9d9dea5650bac30424f9111364bb94928dbf5ecad1baa68` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `smallvec` | 1.15.2 | `8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90` | `MIT OR Apache-2.0` | `MIT` | text below |
@@ -189,6 +192,7 @@ policy in ADR 0002.
 | `winit` | 0.30.13 | `a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d` | `Apache-2.0` | `Apache-2.0` | text below |
 | `zerocopy` | 0.8.56 | `556764e583adb45a9f8d413c2a147fa7e8d821e48e12b14fd560b607998b75eb` | `BSD-2-Clause OR Apache-2.0 OR MIT` | `MIT` | text below |
 | `zerocopy-derive` | 0.8.56 | `f2ab42fc20575779bd240faa45f94a74256f755c0fa9e89f0ede20d91d0cdfc1` | `BSD-2-Clause OR Apache-2.0 OR MIT` | `MIT` | text below |
+| `zmij` | 1.0.23 | `29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b` | `MIT` | `MIT` | text below |
 
 Every package above is published at `registry+https://github.com/rust-lang/crates.io-index`
 and is identified by the SHA-256 in the checksum column, which is the one `Cargo.lock` pins.
@@ -1396,6 +1400,36 @@ DEALINGS IN THE SOFTWARE.
 
 Applies to:
 
+- `memchr` 2.8.3
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2015 Andrew Gallant
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### 12. MIT
+
+Applies to:
+
 - `libc` 0.2.189
 
 ```text
@@ -1426,7 +1460,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 12. MIT
+### 13. MIT
 
 Applies to:
 
@@ -1462,7 +1496,7 @@ DEALINGS IN THE SOFTWARE.
 
 ```
 
-### 13. MIT
+### 14. MIT
 
 Applies to:
 
@@ -1497,7 +1531,7 @@ The `cfg_aliases!` macro uses a lot of the code from [`tectonic_cfg_support::tar
 ---
 ```
 
-### 14. MIT
+### 15. MIT
 
 Applies to:
 
@@ -1529,7 +1563,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 15. MIT
+### 16. MIT
 
 Applies to:
 
@@ -1566,11 +1600,12 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 16. MIT
+### 17. MIT
 
 Applies to:
 
 - `accesskit` 0.24.1
+- `itoa` 1.0.18
 - `once_cell` 1.21.4
 - `pin-project-lite` 0.2.17
 - `proc-macro2` 1.0.107
@@ -1579,6 +1614,7 @@ Applies to:
 - `serde_bytes` 0.11.19
 - `serde_core` 1.0.229
 - `serde_derive` 1.0.229
+- `serde_json` 1.0.151
 - `serde` 1.0.229
 - `smol_str` 0.2.2
 - `syn` 2.0.119
@@ -1586,6 +1622,7 @@ Applies to:
 - `thiserror-impl` 2.0.19
 - `thiserror` 2.0.19
 - `unicode-ident` 1.0.24
+- `zmij` 1.0.23
 
 ```text
 Permission is hereby granted, free of charge, to any
@@ -1613,7 +1650,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 17. MIT
+### 18. MIT
 
 Applies to:
 
@@ -1647,7 +1684,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 18. MIT
+### 19. MIT
 
 Applies to:
 
@@ -1679,7 +1716,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 19. MIT
+### 20. MIT
 
 Applies to:
 
@@ -1697,7 +1734,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 20. MIT
+### 21. MIT
 
 Applies to:
 
@@ -1727,7 +1764,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 21. MIT
+### 22. MIT
 
 Applies to:
 
@@ -1764,7 +1801,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 22. MIT
+### 23. MIT
 
 Applies to:
 
@@ -2031,7 +2068,7 @@ have been licensed under extremely permissive terms.
 Copyright notices are retained in src/* files where relevant.
 ```
 
-### 23. MIT
+### 24. MIT
 
 Applies to:
 
@@ -2062,7 +2099,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 24. MIT
+### 25. MIT
 
 Applies to:
 
@@ -2097,7 +2134,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 25. MIT
+### 26. MIT
 
 Applies to:
 
@@ -2127,7 +2164,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 26. MIT
+### 27. MIT
 
 Applies to:
 
@@ -2161,7 +2198,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 27. MIT
+### 28. MIT
 
 Applies to:
 
@@ -2191,7 +2228,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 28. MIT
+### 29. MIT
 
 Applies to:
 
@@ -2226,7 +2263,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 29. MIT
+### 30. MIT
 
 Applies to:
 
@@ -2256,7 +2293,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 30. MIT
+### 31. MIT
 
 Applies to:
 
@@ -2294,7 +2331,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 31. MIT
+### 32. MIT
 
 Applies to:
 
@@ -2331,7 +2368,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 32. MIT
+### 33. MIT
 
 Applies to:
 
@@ -2361,7 +2398,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 33. MIT
+### 34. MIT
 
 Applies to:
 
@@ -2395,7 +2432,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 34. MIT
+### 35. MIT
 
 Applies to:
 
@@ -2432,7 +2469,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 35. MIT
+### 36. MIT
 
 Applies to:
 
@@ -2466,7 +2503,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 36. MIT
+### 37. MIT
 
 Applies to:
 
@@ -2501,7 +2538,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 37. MIT
+### 38. MIT
 
 Applies to:
 
@@ -2537,7 +2574,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 38. MIT
+### 39. MIT
 
 Applies to:
 
@@ -2573,7 +2610,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 39. MIT
+### 40. MIT
 
 Applies to:
 
@@ -2607,7 +2644,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 40. MIT
+### 41. MIT
 
 Applies to:
 
@@ -2642,7 +2679,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 41. MIT
+### 42. MIT
 
 Applies to:
 
@@ -2670,7 +2707,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 42. MIT
+### 43. MIT
 
 Applies to:
 
@@ -2709,7 +2746,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 43. MIT
+### 44. MIT
 
 Applies to:
 
@@ -2739,7 +2776,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 44. MIT
+### 45. MIT
 
 Applies to:
 
@@ -2758,7 +2795,7 @@ The above copyright notice and this permission notice (including the next paragr
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 45. MIT
+### 46. MIT
 
 Applies to:
 
@@ -2818,7 +2855,7 @@ have been licensed under extremely permissive terms.
 ------------------------------------------------------------------------------
 ```
 
-### 46. MIT
+### 47. MIT
 
 Applies to:
 
@@ -2846,7 +2883,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 47. MIT
+### 48. MIT
 
 Applies to:
 
@@ -2881,7 +2918,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 48. MIT
+### 49. MIT
 
 Applies to:
 
@@ -2911,7 +2948,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 49. MIT
+### 50. MIT
 
 Applies to:
 
@@ -2999,7 +3036,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 50. MIT
+### 51. MIT
 
 Applies to:
 
@@ -3027,7 +3064,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 51. MIT
+### 52. MIT
 
 Applies to:
 
@@ -3045,7 +3082,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 52. MIT
+### 53. MIT
 
 Applies to:
 
@@ -3074,7 +3111,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 53. MIT
+### 54. MIT
 
 Applies to:
 
@@ -3102,7 +3139,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 54. MIT
+### 55. MIT
 
 Applies to:
 
@@ -3132,7 +3169,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 55. MIT
+### 56. MIT
 
 Applies to:
 
@@ -3168,7 +3205,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 56. MIT
+### 57. MIT
 
 Applies to:
 
@@ -3197,7 +3234,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 57. MIT
+### 58. MIT
 
 Applies to:
 
@@ -3227,7 +3264,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 58. MIT
+### 59. MIT
 
 Applies to:
 
@@ -3261,7 +3298,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 59. MIT
+### 60. MIT
 
 Applies to:
 
@@ -3298,7 +3335,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 60. MIT
+### 61. MIT
 
 Applies to:
 
@@ -3332,7 +3369,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 61. MIT
+### 62. MIT
 
 Applies to:
 
@@ -3366,7 +3403,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 62. MIT
+### 63. MIT
 
 Applies to:
 
@@ -3401,7 +3438,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 63. MIT
+### 64. MIT
 
 Applies to:
 
@@ -3431,7 +3468,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 64. MIT
+### 65. MIT
 
 Applies to:
 
@@ -3458,7 +3495,7 @@ WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 65. MIT
+### 66. MIT
 
 Applies to:
 
@@ -3492,7 +3529,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 66. MIT
+### 67. MIT
 
 Applies to:
 
@@ -3522,7 +3559,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 67. MIT
+### 68. MIT
 
 Applies to:
 
@@ -3556,7 +3593,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 68. MIT
+### 69. MIT
 
 Applies to:
 
@@ -3582,7 +3619,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 69. MIT
+### 70. MIT
 
 Applies to:
 
@@ -3616,7 +3653,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 70. MIT
+### 71. MIT
 
 Applies to:
 
@@ -3651,7 +3688,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 71. OFL-1.1
+### 72. OFL-1.1
 
 Applies to:
 
@@ -3752,7 +3789,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
 
-### 72. Ubuntu-font-1.0
+### 73. Ubuntu-font-1.0
 
 Applies to:
 
@@ -3857,7 +3894,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM OTHER
 DEALINGS IN THE FONT SOFTWARE.
 ```
 
-### 73. Unicode-3.0
+### 74. Unicode-3.0
 
 Applies to:
 
@@ -3905,7 +3942,7 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ```
 
-### 74. Zlib
+### 75. Zlib
 
 Applies to:
 

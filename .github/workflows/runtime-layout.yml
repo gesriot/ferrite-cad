@@ -537,6 +537,28 @@ jobs:
             fi
           done
 
+      - name: Inspect and edit through the JSON v1 CLI contract
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          cargo test --release --features planegcs -p ferritecad-cli --test json_v1 \
+            native_json_inspect_edit_contract -- --exact --nocapture 2>&1 | tee json-tests.log
+          if grep -q 'skipped:' json-tests.log || \
+             ! grep -q '^test native_json_inspect_edit_contract \.\.\. ok$' json-tests.log; then
+            echo "::error::the native JSON process gate did not execute and pass"
+            exit 1
+          fi
+
       - name: Require the application to import both runtime component families
         run: |
           set -euo pipefail
