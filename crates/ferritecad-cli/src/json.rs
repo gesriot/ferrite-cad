@@ -13,7 +13,7 @@ use ferritecad_types::{CadError, ContentHash, DocumentId, ObjectId, Result};
 use serde::Serialize;
 
 const SCHEMA_VERSION: u32 = 1;
-/// Delivery failed. An edit may already have published; never retry it here.
+/// Delivery failed. A create or edit may have published; never retry it here.
 const EXIT_REPORT_DELIVERY: u8 = 7;
 
 #[derive(Clone, Copy, Serialize)]
@@ -21,6 +21,7 @@ const EXIT_REPORT_DELIVERY: u8 = 7;
 pub enum Operation {
     Inspect,
     EditExtrude,
+    Create,
 }
 
 #[derive(Serialize)]
@@ -114,6 +115,21 @@ impl From<ferritecad_jobs::EditedDocument> for Edited {
     }
 }
 
+#[derive(Serialize)]
+pub struct Created {
+    destination: PathBuf,
+    document_id: DocumentId,
+}
+
+impl From<ferritecad_jobs::CreatedDocument> for Created {
+    fn from(created: ferritecad_jobs::CreatedDocument) -> Self {
+        Self {
+            destination: created.destination().to_path_buf(),
+            document_id: created.document_id(),
+        }
+    }
+}
+
 pub fn require_utf8_path(path: &Path) -> Result<()> {
     if path.to_str().is_none() {
         return Err(CadError::input(
@@ -194,7 +210,7 @@ pub fn emit<T: Serialize>(operation: Operation, result: Result<T>) -> ExitCode {
         // Use fallible I/O here too: losing the diagnostic pipe must not panic.
         let _ = writeln!(
             io::stderr().lock(),
-            "error [io]: JSON report delivery failed: {error}; the operation has already completed; an edited file may have been published"
+            "error [io]: JSON report delivery failed: {error}; the operation has already completed; a file may have been published"
         );
         return ExitCode::from(EXIT_REPORT_DELIVERY);
     }
