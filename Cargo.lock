@@ -733,6 +733,8 @@ dependencies = [
  "ferritecad-viewport",
  "ferritecad-viewport-gpu",
  "rusqlite",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

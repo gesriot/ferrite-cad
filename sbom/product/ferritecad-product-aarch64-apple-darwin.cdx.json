@@ -3612,6 +3612,43 @@
       "version": "0.15.0"
     },
     {
+      "author": "David Tolnay <dtolnay@gmail.com>",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#itoa@1.0.18",
+      "description": "Fast integer primitive to string conversion",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/itoa"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/dtolnay/itoa"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "itoa",
+      "properties": [
+        {
+          "name": "ferritecad:sbom:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/itoa@1.0.18",
+      "scope": "required",
+      "type": "library",
+      "version": "1.0.18"
+    },
+    {
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#kurbo@0.13.1",
       "description": "A 2D curves library",
       "externalReferences": [
@@ -3883,6 +3920,47 @@
       "scope": "required",
       "type": "library",
       "version": "0.4.33"
+    },
+    {
+      "author": "Andrew Gallant <jamslam@gmail.com>, bluss",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#memchr@2.8.3",
+      "description": "Provides extremely fast (uses SIMD on x86_64, aarch64 and wasm32) routines for 1, 2 or 3 byte search and single substring search. ",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/memchr/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/BurntSushi/memchr"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/BurntSushi/memchr"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Unlicense OR MIT"
+        }
+      ],
+      "name": "memchr",
+      "properties": [
+        {
+          "name": "ferritecad:sbom:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/memchr@2.8.3",
+      "scope": "required",
+      "type": "library",
+      "version": "2.8.3"
     },
     {
       "author": "gfx-rs developers",
@@ -5356,6 +5434,43 @@
       "version": "1.0.229"
     },
     {
+      "author": "Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
+      "description": "A JSON serialization file format",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/serde_json"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/serde-rs/json"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "name": "serde_json",
+      "properties": [
+        {
+          "name": "ferritecad:sbom:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/serde_json@1.0.151",
+      "scope": "required",
+      "type": "library",
+      "version": "1.0.151"
+    },
+    {
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#skrifa@0.44.0",
       "description": "Metadata reader and glyph scaler for OpenType fonts.",
       "externalReferences": [
@@ -6438,6 +6553,43 @@
       "scope": "required",
       "type": "library",
       "version": "0.8.56"
+    },
+    {
+      "author": "David Tolnay <dtolnay@gmail.com>",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#zmij@1.0.23",
+      "description": "A double-to-string conversion algorithm based on Schubfach and xjb",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/zmij"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/dtolnay/zmij"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "zmij",
+      "properties": [
+        {
+          "name": "ferritecad:sbom:source",
+          "value": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "purl": "pkg:cargo/zmij@1.0.23",
+      "scope": "required",
+      "type": "library",
+      "version": "1.0.23"
     }
   ],
   "dependencies": [
@@ -6540,7 +6692,9 @@
         "path+crates/ferritecad-occt#ferritecad-occt@0.0.1",
         "path+crates/ferritecad-scene#ferritecad-scene@0.0.1",
         "path+crates/ferritecad-types#ferritecad-types@0.0.1",
-        "registry+https://github.com/rust-lang/crates.io-index#clap@4.6.6"
+        "registry+https://github.com/rust-lang/crates.io-index#clap@4.6.6",
+        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151"
       ],
       "ref": "path+crates/ferritecad-cli#ferritecad-cli@0.0.1"
     },
@@ -7116,6 +7270,10 @@
       "ref": "registry+https://github.com/rust-lang/crates.io-index#itertools@0.15.0"
     },
     {
+      "dependsOn": [],
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#itoa@1.0.18"
+    },
+    {
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#arrayvec@0.7.8",
         "registry+https://github.com/rust-lang/crates.io-index#polycool@0.4.0",
@@ -7152,6 +7310,10 @@
     {
       "dependsOn": [],
       "ref": "registry+https://github.com/rust-lang/crates.io-index#log@0.4.33"
+    },
+    {
+      "dependsOn": [],
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#memchr@2.8.3"
     },
     {
       "dependsOn": [
@@ -7433,6 +7595,15 @@
     },
     {
       "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#itoa@1.0.18",
+        "registry+https://github.com/rust-lang/crates.io-index#memchr@2.8.3",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_core@1.0.229",
+        "registry+https://github.com/rust-lang/crates.io-index#zmij@1.0.23"
+      ],
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151"
+    },
+    {
+      "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#bytemuck@1.25.2",
         "registry+https://github.com/rust-lang/crates.io-index#read-fonts@0.41.0"
       ],
@@ -7682,6 +7853,10 @@
         "registry+https://github.com/rust-lang/crates.io-index#zerocopy-derive@0.8.56"
       ],
       "ref": "registry+https://github.com/rust-lang/crates.io-index#zerocopy@0.8.56"
+    },
+    {
+      "dependsOn": [],
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#zmij@1.0.23"
     }
   ],
   "metadata": {
@@ -7711,11 +7886,11 @@
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/native/native-assets-inventory.json@sha256:21d4747a64dfbeed7546413517fdb97fd375d9976c4291a711df3372dad9dc8e"
+        "value": "sbom/native/native-assets-inventory.json@sha256:d0503579d6703735bf26c77049be1a255979d6097a410789e839ff06bab99fd4"
       },
       {
         "name": "ferritecad:sbom:merged-from",
-        "value": "sbom/rust/rust-fragment-aarch64-apple-darwin.cdx.json@sha256:a335ec3b663306c551c8032c7ce7c19ac8944649441eb11391469de455b6f506"
+        "value": "sbom/rust/rust-fragment-aarch64-apple-darwin.cdx.json@sha256:5cc2bd819a53ffcf52c2edf7c5dbacf7a4abd862258b45b1a12fb13a6684aeff"
       },
       {
         "name": "ferritecad:sbom:product-format",

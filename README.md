@@ -8,7 +8,8 @@ through Open CASCADE, STEP import, and a viewer window that opens a `.fcad`
 file, draws what it describes – solids and the sketches they were raised from –
 and lets a definition be selected and inspected.
 The window can create an empty native document or a sample plate from a template;
-arbitrary modelling and editing existing documents are still unavailable. See
+it can also change a supported constant Blind extrusion height in a new copy.
+Arbitrary modelling and in-place Save are still unavailable. See
 [`docs/implementation-plan.md`](docs/implementation-plan.md) for what comes when,
 and please read the honest scope note at the end of this file before forming
 expectations.
@@ -53,6 +54,12 @@ old implementation specifically because the file remains.
 What the window can do, what the command line can do, and which library actually
 owns the work — including recipes with expected exit codes — is documented in
 [`docs/cli-capabilities.md`](docs/cli-capabilities.md).
+
+The opt-in `inspect --json` and `edit-extrude --json` commands expose a versioned
+contract for discovering an extrusion UUID and content version, editing its
+height in a new copy, and inspecting the result. See the exact
+[JSON v1 schema and runnable agent recipe](docs/cli-json-v1.md). This contract
+covers those two commands; the other commands retain their existing text output.
 
 ## Exporting to FBX
 

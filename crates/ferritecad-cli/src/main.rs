@@ -9,6 +9,7 @@
 mod export;
 mod export_fbx;
 mod import;
+mod json;
 mod rebuild;
 mod render;
 mod topology;
@@ -95,7 +96,7 @@ enum Command {
     /// Preserves identities; never overwrites source or output. Requires a kernel.
     EditExtrude(EditExtrudeArgs),
     /// Show a document's metadata, objects, graph and references.
-    Inspect(DocumentArgs),
+    Inspect(InspectArgs),
     /// Check that a document is internally consistent and rebuildable.
     Validate(DocumentArgs),
     /// Print the dependency graph.
@@ -141,6 +142,20 @@ struct EditExtrudeArgs {
     /// Optional complete content version printed by inspect; refuses stale input.
     #[arg(long)]
     expect_version: Option<ferritecad_types::ContentHash>,
+    /// Emit one JSON v1 result or execution error. Argument errors remain clap text.
+    /// Source and output paths must be UTF-8 in JSON mode.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct InspectArgs {
+    /// Path to the document. Read without migration, writes or a kernel.
+    path: PathBuf,
+    /// Emit the JSON v1 extrusion-edit catalog, rather than the full text report.
+    /// Argument errors and help remain clap text. Paths must be UTF-8 in JSON mode.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -272,7 +287,7 @@ fn main() -> ExitCode {
     match run(Cli::parse()) {
         Ok(code) => code,
         Err(error) => {
-            report(&error);
+            let _ = report(&error);
             ExitCode::from(EXIT_FAILED)
         }
     }
@@ -281,7 +296,15 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Create(args) => create(args),
+        Command::EditExtrude(args) if args.json => Ok(json::emit(
+            json::Operation::EditExtrude,
+            edit_extrude_result(args).map(json::Edited::from),
+        )),
         Command::EditExtrude(args) => edit_extrude(args),
+        Command::Inspect(args) if args.json => Ok(json::emit(
+            json::Operation::Inspect,
+            json::inspect(&args.path),
+        )),
         Command::Inspect(args) => {
             let document = Document::open_read_only(&args.path)?;
             render::inspect(&document)?;
@@ -378,17 +401,39 @@ fn clear_cache(args: DocumentArgs) -> Result<ExitCode> {
 /// The chain is what makes a storage failure diagnosable: "opening document"
 /// on its own says nothing, "opening document: unable to open database file"
 /// says everything.
-fn report(error: &CadError) {
-    eprintln!("error [{}]: {error}", error.kind());
+fn report(error: &CadError) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut stderr = std::io::stderr().lock();
+    writeln!(stderr, "error [{}]: {error}", error.kind())?;
 
     let mut source = std::error::Error::source(error);
     while let Some(cause) = source {
-        eprintln!("  caused by: {cause}");
+        writeln!(stderr, "  caused by: {cause}")?;
         source = cause.source();
     }
+    Ok(())
 }
 
 fn edit_extrude(args: EditExtrudeArgs) -> Result<ExitCode> {
+    let edited = edit_extrude_result(args)?;
+    println!(
+        "saved {} ({}, feature {})",
+        edited.destination.display(),
+        edited.document_id,
+        edited.feature
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Both output modes submit exactly the same request and publish exactly once.
+fn edit_extrude_result(args: EditExtrudeArgs) -> Result<ferritecad_jobs::EditedDocument> {
+    if args.json {
+        // Before opening a source or publishing: an unrepresentable output
+        // must not turn a successful edit into an apparent operation refusal.
+        json::require_utf8_path(&args.source)?;
+        json::require_utf8_path(&args.output)?;
+    }
     let source = ferritecad_jobs::read_extrude_source(&args.source)?;
     let mut expected = source.version;
     if let Some(version) = args.expect_version {
@@ -402,13 +447,5 @@ fn edit_extrude(args: EditExtrudeArgs) -> Result<ExitCode> {
         destination: args.output,
     };
     let mut kernel = ferritecad_occt::OcctKernel::new()?;
-    let edited =
-        ferritecad_jobs::edit_extrude_copy(&request, &mut kernel, &OperationContext::default())?;
-    println!(
-        "saved {} ({}, feature {})",
-        edited.destination.display(),
-        edited.document_id,
-        edited.feature
-    );
-    Ok(ExitCode::SUCCESS)
+    ferritecad_jobs::edit_extrude_copy(&request, &mut kernel, &OperationContext::default())
 }
