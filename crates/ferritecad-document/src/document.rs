@@ -473,6 +473,55 @@ impl Document {
                 ),
             });
         }
+        // Foreign-key actions are implicit write programs too. Permit the
+        // four cascades in the current document schema; extensions with
+        // further mutating actions need an edit contract of their own.
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT s.name, f.\"from\", f.\"table\", f.\"to\", f.on_update, f.on_delete \
+             FROM sqlite_schema AS s, pragma_foreign_key_list(s.name, 'main') AS f \
+             WHERE s.type = 'table' ORDER BY s.name, f.id, f.seq",
+            )
+            .map_err(|e| CadError::io("checking SQL foreign-key actions", e))?;
+        let keys = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(|e| CadError::io("reading SQL foreign-key actions", e))?;
+        for key in keys {
+            let (table, column, parent, target, update, delete) =
+                key.map_err(|e| CadError::io("reading SQL foreign-key action", e))?;
+            let no_write = |action: &str| matches!(action, "NO ACTION" | "RESTRICT");
+            if no_write(&update) && no_write(&delete) {
+                continue;
+            }
+            let native_cascade = update == "NO ACTION"
+                && delete == "CASCADE"
+                && parent == "objects"
+                && target.as_deref() == Some("id")
+                && matches!(
+                    (table.as_str(), column.as_str()),
+                    ("objects", "parent_id")
+                        | ("deps", "dependent_id")
+                        | ("topology_refs", "owner_id")
+                        | ("imported_source_refs", "object_id")
+                );
+            if !native_cascade {
+                return Ok(Access::ReadOnly {
+                    reason: format!(
+                        "editing with foreign-key action on {table:?}.{column:?} (ON UPDATE {update}, ON DELETE {delete}) is unsupported"
+                    ),
+                });
+            }
+        }
         Ok(access)
     }
 
@@ -542,10 +591,10 @@ impl Document {
                     .map_err(sql_error)?
                     .column_count();
                 // Rowid is the first, unique sort key. WITHOUT ROWID tables
-                // include their primary key in *, so ties under a collation
-                // cannot make the order depend on the query plan either.
+                // include their primary key in *. Use binary text comparison:
+                // a column's collation may differ from its key's collation.
                 let order = (1..=count)
-                    .map(|i| i.to_string())
+                    .map(|i| format!("{i} COLLATE BINARY"))
                     .collect::<Vec<_>>()
                     .join(",");
                 let mut statement = self

@@ -2042,8 +2042,10 @@ output побайтово равны. Реальный macOS GUI smoke прош�
 [протокол §24C](edit-extrude-copy-verification.md). Независимое ревью нашло и исправило
 невидимое для версии изменение implicit rowid и побочные записи stored SQL trigger:
 полный ключ строки теперь входит в content version 2; триггеры дают именованный отказ
-edit без запрета просмотра. Native workspace: 1714 passed, 0 failed, 1 ignored;
-7 обязательных native edit gates и повторный macOS GUI smoke 91×53×17 → 31.
+edit без запрета просмотра. Так же отказывают нестандартные mutating FK actions,
+которые иначе меняли неизвестные таблицы без явного триггера. В CI обязательны
+8 native edit gates; результаты полного workspace и повторного macOS GUI smoke
+91×53×17 → 31 приведены в протоколе.
 
 **§24C-1 — следующий небольшой срез, pending.** Убрать повторное полное чтение и
 сканирование dependencies для каждой Extrude при построении `ExtrudeEditSource`.

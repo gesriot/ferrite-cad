@@ -45,6 +45,10 @@ Display length unit исходника не масштабирует ввод mm
 Документ с сохранёнными SQL-триггерами отказывает в edit до создания scratch: запись
 может вызвать неучтённые изменения других объектов. Триггеры не исполняются и не
 удаляются; просмотр остаётся доступным, UI называет первый триггер в причине отказа.
+Нестандартные mutating foreign-key actions тоже отказывают: CASCADE/SET NULL/SET DEFAULT
+могут переписать дополнительную таблицу при записи payload или обновлении capabilities.
+Разрешены четыре ON DELETE CASCADE штатной схемы документа и любые constraints
+с NO ACTION/RESTRICT; новые каскады требуют отдельного контракта редактирования.
 
 Content version — BLAKE3 по полной SQL-схеме и всем типизированным ячейкам всех таблиц
 в определённом порядке, включая неизвестные данные, BLOB, UUID и timestamps.
@@ -54,7 +58,8 @@ Content version — BLAKE3 по полной SQL-схеме и всем типи
 таблицы используют объявленный primary key. Если затенены все три alias, полная
 версия отказывает `Unsupported` с именем таблицы; неполный hash не выдаётся. Это
 также ограничивает inspect и загрузку scene facts для такой нестандартной схемы.
-Порядок включает уникальный ключ и не зависит от совпадений под SQL collation.
+Порядок включает уникальный ключ и явное `COLLATE BINARY`: collation столбца может
+отличаться от collation его primary key. Такая WITHOUT ROWID таблица включена в backup gate.
 После смены алгоритма сохранённый `--expect-version` нужно получить новым inspect.
 [SQLite описывает rowid и затенение aliases](https://www.sqlite.org/rowidtable.html). Mtime,
 размер, имена путей, страничное размещение и UUID нового документа не используются.
@@ -208,7 +213,7 @@ FBX: `3e2e0adbae0d4d65b5452c9ba3b81efd7e895ad2c949e1cc997abd4aa4a2a2f7`.
 source/output hashes и заголовок сохранились; повторный GUI export побайтово совпал
 с прежним. Scratch не остался. Это реальная проверка диалогов, не тест форматтера.
 
-Windows/Linux GUI вручную не наблюдались. Все семь native edit tests обязательно
+Windows/Linux GUI вручную не наблюдались. Все восемь native edit tests обязательно
 исполняются в обычном combined runtime layout workflow на трёх платформах, с обоими
 нативными компонентами и release-клиентами; имена каждого теста проверяются в логе,
 skip и `--no-run` не считаются прохождением. Ручной OCCT pin также содержит три
@@ -257,3 +262,28 @@ Validate: 0 warnings; cold rebuild: 4 объекта, 1 shape, 3/3 refs. Source 
 после одинаков: `f95f362098ebf7b259d28a09eb8961eb43b251c28e072a6c477c7d59f2fa10ef`.
 Отдельный `Trigger.fcad` открылся с видимой моделью; Edit выключен и называет
 `extension_write`. Тестовый экземпляр закрыт. Windows/Linux GUI этим ревью не измерены.
+
+
+Продолжение ревью обнаружило ту же проблему побочной записи без явного триггера:
+неизвестная таблица с FK на `objects(payload_hash) ON UPDATE CASCADE` поменяла свой
+fingerprint на `e203d59` при успешной правке. Дополнительный snapshot-тест сначала
+скомпилировался и упал на `ReadWrite`. Проверка `copy_access` теперь также отказывает
+нестандартным mutating FK actions, сохраняя штатные четыре cascades и не записывающие
+constraints. Новый native gate проверяет два реальных CLI-отказа: UPDATE CASCADE
+по payload hash и DELETE CASCADE при обновлении capabilities; source и дополнительная
+таблица остаются прежними, output/scratch отсутствуют, сцена по-прежнему загружается.
+Он включён в восьмой поимённый обязательный gate каждого runtime CI target.
+
+
+На конечном коде после FK guard и явной бинарной сортировки версии повторно прошли
+все **166 document/jobs tests** и **8/8 native edit tests** без skips; workspace
+fmt/clippy, actionlint, export/solver boundaries и headers. No-OCCT клиенты и все
+11 CLI process tests также повторены успешно. Полный workspace повторяется отдельно
+в `native-workspace-final.log`; его итог не подменяет эти проверки конечного diff.
+
+Финальный bundle `gui-final/FerriteCAD.app`, viewer SHA-256
+`15f48050745057ba41e3cbc292469b71f10ca852aecf00ece0ee7cca6d8d47c9`, проверен настоящим
+Open на каскадном контрпримере: модель видна, заголовок принят, Edit выключен с
+причиной `extension.fingerprint (ON UPDATE CASCADE, ON DELETE NO ACTION)`.
+Это повторное GUI-измерение FK guard; полный успешный сценарий изменения высоты и
+экспорта выше измерялся на первом review fix. UI код после него не менялся.

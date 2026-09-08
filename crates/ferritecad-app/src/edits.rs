@@ -662,6 +662,58 @@ mod tests {
     }
 
     #[test]
+    fn foreign_key_actions_refuse_publication_without_changing_extension_data() {
+        if !native() {
+            return;
+        }
+        for extension in [
+            "CREATE UNIQUE INDEX extension_key ON objects(payload_hash); \
+             CREATE TABLE extension(value BLOB REFERENCES objects(payload_hash) ON UPDATE CASCADE); \
+             INSERT INTO extension SELECT payload_hash FROM objects WHERE kind = 'feature.extrude';",
+            "CREATE TABLE extension(value TEXT REFERENCES capabilities(name) ON DELETE CASCADE); \
+             INSERT INTO extension SELECT name FROM capabilities;",
+        ] {
+            let root = tempfile::tempdir().expect("directory");
+            let (source, feature) = make(root.path(), ["80", "50", "12"]);
+            rusqlite::Connection::open(&source)
+                .expect("SQL")
+                .execute_batch(extension)
+                .expect("extension");
+            let before = std::fs::read(&source).expect("source bytes");
+            let reading = opened(&source).edit_source.expect("readable model");
+            assert!(!Edits::default().begin(&source, &reading));
+            let reason = reading.unavailable_reason().expect("named refusal");
+            assert!(
+                reason.contains("extension") && reason.contains("foreign-key action"),
+                "{reason}"
+            );
+            let output = root.path().join("refused.fcad");
+            let result = cli(&[
+                "edit-extrude".as_ref(),
+                source.as_os_str(),
+                "--feature".as_ref(),
+                feature.to_string().as_ref(),
+                "--distance-mm".as_ref(),
+                "27".as_ref(),
+                "-o".as_ref(),
+                output.as_os_str(),
+            ]);
+            assert_eq!(result.status.code(), Some(2));
+            assert!(
+                String::from_utf8_lossy(&result.stderr).contains(reason),
+                "{result:?}"
+            );
+            assert_eq!(std::fs::read(&source).expect("unchanged source"), before);
+            assert_eq!(
+                std::fs::read_dir(root.path())
+                    .expect("no scratch or output")
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
     fn cancellation_before_and_after_publish_and_stale_answers_keep_honest_outcomes() {
         if !native() {
             return;

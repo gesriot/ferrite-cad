@@ -329,7 +329,7 @@ alias, полное чтение версии отказывает с её им�
 
 CLI: успех — exit 0 и `saved …`; отказ — exit 2 с `error [kind]` на stderr.
 Неверный UUID/значение/stale/busy — input; другая фича, Symmetric/ThroughAll,
-формула/Parameter dependency/future capabilities/stored SQL trigger — unsupported; kernel/topology
+формула/Parameter dependency/future capabilities/stored SQL trigger/нестандартное mutating FK action — unsupported; kernel/topology
 refusal остаётся типизированным. Отказ/отмена до publish не оставляет файла и scratch;
 после publish поздняя отмена не удаляет файл и не выдаёт публикацию за отказ.
 Сборка без OCCT собирается и честно отказывает операции, требующей ядра.

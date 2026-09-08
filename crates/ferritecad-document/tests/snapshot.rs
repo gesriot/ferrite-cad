@@ -83,6 +83,34 @@ fn stored_triggers_do_not_make_an_editable_copy_with_unaccounted_write_effects()
 }
 
 #[test]
+fn extension_foreign_key_actions_are_not_accepted_as_ordinary_edits() {
+    for definition in [
+        "CREATE UNIQUE INDEX extension_key ON objects(payload_hash); \
+         CREATE TABLE extension(value BLOB REFERENCES objects(payload_hash) ON UPDATE CASCADE);",
+        "CREATE TABLE extension(value TEXT REFERENCES capabilities(name) ON DELETE CASCADE);",
+    ] {
+        let root = tempfile::tempdir().expect("directory");
+        let source = root.path().join("source.fcad");
+        Document::create(&source)
+            .expect("create")
+            .close()
+            .expect("close");
+        Connection::open(&source)
+            .expect("SQL")
+            .execute_batch(definition)
+            .expect("extension");
+        let access = Document::open_read_only(&source)
+            .expect("reading")
+            .copy_access()
+            .expect("access");
+        assert!(
+            matches!(&access, Access::ReadOnly { reason } if reason.contains("extension") && reason.contains("foreign-key action")),
+            "{access:?}"
+        );
+    }
+}
+
+#[test]
 fn backup_keeps_unknown_envelopes_tables_and_the_pinned_reading() {
     let root = tempfile::tempdir().expect("directory");
     let source = root.path().join("source.fcad");
@@ -98,6 +126,10 @@ fn backup_keeps_unknown_envelopes_tables_and_the_pinned_reading() {
     doc.close().expect("close");
     let conn = Connection::open(&source).expect("raw");
     conn.execute_batch("CREATE TABLE extension (key TEXT PRIMARY KEY, bytes BLOB) WITHOUT ROWID; INSERT INTO extension VALUES ('one', X'010203FF');").expect("unknown table");
+    conn.execute_batch("CREATE TABLE extension_ref (key TEXT REFERENCES extension(key) ON DELETE RESTRICT); INSERT INTO extension_ref VALUES ('one');")
+        .expect("an extension constraint without side-effecting actions stays supported");
+    conn.execute_batch("CREATE TABLE extension_collation (key TEXT COLLATE NOCASE, value BLOB, PRIMARY KEY (key COLLATE BINARY)) WITHOUT ROWID; INSERT INTO extension_collation VALUES ('a', X'01'), ('A', X'01');")
+        .expect("a primary key can distinguish values its column collation treats as equal");
     let before = std::fs::read(&source).expect("source bytes");
     let pinned = Document::open_read_only(&source).expect("pinned reading");
     let version = pinned.content_version().expect("version");
