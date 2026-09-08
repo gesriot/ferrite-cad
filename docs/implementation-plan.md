@@ -2190,14 +2190,47 @@ baseline; публичный рецепт выполнен до cold rebuild и 
 проверки отделены от явно пропущенной геометрии. По новому указанию пользователя
 при ревью не запускались окно, ручные GUI-клики и GPU-проверки.
 
-**§24F — pending: Body discovery и STL JSON без GUI.**
-Добавить native Body UUID/optional name в `inspect --json` из того же закреплённого
-read-only снимка и `export-stl --json` через существующий общий STL job и JSON v1.
-Агент выбирает Body явно, получает опубликованный путь/Body/triangles/bytes без
-разбора прозы и сохраняет правила UTF-8, no-clobber, source aliases и delivery
-exit 7. Старые поля inspect и текстовый CLI сохраняются. Imported-only и экспорт
-нескольких тел не расширяются. Gate — реальные CLI-процессы и безоконная native/
-stub матрица; окно, GUI-автоматизация, экран, GPU и участие пользователя не нужны.
+**§24F — сделано, независимое ревью Codex пройдено: Body discovery и STL JSON.**
+Обязательный `inspect --json` → `result.bodies` содержит Body UUIDv7 и точное
+name/string/null в общем objects порядке. Metadata/content version/features/bodies
+принадлежат одному закреплённому read-only снимку. Общий typed helper
+`stl_bodies(&Document)` используется STL selector и discovery; он не знает JSON,
+не открывает путь, не требует ядра и не читает dependencies на каждый объект.
+Старые поля и единственный content hash не менялись; добавление совместимо в v1.
+
+`export-stl --json` использует общий `export_stl_result` и прежний jobs exporter,
+сообщает реально опубликованные destination/body_id/body_name/triangles/bytes и
+length_unit="mm" через существующий json::emit. UTF-8 проверяется до файловых
+операций, execution refusal — 2, delivery failure — 7 без rollback новой публикации
+или force-замены даже при закрытом stderr. Текст, defaults, no-clobber и source
+aliases сохраняются. Body не Extrude: ID фичи не выбирает её тело автоматически.
+Между inspect/export нет общего снимка или --expect-version; исчезнувший UUID
+отказывает. Imported-only и несколько тел одним STL не добавлены.
+
+Существующий обязательный native JSON gate расширен discovery/STL маршрутом,
+двумя геометриями, именами/ordering/domains, изменившимся источником и pipe cases.
+Четыре STL и восемь edit worker gates сохранены. Две временные поломки — подмена
+Body на Extrude и пропуск publish — пойманы исполняемыми process tests, затем
+восстановлен положительный прогон. [Контракт и рецепт](cli-json-v1.md),
+[безоконная матрица и передача](body-stl-json-verification.md) отделяют native от
+stub и новый diff от CI базы. UI/renderer, C++/FFI и runtime edges не менялись.
+Окно, GUI-автоматизация, диалоги и GPU/render tests в этом срезе не запускались.
+При независимом ревью повторены native document 132 / jobs 41 / CLI 48 и
+4 STL + 8 edit headless gates без native skips, fmt, workspace clippy,
+сборка обоих клиентов и публичный рецепт до независимого разбора STL.
+Stub-процессы проверены отдельно: восемь явных native skips не засчитаны
+геометрией; discovery и structured unsupported действительно исполнены.
+Дефектов, требующих изменения production-кода, ревью не выявило.
+
+**§24G — pending: JSON FBX с честным результатом частичного экспорта.**
+Добавить opt-in `export-fbx --json` через существующий общий FBX job и JSON v1.
+Результат должен различать опубликованный полный файл (exit 0), опубликованный
+частичный файл (exit 6) и отказ без публикации (exit 2); потеря доставки отчёта
+остаётся exit 7 без отката файла. Счётчики и типизированные omissions берутся
+только из завершённого `FbxWriteReport`, со source-qualified identity и всеми
+placements. Сохранить текстовый CLI, FBX-байты и identity wire contract.
+Приёмка полностью безоконная: реальные CLI-процессы, native/stub, независимый
+FBX reader и обязательный CI gate трёх платформ. UI/Unity и GPU не нужны.
 Пока пользователь отсутствует, следующие задания тоже не должны требовать
 ручных диалогов или наблюдения включённого экрана; исполнитель — только Codex.
 

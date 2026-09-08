@@ -219,6 +219,10 @@ struct ExportStlArgs {
     /// Replace the output file if it already exists.
     #[arg(long)]
     force: bool,
+
+    /// Emit the versioned JSON v1 result instead of the text report.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -338,6 +342,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::ClearCache(args) => clear_cache(args),
+        Command::ExportStl(args) if args.json => Ok(json::emit(
+            json::Operation::ExportStl,
+            export::export_stl_result(args).map(json::ExportedStl::from),
+        )),
         Command::ExportStl(args) => export::export_stl(args),
         Command::ExportFbx(args) => export_fbx::export_fbx(args),
         Command::Rebuild(args) => rebuild::rebuild(args),

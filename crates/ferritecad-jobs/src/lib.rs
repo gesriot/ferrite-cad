@@ -50,5 +50,5 @@ pub use publish::{
 
 pub use stl::{
     BodySelection, STL_SOURCE_IS_DESTINATION, StlBody, StlExport, StlExportRequest,
-    export_document_as_stl,
+    export_document_as_stl, stl_bodies,
 };

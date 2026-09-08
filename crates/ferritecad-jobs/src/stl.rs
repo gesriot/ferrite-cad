@@ -4,7 +4,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use ferritecad_document::{Document, ObjectPayload, ObjectRecord};
+use ferritecad_document::{Document, ObjectPayload};
 use ferritecad_eval::rebuild_cold;
 use ferritecad_export::binary_stl;
 use ferritecad_kernel::{GeometryKernel, OperationContext, ProgressSink, TessellationParams};
@@ -153,6 +153,21 @@ fn write_and_publish(
     Ok(())
 }
 
+/// Saved native Body facts in `Document::objects()` order, including bodies
+/// without a tip or name. Presence promises neither geometry nor kernel support.
+/// Reads the caller's pinned document; never opens a path or builds geometry.
+pub fn stl_bodies(document: &Document) -> Result<Vec<StlBody>> {
+    Ok(document
+        .objects()?
+        .into_iter()
+        .filter(|object| matches!(object.payload, ObjectPayload::Body(_)))
+        .map(|object| StlBody {
+            id: object.id,
+            name: object.name,
+        })
+        .collect())
+}
+
 /// Which solid to export, and what to call it in messages.
 ///
 /// With one body in the document the choice is obvious and is made. With
@@ -160,11 +175,7 @@ fn write_and_publish(
 /// happened to sort first, and the user would have no way of knowing that a
 /// different part was meant.
 fn choose(document: &Document, selection: BodySelection<'_>) -> Result<StlBody> {
-    let bodies: Vec<ObjectRecord> = document
-        .objects()?
-        .into_iter()
-        .filter(|object| matches!(object.payload, ObjectPayload::Body(_)))
-        .collect();
+    let bodies = stl_bodies(document)?;
 
     if bodies.is_empty() {
         return Err(CadError::input(format!(
@@ -176,7 +187,7 @@ fn choose(document: &Document, selection: BodySelection<'_>) -> Result<StlBody> 
     let wanted = match selection {
         BodySelection::Only { advice } => {
             if bodies.len() == 1 {
-                return Ok(describe(&bodies[0]));
+                return Ok(bodies[0].clone());
             }
             return Err(CadError::input(format!(
                 "{} contains {} bodies; {advice}:\n{}",
@@ -189,7 +200,7 @@ fn choose(document: &Document, selection: BodySelection<'_>) -> Result<StlBody> 
             return bodies
                 .iter()
                 .find(|object| object.id == id)
-                .map(describe)
+                .cloned()
                 .ok_or_else(|| {
                     CadError::input(format!(
                         "no body with identifier {id} in {}; this document holds:\n{}",
@@ -208,7 +219,7 @@ fn choose(document: &Document, selection: BodySelection<'_>) -> Result<StlBody> 
         return bodies
             .iter()
             .find(|object| object.id == id)
-            .map(describe)
+            .cloned()
             .ok_or_else(|| {
                 CadError::input(format!(
                     "no body with identifier {wanted} in {}; this document holds:\n{}",
@@ -218,13 +229,13 @@ fn choose(document: &Document, selection: BodySelection<'_>) -> Result<StlBody> 
             });
     }
 
-    let matched: Vec<&ObjectRecord> = bodies
+    let matched: Vec<&StlBody> = bodies
         .iter()
         .filter(|object| object.name.as_deref() == Some(wanted))
         .collect();
 
     match matched.as_slice() {
-        [one] => Ok(describe(one)),
+        [one] => Ok((*one).clone()),
         [] => Err(CadError::input(format!(
             "no body called {wanted} in {}; this document holds:\n{}",
             document.path().display(),
@@ -238,14 +249,7 @@ fn choose(document: &Document, selection: BodySelection<'_>) -> Result<StlBody> 
     }
 }
 
-fn describe(object: &ObjectRecord) -> StlBody {
-    StlBody {
-        id: object.id,
-        name: object.name.clone(),
-    }
-}
-
-fn list(bodies: &[ObjectRecord]) -> String {
+fn list(bodies: &[StlBody]) -> String {
     bodies
         .iter()
         .map(|object| match &object.name {
