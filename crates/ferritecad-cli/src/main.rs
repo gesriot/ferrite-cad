@@ -91,6 +91,9 @@ struct Cli {
 enum Command {
     /// Create a new document.
     Create(CreateArgs),
+    /// Change one constant Blind extrusion and save a new .fcad of the same model.
+    /// Preserves identities; never overwrites source or output. Requires a kernel.
+    EditExtrude(EditExtrudeArgs),
     /// Show a document's metadata, objects, graph and references.
     Inspect(DocumentArgs),
     /// Check that a document is internally consistent and rebuildable.
@@ -120,6 +123,24 @@ enum Command {
     PrintTopology(DocumentArgs),
     /// Read a STEP file into a new document, source bytes and all.
     ImportStep(ImportStepArgs),
+}
+
+#[derive(Debug, Args)]
+struct EditExtrudeArgs {
+    /// Existing .fcad, read without migration or modification.
+    source: PathBuf,
+    /// Exact feature UUID printed by inspect (never a name or index).
+    #[arg(long)]
+    feature: ferritecad_types::ObjectId,
+    /// New finite, positive distance in millimetres, regardless of display units.
+    #[arg(long, allow_hyphen_values = true)]
+    distance_mm: f64,
+    /// New .fcad path. Existing files are refused; there is no --force.
+    #[arg(short, long)]
+    output: PathBuf,
+    /// Optional complete content version printed by inspect; refuses stale input.
+    #[arg(long)]
+    expect_version: Option<ferritecad_types::ContentHash>,
 }
 
 #[derive(Debug, Args)]
@@ -260,8 +281,9 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Create(args) => create(args),
+        Command::EditExtrude(args) => edit_extrude(args),
         Command::Inspect(args) => {
-            let document = Document::open(&args.path)?;
+            let document = Document::open_read_only(&args.path)?;
             render::inspect(&document)?;
             Ok(ExitCode::SUCCESS)
         }
@@ -364,4 +386,29 @@ fn report(error: &CadError) {
         eprintln!("  caused by: {cause}");
         source = cause.source();
     }
+}
+
+fn edit_extrude(args: EditExtrudeArgs) -> Result<ExitCode> {
+    let source = ferritecad_jobs::read_extrude_source(&args.source)?;
+    let mut expected = source.version;
+    if let Some(version) = args.expect_version {
+        expected.content = version;
+    }
+    let request = ferritecad_jobs::EditExtrudeRequest {
+        source: args.source,
+        expected,
+        feature: args.feature,
+        distance_mm: args.distance_mm,
+        destination: args.output,
+    };
+    let mut kernel = ferritecad_occt::OcctKernel::new()?;
+    let edited =
+        ferritecad_jobs::edit_extrude_copy(&request, &mut kernel, &OperationContext::default())?;
+    println!(
+        "saved {} ({}, feature {})",
+        edited.destination.display(),
+        edited.document_id,
+        edited.feature
+    );
+    Ok(ExitCode::SUCCESS)
 }

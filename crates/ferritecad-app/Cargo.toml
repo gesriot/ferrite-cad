@@ -82,6 +82,7 @@ planegcs = ["ferritecad-jobs/planegcs", "ferritecad-sketch-solver/planegcs"]
 [dev-dependencies]
 ferritecad-eval.workspace = true
 ferritecad-fixtures.workspace = true
+rusqlite = { version = "0.37", features = ["bundled"] }
 tempfile = "3"
 
 [lints]

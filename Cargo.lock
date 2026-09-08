@@ -709,6 +709,7 @@ dependencies = [
  "ferritecad-viewport",
  "ferritecad-viewport-gpu",
  "rfd",
+ "rusqlite",
  "tempfile",
  "wgpu",
  "winit",
@@ -800,11 +801,13 @@ name = "ferritecad-jobs"
 version = "0.0.1"
 dependencies = [
  "ferritecad-document",
+ "ferritecad-eval",
  "ferritecad-exchange",
  "ferritecad-export",
  "ferritecad-kernel",
  "ferritecad-scene",
  "ferritecad-types",
+ "same-file",
  "tempfile",
 ]
 

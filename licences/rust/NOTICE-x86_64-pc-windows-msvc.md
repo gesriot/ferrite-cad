@@ -22,8 +22,8 @@ policy in ADR 0002.
   - `ferritecad`, built from `crates/ferritecad-cli/Cargo.toml` with default features
 - dependency kinds: normal and build. Dev-dependencies are excluded, so the
   solver bench, the fixtures and the test-only crates are not listed here.
-- third-party packages: 162
-- distinct licence texts: 84
+- third-party packages: 164
+- distinct licence texts: 85
 
 ## Packages
 
@@ -135,6 +135,7 @@ policy in ADR 0002.
 | `rusqlite` | 0.37.0 | `165ca6e57b20e1351573e3729b958bc62f0e48025386970b6e4d29e7a7e71f3f` | `MIT` | `MIT` | text below |
 | `rustc-hash` | 1.1.0 | `08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2` | `Apache-2.0 OR MIT` | `MIT` | text below |
 | `rustc-hash` | 2.1.3 | `6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d` | `Apache-2.0 OR MIT` | `MIT` | text below |
+| `same-file` | 1.0.6 | `93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502` | `Unlicense OR MIT` | `MIT` | text below |
 | `scopeguard` | 1.2.0 | `94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `self_cell` | 1.3.0 | `2ab42ca02749e120097e328d91d415325bdf43b1c72c4c8badf37375fe40a813` | `Apache-2.0 OR GPL-2.0-only` | `Apache-2.0` | text below |
 | `serde` | 1.0.229 | `4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba` | `MIT OR Apache-2.0` | `MIT` | text below |
@@ -172,6 +173,7 @@ policy in ADR 0002.
 | `wgpu-hal` | 30.0.0 | `cf765132d8d5f50e192e7880464890c13f4e7457aafe8e5466e8174586e9f101` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `wgpu-naga-bridge` | 30.0.0 | `c9eaac644e5008925c78567d272b9d66ef83da55a53cc17fc7daade7bb6e66e5` | `MIT OR Apache-2.0` | `MIT` | text below |
 | `wgpu-types` | 30.0.0 | `1a9c93c2b35edde326df60ffdee4c0f5864eac3011d6768b70d43f028ad93565` | `MIT OR Apache-2.0` | `MIT` | text below |
+| `winapi-util` | 0.1.11 | `c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22` | `Unlicense OR MIT` | `MIT` | text below |
 | `windows` | 0.62.2 | `527fadee13e0c05939a6a05d5bd6eec6cd2e3dbd648b9f8e447c6518133d8580` | `MIT` | `MIT` | text below |
 | `windows-collections` | 0.3.2 | `23b2d95af1a8a14a3c7367e1ed4fc9c20e0a26e79551b1454d72583c97cc6610` | `MIT` | `MIT` | text below |
 | `windows-core` | 0.62.2 | `b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb` | `MIT` | `MIT` | text below |
@@ -3903,6 +3905,37 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Applies to:
 
+- `same-file` 1.0.6
+- `winapi-util` 0.1.11
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2017 Andrew Gallant
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### 69. MIT
+
+Applies to:
+
 - `pollster` 0.4.0
 
 ```text
@@ -3933,7 +3966,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 69. MIT
+### 70. MIT
 
 Applies to:
 
@@ -3965,7 +3998,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 70. MIT
+### 71. MIT
 
 Applies to:
 
@@ -4002,7 +4035,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 71. MIT
+### 72. MIT
 
 Applies to:
 
@@ -4036,7 +4069,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 72. MIT
+### 73. MIT
 
 Applies to:
 
@@ -4071,7 +4104,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 73. MIT
+### 74. MIT
 
 Applies to:
 
@@ -4101,7 +4134,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 74. MIT
+### 75. MIT
 
 Applies to:
 
@@ -4128,7 +4161,7 @@ WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 75. MIT
+### 76. MIT
 
 Applies to:
 
@@ -4162,7 +4195,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 76. MIT
+### 77. MIT
 
 Applies to:
 
@@ -4192,7 +4225,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 77. MIT
+### 78. MIT
 
 Applies to:
 
@@ -4226,7 +4259,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 78. MIT
+### 79. MIT
 
 Applies to:
 
@@ -4260,7 +4293,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 79. MIT
+### 80. MIT
 
 Applies to:
 
@@ -4294,7 +4327,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 80. MIT
+### 81. MIT
 
 Applies to:
 
@@ -4330,7 +4363,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 81. OFL-1.1
+### 82. OFL-1.1
 
 Applies to:
 
@@ -4431,7 +4464,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
 
-### 82. Ubuntu-font-1.0
+### 83. Ubuntu-font-1.0
 
 Applies to:
 
@@ -4536,7 +4569,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM OTHER
 DEALINGS IN THE FONT SOFTWARE.
 ```
 
-### 83. Unicode-3.0
+### 84. Unicode-3.0
 
 Applies to:
 
@@ -4584,7 +4617,7 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ```
 
-### 84. Zlib
+### 85. Zlib
 
 Applies to:
 

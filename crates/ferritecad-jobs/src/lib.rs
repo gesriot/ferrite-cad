@@ -36,10 +36,12 @@
 //! a function of what was saved rather than of what a viewer happens to hold.
 
 mod create;
+mod edit;
 mod fbx;
 mod publish;
 
 pub use create::{CreateDocumentRequest, CreatedDocument, NewDocument, PlateSize, create_document};
+pub use edit::{EditExtrudeRequest, EditedDocument, edit_extrude_copy, read_extrude_source};
 pub use fbx::{FbxExport, FbxExportRequest, SOURCE_IS_DESTINATION, export_document_as_fbx};
 pub use publish::{
     Existing, Temporary, is_same_entry, path_entry_exists, refuse_source_as_destination,

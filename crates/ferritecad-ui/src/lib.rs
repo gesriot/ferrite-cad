@@ -16,9 +16,11 @@
 //! event to them. What is added here is only the translation: which gesture
 //! calls which operation, and with what.
 
+mod edit;
 mod input;
 mod panels;
 
+pub use edit::{EditChoice, EditExtrudeForm, ExtrusionRow, edit_extrude_panel};
 pub use input::{Hover, PointerButton, ViewportEvent, ViewportInput};
 pub use panels::{
     Activity, CANCEL_EXPORT, CHOOSE_LOCATION, Chosen, ConflictingRule, EMPTY_DOCUMENT, EXPORT_FBX,

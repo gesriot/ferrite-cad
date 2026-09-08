@@ -691,7 +691,10 @@ jobs:
             exports::tests::an_export_writes_the_file_the_user_chose \
             exports::tests::the_window_and_the_shared_job_write_the_same_bytes \
             exports::tests::the_complex_assembly_exports_from_the_window_and_says_what_is_missing \
-            creates::tests::both_clients_reopen_rebuild_resolve_and_export_the_saved_plate
+            creates::tests::both_clients_reopen_rebuild_resolve_and_export_the_saved_plate \
+            edits::tests::one_source_ui_and_cli_preserve_all_ids_rebuild_and_export_the_changed_model \
+            edits::tests::imported_blobs_unknown_tables_and_unselected_payloads_survive_edit \
+            edits::tests::cancellation_before_and_after_publish_and_stale_answers_keep_honest_outcomes
           do
             if ! grep -q "^test ${gate} \.\.\. ok$" app-tests.log; then
               echo "::error::${gate} did not run and pass on this platform"

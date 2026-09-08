@@ -190,7 +190,11 @@ pub fn is_same_entry(source: &Path, destination: &Path) -> Result<bool> {
         .map_err(|e| CadError::io(format!("resolving {}", source.display()), e))?;
     let resolved_destination = std::fs::canonicalize(destination)
         .map_err(|e| CadError::io(format!("resolving {}", destination.display()), e))?;
-    Ok(resolved_source == resolved_destination)
+    if resolved_source == resolved_destination {
+        return Ok(true);
+    }
+    same_file::is_same_file(source, destination)
+        .map_err(|e| CadError::io("comparing source and destination file identities", e))
 }
 
 /// Refuses a destination that is the source, which nothing makes acceptable.

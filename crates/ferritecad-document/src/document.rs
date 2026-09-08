@@ -9,8 +9,8 @@ use ferritecad_exchange::{
 };
 use ferritecad_kernel::{KernelIdentity, ShapeHandle};
 use ferritecad_types::{
-    CadError, ContentHash, Dimension, DocumentId, ImportedSourceId, ObjectId, Result,
-    StableEntityId, Unit,
+    CadError, CanonicalHasher, ContentHash, Dimension, DocumentId, ImportedSourceId, ObjectId,
+    Result, StableEntityId, Unit,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 
@@ -416,6 +416,10 @@ impl Document {
         let path = path.as_ref().to_path_buf();
         refuse_wal_journal(&path)?;
         let conn = open_connection(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        // Pin one SQLite reading for every query (metadata, geometry and edit
+        // identity alike). A concurrent commit cannot split a load in two.
+        conn.execute_batch("BEGIN")
+            .map_err(|e| CadError::io("starting document snapshot", e))?;
         schema::check_application_id(&conn, DOCUMENT_APPLICATION_ID, "document")?;
         schema::require_current_document_schema(&conn)?;
 
@@ -441,6 +445,214 @@ impl Document {
 
     pub fn access(&self) -> &Access {
         &self.access
+    }
+
+    /// Whether a copy can be edited without discarding unsupported meaning.
+    /// Explicit read-only connection access is separate from format capability.
+    pub fn copy_access(&self) -> Result<Access> {
+        let access = determine_access(&self.conn)?;
+        if !access.is_writable() {
+            return Ok(access);
+        }
+        // The bounded edit promises to change only its selected feature. A
+        // stored trigger can change arbitrary other data during that write;
+        // neither executing nor silently stripping it preserves that promise.
+        let trigger: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT name FROM sqlite_schema WHERE type = 'trigger' ORDER BY name LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| CadError::io("checking stored SQL triggers", e))?;
+        if let Some(name) = trigger {
+            return Ok(Access::ReadOnly {
+                reason: format!(
+                    "editing a document with stored SQL trigger {name:?} is unsupported"
+                ),
+            });
+        }
+        // Foreign-key actions are implicit write programs too. Permit the
+        // four cascades in the current document schema; extensions with
+        // further mutating actions need an edit contract of their own.
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT s.name, f.\"from\", f.\"table\", f.\"to\", f.on_update, f.on_delete \
+             FROM sqlite_schema AS s, pragma_foreign_key_list(s.name, 'main') AS f \
+             WHERE s.type = 'table' ORDER BY s.name, f.id, f.seq",
+            )
+            .map_err(|e| CadError::io("checking SQL foreign-key actions", e))?;
+        let keys = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(|e| CadError::io("reading SQL foreign-key actions", e))?;
+        for key in keys {
+            let (table, column, parent, target, update, delete) =
+                key.map_err(|e| CadError::io("reading SQL foreign-key action", e))?;
+            let no_write = |action: &str| matches!(action, "NO ACTION" | "RESTRICT");
+            if no_write(&update) && no_write(&delete) {
+                continue;
+            }
+            let native_cascade = update == "NO ACTION"
+                && delete == "CASCADE"
+                && parent == "objects"
+                && target.as_deref() == Some("id")
+                && matches!(
+                    (table.as_str(), column.as_str()),
+                    ("objects", "parent_id")
+                        | ("deps", "dependent_id")
+                        | ("topology_refs", "owner_id")
+                        | ("imported_source_refs", "object_id")
+                );
+            if !native_cascade {
+                return Ok(Access::ReadOnly {
+                    reason: format!(
+                        "editing with foreign-key action on {table:?}.{column:?} (ON UPDATE {update}, ON DELETE {delete}) is unsupported"
+                    ),
+                });
+            }
+        }
+        Ok(access)
+    }
+
+    /// A complete logical content version, including unknown tables/envelopes
+    /// and imported BLOBs. Implicit row identities are included: they are SQL
+    /// observable data, even when no declared column aliases them. No filesystem
+    /// clock or SQLite page layout enters it. Tables that hide every rowid alias
+    /// are refused, rather than assigned an incomplete version.
+    /// Read this from `open_read_only`, whose transaction pins the whole reading.
+    pub fn content_version(&self) -> Result<ContentHash> {
+        fn quoted(name: &str) -> String {
+            format!("\"{}\"", name.replace('"', "\"\""))
+        }
+        let read = || -> Result<ContentHash> {
+            let sql_error = |e| CadError::io("reading complete document version", e);
+            let mut hash = CanonicalHasher::new("document.logical-content");
+            hash.algorithm_version(2);
+            let mut schema = self
+                .conn
+                .prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name")
+                .map_err(sql_error)?;
+            let mut rows = schema.query([]).map_err(sql_error)?;
+            let mut tables = Vec::new();
+            while let Some(row) = rows.next().map_err(sql_error)? {
+                for column in 0..4 {
+                    let value: Option<String> = row.get(column).map_err(sql_error)?;
+                    hash.bool(value.is_some())
+                        .str(value.as_deref().unwrap_or_default());
+                }
+                if row.get::<_, String>(0).map_err(sql_error)? == "table" {
+                    tables.push(row.get::<_, String>(1).map_err(sql_error)?);
+                }
+            }
+            for table in tables {
+                hash.field(&table);
+                let without_rowid: bool = self
+                    .conn
+                    .query_row(
+                        "SELECT wr FROM pragma_table_list WHERE schema = 'main' AND name = ?1",
+                        [&table],
+                        |row| row.get(0),
+                    )
+                    .map_err(sql_error)?;
+                let identity = if without_rowid {
+                    String::new()
+                } else {
+                    let mut columns = self
+                        .conn
+                        .prepare("SELECT name FROM pragma_table_xinfo(?1, 'main')")
+                        .map_err(sql_error)?;
+                    let names: Vec<String> = columns
+                        .query_map([&table], |row| row.get(0))
+                        .map_err(sql_error)?
+                        .collect::<rusqlite::Result<_>>()
+                        .map_err(sql_error)?;
+                    let alias = ["_rowid_", "rowid", "oid"].into_iter().find(|alias| {
+                        !names.iter().any(|name| name.eq_ignore_ascii_case(alias))
+                    }).ok_or_else(|| CadError::unsupported(format!(
+                        "cannot read complete identity of table {table:?}: all rowid aliases are shadowed"
+                    )))?;
+                    format!("{alias}, ")
+                };
+                let select = format!("SELECT {identity}* FROM {}", quoted(&table));
+                let count = self
+                    .conn
+                    .prepare(&select)
+                    .map_err(sql_error)?
+                    .column_count();
+                // Rowid is the first, unique sort key. WITHOUT ROWID tables
+                // include their primary key in *. Use binary text comparison:
+                // a column's collation may differ from its key's collation.
+                let order = (1..=count)
+                    .map(|i| format!("{i} COLLATE BINARY"))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let mut statement = self
+                    .conn
+                    .prepare(&format!("{select} ORDER BY {order}"))
+                    .map_err(sql_error)?;
+                let mut rows = statement.query([]).map_err(sql_error)?;
+                while let Some(row) = rows.next().map_err(sql_error)? {
+                    hash.field("row");
+                    for column in 0..count {
+                        use rusqlite::types::ValueRef;
+                        match row.get_ref(column).map_err(sql_error)? {
+                            ValueRef::Null => {
+                                hash.field("null");
+                            }
+                            ValueRef::Integer(v) => {
+                                hash.field("integer").bytes(&v.to_be_bytes());
+                            }
+                            ValueRef::Real(v) => {
+                                hash.field("real").bytes(&v.to_bits().to_be_bytes());
+                            }
+                            ValueRef::Text(v) => {
+                                hash.field("text").bytes(v);
+                            }
+                            ValueRef::Blob(v) => {
+                                hash.field("blob").bytes(v);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(hash.finish())
+        };
+        read()
+    }
+
+    /// Copies this pinned reading through SQLite's online backup API. The
+    /// destination must be inside caller-owned private storage and absent.
+    /// All pages are copied, including data this build does not decode.
+    pub fn snapshot_to(&self, destination: &Path) -> Result<()> {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)
+            .map_err(|e| CadError::io("reserving document snapshot", e))?;
+        let mut target = open_connection(destination, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        let backup = rusqlite::backup::Backup::new(&self.conn, &mut target)
+            .map_err(|e| CadError::io("starting SQLite backup", e))?;
+        let step = backup
+            .step(-1)
+            .map_err(|e| CadError::io("copying SQLite snapshot", e))?;
+        if step != rusqlite::backup::StepResult::Done {
+            return Err(CadError::input("source is busy; reopen it and try again"));
+        }
+        drop(backup);
+        target
+            .close()
+            .map_err(|(_, e)| CadError::io("closing SQLite snapshot", e))
     }
 
     /// Where this document's regenerable cache sidecar lives.
