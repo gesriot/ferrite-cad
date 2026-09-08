@@ -5,6 +5,84 @@ use ferritecad_types::ObjectId;
 use rusqlite::Connection;
 
 #[test]
+fn content_version_observes_implicit_row_identity_even_when_an_alias_is_shadowed() {
+    let root = tempfile::tempdir().expect("directory");
+    let source = root.path().join("source.fcad");
+    Document::create(&source)
+        .expect("create")
+        .close()
+        .expect("close");
+    let connection = Connection::open(&source).expect("SQL");
+    connection
+        .execute_batch(
+            "CREATE TABLE extension(rowid TEXT, value BLOB); \
+         INSERT INTO extension(_rowid_, rowid, value) VALUES (1, 'user column', X'0102');",
+        )
+        .expect("extension with a shadowed rowid alias");
+    let version = Document::open_read_only(&source)
+        .expect("reading")
+        .content_version()
+        .expect("complete version");
+    connection
+        .execute("UPDATE extension SET _rowid_ = 42", [])
+        .expect("change identity");
+    let changed = Document::open_read_only(&source)
+        .expect("new reading")
+        .content_version()
+        .expect("new version");
+    assert_ne!(
+        version, changed,
+        "a changed implicit row identity was invisible to the version"
+    );
+}
+
+#[test]
+fn content_version_refuses_an_inaccessible_implicit_identity() {
+    let root = tempfile::tempdir().expect("directory");
+    let source = root.path().join("source.fcad");
+    Document::create(&source)
+        .expect("create")
+        .close()
+        .expect("close");
+    Connection::open(&source)
+        .expect("SQL")
+        .execute_batch("CREATE TABLE extension(rowid TEXT, _ROWID_ TEXT, oid TEXT);")
+        .expect("all aliases shadowed");
+    let error = Document::open_read_only(&source)
+        .expect("reading")
+        .content_version()
+        .expect_err("must not issue an incomplete version")
+        .to_string();
+    assert!(
+        error.contains("extension") && error.contains("all rowid aliases"),
+        "{error}"
+    );
+}
+
+#[test]
+fn stored_triggers_do_not_make_an_editable_copy_with_unaccounted_write_effects() {
+    let root = tempfile::tempdir().expect("directory");
+    let source = root.path().join("source.fcad");
+    Document::create(&source)
+        .expect("create")
+        .close()
+        .expect("close");
+    Connection::open(&source)
+        .expect("SQL")
+        .execute_batch(
+            "CREATE TRIGGER extension_write AFTER UPDATE ON objects BEGIN \
+         UPDATE objects SET name = 'unexpected rename'; END;",
+        )
+        .expect("stored trigger");
+    let document = Document::open_read_only(&source).expect("still readable");
+    let access = document.copy_access().expect("copy access");
+    assert!(
+        matches!(&access, Access::ReadOnly { reason } if reason.contains("extension_write")),
+        "the refusal must identify the stored trigger: {access:?}"
+    );
+}
+
+#[test]
 fn backup_keeps_unknown_envelopes_tables_and_the_pinned_reading() {
     let root = tempfile::tempdir().expect("directory");
     let source = root.path().join("source.fcad");

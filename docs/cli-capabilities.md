@@ -321,12 +321,15 @@ Source не перезаписывается и не мигрируется, out
 и in-place Save отсутствуют. Файл публикуется после одной транзакции, валидации,
 cold rebuild и проверки ранее разрешимых refs. Stale source отказывает с предложением
 reopen; при работе от результата прежнего inspect используйте `--expect-version`.
+Версия учитывает также implicit rowid; после смены алгоритма content version
+получите hash новым inspect. Если дополнительная таблица затеняет все три rowid
+alias, полное чтение версии отказывает с её именем.
 `inspect` теперь также read-only: старую схему/WAL отказывает. Старое описание записи
 через `Document::open` выше по-прежнему относится к validate/dump-graph/clear-cache.
 
 CLI: успех — exit 0 и `saved …`; отказ — exit 2 с `error [kind]` на stderr.
 Неверный UUID/значение/stale/busy — input; другая фича, Symmetric/ThroughAll,
-формула/Parameter dependency/future capabilities — unsupported; kernel/topology
+формула/Parameter dependency/future capabilities/stored SQL trigger — unsupported; kernel/topology
 refusal остаётся типизированным. Отказ/отмена до publish не оставляет файла и scratch;
 после publish поздняя отмена не удаляет файл и не выдаёт публикацию за отказ.
 Сборка без OCCT собирается и честно отказывает операции, требующей ядра.

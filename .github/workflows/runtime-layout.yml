@@ -524,6 +524,7 @@ jobs:
           for gate in \
             one_source_ui_and_cli_preserve_all_ids_rebuild_and_export_the_changed_model \
             imported_blobs_unknown_tables_and_unselected_payloads_survive_edit \
+            hidden_row_identity_and_stored_triggers_refuse_publication \
             cancellation_before_and_after_publish_and_stale_answers_keep_honest_outcomes \
             published_output_and_open_failure_are_separate_from_the_accepted_scene \
             cancelling_the_form_and_a_closed_save_dialog_do_no_work \

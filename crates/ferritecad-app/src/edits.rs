@@ -570,6 +570,98 @@ mod tests {
     }
 
     #[test]
+    fn hidden_row_identity_and_stored_triggers_refuse_publication() {
+        if !native() {
+            return;
+        }
+        for trigger in [false, true] {
+            let root = tempfile::tempdir().expect("directory");
+            let (source, feature) = make(root.path(), ["80", "50", "12"]);
+            let sql = rusqlite::Connection::open(&source).expect("fixture connection");
+            sql.execute_batch(if trigger {
+                "CREATE TRIGGER extension_write AFTER UPDATE OF payload ON objects BEGIN \
+                 UPDATE objects SET name = 'unexpected rename' WHERE kind = 'body'; END;"
+            } else {
+                "CREATE TABLE extension(rowid TEXT, value BLOB); \
+                 INSERT INTO extension(_rowid_, rowid, value) VALUES (1, 'kept', X'0102');"
+            })
+            .expect("extension");
+            let reading = opened(&source).edit_source.expect("accepted reading");
+            let reason = if trigger {
+                "extension_write"
+            } else {
+                "source has changed"
+            };
+            if trigger {
+                let mut edits = Edits::default();
+                assert!(
+                    !edits.begin(&source, &reading),
+                    "UI must refuse before Save"
+                );
+                assert!(
+                    reading
+                        .unavailable_reason()
+                        .expect("named refusal")
+                        .contains(reason)
+                );
+            } else {
+                sql.execute("UPDATE extension SET _rowid_ = 42", [])
+                    .expect("change only row identity");
+            }
+            let before = std::fs::read(&source).expect("source before rejected edit");
+            let destination = root.path().join("refused.fcad");
+            let result = cli(&[
+                "edit-extrude".as_ref(),
+                source.as_os_str(),
+                "--feature".as_ref(),
+                feature.to_string().as_ref(),
+                "--distance-mm".as_ref(),
+                "27".as_ref(),
+                "--expect-version".as_ref(),
+                reading.version.content.to_string().as_ref(),
+                "-o".as_ref(),
+                destination.as_os_str(),
+            ]);
+            assert_eq!(result.status.code(), Some(2));
+            assert!(
+                String::from_utf8_lossy(&result.stderr).contains(reason),
+                "{result:?}"
+            );
+            assert!(!destination.exists());
+            assert_eq!(std::fs::read(&source).expect("source"), before);
+            if !trigger {
+                // Also change only rowid after the worker has built the copy:
+                // the final source recheck must see it before publication.
+                let current = opened(&source).edit_source.expect("fresh reading");
+                let request = EditExtrudeRequest {
+                    source: source.clone(),
+                    expected: current.version,
+                    feature,
+                    distance_mm: 27.0,
+                    destination,
+                };
+                let changing_source = source.clone();
+                let context =
+                    OperationContext::default().with_progress(ProgressSink::new(move |fraction| {
+                        if fraction == 0.95 {
+                            rusqlite::Connection::open(&changing_source)
+                                .expect("writer")
+                                .execute("UPDATE extension SET _rowid_ = 77", [])
+                                .expect("late rowid change");
+                        }
+                    }));
+                let error = run_edit(&request, &context).expect_err("late change must refuse");
+                assert!(error.to_string().contains(reason), "{error}");
+                assert!(!request.destination.exists());
+            }
+            assert_eq!(
+                std::fs::read_dir(root.path()).expect("only source").count(),
+                1
+            );
+        }
+    }
+
+    #[test]
     fn cancellation_before_and_after_publish_and_stale_answers_keep_honest_outcomes() {
         if !native() {
             return;

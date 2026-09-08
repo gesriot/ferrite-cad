@@ -42,9 +42,21 @@ Display length unit исходника не масштабирует ввод mm
 после открытия копии. Read-only connection и совместимость формата — разные факты:
 просмотр совместимого документа сам по себе не запрещает создание его изменённой копии.
 Будущие required capabilities не становятся поддерживаемыми от копирования.
+Документ с сохранёнными SQL-триггерами отказывает в edit до создания scratch: запись
+может вызвать неучтённые изменения других объектов. Триггеры не исполняются и не
+удаляются; просмотр остаётся доступным, UI называет первый триггер в причине отказа.
 
 Content version — BLAKE3 по полной SQL-схеме и всем типизированным ячейкам всех таблиц
-в определённом порядке, включая неизвестные данные, BLOB, UUID и timestamps. Mtime,
+в определённом порядке, включая неизвестные данные, BLOB, UUID и timestamps.
+Алгоритм версии 2 учитывает также implicit rowid у обычных таблиц: это доступный
+из SQL ключ строки, даже когда объявленные столбцы не менялись. Выбирается первый
+незатенённый alias из `_rowid_`, `rowid`, `oid`, без учёта регистра; WITHOUT ROWID
+таблицы используют объявленный primary key. Если затенены все три alias, полная
+версия отказывает `Unsupported` с именем таблицы; неполный hash не выдаётся. Это
+также ограничивает inspect и загрузку scene facts для такой нестандартной схемы.
+Порядок включает уникальный ключ и не зависит от совпадений под SQL collation.
+После смены алгоритма сохранённый `--expect-version` нужно получить новым inspect.
+[SQLite описывает rowid и затенение aliases](https://www.sqlite.org/rowidtable.html). Mtime,
 размер, имена путей, страничное размещение и UUID нового документа не используются.
 Версия проверяется перед копированием и повторным открытием source path непосредственно
 перед publish. Последнее read connection удерживается до публикации. Изменение
@@ -196,7 +208,7 @@ FBX: `3e2e0adbae0d4d65b5452c9ba3b81efd7e895ad2c949e1cc997abd4aa4a2a2f7`.
 source/output hashes и заголовок сохранились; повторный GUI export побайтово совпал
 с прежним. Scratch не остался. Это реальная проверка диалогов, не тест форматтера.
 
-Windows/Linux GUI вручную не наблюдались. Все шесть native edit tests обязательно
+Windows/Linux GUI вручную не наблюдались. Все семь native edit tests обязательно
 исполняются в обычном combined runtime layout workflow на трёх платформах, с обоими
 нативными компонентами и release-клиентами; имена каждого теста проверяются в логе,
 skip и `--no-run` не считаются прохождением. Ручной OCCT pin также содержит три
@@ -205,3 +217,43 @@ skip и `--no-run` не считаются прохождением. Ручно�
 workflow; он не является успешным evidence. Точный head и ссылки CI записаны в PR.
 Новых release/install/association гарантий, in-place Save, dirty state, sketch/parameter
 editor, STEP UI, batch/JSON/RPC/DSL, assemblies или drawings этот PR не добавляет.
+
+
+## Независимое ревью PR #16 — 2026-09-07
+
+Проверен опубликованный head `2a984a64acc627fd0107aa13867c966d3b7fd51d`.
+Его 27 checks были зелёными, но два дополнительных CLI-примера нашли дефекты:
+изменение только implicit rowid неизвестной таблицы не меняло content version,
+а AFTER UPDATE trigger переименовывал Body при успешной публикации правки высоты.
+Два новых snapshot-теста сначала скомпилировались и упали на этих свойствах
+(три прежних прошли); это не ошибки подготовки или компиляции.
+
+Исправления: алгоритм content version 2 с полным ключом строки и именованный отказ
+`copy_access` для stored triggers. Проверяются затенённый alias, недоступные aliases,
+обычная и WITHOUT ROWID таблицы, сохранение pinned snapshot и backup. Новый native
+gate `hidden_row_identity_and_stored_triggers_refuse_publication` проверяет настоящий
+CLI, отказ формы, source bytes, отсутствие output/scratch и изменение только rowid
+на barrier 0.95 — после rebuild, перед окончательной проверкой source. Он добавлен
+в обязательный поимённый список combined runtime layout на каждой из трёх платформ.
+
+Независимый полный native workspace: **1714 passed, 0 failed, 1 ignored**, 93 suites;
+OCCT 8.0.1, PlaneGCS и GPU обязательны, skip markers отсутствуют, все 7 edit tests
+исполнены. Ignored — существующий `regenerate_the_committed_manifest`. После замены
+явного panic в новом тесте на assert повторно прошли все 6 snapshot tests. Успешны
+fmt, workspace clippy всех targets/features с `-D warnings`, export boundary,
+solver ownership, licence headers, actionlint и diff whitespace check.
+Независимая no-OCCT сборка обоих клиентов и 11 CLI process tests тоже прошли;
+CMake cache содержит `OpenCASCADE_DIR-NOTFOUND`, edit отказал без нового файла.
+Логи этого ревью: `/private/tmp/ferrite-pr16-review/` (отдельно от evidence автора).
+
+Повторный macOS GUI smoke выполнен через настоящее окно и native Open/Save на новом
+bundle `/private/tmp/ferrite-pr16-review/gui/FerriteCAD.app`, staged штатным инструментом.
+SHA-256 viewer: `9f5075dfc69a3d3fa368b2c003cf06ae904e07a1c51a7ae708798fce620c9d84`.
+Модель 91×53×17 открыта через диалог; выбран UUID Extrude1, введено 31 mm; отмена Save
+сохранила число и сцену; повторный Save создал `Review height 31.fcad`. Наблюдались
+новая высота, Saved и новый заголовок. GUI FBX и CLI FBX этого output совпали:
+4128 bytes, SHA-256 `baf144d6fcdf517b5aa950c1904ed0d5825520db622cbf79f1a010d5efd1c117`.
+Validate: 0 warnings; cold rebuild: 4 объекта, 1 shape, 3/3 refs. Source SHA-256 до и
+после одинаков: `f95f362098ebf7b259d28a09eb8961eb43b251c28e072a6c477c7d59f2fa10ef`.
+Отдельный `Trigger.fcad` открылся с видимой моделью; Edit выключен и называет
+`extension_write`. Тестовый экземпляр закрыт. Windows/Linux GUI этим ревью не измерены.

@@ -450,49 +450,114 @@ impl Document {
     /// Whether a copy can be edited without discarding unsupported meaning.
     /// Explicit read-only connection access is separate from format capability.
     pub fn copy_access(&self) -> Result<Access> {
-        determine_access(&self.conn)
+        let access = determine_access(&self.conn)?;
+        if !access.is_writable() {
+            return Ok(access);
+        }
+        // The bounded edit promises to change only its selected feature. A
+        // stored trigger can change arbitrary other data during that write;
+        // neither executing nor silently stripping it preserves that promise.
+        let trigger: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT name FROM sqlite_schema WHERE type = 'trigger' ORDER BY name LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| CadError::io("checking stored SQL triggers", e))?;
+        if let Some(name) = trigger {
+            return Ok(Access::ReadOnly {
+                reason: format!(
+                    "editing a document with stored SQL trigger {name:?} is unsupported"
+                ),
+            });
+        }
+        Ok(access)
     }
 
     /// A complete logical content version, including unknown tables/envelopes
-    /// and imported BLOBs. No filesystem clock or SQLite page layout enters it.
+    /// and imported BLOBs. Implicit row identities are included: they are SQL
+    /// observable data, even when no declared column aliases them. No filesystem
+    /// clock or SQLite page layout enters it. Tables that hide every rowid alias
+    /// are refused, rather than assigned an incomplete version.
     /// Read this from `open_read_only`, whose transaction pins the whole reading.
     pub fn content_version(&self) -> Result<ContentHash> {
         fn quoted(name: &str) -> String {
             format!("\"{}\"", name.replace('"', "\"\""))
         }
-        let read = || -> rusqlite::Result<ContentHash> {
+        let read = || -> Result<ContentHash> {
+            let sql_error = |e| CadError::io("reading complete document version", e);
             let mut hash = CanonicalHasher::new("document.logical-content");
-            hash.algorithm_version(1);
-            let mut schema = self.conn.prepare(
-                "SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name",
-            )?;
-            let mut rows = schema.query([])?;
+            hash.algorithm_version(2);
+            let mut schema = self
+                .conn
+                .prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name")
+                .map_err(sql_error)?;
+            let mut rows = schema.query([]).map_err(sql_error)?;
             let mut tables = Vec::new();
-            while let Some(row) = rows.next()? {
+            while let Some(row) = rows.next().map_err(sql_error)? {
                 for column in 0..4 {
-                    let value: Option<String> = row.get(column)?;
+                    let value: Option<String> = row.get(column).map_err(sql_error)?;
                     hash.bool(value.is_some())
                         .str(value.as_deref().unwrap_or_default());
                 }
-                if row.get::<_, String>(0)? == "table" {
-                    tables.push(row.get::<_, String>(1)?);
+                if row.get::<_, String>(0).map_err(sql_error)? == "table" {
+                    tables.push(row.get::<_, String>(1).map_err(sql_error)?);
                 }
             }
             for table in tables {
                 hash.field(&table);
-                let select = format!("SELECT * FROM {}", quoted(&table));
-                let count = self.conn.prepare(&select)?.column_count();
+                let without_rowid: bool = self
+                    .conn
+                    .query_row(
+                        "SELECT wr FROM pragma_table_list WHERE schema = 'main' AND name = ?1",
+                        [&table],
+                        |row| row.get(0),
+                    )
+                    .map_err(sql_error)?;
+                let identity = if without_rowid {
+                    String::new()
+                } else {
+                    let mut columns = self
+                        .conn
+                        .prepare("SELECT name FROM pragma_table_xinfo(?1, 'main')")
+                        .map_err(sql_error)?;
+                    let names: Vec<String> = columns
+                        .query_map([&table], |row| row.get(0))
+                        .map_err(sql_error)?
+                        .collect::<rusqlite::Result<_>>()
+                        .map_err(sql_error)?;
+                    let alias = ["_rowid_", "rowid", "oid"].into_iter().find(|alias| {
+                        !names.iter().any(|name| name.eq_ignore_ascii_case(alias))
+                    }).ok_or_else(|| CadError::unsupported(format!(
+                        "cannot read complete identity of table {table:?}: all rowid aliases are shadowed"
+                    )))?;
+                    format!("{alias}, ")
+                };
+                let select = format!("SELECT {identity}* FROM {}", quoted(&table));
+                let count = self
+                    .conn
+                    .prepare(&select)
+                    .map_err(sql_error)?
+                    .column_count();
+                // Rowid is the first, unique sort key. WITHOUT ROWID tables
+                // include their primary key in *, so ties under a collation
+                // cannot make the order depend on the query plan either.
                 let order = (1..=count)
                     .map(|i| i.to_string())
                     .collect::<Vec<_>>()
                     .join(",");
-                let mut statement = self.conn.prepare(&format!("{select} ORDER BY {order}"))?;
-                let mut rows = statement.query([])?;
-                while let Some(row) = rows.next()? {
+                let mut statement = self
+                    .conn
+                    .prepare(&format!("{select} ORDER BY {order}"))
+                    .map_err(sql_error)?;
+                let mut rows = statement.query([]).map_err(sql_error)?;
+                while let Some(row) = rows.next().map_err(sql_error)? {
                     hash.field("row");
                     for column in 0..count {
                         use rusqlite::types::ValueRef;
-                        match row.get_ref(column)? {
+                        match row.get_ref(column).map_err(sql_error)? {
                             ValueRef::Null => {
                                 hash.field("null");
                             }
@@ -514,7 +579,7 @@ impl Document {
             }
             Ok(hash.finish())
         };
-        read().map_err(|e| CadError::io("reading complete document version", e))
+        read()
     }
 
     /// Copies this pinned reading through SQLite's online backup API. The
