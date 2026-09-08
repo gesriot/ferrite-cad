@@ -2156,16 +2156,50 @@ validate/cold rebuild/STL/FBX. В отдельной сборке с OCCT stub �
 создания/чтения/отказов/доставки; native JSON gate явно пропущен и не считается
 геометрией. Результаты CI точного коммита фиксируются в PR.
 
-**§24E — pending: общий STL export и второй клиент в UI.**
-Перенести существующий export-stl из CLI в общую jobs-операцию и подключить
-асинхронный `Export STL…` во вьюере. Сохранить выбор одного нативного Body по
-UUID, отказ неоднозначного имени/нескольких тел без выбора, параметры
-тесселяции, миллиметры, binary STL и cold rebuild. Источник — документ принятой
-сцены; исходный файл защищён, публикация атомарна, отмена до публикации не
-оставляет результат, поздняя отмена не удаляет опубликованный файл. Gate —
-общая операция UI и настоящий CLI дают одинаковые STL-байты на одной платформе;
-между платформами сравнивается геометрическая семантика. Imported-only STL,
-JSON новых команд, редактирование модели и новый общий dispatcher сюда не входят.
+**§24E — реализовано и прошло независимое ревью: общий STL export и UI.**
+`export_document_as_stl(StlExportRequest, kernel factory, OperationContext)`
+в jobs владеет выбором одного native Body, одним закреплённым read-only чтением,
+cold rebuild, тесселяцией, binary STL и атомарной публикацией. CLI сохраняет
+флаги, defaults 0.01 mm / 0.5 rad, UUID priority, stdout и коды исхода. Форма
+`Export STL…` использует принятый каталог LiveScene и устойчивый Body ObjectId;
+при нескольких Body требует явный выбор, включая одинаковые/отсутствующие имена.
+Путь и UUID фиксируются до Save, worker читает актуальный сохранённый файл.
+Исчезнувший UUID не заменяется другим; камера и видимость не участвуют.
+
+STL использует существующий lifecycle экспорта: Save/Replace/Cancel, owned worker,
+generation guard, cancel/join на shutdown. Отмена до publish сохраняет назначение,
+поздняя отмена и потерянный ответ оставляют опубликованный файл. Scratch очищается,
+shapes освобождаются на ошибках и отмене; source aliases запрещены даже с Replace.
+Статус STL содержит Body/triangles/bytes отдельно от FBX omissions.
+
+Четыре именованных native gate сравнивают настоящий peer CLI с UI worker и
+проверяют отказы, гонки, отмену, смену документа и shutdown. Они добавлены в
+существующий combined runtime workflow Linux/macOS/Windows с обязательными
+OCCT/PlaneGCS и проверкой имён тестов; старые восемь edit gate и JSON gate
+сохранены. Четыре направленные временные поломки пойманы исполняемыми тестами.
+[Локальная матрица, GUI smoke, рецепт и точная база](stl-export-verification.md)
+отделяют новый diff от исходного CI. Результаты CI точного head/merge фиксируются в PR.
+Imported-only STL, JSON новых команд, правка модели, C++/FFI, GPU renderer,
+FBX wire contract и новый dispatcher сюда не входят. Runtime edges не менялись.
+
+Ревью исправило Windows-only предупреждение `unused_mut` в alias fixture и
+уточнило комментарий о поздней отмене. Повторены jobs 41/41, CLI create/edit/
+STL/FBX/JSON, безоконные exports 31/31 и edits 8/8, четыре STL native gate,
+fmt/clippy и boundary checks. Два STL и текстовые отчёты совпали с сохранённым
+baseline; публичный рецепт выполнен до cold rebuild и проверки STL. No-native
+проверки отделены от явно пропущенной геометрии. По новому указанию пользователя
+при ревью не запускались окно, ручные GUI-клики и GPU-проверки.
+
+**§24F — pending: Body discovery и STL JSON без GUI.**
+Добавить native Body UUID/optional name в `inspect --json` из того же закреплённого
+read-only снимка и `export-stl --json` через существующий общий STL job и JSON v1.
+Агент выбирает Body явно, получает опубликованный путь/Body/triangles/bytes без
+разбора прозы и сохраняет правила UTF-8, no-clobber, source aliases и delivery
+exit 7. Старые поля inspect и текстовый CLI сохраняются. Imported-only и экспорт
+нескольких тел не расширяются. Gate — реальные CLI-процессы и безоконная native/
+stub матрица; окно, GUI-автоматизация, экран, GPU и участие пользователя не нужны.
+Пока пользователь отсутствует, следующие задания тоже не должны требовать
+ручных диалогов или наблюдения включённого экрана; исполнитель — только Codex.
 
 ## 15. Чего не делать до beta
 

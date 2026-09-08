@@ -22,6 +22,7 @@ use ferritecad_viewport::{PickId, StandardView};
 #[non_exhaustive]
 pub struct Chosen {
     pub edit: crate::EditChoice,
+    pub stl: crate::StlChoice,
     /// A direction to look from.
     pub view: Option<StandardView>,
     /// The user wants to open a different document.
@@ -737,6 +738,8 @@ pub struct ExportOutcome<'a> {
     /// The file, once there is one. Absent while an export is running and
     /// after one that published nothing.
     pub file: Option<PublishedFile<'a>>,
+    /// STL has body/triangle facts, not FBX nodes, materials or omissions.
+    pub stl: Option<crate::PublishedStl<'a>>,
     /// Everything the published file has no triangles for, in scene order.
     /// Empty for an export that is the whole document.
     pub omissions: &'a [OmittedDefinition<'a>],
@@ -774,6 +777,20 @@ pub fn export_panel(ui: &mut egui::Ui, outcome: Option<ExportOutcome<'_>>) {
                     ui.end_row();
                 }
             });
+    }
+    if let Some(file) = outcome.stl {
+        egui::Grid::new("stl published file").show(ui, |ui| {
+            for (label, value) in [
+                ("File", file.destination.to_owned()),
+                ("Body", file.body.to_owned()),
+                ("Triangles", file.triangles.to_string()),
+                ("Bytes", file.bytes.to_string()),
+            ] {
+                ui.label(label);
+                ui.label(value);
+                ui.end_row();
+            }
+        });
     }
     if !outcome.omissions.is_empty() {
         ui.label(MISSING_GEOMETRY);
@@ -1129,6 +1146,7 @@ pub struct Activity<'a> {
     /// therefore be written out. Not "a document was asked for": an Open that
     /// failed or was given up on leaves nothing to export.
     pub can_export: bool,
+    pub can_export_stl: bool,
     /// Whether an export is running and has not already been told to stop.
     pub can_cancel_export: bool,
     /// Whether the picture can say where what is chosen actually is.
@@ -1193,6 +1211,12 @@ pub fn toolbar(ui: &mut egui::Ui, activity: Activity<'_>) -> Chosen {
         chosen.export = ui
             .add_enabled(activity.can_export, egui::Button::new(EXPORT_FBX))
             .clicked();
+        if ui
+            .add_enabled(activity.can_export_stl, egui::Button::new("Export STL…"))
+            .clicked()
+        {
+            chosen.stl = crate::StlChoice::Begin;
+        }
         // Offered only while there is an export to stop, for the reason the
         // Cancel beside the reading progress is: a button that is there all
         // the time and does nothing most of the time teaches people not to
@@ -1537,6 +1561,7 @@ mod tests {
             line: "part.fcad",
             progress: None,
             can_export: true,
+            can_export_stl: false,
             can_cancel_export,
             can_frame_selection: false,
             can_frame_scene: false,
@@ -1582,6 +1607,7 @@ mod tests {
             line: "part.fcad",
             progress: None,
             can_export,
+            can_export_stl: false,
             can_cancel_export: false,
             can_frame_selection: false,
             can_frame_scene: false,
@@ -1716,6 +1742,7 @@ mod tests {
             line: "Opening part.fcad… 40%",
             progress: Some(0.4),
             can_export: false,
+            can_export_stl: false,
             can_cancel_export: false,
             can_frame_selection: false,
             can_frame_scene: false,
@@ -2167,6 +2194,7 @@ mod tests {
             line: "part.fcad",
             progress: None,
             can_export: false,
+            can_export_stl: false,
             can_cancel_export: false,
             can_frame_selection: false,
             can_frame_scene: false,
@@ -2361,6 +2389,7 @@ mod tests {
             line: "part.fcad",
             progress: None,
             can_export: false,
+            can_export_stl: false,
             can_cancel_export: false,
             can_frame_selection: false,
             can_frame_scene: false,
@@ -2428,6 +2457,7 @@ mod tests {
                     line: "part.fcad",
                     progress: None,
                     can_export: false,
+                    can_export_stl: false,
                     can_cancel_export: false,
                     can_frame_selection: false,
                     can_frame_scene: false,
@@ -2541,6 +2571,7 @@ mod tests {
             line: "part.fcad",
             progress: None,
             can_export: false,
+            can_export_stl: false,
             can_cancel_export: false,
             can_frame_selection: false,
             can_frame_scene: false,
@@ -2592,6 +2623,7 @@ mod tests {
             line: "part.fcad",
             progress: None,
             can_export: false,
+            can_export_stl: false,
             can_cancel_export: false,
             can_frame_selection: false,
             can_frame_scene: false,
@@ -2943,6 +2975,7 @@ mod tests {
             line: "part.fcad",
             progress: None,
             can_export: false,
+            can_export_stl: false,
             can_cancel_export: false,
             can_frame_selection,
             can_frame_scene: false,
@@ -2989,6 +3022,7 @@ mod tests {
             line: "part.fcad",
             progress: None,
             can_export: false,
+            can_export_stl: false,
             can_cancel_export: false,
             can_frame_selection: false,
             can_frame_scene,
@@ -3713,6 +3747,7 @@ mod tests {
             can_open: true,
             can_create_document: true,
             can_export: true,
+            can_export_stl: false,
             ..Default::default()
         };
         let busy = Activity {

@@ -161,8 +161,8 @@ The export is a fresh read of the saved `.fcad`, not a copy of what is drawn.
 Nothing about the picture takes part in it, and nothing about the picture
 changes because of it: what is chosen, what is hidden, where the camera is
 pointing and what the last Open said are all left exactly as they were, whether
-the export finishes, fails or is given up on. This viewer cannot edit a
-document, so there is nothing unsaved to lose; what it does mean is that an
+the export finishes, fails or is given up on. The viewer has no unsaved model
+state: its limited extrusion edit publishes a new copy. This means that an
 export reads whatever is at that path when it runs, and a document replaced on
 disk behind the viewer's back is exported as it now is rather than as it is
 drawn.
@@ -177,8 +177,9 @@ is never an acceptable destination, whatever is confirmed.
 A large assembly takes minutes to export, and the window stays usable while it
 does: the work runs on a thread of its own with its own kernel session, the
 toolbar offers `Cancel export` while it runs, opening another document stops
-it, and closing the window stops and waits for it. An export that is given up
-on publishes nothing and leaves whatever was at the destination untouched.
+it, and closing the window stops and waits for it. Cancellation observed before
+publication leaves the destination untouched. Once publication succeeds, late
+cancellation or an answer the window no longer needs leaves the file in place.
 
 An `Export` section under the toolbar says what happened: `Exporting…`, and
 then the file with the bytes, nodes, geometry objects and materials the writer
@@ -189,6 +190,37 @@ imported, the typed refusal, and every place it sits in the file — while the
 file itself is published all the same. Exporting and opening are reported
 separately: an export that failed is not a document that failed to open, and
 the model in front of you is still the model.
+
+### Binary STL of one native body
+
+```sh
+ferritecad export-stl plate.fcad -o plate.stl
+```
+
+`Export STL…` offers the same operation in the viewer. Open a native `.fcad`,
+choose a body, check the linear deflection in **mm** (default `0.01`) and angular
+deflection in **radians** (default `0.5`), then choose `Save STL…`. The system Save
+dialog chooses the destination; an occupied path requires `Replace` confirmation.
+The result reports the published path, body UUID, triangles and bytes.
+
+One body is selected automatically. Several bodies require an explicit choice;
+every row includes its UUID so duplicate or missing names remain distinguishable.
+The CLI accepts `--solid <name-or-id>`; a UUID takes priority over an identical
+name, and an ambiguous name is refused. Both clients call the shared jobs
+operation, which reads one read-only snapshot, cold rebuilds it, tessellates the
+chosen body and atomically publishes binary STL in millimetres.
+
+The form captures the accepted scene's source path and the chosen UUID together
+before Save. The worker reads the saved file at that path when it starts: changes
+since Open are included, and a missing chosen UUID is refused without selecting
+another body. Camera and temporary visibility do not affect the whole-body export.
+Cancel, source protection (including aliases), late publication and owned worker
+shutdown follow the export rules above. Cancel in the Save dialog starts no work.
+
+An empty document or one containing only imported STEP has no supported native
+Body to export. STL does not combine bodies, export assembly occurrences or
+selected faces, and has no JSON mode. See the [STL verification recipe and local
+results](docs/stl-export-verification.md).
 
 ## Looking at a document
 

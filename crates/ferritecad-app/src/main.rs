@@ -217,6 +217,10 @@ enum AppEvent {
         generation: exports::ExportGeneration,
         result: Box<Result<ferritecad_jobs::FbxExport>>,
     },
+    StlExported {
+        generation: exports::ExportGeneration,
+        result: Result<ferritecad_jobs::StlExport>,
+    },
     /// A saved edit has finished; opening its output is a separate event.
     Edited {
         generation: u64,
@@ -495,6 +499,22 @@ fn spawner(
                     generation,
                     result: Box::new(result),
                 });
+            },
+        )
+    }
+}
+
+fn stl_spawner(
+    intent: exports::StlIntent,
+    proxy: EventLoopProxy<AppEvent>,
+) -> impl FnOnce(&Path, bool, exports::ExportGeneration, &CancelToken) -> JoinHandle<()> {
+    move |destination, replace, generation, cancel| {
+        let destination = destination.to_path_buf();
+        let context = OperationContext::default().with_cancel(cancel.clone());
+        exports::spawn_export(
+            move || exports::run_stl_export(&intent, &destination, replace, &context),
+            move |result| {
+                let _ = proxy.send_event(AppEvent::StlExported { generation, result });
             },
         )
     }
@@ -828,7 +848,11 @@ fn cancel_load(loads: &mut Loads, input: &mut ViewportInput) -> bool {
 
 /// New is serialized with document loads and exports. Viewing remains available.
 fn can_begin_new(creates: &creates::Creates, loads: &Loads, exports: &exports::Exports) -> bool {
-    !creates.busy() && loads.current.is_none() && !exports.running() && exports.pending().is_none()
+    !creates.busy()
+        && loads.current.is_none()
+        && !exports.running()
+        && exports.pending().is_none()
+        && !exports.configuring_stl()
 }
 
 fn ask_new(
@@ -850,7 +874,11 @@ fn start_new(
     chosen: Option<PathBuf>,
     spawn: impl FnOnce(&Path, NewDocument, creates::CreateGeneration, &CancelToken) -> JoinHandle<()>,
 ) -> Option<creates::CreateGeneration> {
-    if loads.current.is_some() || exports.running() || exports.pending().is_some() {
+    if loads.current.is_some()
+        || exports.running()
+        || exports.pending().is_some()
+        || exports.configuring_stl()
+    {
         return None;
     }
     creates::begin_create(creates, input, content, chosen, spawn)
@@ -866,6 +894,7 @@ fn start_new(
 #[derive(Debug)]
 struct Sections<'a> {
     edits: &'a mut edits::Edits,
+    stl_form: Option<&'a mut ferritecad_ui::StlExportForm>,
     can_edit: bool,
     /// Why the last attempt to open a document failed, when it failed over
     /// something with parts.
@@ -1337,6 +1366,32 @@ fn commit_scene<P>(
 /// export it, under a name the user last chose for something else.
 fn can_export<P>(scene: &LiveScene<P>) -> bool {
     scene.document.is_some()
+}
+
+/// Durable facts of the accepted scene, independent of its camera/visibility.
+fn stl_bodies<P>(scene: &LiveScene<P>) -> Vec<ferritecad_jobs::StlBody> {
+    if scene.document.is_none() {
+        return Vec::new();
+    }
+    scene
+        .catalogue
+        .iter()
+        .filter_map(|entry| match entry.item {
+            SceneItem::Body(id) => Some(ferritecad_jobs::StlBody {
+                id,
+                name: entry.name.clone(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+fn can_export_stl<P>(scene: &LiveScene<P>) -> bool {
+    scene.document.is_some()
+        && scene
+            .catalogue
+            .iter()
+            .any(|entry| matches!(entry.item, SceneItem::Body(_)))
 }
 
 /// Where everything drawn as the chosen definition is.
@@ -2256,6 +2311,12 @@ impl ApplicationHandler<AppEvent> for App {
                     self.request_frame_now(event_loop);
                 }
             }
+            AppEvent::StlExported { generation, result } => {
+                exports::finish_stl_export(&mut self.exports, &mut self.input, generation, result);
+                if self.input.take_redraw() {
+                    self.request_frame_now(event_loop);
+                }
+            }
             AppEvent::Loaded { generation, result } => {
                 // An answer to a question the user has since replaced is not
                 // shown and is not announced: "this document could not be
@@ -2324,7 +2385,12 @@ impl ApplicationHandler<AppEvent> for App {
                     // document on screen.
                     can_export: can_export(&live.scene)
                         && !self.creates.busy()
-                        && !self.edits.busy(),
+                        && !self.edits.busy()
+                        && !self.exports.configuring_stl(),
+                    can_export_stl: can_export_stl(&live.scene)
+                        && !self.creates.busy()
+                        && !self.edits.busy()
+                        && !self.exports.configuring_stl(),
                     // And offered a way to stop only while there is one to
                     // stop. Separate from the reading's Cancel: a window can
                     // be reading one document and writing another out at once.
@@ -2368,8 +2434,6 @@ impl ApplicationHandler<AppEvent> for App {
                 // And what the last export did, on the same terms: written
                 // when its answer arrived, borrowed for this frame, and no
                 // scene, report or file read again to produce it.
-                let (export_line, export_omissions) = exports::words(self.exports.status());
-                let export = exports::shown(self.exports.status(), &export_line, &export_omissions);
                 let replacing = self
                     .exports
                     .pending()
@@ -2377,14 +2441,19 @@ impl ApplicationHandler<AppEvent> for App {
                 // And what the last New did, on the same terms as the export
                 // beside it: written when its answer arrived and borrowed for
                 // this frame.
+                let can_edit =
+                    !self.edits.busy() && can_begin_new(&self.creates, &self.loads, &self.exports);
+                let (export_status, stl_form) = self.exports.presentation();
+                let (export_line, export_omissions) = exports::words(export_status);
+                let export = exports::shown(export_status, &export_line, &export_omissions);
                 let create_line = creates::words(self.creates.status());
                 let created = creates::shown(self.creates.status(), &create_line);
                 match live.draw(
                     &self.input,
                     activity,
                     Sections {
-                        can_edit: !self.edits.busy()
-                            && can_begin_new(&self.creates, &self.loads, &self.exports),
+                        can_edit,
+                        stl_form,
                         edits: &mut self.edits,
                         failure,
                         export,
@@ -2444,6 +2513,14 @@ impl ApplicationHandler<AppEvent> for App {
                         // they have just chosen.
                         if chosen.export {
                             self.ask_where_to_export();
+                        }
+                        match chosen.stl {
+                            ferritecad_ui::StlChoice::Begin => self.begin_stl(),
+                            ferritecad_ui::StlChoice::Save => self.ask_where_to_export_stl(),
+                            ferritecad_ui::StlChoice::Cancel => {
+                                exports::cancel_export(&mut self.exports, &mut self.input);
+                            }
+                            _ => {}
                         }
                         // The window's own question, answered by the window.
                         // Nothing has been written at this point: the worker
@@ -2674,6 +2751,52 @@ impl App {
         self.export_to(chosen);
     }
 
+    fn begin_stl(&mut self) {
+        if self.creates.busy() || self.edits.busy() {
+            return;
+        }
+        if let Some(live) = &self.live
+            && let Some(document) = &live.scene.document
+        {
+            self.exports
+                .ask_stl(document, stl_bodies(&live.scene), &mut self.input);
+        }
+    }
+
+    fn ask_where_to_export_stl(&mut self) {
+        if self.creates.busy() || self.edits.busy() {
+            return;
+        }
+        let Some(intent) = self.exports.stl_intent() else {
+            self.input.request_redraw();
+            return;
+        };
+        let Some(live) = &self.live else {
+            return;
+        };
+        let chosen = rfd::FileDialog::new()
+            .set_title("Export STL")
+            .add_filter("Binary STL", &["stl"])
+            .set_directory(intent.document.parent().unwrap_or(Path::new(".")))
+            .set_file_name(format!(
+                "{}.stl",
+                intent
+                    .document
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+            ))
+            .set_parent(live.window.as_ref())
+            .save_file();
+        exports::begin_stl_export(
+            &mut self.exports,
+            &mut self.input,
+            &intent,
+            chosen,
+            stl_spawner(intent.clone(), self.proxy.clone()),
+        );
+    }
+
     /// Asks where the new document should go, and starts making it there.
     ///
     /// Blocking on purpose, exactly as the Open and Export dialogs are: while
@@ -2801,6 +2924,15 @@ impl App {
         if self.creates.busy() || self.edits.busy() {
             return;
         }
+        if let Some(intent) = self.exports.pending_stl().cloned() {
+            exports::confirm_stl_export(
+                &mut self.exports,
+                &mut self.input,
+                choice,
+                stl_spawner(intent, self.proxy.clone()),
+            );
+            return;
+        }
         let document = self
             .live
             .as_ref()
@@ -2826,9 +2958,9 @@ impl App {
         }
         // The export in flight was of the document being left behind, and its
         // answer would describe a file nobody asked for beside a model that is
-        // no longer on screen. Stopping it here means the check the job makes
-        // before it publishes finds a withdrawn request.
-        exports::cancel_export(&mut self.exports, &mut self.input);
+        // no longer on screen. Cancel before publication; abandon its answer
+        // even if publication already won the race and left a complete file.
+        exports::leave_document(&mut self.exports, &mut self.input);
         self.document = Some(path.clone());
         let proxy = self.proxy.clone();
         let waking = self.proxy.clone();
@@ -3194,6 +3326,7 @@ impl App {
             live.renderer.prepare_sketches(prepared, drawings)
         });
         commit_scene(&mut live.scene, &mut self.input, next)?;
+        exports::leave_document(&mut self.exports, &mut self.input);
         // The picture is current; the name on the window is the same fact.
         // Not asked of `App::document`, which already names the request in
         // flight, and not said again every frame.
@@ -3409,6 +3542,7 @@ impl Live {
         let mut replace = ferritecad_ui::ReplaceChoice::default();
         let mut asked = NewChoice::default();
         let Sections {
+            mut stl_form,
             edits,
             can_edit,
             failure,
@@ -3431,6 +3565,10 @@ impl Live {
                 .map(|source| source.unavailable_reason())
                 .unwrap_or(Some("Open a document to edit an extrusion."));
             chosen.edit = edits.draw(ui, can_edit, unavailable);
+            let stl = ferritecad_ui::stl_export_form(ui, stl_form.as_deref_mut());
+            if stl != ferritecad_ui::StlChoice::Waiting {
+                chosen.stl = stl;
+            }
             // Directly under the toolbar, because it is a question about the
             // button that was just pressed and nothing is written until it is
             // answered.
