@@ -84,8 +84,8 @@ Clap-ошибки, help/version, неизвестная команда и арг
 проверяются отдельно, до обещания JSON. Missing/corrupt/old schema/future reader/
 WAL/недоступный rowid проверяются без миграции и создания файлов.
 
-Закрытый stdout воспроизводится реальным OS pipe: write end перенаправлен в CLI,
-единственный reader уже завершился. После edit процесс возвращает 7, не 0/101;
+В первичной сдаче закрытый stdout воспроизводился через stdin завершившегося
+процесса; Windows-ограничение этого helper и его замена описаны в независимом ревью. После edit процесс возвращает 7, не 0/101;
 копия существует, полностью совпадает с jobs-результатом и читается с высотой 27.
 Нет panic, повторной операции, потери source или удаления публикации.
 
@@ -161,7 +161,18 @@ CLI create/edit/json (9 + 2 + 8 passed) и все 8 native UI/CLI edit gates. Н
 native JSON process gate прошёл с настоящим OCCT; геометрических skips нет.
 В отдельном no-native target пересобраны CLI/viewer: OCCT stub, solver-info exit 3;
 тот же набор CLI suites проходит, с одним явным пропуском native JSON gate.
-Новый закрытый-stderr тест выполняется в обоих режимах. GUI/GPU и native C++
+Новый закрытый-stderr тест выполняется в обоих режимах.
+
+Удалённый CI первого head `37e4fe3` обнаружил Windows-дефект тестового helper:
+`ChildStdin → Stdio` в Rust 1.96 создаёт relay thread и промежуточную pipe.
+Она могла принять отчёт после закрытия конечного читателя; тест наблюдал exit 2
+вместо 7 и не воспроизводил обещанное условие на границе CLI. Источник проверен
+в установленном rust-src 1.96: `std/src/sys/process/windows.rs`, `Stdio::Pipe`,
+и `windows/child_pipe.rs`, `spawn_pipe_relay`. Helper заменён на
+[`std::io::pipe`](https://doc.rust-lang.org/std/io/fn.pipe.html): единственный
+PipeReader уничтожается до spawn, PipeWriter передаётся прямо в Stdio.
+Никаких sleep, relay или новых зависимостей. Это исправление общей тестовой
+фикстуры закрытого stdout/stderr; проверки результата 2/7 сохранены без ослабления. GUI/GPU и native C++
 не менялись. Повторно выполнен рецепт из текущей документации настоящим native CLI.
 Offline checks прошли: Rust SBOM 25, native inventory 58, product SBOM 40,
 Rust notices 68; actionlint также прошёл. Результаты удалённого CI точного

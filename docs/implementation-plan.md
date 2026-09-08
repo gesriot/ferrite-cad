@@ -2123,6 +2123,8 @@ Runtime dependency edges serde/serde_json отражаются штатными 
 исправило panic на закрытом stderr: диагностический канал больше не мешает
 JSON-ошибке попасть в исправный stdout (exit 2); потеря обоих каналов даёт exit 7.
 Failing-first process test подтвердил исходный exit 101 с пустым stdout.
+Первый Windows CI выявил промежуточную relay pipe в тестовом helper ChildStdin;
+он заменён прямой std::io::pipe с закрытым reader, проверки 2/7 не ослаблены.
 Проверки неверного числа и content token теперь используют допустимый UUIDv7
 и требуют отказ именно своего аргумента. JSON-примеры также согласованы с UUIDv7.
 Повторены native JSON/старые edit gates и отдельная no-native сборка; результаты
