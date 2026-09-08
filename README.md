@@ -80,10 +80,20 @@ An imported part is read from the bytes the document stores, so the STEP file
 it came from need not exist any more:
 
 ```sh
-cargo run -p ferritecad-cli -- import-step assembly.step --output assembly.fcad
-rm assembly.step
-cargo run -p ferritecad-cli -- export-fbx assembly.fcad --output assembly.fbx
+work="$(mktemp -d)"
+cp assembly.step "$work/private.step"
+cargo run -p ferritecad-cli -- import-step "$work/private.step" --output "$work/assembly.fcad"
+# After import exits 0 or 4, remove only the private copy made above.
+rm "$work/private.step"
+cargo run -p ferritecad-cli -- export-fbx "$work/assembly.fcad" --output "$work/assembly.fbx"
 ```
+
+STEP import now uses the shared jobs operation: one source read, owned geometry,
+closed SQLite scratch and atomic publication. Exit 0 publishes without diagnostics;
+4 publishes with diagnostics; 5 is reader rejection with no document; 2 is an
+execution error. [The API contract and headless recipe](docs/shared-step-import.md)
+describe ownership and cancellation at native call boundaries. UI import and
+`import-step --json` are not available yet.
 
 The same document always produces the same bytes. Nothing in the file is a
 clock, a host name, a path or a random number, so two exports can be compared,
