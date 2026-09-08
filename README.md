@@ -55,11 +55,12 @@ What the window can do, what the command line can do, and which library actually
 owns the work — including recipes with expected exit codes — is documented in
 [`docs/cli-capabilities.md`](docs/cli-capabilities.md).
 
-The opt-in `inspect --json` and `edit-extrude --json` commands expose a versioned
-contract for discovering an extrusion UUID and content version, editing its
-height in a new copy, and inspecting the result. See the exact
+The opt-in `create --json`, `inspect --json` and `edit-extrude --json` commands
+expose a versioned contract for publishing a new document, discovering an
+extrusion UUID and content version, editing its height in a new copy, and
+inspecting the result. See the exact
 [JSON v1 schema and runnable agent recipe](docs/cli-json-v1.md). This contract
-covers those two commands; the other commands retain their existing text output.
+covers those three commands; the other commands retain their existing text output.
 
 ## Exporting to FBX
 

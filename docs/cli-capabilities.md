@@ -1,6 +1,6 @@
 # Карта предметных возможностей: UI ↔ CLI ↔ общий API
 
-Срез §24A, обновлён срезами §24B/§24C/§24D. Это описание **текущих** команд и владельцев, а не проект нового протокола.
+Срез §24A, обновлён срезами §24B/§24C/§24D/§24D-1. Это описание **текущих** команд и владельцев, а не проект нового протокола.
 
 Документ нужен агенту и человеку, которым дали задачу и публичный CLI: что уже можно получить тем же предметным результатом, что в UI, что умеет только один клиент, и где библиотечный метод ещё не является пользовательской операцией. Архитектурное правило — [§4.5 плана](implementation-plan.md): UI и CLI — два клиента общих операций; равенство считается по сохранённой модели и экспортируемым артефактам, а не по hover, жестам мыши или промежуточным кадрам.
 
@@ -20,7 +20,7 @@
 
 ## Что этот срез сознательно не делает
 
-§24D задаёт [JSON v1](cli-json-v1.md) только для opt-in `inspect --json` и `edit-extrude --json`. Общего JSON всех команд, DSL, RPC/MCP server, универсального dispatcher и библиотеки «всех операций» нет. Stdin, отмена CLI и пакетный ввод остаются будущими требованиями §4.5.
+§24D/§24D-1 задают [JSON v1](cli-json-v1.md) только для opt-in `inspect --json`, `edit-extrude --json` и `create --json`. Общего JSON всех команд, DSL, RPC/MCP server, универсального dispatcher и библиотеки «всех операций» нет. Stdin, отмена CLI и пакетный ввод остаются будущими требованиями §4.5.
 
 §24B добавил ровно одну общую операцию — создание документа — и её второго клиента (`New…` во вьюере). Новых команд и флагов у `ferritecad` нет. Остальные возможности сохраняют прежних клиентов.
 
@@ -28,8 +28,8 @@
 
 | Предметный результат | UI сейчас | Публичный CLI сейчас | Общий API / владелец | Фактический пробел |
 | --- | --- | --- | --- | --- |
-| Пустой нативный `.fcad` | `New…` → «Empty document» → системный Save-диалог → создание → обычный Open результата. | `ferritecad create <path>` | Один маршрут: [`ferritecad_jobs::create_document`](../crates/ferritecad-jobs/src/create.rs). Внутри — `Document::create_with` в scratch, транзакция [`Document::write`](../crates/ferritecad-document/src/document.rs), закрытие соединения и атомарная публикация через [`Temporary`](../crates/ferritecad-jobs/src/publish.rs). CLI: [`create`](../crates/ferritecad-cli/src/main.rs). UI: [`creates`](../crates/ferritecad-app/src/creates.rs). | Ни у `create`, ни у UI нет замены существующего файла: занятое назначение — отказ. Пустой документ и пустое окно без документа — разные состояния. |
-| Sample plate с шириной, глубиной, высотой | `New…` → «Sample plate» → W/D/H в мм → Save-диалог → создание → обычный Open. Размеры подписаны единицей; значения по умолчанию те же, что у CLI. | `ferritecad create <path> --sample --size W D H` | Тот же `create_document` с `NewDocument::SamplePlate(PlateSize)`. Построение плиты — приватная транзакция в [`create.rs`](../crates/ferritecad-jobs/src/create.rs); в CLI-крейте её больше нет. Размеры — координаты эскиза и `Expression::constant` высоты, не объекты `Parameter`. | Нет правки уже созданной плиты: `--size` действует только в момент создания. Случайные `ObjectId`/`DocumentId` при каждом создании не совпадают — это контракт, не баг. |
+| Пустой нативный `.fcad` | `New…` → «Empty document» → системный Save-диалог → создание → обычный Open результата. | `ferritecad create <path> [--json]` | Один маршрут: [`ferritecad_jobs::create_document`](../crates/ferritecad-jobs/src/create.rs). Внутри — `Document::create_with` в scratch, транзакция [`Document::write`](../crates/ferritecad-document/src/document.rs), закрытие соединения и атомарная публикация через [`Temporary`](../crates/ferritecad-jobs/src/publish.rs). CLI: [`create`](../crates/ferritecad-cli/src/main.rs). UI: [`creates`](../crates/ferritecad-app/src/creates.rs). JSON v1 сообщает опубликованные `destination` и `document_id`. | Ни у `create`, ни у UI нет замены существующего файла: занятое назначение — отказ. Пустой документ и пустое окно без документа — разные состояния. |
+| Sample plate с шириной, глубиной, высотой | `New…` → «Sample plate» → W/D/H в мм → Save-диалог → создание → обычный Open. Размеры подписаны единицей; значения по умолчанию те же, что у CLI. | `ferritecad create <path> --sample --size W D H [--json]` | Тот же `create_document` с `NewDocument::SamplePlate(PlateSize)`. Построение плиты — приватная транзакция в [`create.rs`](../crates/ferritecad-jobs/src/create.rs); в CLI-крейте её больше нет. Размеры — координаты эскиза и `Expression::constant` высоты, не объекты `Parameter`. | Нет правки уже созданной плиты: `--size` действует только в момент создания. Случайные `ObjectId`/`DocumentId` при каждом создании не совпадают — это контракт, не баг. |
 | Прочитать документ (метаданные, объекты, ссылки) | `Open…` читает `.fcad` read-only через `snapshot_of` → `prepare::load`, с холодным перестроением. | `ferritecad inspect <path> [--json]` | [`Document::open_read_only`](../crates/ferritecad-document/src/document.rs). Текст — `render::inspect`; JSON — общий `ExtrudeEditSource` на том же закреплённом снимке, без kernel/rebuild, миграции и записи. | JSON v1 даёт каталог Extrude для правки, а не всю БД/геометрию. UI не показывает сырой граф и topology refs. |
 | Проверить документ без ядра | Нет отдельной команды. Неоткрываемый файл даёт `Open failed`; это отказ загрузки, не отчёт `validate`. | `ferritecad validate <path>` | [`Document::validate`](../crates/ferritecad-document/src/document.rs) / [`validate::validate`](../crates/ferritecad-document/src/validate.rs). Код 1 при ошибках валидации — *из кода*. | Нет JSON-отчёта. Нет UI-эквивалента «документ внутренне согласован», отдельного от «нарисовался». |
 | Cold rebuild нативного графа | Не команда. Open/Export сами делают холодное перестроение как часть чтения. | `ferritecad rebuild --cold <path>` | [`rebuild_cold`](../crates/ferritecad-eval/src/cold.rs) в `ferritecad-eval` против [`OcctKernel`](../crates/ferritecad-occt/src/kernel.rs) / [`GeometryKernel`](../crates/ferritecad-kernel/src/kernel.rs). Документ — `open_read_only`. | Без `--cold` команда отказывает (exit 2, **измерено**). [`rebuild_cached`](../crates/ferritecad-eval/src/cold.rs) есть в библиотеке и тестах и **не** предлагается CLI/UI. Публичного cached-rebuild нет. |
@@ -102,7 +102,7 @@
 - `dump-graph --format dot` — Graphviz DOT, только эта команда;
 - STL — бинарный, 80-байтовый заголовок без даты (**измерено**: `FerriteCAD binary STL. Units are millimetres. No timestamp, by design.`);
 - FBX — ASCII 7.4;
-- `inspect --json` и `edit-extrude --json` — один объект JSON v1 + LF, [точный контракт](cli-json-v1.md).
+- `inspect --json`, `edit-extrude --json` и `create --json` — один объект JSON v1 + LF, [точный контракт](cli-json-v1.md).
 
 **Нет:** общего JSON всех команд, stdin как входа документа, пакетного списка задач, флага отмены у `ferritecad`. `inspect -` открывает файл с именем `-`, а не стандартный ввод (**измерено**). Существующий DOT не означает JSON-контракта остальных команд.
 
@@ -117,7 +117,7 @@
 | 4 | `import-step`: документ записан целиком, чтение что-то сообщило | *из кода / README* |
 | 5 | `import-step`: ничего не записано (отказ читать); отчёт находится на stdout | **измерено при ревью** на файле, не являющемся STEP |
 | 6 | `export-fbx`: файл опубликован и неполон | *из кода / README* |
-| 7 | Только JSON v1: отчёт не доставлен; копия уже могла быть опубликована, автоматический повтор правки недопустим | **измерено** реальным закрытым stdout |
+| 7 | Только JSON v1: отчёт не доставлен; созданный документ или копия правки уже могли быть опубликованы, автоматический повтор недопустим | **измерено** реальным закрытым stdout |
 
 Скрипт не должен считать 4 или 6 нулём и не должен считать 6 ошибкой «файла нет».
 
@@ -269,7 +269,7 @@
 | `export-stl` только для `Body`; imported-only документ не экспортируется в STL | факт, **измерено** |
 | STL, inspect, validate, graph, topology, rebuild, import, cache — один клиент (CLI), не два | факт |
 | `rebuild_cached` есть в библиотеке, пользовательского warm rebuild нет | факт |
-| Нет JSON всех команд, stdin/batch/отмены CLI | JSON v1 ограничен inspect/edit-extrude (§24D) |
+| Нет JSON всех команд, stdin/batch/отмены CLI | JSON v1 ограничен inspect/edit-extrude/create (§24D/§24D-1) |
 | `create` без `--force` и с другим текстом отказа, чем publish-команды | факт |
 | Случайные UUID независимых `create` не равны | обещание §4.5, не баг |
 | Временная видимость и камера не в CLI | не предметный разрыв; см. выше |
@@ -304,7 +304,7 @@ STL и FBX после сопоставления identity, а CLI/UI FBX одн�
 Обычный CI запускает CLI/app/UI/jobs/document gates; OCCT pin включает native gate.
 
 §24 целиком не завершён. Ограниченная правка существующей модели добавлена §24C,
-JSON двух команд — §24D. Stdin/batch, произвольный редактор и STEP из UI остаются недоступны.
+JSON трёх команд — §24D/§24D-1. Stdin/batch, произвольный редактор и STEP из UI остаются недоступны.
 
 
 ## §24C: edit-extrude и Edit extrusion
@@ -353,3 +353,11 @@ UI доступен по принятой сцене; форма и worker бл�
 геометрический успех. Правка использует ту же jobs-операцию, что текстовый CLI/UI.
 Нативный process gate включён в combined runtime layout на трёх ОС вместе с восемью
 существующими edit gates. Первичная сдача и независимое ревью — в [протоколе](cli-json-v1-verification.md).
+
+## §24D-1: create --json
+
+Тот же конверт v1 для `ferritecad create <path> --json`. Результат — опубликованные
+`destination` и `document_id` новой модели. Текстовый create и UI New не меняются;
+общая операция, no-clobber и правила размеров те же. Рецепт агента начинается с
+JSON create, затем JSON inspect/edit, без заранее известного UUID. JSON остальных
+команд по-прежнему нет.

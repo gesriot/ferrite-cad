@@ -8,10 +8,11 @@ use std::process::{Command, Output, Stdio};
 
 use ferritecad_document::{
     Dependency, DependencyRole, Document, EndCondition, Envelope, Expression, ExtrudeEditSource,
-    ObjectPayload, Parameter,
+    ObjectPayload, Parameter, SketchGeometry,
 };
+use ferritecad_jobs::{CreateDocumentRequest, NewDocument, PlateSize, create_document};
 use ferritecad_kernel::OperationContext;
-use ferritecad_types::{Dimension, ObjectId};
+use ferritecad_types::{Dimension, ObjectId, Unit};
 use serde_json::Value;
 
 fn cli() -> Command {
@@ -92,6 +93,53 @@ fn create(path: &Path, size: Option<[&str; 3]>) {
     success(&mut command);
 }
 
+fn create_json(path: &Path, size: Option<[&str; 3]>) -> Command {
+    let mut command = cli();
+    command.arg("create").arg(path).arg("--json");
+    if let Some(size) = size {
+        command
+            .args(["--sample", "--size"])
+            .args(size)
+            .args(["--length-unit", "in"]);
+    }
+    command
+}
+
+fn plate_facts(path: &Path) -> (Vec<(f64, f64)>, f64, String, String) {
+    let document = Document::open_read_only(path).expect("open");
+    let length = document.meta().display_length_unit.symbol().to_owned();
+    let angle = document.meta().display_angle_unit.symbol().to_owned();
+    let objects = document.objects().expect("objects");
+    let corners = objects
+        .iter()
+        .find_map(|object| match &object.payload {
+            ObjectPayload::Sketch(sketch) => Some(
+                sketch
+                    .curves
+                    .iter()
+                    .map(|curve| match curve.geometry {
+                        SketchGeometry::Line { start, .. } => (start.x, start.y),
+                        ref other => panic!("the profile holds {other:?}"),
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .expect("profile");
+    let height = objects
+        .iter()
+        .find_map(|object| match &object.payload {
+            ObjectPayload::Extrude(extrude) => match &extrude.end_condition {
+                EndCondition::Blind { distance } => Some(distance.value()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("height");
+    document.close().expect("close");
+    (corners, height, length, angle)
+}
+
 fn selected(catalog: &Value, name: &str) -> String {
     // Deliberately explicit, including in the one-feature sample. Names may be
     // duplicated, so the recipe refuses ambiguity before choosing a UUID.
@@ -167,6 +215,162 @@ fn empty_inspect_is_a_read_with_an_unavailable_edit_and_no_sidecars() {
         entries(root.path()),
         vec![source.file_name().expect("name")]
     );
+}
+
+#[test]
+fn json_create_empty_and_sample_match_inspect_and_the_shared_operation() {
+    let root = tempfile::tempdir().expect("dir");
+    let empty = root.path().join("Пустой документ.fcad");
+    let created = reply(&run(&mut create_json(&empty, None)), "create", 0)["result"].clone();
+    assert_eq!(created["destination"], serde_json::json!(empty));
+    let reading = inspect(&empty);
+    assert_eq!(created["document_id"], reading["document_id"]);
+    assert_eq!(reading["features"], serde_json::json!([]));
+    assert_eq!(
+        reading["display_units"],
+        serde_json::json!({"length":"mm","angle":"deg"})
+    );
+    let document = Document::open_read_only(&empty).expect("empty");
+    assert!(document.objects().expect("objects").is_empty());
+    assert_eq!(
+        created["document_id"],
+        document.meta().document_id.to_string()
+    );
+    document.close().expect("close");
+
+    // Quotes exercise JSON escaping on Unix, but cannot name a Windows file.
+    let sample = root.path().join(if cfg!(windows) {
+        "Плита А.fcad"
+    } else {
+        "Плита \"А\".fcad"
+    });
+    let mut command = create_json(&sample, Some(["80", "50", "12"]));
+    command.args(["--angle-unit", "rad"]);
+    let created = reply(&run(&mut command), "create", 0)["result"].clone();
+    assert_eq!(created["destination"], serde_json::json!(sample));
+    let reading = inspect(&sample);
+    assert_eq!(created["document_id"], reading["document_id"]);
+    assert_eq!(reading["display_units"]["length"], "in");
+    assert_eq!(reading["display_units"]["angle"], "rad");
+    assert_eq!(reading["features"][0]["distance_mm"], 12.0);
+    assert_eq!(selected(&reading, "Extrude1").len(), 36);
+
+    let jobs = root.path().join("jobs plate.fcad");
+    create_document(
+        CreateDocumentRequest::new(
+            &jobs,
+            NewDocument::SamplePlate(PlateSize {
+                width: 80.0,
+                depth: 50.0,
+                height: 12.0,
+            }),
+            "keep",
+        )
+        .displaying(Unit::Inch, Unit::Radian),
+        &OperationContext::default(),
+    )
+    .expect("shared create");
+    assert_eq!(plate_facts(&sample), plate_facts(&jobs));
+    let other = root.path().join("second plate.fcad");
+    let again = reply(
+        &run(&mut create_json(&other, Some(["80", "50", "12"]))),
+        "create",
+        0,
+    )["result"]
+        .clone();
+    assert_ne!(again["document_id"], created["document_id"]);
+    assert_eq!(plate_facts(&other).0, plate_facts(&sample).0);
+}
+
+#[test]
+fn json_create_refusals_leave_destination_and_scratch_untouched() {
+    let root = tempfile::tempdir().expect("dir");
+    let occupied = root.path().join("taken.fcad");
+    std::fs::write(&occupied, b"somebody else's file").expect("sentinel");
+    let value = reply(&run(&mut create_json(&occupied, None)), "create", 2);
+    assert_eq!(value["error"]["kind"], "input");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .expect("message")
+            .contains("already exists")
+    );
+    assert_eq!(
+        std::fs::read(&occupied).expect("sentinel"),
+        b"somebody else's file"
+    );
+
+    let zero_width = root.path().join("zero-width.fcad");
+    reply(
+        &run(&mut create_json(&zero_width, Some(["0", "40", "10"]))),
+        "create",
+        0,
+    );
+    assert_eq!(plate_facts(&zero_width).0[0], (0.0, 0.0));
+
+    for (size, kind) in [
+        (["NaN", "50", "12"], "input"),
+        (["60", "40", "NaN"], "input"),
+        (["inf", "50", "12"], "input"),
+        (["60", "40", "0"], "input"),
+    ] {
+        let destination = root.path().join(format!("{}.fcad", size.join("x")));
+        let names = entries(root.path());
+        let value = reply(
+            &run(&mut create_json(&destination, Some(size))),
+            "create",
+            2,
+        );
+        assert_eq!(value["error"]["kind"], kind, "{size:?}");
+        assert!(!destination.exists());
+        assert_eq!(entries(root.path()), names, "no scratch or sidecars");
+    }
+}
+
+#[test]
+fn json_create_closed_pipes_keep_publication_and_structured_errors() {
+    let root = tempfile::tempdir().expect("dir");
+    let occupied = root.path().join("taken.fcad");
+    std::fs::write(&occupied, b"existing").expect("sentinel");
+    let output = run(create_json(&occupied, None).stderr(closed_pipe()));
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let value: Value = serde_json::from_slice(&output.stdout).expect("JSON error");
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["operation"], "create");
+    assert_eq!(value["ok"], false);
+    assert!(value.get("result").is_none());
+    assert_eq!(value["error"]["kind"], "input");
+    assert!(output.stderr.is_empty());
+    assert_eq!(std::fs::read(&occupied).expect("sentinel"), b"existing");
+
+    let published = root.path().join("published without report.fcad");
+    let names = entries(root.path());
+    let lost = run(create_json(&published, None).stdout(closed_pipe()));
+    assert_eq!(lost.status.code(), Some(7), "{lost:?}");
+    assert!(lost.stdout.is_empty());
+    let diagnostic = String::from_utf8(lost.stderr).expect("diagnostic");
+    assert!(diagnostic.contains("JSON report delivery failed"));
+    assert!(!diagnostic.contains("panicked"));
+    assert!(published.exists());
+    assert_eq!(inspect(&published)["features"], serde_json::json!([]));
+    assert_eq!(entries(root.path()).len(), names.len() + 1);
+
+    let silent = root.path().join("published with both pipes closed.fcad");
+    let names = entries(root.path());
+    let lost = run(create_json(&silent, Some(["80", "50", "12"]))
+        .stdout(closed_pipe())
+        .stderr(closed_pipe()));
+    assert_eq!(lost.status.code(), Some(7), "{lost:?}");
+    assert!(lost.stdout.is_empty() && lost.stderr.is_empty());
+    assert_eq!(inspect(&silent)["features"][0]["distance_mm"], 12.0);
+    assert_eq!(entries(root.path()).len(), names.len() + 1);
+
+    let note = root.path().join("noext");
+    let output = run(create_json(&note, None).stderr(closed_pipe()));
+    let created = reply(&output, "create", 0)["result"].clone();
+    assert_eq!(created["destination"], serde_json::json!(note));
+    assert!(output.stderr.is_empty());
+    assert_eq!(inspect(&note)["document_id"], created["document_id"]);
 }
 
 fn mixed_catalog(path: &Path) {
@@ -474,13 +678,24 @@ fn clap_usage_help_and_flag_shaped_values_do_not_guess_a_global_json_mode() {
         vec!["wrong-command", "--json"],
         vec!["validate", "source.fcad", "--json"],
         vec!["--json", "inspect", "source.fcad"],
+        vec!["create", "--json"],
+        vec![
+            "create",
+            "dest.fcad",
+            "--json",
+            "--sample",
+            "--size",
+            "not-number",
+            "50",
+            "12",
+        ],
     ] {
         let output = run(cli().args(&args));
         assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
         assert!(output.stdout.is_empty(), "clap usage belongs to stderr");
         let usage = String::from_utf8(output.stderr).expect("usage");
         assert!(usage.contains("error:"));
-        if args.contains(&"not-number") {
+        if args.contains(&"not-number") && args.contains(&"--distance-mm") {
             assert!(
                 usage.contains("--distance-mm") && usage.contains("not-number"),
                 "{usage}"
@@ -492,10 +707,17 @@ fn clap_usage_help_and_flag_shaped_values_do_not_guess_a_global_json_mode() {
                 "{usage}"
             );
         }
+        if args.contains(&"not-number") && args.contains(&"--size") {
+            assert!(
+                usage.contains("--size") && usage.contains("not-number"),
+                "{usage}"
+            );
+        }
     }
     for args in [
         vec!["inspect", "--json", "--help"],
         vec!["edit-extrude", "--json", "--help"],
+        vec!["create", "--json", "--help"],
         vec!["--version"],
     ] {
         let output = success(cli().args(args));
@@ -514,6 +736,32 @@ fn clap_usage_help_and_flag_shaped_values_do_not_guess_a_global_json_mode() {
         String::from_utf8(output.stdout)
             .expect("text")
             .starts_with("document --json\n")
+    );
+    let creation_root = tempfile::tempdir().expect("create a literal flag name");
+    let created = success(
+        cli()
+            .current_dir(creation_root.path())
+            .args(["create", "--", "--json"]),
+    );
+    assert!(
+        String::from_utf8(created.stdout)
+            .expect("text")
+            .starts_with("created --json (")
+    );
+    let json_named = reply(
+        &run(cli().current_dir(root.path()).args([
+            "create",
+            "--json",
+            "--",
+            "--json-created.fcad",
+        ])),
+        "create",
+        0,
+    );
+    assert_eq!(json_named["result"]["destination"], "--json-created.fcad");
+    assert_eq!(
+        inspect(&root.path().join("--json-created.fcad"))["document_id"],
+        json_named["result"]["document_id"]
     );
     // A value of --feature likewise cannot activate serialization before clap
     // has parsed a valid command; it remains an ordinary usage error.
@@ -554,6 +802,16 @@ fn non_utf8_paths_refuse_before_reading_or_publishing() {
     assert_eq!(
         value["error"]["kind"], "input",
         "path policy must precede filesystem access"
+    );
+    assert!(entries(root.path()).is_empty());
+    let created = run(cli().arg("create").arg(&invalid).arg("--json"));
+    let value = reply(&created, "create", 2);
+    assert_eq!(value["error"]["kind"], "input");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .expect("message")
+            .contains("UTF-8")
     );
     assert!(entries(root.path()).is_empty());
     let source = root.path().join("source.fcad");
@@ -759,12 +1017,24 @@ fn native_json_inspect_edit_contract() {
         eprintln!("skipped: this build has no Open CASCADE (JSON edit process gate)");
         return;
     }
-    for size in [["80", "50", "12"], ["91", "53", "17"]] {
+    for (index, size) in [["80", "50", "12"], ["91", "53", "17"]]
+        .into_iter()
+        .enumerate()
+    {
         let root = tempfile::tempdir().expect("dir");
         let source = root.path().join("Исходная плита.fcad");
-        create(&source, Some(size));
+        let reading = if index == 0 {
+            let created =
+                reply(&run(&mut create_json(&source, Some(size))), "create", 0)["result"].clone();
+            assert_eq!(created["destination"], serde_json::json!(source));
+            let reading = inspect(&source);
+            assert_eq!(created["document_id"], reading["document_id"]);
+            reading
+        } else {
+            create(&source, Some(size));
+            inspect(&source)
+        };
         let before = std::fs::read(&source).expect("bytes");
-        let reading = inspect(&source);
         let feature = selected(&reading, "Extrude1");
         let version = reading["content_version"].as_str().expect("full token");
         assert_eq!(version.len(), 64);

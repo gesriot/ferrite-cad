@@ -265,6 +265,11 @@ struct CreateArgs {
     #[arg(long, num_args = 3, value_names = ["WIDTH", "DEPTH", "HEIGHT"],
           default_values_t = [PlateSize::DEFAULT.width, PlateSize::DEFAULT.depth, PlateSize::DEFAULT.height])]
     size: Vec<f64>,
+
+    /// Emit one JSON v1 result or execution error. Argument errors remain clap text.
+    /// The output path must be UTF-8 in JSON mode.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -295,6 +300,10 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
+        Command::Create(args) if args.json => Ok(json::emit(
+            json::Operation::Create,
+            create_result(args).map(json::Created::from),
+        )),
         Command::Create(args) => create(args),
         Command::EditExtrude(args) if args.json => Ok(json::emit(
             json::Operation::EditExtrude,
@@ -338,11 +347,33 @@ fn run(cli: Cli) -> Result<ExitCode> {
 }
 
 fn create(args: CreateArgs) -> Result<ExitCode> {
+    let created = create_result(args)?;
+    println!(
+        "created {} ({})",
+        created.destination().display(),
+        created.document_id()
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Both output modes submit exactly the same request and publish exactly once.
+fn create_result(args: CreateArgs) -> Result<ferritecad_jobs::CreatedDocument> {
+    use std::io::Write;
+
+    if args.json {
+        json::require_utf8_path(&args.path)?;
+    }
     if args.path.extension().and_then(|e| e.to_str()) != Some(DOCUMENT_EXTENSION) {
-        eprintln!(
+        let note = format!(
             "note: {} does not end in .{DOCUMENT_EXTENSION}",
             args.path.display()
         );
+        if args.json {
+            // A closed diagnostic pipe must not panic or block the JSON report.
+            let _ = writeln!(std::io::stderr().lock(), "{note}");
+        } else {
+            eprintln!("{note}");
+        }
     }
 
     let length_unit: Unit = args.length_unit.parse()?;
@@ -366,18 +397,11 @@ fn create(args: CreateArgs) -> Result<ExitCode> {
     // operation takes one anyway because the window does have such a way, and
     // a second entry point for the interface that does not would be a second
     // creation.
-    let created = create_document(
+    create_document(
         CreateDocumentRequest::new(&args.path, content, CREATE_TAKEN_ADVICE)
             .displaying(length_unit, angle_unit),
         &OperationContext::default(),
-    )?;
-
-    println!(
-        "created {} ({})",
-        created.destination().display(),
-        created.document_id()
-    );
-    Ok(ExitCode::SUCCESS)
+    )
 }
 
 fn clear_cache(args: DocumentArgs) -> Result<ExitCode> {
