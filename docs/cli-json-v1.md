@@ -1,11 +1,13 @@
-# CLI JSON v1: inspect, edit-extrude, create, export-stl и export-fbx
+# CLI JSON v1: inspect, edit-extrude, create, export-stl, export-fbx и import-step
 
 §24D задаёт opt-in контракт inspect и edit-extrude. §24D-1 добавляет третью
 существующую команду, `create`, через тот же конверт v1. §24F добавляет Body
-discovery и `export-stl --json`; §24G добавляет `export-fbx --json` совместимо,
+discovery и `export-stl --json`; §24G добавляет `export-fbx --json`,
+§24I — `import-step --json` совместимо,
 без изменения `schema_version`:
 
 ```text
+ferritecad import-step <source.step> -o <new.fcad> --json [--name <name>] [--force]
 ferritecad export-fbx <source.fcad> -o <out.fbx> --json [--force]
 ferritecad inspect <source.fcad> --json
 ferritecad edit-extrude <source.fcad> --json --feature <uuid> --distance-mm <n> -o <new.fcad> [--expect-version <token>]
@@ -28,7 +30,7 @@ stdout-логов рядом нет. Диагностика для челове�
 | Поле | Тип и правило |
 | --- | --- |
 | `schema_version` | integer, сейчас ровно `1` |
-| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl` или `export-fbx` |
+| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx` или `import-step` |
 | `ok` | boolean |
 | `result` | объект соответствующей операции, присутствует только при `ok: true` |
 | `error` | объект ошибки, присутствует только при `ok: false` |
@@ -51,6 +53,76 @@ UUID — канонические строки RFC 4122 UUIDv7 с дефисам
 hex-символа. Не вычисляйте токен самостоятельно и не используйте mtime вместо него.
 Версия JSON-контракта, версия схемы `.fcad` и версия алгоритма content hash —
 разные понятия. После обновления алгоритма получите токен новым inspect.
+
+## Результат import-step (§24I)
+
+`ferritecad import-step <source.step> -o <new.fcad> --json [--name <name>] [--force]`
+вызывает тот же общий STEP job, что текстовый import. DTO строится только из
+завершённого outcome, без второго import или открытия готового `.fcad`.
+
+| Исход | Envelope | Exit |
+| --- | --- | --- |
+| Документ опубликован без diagnostics | `ok:true`, `result`, diagnostics `[]` | 0 |
+| Документ опубликован с diagnostics | `ok:true`, `result`, непустые diagnostics | 4 |
+| Reader отверг STEP | `ok:false`, `error.code:"reader_rejected"`, `error.step_read` | 5 |
+| Operational failure до публикации | Прежний `ok:false`, `error.kind/message/causes`; без code/step_read | 2 |
+| Потеря сериализации/доставки любого из этих исходов | Ответ может отсутствовать/оборваться; исход операции не отзывается | 7 |
+
+Все поля Published `result` обязательны:
+
+| Поле | Тип и смысл |
+| --- | --- |
+| `destination` | UTF-8 string: реально опубликованный путь, как передан в request |
+| `document_id` | UUIDv7 созданного документа |
+| `object_id` | UUIDv7 сохранённого ImportedStep object, не native Body/Extrude |
+| `source_id` | UUIDv7 embedded STEP source; локальный definition key без него не идентификатор |
+| `name` | string: точное имя объекта, включая пустую строку/Unicode/quotes/LF |
+| `source_name` | string или явный null: сохранённый basename, никогда не полный путь |
+| `source_byte_len` | неотрицательное JSON integer, Rust u64, размер прочитанных STEP bytes |
+| `source_hash` | 64 строчных hex: полный BLAKE3 исходных bytes; не document content_version |
+| `importer` | объект с обязательными string `id`, `version`, `build`; пустой build — `""` |
+| `step_schema` | string: декларация схемы STEP, без изменения; пустая — `""` |
+| `source_unit` | string: декларация единицы STEP, без изменения; пустая — `""` |
+| `definitions` | неотрицательное JSON integer, Rust u64: число сохранённых definitions |
+| `placements` | неотрицательное JSON integer, Rust u64: число сохранённых placements |
+| `diagnostics` | ordered array объектов ниже, `[]` при тишине reader |
+
+Каждый diagnostic имеет обязательные `stage`, `severity`, `entity`, `message`.
+Stage — `load`, `transfer`, `identity`, `validation` или `unknown`; severity —
+`warning`, `fail` или `unknown`. Entity/message — точные строки, включая пустые,
+Unicode/quotes/LF. Порядок и повторы сохраняются. Новые domain варианты отображаются
+в `unknown`, пока wire mapping явно не расширен. Клиент не должен считать
+незнакомый stage/severity безопасным или превращать его в отсутствие diagnostics.
+
+Reader rejection совместимо расширяет только свой error двумя обязательными
+полями: `code:"reader_rejected"` и `step_read`. `step_read` содержит ровно известные
+этому v1 обязательные поля `source_byte_len`, `source_hash`, `importer`,
+`diagnostics` с типами выше. Common `kind` = `input` (стабильная coarse категория
+ErrorKind), `message` — изменяемое описание, `causes` = `[]`: diagnostics —
+наблюдения reader, а не цепочка исключений. Ни result, ни publication destination,
+ни document/object/source/occurrence UUID при rejection не выдаются. Обычные ошибки
+всех шести команд сохраняют прежние kind/message/causes и **не выдают** code/step_read.
+Неизвестные поля клиент игнорирует; неизвестный error code обрабатывает как отказ,
+а не как разрешение продолжить. Отсутствие code у exit 2 — operational failure.
+
+Тишина reader не доказывает корректность STEP. Exit 4 требует явного решения по
+сохранённым diagnostics, даже если файл опубликован. Эти исторические diagnostics
+не являются текущими FBX omissions и не определяют FBX complete. Source unit —
+декларация STEP, не текущая единица координат FBX/STL. Полные vectors placements,
+transforms/colours и discovery всей сборки здесь не выдаются; job сохраняет их
+как прежде. Независимые text/JSON imports получают новые UUID: файлы и ID между
+ними не обязаны совпадать. Между import/inspect/export нет общего снимка/version guard.
+
+Примеры полного published result (exit 0) и reader rejection (exit 5).
+Пути/UUID иллюстративные; строки kernel/reader отражают эту локальную сборку.
+
+```json
+{"schema_version":1,"operation":"import-step","ok":true,"result":{"destination":"clean.fcad","document_id":"01a08678-73a0-7600-9e35-0cc666783899","object_id":"01a08678-739d-7102-b3d6-4262de198511","source_id":"01a08678-73a1-77e2-8abf-2cbbd53c45ca","name":"clean","source_name":"clean.step","source_byte_len":15408,"source_hash":"7e1601d7ddbb078d1270bfce5115a6427215d3a995cfc8a2bf01b0224f4f646a","importer":{"id":"occt","version":"8.0.1","build":"bridge 0d13f6abb948c22016e26bebaf0e64464863a1cf0dc71e9798636c957d9b0313 aarch64-apple-darwin"},"diagnostics":[],"step_schema":"AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF {1 0 10303 442 1 1 4 }","source_unit":"millimetre","definitions":1,"placements":1}}
+```
+
+```json
+{"schema_version":1,"operation":"import-step","ok":false,"error":{"kind":"input","message":"STEP reader rejected the source; nothing was published","causes":[],"code":"reader_rejected","step_read":{"source_byte_len":9375,"source_hash":"3f72cf95c90084f50506a45e998643e11757aebf262ff162f51c5ea5249bf4be","importer":{"id":"occt","version":"8.0.1","build":"bridge 0d13f6abb948c22016e26bebaf0e64464863a1cf0dc71e9798636c957d9b0313 aarch64-apple-darwin"},"diagnostics":[{"stage":"load","severity":"fail","entity":"","message":"DATA NOT AVAILABLE FOR CHECK"}]}}}
+```
 
 ## Результат inspect
 
@@ -296,7 +368,8 @@ Inspect и FBX export читают **отдельные снимки**. FBX эк
 глубинной) и строки edit refusal предназначены человеку и могут меняться; по фразам
 не классифицируйте ошибки. Пустая цепочка — `[]`. Диагностика причины сохраняется
 и в JSON, и, по возможности, на stderr. Ошибка записи диагностики не мешает
-доставить JSON через исправный stdout: сохраняется exit 2. Если не удалось
+доставить JSON через исправный stdout: сохраняется exit 2. Reader rejection
+отдельно даёт exit 5 и typed step_read; его diagnostics не дублируются на stderr. Если не удалось
 доставить сам JSON, действует exit 7, даже когда stderr тоже закрыт. Например, отсутствующий файл даёт `io` с причиной ОС;
 недоступное ядро даёт `unsupported`, не геометрический успех.
 
@@ -307,10 +380,12 @@ Inspect и FBX export читают **отдельные снимки**. FBX эк
 | Ситуация | stdout / stderr | Exit |
 | --- | --- | --- |
 | Полный успех корректно разобранной JSON-команды | JSON result / возможный note о расширении при create | 0 |
+| STEP опубликован с diagnostics: ok:true | JSON result с diagnostics / пусто | 4 |
+| STEP reader rejection: ok:false, code=reader_rejected | JSON error со step_read / пусто | 5 |
 | Частичный FBX опубликован: ok:true, complete:false | JSON result с omissions / пусто | 6 |
 | Отказ выполнения корректно разобранной JSON-команды | JSON error / диагностика | 2 |
 | Ошибка аргументов до успешного clap parse | пусто / обычная текстовая usage-ошибка | 2 |
-| `inspect --json --help`, `edit-extrude --json --help`, `create --json --help`, `export-stl --json --help`, `export-fbx --json --help` | текст help / пусто | 0 |
+| `inspect --json --help`, `edit-extrude --json --help`, `create --json --help`, `export-stl --json --help`, `export-fbx --json --help`, `import-step --json --help` | текст help / пусто | 0 |
 | Корневой `--version` | текст версии / пусто | 0 |
 | Ошибка сериализации или доставки отчёта, включая BrokenPipe | JSON может отсутствовать или быть неполным / диагностика по возможности | 7 |
 
@@ -339,13 +414,21 @@ create: `create -- --json` создаёт файл `--json` текстом; JSON
 У export-stl `export-stl -o out.stl -- --json` читает источник с именем `--json`
 в текстовом режиме. Значение `--solid=--json` тоже не включает JSON-протокол.
 
+У import-step `import-step -o out.fcad -- --json` читает файл `--json` текстом,
+`--name=--json` и `--output=--json` тоже не включают протокол. Для JSON нужен
+самостоятельный flag до `--`: `import-step --json -o out.fcad -- --json`.
+Невалидный UTF-8 в string-значении `--name` отвергает clap как usage; проверка
+OS paths source/output выполняется после parse через общий UTF-8 helper до job.
+Reader rejection и operational refusal с потерянным stdout тоже возвращают 7;
+без publication ничего не появляется и занятое назначение не меняется.
+
 Exit 7 — **ошибка доставки отчёта**, не обещание отката операции. Если stdout
-закрыт после публикации, созданный документ, копия правки, STL или полный/частичный FBX остаются целыми;
+закрыт после публикации, созданный/импортированный документ, копия правки, STL или полный/частичный FBX остаются целыми;
 процесс не паникует, не удаляет файл и не запускает операцию снова. Не повторяйте
-create, edit или export автоматически: проверьте назначение отдельно. Для `.fcad`
+create, import, edit или export автоматически: проверьте назначение отдельно. Для `.fcad`
 используйте inspect и при необходимости validate/rebuild; для STL — независимый
 binary STL parser, для FBX — независимый FBX reader. Подтверждённая `--force`
-замена STL или полного/частичного FBX также не откатывается ради
+замена импортированного `.fcad`, STL или полного/частичного FBX также не откатывается ради
 отчёта. Даже если клиент не получил ответ, завершённая
 публикация остаётся завершённой.
 
@@ -607,3 +690,114 @@ for source, expect_complete, native in cases:
 print("Artifacts retained:", root)
 PY
 ```
+
+## Рецепт JSON STEP import → сохранённый документ → FBX
+
+Из корня checkout; native `ferritecad` в PATH или абсолютный `FCAD_CLI`.
+Рецепт использует чистую опубликованную fixture, делает private STEP-копию и
+удаляет только её после подтверждённой публикации. Для другого STEP измените
+`original` и ожидаемые геометрические размеры. Exit 4 явно останавливает рецепт:
+человек/клиент должен принять решение по diagnostics перед downstream processing.
+Reader rejection, operational failure, partial FBX и lost report также останавливают
+работу; ни один из этих исходов не превращается в молчаливый полный успех.
+
+```sh
+python3 - <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import tempfile
+import uuid
+
+cli = os.environ.get("FCAD_CLI", "ferritecad")
+root = Path(tempfile.mkdtemp(prefix="ferrite-json-step-"))
+original = Path("fixtures/step/canonical/01-single-part.step")
+original_hash = hashlib.sha256(original.read_bytes()).digest()
+source = root / "private STEP.step"
+shutil.copyfile(original, source)
+document, fbx = root / "part.fcad", root / "part.fbx"
+name = 'Imported "plate"\n零'
+
+def call(operation, *args):
+    p = subprocess.run([cli, operation, *map(str, args), "--json"], capture_output=True)
+    if p.returncode == 7:
+        raise SystemExit("Report lost: preserve and inspect destination; do not retry automatically")
+    if p.returncode not in (0, 2, 4, 5, 6):
+        raise SystemExit(f"Unexpected process exit {p.returncode}; inspect destination before retry")
+    # These arguments are valid. A usage error outside this recipe has no JSON.
+    value = json.loads(p.stdout)
+    assert value["schema_version"] == 1 and value["operation"] == operation
+    if p.returncode == 5:
+        assert operation == "import-step" and not value["ok"] and "result" not in value
+        assert value["error"]["code"] == "reader_rejected"
+        print(json.dumps(value["error"]["step_read"], ensure_ascii=False))
+        raise SystemExit("Reader rejected STEP; no publication, processing stopped")
+    if p.returncode == 2:
+        assert not value["ok"] and "result" not in value
+        print(json.dumps(value["error"], ensure_ascii=False))
+        raise SystemExit("Operational refusal; processing stopped")
+    assert value["ok"] and "error" not in value
+    return p.returncode, value["result"]
+
+code, imported = call("import-step", source, "-o", document, "--name", name)
+assert code in (0, 4) and document.is_file()
+assert imported["destination"] == str(document)
+assert imported["name"] == name and imported["source_name"] == source.name
+assert imported["source_byte_len"] == source.stat().st_size
+assert re.fullmatch("[0-9a-f]{64}", imported["source_hash"])
+# source_hash is the reported BLAKE3. hashlib SHA-256 below independently checks
+# that this recipe's external source and saved file are unchanged by later work.
+for field in ("document_id", "object_id", "source_id"):
+    ident = uuid.UUID(imported[field])
+    assert ident.version == 7 and str(ident) == imported[field]
+assert (code == 0) == (imported["diagnostics"] == [])
+if code == 4:
+    print(json.dumps(imported["diagnostics"], ensure_ascii=False))
+    raise SystemExit("Published with diagnostics; explicit review/acceptance required before continuing")
+assert imported["definitions"] == 1 and imported["placements"] == 1
+assert source.read_bytes() == original.read_bytes()
+source.unlink()  # Only the private copy made above.
+code, inspected = call("inspect", document)
+assert code == 0 and inspected["document_id"] == imported["document_id"]
+assert inspected["bodies"] == []  # ImportedStep is not a native Body.
+before = hashlib.sha256(document.read_bytes()).digest()
+code, exported = call("export-fbx", document, "-o", fbx)
+assert exported["destination"] == str(fbx)
+assert exported["bytes"] == fbx.stat().st_size
+if code == 6:
+    assert not exported["complete"] and exported["omissions"]
+    print(json.dumps(exported["omissions"], ensure_ascii=False))
+    raise SystemExit("Partial FBX kept; complete-model processing stopped")
+assert code == 0 and exported["complete"] and exported["omissions"] == []
+# Independent ASCII FBX subset reader; no FerriteCAD library or prose parsing.
+text = fbx.read_text(encoding="utf-8")
+assert "FBXVersion: 7400" in text
+for field, kind in [("models", "Model"), ("geometries", "Geometry"), ("materials", "Material")]:
+    assert exported[field] == len(re.findall(r"^\s*" + kind + r": [0-9]+,", text, re.M))
+assert exported["geometries"] == 1
+vertices = re.search(r"Vertices: \*(\d+) \{\s*a: ([^}]+)\}", text)
+coordinates = [float(x) for x in vertices[2].strip().split(",")]
+assert len(coordinates) == int(vertices[1])
+# Unchanged FBX convention: metres and (x, z, -y), so 60 x 40 x 10 mm:
+assert [max(coordinates[i::3]) - min(coordinates[i::3]) for i in range(3)] == [0.06, 0.01, 0.04]
+polygons = re.search(r"PolygonVertexIndex: \*(\d+) \{\s*a: ([^}]+)\}", text)
+indices = [int(x) for x in polygons[2].strip().split(",")]
+assert len(indices) == int(polygons[1]) == 36 and sum(i < 0 for i in indices) == 12
+assert all(0 <= (i if i >= 0 else -i-1) < len(coordinates)//3 for i in indices)
+assert hashlib.sha256(document.read_bytes()).digest() == before
+assert hashlib.sha256(original.read_bytes()).digest() == original_hash
+assert {p.name for p in root.iterdir()} == {"part.fcad", "part.fbx"}
+print("Verified JSON STEP publication and independent FBX:", root)
+PY
+```
+
+Это независимое чтение фиксированного ASCII subset, не универсальный FBX reader.
+Существующая обязательная native кампания `source tools/check-fbx-complex.sh`
+дополнительно читает complete и complex partial после JSON STEP import и удаления
+private STEP через pinned ufbx 0.23.0 strict. На macOS запускайте `source` в Bash
+с уже заданными DYLD paths. Import, inspect и export — отдельные операции над
+сохранёнными состояниями; FBX не получил `--expect-version`.

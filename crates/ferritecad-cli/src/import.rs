@@ -28,8 +28,12 @@ use ferritecad_types::Result;
 
 use crate::{EXIT_NOTICED, EXIT_REJECTED, ImportStepArgs, replacing};
 
-pub fn import_step(args: ImportStepArgs) -> Result<ExitCode> {
-    let outcome = import_step_document(
+pub fn import_step_result(args: &ImportStepArgs) -> Result<StepImportOutcome> {
+    if args.json {
+        crate::json::require_utf8_path(&args.path)?;
+        crate::json::require_utf8_path(&args.output)?;
+    }
+    import_step_document(
         &ImportStepRequest {
             source: &args.path,
             destination: &args.output,
@@ -39,8 +43,11 @@ pub fn import_step(args: ImportStepArgs) -> Result<ExitCode> {
         OcctKernel::new,
         OcctKernel::import_step,
         &OperationContext::default(),
-    )?;
-    match outcome {
+    )
+}
+
+pub fn import_step(args: ImportStepArgs) -> Result<ExitCode> {
+    match import_step_result(&args)? {
         StepImportOutcome::Rejected(read) => {
             print!("{}", refused(&args.path, &read));
             Ok(ExitCode::from(EXIT_REJECTED))

@@ -384,6 +384,7 @@ fn the_complex_assembly_becomes_one_fbx_that_keeps_every_definition_and_says_wha
         .arg(&input)
         .arg("--output")
         .arg(&document)
+        .arg("--json")
         .output()
         .expect("the shipped import-step command runs");
     assert_eq!(
@@ -393,6 +394,35 @@ fn the_complex_assembly_becomes_one_fbx_that_keeps_every_definition_and_says_wha
         String::from_utf8_lossy(&imported.stdout),
         String::from_utf8_lossy(&imported.stderr)
     );
+
+    // Reuse this one expensive import for JSON STEP -> partial FBX -> ufbx.
+    let import_reply: serde_json::Value =
+        serde_json::from_slice(&imported.stdout).expect("JSON STEP import");
+    assert_eq!(import_reply["schema_version"], 1);
+    assert_eq!(import_reply["operation"], "import-step");
+    assert_eq!(import_reply["ok"], true);
+    assert!(import_reply.get("error").is_none());
+    assert_eq!(
+        import_reply["result"]["destination"],
+        document.to_str().expect("UTF-8")
+    );
+    assert_eq!(
+        import_reply["result"]["source_byte_len"],
+        original.len() as u64
+    );
+    assert_eq!(
+        import_reply["result"]["source_hash"],
+        ferritecad_types::ContentHash::of_bytes(&original).to_string()
+    );
+    assert_eq!(import_reply["result"]["definitions"], 46);
+    assert_eq!(import_reply["result"]["placements"], 140);
+    assert!(
+        !import_reply["result"]["diagnostics"]
+            .as_array()
+            .expect("diagnostics")
+            .is_empty()
+    );
+    assert!(imported.stderr.is_empty());
 
     // From here on the external STEP does not exist.
     std::fs::remove_file(&input).expect("hides the external STEP before exporting");

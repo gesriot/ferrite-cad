@@ -2295,16 +2295,47 @@ C++/FFI, schema, зависимости и FBX wire contract не менялис
 native/stub проверки и публичный рецепт; результаты CI опубликованного head и
 merge фиксируются отдельно от локальной передачи.
 
-**§24I — pending: import-step --json через общий STEP job.**
-Добавить opt-in JSON v1 с явным различием опубликованного документа без/с
-diagnostics, reader rejection без публикации и operational error. Сохранить
-коды 0/4/5/2; потеря JSON-отчёта возвращает 7 и не отзывает готовый документ.
-Типизированные diagnostics и факты результата брать из §24H без повторного
-чтения STEP/SQLite или import. Текстовый CLI и пять прежних JSON-команд сохраняют
-контракт. Приёмка полностью без окон: native/stub process tests, сохранность
-source/output, закрытые pipes, рецепт import → удалить приватный STEP → JSON FBX
-с независимым reader. UI import, batch и новые геометрические операции отдельно;
-исполнитель следующего среза — Codex, diff оставляется незакоммиченным для ревью.
+**§24I — реализовано: import-step --json.**
+Opt-in JSON v1 использует единый `import_step_result` text/JSON адаптер и прежний
+`import_step_document`. Jobs остаётся владельцем read/import/handles/storage/close/
+publish; дополнительного import или чтения output ради DTO нет. Явный CLI DTO
+передаёт publication destination/document/object/source UUID, name/basename,
+source bytes/hash, kernel identity, schema/unit, counts и ordered diagnostics.
+
+Чистая публикация — ok:true/exit 0; публикация с diagnostics — ok:true/exit 4.
+Reader rejection — ok:false/exit 5, error.code=reader_rejected и typed step_read,
+без выдуманной publication identity. Operational error сохраняет error/exit 2.
+Один fallible emitter доставляет все исходы; потеря JSON даёт 7, сохраняет готовую
+публикацию/force replacement и не вызывает повтор или rollback. Пять старых
+JSON-команд сохраняют wire/exit semantics. Paths UTF-8 проверяются до job;
+clap usage/help и flag-shaped filenames/values сохраняют текстовую политику.
+
+Native process gate сверяет JSON со stored facts и text import после reopen,
+проверяет 0/4/5/2, реальные закрытые OS pipes и no-clobber/alias/source protection.
+Он добавлен в существующий трёхплатформенный runtime workflow с exact-name и
+anti-skip проверками; прежние 51 gates и FBX/strict ufbx campaign сохранены.
+Две временные семантические поломки проверены исполняемым падением и восстановлены.
+[Контракт и публичный рецепт](cli-json-v1.md),
+[локальный протокол и передача](cli-json-step-import-verification.md).
+UI import, batch/stdin/RPC, CLI cancellation, schema, FFI, native inputs и
+зависимости не менялись. Независимое ревью подтвердило общий job, явный DTO,
+сохранение прежних operational errors и разделение исходов 0/4/5/2/7. В карте
+возможностей исправлены устаревшие сведения о числе JSON-команд и правке высоты.
+Локальные результаты и CI опубликованного head/merge фиксируются отдельно.
+
+**§24J — pending: read-only validate и структурированная диагностика.**
+Сейчас текстовый validate использует Document::open и может мигрировать файл
+при проверке. Перевести text/JSON validate на общий read-only маршрут одного
+закреплённого снимка через Document::validate; не добавлять второй валидатор.
+Текущий документ с диагностикой даёт законченный report: exit 0 без errors
+(warnings допустимы), exit 1 при errors; невозможность проверки — error/exit 2.
+JSON v1 различает выполненную проверку и operational refusal, сохраняет stable
+diagnostic codes, object UUID/null, severity и порядок. Потеря отчёта — exit 7.
+Старые схемы/WAL/неподдерживаемый reader отказывают без миграции или repair.
+Приёмка без ядра и окон доказывает сохранность bytes/mtime/каталога на успехах
+и отказах. Проверка внутренней согласованности не обещает успешную геометрию,
+исправность исходного STEP или полный FBX. UI validate, миграция/repair, новые
+геометрические операции и batch остаются отдельными срезами.
 
 ## 15. Чего не делать до beta
 
