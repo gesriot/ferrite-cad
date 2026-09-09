@@ -1,9 +1,10 @@
 # Общий STEP import (§24H)
 
 `ferritecad_jobs::import_step_document` — один предметный маршрут для сохранения
-STEP в новом `.fcad`. Текстовый `import-step` уже использует его. UI import,
-`import-step --json` и флаги отмены CLI **не добавлены**. Существующий JSON v1
-пяти других команд не меняется.
+STEP в новом `.fcad`. Текстовый `import-step` и с §24I opt-in `import-step --json`
+используют один адаптер request и этот job. UI import и флаги отмены CLI
+**не добавлены**. [JSON-контракт и рецепт](cli-json-v1.md#результат-import-step-24i)
+различают publication, reader rejection и operational failure; сам job не знает JSON.
 
 ## Request и завершённый результат
 

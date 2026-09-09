@@ -581,6 +581,28 @@ jobs:
             exit 1
           fi
 
+      - name: Import STEP through JSON publication, rejection and direct OS pipes
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          cargo test --release --features planegcs -p ferritecad-cli --test json_import \
+            native_json_step_import_publication_rejection_and_delivery -- --exact --nocapture 2>&1 | tee json-import-tests.log
+          if grep -q 'skipped:' json-import-tests.log || \
+             ! grep -q '^test native_json_step_import_publication_rejection_and_delivery \.\.\. ok$' json-import-tests.log; then
+            echo "::error::the native JSON STEP import gate did not execute and pass"
+            exit 1
+          fi
+
       - name: Publish complete and partial JSON FBX and read them with pinned ufbx
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
@@ -1150,6 +1172,7 @@ jobs:
             edit-tests.log
             fbx-json-tests.log
             import-tests.log
+            json-import-tests.log
             closure-viewer.txt
             closure-cli.txt
             layout-${{ matrix.name }}.txt

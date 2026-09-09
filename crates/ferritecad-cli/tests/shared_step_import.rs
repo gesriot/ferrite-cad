@@ -491,7 +491,7 @@ fn step_preflight_and_stub_refusals_preserve_sources_and_names() {
             assert_eq!(inventory(dir.path()), before);
         }
     }
-    let output = process(&source, &destination, &["--json"]);
+    let output = process(&source, &destination, &["--batch"]);
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument"));
     assert_eq!(inventory(dir.path()), before);

@@ -13,7 +13,9 @@ use ferritecad_types::{CadError, ContentHash, DocumentId, ObjectId, Result};
 use serde::Serialize;
 
 mod fbx;
+mod import;
 pub use fbx::ExportedFbx;
+pub use import::emit_import;
 
 const SCHEMA_VERSION: u32 = 1;
 /// Delivery failed. An operation may have published; never retry it here.
@@ -27,6 +29,7 @@ pub enum Operation {
     Create,
     ExportStl,
     ExportFbx,
+    ImportStep,
 }
 
 #[derive(Serialize)]
@@ -49,6 +52,8 @@ struct Failure {
     kind: &'static str,
     message: String,
     causes: Vec<String>,
+    #[serde(flatten)]
+    rejection: Option<import::ReaderRejection>,
 }
 
 impl From<&CadError> for Failure {
@@ -63,6 +68,7 @@ impl From<&CadError> for Failure {
             kind: error.kind().as_str(),
             message: error.to_string(),
             causes,
+            rejection: None,
         }
     }
 }
@@ -223,7 +229,7 @@ pub fn emit<T: Serialize>(operation: Operation, result: Result<T>) -> ExitCode {
     emit_with_exit(operation, result.map(|result| (result, 0)))
 }
 
-/// A published partial FBX is a successful result with exit 6. Delivery failure
+/// A published noticed import (4) or partial FBX (6) is successful. Delivery failure
 /// still takes precedence, through exactly the same envelope and fallible I/O.
 pub fn emit_with_exit<T: Serialize>(operation: Operation, result: Result<(T, u8)>) -> ExitCode {
     let (outcome, exit) = match result {
@@ -241,6 +247,15 @@ pub fn emit_with_exit<T: Serialize>(operation: Operation, result: Result<(T, u8)
             )
         }
     };
+    emit_outcome(operation, outcome, exit)
+}
+
+// The single serialization/delivery path also serves a typed reader rejection.
+fn emit_outcome<T: Serialize>(
+    operation: Operation,
+    outcome: Outcome<T>,
+    exit: ExitCode,
+) -> ExitCode {
     let response = Response {
         schema_version: SCHEMA_VERSION,
         operation,

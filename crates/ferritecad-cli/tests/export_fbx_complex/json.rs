@@ -158,9 +158,22 @@ fn native_json_fbx_complete_publication() {
         .arg(&step)
         .arg("-o")
         .arg(&imported)
+        .arg("--json")
         .output()
         .expect("import");
     assert_eq!(result.status.code(), Some(0), "{result:?}");
+    let import_reply: Value = serde_json::from_slice(&result.stdout).expect("JSON STEP import");
+    assert_eq!(import_reply["schema_version"], 1);
+    assert_eq!(import_reply["operation"], "import-step");
+    assert_eq!(import_reply["ok"], true);
+    assert_eq!(
+        import_reply["result"]["destination"],
+        imported.to_str().expect("UTF-8")
+    );
+    assert_eq!(import_reply["result"]["diagnostics"], serde_json::json!([]));
+    assert_eq!(import_reply["result"]["definitions"], 1);
+    assert_eq!(import_reply["result"]["placements"], 1);
+    assert!(result.stderr.is_empty());
     std::fs::remove_file(&step).expect("only our STEP copy removed");
     for (source, name) in [(&native, "native.fbx"), (&imported, "imported.fbx")] {
         let before = files(root.path());

@@ -177,6 +177,11 @@ struct ImportStepArgs {
     /// Replace the output document if it already exists.
     #[arg(long)]
     force: bool,
+
+    /// Emit JSON v1 publication facts or a typed reader rejection.
+    /// Argument errors and help remain clap text. Paths must be UTF-8.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -361,6 +366,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::ExportFbx(args) => export_fbx::export_fbx(args),
         Command::Rebuild(args) => rebuild::rebuild(args),
         Command::PrintTopology(args) => topology::print_topology(args),
+        Command::ImportStep(args) if args.json => {
+            Ok(json::emit_import(import::import_step_result(&args)))
+        }
         Command::ImportStep(args) => import::import_step(args),
     }
 }

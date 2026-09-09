@@ -92,8 +92,11 @@ STEP import now uses the shared jobs operation: one source read, owned geometry,
 closed SQLite scratch and atomic publication. Exit 0 publishes without diagnostics;
 4 publishes with diagnostics; 5 is reader rejection with no document; 2 is an
 execution error. [The API contract and headless recipe](docs/shared-step-import.md)
-describe ownership and cancellation at native call boundaries. UI import and
-`import-step --json` are not available yet.
+describe ownership and cancellation at native call boundaries. UI import is
+not available yet. `import-step --json` reports published identities and diagnostics
+(0/4), typed reader rejection (5), operational refusal (2), or report delivery
+failure (7) through [JSON v1](docs/cli-json-v1.md#результат-import-step-24i).
+A lost report keeps any published document, including a confirmed replacement.
 
 The same document always produces the same bytes. Nothing in the file is a
 clock, a host name, a path or a random number, so two exports can be compared,
