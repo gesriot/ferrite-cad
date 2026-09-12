@@ -97,8 +97,8 @@ enum Command {
     EditExtrude(EditExtrudeArgs),
     /// Show a document's metadata, objects, graph and references.
     Inspect(InspectArgs),
-    /// Check that a document is internally consistent and rebuildable.
-    Validate(DocumentArgs),
+    /// Check stored consistency without writes, migration or a geometry kernel.
+    Validate(ValidateArgs),
     /// Print the dependency graph.
     DumpGraph(DumpGraphArgs),
     /// Delete a document's regenerable cache sidecar.
@@ -154,6 +154,15 @@ struct InspectArgs {
     path: PathBuf,
     /// Emit the JSON v1 extrusion-edit catalog, rather than the full text report.
     /// Argument errors and help remain clap text. Paths must be UTF-8 in JSON mode.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct ValidateArgs {
+    /// Existing current-schema document, opened read-only.
+    path: PathBuf,
+    /// Emit JSON v1 diagnostics. Paths must be UTF-8; help/usage remain text.
     #[arg(long)]
     json: bool,
 }
@@ -332,15 +341,17 @@ fn run(cli: Cli) -> Result<ExitCode> {
             render::inspect(&document)?;
             Ok(ExitCode::SUCCESS)
         }
+        Command::Validate(args) if args.json => Ok(json::emit_with_exit(
+            json::Operation::Validate,
+            validate_result(&args).map(|checked| {
+                let exit = validation_exit(&checked.report);
+                (json::Validated::from(checked), exit)
+            }),
+        )),
         Command::Validate(args) => {
-            let document = Document::open(&args.path)?;
-            let report = document.validate()?;
-            render::validation(&args.path, &report);
-            Ok(if report.is_ok() {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::from(EXIT_INVALID)
-            })
+            let checked = validate_result(&args)?;
+            render::validation(&args.path, &checked.report);
+            Ok(ExitCode::from(validation_exit(&checked.report)))
         }
         Command::DumpGraph(args) => {
             let document = Document::open(&args.path)?;
@@ -381,6 +392,18 @@ fn create(args: CreateArgs) -> Result<ExitCode> {
         created.document_id()
     );
     Ok(ExitCode::SUCCESS)
+}
+
+/// Both presentations use one read-only operation; only JSON restricts OS paths.
+fn validate_result(args: &ValidateArgs) -> Result<ferritecad_jobs::ValidatedDocument> {
+    if args.json {
+        json::require_utf8_path(&args.path)?;
+    }
+    ferritecad_jobs::validate_document(&args.path)
+}
+
+fn validation_exit(report: &ferritecad_document::ValidationReport) -> u8 {
+    if report.is_ok() { 0 } else { EXIT_INVALID }
 }
 
 /// Both output modes submit exactly the same request and publish exactly once.

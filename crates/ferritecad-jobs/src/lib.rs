@@ -41,6 +41,9 @@ mod fbx;
 mod import;
 mod publish;
 mod stl;
+mod validate;
+
+pub use validate::{ValidatedDocument, validate_document};
 
 pub use create::{CreateDocumentRequest, CreatedDocument, NewDocument, PlateSize, create_document};
 pub use edit::{EditExtrudeRequest, EditedDocument, edit_extrude_copy, read_extrude_source};

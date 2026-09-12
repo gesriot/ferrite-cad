@@ -215,3 +215,108 @@ fn snapshot_leaves_source_bytes_and_foreign_sidecars_unchanged() {
         b"foreign cache sentinel"
     );
 }
+
+#[test]
+fn validation_metadata_and_findings_hold_the_same_committed_snapshot() {
+    let root = tempfile::tempdir().expect("directory");
+    let path = root.path().join("validation.fcad");
+    let mut document = Document::create(&path).expect("create");
+    let id = ObjectId::new();
+    let bytes = Envelope::new("future.note", 1, vec![], vec![1])
+        .to_bytes()
+        .expect("envelope");
+    let payload = ObjectPayload::from_storage_bytes(&bytes).expect("unknown");
+    document
+        .write(|w| w.put_object(id, None, 0, None, &payload))
+        .expect("object");
+    document.close().expect("close fixture");
+    let reading = Document::open_read_only(&path).expect("pin metadata");
+    let old_id = reading.meta().document_id;
+    let old_report = reading.validate().expect("one warning");
+    assert_eq!(old_report.warnings().count(), 1);
+    let new_id = ferritecad_types::DocumentId::new();
+    let writer = Connection::open(&path).expect("writer");
+    writer
+        .busy_timeout(std::time::Duration::ZERO)
+        .expect("no timing race or sleep");
+    writer
+        .execute_batch("BEGIN IMMEDIATE; DELETE FROM objects;")
+        .expect("change findings");
+    writer
+        .execute(
+            "UPDATE meta SET document_id = ?1",
+            [new_id.to_bytes().as_slice()],
+        )
+        .expect("change metadata in same transaction");
+    // A deferred transaction without a pinned read would allow this commit,
+    // yielding stale cached metadata paired with fresh validation findings.
+    let error = writer
+        .execute_batch("COMMIT")
+        .expect_err("snapshot holds a read lock");
+    assert!(
+        matches!(error, rusqlite::Error::SqliteFailure(ref e, _) if e.code == rusqlite::ErrorCode::DatabaseBusy)
+    );
+    assert_eq!(reading.meta().document_id, old_id);
+    assert_eq!(reading.validate().expect("same report"), old_report);
+    reading.close().expect("release reading");
+    writer.execute_batch("COMMIT").expect("commit after close");
+    drop(writer);
+    let later = Document::open_read_only(&path).expect("new reading");
+    assert_eq!(later.meta().document_id, new_id);
+    assert!(
+        later
+            .validate()
+            .expect("new findings")
+            .diagnostics
+            .is_empty()
+    );
+    later.close().expect("close");
+}
+
+#[test]
+fn rollback_header_does_not_allow_writes_to_foreign_wal_sidecars() {
+    let root = tempfile::tempdir().expect("directory");
+    let path = root.path().join("document.fcad");
+    Document::create(&path)
+        .expect("create")
+        .close()
+        .expect("close");
+    let before = std::fs::read(&path).expect("bytes");
+    assert_eq!(&before[18..20], &[1, 1], "DELETE header");
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = root.path().join(format!("document.fcad{suffix}"));
+        std::fs::write(&sidecar, b"foreign sidecar").expect("sentinel");
+        let mtime = sidecar
+            .metadata()
+            .expect("metadata")
+            .modified()
+            .expect("mtime");
+        let error = Document::open_read_only(&path).expect_err("SQLite must not touch SHM");
+        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Unsupported);
+        assert!(error.to_string().contains("WAL sidecar"), "{error}");
+        #[cfg(unix)]
+        {
+            // The alias has no adjacent sidecars of its own.
+            let alias = root.path().join("alias.fcad");
+            std::os::unix::fs::symlink(&path, &alias).expect("source alias");
+            let error = Document::open_read_only(&alias).expect_err("resolved source sidecar");
+            assert_eq!(error.kind(), ferritecad_types::ErrorKind::Unsupported);
+            assert!(error.to_string().contains("WAL sidecar"));
+            std::fs::remove_file(alias).expect("own symlink");
+        }
+        assert_eq!(std::fs::read(&path).expect("source"), before);
+        assert_eq!(
+            std::fs::read(&sidecar).expect("sidecar"),
+            b"foreign sidecar"
+        );
+        assert_eq!(
+            sidecar
+                .metadata()
+                .expect("metadata")
+                .modified()
+                .expect("mtime"),
+            mtime
+        );
+        std::fs::remove_file(sidecar).expect("own sentinel");
+    }
+}

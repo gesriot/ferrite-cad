@@ -2323,19 +2323,39 @@ UI import, batch/stdin/RPC, CLI cancellation, schema, FFI, native inputs и
 возможностей исправлены устаревшие сведения о числе JSON-команд и правке высоты.
 Локальные результаты и CI опубликованного head/merge фиксируются отдельно.
 
-**§24J — pending: read-only validate и структурированная диагностика.**
-Сейчас текстовый validate использует Document::open и может мигрировать файл
-при проверке. Перевести text/JSON validate на общий read-only маршрут одного
-закреплённого снимка через Document::validate; не добавлять второй валидатор.
-Текущий документ с диагностикой даёт законченный report: exit 0 без errors
-(warnings допустимы), exit 1 при errors; невозможность проверки — error/exit 2.
-JSON v1 различает выполненную проверку и operational refusal, сохраняет stable
-diagnostic codes, object UUID/null, severity и порядок. Потеря отчёта — exit 7.
-Старые схемы/WAL/неподдерживаемый reader отказывают без миграции или repair.
-Приёмка без ядра и окон доказывает сохранность bytes/mtime/каталога на успехах
-и отказах. Проверка внутренней согласованности не обещает успешную геометрию,
-исправность исходного STEP или полный FBX. UI validate, миграция/repair, новые
-геометрические операции и batch остаются отдельными срезами.
+**§24J — реализовано: read-only validate и JSON-диагностика.**
+Text/JSON готовят один запрос-путь и вызывают `ferritecad_jobs::validate_document`.
+Один read-only закреплённый снимок даёт document identity и существующий
+`ValidationReport`; SQLite закрывается до возврата owned фактов. Правила и stable
+codes остаются в document, content version/ядро/rebuild не вычисляются.
+
+JSON v1: `ok:true`, `valid:true`, exit 0 (warnings допустимы); `ok:true`,
+`valid:false`, exit 1 при errors; operational refusal — прежний error/exit 2;
+потеря отчёта — 7 через существующий fallible emitter. Ordered diagnostics
+сохраняют code/severity/message/object UUID/null, counts получаются из report.
+Шесть прежних JSON-команд сохраняют wire/exit semantics. Найден и исправлен
+конкретный дефект общего read-only open: stale WAL/SHM при DELETE-заголовке
+могли вызвать запись SHM. Guard до SQLite теперь отказывает при этих sidecars,
+включая разрешённую цель symlink; validation rules не расширялись. Для text validate намеренно
+изменён только writable open: schema/WAL/minimum reader guards отказывают без
+миграции/repair; текущие тексты, findings и exit 0/1 остаются прежними.
+
+Сохранность bytes/mtime/каталога/чужих sidecars, warnings/invalid/refusals, реальные
+закрытые pipes, OS arguments и фактические read/write permission denials проверяются
+реальными процессами без ядра. Отдельные транзакционные tests доказывают снимок
+и закрытие соединения без sleeps. Именованные gates добавлены в обычный CI трёх ОС;
+существующие 54 native gates и strict ufbx остаются в combined runtime workflow.
+[JSON контракт и исполняемый рецепт](cli-json-v1.md),
+[общий протокол](read-only-validation.md),
+[локальные доказательства и передача](read-only-validation-verification.md).
+UI, repair/migrate, kernel validation, schema/FFI/dependencies и следующий срез
+не затронуты. Проверка внутренней согласованности не обещает solid, корректный
+STEP или complete FBX. Между validate/export нет общего snapshot/version guard.
+
+Независимое ревью §24J: исправлена CI-проверка отсутствия skips — отдельный
+`! grep` не останавливал Bash с `set -e`; теперь совпадение явно завершает gate
+ошибкой. Обновлён перечень JSON-команд. Локальные повторные проверки и результаты
+CI опубликованного head/merge фиксируются отдельно от отчёта реализации.
 
 ## 15. Чего не делать до beta
 

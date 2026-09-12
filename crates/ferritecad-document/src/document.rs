@@ -411,10 +411,12 @@ impl Document {
     /// it as if the new columns already existed would be misleading. A file in
     /// SQLite WAL mode is likewise refused before SQLite opens it: FerriteCAD
     /// documents are single-file rollback-journal databases, and even a
-    /// read-only WAL connection may create `-wal`/`-shm` files.
+    /// read-only WAL connection may create or modify `-wal`/`-shm` files. Stale
+    /// WAL sidecars are refused even when the database header says DELETE.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         refuse_wal_journal(&path)?;
+        refuse_wal_sidecars(&path)?;
         let conn = open_connection(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         // Pin one SQLite reading for every query (metadata, geometry and edit
         // identity alike). A concurrent commit cannot split a load in two.
@@ -1489,6 +1491,45 @@ fn refuse_wal_journal(path: &Path) -> Result<()> {
              files nor rewrite it to FerriteCAD's single-file DELETE mode",
             path.display()
         )));
+    }
+    Ok(())
+}
+
+/// SQLite can consult a stale WAL even with a rollback-mode database header,
+/// and SQLITE_OPEN_READ_ONLY still permits writing shared-memory bookkeeping.
+/// Check both the requested spelling and the resolved file: SQLite's VFS may
+/// resolve a symlink before choosing the adjacent sidecar paths.
+fn refuse_wal_sidecars(path: &Path) -> Result<()> {
+    fn check(path: &Path) -> Result<()> {
+        for suffix in ["-wal", "-shm"] {
+            let mut name = path.as_os_str().to_os_string();
+            name.push(suffix);
+            let sidecar = PathBuf::from(name);
+            match std::fs::symlink_metadata(&sidecar) {
+                Ok(_) => {
+                    return Err(CadError::unsupported(format!(
+                        "{} has a SQLite WAL sidecar {}; a read-only command will neither \
+                         modify nor remove it",
+                        path.display(),
+                        sidecar.display()
+                    )));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(CadError::io(
+                        format!("checking WAL sidecar {}", sidecar.display()),
+                        error,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+    check(path)?;
+    let resolved = std::fs::canonicalize(path)
+        .map_err(|error| CadError::io(format!("resolving {}", path.display()), error))?;
+    if resolved != path {
+        check(&resolved)?;
     }
     Ok(())
 }

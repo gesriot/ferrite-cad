@@ -56,12 +56,19 @@ owns the work — including recipes with expected exit codes — is documented i
 [`docs/cli-capabilities.md`](docs/cli-capabilities.md).
 
 The opt-in `create --json`, `inspect --json`, `edit-extrude --json`,
-`export-stl --json` and `export-fbx --json` commands expose a versioned contract
+`export-stl --json`, `export-fbx --json`, `import-step --json` and
+`validate --json` commands expose a versioned contract
 for publishing a document,
-discovering Extrude and native Body UUIDs, editing a height in a new copy, and
+discovering Extrude and native Body UUIDs, editing a height in a new copy,
+importing STEP, checking stored consistency without writes or a kernel, and
 exporting one Body to binary STL or the whole scene to FBX. See the exact
 [JSON v1 schema and runnable agent recipe](docs/cli-json-v1.md). This contract
-covers those five commands; the other commands retain their existing text output.
+covers those seven commands; the other commands retain their existing text output.
+
+`validate` now opens read-only in both text and JSON modes. Old schemas, WAL and
+incompatible reader requirements are refused without migration. JSON `ok:true`
+means the check ran; `valid:false` exits 1, while warnings may accompany exit 0.
+A valid document does not guarantee a successful rebuild or complete FBX.
 
 ## Exporting to FBX
 
