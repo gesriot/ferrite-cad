@@ -151,6 +151,33 @@ jobs:
       # accepted-scene gates. The build above supplies both client executables.
       - run: cargo test --workspace
 
+      # Stored validation needs no native libraries. Keep these process and
+      # snapshot gates in ordinary CI on every OS, with actual execution checked.
+      - name: Validate read-only documents through text and JSON
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p ferritecad-cli --test validate -- --nocapture 2>&1 | tee validation.log
+          for gate in validation_reports_match_shared_operation_without_writes \
+                      validation_read_only_refusals_preserve_storage \
+                      validation_json_arguments_and_closed_pipes \
+                      validation_really_read_only_permissions; do
+            grep -E "^test ${gate} \.\.\. ok$" validation.log
+          done
+          grep -F '4 passed; 0 failed; 0 ignored' validation.log
+          if grep -Ei 'skipping|skipped|SKIP:' validation.log; then
+            exit 1
+          fi
+          cargo test -p ferritecad-jobs validate::tests::validation_keeps_one_snapshot_and_closes_before_return -- --exact --nocapture 2>&1 | tee validation-job.log
+          grep -E '^test validate::tests::validation_keeps_one_snapshot_and_closes_before_return \.\.\. ok$' validation-job.log
+          grep -F '1 passed; 0 failed; 0 ignored' validation-job.log
+          cargo test -p ferritecad-document --test snapshot validation_metadata_and_findings_hold_the_same_committed_snapshot -- --exact --nocapture 2>&1 | tee validation-snapshot.log
+          grep -E '^test validation_metadata_and_findings_hold_the_same_committed_snapshot \.\.\. ok$' validation-snapshot.log
+          grep -F '1 passed; 0 failed; 0 ignored' validation-snapshot.log
+          cargo test -p ferritecad-document --test snapshot rollback_header_does_not_allow_writes_to_foreign_wal_sidecars -- --exact --nocapture 2>&1 | tee validation-sidecars.log
+          grep -E '^test rollback_header_does_not_allow_writes_to_foreign_wal_sidecars \.\.\. ok$' validation-sidecars.log
+          grep -F '1 passed; 0 failed; 0 ignored' validation-sidecars.log
+
       # The production FBX writer, read by pinned ufbx 0.23.0 in strict mode on
       # every product platform.
       #

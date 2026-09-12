@@ -14,8 +14,10 @@ use serde::Serialize;
 
 mod fbx;
 mod import;
+mod validate;
 pub use fbx::ExportedFbx;
 pub use import::emit_import;
+pub use validate::Validated;
 
 const SCHEMA_VERSION: u32 = 1;
 /// Delivery failed. An operation may have published; never retry it here.
@@ -30,6 +32,7 @@ pub enum Operation {
     ExportStl,
     ExportFbx,
     ImportStep,
+    Validate,
 }
 
 #[derive(Serialize)]

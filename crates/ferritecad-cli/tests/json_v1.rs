@@ -688,7 +688,7 @@ fn clap_usage_help_and_flag_shaped_values_do_not_guess_a_global_json_mode() {
             "out.fcad",
         ],
         vec!["wrong-command", "--json"],
-        vec!["validate", "source.fcad", "--json"],
+        vec!["validate", "--json"],
         vec!["--json", "inspect", "source.fcad"],
         vec!["create", "--json"],
         vec!["export-stl", "source.fcad", "--json"],

@@ -1,12 +1,13 @@
-# CLI JSON v1: inspect, edit-extrude, create, export-stl, export-fbx и import-step
+# CLI JSON v1: inspect, edit-extrude, create, export-stl, export-fbx, import-step и validate
 
 §24D задаёт opt-in контракт inspect и edit-extrude. §24D-1 добавляет третью
 существующую команду, `create`, через тот же конверт v1. §24F добавляет Body
 discovery и `export-stl --json`; §24G добавляет `export-fbx --json`,
-§24I — `import-step --json` совместимо,
+§24I — `import-step --json`, §24J — `validate --json` совместимо,
 без изменения `schema_version`:
 
 ```text
+ferritecad validate <source.fcad> --json
 ferritecad import-step <source.step> -o <new.fcad> --json [--name <name>] [--force]
 ferritecad export-fbx <source.fcad> -o <out.fbx> --json [--force]
 ferritecad inspect <source.fcad> --json
@@ -30,7 +31,7 @@ stdout-логов рядом нет. Диагностика для челове�
 | Поле | Тип и правило |
 | --- | --- |
 | `schema_version` | integer, сейчас ровно `1` |
-| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx` или `import-step` |
+| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step` или `validate` |
 | `ok` | boolean |
 | `result` | объект соответствующей операции, присутствует только при `ok: true` |
 | `error` | объект ошибки, присутствует только при `ok: false` |
@@ -53,6 +54,81 @@ UUID — канонические строки RFC 4122 UUIDv7 с дефисам
 hex-символа. Не вычисляйте токен самостоятельно и не используйте mtime вместо него.
 Версия JSON-контракта, версия схемы `.fcad` и версия алгоритма content hash —
 разные понятия. После обновления алгоритма получите токен новым inspect.
+
+## Результат validate (§24J)
+
+`ferritecad validate <source.fcad> --json` проверяет внутреннюю согласованность
+сохранённого документа. Text/JSON используют один `validate_result` и общий
+`ferritecad_jobs::validate_document(&Path)`: один `Document::open_read_only`,
+metadata и `Document::validate` на закреплённом снимке, закрытие SQLite до возврата.
+Content version не вычисляется. Ядро, rebuild и sidecar cache не используются.
+
+| Поле result | Тип и смысл |
+| --- | --- |
+| `document_id` | canonical UUIDv7 string: identity проверенного снимка |
+| `valid` | boolean: в diagnostics нет severity `error` |
+| `errors` | неотрицательный JSON integer, Rust u64: число diagnostics с severity `error` |
+| `warnings` | неотрицательный JSON integer, Rust u64: число diagnostics с severity `warning` |
+| `diagnostics` | ordered array, `[]` при отсутствии findings; порядок и повторы document validator сохраняются |
+
+Каждый diagnostic содержит обязательные `code` (stable string), `severity`
+(string: `error` или `warning`), `message` (точная строка, включая Unicode,
+кавычки и LF) и `object_id` (canonical UUIDv7 string либо явный `null`). UUID
+может указывать на отсутствующий объект: это часть обнаруженной проблемы.
+Сообщение предназначено человеку; клиент сопоставляет code, не фрагменты prose.
+Counts получены из этого же owned report, не дополнительным проходом по БД.
+Все поля обязательны, `errors + warnings == len(diagnostics)` для известных
+severity v1. Неизвестные поля игнорируются; неизвестный code сохраняется и
+обрабатывается по severity. Неизвестная severity требует остановки/обновления
+клиента, её нельзя считать warning, отсутствием ошибки или основанием продолжить.
+Новые codes допустимы внутри v1; смысл существующих codes не меняется.
+
+Проверка состоялась: `ok:true`; без errors — `valid:true`, exit **0**, в том числе
+при warnings. С errors — **`ok:true`, `valid:false`, exit 1**. Для downstream
+недостаточно проверить `ok`: нужно проверить exit, valid и принять решение по
+warnings. Например, `object.unknown-type` — warning о сохраняемом объекте, который
+эта сборка не интерпретирует; это не гарантия безопасного экспорта всей модели.
+
+```json
+{"schema_version":1,"operation":"validate","ok":true,"result":{"document_id":"019923ca-34da-7000-8000-000000000001","valid":true,"errors":0,"warnings":0,"diagnostics":[]}}
+```
+
+```json
+{"schema_version":1,"operation":"validate","ok":true,"result":{"document_id":"019923ca-34da-7000-8000-000000000001","valid":false,"errors":1,"warnings":0,"diagnostics":[{"code":"reference.missing-edge","severity":"error","message":"A semantic reference has no dependency edge","object_id":"019923ca-34da-7000-8000-000000000002"}]}}
+```
+
+Тексты примеров иллюстративны, не стабильный интерфейс. Operational refusal
+отличается от invalid report: `ok:false`, только прежний error.kind/message/causes,
+exit **2**, без STEP reader rejection code/step_read. Ошибка открытия или
+декодирования не заменяется пустым отчётом. Например, отсутствующая dependency
+edge даёт `reference.missing-edge`, а неизвестная role, не поддающийся декодированию
+CBOR или неподдерживаемый reader не дают завершённого ValidationReport.
+
+```json
+{"schema_version":1,"operation":"validate","ok":false,"error":{"kind":"unsupported","message":"This document needs migration; read-only validation refuses it","causes":[]}}
+```
+
+**Намеренное изменение text validate:** старая SQL schema, WAL и несовместимый
+minimum reader теперь отказывают без миграции/нормализации. Общий read-only guard
+также отказывает при наличии WAL/SHM sidecars, даже с DELETE-заголовком: SQLite
+мог бы изменить SHM. Проверяются запрошенный путь и разрешённая цель symlink;
+чужие sidecars не удаляются. Для поддерживаемых
+документов прежние тексты, порядок findings и exit 0/1 сохраняются. Missing path
+не создаётся; bytes/mtime/чужие sidecars и каталог остаются неизменными при
+valid/warnings/errors, отказе и потере отчёта. Ни auto-repair, ни migrate-команды нет.
+UTF-8 source проверяется до работы только в JSON; текстовые правила путей прежние.
+`validate -- --json` — текстовая проверка файла `--json`,
+`validate --json -- --json` — JSON-проверка того же имени. Help/usage остаются текстом.
+
+Потеря stdout при любом исходе даёт **7** без повторной проверки и изменения
+файлов. Закрытый stderr не мешает error JSON через исправный stdout; оба закрытых
+канала не вызывают panic. JSON использует прежний fallible emitter.
+
+Это не проверка геометрии: valid не доказывает solid после native rebuild,
+корректный исходный STEP, успешное повторное чтение imported geometry или FBX
+complete. Historical STEP diagnostics, validation findings и нынешние FBX omissions
+— разные факты. Validate и последующий export открывают отдельные снимки;
+общего snapshot/version guard между командами нет. [Протокол](read-only-validation.md).
 
 ## Результат import-step (§24I)
 
@@ -379,13 +455,14 @@ Inspect и FBX export читают **отдельные снимки**. FBX эк
 
 | Ситуация | stdout / stderr | Exit |
 | --- | --- | --- |
-| Полный успех корректно разобранной JSON-команды | JSON result / возможный note о расширении при create | 0 |
+| Успех; для validate — valid:true, warnings допустимы | JSON result / возможный note о расширении при create | 0 |
+| Проверка состоялась с errors: ok:true, valid:false | JSON result с diagnostics / пусто | 1 |
 | STEP опубликован с diagnostics: ok:true | JSON result с diagnostics / пусто | 4 |
 | STEP reader rejection: ok:false, code=reader_rejected | JSON error со step_read / пусто | 5 |
 | Частичный FBX опубликован: ok:true, complete:false | JSON result с omissions / пусто | 6 |
 | Отказ выполнения корректно разобранной JSON-команды | JSON error / диагностика | 2 |
 | Ошибка аргументов до успешного clap parse | пусто / обычная текстовая usage-ошибка | 2 |
-| `inspect --json --help`, `edit-extrude --json --help`, `create --json --help`, `export-stl --json --help`, `export-fbx --json --help`, `import-step --json --help` | текст help / пусто | 0 |
+| `inspect --json --help`, `edit-extrude --json --help`, `create --json --help`, `export-stl --json --help`, `export-fbx --json --help`, `import-step --json --help`, `validate --json --help` | текст help / пусто | 0 |
 | Корневой `--version` | текст версии / пусто | 0 |
 | Ошибка сериализации или доставки отчёта, включая BrokenPipe | JSON может отсутствовать или быть неполным / диагностика по возможности | 7 |
 
@@ -402,7 +479,7 @@ JSON не обещан до успешного разбора аргументо
 Успешное создание само по себе не обещает успешный rebuild геометрии.
 При нескольких дефектах входа порядок отказов задаёт общий
 маршрут; например, недоступное ядро может отказать раньше предметной проверки.
-Неверная команда с `--json`, `validate --json`, корневой `--json` и неподдерживаемый
+Неверная команда с `--json`, `validate --json` без пути, корневой `--json` и неподдерживаемый
 подкомандой `--version` также остаются текстовыми usage-ошибками. Глобального
 флага нет. `inspect -- --json` читает файл с именем `--json` в текстовом режиме;
 для JSON-чтения такого имени используйте `inspect --json -- --json`. То же для
@@ -691,14 +768,14 @@ print("Artifacts retained:", root)
 PY
 ```
 
-## Рецепт JSON STEP import → сохранённый документ → FBX
+## Рецепт JSON STEP import → read-only validate → FBX
 
 Из корня checkout; native `ferritecad` в PATH или абсолютный `FCAD_CLI`.
 Рецепт использует чистую опубликованную fixture, делает private STEP-копию и
 удаляет только её после подтверждённой публикации. Для другого STEP измените
 `original` и ожидаемые геометрические размеры. Exit 4 явно останавливает рецепт:
 человек/клиент должен принять решение по diagnostics перед downstream processing.
-Reader rejection, operational failure, partial FBX и lost report также останавливают
+Reader rejection, operational failure, validation errors/warnings, partial FBX и lost report также останавливают
 работу; ни один из этих исходов не превращается в молчаливый полный успех.
 
 ```sh
@@ -714,7 +791,7 @@ import tempfile
 import uuid
 
 cli = os.environ.get("FCAD_CLI", "ferritecad")
-root = Path(tempfile.mkdtemp(prefix="ferrite-json-step-"))
+root = Path(tempfile.mkdtemp(prefix="ferrite-json-validate-"))
 original = Path("fixtures/step/canonical/01-single-part.step")
 original_hash = hashlib.sha256(original.read_bytes()).digest()
 source = root / "private STEP.step"
@@ -726,7 +803,7 @@ def call(operation, *args):
     p = subprocess.run([cli, operation, *map(str, args), "--json"], capture_output=True)
     if p.returncode == 7:
         raise SystemExit("Report lost: preserve and inspect destination; do not retry automatically")
-    if p.returncode not in (0, 2, 4, 5, 6):
+    if p.returncode not in (0, 1, 2, 4, 5, 6):
         raise SystemExit(f"Unexpected process exit {p.returncode}; inspect destination before retry")
     # These arguments are valid. A usage error outside this recipe has no JSON.
     value = json.loads(p.stdout)
@@ -765,6 +842,18 @@ code, inspected = call("inspect", document)
 assert code == 0 and inspected["document_id"] == imported["document_id"]
 assert inspected["bodies"] == []  # ImportedStep is not a native Body.
 before = hashlib.sha256(document.read_bytes()).digest()
+mtime = document.stat().st_mtime_ns
+code, checked = call("validate", document)
+assert checked["document_id"] == imported["document_id"]
+assert code in (0, 1) and checked["valid"] == (code == 0)
+assert checked["errors"] == sum(d["severity"] == "error" for d in checked["diagnostics"])
+assert checked["warnings"] == sum(d["severity"] == "warning" for d in checked["diagnostics"])
+if not checked["valid"] or checked["diagnostics"]:
+    print(json.dumps(checked["diagnostics"], ensure_ascii=False))
+    raise SystemExit("Validation findings: stop; errors must be resolved, warnings require a decision")
+assert document.stat().st_mtime_ns == mtime
+assert hashlib.sha256(document.read_bytes()).digest() == before
+# Export opens the current file separately; validate is not a version guard.
 code, exported = call("export-fbx", document, "-o", fbx)
 assert exported["destination"] == str(fbx)
 assert exported["bytes"] == fbx.stat().st_size
@@ -791,7 +880,7 @@ assert all(0 <= (i if i >= 0 else -i-1) < len(coordinates)//3 for i in indices)
 assert hashlib.sha256(document.read_bytes()).digest() == before
 assert hashlib.sha256(original.read_bytes()).digest() == original_hash
 assert {p.name for p in root.iterdir()} == {"part.fcad", "part.fbx"}
-print("Verified JSON STEP publication and independent FBX:", root)
+print("Verified JSON STEP publication, read-only validation and independent FBX:", root)
 PY
 ```
 
@@ -799,5 +888,5 @@ PY
 Существующая обязательная native кампания `source tools/check-fbx-complex.sh`
 дополнительно читает complete и complex partial после JSON STEP import и удаления
 private STEP через pinned ufbx 0.23.0 strict. На macOS запускайте `source` в Bash
-с уже заданными DYLD paths. Import, inspect и export — отдельные операции над
+с уже заданными DYLD paths. Import, inspect, validate и export — отдельные операции над
 сохранёнными состояниями; FBX не получил `--expect-version`.
