@@ -151,6 +151,10 @@ jobs:
       # accepted-scene gates. The build above supplies both client executables.
       - run: cargo test --workspace
 
+      - name: Verify memory guard cleanup without a viewer
+        if: runner.os == 'macOS'
+        run: python3 tools/test-viewer-memory-guard.py
+
       # Stored validation needs no native libraries. Keep these process and
       # snapshot gates in ordinary CI on every OS, with actual execution checked.
       - name: Validate read-only documents through text and JSON

@@ -28,6 +28,7 @@
 //! empty scene and gains the model when the model is ready.
 
 mod creates;
+mod dialogs;
 mod edits;
 mod exports;
 
@@ -893,6 +894,7 @@ fn start_new(
 /// again per frame.
 #[derive(Debug)]
 struct Sections<'a> {
+    dialog_failure: Option<&'a str>,
     edits: &'a mut edits::Edits,
     stl_form: Option<&'a mut ferritecad_ui::StlExportForm>,
     can_edit: bool,
@@ -2193,6 +2195,7 @@ fn identity_of(entry: &CatalogueEntry) -> String {
 }
 
 struct App {
+    dialogs: dialogs::Dialogs,
     live: Option<Live>,
     input: ViewportInput,
     proxy: EventLoopProxy<AppEvent>,
@@ -2452,6 +2455,7 @@ impl ApplicationHandler<AppEvent> for App {
                     &self.input,
                     activity,
                     Sections {
+                        dialog_failure: self.dialogs.failure(),
                         can_edit,
                         stl_form,
                         edits: &mut self.edits,
@@ -2659,6 +2663,7 @@ impl ApplicationHandler<AppEvent> for App {
 impl App {
     fn new(proxy: EventLoopProxy<AppEvent>, document: Option<PathBuf>) -> Self {
         Self {
+            dialogs: dialogs::Dialogs::default(),
             live: None,
             input: ViewportInput::new(),
             proxy,
@@ -2691,22 +2696,24 @@ impl App {
         let Some(live) = &self.live else {
             return;
         };
-        let chosen = rfd::FileDialog::new()
-            .set_title("Open a document")
-            .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-            .set_directory(
-                self.document
-                    .as_deref()
-                    .and_then(Path::parent)
-                    .filter(|parent| !parent.as_os_str().is_empty())
-                    .unwrap_or(Path::new(".")),
-            )
-            .set_parent(live.window.as_ref())
-            .pick_file();
+        let Some(chosen) = self.dialogs.choose(
+            dialogs::Action::Open,
+            rfd::FileDialog::new()
+                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
+                .set_directory(
+                    self.document
+                        .as_deref()
+                        .and_then(Path::parent)
+                        .filter(|parent| !parent.as_os_str().is_empty())
+                        .unwrap_or(Path::new(".")),
+                )
+                .set_parent(live.window.as_ref()),
+            &mut self.input,
+        ) else {
+            return;
+        };
 
-        if let Some(path) = chosen {
-            self.open(path);
-        }
+        self.open(chosen);
     }
 
     /// Asks the system where to write the model, and starts writing it there.
@@ -2733,22 +2740,26 @@ impl App {
             return;
         };
 
-        let chosen = rfd::FileDialog::new()
-            .set_title("Export FBX")
-            .add_filter("FBX", &[FBX_EXTENSION])
-            // Beside the document being exported, which is where a person
-            // looking for the thing they just made will look for it.
-            .set_directory(
-                document
-                    .parent()
-                    .filter(|parent| !parent.as_os_str().is_empty())
-                    .unwrap_or(Path::new(".")),
-            )
-            .set_file_name(suggested_export_name(&document))
-            .set_parent(live.window.as_ref())
-            .save_file();
+        let Some(chosen) = self.dialogs.choose(
+            dialogs::Action::ExportFbx,
+            rfd::FileDialog::new()
+                .add_filter("FBX", &[FBX_EXTENSION])
+                // Beside the document being exported, which is where a person
+                // looking for the thing they just made will look for it.
+                .set_directory(
+                    document
+                        .parent()
+                        .filter(|parent| !parent.as_os_str().is_empty())
+                        .unwrap_or(Path::new(".")),
+                )
+                .set_file_name(suggested_export_name(&document))
+                .set_parent(live.window.as_ref()),
+            &mut self.input,
+        ) else {
+            return;
+        };
 
-        self.export_to(chosen);
+        self.export_to(Some(chosen));
     }
 
     fn begin_stl(&mut self) {
@@ -2774,25 +2785,29 @@ impl App {
         let Some(live) = &self.live else {
             return;
         };
-        let chosen = rfd::FileDialog::new()
-            .set_title("Export STL")
-            .add_filter("Binary STL", &["stl"])
-            .set_directory(intent.document.parent().unwrap_or(Path::new(".")))
-            .set_file_name(format!(
-                "{}.stl",
-                intent
-                    .document
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-            ))
-            .set_parent(live.window.as_ref())
-            .save_file();
+        let Some(chosen) = self.dialogs.choose(
+            dialogs::Action::ExportStl,
+            rfd::FileDialog::new()
+                .add_filter("Binary STL", &["stl"])
+                .set_directory(intent.document.parent().unwrap_or(Path::new(".")))
+                .set_file_name(format!(
+                    "{}.stl",
+                    intent
+                        .document
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                ))
+                .set_parent(live.window.as_ref()),
+            &mut self.input,
+        ) else {
+            return;
+        };
         exports::begin_stl_export(
             &mut self.exports,
             &mut self.input,
             &intent,
-            chosen,
+            Some(chosen),
             stl_spawner(intent.clone(), self.proxy.clone()),
         );
     }
@@ -2816,23 +2831,27 @@ impl App {
             return;
         };
 
-        let chosen = rfd::FileDialog::new()
-            .set_title("New document")
-            .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-            // Beside the last document this window was pointed at, which is
-            // where somebody making another one is most likely to want it.
-            .set_directory(
-                self.document
-                    .as_deref()
-                    .and_then(Path::parent)
-                    .filter(|parent| !parent.as_os_str().is_empty())
-                    .unwrap_or(Path::new(".")),
-            )
-            .set_file_name(format!("untitled.{DOCUMENT_EXTENSION}"))
-            .set_parent(live.window.as_ref())
-            .save_file();
+        let Some(chosen) = self.dialogs.choose(
+            dialogs::Action::New,
+            rfd::FileDialog::new()
+                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
+                // Beside the last document this window was pointed at, which is
+                // where somebody making another one is most likely to want it.
+                .set_directory(
+                    self.document
+                        .as_deref()
+                        .and_then(Path::parent)
+                        .filter(|parent| !parent.as_os_str().is_empty())
+                        .unwrap_or(Path::new(".")),
+                )
+                .set_file_name(format!("untitled.{DOCUMENT_EXTENSION}"))
+                .set_parent(live.window.as_ref()),
+            &mut self.input,
+        ) else {
+            return;
+        };
 
-        self.create_at(content, chosen);
+        self.create_at(content, Some(chosen));
     }
 
     /// The form describes only the document whose scene was accepted.
@@ -2856,23 +2875,25 @@ impl App {
         let Some(live) = &self.live else {
             return;
         };
-        let chosen = rfd::FileDialog::new()
-            .set_title("Save edited model as a new file")
-            .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
-            .set_directory(request.source.parent().unwrap_or(Path::new(".")))
-            .set_file_name("edited.fcad")
-            .set_parent(live.window.as_ref())
-            .save_file();
-        if let Some(destination) = chosen {
-            request.destination = destination;
-            let proxy = self.proxy.clone();
-            self.edits
-                .start(request, move |request, generation, cancel| {
-                    edits::spawn_edit(request, cancel, move |result| {
-                        let _ = proxy.send_event(AppEvent::Edited { generation, result });
-                    })
-                });
-        }
+        let Some(chosen) = self.dialogs.choose(
+            dialogs::Action::Edit,
+            rfd::FileDialog::new()
+                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
+                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_file_name("edited.fcad")
+                .set_parent(live.window.as_ref()),
+            &mut self.input,
+        ) else {
+            return;
+        };
+        request.destination = chosen;
+        let proxy = self.proxy.clone();
+        self.edits
+            .start(request, move |request, generation, cancel| {
+                edits::spawn_edit(request, cancel, move |result| {
+                    let _ = proxy.send_event(AppEvent::Edited { generation, result });
+                })
+            });
         self.input.request_redraw();
     }
 
@@ -3542,6 +3563,7 @@ impl Live {
         let mut replace = ferritecad_ui::ReplaceChoice::default();
         let mut asked = NewChoice::default();
         let Sections {
+            dialog_failure,
             mut stl_form,
             edits,
             can_edit,
@@ -3558,6 +3580,9 @@ impl Live {
             // place for that is what stops a button and a keystroke drifting
             // apart.
             chosen = ferritecad_ui::toolbar(ui, activity);
+            if let Some(message) = dialog_failure {
+                ui.colored_label(ui.visuals().error_fg_color, message);
+            }
             ui.separator();
             let unavailable = scene
                 .edit_source
@@ -13549,6 +13574,96 @@ mod tests {
             };
             assert_eq!(scene.chosen(&picture), Some((0, &entry)));
         }
+    }
+
+    #[test]
+    fn dialog_refusal_preserves_the_accepted_scene_and_starts_no_work() {
+        let directory = tempfile::tempdir().expect("private directory");
+        let source = directory.path().join("accepted.fcad");
+        std::fs::write(&source, b"untouched source").expect("sentinel");
+        let picture = two_definitions();
+        let mut scene = live_with(&picture, 0);
+        scene.document = Some(source.clone());
+        scene.visibility.hide(
+            Marked::Definition(picture.pick_of(1).expect("second definition")),
+            &picture,
+        );
+        let selection = scene.selection.clone();
+        let visibility = scene.visibility.clone();
+        let catalogue = scene.catalogue.clone();
+        let title = window_title(scene.document.as_deref());
+        let mut input = ViewportInput::new();
+        let camera = *input.camera();
+        let mut loads = Loads::default();
+        let generation = start_open(&mut loads, &source);
+        loads.answered(generation, Ok(()));
+        let status = loads.status().clone();
+        let issued = loads.issued;
+        let mut exports = exports::Exports::default();
+        let mut creates = creates::Creates::default();
+        let mut dialogs = dialogs::Dialogs::default();
+        for action in [
+            dialogs::Action::Open,
+            dialogs::Action::New,
+            dialogs::Action::Edit,
+            dialogs::Action::ExportFbx,
+            dialogs::Action::ExportStl,
+        ] {
+            for answer in [dialogs::Outcome::Cancelled, dialogs::Outcome::Failed] {
+                let failed = answer == dialogs::Outcome::Failed;
+                let chosen = dialogs.receive(action, answer, &mut input);
+                assert!(chosen.is_none());
+                assert_eq!(dialogs.failure().is_some(), failed);
+                assert!(
+                    begin_load(
+                        &mut loads,
+                        &mut input,
+                        chosen.as_deref(),
+                        relay(),
+                        |_, _| panic!("a dialog refusal started a load")
+                    )
+                    .is_none()
+                );
+                exports::begin_export(
+                    &mut exports,
+                    &mut input,
+                    scene.document.as_deref(),
+                    chosen.clone(),
+                    |_, _, _, _| panic!("a dialog refusal started an export"),
+                );
+                assert!(
+                    start_new(
+                        &mut creates,
+                        &loads,
+                        &exports,
+                        &mut input,
+                        NewDocument::Empty,
+                        chosen,
+                        |_, _, _, _| panic!("a dialog refusal created a file")
+                    )
+                    .is_none()
+                );
+                assert_eq!(loads.issued, issued);
+                assert_eq!(loads.status(), &status);
+                assert!(!exports.running());
+                assert!(exports.pending().is_none());
+                assert!(!creates.busy());
+                assert_eq!(scene.selection, selection);
+                assert_eq!(scene.visibility, visibility);
+                assert_eq!(scene.catalogue, catalogue);
+                assert_eq!(*input.camera(), camera);
+                assert_eq!(window_title(scene.document.as_deref()), title);
+                assert!(can_export(&scene));
+            }
+        }
+        assert_eq!(std::fs::read(&source).expect("source"), b"untouched source");
+        assert_eq!(
+            std::fs::read_dir(directory.path())
+                .expect("directory")
+                .count(),
+            1
+        );
+        loads.stop_all();
     }
 
     #[test]
