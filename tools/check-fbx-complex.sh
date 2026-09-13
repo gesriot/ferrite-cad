@@ -138,3 +138,14 @@ for name in native imported partial; do
         echo "error: pinned reader did not verify JSON FBX $name" >&2; exit 1;
     }
 done
+
+# §25C supplies an actual saved-Sketch worker publication from the preceding
+# runtime step. Reuse this reader build; no second complex STEP import.
+if [ -n "${FCAD_SKETCH_DRAG_FBX:-}" ]; then
+    "$reader" --identity "$FCAD_SKETCH_DRAG_FBX" | tee "$work/sketch-drag-reader.txt"
+    count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) failures=0$/\1/p' "$work/sketch-drag-reader.txt")"
+    [ -n "$count" ] && [ "$count" -ge 6 ] || {
+        echo "error: pinned reader did not verify the dragged Sketch FBX" >&2; exit 1;
+    }
+    echo "FCAD_SKETCH_DRAG_UFBX_EXECUTED"
+fi

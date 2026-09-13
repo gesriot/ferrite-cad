@@ -11,6 +11,8 @@ Create your own XY Line polygon with **Create sketch + Extrude…**, or run
 `ferritecad create-sketch-extrude request.json -o new.fcad --json`.
 Both clients save a real Sketch/Extrude/Body and cold-check it before publication.
 See the [bounded contract and executable agent recipe](docs/sketch-extrude-create.md).
+Existing vertices can be selected and dragged in either sketch editor;
+[gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 Saved Line coordinates can be edited in a new copy through **Edit Sketch …** or
 `edit-sketch-copy`; [the identity-preserving contract](docs/edit-sketch-copy.md)
 keeps segment IDs/order and winding. Constraint editing remains future work.

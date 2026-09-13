@@ -598,6 +598,35 @@ jobs:
             exit 1
           fi
 
+      - name: Drag saved Sketch vertices through the native worker and peer CLI
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          CARGO_BUILD_JOBS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          artifacts="$RUNNER_TEMP/sketch-drag"
+          mkdir -p "$artifacts"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH"; artifacts="$(cygpath -w "$artifacts")" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          export FCAD_SKETCH_DRAG_ARTIFACT_DIR="$artifacts"
+          cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer \
+            sketch::drag_tests::native_dragged_sketch_worker_and_cli_preserve_identity_and_geometry \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee sketch-drag.log
+          if grep -q 'skipped:' sketch-drag.log || \
+             ! grep -q '^test sketch::drag_tests::native_dragged_sketch_worker_and_cli_preserve_identity_and_geometry \.\.\. ok$' sketch-drag.log; then
+            echo "::error::native vertex drag gate did not execute and pass"
+            exit 1
+          fi
+          # The existing FBX campaign reuses its pinned reader for this file.
+          echo "FCAD_SKETCH_DRAG_FBX=$artifacts/drag.fbx" >> "$GITHUB_ENV"
+
       - name: Create, discover, edit and export through the JSON v1 CLI contract
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
@@ -682,6 +711,7 @@ jobs:
           # exact complete/partial test names, route markers and no green skip.
           # Source keeps DYLD_* across the macOS system-shell boundary.
           source tools/check-fbx-complex.sh --release --features planegcs 2>&1 | tee fbx-json-tests.log
+          grep -q '^FCAD_SKETCH_DRAG_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:
