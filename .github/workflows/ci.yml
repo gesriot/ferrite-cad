@@ -151,6 +151,18 @@ jobs:
       # accepted-scene gates. The build above supplies both client executables.
       - run: cargo test --workspace
 
+      - name: Discover constraint editing and preserve drafts without native geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          for gate in constraint_discovery_requests_and_delivery_without_native constraint_discovery_separates_document_and_feature_refusals constraint_os_paths_and_flag_shaped_arguments; do
+            cargo test -p ferritecad-cli --test edit_constraints "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee "$gate.log"
+            if grep -q 'skipped:' "$gate.log" || ! grep -Fq "test $gate ... ok" "$gate.log"; then exit 1; fi
+          done
+          gate=constraints::tests::constraint_widgets_keep_draft_on_save_cancel_refusal_and_stale_reply
+          cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee constraints-draft.log
+          if grep -q 'skipped:' constraints-draft.log || ! grep -Fq "test $gate ... ok" constraints-draft.log; then exit 1; fi
+
       - name: Verify memory guard cleanup without a viewer
         if: runner.os == 'macOS'
         run: python3 tools/test-viewer-memory-guard.py

@@ -31,7 +31,7 @@ pub fn sketch_choices(document: &Document, objects: &[ObjectRecord]) -> Vec<Sket
     objects
         .iter()
         .filter(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
-        .map(|o| match supported(document, objects, o) {
+        .map(|o| match supported(document, objects, o, false) {
             Ok((vertices, height)) => SketchChoice {
                 sketch: o.id,
                 name: o.name.clone(),
@@ -54,10 +54,11 @@ fn unsupported(message: &str) -> CadError {
     CadError::unsupported(message)
 }
 
-fn supported(
+pub(crate) fn supported(
     document: &Document,
     objects: &[ObjectRecord],
     object: &ObjectRecord,
+    allow_constraints: bool,
 ) -> Result<(Vec<SketchVertex>, f64)> {
     // Refuse unknown fields/noncanonical envelopes in the one payload we will
     // rewrite, rather than silently discard bytes this reader did not retain.
@@ -117,7 +118,7 @@ fn supported(
             "sketch edit requires only plane, profile and body-tip dependencies",
         ));
     }
-    if !sketch.constraints.is_empty()
+    if (!allow_constraints && !sketch.constraints.is_empty())
         || sketch.curves.len() < 3
         || sketch.curves.len() > PolygonExtrusion::MAX_POINTS
     {
@@ -176,7 +177,7 @@ pub fn replace_sketch_coordinates(
         .find(|o| o.id == selected)
         .cloned()
         .ok_or_else(|| CadError::input("selected Sketch UUID does not exist"))?;
-    let (original, height) = supported(document, &objects, &object)?;
+    let (original, height) = supported(document, &objects, &object, false)?;
     let polygon = validate_coordinates(&original, height, vertices)?;
     let ObjectPayload::Sketch(sketch) = &mut object.payload else {
         unreachable!("checked Sketch")

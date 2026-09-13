@@ -6,6 +6,7 @@
 //! interface will later need to know about a document should be answerable
 //! here first.
 
+mod edit_constraints;
 mod edit_sketch;
 mod export;
 mod export_fbx;
@@ -101,6 +102,8 @@ enum Command {
     EditExtrude(EditExtrudeArgs),
     /// Change saved Line coordinates in a new identity-preserving FCAD copy.
     EditSketchCopy(edit_sketch::EditSketchArgs),
+    /// Add/remove persisted Line H/V constraints, solving and publishing a new FCAD copy.
+    EditSketchConstraintsCopy(edit_constraints::EditConstraintsArgs),
     /// Show a document's metadata, objects, graph and references.
     Inspect(InspectArgs),
     /// Check stored consistency without writes, migration or a geometry kernel.
@@ -329,6 +332,7 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::EditSketchCopy(args) => edit_sketch::run(args),
+        Command::EditSketchConstraintsCopy(args) => edit_constraints::run(args),
         Command::CreateSketchExtrude(args) => sketch::run(args),
         Command::Create(args) if args.json => Ok(json::emit(
             json::Operation::Create,

@@ -135,7 +135,8 @@ pub fn emit_import(result: Result<StepImportOutcome>) -> ExitCode {
             Operation::ImportStep,
             Outcome::Failure {
                 ok: false,
-                error: Failure {
+                error: Box::new(Failure {
+                    constraint_conflict: None,
                     kind: ErrorKind::Input.as_str(),
                     message: "STEP reader rejected the source; nothing was published".into(),
                     causes: Vec::new(),
@@ -143,7 +144,7 @@ pub fn emit_import(result: Result<StepImportOutcome>) -> ExitCode {
                         code: RejectionCode::ReaderRejected,
                         step_read: read.into(),
                     }),
-                },
+                }),
             },
             ExitCode::from(crate::EXIT_REJECTED),
         ),

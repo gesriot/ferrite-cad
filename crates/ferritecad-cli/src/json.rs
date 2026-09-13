@@ -12,6 +12,7 @@ use ferritecad_document::{Document, ExtrudeEditSource};
 use ferritecad_types::{CadError, ContentHash, DocumentId, ObjectId, Result};
 use serde::Serialize;
 
+pub(crate) mod constraints;
 mod fbx;
 mod import;
 mod validate;
@@ -29,6 +30,7 @@ pub enum Operation {
     Inspect,
     EditExtrude,
     EditSketchCopy,
+    EditSketchConstraintsCopy,
     Create,
     CreateSketchExtrude,
     ExportStl,
@@ -49,7 +51,7 @@ struct Response<T> {
 #[serde(untagged)]
 enum Outcome<T> {
     Success { ok: bool, result: T },
-    Failure { ok: bool, error: Failure },
+    Failure { ok: bool, error: Box<Failure> },
 }
 
 #[derive(Serialize)]
@@ -59,6 +61,8 @@ struct Failure {
     causes: Vec<String>,
     #[serde(flatten)]
     rejection: Option<import::ReaderRejection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    constraint_conflict: Option<constraints::Conflict>,
 }
 
 impl From<&CadError> for Failure {
@@ -74,6 +78,7 @@ impl From<&CadError> for Failure {
             message: error.to_string(),
             causes,
             rejection: None,
+            constraint_conflict: None,
         }
     }
 }
@@ -95,6 +100,7 @@ struct Sketch {
     sketch_id: ObjectId,
     name: Option<String>,
     vertices: Option<Vec<SketchVertex>>,
+    constraint_edit: constraints::Discovery,
     editable: bool,
     refusal: Option<String>,
     document_refusal: Option<String>,
@@ -208,6 +214,11 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
     // call read_extrude_source(path) or the text renderer beside this reading.
     let source = ExtrudeEditSource::read(&document)?;
     let refusal = source.unavailable_reason().map(str::to_owned);
+    let mut constraint_choices: std::collections::BTreeMap<_, _> = source
+        .constraint_sketches
+        .into_iter()
+        .map(|c| (c.sketch, c))
+        .collect();
     let result = Inspection {
         document_id: source.version.document_id,
         content_version: source.version.content,
@@ -225,6 +236,12 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
             .sketches
             .into_iter()
             .map(|s| Sketch {
+                constraint_edit: constraints::Discovery::new(
+                    constraint_choices
+                        .remove(&s.sketch)
+                        .expect("same snapshot Sketch catalogue"),
+                    source.refusal.clone(),
+                ),
                 sketch_id: s.sketch,
                 name: s.name,
                 editable: source.refusal.is_none() && s.refusal.is_none(),
@@ -281,7 +298,15 @@ pub fn emit_with_exit<T: Serialize>(operation: Operation, result: Result<(T, u8)
             (
                 Outcome::Failure {
                     ok: false,
-                    error: Failure::from(&error),
+                    error: {
+                        let mut failure = Failure::from(&error);
+                        if matches!(operation, Operation::EditSketchConstraintsCopy) {
+                            failure.constraint_conflict =
+                                ferritecad_eval::SketchConflict::of(&error)
+                                    .map(constraints::Conflict::from);
+                        }
+                        Box::new(failure)
+                    },
                 },
                 ExitCode::from(crate::EXIT_FAILED),
             )

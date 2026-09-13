@@ -62,8 +62,9 @@ pub fn edit_extrude_copy<K: GeometryKernel + ?Sized>(
             extrude.end_condition = EndCondition::Blind {
                 distance: replacement,
             };
-            Ok((selected, None))
+            Ok(CopyWrite::Object(selected))
         },
+        |_, _| Ok(()),
     )?;
     Ok(EditedDocument {
         destination: request.destination.clone(),
@@ -101,15 +102,16 @@ pub fn edit_sketch_copy<K: GeometryKernel + ?Sized>(
         kernel,
         context,
         |source| {
-            Ok((
+            Ok(CopyWrite::Coordinates(
                 ferritecad_document::replace_sketch_coordinates(
                     source,
                     request.sketch,
                     &request.vertices,
                 )?,
-                Some(request.vertices.clone()),
+                request.vertices.clone(),
             ))
         },
+        |_, _| Ok(()),
     )?;
     Ok(EditedSketch {
         destination: request.destination.clone(),
@@ -118,20 +120,86 @@ pub fn edit_sketch_copy<K: GeometryKernel + ?Sized>(
     })
 }
 
+#[derive(Debug, Clone)]
+pub struct EditSketchConstraintsRequest {
+    pub source: PathBuf,
+    pub expected: DocumentVersion,
+    pub sketch: ObjectId,
+    pub edits: ferritecad_document::SketchConstraintEdits,
+    pub destination: PathBuf,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditedSketchConstraints {
+    pub destination: PathBuf,
+    pub document_id: ferritecad_types::DocumentId,
+    pub sketch: ObjectId,
+    pub added: Vec<ferritecad_document::SketchConstraint>,
+    pub removed: Vec<StableEntityId>,
+    pub solve: ferritecad_eval::SketchSolveReport,
+}
+
+pub fn edit_sketch_constraints_copy<K: GeometryKernel + ?Sized>(
+    request: &EditSketchConstraintsRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+) -> Result<EditedSketchConstraints> {
+    context.check_cancelled()?;
+    edit_object_copy(
+        &request.source,
+        request.expected,
+        &request.destination,
+        kernel,
+        context,
+        |source| {
+            ferritecad_document::prepare_sketch_constraints(source, request.sketch, &request.edits)
+                .map(CopyWrite::Constraints)
+        },
+        |prepared, solve| {
+            let CopyWrite::Constraints(prepared) = prepared else {
+                return Err(CadError::input("missing prepared constraint edit"));
+            };
+            Ok(EditedSketchConstraints {
+                destination: request.destination.clone(),
+                document_id: request.expected.document_id,
+                sketch: request.sketch,
+                added: prepared.added.clone(),
+                removed: prepared.removed.clone(),
+                solve: solve.ok_or_else(|| {
+                    CadError::constraint("changed constrained Sketch produced no solve report")
+                })?,
+            })
+        },
+    )
+}
+
+enum CopyWrite {
+    Object(ferritecad_document::ObjectRecord),
+    Coordinates(
+        ferritecad_document::ObjectRecord,
+        Vec<ferritecad_document::SketchVertex>,
+    ),
+    Constraints(ferritecad_document::PreparedSketchConstraints),
+}
+impl CopyWrite {
+    fn object(&self) -> &ferritecad_document::ObjectRecord {
+        match self {
+            Self::Object(o) | Self::Coordinates(o, _) => o,
+            Self::Constraints(p) => p.object(),
+        }
+    }
+}
+
 /// Shared snapshot, transaction, cold references, cancellation and publication.
-fn edit_object_copy<K: GeometryKernel + ?Sized>(
+/// All owned completion facts are prepared fallibly BEFORE publication.
+fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     source_path: &Path,
     expected: DocumentVersion,
     destination: &Path,
     kernel: &mut K,
     context: &OperationContext,
-    prepare: impl FnOnce(
-        &Document,
-    ) -> Result<(
-        ferritecad_document::ObjectRecord,
-        Option<Vec<ferritecad_document::SketchVertex>>,
-    )>,
-) -> Result<()> {
+    prepare: impl FnOnce(&Document) -> Result<CopyWrite>,
+    complete: impl FnOnce(&CopyWrite, Option<ferritecad_eval::SketchSolveReport>) -> Result<T>,
+) -> Result<T> {
     refuse_source_as_destination(
         source_path,
         destination,
@@ -149,7 +217,8 @@ fn edit_object_copy<K: GeometryKernel + ?Sized>(
             "document cannot be edited: {reason}"
         )));
     }
-    let (selected, coordinates) = prepare(&source)?;
+    let prepared = prepare(&source)?;
+    let selected = prepared.object();
     let temporary = Temporary::beside(destination)?;
     source.snapshot_to(temporary.path())?;
     source.close()?;
@@ -160,8 +229,10 @@ fn edit_object_copy<K: GeometryKernel + ?Sized>(
     // Baseline and edited refs are compared by their stored IDs. An already
     // unresolved ref may remain unresolved; a previously resolved one may not
     // be lost. Rebuild errors (including solver diagnostics) always refuse.
-    let baseline = checked_rebuild(&document, kernel, &phase(context, 0.1, 0.4), None)?;
-    if coordinates.is_some() && baseline.len() != document.topology_refs()?.len() {
+    let baseline = checked_rebuild(&document, kernel, &phase(context, 0.1, 0.4), None, None)?.0;
+    if !matches!(&prepared, CopyWrite::Object(_))
+        && baseline.len() != document.topology_refs()?.len()
+    {
         return Err(CadError::topology(
             "saved sketch has unresolved topology references",
         ));
@@ -178,17 +249,25 @@ fn edit_object_copy<K: GeometryKernel + ?Sized>(
         )?;
         Ok(())
     };
-    if let Some(vertices) = coordinates {
-        document.write_sketch_coordinates(selected.id, &vertices)?;
-    } else {
-        document.write(write)?;
+    match &prepared {
+        CopyWrite::Coordinates(_, vertices) => {
+            document.write_sketch_coordinates(selected.id, vertices)?
+        }
+        CopyWrite::Constraints(p) => document.write_sketch_constraints(p)?,
+        CopyWrite::Object(_) => document.write(write)?,
     }
-    checked_rebuild(
+    let constraints = match &prepared {
+        CopyWrite::Constraints(p) => Some((selected.id, p.height_mm)),
+        _ => None,
+    };
+    let (_, solve) = checked_rebuild(
         &document,
         kernel,
         &phase(context, 0.4, 0.9),
         Some(&baseline),
+        constraints,
     )?;
+    let completed = complete(&prepared, solve)?;
     document.close()?;
     context.progress().report(0.95);
     context.check_cancelled()?;
@@ -210,7 +289,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized>(
     )?;
     drop(current);
     context.progress().report(1.0);
-    Ok(())
+    Ok(completed)
 }
 
 fn require_version(document: &Document, expected: DocumentVersion) -> Result<()> {
@@ -229,7 +308,11 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
     context: &OperationContext,
     baseline: Option<&BTreeSet<StableEntityId>>,
-) -> Result<BTreeSet<StableEntityId>> {
+    constraints: Option<(ObjectId, f64)>,
+) -> Result<(
+    BTreeSet<StableEntityId>,
+    Option<ferritecad_eval::SketchSolveReport>,
+)> {
     let built = rebuild_cold(document, kernel, context)?;
     let result = (|| {
         let mut resolved = BTreeSet::new();
@@ -250,7 +333,42 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
                 _ => {}
             }
         }
-        Ok(resolved)
+        let solve = if let Some((id, height)) = constraints {
+            let report = built.solve_report(id).ok_or_else(|| {
+                CadError::constraint("changed constrained Sketch produced no solve report")
+            })?;
+            let picture = built.sketch_presentation(id).ok_or_else(|| {
+                CadError::constraint("changed constrained Sketch produced no presentation")
+            })?;
+            let mut starts = Vec::new();
+            let mut ends = Vec::new();
+            for curve in picture.curves() {
+                let ferritecad_document::SketchGeometry::Line { start, end } = curve.geometry()
+                else {
+                    return Err(CadError::unsupported(
+                        "constraint edit solved a non-Line curve",
+                    ));
+                };
+                starts.push([start.x, start.y]);
+                ends.push([end.x, end.y]);
+            }
+            for (i, end) in ends.iter().enumerate() {
+                let next = starts[(i + 1) % starts.len()];
+                if (end[0] - next[0]).abs() > ferritecad_document::PolygonExtrusion::TOLERANCE_MM
+                    || (end[1] - next[1]).abs()
+                        > ferritecad_document::PolygonExtrusion::TOLERANCE_MM
+                {
+                    return Err(CadError::constraint(
+                        "solved constraint polygon lost an adjacent joint",
+                    ));
+                }
+            }
+            ferritecad_document::PolygonExtrusion::new(starts, height)?;
+            Some(report.clone())
+        } else {
+            None
+        };
+        Ok((resolved, solve))
     })();
     built.release_all(kernel);
     result
@@ -868,6 +986,48 @@ mod tests {
 
     #[test]
     fn sketch_copy_refusals_cancellation_races_and_cleanup() {
+        copy_faults(false);
+    }
+
+    #[test]
+    fn constraint_copy_refusals_cancellation_races_and_cleanup() {
+        let (_root, old) = sketch_fixture();
+        let request = constraint_request(&old);
+        let probe = edit_sketch_constraints_copy(
+            &request,
+            &mut MockKernel::new(),
+            &OperationContext::default(),
+        );
+        if probe
+            .as_ref()
+            .is_err_and(|e| e.kind() == ferritecad_types::ErrorKind::Unsupported)
+        {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+            eprintln!("skipped: no PlaneGCS for constraint phase faults");
+            return;
+        }
+        probe.expect("constraint solve with test kernel");
+        copy_faults(true);
+    }
+    fn constraint_request(old: &EditSketchRequest) -> EditSketchConstraintsRequest {
+        EditSketchConstraintsRequest {
+            source: old.source.clone(),
+            expected: old.expected,
+            sketch: old.sketch,
+            destination: old.destination.clone(),
+            edits: ferritecad_document::SketchConstraintEdits {
+                remove: vec![],
+                add: vec![ferritecad_document::AddLineConstraint {
+                    curve: old.vertices[0].curve_id,
+                    kind: ferritecad_document::LineConstraintKind::Horizontal,
+                }],
+            },
+        }
+    }
+    fn copy_faults(constraints: bool) {
         use std::sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -957,7 +1117,12 @@ mod tests {
             };
             // Reuse the fault seam after a successful baseline rebuild: the
             // second extrusion, with the changed profile, fails or loses a ref.
-            let result = edit_sketch_copy(&request, &mut kernel, &context);
+            let result = if constraints {
+                edit_sketch_constraints_copy(&constraint_request(&request), &mut kernel, &context)
+                    .map(|_| ())
+            } else {
+                edit_sketch_copy(&request, &mut kernel, &context).map(|_| ())
+            };
             if case == "late" {
                 assert!(result.is_ok(), "{case}: {result:?}");
             } else {

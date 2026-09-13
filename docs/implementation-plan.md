@@ -2484,6 +2484,30 @@ Save Cancel, публикацию и сброс настройки; GUI/CLI SQL 
 80×40×10 mm / 20000 mm³. Watchdog peak 188.02 MiB, swap без роста, exit 0.
 Причина старого OOM остаётся неизвестной; head/merge CI учитывается отдельно.
 
+**§25E — реализована первая сохраняемая H/V-правка Line Sketch.**
+Отдельные discovery и request именуют Sketch/curve/constraint UUID и полный content
+version. Remove-before-add атомарен; на первом H/V добавляются именованные
+Coincident всех стыков, остающиеся после удаления последнего H/V. Narrow writer
+сохраняет stored coordinates/IDs/SQL claims/rowid/metadata и обновляет только
+payload/hash/version Sketch и нужную required capability; DDL/FFI не менялись.
+Jobs расширяет прежний copy/cold/close/Keep путь; один solve даёт profile,
+presentation и report. UI draft и text/JSON CLI используют ту же операцию.
+Coordinate drag/Snap constrained Sketch остаются запрещены. Нет произвольных
+families, dimensions, live solver, in-place Save или persistent undo.
+[Точный контракт и рецепт](sketch-constraints-copy.md),
+[локальные доказательства и ограничения](sketch-constraints-copy-verification.md).
+CI базы и локальные проверки нового незакоммиченного diff учитываются отдельно;
+новые gates включены в существующий runtime workflow.
+
+Независимое ревью §25E исправило недоступность Save/Clear при длинном списке
+pending H/V: ограниченная прокрутка сохраняет действия видимыми. Failing-first
+widget test проверяет 32 добавления, новый и constrained каталог, реальный Save
+и Clear. Native/stub проверки и повторный macOS GUI smoke прошли; сохранённые
+данные и STL/FBX совпали с CLI, closure UUID сохранены. Watchdog peak 231.08 MiB,
+swap без роста, exit 0. Причина старого OOM не установлена; head/merge CI отдельно.
+Следующий небольшой срез §25E-1 — ограниченные Undo/Redo pending H/V draft в UI,
+с прежним общим request и без изменения persisted модели; реализация не начата.
+
 ## 15. Чего не делать до beta
 
 - не писать собственное B-Rep-ядро;

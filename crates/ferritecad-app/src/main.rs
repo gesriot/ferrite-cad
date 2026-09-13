@@ -27,6 +27,7 @@
 //! its own thread and comes back as one more event. The window opens on an
 //! empty scene and gains the model when the model is ready.
 
+mod constraints;
 mod creates;
 mod dialogs;
 mod edits;
@@ -224,6 +225,10 @@ enum AppEvent {
         result: Result<ferritecad_jobs::StlExport>,
     },
     /// A saved edit has finished; opening its output is a separate event.
+    SketchConstraintsEdited {
+        generation: u64,
+        result: Box<Result<ferritecad_jobs::EditedSketchConstraints>>,
+    },
     SketchEdited {
         generation: u64,
         result: Result<ferritecad_jobs::EditedSketch>,
@@ -2286,6 +2291,18 @@ impl ApplicationHandler<AppEvent> for App {
                     self.request_frame_now(event_loop);
                 }
             }
+            AppEvent::SketchConstraintsEdited { generation, result } => {
+                if let Some(path) = constraints::finish_edit(
+                    &mut self.creates.sketch.constraints,
+                    &mut self.edits,
+                    generation,
+                    *result,
+                ) {
+                    self.open(path);
+                }
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
+            }
             AppEvent::SketchEdited { generation, result } => {
                 if let Some(path) = sketch::finish_edit(
                     &mut self.creates.sketch,
@@ -2524,6 +2541,9 @@ impl ApplicationHandler<AppEvent> for App {
                                 self.input.request_redraw();
                             }
                             _ => {}
+                        }
+                        if let Some(request) = self.creates.sketch.constraints.take_request() {
+                            self.ask_where_to_edit_constraints(request);
                         }
                         if let Some(request) = self.creates.sketch.take_edit_request() {
                             self.ask_where_to_edit_sketch(request);
@@ -2894,6 +2914,41 @@ impl App {
             self.edits.begin(path, source);
             self.input.request_redraw();
         }
+    }
+
+    fn ask_where_to_edit_constraints(
+        &mut self,
+        mut request: ferritecad_jobs::EditSketchConstraintsRequest,
+    ) {
+        if self.edits.running() {
+            return;
+        }
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Some(chosen) = self.dialogs.choose(
+            dialogs::Action::Edit,
+            rfd::FileDialog::new()
+                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
+                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_file_name("sketch-constraints.fcad")
+                .set_parent(live.window.as_ref()),
+            &mut self.input,
+        ) else {
+            return;
+        };
+        request.destination = chosen;
+        let proxy = self.proxy.clone();
+        self.edits
+            .start_constraints(request, move |request, generation, cancel| {
+                edits::spawn_constraint_edit(request, cancel, move |result| {
+                    let _ = proxy.send_event(AppEvent::SketchConstraintsEdited {
+                        generation,
+                        result: Box::new(result),
+                    });
+                })
+            });
+        self.input.request_redraw();
     }
 
     fn ask_where_to_edit_sketch(&mut self, mut request: ferritecad_jobs::EditSketchRequest) {

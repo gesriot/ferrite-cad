@@ -30,6 +30,7 @@ pub struct ExtrudeEditSource {
     pub features: Vec<ExtrudeChoice>,
     /// Coordinate edit catalogue on this same version (legacy type name retained).
     pub sketches: Vec<crate::SketchChoice>,
+    pub constraint_sketches: Vec<crate::ConstraintSketchChoice>,
     pub refusal: Option<String>,
 }
 
@@ -85,6 +86,7 @@ impl ExtrudeEditSource {
             },
             features,
             sketches: crate::sketch_choices(document, &objects),
+            constraint_sketches: crate::constraint_sketch_choices(document, &objects),
             refusal,
         })
     }
@@ -770,6 +772,7 @@ mod tests {
             .collect();
         Ok(ExtrudeEditSource {
             sketches: crate::sketch_choices(document, &document.objects()?),
+            constraint_sketches: crate::constraint_sketch_choices(document, &objects),
             version: DocumentVersion {
                 document_id: document.meta().document_id,
                 content: document.content_version()?,
