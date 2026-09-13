@@ -29,6 +29,7 @@ pub enum Operation {
     Inspect,
     EditExtrude,
     Create,
+    CreateSketchExtrude,
     ExportStl,
     ExportFbx,
     ImportStep,

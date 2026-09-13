@@ -537,6 +537,32 @@ jobs:
             fi
           done
 
+      - name: Create a saved polygon through the native CLI and sketch worker
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          CARGO_BUILD_JOBS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          cargo test --release --features planegcs -p ferritecad-cli --test sketch_extrude \
+            native_sketch_extrude_process_cold_geometry_and_delivery -- --exact --nocapture --test-threads=1 2>&1 | tee sketch-cli.log
+          cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer \
+            sketch::tests::native_sketch_draft_and_cli_publish_equivalent_models -- --exact --nocapture --test-threads=1 2>&1 | tee sketch-ui.log
+          if grep -q 'skipped:' sketch-cli.log sketch-ui.log || \
+             ! grep -q '^test native_sketch_extrude_process_cold_geometry_and_delivery \.\.\. ok$' sketch-cli.log || \
+             ! grep -q '^test sketch::tests::native_sketch_draft_and_cli_publish_equivalent_models \.\.\. ok$' sketch-ui.log; then
+            echo "::error::polygon native gates did not execute and pass"
+            exit 1
+          fi
+
       - name: Create, discover, edit and export through the JSON v1 CLI contract
         env:
           FERRITECAD_REQUIRE_OCCT: '1'

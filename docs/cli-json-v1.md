@@ -1,4 +1,4 @@
-# CLI JSON v1: inspect, edit-extrude, create, export-stl, export-fbx, import-step и validate
+# CLI JSON v1: восемь opt-in команд
 
 §24D задаёт opt-in контракт inspect и edit-extrude. §24D-1 добавляет третью
 существующую команду, `create`, через тот же конверт v1. §24F добавляет Body
@@ -12,6 +12,7 @@ ferritecad import-step <source.step> -o <new.fcad> --json [--name <name>] [--for
 ferritecad export-fbx <source.fcad> -o <out.fbx> --json [--force]
 ferritecad inspect <source.fcad> --json
 ferritecad edit-extrude <source.fcad> --json --feature <uuid> --distance-mm <n> -o <new.fcad> [--expect-version <token>]
+ferritecad create-sketch-extrude <request.json> -o <new.fcad> --json
 ferritecad create <path> --json [--sample] [--size W D H] [--length-unit <u>] [--angle-unit <u>]
 ferritecad export-stl <source.fcad> -o <out.stl> --json [--solid <name-or-id>] [--linear-deflection <mm>] [--angular-deflection <rad>] [--force]
 ```
@@ -31,7 +32,7 @@ stdout-логов рядом нет. Диагностика для челове�
 | Поле | Тип и правило |
 | --- | --- |
 | `schema_version` | integer, сейчас ровно `1` |
-| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step` или `validate` |
+| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate` или `create-sketch-extrude` |
 | `ok` | boolean |
 | `result` | объект соответствующей операции, присутствует только при `ok: true` |
 | `error` | объект ошибки, присутствует только при `ok: false` |
@@ -54,6 +55,15 @@ UUID — канонические строки RFC 4122 UUIDv7 с дефисам
 hex-символа. Не вычисляйте токен самостоятельно и не используйте mtime вместо него.
 Версия JSON-контракта, версия схемы `.fcad` и версия алгоритма content hash —
 разные понятия. После обновления алгоритма получите токен новым inspect.
+
+## Создание собственного контура (§25A)
+
+`ferritecad create-sketch-extrude <request.json> -o <new.fcad> [--json]` — восьмая
+opt-in команда. `operation:"create-sketch-extrude"`, result с обязательными
+`destination:string` и `document_id:UUIDv7` после cold-check и publish, exit 0;
+обычный operational error/exit 2; потеря отчёта/exit 7. Семь прежних команд
+не меняются. Точные request v1, ограничения, правила UI/API и запускаемый рецепт:
+[Sketch → Extrude → FCAD](sketch-extrude-create.md). Это не JSON произвольной модели.
 
 ## Результат validate (§24J)
 

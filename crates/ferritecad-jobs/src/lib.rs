@@ -36,6 +36,8 @@
 //! a function of what was saved rather than of what a viewer happens to hold.
 
 mod create;
+mod polygon;
+pub use polygon::PolygonExtrusion;
 mod edit;
 mod fbx;
 mod import;
@@ -45,7 +47,10 @@ mod validate;
 
 pub use validate::{ValidatedDocument, validate_document};
 
-pub use create::{CreateDocumentRequest, CreatedDocument, NewDocument, PlateSize, create_document};
+pub use create::{
+    CreateDocumentRequest, CreatedDocument, NewDocument, PlateSize, create_document,
+    create_document_with_kernel,
+};
 pub use edit::{EditExtrudeRequest, EditedDocument, edit_extrude_copy, read_extrude_source};
 pub use fbx::{FbxExport, FbxExportRequest, SOURCE_IS_DESTINATION, export_document_as_fbx};
 pub use import::{
