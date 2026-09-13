@@ -36,21 +36,20 @@
 //! interface's sentence, carried in [`CreateDocumentRequest::advice`]; a window
 //! must not print the name of a command-line flag.
 //!
-//! # No kernel, no window
-//!
-//! Writing the feature graph of a new document needs neither. The kernel is
-//! what turns that graph into geometry afterwards, when the document is opened;
-//! nothing here rebuilds, tessellates or stores a mesh. That is why a new
-//! document can be made on a machine with no Open CASCADE at all.
+//! Empty/sample creation remains kernel-free. Polygon creation additionally
+//! cold-checks the saved graph with a worker-owned kernel before closing and
+//! publishing. Both routes use the same writer and publication; neither stores
+//! a mesh or requires a window.
 
 use std::path::{Path, PathBuf};
 
+use crate::PolygonExtrusion;
 use ferritecad_document::{
     Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, EntityKind,
     Expression, Extrude, ObjectPayload, Point2, SelectionRule, SemanticRole, Sketch, SketchCurve,
     SketchGeometry, SolidOperation, TopologyRef,
 };
-use ferritecad_kernel::OperationContext;
+use ferritecad_kernel::{GeometryKernel, OperationContext, ProgressSink};
 use ferritecad_types::{DocumentId, ObjectId, Result, StableEntityId, Transform, Unit};
 
 use crate::publish::{Existing, Temporary, path_entry_exists};
@@ -95,11 +94,9 @@ impl Default for PlateSize {
 
 /// What a new document is to contain.
 ///
-/// Exactly the two things a person can ask for today. Not a description of an
-/// arbitrary model and not a script: a new document is either empty or the one
-/// sample part, and anything else is editing, which is a different operation
-/// that does not exist yet.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Empty, sample plate, or one bounded polygon extrusion. This is a creation
+/// request, not an arbitrary model or an edit to an existing document.
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum NewDocument {
     /// Metadata and nothing else. No objects, no dependencies, no references.
@@ -108,10 +105,12 @@ pub enum NewDocument {
     /// extrusion producing a body, and the three references naming that
     /// extrusion's two caps and the faces raised from its first segment.
     SamplePlate(PlateSize),
+    /// A validated XY polygon, cold-checked before publication.
+    SketchExtrude(PolygonExtrusion),
 }
 
 /// What one creation was asked to do.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct CreateDocumentRequest<'a> {
     /// Where the finished document goes, and the only path this publishes to.
@@ -195,6 +194,67 @@ pub fn create_document(
     request: CreateDocumentRequest<'_>,
     context: &OperationContext,
 ) -> Result<CreatedDocument> {
+    if matches!(request.content, NewDocument::SketchExtrude(_)) {
+        return Err(ferritecad_types::CadError::unsupported(
+            "polygon creation requires a checked kernel route",
+        ));
+    }
+    create_checked(request, context, |_| Ok(()))
+}
+
+/// Same transaction/publication route, with a worker-owned kernel for the new
+/// polygon. The factory is called only after preflight and model construction.
+pub fn create_document_with_kernel<K: GeometryKernel>(
+    request: CreateDocumentRequest<'_>,
+    factory: impl FnOnce() -> Result<K>,
+    context: &OperationContext,
+) -> Result<CreatedDocument> {
+    let polygon = matches!(request.content, NewDocument::SketchExtrude(_));
+    create_checked(request, context, |document| {
+        if !polygon {
+            return Ok(());
+        }
+        context.check_cancelled()?;
+        let mut kernel = factory()?;
+        check_polygon(document, &mut kernel, context)
+    })
+}
+
+fn check_polygon(
+    document: &Document,
+    kernel: &mut impl GeometryKernel,
+    context: &OperationContext,
+) -> Result<()> {
+    let progress = context.progress().clone();
+    let phase = context
+        .clone()
+        .with_progress(ProgressSink::new(move |f| progress.report(0.1 + 0.7 * f)));
+    let built = ferritecad_eval::rebuild_cold(document, kernel, &phase)?;
+    context.progress().report(0.8); // geometry checked next; nothing is published yet
+    let checked = (|| {
+        if built.shape_count() != 1 {
+            return Err(ferritecad_types::CadError::kernel(
+                "polygon did not build one shape",
+            ));
+        }
+        for reference in document.topology_refs()? {
+            if built.resolve(&reference)?.is_empty() {
+                return Err(ferritecad_types::CadError::topology(
+                    "polygon lost a stored reference",
+                ));
+            }
+        }
+        context.check_cancelled()
+    })();
+    built.release_all(kernel);
+    checked
+}
+
+fn create_checked(
+    request: CreateDocumentRequest<'_>,
+    context: &OperationContext,
+    check: impl FnOnce(&Document) -> Result<()>,
+) -> Result<CreatedDocument> {
     // Before any work, and cheaply. The publication below is the guarantee;
     // this is the courtesy of not building a document in order to throw it
     // away, and of saying so in the same words either way.
@@ -203,7 +263,7 @@ pub fn create_document(
     }
     context.cancel().check()?;
 
-    let (temporary, document_id) = build(&request)?;
+    let (temporary, document_id) = build_checked(&request, check)?;
     // The SQLite connection is closed; only publication remains.
     context.progress().report(0.9);
 
@@ -235,7 +295,10 @@ pub fn create_document(
 /// Split out so that the two steps a creation is made of can be driven apart
 /// in a gate: everything up to and including the close, and then the one
 /// publication.
-fn build(request: &CreateDocumentRequest<'_>) -> Result<(Temporary, DocumentId)> {
+fn build_checked(
+    request: &CreateDocumentRequest<'_>,
+    check: impl FnOnce(&Document) -> Result<()>,
+) -> Result<(Temporary, DocumentId)> {
     let temporary = Temporary::beside(request.destination)?;
 
     let mut document = Document::create_with(
@@ -247,10 +310,14 @@ fn build(request: &CreateDocumentRequest<'_>) -> Result<(Temporary, DocumentId)>
 
     // One transaction for the whole model. A refusal inside it rolls back
     // everything, and the scratch document goes with the guard either way.
-    if let NewDocument::SamplePlate(size) = request.content {
-        populate_sample_plate(&mut document, size)?;
+    match &request.content {
+        NewDocument::Empty => {}
+        NewDocument::SamplePlate(size) => populate_sample_plate(&mut document, *size)?,
+        NewDocument::SketchExtrude(profile) => {
+            populate_profile(&mut document, profile.points(), profile.height_mm(), "Body")?
+        }
     }
-
+    check(&document)?;
     document.close()?;
     Ok((temporary, document_id))
 }
@@ -286,18 +353,25 @@ fn populate_sample_plate(document: &mut Document, size: PlateSize) -> Result<()>
         height,
     } = size;
 
-    let plane = ObjectId::new();
-    let sketch = ObjectId::new();
-    let extrude = ObjectId::new();
-    let body = ObjectId::new();
-
     let corners = [
         Point2::new(0.0, 0.0)?,
         Point2::new(width, 0.0)?,
         Point2::new(width, depth)?,
         Point2::new(0.0, depth)?,
     ];
+    populate_profile(document, &corners, height, "Plate")
+}
 
+fn populate_profile(
+    document: &mut Document,
+    corners: &[Point2],
+    height: f64,
+    body_name: &str,
+) -> Result<()> {
+    let plane = ObjectId::new();
+    let sketch = ObjectId::new();
+    let extrude = ObjectId::new();
+    let body = ObjectId::new();
     let mut curves = Vec::with_capacity(corners.len());
     for (index, start) in corners.iter().enumerate() {
         curves.push(SketchCurve {
@@ -342,7 +416,7 @@ fn populate_sample_plate(document: &mut Document, size: PlateSize) -> Result<()>
             body,
             None,
             3,
-            Some("Plate"),
+            Some(body_name),
             &ObjectPayload::Body(Body {
                 tip_feature: Some(extrude),
             }),
@@ -1001,6 +1075,98 @@ mod tests {
                 "{name} was refused for another reason: {error}"
             );
             assert!(!destination.exists(), "{name} was refused and left behind");
+        }
+    }
+    #[test]
+    fn polygon_cold_check_cleanup_and_publication_boundaries() {
+        use ferritecad_kernel::{ProgressSink, mock::MockKernel};
+        let polygon = PolygonExtrusion::new(
+            vec![
+                [0., 0.],
+                [60., 0.],
+                [60., 20.],
+                [20., 20.],
+                [20., 40.],
+                [0., 40.],
+            ],
+            10.,
+        )
+        .expect("polygon");
+        for event in [
+            "success",
+            "build failure",
+            "before",
+            "during",
+            "before publish",
+            "racer",
+            "late",
+        ] {
+            let dir = tempfile::tempdir().expect("dir");
+            let out = dir.path().join("new.fcad");
+            let cancel = CancelToken::new();
+            let stop = cancel.clone();
+            let target = out.clone();
+            let ctx = OperationContext::default()
+                .with_cancel(cancel.clone())
+                .with_progress(ProgressSink::new(move |f| {
+                    if event == "during" && (0.7..0.9).contains(&f) {
+                        stop.cancel();
+                    }
+                    if f == 0.9 {
+                        if event == "before publish" {
+                            stop.cancel();
+                        }
+                        if event == "racer" {
+                            std::fs::write(&target, b"racer").expect("racer");
+                        }
+                    }
+                    if f == 1.0 && event == "late" {
+                        stop.cancel();
+                    }
+                }));
+            if event == "before" {
+                cancel.cancel();
+            }
+            let mut kernel = MockKernel::new();
+            let result = create_checked(
+                CreateDocumentRequest::new(
+                    &out,
+                    NewDocument::SketchExtrude(polygon.clone()),
+                    "keep",
+                ),
+                &ctx,
+                |doc| {
+                    check_polygon(doc, &mut kernel, &ctx)?;
+                    if event == "build failure" {
+                        return Err(ferritecad_types::CadError::kernel("injected build failure"));
+                    }
+                    Ok(())
+                },
+            );
+            assert_eq!(
+                kernel.live_shape_count(),
+                0,
+                "{event}: shapes must be freed before dropping the kernel"
+            );
+            assert_eq!(
+                result.is_ok(),
+                matches!(event, "success" | "late"),
+                "{event}: {result:?}"
+            );
+            assert_eq!(out.exists(), matches!(event, "success" | "late" | "racer"));
+            assert_eq!(
+                entries(dir.path()).len(),
+                usize::from(out.exists()),
+                "scratch/sidecars after {event}"
+            );
+            if event == "racer" {
+                assert_eq!(std::fs::read(&out).expect("racer"), b"racer");
+            }
+            if result.is_ok() {
+                let d = Document::open_read_only(&out).expect("publication");
+                assert_eq!(d.objects().expect("objects").len(), 4);
+                d.close().expect("close");
+            }
         }
     }
 }

@@ -2399,6 +2399,32 @@ STEP или complete FBX. Между validate/export нет общего snapsho
 ошибкой. Обновлён перечень JSON-команд. Локальные повторные проверки и результаты
 CI опубликованного head/merge фиксируются отдельно от отчёта реализации.
 
+## 14.25. Создание собственных моделей
+
+**§25A — реализован ограниченный контур → Extrude → новый FCAD.**
+Общий `PolygonExtrusion` задаёт один простой Line polygon на XY/mm, положительную
+Blind-высоту/NewBody. `NewDocument::SketchExtrude` переиспользует writer, transaction,
+Temporary/Keep publication и cancellation существующего create; cold evaluator
+проверяет shape и сохранённые topology refs до publish. Новых IR/schema/FFI нет.
+UI имеет отдельный черновик с мышью, точными координатами, явным замыканием,
+undo/redo и Save через адаптер §23D; создание/открытие остаются асинхронными.
+CLI `create-sketch-extrude` принимает request JSON v1 и opt-in report JSON v1.
+[Контракт и рецепт](sketch-extrude-create.md), [проверки](sketch-extrude-verification.md).
+
+Это частичная реализация §9/§10: только создание unconstrained Line Sketch,
+не редактирование сохранённого эскиза, constraints solver UI или persistent undo.
+L-профиль проверяется через два клиента, cold reopen, STL и независимый FBX reader.
+Новые native gates добавлены в существующий runtime workflow; результаты локального
+незакоммиченного diff и CI базы различаются. Следующий срез не начат.
+
+Независимое ревью §25A закрыло интерактивный macOS smoke: мышь/точные поля,
+замыкание, Undo/Redo, видимый отказ ввода, Save Cancel, публикация и отображение
+L-модели, отмена нового черновика с сохранением принятой сцены. Сам GUI-файл
+прошёл cold rebuild; STL совпал с CLI побайтово, volume 16000 mm³, strict ufbx
+прочитал оба FBX. Watchdog: peak 189.13 MiB, штатный выход; причина исходного
+OOM не установлена. Production-исправления не потребовались. Повторные native/
+stub проверки и ограничения описаны в протоколе; CI head/merge учитывается отдельно.
+
 ## 15. Чего не делать до beta
 
 - не писать собственное B-Rep-ядро;

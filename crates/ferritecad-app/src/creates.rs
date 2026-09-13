@@ -22,12 +22,9 @@
 //! choice made in it and the document an export reads are all exactly what they
 //! were.
 //!
-//! # There is no unsaved document here
-//!
-//! The person names the file before anything is made, in their own save dialog,
-//! and what they get back is a document on disk. Nothing in this window holds a
-//! model that has not been written, so there is nothing to lose, nothing to
-//! prompt about on the way out, and no Save.
+//! A polygon draft is owned separately by `sketch::Editor`. It is disposable
+//! input, not the accepted document. Save cancellation and job failures retain
+//! it; a published result ends its history before the ordinary async Open.
 //!
 //! # Nothing here blocks the loop, and nothing here replaces a file
 //!
@@ -40,9 +37,7 @@
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 
-use ferritecad_jobs::{
-    CreateDocumentRequest, CreatedDocument, NewDocument, PlateSize, create_document,
-};
+use ferritecad_jobs::{CreateDocumentRequest, CreatedDocument, NewDocument, PlateSize};
 use ferritecad_kernel::{CancelToken, OperationContext};
 use ferritecad_types::{ErrorKind, Result};
 use ferritecad_ui::{NewChoice, NewContent, NewDocumentForm, ViewportInput};
@@ -154,14 +149,19 @@ pub(crate) struct Creates {
     /// pressed New, holding numbers they typed for a document they decided not
     /// to make.
     form: Option<NewDocumentForm>,
+    pub(crate) sketch: crate::sketch::Editor,
 }
 
 impl Creates {
+    pub(crate) fn forms(&mut self) -> (Option<&mut NewDocumentForm>, &mut crate::sketch::Editor) {
+        (self.form.as_mut(), &mut self.sketch)
+    }
     pub(crate) fn status(&self) -> &CreateStatus {
         &self.status
     }
 
     /// The form on screen, to be drawn and typed into.
+    #[cfg(test)]
     pub(crate) fn form(&mut self) -> Option<&mut NewDocumentForm> {
         self.form.as_mut()
     }
@@ -172,7 +172,7 @@ impl Creates {
     }
 
     pub(crate) fn busy(&self) -> bool {
-        self.running() || self.form.is_some()
+        self.running() || self.form.is_some() || self.sketch.active()
     }
 
     pub(crate) fn can_cancel(&self) -> bool {
@@ -269,6 +269,7 @@ impl Creates {
                 let destination = destination.clone();
                 self.status = match outcome {
                     Ok(created) => {
+                        self.sketch.dismiss();
                         if !self.cancel_requested {
                             open = Some(created.destination().to_path_buf());
                         }
@@ -482,24 +483,23 @@ pub(crate) fn spawn_create(
 
 /// The whole of the work, and the only place this application does any of it.
 ///
-/// One call to the shared operation. No kernel session is opened: writing the
-/// feature graph of a new document needs none, and a window that opened one
-/// here would make creating a document impossible on a build with no Open
-/// CASCADE for no reason at all.
+/// One shared operation. The factory opens a worker-owned kernel only for a
+/// polygon; empty/sample documents retain their kernel-free creation behavior.
 pub(crate) fn run_create(
     destination: &Path,
     content: NewDocument,
     context: &OperationContext,
 ) -> Result<CreatedDocument> {
-    create_document(
+    ferritecad_jobs::create_document_with_kernel(
         CreateDocumentRequest::new(destination, content, CHOOSE_ANOTHER_NAME),
+        ferritecad_occt::OcctKernel::new,
         context,
     )
 }
 
 #[cfg(test)]
 #[allow(clippy::panic, reason = "a gate that cannot fail is not a gate")]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     use std::sync::mpsc;
@@ -546,7 +546,7 @@ mod tests {
     /// [`finish_create`] exactly as the event loop delivers it. What is left
     /// out is the winit event and the system dialog, which is what "without
     /// reproducing clicks" means.
-    fn run_to_completion(
+    pub(crate) fn run_to_completion(
         creates: &mut Creates,
         input: &mut ViewportInput,
         content: NewDocument,
@@ -909,7 +909,7 @@ mod tests {
     // ------------------------------------------------------------ two clients
 
     /// The `ferritecad` this test was built alongside.
-    fn ferritecad() -> PathBuf {
+    pub(crate) fn ferritecad() -> PathBuf {
         // `current_exe` is target/<profile>/deps/<test>; the binary is two up.
         let mut path = std::env::current_exe().expect("the test knows where it is");
         path.pop();
@@ -958,7 +958,7 @@ mod tests {
     /// this value. Two graphs with their identity fields simply removed would
     /// compare equal however their links were rearranged.
     #[derive(Debug, PartialEq)]
-    struct Semantics {
+    pub(crate) struct Semantics {
         /// Display units, which are metadata a person chose rather than model.
         units: (String, String),
         payloads: Vec<String>,
@@ -973,14 +973,14 @@ mod tests {
     /// The identities themselves, which two independent creations must *not*
     /// share.
     #[derive(Debug, PartialEq, Eq)]
-    struct Identities {
+    pub(crate) struct Identities {
         document: String,
         objects: Vec<String>,
         segments: Vec<String>,
         references: Vec<String>,
     }
 
-    fn read_semantics(path: &Path) -> (Semantics, Identities) {
+    pub(crate) fn read_semantics(path: &Path) -> (Semantics, Identities) {
         let document = Document::open(path).expect("opens the document");
         let objects = document.objects().expect("reads objects");
 

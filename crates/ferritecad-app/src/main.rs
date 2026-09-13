@@ -31,6 +31,7 @@ mod creates;
 mod dialogs;
 mod edits;
 mod exports;
+mod sketch;
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -895,6 +896,8 @@ fn start_new(
 #[derive(Debug)]
 struct Sections<'a> {
     dialog_failure: Option<&'a str>,
+    sketch: &'a mut sketch::Editor,
+    creating: bool,
     edits: &'a mut edits::Edits,
     stl_form: Option<&'a mut ferritecad_ui::StlExportForm>,
     can_edit: bool,
@@ -2451,6 +2454,8 @@ impl ApplicationHandler<AppEvent> for App {
                 let export = exports::shown(export_status, &export_line, &export_omissions);
                 let create_line = creates::words(self.creates.status());
                 let created = creates::shown(self.creates.status(), &create_line);
+                let creating = self.creates.running();
+                let (form, sketch) = self.creates.forms();
                 match live.draw(
                     &self.input,
                     activity,
@@ -2462,7 +2467,9 @@ impl ApplicationHandler<AppEvent> for App {
                         failure,
                         export,
                         replacing: replacing.as_deref(),
-                        form: self.creates.form(),
+                        form,
+                        sketch,
+                        creating,
                         created,
                     },
                 ) {
@@ -2501,6 +2508,9 @@ impl ApplicationHandler<AppEvent> for App {
                                 self.input.request_redraw();
                             }
                             _ => {}
+                        }
+                        if let Some(content) = self.creates.sketch.take_request() {
+                            self.ask_where_to_create(content);
                         }
                         if chosen.cancel_create {
                             self.creates.cancel(&mut self.input);
@@ -3564,6 +3574,8 @@ impl Live {
         let mut asked = NewChoice::default();
         let Sections {
             dialog_failure,
+            sketch,
+            creating,
             mut stl_form,
             edits,
             can_edit,
@@ -3580,6 +3592,7 @@ impl Live {
             // place for that is what stops a button and a keystroke drifting
             // apart.
             chosen = ferritecad_ui::toolbar(ui, activity);
+            sketch.draw(ui, can_edit, creating);
             if let Some(message) = dialog_failure {
                 ui.colored_label(ui.visuals().error_fg_color, message);
             }

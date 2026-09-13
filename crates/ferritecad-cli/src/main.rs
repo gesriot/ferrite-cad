@@ -12,6 +12,7 @@ mod import;
 mod json;
 mod rebuild;
 mod render;
+mod sketch;
 mod topology;
 
 use std::path::PathBuf;
@@ -92,6 +93,8 @@ struct Cli {
 enum Command {
     /// Create a new document.
     Create(CreateArgs),
+    /// Create an XY Line polygon with a positive Blind extrusion from JSON request v1.
+    CreateSketchExtrude(sketch::SketchArgs),
     /// Change one constant Blind extrusion and save a new .fcad of the same model.
     /// Preserves identities; never overwrites source or output. Requires a kernel.
     EditExtrude(EditExtrudeArgs),
@@ -322,6 +325,7 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
+        Command::CreateSketchExtrude(args) => sketch::run(args),
         Command::Create(args) if args.json => Ok(json::emit(
             json::Operation::Create,
             create_result(args).map(json::Created::from),

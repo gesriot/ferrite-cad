@@ -7,6 +7,12 @@ account, no proprietary container you cannot read back.
 through Open CASCADE, STEP import, and a viewer window that opens a `.fcad`
 file, draws what it describes – solids and the sketches they were raised from –
 and lets a definition be selected and inspected.
+Create your own XY Line polygon with **Create sketch + Extrude…**, or run
+`ferritecad create-sketch-extrude request.json -o new.fcad --json`.
+Both clients save a real Sketch/Extrude/Body and cold-check it before publication.
+See the [bounded contract and executable agent recipe](docs/sketch-extrude-create.md).
+Editing an already saved sketch and constraint editing remain future work.
+
 The window can create an empty native document or a sample plate from a template;
 it can also change a supported constant Blind extrusion height in a new copy.
 Arbitrary modelling and in-place Save are still unavailable. See
@@ -63,7 +69,7 @@ discovering Extrude and native Body UUIDs, editing a height in a new copy,
 importing STEP, checking stored consistency without writes or a kernel, and
 exporting one Body to binary STL or the whole scene to FBX. See the exact
 [JSON v1 schema and runnable agent recipe](docs/cli-json-v1.md). This contract
-covers those seven commands; the other commands retain their existing text output.
+covers those seven commands and the new polygon creation command; the other commands retain their existing text output.
 
 `validate` now opens read-only in both text and JSON modes. Old schemas, WAL and
 incompatible reader requirements are refused without migration. JSON `ok:true`
@@ -687,7 +693,7 @@ this program carries. A command line this viewer cannot act on still exits
 This says which component is loaded. A document stores the meaning of a
 constrained sketch, and a build that linked planegcs solves those constraints
 when it rebuilds: the profile it extrudes is the solved one, not the
-coordinates the curves were last left at. The viewer still cannot create or
+coordinates the curves were last left at. The viewer can create an unconstrained Line polygon (§25A), but cannot yet
 edit a constraint, so a constrained sketch is one that arrived in the document
 some other way. A build with no solver refuses such a sketch rather than
 building from the stored coordinates. What that solve found out – how much
