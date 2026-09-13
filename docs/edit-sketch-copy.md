@@ -1,7 +1,8 @@
 # §25B — координаты сохранённого Sketch → новая копия
 
 Выбор/drag существующих вершин мышью добавлен в [§25C](sketch-vertex-drag.md);
-числовые requests и общий маршрут сохранения прежние.
+шаг привязки координат — в [§25D](sketch-snap-step.md).
+Числовые requests и общий маршрут сохранения прежние.
 
 UI `Edit Sketch <name> — <UUID>…` и CLI `edit-sketch-copy` правят существующую
 модель. Они сохраняют document/object/curve/reference UUID; это не повторный

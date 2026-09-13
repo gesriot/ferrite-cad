@@ -409,6 +409,18 @@ struct Canvas {
     selected: Option<usize>,
     gesture: Option<VertexDrag>,
     claimed_press: bool,
+    snap: Snap,
+}
+
+/// Editor-only step. Not model data, not a preference, not persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Snap {
+    #[default]
+    Off,
+    Tenth,
+    One,
+    Five,
+    Ten,
 }
 
 #[derive(Debug)]
@@ -418,6 +430,7 @@ struct VertexDrag {
     scale: f64,
     start: [f64; 2],
     before: State,
+    snap: Snap,
 }
 
 /// Preview frames do not enter history. Each changed release supplies one
@@ -428,6 +441,43 @@ enum CanvasEdit {
     Gesture,
     Finished(Vec<State>),
 }
+impl Snap {
+    const CHOICES: [(Self, &'static str); 5] = [
+        (Self::Off, "Off"),
+        (Self::Tenth, "0.1 mm"),
+        (Self::One, "1 mm"),
+        (Self::Five, "5 mm"),
+        (Self::Ten, "10 mm"),
+    ];
+    fn label(self) -> &'static str {
+        Snap::CHOICES
+            .iter()
+            .find(|(value, _)| *value == self)
+            .map(|(_, label)| *label)
+            .expect("every Snap value has a label")
+    }
+    fn apply(self, value: f64) -> String {
+        let snapped = match self {
+            Self::Off => return value.to_string(),
+            // Multiply/divide by ten instead of by the inexact binary 0.1:
+            // decimal halves round away from zero, and 3/10 displays as "0.3".
+            Self::Tenth => (value * 10.0).round() / 10.0,
+            Self::One => value.round(),
+            Self::Five => (value / 5.0).round() * 5.0,
+            Self::Ten => (value / 10.0).round() * 10.0,
+        };
+        if !snapped.is_finite() {
+            // Keep invalid input invalid for the shared polygon policy. A
+            // float-to-integer cast would turn NaN into zero or saturate it.
+            value.to_string()
+        } else if snapped == 0.0 {
+            "0".into()
+        } else {
+            snapped.to_string()
+        }
+    }
+}
+
 impl Default for Canvas {
     fn default() -> Self {
         Self {
@@ -436,6 +486,7 @@ impl Default for Canvas {
             selected: None,
             gesture: None,
             claimed_press: false,
+            snap: Snap::Off,
         }
     }
 }
@@ -513,13 +564,15 @@ impl Canvas {
                 draft.points[drag.vertex][axis] = if delta == 0.0 {
                     drag.before.points[drag.vertex][axis].clone()
                 } else {
-                    (drag.start[axis] + delta / drag.scale).to_string()
+                    drag.snap.apply(drag.start[axis] + delta / drag.scale)
                 };
             }
         }
     }
     fn draw(&mut self, ui: &mut egui::Ui, draft: &mut State) -> CanvasEdit {
         let points = Self::points(draft);
+        let events = ui.input(|i| i.events.clone());
+        let mut snap_changes = Vec::new();
         ui.add_enabled_ui(self.gesture.is_none(), |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Fit drawing").clicked()
@@ -533,6 +586,42 @@ impl Canvas {
                 }
                 ui.label("+X right · +Y up · coordinates in mm");
             });
+            ui.horizontal(|ui| {
+                ui.label("Snap:");
+                for (value, label) in Snap::CHOICES {
+                    let response = ui.selectable_label(self.snap == value, label);
+                    if response.clicked() {
+                        // egui evaluates the control before we replay canvas
+                        // events. Defer its accepted click to the actual release
+                        // so a later Snap choice cannot rewrite an earlier drag.
+                        let event = events
+                            .iter()
+                            .rposition(|event| {
+                                matches!(event,
+                                    egui::Event::PointerButton {
+                                        pos, button: egui::PointerButton::Primary,
+                                        pressed: false, ..
+                                    } if response.rect.contains(*pos)
+                                )
+                            })
+                            .or_else(|| {
+                                events.iter().rposition(|event| {
+                                    matches!(
+                                        event,
+                                        egui::Event::Key {
+                                            key: egui::Key::Space | egui::Key::Enter,
+                                            pressed: true,
+                                            ..
+                                        }
+                                    )
+                                })
+                            })
+                            .unwrap_or(events.len());
+                        snap_changes.push((event, value));
+                        ui.ctx().request_repaint();
+                    }
+                }
+            });
         });
         let (response, painter) =
             ui.allocate_painter(egui::vec2(510., 250.), egui::Sense::click_and_drag());
@@ -544,12 +633,14 @@ impl Canvas {
         };
         let pointer = ui.input(|i| i.pointer.clone());
         let mut checkpoints = Vec::new();
-        let events = ui.input(|i| i.events.clone());
         // Aggregate pointer state loses ordering when one frame contains the
         // release of an old gesture and the press (or whole gesture) of another.
         // Own gestures at their actual press and process every event in order.
-        for event in events {
-            match event {
+        for (index, event) in events.iter().enumerate() {
+            for &(_, value) in snap_changes.iter().filter(|(at, _)| *at == index) {
+                self.snap = value;
+            }
+            match *event {
                 egui::Event::PointerButton {
                     pos,
                     button: egui::PointerButton::Primary,
@@ -573,6 +664,7 @@ impl Canvas {
                             scale: f64::from(self.scale),
                             start: points[vertex],
                             before: draft.clone(),
+                            snap: self.snap,
                         });
                     }
                 }
@@ -608,6 +700,10 @@ impl Canvas {
                 _ => {}
             }
         }
+        // Accessibility/programmatic activation can have no pointer/key event.
+        for &(_, value) in snap_changes.iter().filter(|(at, _)| *at == events.len()) {
+            self.snap = value;
+        }
         // A lost release must not leave a preview or a permanently owned drag.
         if !ui.input(|i| i.focused) || !pointer.primary_down() {
             self.cancel(draft);
@@ -631,10 +727,11 @@ impl Canvas {
                 && let Some(pos) = response.interact_pointer_pos()
             {
                 let offset = to_document(pos, rect.left_bottom(), self.scale);
-                draft.points.push([
-                    format!("{:.3}", self.minimum[0] + offset[0]),
-                    format!("{:.3}", self.minimum[1] + offset[1]),
-                ]);
+                let at = [self.minimum[0] + offset[0], self.minimum[1] + offset[1]];
+                draft.points.push(match self.snap {
+                    Snap::Off => [format!("{:.3}", at[0]), format!("{:.3}", at[1])],
+                    snap => [snap.apply(at[0]), snap.apply(at[1])],
+                });
             }
         }
         if !pointer.primary_down() {
@@ -661,7 +758,7 @@ impl Canvas {
         painter.text(
             rect.left_top() + egui::vec2(5., 5.),
             egui::Align2::LEFT_TOP,
-            format!("grid: {grid} mm"),
+            format!("grid: {grid} mm · snap: {}", self.snap.label()),
             egui::FontId::proportional(12.),
             egui::Color32::WHITE,
         );

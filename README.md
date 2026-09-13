@@ -13,6 +13,9 @@ Both clients save a real Sketch/Extrude/Body and cold-check it before publicatio
 See the [bounded contract and executable agent recipe](docs/sketch-extrude-create.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
+An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to
+exact document millimetres; [step rules](docs/sketch-snap-step.md). X/Y fields
+and Snap Off keep full precision.
 Saved Line coordinates can be edited in a new copy through **Edit Sketch …** or
 `edit-sketch-copy`; [the identity-preserving contract](docs/edit-sketch-copy.md)
 keeps segment IDs/order and winding. Constraint editing remains future work.

@@ -1,6 +1,6 @@
 # Карта предметных возможностей: UI ↔ CLI ↔ общий API
 
-Срез §24A, обновлён срезами §24B–§24J и §25A. Это описание **текущих** команд и владельцев, а не проект нового протокола.
+Срез §24A, обновлён срезами §24B–§24J и §25A–§25D. Это описание **текущих** команд и владельцев, а не проект нового протокола.
 
 Документ нужен агенту и человеку, которым дали задачу и публичный CLI: что уже можно получить тем же предметным результатом, что в UI, что умеет только один клиент, и где библиотечный метод ещё не является пользовательской операцией. Архитектурное правило — [§4.5 плана](implementation-plan.md): UI и CLI — два клиента общих операций; равенство считается по сохранённой модели и экспортируемым артефактам, а не по hover, жестам мыши или промежуточным кадрам.
 
@@ -11,7 +11,9 @@ UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o ne
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.
 §25B добавляет координатную правку сохранённого Line Sketch в новой копии;
 constraints и persistent history остаются будущей работой.
-Это восьмая opt-in JSON-команда, а не JSON всех команд.
+§25D добавляет opt-in Snap Off/0.1/1/5/10 mm в том же canvas; это жест UI,
+не новая CLI-команда и не поле JSON.
+JSON v1 доступен только явно перечисленным командам.
 
 ## Как читать таблицу
 
@@ -36,8 +38,8 @@ constraints и persistent history остаются будущей работой
 | Предметный результат | UI сейчас | Публичный CLI сейчас | Общий API / владелец | Фактический пробел |
 | --- | --- | --- | --- | --- |
 | Пустой нативный `.fcad` | `New…` → «Empty document» → системный Save-диалог → создание → обычный Open результата. | `ferritecad create <path> [--json]` | Один маршрут: [`ferritecad_jobs::create_document`](../crates/ferritecad-jobs/src/create.rs). Внутри — `Document::create_with` в scratch, транзакция [`Document::write`](../crates/ferritecad-document/src/document.rs), закрытие соединения и атомарная публикация через [`Temporary`](../crates/ferritecad-jobs/src/publish.rs). CLI: [`create`](../crates/ferritecad-cli/src/main.rs). UI: [`creates`](../crates/ferritecad-app/src/creates.rs). JSON v1 сообщает опубликованные `destination` и `document_id`. | Ни у `create`, ни у UI нет замены существующего файла: занятое назначение — отказ. Пустой документ и пустое окно без документа — разные состояния. |
-| Sample plate с шириной, глубиной, высотой | `New…` → «Sample plate» → W/D/H в мм → Save-диалог → создание → обычный Open. Размеры подписаны единицей; значения по умолчанию те же, что у CLI. | `ferritecad create <path> --sample --size W D H [--json]` | Тот же `create_document` с `NewDocument::SamplePlate(PlateSize)`. Построение плиты — приватная транзакция в [`create.rs`](../crates/ferritecad-jobs/src/create.rs); в CLI-крейте её больше нет. Размеры — координаты эскиза и `Expression::constant` высоты, не объекты `Parameter`. | `--size` задаёт размеры только при создании. Постоянную Blind-высоту уже созданной плиты можно изменить через edit-extrude (§24C); правки ширины и глубины эскиза пока нет. Случайные `ObjectId`/`DocumentId` при каждом создании не совпадают — это контракт, не баг. |
-| Прочитать документ (метаданные, объекты, ссылки) | `Open…` читает `.fcad` read-only через `snapshot_of` → `prepare::load`, с холодным перестроением. | `ferritecad inspect <path> [--json]` | [`Document::open_read_only`](../crates/ferritecad-document/src/document.rs). Текст — `render::inspect`; JSON — общие `ExtrudeEditSource` и `stl_bodies(&Document)` на том же закреплённом снимке, без kernel/rebuild, миграции и записи. | JSON v1 даёт `features` для правки Extrude и `bodies` для экспорта native Body, а не всю БД/геометрию. UI не показывает сырой граф и topology refs. |
+| Sample plate с шириной, глубиной, высотой | `New…` → «Sample plate» → W/D/H в мм → Save-диалог → создание → обычный Open. Размеры подписаны единицей; значения по умолчанию те же, что у CLI. | `ferritecad create <path> --sample --size W D H [--json]` | Тот же `create_document` с `NewDocument::SamplePlate(PlateSize)`. Построение плиты — приватная транзакция в [`create.rs`](../crates/ferritecad-jobs/src/create.rs); в CLI-крейте её больше нет. Размеры — координаты эскиза и `Expression::constant` высоты, не объекты `Parameter`. | `--size` задаёт размеры только при создании. Постоянную Blind-высоту уже созданной плиты можно изменить через edit-extrude (§24C); ширину и глубину можно менять координатами Sketch через `edit-sketch-copy` (§25B). Случайные `ObjectId`/`DocumentId` при каждом создании не совпадают — это контракт, не баг. |
+| Прочитать документ (метаданные, объекты, ссылки) | `Open…` читает `.fcad` read-only через `snapshot_of` → `prepare::load`, с холодным перестроением. | `ferritecad inspect <path> [--json]` | [`Document::open_read_only`](../crates/ferritecad-document/src/document.rs). Текст — `render::inspect`; JSON — общие `ExtrudeEditSource` и `stl_bodies(&Document)` на том же закреплённом снимке, без kernel/rebuild, миграции и записи. | JSON v1 даёт `features` для правки Extrude, `sketches` для координатной правки и `bodies` для экспорта native Body, а не всю БД/геометрию. UI не показывает сырой граф и topology refs. |
 | Собственный полигон → новый Sketch/Extrude/Body | `Create sketch + Extrude…`, мышь/точные координаты, Close contour, draft undo/redo, Save в новый файл | `ferritecad create-sketch-extrude request.json -o new.fcad [--json]` | `PolygonExtrusion` → `CreateDocumentRequest` → `create_document_with_kernel`, общий writer/evaluator/Keep publish | Один XY Line polygon/mm/Blind/NewBody; [точные ограничения и рецепт](sketch-extrude-create.md). Правка сохранённого Sketch — отдельный §25B ниже; constraints и persistent undo отсутствуют. |
 | Координаты сохранённого Line Sketch → новая копия | `Edit Sketch <name> — <UUID>…`, прежний canvas/draft и async edit worker | `edit-sketch-copy source.fcad --sketch UUID --expect-version TOKEN --request coordinates.json -o copy.fcad [--json]` | document `SketchChoice`/polygon policy → jobs `edit_sketch_copy` → общий snapshot/cold/Keep путь | Тот же набор curve IDs в прежнем порядке и winding; [контракт](edit-sketch-copy.md). |
 | Проверить документ без ядра | Нет отдельной команды. Неоткрываемый файл даёт `Open failed`; это отказ загрузки, не отчёт `validate`. | `ferritecad validate <path> [--json]` | Общий [`validate_document`](../crates/ferritecad-jobs/src/validate.rs): один `Document::open_read_only`, UUID и `Document::validate` из закреплённого снимка, закрытие SQLite до owned результата. Правила и stable codes принадлежат document. | Без writes/миграции/kernel. JSON ok:true и valid:true/false дают 0/1; operational error — 2, delivery failure — 7. Warnings сохраняются. Старые schema/WAL/minimum reader теперь честно отказывают также в text validate. Это не гарантия геометрии/STEP/FBX complete; UI validate/repair отсутствуют. [Протокол](read-only-validation.md). |
@@ -52,7 +54,7 @@ constraints и persistent history остаются будущей работой
 
 ## Ограничения моделирования (чтобы агент не обещал лишнего)
 
-Создать sample plate **не значит** произвольно редактировать параметры, эскизы и фичи существующей модели. `create --sample --size` и `New… → Sample plate` задают прямоугольник и высоту **в момент создания**. §24C позволяет изменить существующее постоянное Blind-выдавливание в новой копии (см. ниже). Команды или действия окна изменить ширину, заменить сегмент, добавить отверстие, fillet или параметр нет. В документе плиты нет объектов `Parameter`: ширина и глубина — координаты четырёх линий эскиза, высота — константа `Blind` у `Extrude` ([`create.rs`](../crates/ferritecad-jobs/src/create.rs)). Типы `Parameter` и `SketchConstraint` в `ferritecad-document` есть; пользовательской операции «задать параметр / поставить ограничение» нет.
+Создать sample plate **не значит** произвольно редактировать параметры, эскизы и фичи существующей модели. `create --sample --size` и `New… → Sample plate` задают прямоугольник и высоту **в момент создания**. §24C позволяет изменить существующее постоянное Blind-выдавливание в новой копии (см. ниже). §25A позволяет создать собственный Line-полигон с Extrude, §25B — изменить координаты сохранённого Sketch, включая ширину и глубину плиты. Число и порядок сегментов сохранённого Sketch менять нельзя; отдельных операций отверстия, fillet или создания параметра нет. В документе плиты нет объектов `Parameter`: ширина и глубина — координаты четырёх линий эскиза, высота — константа `Blind` у `Extrude` ([`create.rs`](../crates/ferritecad-jobs/src/create.rs)). Типы `Parameter` и `SketchConstraint` в `ferritecad-document` есть; пользовательской операции «задать параметр / поставить ограничение» нет.
 
 Плита — **шаблон**, и окно называет её так. `New…` во вьюере не вводит несохранённый редактируемый документ: имя файла выбирается до создания, результат открывается обычным Open, `Save` / `Save As` для уже существующей модели по-прежнему нет.
 
@@ -62,7 +64,7 @@ constraints и persistent history остаются будущей работой
 
 Агент **не получит** по одному заданию:
 
-- произвольную параметрическую деталь, которой нет в sample plate и которой нельзя добиться импортом готового STEP;
+- произвольные операции моделирования за пределами Line-полигона → Blind Extrude, поддержанной координатной правки и изменения Blind-высоты;
 - редактируемую сборку или чертёж;
 - STEP наружу, DXF, ЕСКД;
 - JSON-контракт всех команд, stdin-пакет, отмену CLI.
