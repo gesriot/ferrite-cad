@@ -248,8 +248,8 @@ probes локально не запускались; причина первон
 этим не устанавливается. Linux/Windows GUI не проверялись.
 
 Повторный stub: текущий CLI imports содержит только libiconv/libSystem; suites
-edit-sketch/create-sketch/JSON-v1 — 22 harness passes, из них 3 явных geometry
-skips, 19 выполненных проверок; jobs edit — 10/10 без skips. Native экспортом эти
+edit-sketch/create-sketch/JSON-v1 — 22 harness passes, из них 4 явных geometry
+skips, 18 выполненных проверок; jobs edit — 10/10 без skips. Native экспортом эти
 skips не считаются (`stub-cli.log`, `stub-jobs.log`, `stub-imports.txt`).
 
 Shellcheck с разрешением sourced scripts (`-x`), actionlint и новый opt-in gate
