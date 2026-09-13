@@ -74,6 +74,10 @@ fn vertex(ctx: &egui::Context, e: &mut Editor, i: usize) -> egui::Pos2 {
         Canvas::points(e.draft.as_ref().expect("draft")).expect("numbers")[i],
     )
 }
+fn choose(ctx: &egui::Context, e: &mut Editor, label: &str) {
+    let out = frame(ctx, e, vec![]);
+    click(ctx, e, text_at(&out, label));
+}
 
 #[test]
 fn pointer_drag_is_one_precise_undo_step_and_selects_only_its_vertex() {
@@ -243,13 +247,268 @@ fn pointer_hit_ties_free_add_and_invalid_preview_use_existing_draft_policy() {
     assert!(e.content().is_ok());
 }
 
+#[test]
+fn snap_change_after_a_coalesced_drag_does_not_rewrite_that_gesture() {
+    let (ctx, mut e) = setup();
+    choose(&ctx, &mut e, "1 mm");
+    let at = vertex(&ctx, &mut e, 1);
+    let target = at + egui::vec2(24., 0.); // 60 -> 66 mm
+    let ten = text_at(&frame(&ctx, &mut e, vec![]), "10 mm");
+    let mut events = Vec::new();
+    for (press, release) in [(at, target), (ten, ten)] {
+        events.extend([
+            egui::Event::PointerMoved(press),
+            egui::Event::PointerButton {
+                pos: press,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+            egui::Event::PointerMoved(release),
+            egui::Event::PointerButton {
+                pos: release,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            },
+        ]);
+    }
+    frame(&ctx, &mut e, events);
+    assert_eq!(
+        e.canvas.snap,
+        Snap::Ten,
+        "the later control click was accepted"
+    );
+    assert_eq!(
+        e.draft.as_ref().expect("draft").points[1][0],
+        "66",
+        "a later Snap change cannot rewrite an earlier gesture"
+    );
+    assert_eq!(e.undo.len(), 1);
+}
+
+#[test]
+fn snap_rounds_values_below_half_a_step_toward_the_nearer_grid_point() {
+    let below_half = f64::from_bits(0.05_f64.to_bits() - 1);
+    assert_eq!(Snap::Tenth.apply(below_half), "0");
+    assert_eq!(Snap::Tenth.apply(-below_half), "0");
+    assert_eq!(Snap::Tenth.apply(0.05), "0.1");
+    assert_eq!(Snap::Tenth.apply(-0.05), "-0.1");
+}
+
+#[test]
+fn snap_large_finite_displacements_remain_refused_without_overflow() {
+    for (snap, _) in Snap::CHOICES {
+        for value in [
+            f64::from(f32::MAX),
+            -f64::from(f32::MAX),
+            f64::MAX,
+            -f64::MAX,
+        ] {
+            let coordinate = snap.apply(value).parse::<f64>().expect("number");
+            assert!(
+                PolygonExtrusion::new(
+                    vec![[coordinate, 0.], [60., 0.], [60., 40.], [0., 40.]],
+                    10.
+                )
+                .is_err(),
+                "{snap:?} must retain the shared range refusal"
+            );
+        }
+    }
+}
+
+#[test]
+fn snap_preserves_invalid_coordinate_refusals_without_panicking() {
+    for (snap, _) in Snap::CHOICES {
+        for value in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::MAX,
+            -f64::MAX,
+        ] {
+            let mut e = Editor::default();
+            e.begin();
+            let d = e.draft.as_mut().expect("draft");
+            d.closed = true;
+            // Replacing NaN with zero would make this rectangle valid.
+            d.points = [["0", "0"], ["60", "0"], ["60", "40"], ["0", "40"]]
+                .map(|p| p.map(str::to_owned))
+                .to_vec();
+            d.points[0][0] = snap.apply(value);
+            assert!(
+                e.content().is_err(),
+                "{snap:?} must not make {value} publishable"
+            );
+        }
+    }
+}
+
+#[test]
+fn snap_step_rounds_pointer_input_without_changing_fields_or_off_precision() {
+    assert_eq!(Snap::Off.apply(80.07456568667763), "80.07456568667763");
+    assert_eq!(Snap::One.apply(80.07456568667763), "80");
+    assert_eq!(Snap::Tenth.apply(0.1 + 0.2), "0.3");
+    assert_eq!(Snap::Tenth.apply(0.15), "0.2");
+    assert_eq!(Snap::Tenth.apply(-0.15), "-0.2");
+    assert_eq!(Snap::Tenth.apply(0.05), "0.1");
+    assert_eq!(Snap::Tenth.apply(-0.05), "-0.1");
+    assert_eq!(Snap::Five.apply(-7.5), "-10");
+    assert_eq!(Snap::Ten.apply(15.), "20");
+
+    let (ctx, mut e) = setup();
+    assert_eq!(e.canvas.snap, Snap::Off);
+    let out = frame(&ctx, &mut e, vec![]);
+    assert!(
+        out.shapes
+            .iter()
+            .any(|c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text() == "Off"))
+    );
+    assert!(out.shapes.iter().any(
+        |c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text().contains("snap: Off"))
+    ));
+    let at = vertex(&ctx, &mut e, 1);
+    let slop = at + egui::vec2(81.4, 0.);
+    press(&ctx, &mut e, at);
+    move_to(&ctx, &mut e, slop);
+    button(&ctx, &mut e, slop, false);
+    let off = e.draft.as_ref().expect("draft").points[1][0].clone();
+    assert_ne!(off, "80");
+    assert!(off.starts_with("80."), "{off}");
+    assert_eq!(e.undo.len(), 1);
+    e.undo();
+    let before = e.draft.clone();
+    choose(&ctx, &mut e, "1 mm");
+    assert_eq!(e.canvas.snap, Snap::One);
+    assert_eq!(e.draft, before);
+    assert!(e.undo.is_empty(), "toggling Snap is not an undo step");
+    choose(&ctx, &mut e, "Fit drawing");
+    assert_eq!(e.canvas.snap, Snap::One);
+    assert_eq!(e.draft, before);
+
+    e.draft.as_mut().expect("draft").points[1][1] = "0.37".into();
+    let before = e.draft.clone();
+    let at = vertex(&ctx, &mut e, 1) + egui::vec2(3., -2.);
+    click(&ctx, &mut e, at);
+    assert_eq!(e.canvas.selected, Some(1));
+    assert_eq!(
+        e.draft, before,
+        "press without movement keeps off-grid strings"
+    );
+    let dx = 20. * e.canvas.scale + 1.25;
+    press(&ctx, &mut e, at);
+    move_to(&ctx, &mut e, at + egui::vec2(dx, 0.));
+    assert_eq!(
+        e.draft.as_ref().expect("draft").points[1],
+        ["80".to_owned(), "0.37".to_owned()],
+        "zero-delta axis keeps its off-grid string"
+    );
+    button(&ctx, &mut e, at + egui::vec2(dx, 0.), false);
+    assert_eq!(e.undo.len(), 1);
+    let at = vertex(&ctx, &mut e, 1);
+    let six = 6. * e.canvas.scale;
+    press(&ctx, &mut e, at);
+    e.canvas.snap = Snap::Ten;
+    move_to(&ctx, &mut e, at + egui::vec2(six, 0.));
+    assert_eq!(
+        e.draft.as_ref().expect("draft").points[1][0],
+        "86",
+        "the step is the one frozen at press, not the later control value"
+    );
+    frame(&ctx, &mut e, vec![key(egui::Key::Escape)]);
+    button(&ctx, &mut e, at, false);
+    e.canvas.snap = Snap::One;
+    assert_eq!(e.draft.as_ref().expect("draft").points[1][0], "80");
+    assert_eq!(e.undo.len(), 1);
+    assert!(e.gesture_finished());
+    for i in [0, 2, 3, 4, 5] {
+        assert_eq!(
+            e.draft.as_ref().expect("draft").points[i],
+            before.as_ref().expect("draft").points[i]
+        );
+    }
+    let kept = e.draft.clone();
+    let at = vertex(&ctx, &mut e, 1);
+    press(&ctx, &mut e, at);
+    move_to(&ctx, &mut e, at + egui::vec2(dx, 0.));
+    move_to(&ctx, &mut e, at);
+    button(&ctx, &mut e, at, false);
+    assert_eq!(e.draft, kept);
+    assert_eq!(e.undo.len(), 1, "return to press is a no-op");
+    choose(&ctx, &mut e, "Undo draft");
+    assert_eq!(e.draft, before);
+    choose(&ctx, &mut e, "Redo draft");
+    assert_eq!(e.draft.as_ref().expect("draft").points[1][0], "80");
+    replace_field(&ctx, &mut e, "80", "80.25");
+    assert_eq!(e.draft.as_ref().expect("draft").points[1][0], "80.25");
+
+    let (ctx, mut e) = setup();
+    e.draft.as_mut().expect("draft").closed = false;
+    choose(&ctx, &mut e, "0.1 mm");
+    let rect = canvas(&frame(&ctx, &mut e, vec![]));
+    let added = e.canvas.screen(rect, [90.34, 30.15]);
+    click(&ctx, &mut e, added);
+    assert_eq!(
+        e.draft.as_ref().expect("draft").points.last(),
+        Some(&["90.3".to_owned(), "30.2".to_owned()])
+    );
+    choose(&ctx, &mut e, "5 mm");
+    let at = vertex(&ctx, &mut e, 0);
+    let left = -7.5 * e.canvas.scale;
+    press(&ctx, &mut e, at);
+    move_to(&ctx, &mut e, at + egui::vec2(left, 0.));
+    button(&ctx, &mut e, at + egui::vec2(left, 0.), false);
+    assert_eq!(e.draft.as_ref().expect("draft").points[0][0], "-10");
+
+    let (ctx, mut e) = setup();
+    choose(&ctx, &mut e, "1 mm");
+    let at = vertex(&ctx, &mut e, 1);
+    let before = e.draft.clone();
+    press(&ctx, &mut e, at);
+    move_to(&ctx, &mut e, at + egui::vec2(40., 0.));
+    frame(&ctx, &mut e, vec![key(egui::Key::Escape)]);
+    button(&ctx, &mut e, at + egui::vec2(40., 0.), false);
+    assert_eq!(e.draft, before);
+    let other = vertex(&ctx, &mut e, 0);
+    press(&ctx, &mut e, at);
+    let output = move_to(&ctx, &mut e, other);
+    assert!(e.content().is_err());
+    assert!(output.shapes.iter().any(
+        |c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text().contains("repeated vertices"))
+    ));
+    button(&ctx, &mut e, other, false);
+    assert!(e.content().is_err());
+    assert!(e.take_request().is_none());
+    e.undo();
+    assert!(e.content().is_ok());
+    e.dismiss();
+    e.begin();
+    assert_eq!(
+        e.canvas.snap,
+        Snap::Off,
+        "a new editor starts with Snap Off"
+    );
+}
+
 pub(super) fn move_saved_l(ctx: &egui::Context, e: &mut Editor) {
     let original = e.edit_request().expect("original");
+    let out = frame(ctx, e, vec![]);
+    click(ctx, e, text_at(&out, "1 mm"));
+    assert_eq!(e.canvas.snap, Snap::One);
+    let out = frame(ctx, e, vec![]);
+    click(ctx, e, text_at(&out, "Fit drawing"));
+    assert_eq!(
+        e.canvas.snap,
+        Snap::One,
+        "Fit does not change the document step"
+    );
     for i in [1, 2] {
         let before = e.draft.clone();
         let history = e.undo.len();
         let at = vertex(ctx, e, i);
-        let dx = 20. * e.canvas.scale; // Fit gives 4.75 points/mm for this exact L.
+        // Slightly inaccurate pixels; snap, not numeric fields, yields 80 mm.
+        let dx = 20. * e.canvas.scale + 1.25;
         press(ctx, e, at);
         for fraction in [0.25, 0.5, 0.75, 1.] {
             move_to(ctx, e, at + egui::vec2(dx * fraction, 0.));
