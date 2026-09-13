@@ -102,6 +102,7 @@ case " ${NATIVE_PLATFORMS[*]} " in
     *) package_die "unknown platform $platform" ;;
 esac
 if [ "$execute" = yes ]; then
+    runtime_probe_require_failure_opt_in "$platform"
     [ -n "$document" ] || package_die '--document is needed to cross the Open CASCADE boundary'
     [ -f "$document" ] || package_die "no such document: $document"
 fi

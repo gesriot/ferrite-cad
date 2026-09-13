@@ -11,7 +11,9 @@ Create your own XY Line polygon with **Create sketch + Extrude…**, or run
 `ferritecad create-sketch-extrude request.json -o new.fcad --json`.
 Both clients save a real Sketch/Extrude/Body and cold-check it before publication.
 See the [bounded contract and executable agent recipe](docs/sketch-extrude-create.md).
-Editing an already saved sketch and constraint editing remain future work.
+Saved Line coordinates can be edited in a new copy through **Edit Sketch …** or
+`edit-sketch-copy`; [the identity-preserving contract](docs/edit-sketch-copy.md)
+keeps segment IDs/order and winding. Constraint editing remains future work.
 
 The window can create an empty native document or a sample plate from a template;
 it can also change a supported constant Blind extrusion height in a new copy.
@@ -69,7 +71,8 @@ discovering Extrude and native Body UUIDs, editing a height in a new copy,
 importing STEP, checking stored consistency without writes or a kernel, and
 exporting one Body to binary STL or the whole scene to FBX. See the exact
 [JSON v1 schema and runnable agent recipe](docs/cli-json-v1.md). This contract
-covers those seven commands and the new polygon creation command; the other commands retain their existing text output.
+covers those seven commands plus polygon creation and saved Sketch coordinate editing;
+the other commands retain their existing text output.
 
 `validate` now opens read-only in both text and JSON modes. Old schemas, WAL and
 incompatible reader requirements are refused without migration. JSON `ok:true`
@@ -638,12 +641,18 @@ out="$HOME/Desktop/FerriteCAD Local Build"
 tools/package-release.sh --platform macos --staging "$staging" \
   --output-dir "$out" --source-revision "$(git rev-parse HEAD)"
 rm -rf "$staging"
-tools/check-release-package.sh --platform macos \
+tools/check-release-package.sh --platform macos --no-execute \
   --archive "$out/ferritecad-0.0.1-aarch64-apple-darwin.tar.gz" \
   --extract-to "$out/extracted" \
   --document crates/ferritecad-fixtures/plate/plate.fcad \
   --forbidden "$staging" --output "$out/package-facts.txt"
 ```
+
+This local check verifies the extracted files without starting deliberately broken
+processes. The full CI gate also removes libraries and requires loader failures.
+On macOS that experiment can display “cannot be opened because of a problem”;
+running it locally requires removing `--no-execute` and explicitly setting
+`FCAD_ALLOW_LOADER_FAILURE_PROBES=1`. It is not needed to stage or open the app.
 
 What that leaves is
 `~/Desktop/FerriteCAD Local Build/extracted/ferritecad-0.0.1-aarch64-apple-darwin/FerriteCAD.app`.
@@ -775,3 +784,9 @@ scope until that works.
 MIT, see [`LICENSE`](LICENSE). Open CASCADE is LGPL-2.1 with the Open CASCADE
 exception and, by project policy, will be linked dynamically only; see
 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
+
+Saved Line sketches from this route or the sample plate can also be edited in a
+new copy: choose **Edit Sketch …** or use `edit-sketch-copy` with the Sketch UUID,
+content version and ordered curve coordinates discovered by `inspect --json`.
+Object, curve and reference identities remain unchanged. See the
+[bounded editing contract and runnable recipe](docs/edit-sketch-copy.md).

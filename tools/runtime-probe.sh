@@ -16,6 +16,16 @@
 # A caller sets RUNTIME_PROBE_TOOL to its own name before sourcing, so a
 # failure reads as that gate's finding.
 
+# Deliberate dyld failures can show macOS crash dialogs even with --solver-info
+# and redirected output. Require an explicit experiment before any gate mutates
+# files or starts a process; a refusal is not a passed or skipped negative check.
+runtime_probe_require_failure_opt_in() { # platform
+    if [ "$1" = macos ] && [ "${FCAD_ALLOW_LOADER_FAILURE_PROBES:-}" != 1 ]; then
+        echo "${RUNTIME_PROBE_TOOL:-runtime-probe}: this gate deliberately starts binaries with missing libraries and may show macOS crash dialogs. Run in CI, or explicitly set FCAD_ALLOW_LOADER_FAILURE_PROBES=1 for this experiment. Ordinary app staging does not require this gate." >&2
+        exit 1
+    fi
+}
+
 # The inspector that says which libraries a binary names for itself. Windows
 # has no run path, so its import table is also the only way to ask there.
 runtime_probe_dumpbin=''

@@ -2411,8 +2411,9 @@ undo/redo и Save через адаптер §23D; создание/открыт
 CLI `create-sketch-extrude` принимает request JSON v1 и opt-in report JSON v1.
 [Контракт и рецепт](sketch-extrude-create.md), [проверки](sketch-extrude-verification.md).
 
-Это частичная реализация §9/§10: только создание unconstrained Line Sketch,
-не редактирование сохранённого эскиза, constraints solver UI или persistent undo.
+§25A — частичная реализация §9/§10: создание unconstrained Line Sketch. Правка
+сохранённого эскиза добавлена в §25B ниже; constraints solver UI и persistent undo
+остаются вне этих срезов.
 L-профиль проверяется через два клиента, cold reopen, STL и независимый FBX reader.
 Новые native gates добавлены в существующий runtime workflow; результаты локального
 незакоммиченного diff и CI базы различаются. Следующий срез не начат.
@@ -2424,6 +2425,32 @@ L-модели, отмена нового черновика с сохранен
 прочитал оба FBX. Watchdog: peak 189.13 MiB, штатный выход; причина исходного
 OOM не установлена. Production-исправления не потребовались. Повторные native/
 stub проверки и ограничения описаны в протоколе; CI head/merge учитывается отдельно.
+
+**§25B — реализована координатная правка сохранённого Line Sketch в новой копии.**
+Поддержаны §25A/sample: один XY Line polygon, positive literal Blind/NewBody.
+Явный выбор Sketch и полный ordered request по persisted curve UUID; число/порядок
+сегментов и winding неизменны. Общая polygon policy в document реэкспортируется
+jobs. Typed discovery добавлен в inspect JSON v1 и тот же accepted scene snapshot.
+UI переиспользует canvas/undo/redo/Save adapter и один edit worker. Jobs переиспользует
+snapshot backup, version/copy guards, cold refs, cleanup и atomic Keep с edit-extrude.
+Height, metadata, объектные/curve/reference IDs и остальные SQL-данные сохраняются.
+CLI `edit-sketch-copy` имеет request v1 и opt-in response v1, exit 0/2/7.
+[Протокол и исполняемый рецепт](edit-sketch-copy.md),
+[локальная проверка diff](edit-sketch-copy-verification.md). §9/§10 остаются частичными:
+нет constraints UI, добавления/удаления сегментов, imported editing или persistent undo.
+CI базы и локальные проверки нового diff учитываются отдельно; следующий срез не начат.
+
+Независимое ревью §25B исправило побочный эффект полной записи объекта:
+координатная правка теперь меняет только payload/hash, сохраняя attached source
+claims. Failing-first процессный тест подтверждает исправление. Причина последних
+системных сообщений macOS сопоставлена с намеренными dyld probes; локальные
+полные gates требуют явного opt-in, CI продолжает проверять все отказы.
+
+**§25C — следующий продуктовый срез (pending): перемещение вершин мышью.**
+Для создаваемого и сохранённого Line-контура: явный выбор вершины, preview,
+Escape/отмена, один undo шаг на жест, точные поля синхронны с canvas. Результат
+по-прежнему выражается существующими create/edit JSON requests; новые geometry
+операции и persistent undo не требуются. Реализация не начата.
 
 ## 15. Чего не делать до beta
 

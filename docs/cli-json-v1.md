@@ -1,4 +1,4 @@
-# CLI JSON v1: восемь opt-in команд
+# CLI JSON v1: девять opt-in команд
 
 §24D задаёт opt-in контракт inspect и edit-extrude. §24D-1 добавляет третью
 существующую команду, `create`, через тот же конверт v1. §24F добавляет Body
@@ -7,6 +7,7 @@ discovery и `export-stl --json`; §24G добавляет `export-fbx --json`,
 без изменения `schema_version`:
 
 ```text
+ferritecad edit-sketch-copy <source.fcad> --sketch <uuid> --expect-version <token> --request <coordinates.json> -o <new.fcad> --json
 ferritecad validate <source.fcad> --json
 ferritecad import-step <source.step> -o <new.fcad> --json [--name <name>] [--force]
 ferritecad export-fbx <source.fcad> -o <out.fbx> --json [--force]
@@ -18,7 +19,7 @@ ferritecad export-stl <source.fcad> -o <out.stl> --json [--solid <name-or-id>] [
 ```
 
 Обычный текстовый режим сохраняется. Общие document/jobs операции остаются
-владельцами чтения, создания, допустимости правки и публикации. GUI не изменён.
+владельцами чтения, создания, допустимости правки и публикации.
 Нет JSON остальных команд, stdin/batch, RPC, DSL, сервера, новых геометрических
 операций, правки формул/Parameter или in-place Save. Возможности остальных
 команд описаны в [карте CLI](cli-capabilities.md).
@@ -32,7 +33,7 @@ stdout-логов рядом нет. Диагностика для челове�
 | Поле | Тип и правило |
 | --- | --- |
 | `schema_version` | integer, сейчас ровно `1` |
-| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate` или `create-sketch-extrude` |
+| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate` `create-sketch-extrude` или `edit-sketch-copy` |
 | `ok` | boolean |
 | `result` | объект соответствующей операции, присутствует только при `ok: true` |
 | `error` | объект ошибки, присутствует только при `ok: false` |
@@ -55,6 +56,16 @@ UUID — канонические строки RFC 4122 UUIDv7 с дефисам
 hex-символа. Не вычисляйте токен самостоятельно и не используйте mtime вместо него.
 Версия JSON-контракта, версия схемы `.fcad` и версия алгоритма content hash —
 разные понятия. После обновления алгоритма получите токен новым inspect.
+
+## Правка сохранённого Sketch (§25B)
+
+Девятая opt-in команда `edit-sketch-copy`: result `destination:string`,
+`document_id:UUIDv7`, `sketch_id:UUIDv7`, все обязательны. Exit 0/2/7 и прежний
+emitter. Inspect совместимо добавляет `sketches` с UUID/name, ordered vertices
+по curve UUID/start_mm, editable, local refusal и document_refusal.
+Все точные поля, null policy, eligibility, versioned request и исполняемый рецепт
+зафиксированы в [контракте правки Sketch](edit-sketch-copy.md).
+Это координатная правка в новой копии с сохранением IDs, не полная sketch editing API.
 
 ## Создание собственного контура (§25A)
 

@@ -52,6 +52,10 @@
 mod cache;
 mod document;
 mod edit;
+mod polygon;
+mod sketch_edit;
+pub use polygon::PolygonExtrusion;
+pub use sketch_edit::{SketchChoice, SketchVertex, replace_sketch_coordinates, sketch_choices};
 mod envelope;
 mod graph;
 mod model;

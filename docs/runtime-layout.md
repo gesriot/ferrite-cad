@@ -163,6 +163,17 @@ measurement found no third library to account for.
 
 ## The candidate layout
 
+On macOS, the full `check-staged-layout.sh` and executable
+`check-release-package.sh` gates deliberately remove libraries and launch the
+binaries. These dyld failures can trigger system crash dialogs even though the
+tests open no viewer window. Both gates now refuse before running or changing
+files unless `FCAD_ALLOW_LOADER_FAILURE_PROBES=1` is explicitly set. The runtime
+workflow sets it on its disposable runners; all negative checks remain mandatory.
+For ordinary local GUI work, stage the intact bundle with
+`stage-runtime-layout.sh`. Archive verification can use `--no-execute`, whose
+facts explicitly omit runtime proof. Neither route claims the negative checks
+passed, and neither disables macOS crash reporting.
+
 Built by [`tools/stage-runtime-layout.sh`](../tools/stage-runtime-layout.sh)
 into the runner's temporary directory and started by
 [`tools/check-staged-layout.sh`](../tools/check-staged-layout.sh). It is a

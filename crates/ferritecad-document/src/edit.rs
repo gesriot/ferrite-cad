@@ -28,6 +28,8 @@ pub struct ExtrudeChoice {
 pub struct ExtrudeEditSource {
     pub version: DocumentVersion,
     pub features: Vec<ExtrudeChoice>,
+    /// Coordinate edit catalogue on this same version (legacy type name retained).
+    pub sketches: Vec<crate::SketchChoice>,
     pub refusal: Option<String>,
 }
 
@@ -48,8 +50,8 @@ impl ExtrudeEditSource {
         // literal still needs that check. Cache errors as well as the set:
         // unreadable dependencies must not cause another query per feature.
         let parameterized = LazyCell::new(load);
-        let features = document
-            .objects()?
+        let objects = document.objects()?;
+        let features = objects
             .iter()
             .filter_map(|object| {
                 let ObjectPayload::Extrude(extrude) = &object.payload else {
@@ -82,6 +84,7 @@ impl ExtrudeEditSource {
                 content: document.content_version()?,
             },
             features,
+            sketches: crate::sketch_choices(document, &objects),
             refusal,
         })
     }
@@ -742,8 +745,8 @@ mod tests {
             Access::ReadOnly { reason } => Some(reason),
             _ => None,
         };
-        let features = document
-            .objects()?
+        let objects = document.objects()?;
+        let features = objects
             .iter()
             .filter_map(|object| {
                 let ObjectPayload::Extrude(extrude) = &object.payload else {
@@ -766,6 +769,7 @@ mod tests {
             })
             .collect();
         Ok(ExtrudeEditSource {
+            sketches: crate::sketch_choices(document, &document.objects()?),
             version: DocumentVersion {
                 document_id: document.meta().document_id,
                 content: document.content_version()?,

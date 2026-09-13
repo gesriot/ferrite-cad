@@ -51,7 +51,10 @@ pub use create::{
     CreateDocumentRequest, CreatedDocument, NewDocument, PlateSize, create_document,
     create_document_with_kernel,
 };
-pub use edit::{EditExtrudeRequest, EditedDocument, edit_extrude_copy, read_extrude_source};
+pub use edit::{
+    EditExtrudeRequest, EditSketchRequest, EditedDocument, EditedSketch, edit_extrude_copy,
+    edit_sketch_copy, read_extrude_source,
+};
 pub use fbx::{FbxExport, FbxExportRequest, SOURCE_IS_DESTINATION, export_document_as_fbx};
 pub use import::{
     ImportStepRequest, PublishedStepImport, STEP_SOURCE_IS_DESTINATION, StepImportOutcome,

@@ -46,6 +46,7 @@ on:
       - 'tools/runtime-closure.sh'
       - 'tools/stage-runtime-layout.sh'
       - 'tools/check-staged-layout.sh'
+      - 'tools/check-runtime-probe-opt-in.sh'
       - 'tools/macos-bundle.sh'
       - 'tools/macos-bundle-plist.py'
       - 'tools/build-planegcs.sh'
@@ -89,6 +90,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Negative loader probes intentionally crash children, on disposable runners.
+  FCAD_ALLOW_LOADER_FAILURE_PROBES: '1'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -128,6 +131,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      - name: Check explicit opt-in for macOS loader failures without launching binaries
+        run: bash tools/check-runtime-probe-opt-in.sh
 
       # The pin, from the one file that owns it. It used to be written out in
       # this workflow's `env:` block, which made a workflow the only
@@ -559,6 +565,35 @@ jobs:
           if grep -q 'skipped:' sketch-cli.log sketch-ui.log || \
              ! grep -q '^test native_sketch_extrude_process_cold_geometry_and_delivery \.\.\. ok$' sketch-cli.log || \
              ! grep -q '^test sketch::tests::native_sketch_draft_and_cli_publish_equivalent_models \.\.\. ok$' sketch-ui.log; then
+            echo "::error::polygon native gates did not execute and pass"
+            exit 1
+          fi
+
+      - name: Edit a saved Sketch through the native CLI and sketch worker
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          CARGO_BUILD_JOBS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          cargo test --release --features planegcs -p ferritecad-cli --test edit_sketch \
+            native_edit_sketch_process_identity_geometry_and_delivery -- --exact --nocapture --test-threads=1 2>&1 | tee edit-sketch-cli.log
+          cargo test --release --features planegcs -p ferritecad-cli --test edit_sketch \
+            native_sketch_edit_refusals_preserve_source_and_destinations -- --exact --nocapture --test-threads=1 2>&1 | tee edit-sketch-refusals.log
+          cargo test --release --features planegcs -p ferritecad-app --bin ferritecad-viewer \
+            sketch::tests::native_saved_sketch_draft_and_cli_preserve_same_model -- --exact --nocapture --test-threads=1 2>&1 | tee edit-sketch-ui.log
+          if grep -q 'skipped:' edit-sketch-cli.log edit-sketch-ui.log edit-sketch-refusals.log || \
+             ! grep -q '^test native_edit_sketch_process_identity_geometry_and_delivery \.\.\. ok$' edit-sketch-cli.log || \
+             ! grep -q '^test native_sketch_edit_refusals_preserve_source_and_destinations \.\.\. ok$' edit-sketch-refusals.log || \
+             ! grep -q '^test sketch::tests::native_saved_sketch_draft_and_cli_preserve_same_model \.\.\. ok$' edit-sketch-ui.log; then
             echo "::error::polygon native gates did not execute and pass"
             exit 1
           fi

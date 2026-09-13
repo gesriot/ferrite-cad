@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 //! A disposable drawing, separate from the accepted scene and persisted model.
 //! No kernel, filesystem, IDs, or document mutation occurs while editing it.
-use ferritecad_jobs::{NewDocument, PolygonExtrusion};
+use ferritecad_document::{ExtrudeEditSource, SketchChoice, SketchVertex};
+use ferritecad_jobs::{EditSketchRequest, NewDocument, PolygonExtrusion};
 use ferritecad_types::{CadError, Result};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
 struct State {
@@ -28,6 +30,8 @@ pub(crate) struct Editor {
     next: [String; 2],
     pending: Option<NewDocument>,
     canvas: Canvas,
+    editing: Option<(EditSketchRequest, SketchChoice)>,
+    pending_edit: Option<EditSketchRequest>,
 }
 impl Editor {
     pub(crate) fn active(&self) -> bool {
@@ -38,6 +42,108 @@ impl Editor {
     }
     pub(crate) fn take_request(&mut self) -> Option<NewDocument> {
         self.pending.take()
+    }
+    pub(crate) fn take_edit_request(&mut self) -> Option<EditSketchRequest> {
+        self.pending_edit.take()
+    }
+    pub(crate) fn begin_edit(
+        &mut self,
+        path: &Path,
+        source: &ExtrudeEditSource,
+        id: ferritecad_types::ObjectId,
+    ) -> bool {
+        if self.active() || source.refusal.is_some() {
+            return false;
+        }
+        let Some(choice) = source
+            .sketches
+            .iter()
+            .find(|s| s.sketch == id && s.refusal.is_none())
+        else {
+            return false;
+        };
+        let (Some(vertices), Some(height)) = (&choice.vertices, choice.height_mm) else {
+            return false;
+        };
+        self.dismiss();
+        self.draft = Some(State {
+            points: vertices
+                .iter()
+                .map(|v| v.start_mm.map(|n| n.to_string()))
+                .collect(),
+            closed: true,
+            height: height.to_string(),
+        });
+        self.canvas
+            .fit(&vertices.iter().map(|v| v.start_mm).collect::<Vec<_>>());
+        self.editing = Some((
+            EditSketchRequest {
+                source: path.to_path_buf(),
+                expected: source.version,
+                sketch: id,
+                vertices: vertices.clone(),
+                destination: PathBuf::new(),
+            },
+            choice.clone(),
+        ));
+        true
+    }
+    pub(crate) fn draw_choices(
+        &mut self,
+        ui: &mut egui::Ui,
+        can_begin: bool,
+        path: Option<&Path>,
+        source: Option<&ExtrudeEditSource>,
+    ) {
+        if self.active() {
+            return;
+        }
+        if let (Some(path), Some(source)) = (path, source) {
+            for choice in &source.sketches {
+                let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
+                let response = ui.add_enabled(
+                    can_begin && refusal.is_none(),
+                    egui::Button::new(format!(
+                        "Edit Sketch {} — {}…",
+                        choice.name.as_deref().unwrap_or("Unnamed"),
+                        choice.sketch
+                    )),
+                );
+                if response.clicked() {
+                    self.begin_edit(path, source, choice.sketch);
+                }
+                if let Some(reason) = refusal {
+                    response.on_hover_text(reason);
+                }
+            }
+        }
+    }
+    fn edit_request(&self) -> Result<EditSketchRequest> {
+        let (basis, choice) = self
+            .editing
+            .as_ref()
+            .ok_or_else(|| CadError::input("no saved Sketch draft"))?;
+        let draft = self
+            .draft
+            .as_ref()
+            .ok_or_else(|| CadError::input("no draft"))?;
+        if draft.points.len() != basis.vertices.len() {
+            return Err(CadError::input("segment count cannot change"));
+        }
+        let mut request = basis.clone();
+        request.vertices = basis
+            .vertices
+            .iter()
+            .zip(&draft.points)
+            .map(|(v, p)| {
+                Ok(SketchVertex {
+                    curve_id: v.curve_id,
+                    start_mm: [number(&p[0])?, number(&p[1])?],
+                })
+            })
+            .collect::<Result<_>>()?;
+        choice.validate_coordinates(&request.vertices)?;
+        Ok(request)
     }
     fn begin(&mut self) {
         self.dismiss();
@@ -97,22 +203,35 @@ impl Editor {
             }
             return;
         }
-        egui::Window::new("Sketch + Extrude — new document")
-            .resizable(false)
-            .default_width(540.)
-            .show(ui.ctx(), |ui| self.draw_draft(ui, running));
+        egui::Window::new(if self.editing.is_some() {
+            "Edit saved Sketch — new copy"
+        } else {
+            "Sketch + Extrude — new document"
+        })
+        .resizable(false)
+        .default_width(540.)
+        .show(ui.ctx(), |ui| self.draw_draft(ui, running));
     }
 
     fn draw_draft(&mut self, ui: &mut egui::Ui, running: bool) {
         ui.label("XY · mm · Line polygon · Blind · NewBody");
-        ui.label(
-            "Click to add vertices, or enter exact coordinates. Last edge closes to vertex 1.",
-        );
+        ui.label(if self.editing.is_some() {
+            "Edit exact coordinates. Curve IDs, order, closure and height are retained."
+        } else {
+            "Click to add vertices, or enter exact coordinates. Last edge closes to vertex 1."
+        });
+        if let Some((request, _)) = &self.editing {
+            ui.small(format!(
+                "Sketch {} · {}",
+                request.sketch,
+                request.source.display()
+            ));
+        }
         ui.add_enabled_ui(!running, |ui| self.edit(ui));
         if running {
-            ui.label("Creating… Draft retained until publication. Cancel job in toolbar.");
+            ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
         }
-        ui.small("Draft undo ends at publication. Editing a saved sketch is not available yet.");
+        ui.small("Undo/redo changes only this draft; history ends at publication.");
     }
 
     fn edit(&mut self, ui: &mut egui::Ui) {
@@ -138,34 +257,36 @@ impl Editor {
         };
         let draft = self.draft.as_mut().expect("present");
         self.canvas.draw(ui, draft);
-        ui.horizontal(|ui| {
-            ui.label("Next X");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.next[0])
-                    .char_limit(64)
-                    .desired_width(75.),
-            );
-            ui.label("Y");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.next[1])
-                    .char_limit(64)
-                    .desired_width(75.),
-            );
-            if ui
-                .add_enabled(
-                    !draft.closed && draft.points.len() < PolygonExtrusion::MAX_POINTS,
-                    egui::Button::new("Add point"),
-                )
-                .clicked()
-            {
-                draft.points.push(self.next.clone());
-            }
-            if ui
-                .add_enabled(!draft.closed, egui::Button::new("Close contour"))
-                .clicked()
-            {
-                draft.closed = true;
-            }
+        ui.add_enabled_ui(self.editing.is_none(), |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Next X");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.next[0])
+                        .char_limit(64)
+                        .desired_width(75.),
+                );
+                ui.label("Y");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.next[1])
+                        .char_limit(64)
+                        .desired_width(75.),
+                );
+                if ui
+                    .add_enabled(
+                        !draft.closed && draft.points.len() < PolygonExtrusion::MAX_POINTS,
+                        egui::Button::new("Add point"),
+                    )
+                    .clicked()
+                {
+                    draft.points.push(self.next.clone());
+                }
+                if ui
+                    .add_enabled(!draft.closed, egui::Button::new("Close contour"))
+                    .clicked()
+                {
+                    draft.closed = true;
+                }
+            });
         });
         egui::ScrollArea::vertical()
             .max_height(160.)
@@ -185,7 +306,10 @@ impl Editor {
                                 .char_limit(64)
                                 .desired_width(125.),
                         );
-                        if ui.button("Remove").clicked() {
+                        if ui
+                            .add_enabled(self.editing.is_none(), egui::Button::new("Remove"))
+                            .clicked()
+                        {
                             remove = Some(i);
                         }
                     });
@@ -196,13 +320,27 @@ impl Editor {
             });
         ui.horizontal(|ui| {
             ui.label("Blind height mm");
-            ui.add(
+            ui.add_enabled(
+                self.editing.is_none(),
                 egui::TextEdit::singleline(&mut draft.height)
                     .char_limit(64)
                     .desired_width(100.),
             );
         });
         self.record(before);
+        if self.editing.is_some() {
+            match self.edit_request() {
+                Ok(request) => {
+                    if ui.button("Save edited copy…").clicked() {
+                        self.pending_edit = Some(request);
+                    }
+                }
+                Err(error) => {
+                    ui.colored_label(ui.visuals().error_fg_color, error.to_string());
+                }
+            }
+            return;
+        }
         match self.content() {
             Ok(content) => {
                 if ui.button("Create in new file…").clicked() {
@@ -214,6 +352,18 @@ impl Editor {
             }
         }
     }
+}
+
+pub(crate) fn finish_edit(
+    editor: &mut Editor,
+    edits: &mut crate::edits::Edits,
+    generation: u64,
+    result: Result<ferritecad_jobs::EditedSketch>,
+) -> Option<PathBuf> {
+    if edits.accepts(generation) && result.is_ok() {
+        editor.dismiss();
+    }
+    edits.finish_sketch(generation, result)
 }
 
 /// Drawing coordinates are a view of numbers, never a source of modelling rules.
@@ -659,5 +809,198 @@ mod tests {
             bytes.push(std::fs::read(out).expect("STL"));
         }
         assert_eq!(bytes[0], bytes[1]);
+    }
+    #[test]
+    fn native_saved_sketch_draft_and_cli_preserve_same_model() {
+        use crate::creates::tests::{ferritecad, read_semantics};
+        use ferritecad_document::Document;
+        use ferritecad_kernel::OperationContext;
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: no OCCT for saved Sketch worker");
+            return;
+        }
+        let root = tempfile::tempdir().expect("directory");
+        let source = root.path().join("original.fcad");
+        let input = root.path().join("L.json");
+        std::fs::write(&input,r#"{"request_version":1,"points_mm":[[0,0],[60,0],[60,20],[20,20],[20,40],[0,40]],"height_mm":10}"#).expect("input");
+        let p = std::process::Command::new(ferritecad())
+            .arg("create-sketch-extrude")
+            .arg(&input)
+            .arg("-o")
+            .arg(&source)
+            .arg("--json")
+            .output()
+            .expect("create");
+        assert!(p.status.success(), "{p:?}");
+        let bytes = std::fs::read(&source).expect("source");
+        let modified = std::fs::metadata(&source)
+            .expect("metadata")
+            .modified()
+            .expect("mtime");
+        let loaded = {
+            let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+            ferritecad_scene::snapshot_of(
+                &source,
+                &mut k,
+                |k, b| k.import_step(b),
+                &Default::default(),
+                &OperationContext::default(),
+            )
+            .expect("accepted scene")
+        };
+        let reading = loaded.edit_source.expect("accepted edit facts");
+        let id = reading.sketches[0].sketch;
+        let mut e = Editor::default();
+        assert!(!e.begin_edit(&source, &reading, ferritecad_types::ObjectId::new()));
+        assert!(!e.active());
+        assert!(e.begin_edit(&source, &reading, id));
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut e, vec![]);
+        frame(&ctx, &mut e, vec![]);
+        // Two distinct saved start vertices have the same X; replace each real
+        // field once, then undo/redo the second through the existing widgets.
+        replace_field(&ctx, &mut e, "60", "80");
+        replace_field(&ctx, &mut e, "60", "80");
+        assert_eq!(e.draft.as_ref().expect("draft").points[1][0], "80");
+        assert_eq!(e.draft.as_ref().expect("draft").points[2][0], "80");
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Undo draft"));
+        assert_eq!(e.draft.as_ref().expect("draft").points[2][0], "60");
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Redo draft"));
+        let kept = e.draft.clone();
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Remove"));
+        assert_eq!(e.draft, kept, "disabled segment removal");
+        let out = frame(&ctx, &mut e, vec![]);
+        let canvas = out
+            .shapes
+            .iter()
+            .find_map(|c| {
+                if let egui::Shape::Rect(r) = &c.shape {
+                    ((r.rect.width() - 510.).abs() < 1. && (r.rect.height() - 250.).abs() < 1.)
+                        .then_some(r.rect)
+                } else {
+                    None
+                }
+            })
+            .expect("canvas");
+        click(&ctx, &mut e, canvas.center());
+        assert_eq!(e.draft, kept, "closed canvas cannot add");
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Save edited copy…"));
+        let request = e.take_edit_request().expect("submit");
+        assert!(e.take_edit_request().is_none());
+        assert_eq!(request.source, source);
+        assert_eq!(request.expected, reading.version);
+        // No dialog result starts nothing; the same owned draft remains retryable.
+        assert_eq!(e.draft, kept);
+        let mut edits = crate::edits::Edits::default();
+        for occupied in [true, false] {
+            let mut request = request.clone();
+            request.destination =
+                root.path()
+                    .join(if occupied { "occupied.fcad" } else { "ui.fcad" });
+            if occupied {
+                std::fs::write(&request.destination, b"keep").expect("sentinel");
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let generation = edits
+                .start_sketch(request.clone(), move |r, g, c| {
+                    crate::edits::spawn_sketch_edit(r, c, move |result| {
+                        tx.send((g, result)).expect("reply")
+                    })
+                })
+                .expect("worker");
+            assert!(
+                edits
+                    .start_sketch(request, |_, _, _| panic!("duplicate worker"))
+                    .is_none()
+            );
+            assert!(
+                finish_edit(
+                    &mut e,
+                    &mut edits,
+                    generation + 1,
+                    Err(CadError::input("stale response"))
+                )
+                .is_none()
+            );
+            assert_eq!(e.draft, kept);
+            let (g, result) = rx.recv().expect("completed");
+            let path = finish_edit(&mut e, &mut edits, g, result);
+            if occupied {
+                assert!(path.is_none());
+                assert_eq!(e.draft, kept);
+                assert_eq!(
+                    std::fs::read(root.path().join("occupied.fcad")).expect("sentinel"),
+                    b"keep"
+                );
+            } else {
+                assert_eq!(path, Some(root.path().join("ui.fcad")));
+                assert!(!e.active());
+            }
+        }
+        // IDs and finite numeric coordinates only; process JSON assertions live
+        // in the CLI suite, avoiding an application dependency just for a test.
+        let vertices = request
+            .vertices
+            .iter()
+            .map(|v| {
+                format!(
+                    r#"{{"curve_id":"{}","start_mm":[{},{}]}}"#,
+                    v.curve_id, v.start_mm[0], v.start_mm[1]
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        std::fs::write(
+            &input,
+            format!(r#"{{"request_version":1,"vertices":[{vertices}]}}"#),
+        )
+        .expect("request");
+        let cli = root.path().join("cli.fcad");
+        let p = std::process::Command::new(ferritecad())
+            .arg("edit-sketch-copy")
+            .arg(&source)
+            .arg("--sketch")
+            .arg(id.to_string())
+            .arg("--expect-version")
+            .arg(reading.version.content.to_string())
+            .arg("--request")
+            .arg(input)
+            .arg("-o")
+            .arg(&cli)
+            .arg("--json")
+            .output()
+            .expect("peer CLI");
+        assert!(p.status.success(), "{p:?}");
+        let ui = root.path().join("ui.fcad");
+        assert_eq!(
+            read_semantics(&ui),
+            read_semantics(&cli),
+            "same source: all identities and semantic relationships identical"
+        );
+        let a = Document::open_read_only(&ui).expect("UI");
+        let b = Document::open_read_only(&cli).expect("CLI");
+        assert_eq!(a.meta(), b.meta());
+        assert_eq!(a.objects().expect("objects"), b.objects().expect("objects"));
+        assert_eq!(
+            a.dependencies().expect("deps"),
+            b.dependencies().expect("deps")
+        );
+        assert_eq!(
+            a.topology_refs().expect("refs"),
+            b.topology_refs().expect("refs")
+        );
+        assert_eq!(std::fs::read(&source).expect("source"), bytes);
+        assert_eq!(
+            std::fs::metadata(&source)
+                .expect("metadata")
+                .modified()
+                .expect("mtime"),
+            modified
+        );
     }
 }
