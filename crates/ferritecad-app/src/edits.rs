@@ -33,6 +33,15 @@ pub(crate) struct Edits {
 }
 
 impl Edits {
+    pub(crate) fn accepts(&self, generation: u64) -> bool {
+        self.running
+            .as_ref()
+            .is_some_and(|r| r.generation == generation)
+    }
+    pub(crate) fn running(&self) -> bool {
+        self.running.is_some()
+    }
+
     pub(crate) fn busy(&self) -> bool {
         self.form.is_some() || self.running.is_some()
     }
@@ -121,14 +130,35 @@ impl Edits {
         request: EditExtrudeRequest,
         spawn: impl FnOnce(EditExtrudeRequest, u64, CancelToken) -> JoinHandle<()>,
     ) -> Option<u64> {
+        let destination = request.destination.clone();
+        self.start_at(&destination, |generation, cancel| {
+            spawn(request, generation, cancel)
+        })
+    }
+
+    pub(crate) fn start_sketch(
+        &mut self,
+        request: ferritecad_jobs::EditSketchRequest,
+        spawn: impl FnOnce(ferritecad_jobs::EditSketchRequest, u64, CancelToken) -> JoinHandle<()>,
+    ) -> Option<u64> {
+        let destination = request.destination.clone();
+        self.start_at(&destination, |generation, cancel| {
+            spawn(request, generation, cancel)
+        })
+    }
+    fn start_at(
+        &mut self,
+        destination: &Path,
+        spawn: impl FnOnce(u64, CancelToken) -> JoinHandle<()>,
+    ) -> Option<u64> {
         if self.running.is_some() {
             return None;
         }
         self.issued += 1;
         let generation = self.issued;
         let cancel = CancelToken::new();
-        self.status = format!("Saving edited model to {}", request.destination.display());
-        let worker = spawn(request, generation, cancel.clone());
+        self.status = format!("Saving edited model to {}", destination.display());
+        let worker = spawn(generation, cancel.clone());
         self.running = Some(Running {
             generation,
             cancel,
@@ -143,6 +173,16 @@ impl Edits {
         generation: u64,
         result: Result<EditedDocument>,
     ) -> Option<PathBuf> {
+        self.finish_path(generation, result.map(|r| r.destination))
+    }
+    pub(crate) fn finish_sketch(
+        &mut self,
+        generation: u64,
+        result: Result<ferritecad_jobs::EditedSketch>,
+    ) -> Option<PathBuf> {
+        self.finish_path(generation, result.map(|r| r.destination))
+    }
+    fn finish_path(&mut self, generation: u64, result: Result<PathBuf>) -> Option<PathBuf> {
         if self
             .running
             .as_ref()
@@ -154,9 +194,9 @@ impl Edits {
         let _ = running.worker.join();
         match result {
             Ok(saved) => {
-                self.status = format!("Saved edited model: {}", saved.destination.display());
+                self.status = format!("Saved edited model: {}", saved.display());
                 if !running.cancel.is_cancelled() {
-                    return Some(saved.destination);
+                    return Some(saved);
                 }
             }
             Err(error) if error.kind() == ErrorKind::Cancellation => {
@@ -190,9 +230,31 @@ pub(crate) fn spawn_edit(
     cancel: CancelToken,
     deliver: impl FnOnce(Result<EditedDocument>) + Send + 'static,
 ) -> JoinHandle<()> {
+    spawn_job(cancel, move |context| run_edit(&request, context), deliver)
+}
+
+pub(crate) fn spawn_sketch_edit(
+    request: ferritecad_jobs::EditSketchRequest,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ferritecad_jobs::EditedSketch>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn_job(
+        cancel,
+        move |context| {
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            ferritecad_jobs::edit_sketch_copy(&request, &mut kernel, context)
+        },
+        deliver,
+    )
+}
+fn spawn_job<T: Send + 'static>(
+    cancel: CancelToken,
+    job: impl FnOnce(&OperationContext) -> Result<T> + Send + 'static,
+    deliver: impl FnOnce(Result<T>) + Send + 'static,
+) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_edit(&request, &OperationContext::default().with_cancel(cancel))
+            job(&OperationContext::default().with_cancel(cancel))
         }))
         .unwrap_or_else(|_| Err(CadError::kernel("edit worker stopped unexpectedly")));
         deliver(result);

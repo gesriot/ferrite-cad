@@ -81,6 +81,7 @@ done
 [ -n "$staging" ] || die 'no --staging'
 [ -n "$document" ] || die 'no --document'
 [ -n "$output" ] || die 'no --output'
+runtime_probe_require_failure_opt_in "$platform"
 [ -d "$staging" ] || die "no such staging directory: $staging"
 [ -f "$document" ] || die "no such document: $document"
 [ "${#forbidden[@]}" -gt 0 ] || die 'no --forbidden directory, so nothing was taken away'

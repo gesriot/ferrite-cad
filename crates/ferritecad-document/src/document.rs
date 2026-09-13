@@ -671,6 +671,52 @@ impl Document {
         &mut self,
         edit: impl FnOnce(&mut DocumentWriter<'_>) -> Result<T>,
     ) -> Result<T> {
+        self.write_transaction(edit, true)
+    }
+
+    /// Change only a supported saved Sketch's coordinates. Its object set and
+    /// required capabilities cannot change, so preserve all metadata and stored
+    /// capability rows (including optional declarations and row identities).
+    pub fn write_sketch_coordinates(
+        &mut self,
+        sketch: ObjectId,
+        vertices: &[crate::SketchVertex],
+    ) -> Result<()> {
+        let selected = crate::replace_sketch_coordinates(self, sketch, vertices)?;
+        let bytes = selected.payload.to_storage_bytes()?;
+        let hash = ContentHash::of_bytes(&bytes);
+        self.write_transaction(
+            |writer| {
+                // Replacing an object via put_object also clears source claims.
+                // Coordinates do not replace the object or its ownership, so
+                // update exactly the two cells this operation promises to edit.
+                let changed = writer
+                    .tx
+                    .execute(
+                        "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
+                        params![
+                            bytes,
+                            hash.as_bytes().as_slice(),
+                            selected.id.to_bytes().as_slice()
+                        ],
+                    )
+                    .map_err(|e| CadError::io("writing Sketch coordinates", e))?;
+                if changed != 1 {
+                    return Err(CadError::input(
+                        "selected Sketch disappeared before coordinate write",
+                    ));
+                }
+                Ok(())
+            },
+            false,
+        )
+    }
+
+    fn write_transaction<T>(
+        &mut self,
+        edit: impl FnOnce(&mut DocumentWriter<'_>) -> Result<T>,
+        stamp: bool,
+    ) -> Result<T> {
         if let Access::ReadOnly { reason } = &self.access {
             return Err(CadError::unsupported(format!(
                 "{} is open read-only: {reason}",
@@ -695,13 +741,15 @@ impl Document {
 
         match outcome {
             Ok(value) => {
-                reclaim_imported_sources(&tx)?;
-                rebuild_capabilities(&tx)?;
-                tx.execute(
-                    &format!("UPDATE meta SET modified_at = {NOW_UTC} WHERE id = 1"),
-                    [],
-                )
-                .map_err(|e| CadError::io("stamping modification time", e))?;
+                if stamp {
+                    reclaim_imported_sources(&tx)?;
+                    rebuild_capabilities(&tx)?;
+                    tx.execute(
+                        &format!("UPDATE meta SET modified_at = {NOW_UTC} WHERE id = 1"),
+                        [],
+                    )
+                    .map_err(|e| CadError::io("stamping modification time", e))?;
+                }
                 tx.commit()
                     .map_err(|e| CadError::io("committing document edit", e))?;
                 self.meta = read_meta(&self.conn)?;

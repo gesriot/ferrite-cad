@@ -28,6 +28,7 @@ const EXIT_REPORT_DELIVERY: u8 = 7;
 pub enum Operation {
     Inspect,
     EditExtrude,
+    EditSketchCopy,
     Create,
     CreateSketchExtrude,
     ExportStl,
@@ -86,6 +87,22 @@ pub struct Inspection {
     edit_extrude: EditAvailability,
     features: Vec<Feature>,
     bodies: Vec<Body>,
+    sketches: Vec<Sketch>,
+}
+
+#[derive(Serialize)]
+struct Sketch {
+    sketch_id: ObjectId,
+    name: Option<String>,
+    vertices: Option<Vec<SketchVertex>>,
+    editable: bool,
+    refusal: Option<String>,
+    document_refusal: Option<String>,
+}
+#[derive(Serialize)]
+struct SketchVertex {
+    curve_id: ferritecad_types::StableEntityId,
+    start_mm: [f64; 2],
 }
 
 #[derive(Serialize)]
@@ -204,6 +221,25 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
             refusal,
             document_refusal: source.refusal.clone(),
         },
+        sketches: source
+            .sketches
+            .into_iter()
+            .map(|s| Sketch {
+                sketch_id: s.sketch,
+                name: s.name,
+                editable: source.refusal.is_none() && s.refusal.is_none(),
+                refusal: s.refusal,
+                document_refusal: source.refusal.clone(),
+                vertices: s.vertices.map(|vs| {
+                    vs.into_iter()
+                        .map(|v| SketchVertex {
+                            curve_id: v.curve_id,
+                            start_mm: v.start_mm,
+                        })
+                        .collect()
+                }),
+            })
+            .collect(),
         features: source
             .features
             .into_iter()

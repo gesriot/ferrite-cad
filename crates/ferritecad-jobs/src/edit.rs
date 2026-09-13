@@ -42,31 +42,115 @@ pub fn edit_extrude_copy<K: GeometryKernel + ?Sized>(
     if request.distance_mm <= 0.0 {
         return Err(CadError::input("extrude distance must be positive"));
     }
-    refuse_source_as_destination(
+    edit_object_copy(
         &request.source,
+        request.expected,
         &request.destination,
+        kernel,
+        context,
+        |source| {
+            let mut selected = source.object(request.feature)?.ok_or_else(|| {
+                CadError::input(format!(
+                    "feature {} does not exist in this document",
+                    request.feature
+                ))
+            })?;
+            editable_extrude(source, &selected)?;
+            let ObjectPayload::Extrude(extrude) = &mut selected.payload else {
+                unreachable!("checked above")
+            };
+            extrude.end_condition = EndCondition::Blind {
+                distance: replacement,
+            };
+            Ok((selected, None))
+        },
+    )?;
+    Ok(EditedDocument {
+        destination: request.destination.clone(),
+        document_id: request.expected.document_id,
+        feature: request.feature,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct EditSketchRequest {
+    pub source: PathBuf,
+    pub expected: DocumentVersion,
+    pub sketch: ObjectId,
+    pub vertices: Vec<ferritecad_document::SketchVertex>,
+    pub destination: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditedSketch {
+    pub destination: PathBuf,
+    pub document_id: ferritecad_types::DocumentId,
+    pub sketch: ObjectId,
+}
+
+pub fn edit_sketch_copy<K: GeometryKernel + ?Sized>(
+    request: &EditSketchRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+) -> Result<EditedSketch> {
+    context.check_cancelled()?;
+    edit_object_copy(
+        &request.source,
+        request.expected,
+        &request.destination,
+        kernel,
+        context,
+        |source| {
+            Ok((
+                ferritecad_document::replace_sketch_coordinates(
+                    source,
+                    request.sketch,
+                    &request.vertices,
+                )?,
+                Some(request.vertices.clone()),
+            ))
+        },
+    )?;
+    Ok(EditedSketch {
+        destination: request.destination.clone(),
+        document_id: request.expected.document_id,
+        sketch: request.sketch,
+    })
+}
+
+/// Shared snapshot, transaction, cold references, cancellation and publication.
+fn edit_object_copy<K: GeometryKernel + ?Sized>(
+    source_path: &Path,
+    expected: DocumentVersion,
+    destination: &Path,
+    kernel: &mut K,
+    context: &OperationContext,
+    prepare: impl FnOnce(
+        &Document,
+    ) -> Result<(
+        ferritecad_document::ObjectRecord,
+        Option<Vec<ferritecad_document::SketchVertex>>,
+    )>,
+) -> Result<()> {
+    refuse_source_as_destination(
+        source_path,
+        destination,
         "source and output must be different files",
     )?;
-    if path_entry_exists(&request.destination)? {
+    if path_entry_exists(destination)? {
         return Err(CadError::input(
             "output already exists; choose a different file name",
         ));
     }
-    let source = Document::open_read_only(&request.source)?;
-    require_version(&source, request.expected)?;
+    let source = Document::open_read_only(source_path)?;
+    require_version(&source, expected)?;
     if let Access::ReadOnly { reason } = source.copy_access()? {
         return Err(CadError::unsupported(format!(
             "document cannot be edited: {reason}"
         )));
     }
-    let mut selected = source.object(request.feature)?.ok_or_else(|| {
-        CadError::input(format!(
-            "feature {} does not exist in this document",
-            request.feature
-        ))
-    })?;
-    editable_extrude(&source, &selected)?;
-    let temporary = Temporary::beside(&request.destination)?;
+    let (selected, coordinates) = prepare(&source)?;
+    let temporary = Temporary::beside(destination)?;
     source.snapshot_to(temporary.path())?;
     source.close()?;
     context.progress().report(0.1);
@@ -77,13 +161,14 @@ pub fn edit_extrude_copy<K: GeometryKernel + ?Sized>(
     // unresolved ref may remain unresolved; a previously resolved one may not
     // be lost. Rebuild errors (including solver diagnostics) always refuse.
     let baseline = checked_rebuild(&document, kernel, &phase(context, 0.1, 0.4), None)?;
-    let ObjectPayload::Extrude(extrude) = &mut selected.payload else {
-        unreachable!("checked above")
-    };
-    extrude.end_condition = EndCondition::Blind {
-        distance: replacement,
-    };
-    document.write(|writer| {
+    if coordinates.is_some() && baseline.len() != document.topology_refs()?.len() {
+        return Err(CadError::topology(
+            "saved sketch has unresolved topology references",
+        ));
+    }
+    context.progress().report(0.4);
+    context.check_cancelled()?;
+    let write = |writer: &mut ferritecad_document::DocumentWriter<'_>| {
         writer.put_object(
             selected.id,
             selected.parent,
@@ -92,7 +177,12 @@ pub fn edit_extrude_copy<K: GeometryKernel + ?Sized>(
             &selected.payload,
         )?;
         Ok(())
-    })?;
+    };
+    if let Some(vertices) = coordinates {
+        document.write_sketch_coordinates(selected.id, &vertices)?;
+    } else {
+        document.write(write)?;
+    }
     checked_rebuild(
         &document,
         kernel,
@@ -104,27 +194,23 @@ pub fn edit_extrude_copy<K: GeometryKernel + ?Sized>(
     context.check_cancelled()?;
     // Re-open the path, not the old SQLite handle: replacement by another
     // document while the worker was running is stale too.
-    let current = Document::open_read_only(&request.source)?;
-    require_version(&current, request.expected)?;
+    let current = Document::open_read_only(source_path)?;
+    require_version(&current, expected)?;
     refuse_source_as_destination(
-        &request.source,
-        &request.destination,
+        source_path,
+        destination,
         "source and output must be different files",
     )?;
     context.check_cancelled()?;
     temporary.publish(
-        &request.destination,
+        destination,
         Existing::Keep {
             advice: "choose a different file name",
         },
     )?;
     drop(current);
     context.progress().report(1.0);
-    Ok(EditedDocument {
-        destination: request.destination.clone(),
-        document_id: request.expected.document_id,
-        feature: request.feature,
-    })
+    Ok(())
 }
 
 fn require_version(document: &Document, expected: DocumentVersion) -> Result<()> {
@@ -496,17 +582,20 @@ mod tests {
     struct Refusing {
         inner: MockKernel,
         lose_ref: bool,
+        sketch_fault: bool,
     }
     impl GeometryKernel for Refusing {
         fn identity(&self) -> &KernelIdentity {
             self.inner.identity()
         }
         fn extrude(&mut self, r: &ExtrudeRequest, c: &OperationContext) -> Result<ExtrudeResult> {
-            if r.extent().total_length() == 27.0 && !self.lose_ref {
+            let refuse = r.extent().total_length() == 27.0
+                || (self.sketch_fault && self.inner.extrude_count() == 1);
+            if refuse && !self.lose_ref {
                 return Err(CadError::kernel("deterministic edited geometry refusal"));
             }
             let mut result = self.inner.extrude(r, c)?;
-            if r.extent().total_length() == 27.0 {
+            if refuse {
                 result.end_cap.clear();
             }
             Ok(result)
@@ -560,6 +649,7 @@ mod tests {
             let mut kernel = Refusing {
                 inner: MockKernel::new(),
                 lose_ref,
+                sketch_fault: false,
             };
             let error = edit_extrude_copy(&request, &mut kernel, &OperationContext::default())
                 .expect_err("refused edited geometry");
@@ -683,5 +773,241 @@ mod tests {
         assert_eq!(entries(root.path()), expected);
         assert_eq!(std::fs::read(&request.source).expect("source"), before);
         assert_eq!(std::fs::read(foreign).expect("foreign"), b"foreign cache");
+    }
+    fn sketch_fixture() -> (tempfile::TempDir, EditSketchRequest) {
+        let (root, old) = fixture();
+        let reading = read_extrude_source(&old.source).expect("catalog");
+        let choice = &reading.sketches[0];
+        let mut vertices = choice.vertices.clone().expect("supported");
+        vertices[1].start_mm[0] = 100.;
+        vertices[2].start_mm[0] = 100.;
+        (
+            root,
+            EditSketchRequest {
+                source: old.source,
+                expected: reading.version,
+                sketch: choice.sketch,
+                vertices,
+                destination: old.destination,
+            },
+        )
+    }
+
+    #[test]
+    fn sketch_copy_identity_and_metadata_survive() {
+        let (root, request) = sketch_fixture();
+        let bytes = std::fs::read(&request.source).expect("bytes");
+        let mtime = std::fs::metadata(&request.source)
+            .expect("metadata")
+            .modified()
+            .expect("mtime");
+        let source = Document::open_read_only(&request.source).expect("source");
+        let expected = ferritecad_document::replace_sketch_coordinates(
+            &source,
+            request.sketch,
+            &request.vertices,
+        )
+        .expect("prepared");
+        let mut kernel = MockKernel::new();
+        let saved = edit_sketch_copy(&request, &mut kernel, &OperationContext::default())
+            .expect("published");
+        assert_eq!(
+            kernel.live_shape_count(),
+            0,
+            "released before kernel destructor"
+        );
+        assert_eq!(kernel.extrude_count(), 2, "two cold checks");
+        assert_eq!(saved.document_id, source.meta().document_id);
+        let copy = Document::open_read_only(&saved.destination).expect("copy");
+        assert_eq!(
+            copy.meta(),
+            source.meta(),
+            "all metadata including modified_at"
+        );
+        assert_eq!(
+            copy.dependencies().expect("deps"),
+            source.dependencies().expect("deps")
+        );
+        assert_eq!(
+            copy.topology_refs().expect("refs"),
+            source.topology_refs().expect("refs")
+        );
+        for o in source.objects().expect("objects") {
+            let actual = copy.object(o.id).expect("object").expect("same ID");
+            if o.id == request.sketch {
+                assert_eq!(actual.payload, expected.payload);
+                assert_eq!(actual.id, expected.id);
+                assert_eq!(actual.name, expected.name);
+                assert_eq!(actual.ordinal, expected.ordinal);
+                assert_eq!(actual.parent, expected.parent);
+                let (ObjectPayload::Sketch(old), ObjectPayload::Sketch(new)) =
+                    (o.payload, actual.payload)
+                else {
+                    panic!("sketch")
+                };
+                assert_eq!(
+                    old.curves.iter().map(|c| c.id).collect::<Vec<_>>(),
+                    new.curves.iter().map(|c| c.id).collect::<Vec<_>>()
+                );
+            } else {
+                assert_eq!(actual, o);
+            }
+        }
+        copy.close().expect("close");
+        source.close().expect("close");
+        assert_eq!(std::fs::read(&request.source).expect("source"), bytes);
+        assert_eq!(
+            std::fs::metadata(&request.source)
+                .expect("metadata")
+                .modified()
+                .expect("mtime"),
+            mtime
+        );
+        assert_eq!(entries(root.path()).len(), 2);
+    }
+
+    #[test]
+    fn sketch_copy_refusals_cancellation_races_and_cleanup() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        for case in [
+            "before",
+            "snapshot",
+            "rebuilt",
+            "closed",
+            "late",
+            "occupied",
+            "changed",
+            "alias",
+            "publish",
+            "geometry",
+            "references",
+        ] {
+            let (root, request) = sketch_fixture();
+            let bytes = std::fs::read(&request.source).expect("source");
+            let mtime = std::fs::metadata(&request.source)
+                .expect("metadata")
+                .modified()
+                .expect("mtime");
+            let directory = root.path().to_path_buf();
+            let cancel = CancelToken::new();
+            if case == "before" {
+                cancel.cancel();
+            }
+            let token = cancel.clone();
+            let source = request.source.clone();
+            let dest = request.destination.clone();
+            let once = Arc::new(AtomicBool::new(false));
+            let context = OperationContext::default()
+                .with_cancel(cancel)
+                .with_progress(ProgressSink::new(move |f| {
+                    let threshold = match case {
+                        "snapshot" => 0.1,
+                        "rebuilt" => 0.4,
+                        "late" => 1.,
+                        _ => 0.95,
+                    };
+                    if f == threshold && !once.swap(true, Ordering::SeqCst) {
+                        match case {
+                            "snapshot" | "rebuilt" | "closed" | "late" => token.cancel(),
+                            "occupied" => {
+                                std::fs::write(&dest, b"raced destination").expect("race")
+                            }
+                            "changed" => {
+                                let mut d = Document::open(&source).expect("source writer");
+                                let mut o = d.objects().expect("objects").remove(0);
+                                o.name = Some("changed during edit".into());
+                                d.write(|w| {
+                                    w.put_object(
+                                        o.id,
+                                        o.parent,
+                                        o.ordinal,
+                                        o.name.as_deref(),
+                                        &o.payload,
+                                    )
+                                })
+                                .expect("change");
+                                d.close().expect("close");
+                            }
+                            "alias" => std::fs::hard_link(&source, &dest).expect("late alias"),
+                            "publish" => {
+                                let scratch = entries(&directory)
+                                    .into_iter()
+                                    .find(|p| {
+                                        p.file_name()
+                                            .expect("name")
+                                            .to_string_lossy()
+                                            .starts_with(".ferritecad-")
+                                    })
+                                    .expect("owned scratch")
+                                    .join("payload");
+                                std::fs::remove_file(scratch)
+                                    .expect("inject missing scratch payload");
+                            }
+                            _ => {}
+                        }
+                    }
+                }));
+            let mut kernel = Refusing {
+                inner: MockKernel::new(),
+                lose_ref: case == "references",
+                sketch_fault: matches!(case, "geometry" | "references"),
+            };
+            // Reuse the fault seam after a successful baseline rebuild: the
+            // second extrusion, with the changed profile, fails or loses a ref.
+            let result = edit_sketch_copy(&request, &mut kernel, &context);
+            if case == "late" {
+                assert!(result.is_ok(), "{case}: {result:?}");
+            } else {
+                let error = result.expect_err(case);
+                let expected = match case {
+                    "before" | "snapshot" | "rebuilt" | "closed" => {
+                        ferritecad_types::ErrorKind::Cancellation
+                    }
+                    "geometry" => ferritecad_types::ErrorKind::Kernel,
+                    "references" => ferritecad_types::ErrorKind::Topology,
+                    "publish" => ferritecad_types::ErrorKind::Io,
+                    _ => ferritecad_types::ErrorKind::Input,
+                };
+                assert_eq!(error.kind(), expected, "{case}: {error}");
+            }
+            assert_eq!(kernel.inner.live_shape_count(), 0, "{case} leaked handles");
+            if case != "changed" {
+                assert_eq!(
+                    std::fs::read(&request.source).expect("source"),
+                    bytes,
+                    "{case}"
+                );
+                assert_eq!(
+                    std::fs::metadata(&request.source)
+                        .expect("metadata")
+                        .modified()
+                        .expect("mtime"),
+                    mtime,
+                    "{case}"
+                );
+            }
+            if case == "occupied" {
+                assert_eq!(
+                    std::fs::read(&request.destination).expect("destination"),
+                    b"raced destination"
+                );
+            }
+            let mut expected_entries = vec![request.source.clone()];
+            if matches!(case, "late" | "occupied" | "alias") {
+                expected_entries.push(request.destination.clone());
+            }
+            expected_entries.sort();
+            assert_eq!(
+                entries(root.path()),
+                expected_entries,
+                "{case}: scratch or sidecars remained"
+            );
+            if case == "alias" {
+                assert_eq!(std::fs::read(&request.destination).expect("alias"), bytes);
+            }
+        }
     }
 }

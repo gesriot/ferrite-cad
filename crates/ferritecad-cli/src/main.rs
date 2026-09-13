@@ -6,6 +6,7 @@
 //! interface will later need to know about a document should be answerable
 //! here first.
 
+mod edit_sketch;
 mod export;
 mod export_fbx;
 mod import;
@@ -98,6 +99,8 @@ enum Command {
     /// Change one constant Blind extrusion and save a new .fcad of the same model.
     /// Preserves identities; never overwrites source or output. Requires a kernel.
     EditExtrude(EditExtrudeArgs),
+    /// Change saved Line coordinates in a new identity-preserving FCAD copy.
+    EditSketchCopy(edit_sketch::EditSketchArgs),
     /// Show a document's metadata, objects, graph and references.
     Inspect(InspectArgs),
     /// Check stored consistency without writes, migration or a geometry kernel.
@@ -325,6 +328,7 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
+        Command::EditSketchCopy(args) => edit_sketch::run(args),
         Command::CreateSketchExtrude(args) => sketch::run(args),
         Command::Create(args) if args.json => Ok(json::emit(
             json::Operation::Create,
