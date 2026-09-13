@@ -152,12 +152,15 @@ impl Editor {
     }
     fn record(&mut self, before: State) {
         if self.draft.as_ref() != Some(&before) {
-            if self.undo.len() == 128 {
-                self.undo.remove(0);
-            }
-            self.undo.push(before);
-            self.redo.clear();
+            self.push_undo(before);
         }
+    }
+    fn push_undo(&mut self, before: State) {
+        if self.undo.len() == 128 {
+            self.undo.remove(0);
+        }
+        self.undo.push(before);
+        self.redo.clear();
     }
     fn undo(&mut self) {
         if let Some(previous) = self.undo.pop()
@@ -235,103 +238,129 @@ impl Editor {
     }
 
     fn edit(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(!self.undo.is_empty(), egui::Button::new("Undo draft"))
-                .clicked()
-            {
-                self.undo();
-            }
-            if ui
-                .add_enabled(!self.redo.is_empty(), egui::Button::new("Redo draft"))
-                .clicked()
-            {
-                self.redo();
-            }
-            if ui.button("Cancel draft").clicked() {
-                self.dismiss();
-            }
+        ui.add_enabled_ui(self.canvas.gesture.is_none(), |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(!self.undo.is_empty(), egui::Button::new("Undo draft"))
+                    .clicked()
+                {
+                    self.undo();
+                }
+                if ui
+                    .add_enabled(!self.redo.is_empty(), egui::Button::new("Redo draft"))
+                    .clicked()
+                {
+                    self.redo();
+                }
+                if ui.button("Cancel draft").clicked() {
+                    self.dismiss();
+                }
+            })
         });
         let Some(before) = self.draft.clone() else {
             return;
         };
         let draft = self.draft.as_mut().expect("present");
-        self.canvas.draw(ui, draft);
-        ui.add_enabled_ui(self.editing.is_none(), |ui| {
+        let canvas_edit = self.canvas.draw(ui, draft);
+        // A pointer gesture owns its checkpoint. Ordinary numeric/button edits
+        // keep their existing per-change history and cannot modify a live drag.
+        ui.add_enabled_ui(matches!(canvas_edit, CanvasEdit::Ordinary), |ui| {
+            ui.add_enabled_ui(self.editing.is_none(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Next X");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.next[0])
+                            .char_limit(64)
+                            .desired_width(75.),
+                    );
+                    ui.label("Y");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.next[1])
+                            .char_limit(64)
+                            .desired_width(75.),
+                    );
+                    if ui
+                        .add_enabled(
+                            !draft.closed && draft.points.len() < PolygonExtrusion::MAX_POINTS,
+                            egui::Button::new("Add point"),
+                        )
+                        .clicked()
+                    {
+                        draft.points.push(self.next.clone());
+                    }
+                    if ui
+                        .add_enabled(!draft.closed, egui::Button::new("Close contour"))
+                        .clicked()
+                    {
+                        draft.closed = true;
+                    }
+                });
+            });
+            egui::ScrollArea::vertical()
+                .max_height(160.)
+                .show(ui, |ui| {
+                    let mut remove = None;
+                    for (i, p) in draft.points.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            let label = egui::RichText::new(format!("{}  X mm", i + 1));
+                            ui.label(if self.canvas.selected == Some(i) {
+                                label.strong().color(egui::Color32::LIGHT_YELLOW)
+                            } else {
+                                label
+                            });
+                            ui.add(
+                                egui::TextEdit::singleline(&mut p[0])
+                                    .char_limit(64)
+                                    .desired_width(125.),
+                            );
+                            ui.label("Y mm");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut p[1])
+                                    .char_limit(64)
+                                    .desired_width(125.),
+                            );
+                            if ui
+                                .add_enabled(self.editing.is_none(), egui::Button::new("Remove"))
+                                .clicked()
+                            {
+                                remove = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove {
+                        draft.points.remove(i);
+                        self.canvas.selected = None;
+                    }
+                });
             ui.horizontal(|ui| {
-                ui.label("Next X");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.next[0])
+                ui.label("Blind height mm");
+                ui.add_enabled(
+                    self.editing.is_none(),
+                    egui::TextEdit::singleline(&mut draft.height)
                         .char_limit(64)
-                        .desired_width(75.),
+                        .desired_width(100.),
                 );
-                ui.label("Y");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.next[1])
-                        .char_limit(64)
-                        .desired_width(75.),
-                );
-                if ui
-                    .add_enabled(
-                        !draft.closed && draft.points.len() < PolygonExtrusion::MAX_POINTS,
-                        egui::Button::new("Add point"),
-                    )
-                    .clicked()
-                {
-                    draft.points.push(self.next.clone());
-                }
-                if ui
-                    .add_enabled(!draft.closed, egui::Button::new("Close contour"))
-                    .clicked()
-                {
-                    draft.closed = true;
-                }
             });
         });
-        egui::ScrollArea::vertical()
-            .max_height(160.)
-            .show(ui, |ui| {
-                let mut remove = None;
-                for (i, p) in draft.points.iter_mut().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("{}  X mm", i + 1));
-                        ui.add(
-                            egui::TextEdit::singleline(&mut p[0])
-                                .char_limit(64)
-                                .desired_width(125.),
-                        );
-                        ui.label("Y mm");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut p[1])
-                                .char_limit(64)
-                                .desired_width(125.),
-                        );
-                        if ui
-                            .add_enabled(self.editing.is_none(), egui::Button::new("Remove"))
-                            .clicked()
-                        {
-                            remove = Some(i);
-                        }
-                    });
+        match canvas_edit {
+            CanvasEdit::Ordinary => self.record(before),
+            CanvasEdit::Gesture => {}
+            CanvasEdit::Finished(checkpoints) => {
+                for before in checkpoints {
+                    self.push_undo(before);
                 }
-                if let Some(i) = remove {
-                    draft.points.remove(i);
-                }
-            });
-        ui.horizontal(|ui| {
-            ui.label("Blind height mm");
-            ui.add_enabled(
-                self.editing.is_none(),
-                egui::TextEdit::singleline(&mut draft.height)
-                    .char_limit(64)
-                    .desired_width(100.),
-            );
-        });
-        self.record(before);
+            }
+        }
         if self.editing.is_some() {
             match self.edit_request() {
                 Ok(request) => {
-                    if ui.button("Save edited copy…").clicked() {
+                    if ui
+                        .add_enabled(
+                            self.canvas.gesture.is_none(),
+                            egui::Button::new("Save edited copy…"),
+                        )
+                        .clicked()
+                    {
                         self.pending_edit = Some(request);
                     }
                 }
@@ -343,7 +372,13 @@ impl Editor {
         }
         match self.content() {
             Ok(content) => {
-                if ui.button("Create in new file…").clicked() {
+                if ui
+                    .add_enabled(
+                        self.canvas.gesture.is_none(),
+                        egui::Button::new("Create in new file…"),
+                    )
+                    .clicked()
+                {
                     self.pending = Some(content);
                 }
             }
@@ -371,12 +406,36 @@ pub(crate) fn finish_edit(
 struct Canvas {
     minimum: [f64; 2],
     scale: f32,
+    selected: Option<usize>,
+    gesture: Option<VertexDrag>,
+    claimed_press: bool,
+}
+
+#[derive(Debug)]
+struct VertexDrag {
+    vertex: usize,
+    press: egui::Pos2,
+    scale: f64,
+    start: [f64; 2],
+    before: State,
+}
+
+/// Preview frames do not enter history. Each changed release supplies one
+/// checkpoint, even when several gestures arrive in a frame. Cancellation
+/// restores only the active gesture without changing undo or redo.
+enum CanvasEdit {
+    Ordinary,
+    Gesture,
+    Finished(Vec<State>),
 }
 impl Default for Canvas {
     fn default() -> Self {
         Self {
             minimum: [-8.75, -7.5],
             scale: 4.0,
+            selected: None,
+            gesture: None,
+            claimed_press: false,
         }
     }
 }
@@ -401,39 +460,187 @@ impl Canvas {
             lo[1] - 30.0 / f64::from(self.scale),
         ];
     }
-    fn draw(&mut self, ui: &mut egui::Ui, draft: &mut State) {
-        let points: Option<Vec<_>> = draft
+    fn points(draft: &State) -> Option<Vec<[f64; 2]>> {
+        draft
             .points
             .iter()
             .map(|p| {
-                Some([
-                    p[0].trim().parse::<f64>().ok()?,
-                    p[1].trim().parse::<f64>().ok()?,
-                ])
+                let [x, y] = [number(&p[0]).ok()?, number(&p[1]).ok()?];
+                (x.is_finite() && y.is_finite() && x.abs() <= 1e6 && y.abs() <= 1e6)
+                    .then_some([x, y])
             })
-            .collect();
-        let points = points.filter(|p| p.iter().flatten().all(|x| x.is_finite() && x.abs() <= 1e6));
-        ui.horizontal(|ui| {
-            if ui.button("Fit drawing").clicked()
-                && let Some(p) = &points
-            {
-                self.fit(p);
+            .collect()
+    }
+    fn screen(&self, rect: egui::Rect, p: [f64; 2]) -> egui::Pos2 {
+        rect.left_bottom()
+            + egui::vec2(
+                ((p[0] - self.minimum[0]) * f64::from(self.scale)) as f32,
+                -((p[1] - self.minimum[1]) * f64::from(self.scale)) as f32,
+            )
+    }
+    fn hit(
+        &self,
+        rect: egui::Rect,
+        visible: egui::Rect,
+        points: &[[f64; 2]],
+        at: egui::Pos2,
+    ) -> Option<usize> {
+        const RADIUS: f32 = 9.0; // egui screen points, independent of zoom/DPI
+        points
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| {
+                let screen = self.screen(rect, *p);
+                let distance = screen.distance_sq(at);
+                (visible.contains(screen) && distance <= RADIUS * RADIUS).then_some((i, distance))
+            })
+            .min_by(|(i, a), (j, b)| a.total_cmp(b).then(i.cmp(j)))
+            .map(|(i, _)| i)
+    }
+    fn cancel(&mut self, draft: &mut State) {
+        if let Some(drag) = self.gesture.take() {
+            *draft = drag.before;
+        }
+    }
+    fn preview(&self, draft: &mut State, at: egui::Pos2) {
+        if let Some(drag) = &self.gesture {
+            // Preserve the grab offset and original strings on untouched axes.
+            let delta = [
+                f64::from(at.x) - f64::from(drag.press.x),
+                f64::from(drag.press.y) - f64::from(at.y),
+            ];
+            for (axis, delta) in delta.into_iter().enumerate() {
+                draft.points[drag.vertex][axis] = if delta == 0.0 {
+                    drag.before.points[drag.vertex][axis].clone()
+                } else {
+                    (drag.start[axis] + delta / drag.scale).to_string()
+                };
             }
-            if ui.button("Reset view").clicked() {
-                *self = Self::default();
-            }
-            ui.label("+X right · +Y up · coordinates in mm");
+        }
+    }
+    fn draw(&mut self, ui: &mut egui::Ui, draft: &mut State) -> CanvasEdit {
+        let points = Self::points(draft);
+        ui.add_enabled_ui(self.gesture.is_none(), |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Fit drawing").clicked()
+                    && let Some(p) = &points
+                {
+                    self.fit(p);
+                }
+                if ui.button("Reset view").clicked() {
+                    self.minimum = Self::default().minimum;
+                    self.scale = Self::default().scale;
+                }
+                ui.label("+X right · +Y up · coordinates in mm");
+            });
         });
-        let (response, painter) = ui.allocate_painter(egui::vec2(510., 250.), egui::Sense::click());
+        let (response, painter) =
+            ui.allocate_painter(egui::vec2(510., 250.), egui::Sense::click_and_drag());
         let rect = response.rect;
-        let origin = rect.left_bottom();
-        let screen = |p: [f64; 2]| {
-            origin
-                + egui::vec2(
-                    ((p[0] - self.minimum[0]) * f64::from(self.scale)) as f32,
-                    -((p[1] - self.minimum[1]) * f64::from(self.scale)) as f32,
-                )
+        let mut change = if self.claimed_press {
+            CanvasEdit::Gesture
+        } else {
+            CanvasEdit::Ordinary
         };
+        let pointer = ui.input(|i| i.pointer.clone());
+        let mut checkpoints = Vec::new();
+        let events = ui.input(|i| i.events.clone());
+        // Aggregate pointer state loses ordering when one frame contains the
+        // release of an old gesture and the press (or whole gesture) of another.
+        // Own gestures at their actual press and process every event in order.
+        for event in events {
+            match event {
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    ..
+                } => {
+                    self.cancel(draft);
+                    if ui.is_enabled()
+                        && rect.intersect(ui.clip_rect()).contains(pos)
+                        && ui.ctx().layer_id_at(pos) == Some(ui.layer_id())
+                        && let Some(points) = Self::points(draft)
+                        && let Some(vertex) =
+                            self.hit(rect, rect.intersect(ui.clip_rect()), &points, pos)
+                    {
+                        self.selected = Some(vertex);
+                        self.claimed_press = true;
+                        change = CanvasEdit::Gesture;
+                        self.gesture = Some(VertexDrag {
+                            vertex,
+                            press: pos,
+                            scale: f64::from(self.scale),
+                            start: points[vertex],
+                            before: draft.clone(),
+                        });
+                    }
+                }
+                egui::Event::PointerMoved(pos) => self.preview(draft, pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    ..
+                } => {
+                    self.preview(draft, pos);
+                    if let Some(drag) = self.gesture.take()
+                        && *draft != drag.before
+                    {
+                        if checkpoints.len() == 128 {
+                            checkpoints.remove(0);
+                        }
+                        checkpoints.push(drag.before);
+                    }
+                    self.claimed_press = false;
+                }
+                egui::Event::Key {
+                    key: egui::Key::Escape,
+                    pressed: true,
+                    ..
+                } if self.gesture.is_some() => {
+                    ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+                    self.cancel(draft);
+                }
+                egui::Event::WindowFocused(false) | egui::Event::PointerGone => {
+                    self.cancel(draft);
+                }
+                _ => {}
+            }
+        }
+        // A lost release must not leave a preview or a permanently owned drag.
+        if !ui.input(|i| i.focused) || !pointer.primary_down() {
+            self.cancel(draft);
+        }
+        if !checkpoints.is_empty() {
+            change = CanvasEdit::Finished(checkpoints);
+        }
+        let points = Self::points(draft);
+        let hover = response.hover_pos().and_then(|pos| {
+            points
+                .as_ref()
+                .and_then(|points| self.hit(rect, rect.intersect(ui.clip_rect()), points, pos))
+        });
+        if matches!(change, CanvasEdit::Ordinary)
+            && response.clicked_by(egui::PointerButton::Primary)
+        {
+            if let Some(vertex) = hover {
+                self.selected = Some(vertex);
+            } else if !draft.closed
+                && draft.points.len() < PolygonExtrusion::MAX_POINTS
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                let offset = to_document(pos, rect.left_bottom(), self.scale);
+                draft.points.push([
+                    format!("{:.3}", self.minimum[0] + offset[0]),
+                    format!("{:.3}", self.minimum[1] + offset[1]),
+                ]);
+            }
+        }
+        if !pointer.primary_down() {
+            self.claimed_press = false;
+        }
+        let screen = |p| self.screen(rect, p);
         painter.rect_filled(rect, 0., egui::Color32::from_gray(25));
         // At most ~50 lines, even for very small or far-translated drawings.
         let grid = 10_f64.powf((40.0 / f64::from(self.scale)).log10().floor());
@@ -458,18 +665,7 @@ impl Canvas {
             egui::FontId::proportional(12.),
             egui::Color32::WHITE,
         );
-        if response.clicked()
-            && !draft.closed
-            && draft.points.len() < PolygonExtrusion::MAX_POINTS
-            && let Some(pos) = response.interact_pointer_pos()
-        {
-            let offset = to_document(pos, origin, self.scale);
-            draft.points.push([
-                format!("{:.3}", self.minimum[0] + offset[0]),
-                format!("{:.3}", self.minimum[1] + offset[1]),
-            ]);
-        }
-        if let Some(points) = points {
+        if let Some(points) = Self::points(draft) {
             for pair in points.windows(2) {
                 painter.line_segment(
                     [screen(pair[0]), screen(pair[1])],
@@ -484,7 +680,19 @@ impl Canvas {
             }
             for (i, p) in points.iter().enumerate() {
                 let p = screen(*p);
-                painter.circle_filled(p, 3., egui::Color32::WHITE);
+                let selected = self.selected == Some(i);
+                if hover == Some(i) {
+                    painter.circle_stroke(p, 9., (1.5, egui::Color32::LIGHT_BLUE));
+                }
+                painter.circle_filled(
+                    p,
+                    if selected { 5. } else { 3. },
+                    if selected {
+                        egui::Color32::LIGHT_YELLOW
+                    } else {
+                        egui::Color32::WHITE
+                    },
+                );
                 painter.text(
                     p + egui::vec2(4., -4.),
                     egui::Align2::LEFT_BOTTOM,
@@ -494,6 +702,13 @@ impl Canvas {
                 );
             }
         }
+        ui.label(
+            self.selected
+                .and_then(|i| draft.points.get(i).map(|p| (i, p)))
+                .map(|(i, p)| format!("Vertex {} · X {} mm · Y {} mm", i + 1, p[0], p[1]))
+                .unwrap_or_else(|| "Select/drag a vertex · Escape cancels the gesture".into()),
+        );
+        change
     }
 }
 fn number(s: &str) -> Result<f64> {
@@ -547,7 +762,11 @@ mod tests {
         );
     }
 
-    fn frame(ctx: &egui::Context, e: &mut Editor, events: Vec<egui::Event>) -> egui::FullOutput {
+    pub(super) fn frame(
+        ctx: &egui::Context,
+        e: &mut Editor,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -562,7 +781,7 @@ mod tests {
         output.textures_delta.clear();
         output
     }
-    fn text_at(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+    pub(super) fn text_at(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
         output
             .shapes
             .iter()
@@ -580,7 +799,7 @@ mod tests {
             })
             .unwrap_or_else(|| panic!("button {label} was not painted"))
     }
-    fn click(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2) {
+    pub(super) fn click(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2) {
         frame(ctx, e, vec![egui::Event::PointerMoved(at)]);
         for pressed in [true, false] {
             frame(
@@ -595,7 +814,7 @@ mod tests {
             );
         }
     }
-    fn replace_field(ctx: &egui::Context, e: &mut Editor, label: &str, value: &str) {
+    pub(super) fn replace_field(ctx: &egui::Context, e: &mut Editor, label: &str, value: &str) {
         let out = frame(ctx, e, vec![]);
         click(ctx, e, text_at(&out, label));
         frame(
@@ -812,6 +1031,9 @@ mod tests {
     }
     #[test]
     fn native_saved_sketch_draft_and_cli_preserve_same_model() {
+        saved_sketch_and_cli(false);
+    }
+    pub(super) fn saved_sketch_and_cli(drag: bool) {
         use crate::creates::tests::{ferritecad, read_semantics};
         use ferritecad_document::Document;
         use ferritecad_kernel::OperationContext;
@@ -833,6 +1055,9 @@ mod tests {
             .output()
             .expect("create");
         assert!(p.status.success(), "{p:?}");
+        if drag {
+            super::drag_tests::attach_source_claim(&source);
+        }
         let bytes = std::fs::read(&source).expect("source");
         let modified = std::fs::metadata(&source)
             .expect("metadata")
@@ -860,8 +1085,12 @@ mod tests {
         frame(&ctx, &mut e, vec![]);
         // Two distinct saved start vertices have the same X; replace each real
         // field once, then undo/redo the second through the existing widgets.
-        replace_field(&ctx, &mut e, "60", "80");
-        replace_field(&ctx, &mut e, "60", "80");
+        if drag {
+            super::drag_tests::move_saved_l(&ctx, &mut e);
+        } else {
+            replace_field(&ctx, &mut e, "60", "80");
+            replace_field(&ctx, &mut e, "60", "80");
+        }
         assert_eq!(e.draft.as_ref().expect("draft").points[1][0], "80");
         assert_eq!(e.draft.as_ref().expect("draft").points[2][0], "80");
         let out = frame(&ctx, &mut e, vec![]);
@@ -994,6 +1223,9 @@ mod tests {
             a.topology_refs().expect("refs"),
             b.topology_refs().expect("refs")
         );
+        if drag {
+            super::drag_tests::verify_publications(&source, &ui, &cli);
+        }
         assert_eq!(std::fs::read(&source).expect("source"), bytes);
         assert_eq!(
             std::fs::metadata(&source)
@@ -1004,3 +1236,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "sketch/drag_tests.rs"]
+mod drag_tests;
