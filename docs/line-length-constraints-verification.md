@@ -200,7 +200,7 @@ Document schema, native pins/FFI, dependencies/Cargo.lock и inventories не м
 
 ## Независимое ревью, 2026-09-13
 
-Дефектов реализации не обнаружено; production code и тесты при ревью не менялись.
+Дефектов production-реализации не обнаружено; её код при ревью не менялся.
 Проверены строгий tagged request, checked length/history equality, отдельные slots
 orientation/length, whole-document refusal, remove-before-add и сохранность closure.
 Точная база повторно проверена: PR #32 MERGED, main/origin/main
@@ -243,3 +243,15 @@ swap initial/max/final 2991783936 bytes, min free disk 39.31 GiB;
 Логи, snapshots, GUI-файлы, SQL/mesh comparisons и memory samples:
 `/private/tmp/ferrite-pr33-review/`. CI head и merge нового diff проверяется
 отдельно после публикации. Чужой a200 и исходные fixtures не изменены.
+
+### Исправление после первого head CI
+
+Первый runtime head `fc58c0f7762d96c348602883bc4badaeae17713e` выявил нарушение
+контракта test-log: добавленный `eprintln!` в общем helper измерения геометрии
+вклинивался между `test <exact name> ...` и `ok`. На macOS исполнился один тест,
+он прошёл, но обязательный grep точной строки закономерно отказал. Лог:
+`/private/tmp/ferrite-pr33-review/head-macos-failure.log`, runtime `34807493230`.
+Лишний диагностический вывод удалён. Assertions solve/DOF/geometry/identity
+сохранены, exact-name/no-skip gate не ослаблен. Локально три native CLI gates
+повторены с тем же `--exact --nocapture --test-threads=1` и проверкой строки;
+CI исправленного head учитывается отдельно от первого отказа.

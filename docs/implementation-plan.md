@@ -2535,13 +2535,15 @@ conflict, сохранность и delivery. [Контракт и рецепт]
 [локальные доказательства](line-length-constraints-verification.md).
 Изменения оставлены unstaged/uncommitted для независимого ревью; CI базы отдельно.
 
-Независимое ревью §25F не потребовало изменений кода. Повторены 367 domain/job/eval,
+Независимое ревью §25F сохранило production-код. Повторены 367 domain/job/eval,
 47 CLI и 41 headless app tests; native/stub разделены. Живой macOS smoke закрыл
 исходное ограничение locked screen: Add lengths, invalid input/Redo, Save Cancel,
 publish/Open и exact replacement прошли. GUI/CLI SQL и STL/FBX совпали с явным
 сопоставлением новых IDs; измерены 60×30×10 / ≈18000 mm³ и 55×30×10 / 16500 mm³.
 Watchdog peak 277.03 MiB, swap без роста, exit 0; причина OOM неизвестна.
-CI head/merge учитывается отдельно.
+Первый head CI обнаружил, что диагностический вывод теста разрывает обязательную
+строку exact-name gate. Вывод удалён; assertions и строгий gate сохранены.
+CI исправленного head/merge учитывается отдельно.
 
 **§25F-1 — pending: прямая замена сохранённой длины в UI.**
 Одно действие над выбранным Line собирает прежний exact remove/add request и

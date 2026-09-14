@@ -347,11 +347,6 @@ fn geometry_checked(
         );
     }
     check(&starts, &ends, s);
-    eprintln!(
-        "solved {}: DOF {}",
-        path.display(),
-        report.degrees_of_freedom()
-    );
     let area: f64 = starts
         .iter()
         .enumerate()
