@@ -228,6 +228,51 @@ fn constraint_discovery_requests_and_delivery_without_native() {
         assert_eq!(v["error"]["kind"], "input");
         assert!(v["error"].get("constraint_conflict").is_none());
     }
+    for addition in [
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"fixed","at":"start","x_mm":10}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"fixed","at":"start","y_mm":-5}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"fixed","x_mm":10,"y_mm":-5}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"fixed","at":"middle","x_mm":10,"y_mm":-5}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"fixed","at":"at","x_mm":10,"y_mm":-5}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"fixed","at":"Start","x_mm":10,"y_mm":-5}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"fixed","at":0,"x_mm":10,"y_mm":-5}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"fixed","at":"start","x_mm":"10","y_mm":-5}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"fixed","at":"start","x_mm":null,"y_mm":-5}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"fixed","at":"start","x_mm":true,"y_mm":-5}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"fixed","at":"start","x_mm":10,"y_mm":-5,"distance_mm":30}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"fixed","at":"start","x_mm":10,"y_mm":-5,"future":1}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"horizontal","at":"start"}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"distance","distance_mm":30,"at":"start"}),
+    ] {
+        write(
+            &f.request,
+            &json!({"request_version":1,"remove":[],"add":[addition]}),
+        );
+        let v = reply(f.edit(&out).output().expect("invalid pin"), OP, 2);
+        assert_eq!(v["error"]["kind"], "input");
+        assert!(v["error"].get("constraint_conflict").is_none());
+    }
+    let pin=json!({"request_version":1,"remove":[],"add":[{"curve_id":discovery["curves"][0]["curve_id"],"rule":"fixed","at":"start","x_mm":10,"y_mm":-5}]}).to_string();
+    for (field, bad) in [
+        ("x_mm", "NaN"),
+        ("x_mm", "Infinity"),
+        ("x_mm", "-Infinity"),
+        ("y_mm", "1e999"),
+        ("y_mm", "-1e999"),
+    ] {
+        std::fs::write(
+            &f.request,
+            pin.replace(
+                &format!("\"{field}\":{}", if field == "x_mm" { "10" } else { "-5" }),
+                &format!("\"{field}\":{bad}"),
+            ),
+        )
+        .expect("bad coordinate");
+        assert_eq!(
+            reply(f.edit(&out).output().expect("bad pin number"), OP, 2)["error"]["kind"],
+            "input"
+        );
+    }
     let valid=json!({"request_version":1,"remove":[],"add":[{"curve_id":discovery["curves"][0]["curve_id"],"rule":"distance","distance_mm":30}]}).to_string();
     for bad in ["1e999", "NaN", "Infinity"] {
         std::fs::write(
@@ -309,8 +354,11 @@ fn stored_same(a: &Path, b: &Path) {
 }
 /// Independent STL triangle integration, compared with the measured solved polygon;
 /// no arbitrary under-constrained position is pinned across solver platforms.
+/// `dof` names the exact count where this slice fixes it; `None` keeps the
+/// older gates' weaker "still under-constrained" statement.
 fn geometry_checked(
     path: &Path,
+    dof: Option<usize>,
     check: impl FnOnce(&[[f64; 2]], &[[f64; 2]], &ferritecad_document::Sketch),
 ) {
     let d = Document::open_read_only(path).expect("doc");
@@ -326,7 +374,10 @@ fn geometry_checked(
     let b = ferritecad_eval::rebuild_cold(&d, &mut k, &OperationContext::default())
         .expect("cold after reopen");
     let report = b.solve_report(o.id).expect("solve report");
-    assert!(report.degrees_of_freedom() > 0);
+    match dof {
+        Some(n) => assert_eq!(report.degrees_of_freedom(), n, "cold reopen solved DOF"),
+        None => assert!(report.degrees_of_freedom() > 0),
+    }
     assert!(report.redundant().is_empty());
     let p = b.sketch_presentation(o.id).expect("solved presentation");
     let mut starts = vec![];
@@ -447,7 +498,7 @@ fn geometry_checked(
     }
 }
 fn geometry(path: &Path, horizontal: bool) {
-    geometry_checked(path, |starts, ends, s| {
+    geometry_checked(path, None, |starts, ends, s| {
         let (line, axis) = if horizontal { (0, 1) } else { (1, 0) };
         let SketchGeometry::Line {
             start: old_a,
@@ -481,7 +532,7 @@ fn geometry(path: &Path, horizontal: bool) {
     });
 }
 fn length_geometry(path: &Path, lengths: &[(usize, f64)], rectangle: bool) {
-    geometry_checked(path, |starts, ends, s| {
+    geometry_checked(path, None, |starts, ends, s| {
         for &(i, length) in lengths {
             let dx = ends[i][0] - starts[i][0];
             let dy = ends[i][1] - starts[i][1];
@@ -810,15 +861,23 @@ fn constraint_discovery_separates_document_and_feature_refusals() {
             let ObjectPayload::Sketch(s) = &mut o.payload else {
                 panic!("sketch")
             };
-            s.constraints.push(ferritecad_document::SketchConstraint {
-                id: ferritecad_types::StableEntityId::new(),
-                rule: ferritecad_document::SketchConstraintRule::Fixed {
-                    point: ferritecad_document::SketchPointRef::new(
-                        s.curves[0].id,
+            let segment = |i: usize| {
+                ferritecad_document::SketchSegmentRef::new(
+                    ferritecad_document::SketchPointRef::new(
+                        s.curves[i].id,
                         ferritecad_document::SketchPointSelector::Start,
                     ),
-                    x: 0.,
-                    y: 0.,
+                    ferritecad_document::SketchPointRef::new(
+                        s.curves[i].id,
+                        ferritecad_document::SketchPointSelector::End,
+                    ),
+                )
+            };
+            s.constraints.push(ferritecad_document::SketchConstraint {
+                id: ferritecad_types::StableEntityId::new(),
+                rule: ferritecad_document::SketchConstraintRule::Perpendicular {
+                    a: segment(0),
+                    b: segment(1),
                 },
             });
             d.write(|w| w.put_object(o.id, o.parent, o.ordinal, o.name.as_deref(), &o.payload))
@@ -1011,7 +1070,7 @@ fn native_line_length_process_geometry_replacement_conflict_and_delivery() {
         json!(expected)
     );
     stored_same(&out, &replacement);
-    geometry_checked(&replacement, |starts, ends, _| {
+    geometry_checked(&replacement, None, |starts, ends, _| {
         assert!(((ends[0][0] - starts[0][0]).hypot(ends[0][1] - starts[0][1]) - 55.).abs() < 1e-6)
     });
     let removed = f.root.path().join("length-removed.fcad");
@@ -1093,4 +1152,275 @@ fn native_line_length_process_geometry_replacement_conflict_and_delivery() {
     reply(slanted.edit(&out).output().expect("slanted length"), OP, 0);
     stored_same(&slanted.source, &out);
     length_geometry(&out, &[(0, 50.)], false);
+}
+
+fn pin_add(catalog: &Value, i: usize, at: &str, x: f64, y: f64) -> Value {
+    json!({"curve_id":catalog["sketches"][0]["constraint_edit"]["curves"][i]["curve_id"],
+           "rule":"fixed","at":at,"x_mm":x,"y_mm":y})
+}
+fn constraint_ids(catalog: &Value) -> Vec<Value> {
+    catalog["sketches"][0]["constraint_edit"]["constraints"]
+        .as_array()
+        .expect("constraints")
+        .iter()
+        .map(|c| c["constraint_id"].clone())
+        .collect()
+}
+/// Axis-aligned bounds of the solved polygon, measured from the presentation.
+fn bounds(starts: &[[f64; 2]]) -> [[f64; 2]; 2] {
+    [
+        std::array::from_fn(|j| starts.iter().map(|p| p[j]).fold(f64::INFINITY, f64::min)),
+        std::array::from_fn(|j| {
+            starts
+                .iter()
+                .map(|p| p[j])
+                .fold(f64::NEG_INFINITY, f64::max)
+        }),
+    ]
+}
+
+#[test]
+fn native_fixed_endpoint_pins_the_body_and_removal_restores_two_degrees_of_freedom() {
+    if !native() {
+        return;
+    }
+    let f = Fixture::with_points(Some([[-40., -20.], [40., -20.], [40., 20.], [-40., 20.]]));
+    let before = std::fs::read(&f.source).expect("source");
+    let mtime = std::fs::metadata(&f.source)
+        .expect("meta")
+        .modified()
+        .expect("mtime");
+
+    // A fully dimensioned rectangle still floats: two translations remain.
+    let dimensioned = f.root.path().join("dimensioned.fcad");
+    write(&f.request, &rectangle_edits(&f.catalog));
+    let sizes = reply(f.edit(&dimensioned).output().expect("dimensions"), OP, 0)["result"].clone();
+    assert_eq!(sizes["solve"]["degrees_of_freedom"], 2);
+    let sized = inspect(&dimensioned);
+    let sized_ids = constraint_ids(&sized);
+    assert_eq!(sized_ids.len(), 10);
+
+    // Structural refusals keep the one-pin rule, publish nothing and touch nothing.
+    for add in [
+        json!([
+            pin_add(&sized, 0, "start", 10., -5.),
+            pin_add(&sized, 0, "end", 70., -5.)
+        ]),
+        json!([
+            pin_add(&sized, 0, "start", 10., -5.),
+            pin_add(&sized, 2, "start", 70., 25.)
+        ]),
+        json!([
+            pin_add(&sized, 0, "start", 10., -5.),
+            pin_add(&sized, 0, "start", 10., -5.)
+        ]),
+        json!([{"curve_id":ferritecad_types::StableEntityId::new(),"rule":"fixed","at":"start","x_mm":0,"y_mm":0}]),
+    ] {
+        let refused = f.root.path().join("refused.fcad");
+        let directory = entries(f.root.path());
+        write(
+            &f.request,
+            &json!({"request_version":1,"remove":[],"add":add}),
+        );
+        let v = reply(
+            f.edit_from(&dimensioned, &sized, &refused)
+                .output()
+                .expect("structural refusal"),
+            OP,
+            2,
+        );
+        assert_eq!(v["error"]["kind"], "input");
+        assert!(v["error"].get("constraint_conflict").is_none());
+        assert!(!refused.exists());
+        assert_eq!(entries(f.root.path()), directory);
+    }
+
+    // One pin at an explicit place removes exactly the two remaining freedoms.
+    let pinned = f.root.path().join("pinned.fcad");
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[],"add":[pin_add(&sized,0,"start",10.,-5.)]}),
+    );
+    let published = reply(
+        f.edit_from(&dimensioned, &sized, &pinned)
+            .output()
+            .expect("pin"),
+        OP,
+        0,
+    )["result"]
+        .clone();
+    let added = published["added_constraints"]
+        .as_array()
+        .expect("added")
+        .clone();
+    assert_eq!(
+        added.len(),
+        1,
+        "closure already persisted; only the pin is new"
+    );
+    let rule = &added[0]["rule"];
+    assert_eq!(rule["kind"], "fixed");
+    assert_eq!(
+        rule["point"]["curve_id"],
+        sized["sketches"][0]["constraint_edit"]["curves"][0]["curve_id"]
+    );
+    assert_eq!(rule["point"]["at"], "start");
+    assert_eq!(rule["x"], 10.);
+    assert_eq!(rule["y"], -5.);
+    assert!(
+        rule.get("x_mm").is_none() && rule.get("y_mm").is_none() && rule.get("a").is_none(),
+        "response wire keeps point/x/y"
+    );
+    assert_eq!(published["solve"]["degrees_of_freedom"], 0);
+    assert_eq!(published["removed_constraint_ids"], json!([]));
+    let pin_id = added[0]["constraint_id"].clone();
+    assert!(!sized_ids.contains(&pin_id));
+    let after = inspect(&pinned);
+    assert_eq!(
+        constraint_ids(&after),
+        [sized_ids.clone(), vec![pin_id.clone()]].concat()
+    );
+    stored_same(&dimensioned, &pinned);
+
+    // Cold reopen, real solver, independent STL: DOF is zero and the pinned
+    // stored endpoint really landed on the millimetres that were asked for.
+    let mut placed = [[0.; 2]; 2];
+    geometry_checked(&pinned, Some(0), |starts, _, _| {
+        placed = bounds(starts);
+        let widths = [placed[1][0] - placed[0][0], placed[1][1] - placed[0][1]];
+        assert!(
+            (widths[0] - 60.).abs() < 1e-6 && (widths[1] - 30.).abs() < 1e-6,
+            "{widths:?}"
+        );
+        assert!(
+            (starts[0][0] - 10.).abs() < 1e-6 && (starts[0][1] + 5.).abs() < 1e-6,
+            "the selected Line Start is not at (10, -5): {starts:?}"
+        );
+    });
+
+    // Moving the pin translates the body and changes no dimension.
+    let moved = f.root.path().join("pin-moved.fcad");
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[pin_id],"add":[pin_add(&after,0,"start",-25.,40.)]}),
+    );
+    let replace = reply(
+        f.edit_from(&pinned, &after, &moved)
+            .output()
+            .expect("move pin"),
+        OP,
+        0,
+    )["result"]
+        .clone();
+    assert_eq!(replace["removed_constraint_ids"], json!([pin_id]));
+    assert_eq!(replace["solve"]["degrees_of_freedom"], 0);
+    let new_pin = replace["added_constraints"][0]["constraint_id"].clone();
+    assert_ne!(new_pin, pin_id);
+    let moved_catalog = inspect(&moved);
+    assert_eq!(
+        constraint_ids(&moved_catalog),
+        [sized_ids.clone(), vec![new_pin.clone()]].concat(),
+        "every other UUID and its order survive the replacement"
+    );
+    stored_same(&pinned, &moved);
+    geometry_checked(&moved, Some(0), |starts, _, _| {
+        let now = bounds(starts);
+        for j in 0..2 {
+            let delta = [-35., 45.][j];
+            assert!((now[0][j] - placed[0][j] - delta).abs() < 1e-6, "{now:?}");
+            assert!((now[1][j] - placed[1][j] - delta).abs() < 1e-6, "{now:?}");
+        }
+        assert!(
+            (starts[0][0] + 25.).abs() < 1e-6 && (starts[0][1] - 40.).abs() < 1e-6,
+            "the selected Line Start did not move with the pin: {starts:?}"
+        );
+    });
+
+    // Removing the exact pin gives the two translations back and keeps closure.
+    let unpinned = f.root.path().join("unpinned.fcad");
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[new_pin],"add":[]}),
+    );
+    let removed = reply(
+        f.edit_from(&moved, &moved_catalog, &unpinned)
+            .output()
+            .expect("remove pin"),
+        OP,
+        0,
+    )["result"]
+        .clone();
+    assert_eq!(removed["solve"]["degrees_of_freedom"], 2);
+    assert_eq!(removed["added_constraints"], json!([]));
+    assert_eq!(constraint_ids(&inspect(&unpinned)), sized_ids);
+    stored_same(&moved, &unpinned);
+    length_geometry(&unpinned, &[(0, 60.), (1, 30.)], true);
+
+    // Zero and negative millimetres are ordinary coordinates.
+    let origin = f.root.path().join("pin-origin.fcad");
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[],"add":[pin_add(&sized,1,"end",0.,-0.)]}),
+    );
+    let at_origin = reply(
+        f.edit_from(&dimensioned, &sized, &origin)
+            .output()
+            .expect("pin at the origin"),
+        OP,
+        0,
+    )["result"]
+        .clone();
+    assert_eq!(at_origin["solve"]["degrees_of_freedom"], 0);
+    assert_eq!(at_origin["added_constraints"][0]["rule"]["x"], 0.);
+    assert_eq!(at_origin["added_constraints"][0]["rule"]["y"], 0.);
+    geometry_checked(&origin, Some(0), |_, ends, _| {
+        assert!(
+            ends[1][0].abs() < 1e-6 && ends[1][1].abs() < 1e-6,
+            "the selected second Line End is not at the origin: {ends:?}"
+        );
+    });
+
+    // A real solver failure is separate from the structural ones, and the
+    // one-pin rule is not weakened to produce it.
+    let mut contradictory = rectangle_edits(&f.catalog);
+    contradictory["add"].as_array_mut().expect("add").extend([
+        length_add(&f.catalog, 2, 70.),
+        pin_add(&f.catalog, 0, "start", 1., 2.),
+    ]);
+    write(&f.request, &contradictory);
+    let failed = f.root.path().join("pin-conflict.fcad");
+    let directory = entries(f.root.path());
+    let refusal = reply(f.edit(&failed).output().expect("real conflict"), OP, 2);
+    assert_eq!(refusal["error"]["kind"], "constraint", "{refusal}");
+    assert!(
+        !refusal["error"]["constraint_conflict"]["constraints"]
+            .as_array()
+            .expect("typed conflict")
+            .is_empty()
+    );
+    assert!(!failed.exists());
+    assert_eq!(entries(f.root.path()), directory);
+
+    // A pin reaches publication even when its report cannot be delivered.
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[],"add":[pin_add(&sized,0,"start",10.,-5.)]}),
+    );
+    let lost = f.root.path().join("pin-lost.fcad");
+    let mut cmd = f.edit_from(&dimensioned, &sized, &lost);
+    cmd.stdout(pipe::closed_pipe());
+    assert_eq!(cmd.output().expect("lost report").status.code(), Some(7));
+    let d = Document::open_read_only(&lost).expect("published despite lost report");
+    assert!(d.validate().expect("valid").is_ok());
+    d.close().expect("close");
+    assert_eq!(constraint_ids(&inspect(&lost)).len(), 11);
+
+    assert_eq!(std::fs::read(&f.source).expect("source"), before);
+    assert_eq!(
+        std::fs::metadata(&f.source)
+            .expect("meta")
+            .modified()
+            .expect("mtime"),
+        mtime
+    );
 }

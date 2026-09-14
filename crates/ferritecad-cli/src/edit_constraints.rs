@@ -2,8 +2,8 @@
 //! Text/JSON prepare one typed request; jobs owns solver/copy/publication.
 use clap::Args;
 use ferritecad_document::{
-    AddLineConstraint, Document, DocumentVersion, LineConstraintKind, LineLengthMm,
-    SketchConstraintEdits,
+    AddLineConstraint, Document, DocumentVersion, LineConstraintKind, LineEndpoint, LineLengthMm,
+    SketchConstraintEdits, SketchCoordinateMm,
 };
 use ferritecad_jobs::{
     EditSketchConstraintsRequest, EditedSketchConstraints, edit_sketch_constraints_copy,
@@ -21,7 +21,8 @@ pub struct EditConstraintsArgs {
     /// Full content_version from the same inspect snapshot as all chosen UUIDs.
     #[arg(long)]
     expect_version: ContentHash,
-    /// Request v1: remove exact constraint UUIDs, then add Line H/V or length in mm.
+    /// Request v1: remove exact constraint UUIDs, then add Line H/V, length in mm
+    /// or one Fixed Line endpoint at explicit X/Y mm.
     #[arg(long)]
     request: PathBuf,
     /// New FCAD destination; no overwrite and no --force.
@@ -38,6 +39,21 @@ struct Input {
     remove: Vec<StableEntityId>,
     add: Vec<Addition>,
 }
+/// The request spells a Line endpoint, never the `at` of point geometry.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum At {
+    Start,
+    End,
+}
+impl From<At> for LineEndpoint {
+    fn from(at: At) -> Self {
+        match at {
+            At::Start => Self::Start,
+            At::End => Self::End,
+        }
+    }
+}
 #[derive(Deserialize)]
 #[serde(tag = "rule", rename_all = "snake_case", deny_unknown_fields)]
 enum Addition {
@@ -51,6 +67,12 @@ enum Addition {
         curve_id: StableEntityId,
         distance_mm: f64,
     },
+    Fixed {
+        curve_id: StableEntityId,
+        at: At,
+        x_mm: f64,
+        y_mm: f64,
+    },
 }
 impl Addition {
     fn checked(self) -> Result<AddLineConstraint> {
@@ -63,6 +85,19 @@ impl Addition {
             } => (
                 curve_id,
                 LineConstraintKind::Distance(LineLengthMm::new(distance_mm)?),
+            ),
+            Self::Fixed {
+                curve_id,
+                at,
+                x_mm,
+                y_mm,
+            } => (
+                curve_id,
+                LineConstraintKind::Fixed {
+                    at: at.into(),
+                    x: SketchCoordinateMm::new(x_mm)?,
+                    y: SketchCoordinateMm::new(y_mm)?,
+                },
             ),
         };
         Ok(AddLineConstraint { curve, kind })

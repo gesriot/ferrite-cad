@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Bounded persisted Line orientation/length editing. No solver or wire format.
+//! Bounded persisted Line orientation/length/pin editing. No solver or wire format.
 use crate::{
     Document, ObjectPayload, ObjectRecord, Sketch, SketchConstraint, SketchConstraintRule,
     SketchPointRef, SketchPointSelector,
@@ -25,11 +25,63 @@ impl LineLengthMm {
     }
 }
 
+/// A finite signed sketch coordinate in millimetres. Zero is normalised to one
+/// pattern so exact Eq agrees with f64 equality; NaN and infinity are excluded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SketchCoordinateMm(u64);
+impl SketchCoordinateMm {
+    pub fn new(value: f64) -> Result<Self> {
+        if !value.is_finite() {
+            return Err(CadError::input("sketch coordinate must be finite in mm"));
+        }
+        Ok(Self(if value == 0. {
+            0f64.to_bits()
+        } else {
+            value.to_bits()
+        }))
+    }
+    pub fn get(self) -> f64 {
+        f64::from_bits(self.0)
+    }
+}
+
+/// Which end of a Line a pin names. The model's `At` selector belongs to point
+/// geometry, so a Line endpoint request cannot spell it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineEndpoint {
+    Start,
+    End,
+}
+impl LineEndpoint {
+    pub fn selector(self) -> SketchPointSelector {
+        match self {
+            Self::Start => SketchPointSelector::Start,
+            Self::End => SketchPointSelector::End,
+        }
+    }
+    pub fn of(selector: SketchPointSelector) -> Option<Self> {
+        match selector {
+            SketchPointSelector::Start => Some(Self::Start),
+            SketchPointSelector::End => Some(Self::End),
+            _ => None,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        self.selector().as_str()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineConstraintKind {
     Horizontal,
     Vertical,
     Distance(LineLengthMm),
+    /// One endpoint of this Line pinned at explicit millimetres.
+    Fixed {
+        at: LineEndpoint,
+        x: SketchCoordinateMm,
+        y: SketchCoordinateMm,
+    },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AddLineConstraint {
@@ -113,6 +165,16 @@ fn closures(sketch: &Sketch) -> Vec<[SketchPointRef; 2]> {
         .collect()
 }
 fn line_of(rule: SketchConstraintRule) -> Option<(StableEntityId, LineConstraintKind)> {
+    if let SketchConstraintRule::Fixed { point, x, y } = rule {
+        return Some((
+            point.curve,
+            LineConstraintKind::Fixed {
+                at: LineEndpoint::of(point.at)?,
+                x: SketchCoordinateMm::new(x).ok()?,
+                y: SketchCoordinateMm::new(y).ok()?,
+            },
+        ));
+    }
     let (a, b, kind) = match rule {
         SketchConstraintRule::Horizontal { a, b } => (a, b, LineConstraintKind::Horizontal),
         SketchConstraintRule::Vertical { a, b } => (a, b, LineConstraintKind::Vertical),
@@ -126,8 +188,31 @@ fn line_of(rule: SketchConstraintRule) -> Option<(StableEntityId, LineConstraint
     (a.curve == b.curve && unordered(a, b) == unordered(endpoints(a.curve).0, endpoints(a.curve).1))
         .then_some((a.curve, kind))
 }
-fn line_slot(curve: StableEntityId, kind: LineConstraintKind) -> (StableEntityId, bool) {
-    (curve, matches!(kind, LineConstraintKind::Distance(_)))
+/// What a request occupies: one orientation and one length per Line, and at
+/// most one pinned endpoint in the whole profile, whichever Line carries it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Slot {
+    Orientation(StableEntityId),
+    Length(StableEntityId),
+    Pin,
+}
+fn line_slot(curve: StableEntityId, kind: LineConstraintKind) -> Slot {
+    match kind {
+        LineConstraintKind::Horizontal | LineConstraintKind::Vertical => Slot::Orientation(curve),
+        LineConstraintKind::Distance(_) => Slot::Length(curve),
+        LineConstraintKind::Fixed { .. } => Slot::Pin,
+    }
+}
+fn occupied(kind: LineConstraintKind) -> &'static str {
+    match kind {
+        LineConstraintKind::Distance(_) => {
+            "a Line may hold only one length; remove its current constraint first"
+        }
+        LineConstraintKind::Fixed { .. } => {
+            "a profile may hold only one fixed endpoint; remove the stored one in the same request"
+        }
+        _ => "a Line may hold only one H/V; remove its current constraint first",
+    }
 }
 
 /// Preserve only this declared family of stored relationships; never simplify others.
@@ -143,9 +228,12 @@ fn managed(sketch: &Sketch) -> Result<()> {
         }
         if let Some((curve, kind)) = line_of(c.rule) {
             if !curve_ids.contains(&curve) || !lines.insert(line_slot(curve, kind)) {
-                return Err(CadError::unsupported(
-                    "constraint edit refuses duplicate orientation or length on a Line",
-                ));
+                return Err(CadError::unsupported(match kind {
+                    LineConstraintKind::Fixed { .. } => {
+                        "constraint edit supports at most one Fixed endpoint per profile"
+                    }
+                    _ => "constraint edit refuses duplicate orientation or length on a Line",
+                }));
             }
         } else if let SketchConstraintRule::Coincident { a, b } = c.rule {
             let pair = unordered(a, b);
@@ -156,13 +244,13 @@ fn managed(sketch: &Sketch) -> Result<()> {
             }
         } else {
             return Err(CadError::unsupported(
-                "constraint edit supports only Line H/V, positive Start/End length and adjacent-joint Coincident families",
+                "constraint edit supports only Line H/V, positive Start/End length, one finite Fixed Line endpoint and adjacent-joint Coincident families",
             ));
         }
     }
     if !lines.is_empty() && joins != expected {
         return Err(CadError::unsupported(
-            "existing H/V or length require all persisted Coincident closure links",
+            "existing H/V, length or Fixed endpoint require all persisted Coincident closure links",
         ));
     }
     Ok(())
@@ -193,7 +281,7 @@ fn retained(sketch: &Sketch, edits: &SketchConstraintEdits) -> Result<Vec<Sketch
             })?;
         if line_of(c.rule).is_none() {
             return Err(CadError::input(
-                "only H/V or Line length constraints may be removed; closure links are retained",
+                "only H/V, Line length or the Fixed endpoint may be removed; closure links are retained",
             ));
         }
     }
@@ -215,12 +303,7 @@ fn retained(sketch: &Sketch, edits: &SketchConstraintEdits) -> Result<Vec<Sketch
             )));
         }
         if !lines.insert(line_slot(add.curve, add.kind)) {
-            return Err(CadError::input(match add.kind {
-                LineConstraintKind::Distance(_) => {
-                    "a Line may hold only one length; remove its current constraint first"
-                }
-                _ => "a Line may hold only one H/V; remove its current constraint first",
-            }));
+            return Err(CadError::input(occupied(add.kind)));
         }
     }
     Ok(kept)
@@ -293,6 +376,11 @@ pub fn prepare_sketch_constraints(
                 a,
                 b,
                 distance: length.get(),
+            },
+            LineConstraintKind::Fixed { at, x, y } => SketchConstraintRule::Fixed {
+                point: SketchPointRef::new(add.curve, at.selector()),
+                x: x.get(),
+                y: y.get(),
             },
         };
         let c = SketchConstraint {

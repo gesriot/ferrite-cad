@@ -307,10 +307,15 @@ fn existing_reversed_closure_is_reused_and_other_families_are_refused() {
         s.constraints.push(SketchConstraint {
             id: retained,
             rule: if unsupported {
-                SketchConstraintRule::Fixed {
-                    point: SketchPointRef::new(curve, SketchPointSelector::Start),
-                    x: -20.,
-                    y: -10.,
+                SketchConstraintRule::Perpendicular {
+                    a: SketchSegmentRef::new(
+                        SketchPointRef::new(curve, SketchPointSelector::Start),
+                        SketchPointRef::new(curve, SketchPointSelector::End),
+                    ),
+                    b: SketchSegmentRef::new(
+                        SketchPointRef::new(s.curves[1].id, SketchPointSelector::Start),
+                        SketchPointRef::new(s.curves[1].id, SketchPointSelector::End),
+                    ),
                 }
             } else {
                 SketchConstraintRule::Coincident {
@@ -325,7 +330,7 @@ fn existing_reversed_closure_is_reused_and_other_families_are_refused() {
             prepare_sketch_constraints(&d, id, &add(curve, LineConstraintKind::Horizontal));
         if unsupported {
             assert_eq!(
-                result.expect_err("Fixed outside edit class").kind(),
+                result.expect_err("Perpendicular outside edit class").kind(),
                 ErrorKind::Unsupported
             );
         } else {
@@ -469,6 +474,230 @@ fn arbitrary_distance_and_duplicate_lengths_refuse_whole_document() {
         let before = stored(&d, id);
         let source = ExtrudeEditSource::read(&d).expect("discovery");
         assert!(source.constraint_sketches[0].stored.is_none(), "{case}");
+        assert_eq!(
+            prepare_sketch_constraints(&d, id, &add(curve, LineConstraintKind::Horizontal))
+                .expect_err(case)
+                .kind(),
+            ErrorKind::Unsupported
+        );
+        assert_eq!(stored(&d, id), before);
+    }
+}
+
+fn pin(at: LineEndpoint, x: f64, y: f64) -> LineConstraintKind {
+    LineConstraintKind::Fixed {
+        at,
+        x: SketchCoordinateMm::new(x).expect("x"),
+        y: SketchCoordinateMm::new(y).expect("y"),
+    }
+}
+
+#[test]
+fn a_fixed_endpoint_is_checked_replaced_and_removed_without_touching_other_ids() {
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(
+            SketchCoordinateMm::new(bad)
+                .expect_err("not a coordinate")
+                .kind(),
+            ErrorKind::Input
+        );
+    }
+    for good in [0., -0., -5., 10.5, f64::MIN, f64::MAX] {
+        assert_eq!(SketchCoordinateMm::new(good).expect("finite").get(), good);
+    }
+    // Both zeros are one coordinate, so history comparison never splits them.
+    assert_eq!(
+        SketchCoordinateMm::new(0.).expect("0"),
+        SketchCoordinateMm::new(-0.).expect("-0")
+    );
+    let (_root, mut d, id) = fixture();
+    let original = stored(&d, id);
+    let curve = original.curves[0].id;
+    let other = original.curves[2].id;
+
+    // A pin alone is the first user constraint: closure is created with it.
+    let p = prepare_sketch_constraints(&d, id, &add(curve, pin(LineEndpoint::Start, -20., -10.)))
+        .expect("first pin adds closure");
+    assert_eq!(p.added.len(), 5);
+    assert!(
+        p.added[..4]
+            .iter()
+            .all(|c| matches!(c.rule, SketchConstraintRule::Coincident { .. })),
+        "closure precedes the pin"
+    );
+    let SketchConstraintRule::Fixed { point, x, y } = p.added[4].rule else {
+        panic!("pin")
+    };
+    assert_eq!(
+        (point.curve, point.at, x, y),
+        (curve, SketchPointSelector::Start, -20., -10.)
+    );
+    d.write_sketch_constraints(&p).expect("write pin");
+    let first = p.added[4].id;
+    let before = stored(&d, id);
+    assert_eq!(
+        before.curves, original.curves,
+        "stored coordinates are inputs"
+    );
+
+    // One pin per profile, whichever Line or endpoint the second one names —
+    // including the far side of the very joint the first one sits on.
+    for second in [
+        add(curve, pin(LineEndpoint::Start, -20., -10.)),
+        add(curve, pin(LineEndpoint::End, 40., -8.)),
+        add(other, pin(LineEndpoint::Start, 42., 30.)),
+        add(
+            original.curves[3].id,
+            pin(LineEndpoint::End, -20., -10.), // alias of curve 0 Start's joint
+        ),
+    ] {
+        assert_eq!(
+            prepare_sketch_constraints(&d, id, &second)
+                .expect_err("one pin per profile")
+                .kind(),
+            ErrorKind::Input
+        );
+        assert_eq!(stored(&d, id), before);
+    }
+    assert_eq!(
+        prepare_sketch_constraints(
+            &d,
+            id,
+            &add(StableEntityId::new(), pin(LineEndpoint::Start, 0., 0.))
+        )
+        .expect_err("foreign curve")
+        .kind(),
+        ErrorKind::Input
+    );
+
+    // Discovery still reads the document, and names the pin as a pin.
+    let discovery = ExtrudeEditSource::read(&d).expect("discovery");
+    let choice = &discovery.constraint_sketches[0];
+    assert!(choice.refusal.is_none());
+    assert_eq!(
+        choice
+            .stored
+            .as_ref()
+            .expect("stored")
+            .constraints
+            .iter()
+            .filter(|c| matches!(c.rule, SketchConstraintRule::Fixed { .. }))
+            .map(|c| c.id)
+            .collect::<Vec<_>>(),
+        vec![first]
+    );
+
+    // Exact remove + add in one request moves the pin and mints one new UUID.
+    let replacement = SketchConstraintEdits {
+        remove: vec![first],
+        add: vec![AddLineConstraint {
+            curve: other,
+            kind: pin(LineEndpoint::End, 0., 0.),
+        }],
+    };
+    let p = prepare_sketch_constraints(&d, id, &replacement).expect("atomic pin replacement");
+    assert_eq!(p.removed, vec![first]);
+    assert_eq!(p.added.len(), 1);
+    assert_ne!(p.added[0].id, first);
+    let moved = p.added[0].id;
+    d.write_sketch_constraints(&p).expect("replace pin");
+    let after = stored(&d, id);
+    assert_eq!(after.curves, original.curves);
+    assert_eq!(
+        after.constraints[..4],
+        before.constraints[..4],
+        "closure UUIDs are untouched"
+    );
+    assert!(!after.constraints.iter().any(|c| c.id == first));
+    assert_eq!(
+        after.constraints.last().expect("pin"),
+        &SketchConstraint {
+            id: moved,
+            rule: SketchConstraintRule::Fixed {
+                point: SketchPointRef::new(other, SketchPointSelector::End),
+                x: 0.,
+                y: 0.,
+            },
+        }
+    );
+
+    // Removing the pin keeps closure and every other identity.
+    let removal = prepare_sketch_constraints(
+        &d,
+        id,
+        &SketchConstraintEdits {
+            remove: vec![moved],
+            add: vec![],
+        },
+    )
+    .expect("remove pin");
+    d.write_sketch_constraints(&removal).expect("write removal");
+    assert_eq!(stored(&d, id).constraints, before.constraints[..4]);
+    assert_eq!(stored(&d, id).curves, original.curves);
+}
+
+#[test]
+fn several_pins_or_an_unrepresentable_pin_refuse_the_whole_document() {
+    for case in [
+        "second-pin",
+        "point-selector",
+        "non-finite",
+        "missing-closure",
+    ] {
+        let (_root, mut d, id) = fixture();
+        let curve = stored(&d, id).curves[0].id;
+        let p =
+            prepare_sketch_constraints(&d, id, &add(curve, pin(LineEndpoint::Start, -20., -10.)))
+                .expect("prepare");
+        d.write_sketch_constraints(&p).expect("store");
+        let mut o = d.object(id).expect("object").expect("Sketch");
+        let ObjectPayload::Sketch(s) = &mut o.payload else {
+            panic!("Sketch")
+        };
+        match case {
+            "second-pin" => s.constraints.push(SketchConstraint {
+                id: StableEntityId::new(),
+                rule: SketchConstraintRule::Fixed {
+                    point: SketchPointRef::new(s.curves[1].id, SketchPointSelector::End),
+                    x: 1.,
+                    y: 2.,
+                },
+            }),
+            "point-selector" => {
+                if let SketchConstraintRule::Fixed { point, .. } = &mut s.constraints[4].rule {
+                    point.at = SketchPointSelector::At;
+                }
+            }
+            "non-finite" => {
+                if let SketchConstraintRule::Fixed { y, .. } = &mut s.constraints[4].rule {
+                    *y = f64::INFINITY;
+                }
+            }
+            _ => {
+                s.constraints.remove(0);
+            }
+        }
+        let payload_accepted = d
+            .write(|w| w.put_object(o.id, o.parent, o.ordinal, o.name.as_deref(), &o.payload))
+            .is_ok();
+        if !payload_accepted {
+            // Stored validation refuses these before any edit class sees them.
+            assert!(
+                ["point-selector", "non-finite"].contains(&case),
+                "{case} must reach the edit class"
+            );
+            continue;
+        }
+        let before = stored(&d, id);
+        let source = ExtrudeEditSource::read(&d).expect("discovery");
+        assert!(source.constraint_sketches[0].stored.is_none(), "{case}");
+        assert!(
+            source.constraint_sketches[0]
+                .refusal
+                .as_deref()
+                .is_some_and(|r| !r.is_empty()),
+            "{case} is explained, not silently dropped"
+        );
         assert_eq!(
             prepare_sketch_constraints(&d, id, &add(curve, LineConstraintKind::Horizontal))
                 .expect_err(case)

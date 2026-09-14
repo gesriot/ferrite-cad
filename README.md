@@ -21,6 +21,8 @@ Saved Line coordinates can be edited in a new copy through **Edit Sketch …** o
 keeps segment IDs/order and winding. **Edit H/V …** and
 `edit-sketch-constraints-copy` persist Horizontal/Vertical constraints in a new
 copy; [constraint contract and agent recipe](docs/sketch-constraints-copy.md).
+The same operation persists one [length per Line](docs/line-length-constraints.md)
+and [one pinned endpoint per profile at explicit X/Y mm](docs/fixed-sketch-vertex.md).
 The solver keeps joints closed through named Coincident constraints; stored
 coordinates remain inputs, and arbitrary constraint families are still unsupported.
 

@@ -935,3 +935,24 @@ Discovery/result Distance возвращают прежнее поле **`distan
 одного Line запрещены. Замена — remove exact UUID + add с новым UUID, остальные
 IDs сохраняются. [Полный контракт и UI semantics](sketch-constraints-copy.md),
 [рецепт с независимым измерением геометрии](line-length-constraints.md).
+
+§25G снова сохраняет operation/schema/request v1 и все exit-коды. В `add`
+аддитивно доступна четвёртая форма — ровно так и пишется:
+
+```json
+{"rule":"fixed","curve_id":"UUID_FROM_DISCOVERY","at":"start","x_mm":10,"y_mm":-5}
+```
+
+`at` — строка `start` либо `end` (lowercase, никакого `at`, `middle`, `Start`
+или числа). `x_mm`/`y_mm` — JSON numbers, после декодирования в f64 конечные
+миллиметры; ноль и отрицательные допустимы, NaN/Infinity/overflow, строки, bool,
+null и отсутствие поля отвергаются. `distance_mm` у `fixed` и `at` у
+H/V/`distance` — лишние поля и тоже отвергаются. Один Fixed на профиль: второй
+add, второй сохранённый Fixed и ссылка на противоположный endpoint того же
+adjacent Coincident joint отвергаются до публикации.
+
+Discovery и `added_constraints` возвращают прежний DTO `{"kind":"fixed",
+"point":{"curve_id","at"},"x","y"}` — **`point`/`x`/`y`, а не `x_mm`/`y_mm`**,
+ровно как Distance сохраняет поле `distance`. Замена — remove exact UUID + add
+в одном request; удаление Fixed не трогает Coincident closure, H/V и размеры.
+[Полный контракт и рецепт](fixed-sketch-vertex.md).
