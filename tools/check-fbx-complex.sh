@@ -152,7 +152,7 @@ fi
 
 # §25E reuses this same pinned reader for the actual H/V publications.
 if [ -n "${FCAD_SKETCH_CONSTRAINT_FBX_DIR:-}" ]; then
-    for name in horizontal vertical; do
+    for name in horizontal vertical length-rectangle length-replaced length-slanted; do
         "$reader" --identity "$FCAD_SKETCH_CONSTRAINT_FBX_DIR/$name.fbx" | tee "$work/constraint-$name-reader.txt"
         count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) failures=0$/\1/p' "$work/constraint-$name-reader.txt")"
         [ -n "$count" ] && [ "$count" -ge 6 ] || {
