@@ -149,3 +149,15 @@ if [ -n "${FCAD_SKETCH_DRAG_FBX:-}" ]; then
     }
     echo "FCAD_SKETCH_DRAG_UFBX_EXECUTED"
 fi
+
+# §25E reuses this same pinned reader for the actual H/V publications.
+if [ -n "${FCAD_SKETCH_CONSTRAINT_FBX_DIR:-}" ]; then
+    for name in horizontal vertical; do
+        "$reader" --identity "$FCAD_SKETCH_CONSTRAINT_FBX_DIR/$name.fbx" | tee "$work/constraint-$name-reader.txt"
+        count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) failures=0$/\1/p' "$work/constraint-$name-reader.txt")"
+        [ -n "$count" ] && [ "$count" -ge 6 ] || {
+            echo "error: pinned reader did not verify constrained $name FBX" >&2; exit 1;
+        }
+    done
+    echo "FCAD_SKETCH_CONSTRAINT_UFBX_EXECUTED"
+fi

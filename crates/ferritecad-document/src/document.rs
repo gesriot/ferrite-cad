@@ -712,6 +712,54 @@ impl Document {
         )
     }
 
+    /// Write a prepared H/V edit without replacing object ownership. Exactly the
+    /// selected payload/hash/header and its required constraint capability may change.
+    pub fn write_sketch_constraints(
+        &mut self,
+        prepared: &crate::PreparedSketchConstraints,
+    ) -> Result<()> {
+        let selected = prepared.object();
+        let current = self.object(selected.id)?.ok_or_else(|| {
+            CadError::input("selected Sketch disappeared before constraint write")
+        })?;
+        if current.storage_bytes() != selected.storage_bytes()
+            || current.parent != selected.parent
+            || current.ordinal != selected.ordinal
+            || current.name != selected.name
+        {
+            return Err(CadError::input(
+                "Sketch changed after constraint preparation",
+            ));
+        }
+        let bytes = selected.payload.to_storage_bytes()?;
+        let hash = ContentHash::of_bytes(&bytes);
+        let ObjectPayload::Sketch(sketch) = &selected.payload else {
+            return Err(CadError::input(
+                "constraint preparation must contain a Sketch",
+            ));
+        };
+        let version = sketch.schema_version();
+        if sketch.constraints.is_empty() {
+            return Err(CadError::input(
+                "constraint editing retains persisted closure",
+            ));
+        }
+        self.write_transaction(|writer| {
+            let changed = writer.tx.execute(
+                "UPDATE objects SET schema_version=?1,payload=?2,payload_hash=?3 WHERE id=?4",
+                params![version,bytes,hash.as_bytes().as_slice(),selected.id.to_bytes().as_slice()],
+            ).map_err(|e| CadError::io("writing Sketch constraints",e))?;
+            if changed != 1 { return Err(CadError::input("selected Sketch disappeared before constraint write")); }
+            // Upsert only this capability. The general index rebuild deletes
+            // optional rows and reissues rowids; no other declaration changed.
+            writer.tx.execute(
+                "INSERT INTO capabilities(name,required) VALUES(?1,1) ON CONFLICT(name) DO UPDATE SET required=1 WHERE required<>1",
+                params![crate::SKETCH_CONSTRAINTS_CAPABILITY],
+            ).map_err(|e| CadError::io("recording Sketch constraint capability",e))?;
+            Ok(())
+        },false)
+    }
+
     fn write_transaction<T>(
         &mut self,
         edit: impl FnOnce(&mut DocumentWriter<'_>) -> Result<T>,

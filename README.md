@@ -18,7 +18,11 @@ exact document millimetres; [step rules](docs/sketch-snap-step.md). X/Y fields
 and Snap Off keep full precision.
 Saved Line coordinates can be edited in a new copy through **Edit Sketch …** or
 `edit-sketch-copy`; [the identity-preserving contract](docs/edit-sketch-copy.md)
-keeps segment IDs/order and winding. Constraint editing remains future work.
+keeps segment IDs/order and winding. **Edit H/V …** and
+`edit-sketch-constraints-copy` persist Horizontal/Vertical constraints in a new
+copy; [constraint contract and agent recipe](docs/sketch-constraints-copy.md).
+The solver keeps joints closed through named Coincident constraints; stored
+coordinates remain inputs, and arbitrary constraint families are still unsupported.
 
 The window can create an empty native document or a sample plate from a template;
 it can also change a supported constant Blind extrusion height in a new copy.
@@ -707,9 +711,9 @@ this program carries. A command line this viewer cannot act on still exits
 This says which component is loaded. A document stores the meaning of a
 constrained sketch, and a build that linked planegcs solves those constraints
 when it rebuilds: the profile it extrudes is the solved one, not the
-coordinates the curves were last left at. The viewer can create an unconstrained Line polygon (§25A), but cannot yet
-edit a constraint, so a constrained sketch is one that arrived in the document
-some other way. A build with no solver refuses such a sketch rather than
+coordinates the curves were last left at. The viewer can create an unconstrained
+Line polygon (§25A) and add/remove persisted H/V in a new copy (§25E), with
+explicit Coincident closure. Other constraint families are outside that editor. A build with no solver refuses such a sketch rather than
 building from the stored coordinates. What that solve found out – how much
 freedom each sketch has left, and which of its constraints repeat what the rest
 already said, each one explained in the document's own words rather than named

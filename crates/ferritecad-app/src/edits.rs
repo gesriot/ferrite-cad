@@ -146,6 +146,27 @@ impl Edits {
             spawn(request, generation, cancel)
         })
     }
+    pub(crate) fn start_constraints(
+        &mut self,
+        request: ferritecad_jobs::EditSketchConstraintsRequest,
+        spawn: impl FnOnce(
+            ferritecad_jobs::EditSketchConstraintsRequest,
+            u64,
+            CancelToken,
+        ) -> JoinHandle<()>,
+    ) -> Option<u64> {
+        let destination = request.destination.clone();
+        self.start_at(&destination, |generation, cancel| {
+            spawn(request, generation, cancel)
+        })
+    }
+    pub(crate) fn finish_constraints(
+        &mut self,
+        generation: u64,
+        result: Result<ferritecad_jobs::EditedSketchConstraints>,
+    ) -> Option<PathBuf> {
+        self.finish_path(generation, result.map(|r| r.destination))
+    }
     fn start_at(
         &mut self,
         destination: &Path,
@@ -243,6 +264,20 @@ pub(crate) fn spawn_sketch_edit(
         move |context| {
             let mut kernel = ferritecad_occt::OcctKernel::new()?;
             ferritecad_jobs::edit_sketch_copy(&request, &mut kernel, context)
+        },
+        deliver,
+    )
+}
+pub(crate) fn spawn_constraint_edit(
+    request: ferritecad_jobs::EditSketchConstraintsRequest,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ferritecad_jobs::EditedSketchConstraints>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn_job(
+        cancel,
+        move |context| {
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            ferritecad_jobs::edit_sketch_constraints_copy(&request, &mut kernel, context)
         },
         deliver,
     )

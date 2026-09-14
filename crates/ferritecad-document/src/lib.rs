@@ -84,3 +84,9 @@ pub use schema::{
     SUPPORTED_CAPABILITIES,
 };
 pub use validate::{Diagnostic, Severity, ValidationReport};
+
+mod sketch_constraints;
+pub use sketch_constraints::{
+    AddLineConstraint, ConstraintSketchChoice, LineConstraintKind, PreparedSketchConstraints,
+    SketchConstraintEdits, constraint_sketch_choices, prepare_sketch_constraints,
+};

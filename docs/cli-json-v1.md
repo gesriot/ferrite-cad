@@ -1,4 +1,4 @@
-# CLI JSON v1: девять opt-in команд
+# CLI JSON v1: десять opt-in команд
 
 §24D задаёт opt-in контракт inspect и edit-extrude. §24D-1 добавляет третью
 существующую команду, `create`, через тот же конверт v1. §24F добавляет Body
@@ -7,6 +7,7 @@ discovery и `export-stl --json`; §24G добавляет `export-fbx --json`,
 без изменения `schema_version`:
 
 ```text
+ferritecad edit-sketch-constraints-copy <source.fcad> --sketch <uuid> --expect-version <token> --request <constraints.json> -o <new.fcad> --json
 ferritecad edit-sketch-copy <source.fcad> --sketch <uuid> --expect-version <token> --request <coordinates.json> -o <new.fcad> --json
 ferritecad validate <source.fcad> --json
 ferritecad import-step <source.step> -o <new.fcad> --json [--name <name>] [--force]
@@ -33,7 +34,7 @@ stdout-логов рядом нет. Диагностика для челове�
 | Поле | Тип и правило |
 | --- | --- |
 | `schema_version` | integer, сейчас ровно `1` |
-| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate` `create-sketch-extrude` или `edit-sketch-copy` |
+| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate`, `create-sketch-extrude`, `edit-sketch-copy` или `edit-sketch-constraints-copy` |
 | `ok` | boolean |
 | `result` | объект соответствующей операции, присутствует только при `ok: true` |
 | `error` | объект ошибки, присутствует только при `ok: false` |
@@ -911,3 +912,14 @@ PY
 private STEP через pinned ufbx 0.23.0 strict. На macOS запускайте `source` в Bash
 с уже заданными DYLD paths. Import, inspect, validate и export — отдельные операции над
 сохранёнными состояниями; FBX не получил `--expect-version`.
+
+## §25E: сохраняемые Horizontal/Vertical
+
+`inspect.result.sketches[]` совместимо получает required `constraint_edit` с
+available/refusal/document_refusal и ordered stored curves/constraints.
+Это отдельная доступность: coordinate editing constrained Sketch остаётся запрещено.
+Точные поля, null/[]/unknown policy, request remove-before-add, closure retention,
+result и typed `error.constraint_conflict` описаны в
+[H/V contract](sketch-constraints-copy.md#json-v1). `operation` —
+`edit-sketch-constraints-copy`; только 0 (published), 2 (refused), 7 (delivery).
+Старые девять операций сохраняют wire и коды. [Запускаемый рецепт](sketch-constraints-copy.md#запускаемый-рецепт-агента).

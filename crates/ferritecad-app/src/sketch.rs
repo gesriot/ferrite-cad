@@ -24,6 +24,7 @@ impl Default for State {
 
 #[derive(Debug, Default)]
 pub(crate) struct Editor {
+    pub(crate) constraints: crate::constraints::Editor,
     draft: Option<State>,
     undo: Vec<State>,
     redo: Vec<State>,
@@ -35,7 +36,7 @@ pub(crate) struct Editor {
 }
 impl Editor {
     pub(crate) fn active(&self) -> bool {
-        self.draft.is_some()
+        self.draft.is_some() || self.constraints.active()
     }
     pub(crate) fn dismiss(&mut self) {
         *self = Self::default();
@@ -95,6 +96,9 @@ impl Editor {
         path: Option<&Path>,
         source: Option<&ExtrudeEditSource>,
     ) {
+        if !self.active() {
+            self.constraints.choices(ui, can_begin, path, source);
+        }
         if self.active() {
             return;
         }
@@ -197,6 +201,10 @@ impl Editor {
         )?))
     }
     pub(crate) fn draw(&mut self, ui: &mut egui::Ui, can_begin: bool, running: bool) {
+        if self.constraints.active() {
+            self.constraints.draw(ui, running);
+            return;
+        }
         if !self.active() {
             if ui
                 .add_enabled(can_begin, egui::Button::new("Create sketch + Extrude…"))
@@ -1336,4 +1344,4 @@ mod tests {
 
 #[cfg(test)]
 #[path = "sketch/drag_tests.rs"]
-mod drag_tests;
+pub(crate) mod drag_tests;

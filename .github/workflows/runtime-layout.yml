@@ -627,6 +627,43 @@ jobs:
           # The existing FBX campaign reuses its pinned reader for this file.
           echo "FCAD_SKETCH_DRAG_FBX=$artifacts/drag.fbx" >> "$GITHUB_ENV"
 
+      - name: Persist and solve Line H/V through the native CLI and worker
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          CARGO_BUILD_JOBS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          artifacts="$RUNNER_TEMP/sketch-constraints"
+          mkdir -p "$artifacts"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH"; artifacts="$(cygpath -w "$artifacts")" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          export FERRITECAD_CONSTRAINT_ARTIFACTS="$artifacts"
+          # Peer process must be this build before the app worker gate.
+          cargo build --release --features planegcs -p ferritecad-cli
+          for gate in native_constraint_copy_process_solves_slanted_h_v_and_removes_exact_ids native_constraint_refusals_are_atomic; do
+            cargo test --release --features planegcs -p ferritecad-cli --test edit_constraints \
+              "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee "$gate.log"
+            if grep -q 'skipped:' "$gate.log" || ! grep -Fq "test $gate ... ok" "$gate.log"; then
+              echo "::error::constraint process gate $gate did not execute"; exit 1
+            fi
+          done
+          for pair in 'ferritecad-app constraints::tests::native_constraint_worker_and_cli_preserve_model_and_solved_body' 'ferritecad-jobs edit::tests::constraint_copy_refusals_cancellation_races_and_cleanup'; do
+            read -r package gate <<< "$pair"
+            cargo test --release --features planegcs -p "$package" "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee "$package-constraints.log"
+            if grep -q 'skipped:' "$package-constraints.log" || ! grep -Fq "test $gate ... ok" "$package-constraints.log"; then
+              echo "::error::constraint gate $gate did not execute"; exit 1
+            fi
+          done
+          echo "FCAD_SKETCH_CONSTRAINT_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
+
       - name: Create, discover, edit and export through the JSON v1 CLI contract
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
@@ -712,6 +749,7 @@ jobs:
           # Source keeps DYLD_* across the macOS system-shell boundary.
           source tools/check-fbx-complex.sh --release --features planegcs 2>&1 | tee fbx-json-tests.log
           grep -q '^FCAD_SKETCH_DRAG_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_SKETCH_CONSTRAINT_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

@@ -562,14 +562,14 @@ pub(super) fn move_saved_l(ctx: &egui::Context, e: &mut Editor) {
     assert!(e.edit_request().is_ok());
 }
 
-pub(super) fn attach_source_claim(source: &std::path::Path) {
+pub(crate) fn attach_source_claim(source: &std::path::Path) {
     let db = rusqlite::Connection::open(source).expect("SQL");
     let bytes = b"attached Sketch source must remain owned after pointer editing";
     db.execute("INSERT INTO imported_sources(id,format,bytes,content_hash,byte_len,created_at) VALUES(zeroblob(16),'future.sketch-source',?1,?2,?3,'saved')",
         rusqlite::params![bytes.as_slice(),ferritecad_types::ContentHash::of_bytes(bytes).as_bytes().as_slice(),bytes.len()]).expect("source bytes");
     db.execute_batch("INSERT INTO imported_source_refs SELECT id,zeroblob(16) FROM objects WHERE kind='sketch'; CREATE TABLE extension(value BLOB); INSERT INTO extension(rowid,value) VALUES(73,X'00FF'); UPDATE capabilities SET rowid=rowid+100; INSERT INTO capabilities(rowid,name,required) VALUES(999,'future.optional',0);").expect("claims and other SQL");
 }
-fn sql_facts(
+pub(crate) fn sql_facts(
     path: &std::path::Path,
 ) -> std::collections::BTreeMap<String, Vec<Vec<rusqlite::types::Value>>> {
     use rusqlite::{Connection, OpenFlags};
