@@ -1,10 +1,10 @@
-# §25E — H/V constraints в новой копии
+# §25E–F — ограничения Line в новой копии
 
 Контракт реализации: существующие собственные XY Line polygons, 3..256 сегментов,
 один positive literal Blind/NewBody и его Body. Stored координаты остаются
 исходным состоянием solver; они не являются solved presentation. Coordinate edit,
 drag и Snap constrained Sketch по-прежнему недоступны. Отдельная операция ниже
-добавляет/удаляет только Horizontal/Vertical. Нет in-place Save.
+добавляет/удаляет Horizontal/Vertical и евклидову длину Line. Нет in-place Save.
 
 ## Request и атомарность
 
@@ -14,24 +14,36 @@ drag и Snap constrained Sketch по-прежнему недоступны. От
 {"request_version":1,"remove":[],"add":[{"curve_id":"UUID_FROM_DISCOVERY","rule":"horizontal"}]}
 ```
 
-Оба массива обязательны. UUID — canonical UUIDv7; rule — `horizontal` или
-`vertical`. Request ограничен 65536 bytes и 512 изменениями, должен быть непустым;
+Оба массива обязательны. UUID — canonical UUIDv7. Старые additions остаются
+`{curve_id,rule:"horizontal"}` / `{curve_id,rule:"vertical"}` без дополнительных полей.
+§25F аддитивно добавляет в request v1
+`{curve_id,rule:"distance",distance_mm:N}`: N — JSON number, после декодирования
+в f64 конечный и строго положительный, в mm. Это евклидово расстояние между
+Start и End одного указанного Line, а не X/Y-проекция. H/V не принимают
+`distance_mm`, даже null; Distance требует это поле. Строка, bool, null, NaN,
+infinity, overflow, zero/negative и любые неизвестные поля отказываются. Request ограничен 65536 bytes и 512 изменениями, должен быть непустым;
 неизвестные поля/версии/rules отказываются. Сначала все удаления в порядке remove,
-затем добавления в порядке add; request атомарен. Remove именует существующий H/V
+затем добавления в порядке add; request атомарен. Remove именует существующий H/V или Line length
 constraint UUID выбранного Sketch. Повторное удаление, foreign UUID, удаление
-Coincident, повторный H/V или H+V одного сегмента отказываются. Можно удалить H и
+Coincident, повторный H/V, H+V или две длины одного сегмента отказываются. Можно удалить H и
 добавить V в одном request. Один add всегда ссылается на Start/End указанного Line.
+Один Line может иметь H либо V и одну длину одновременно. Даже две одинаковые
+длины запрещены. Замена значения — атомарный remove старого exact UUID + add
+новой длины: новый constraint UUID создаётся общей операцией один раз; остальные
+IDs сохраняются. Это не обновление значения с сохранением UUID заменённой связи.
 
-При добавлении H/V отсутствующие связи замыкания создаются явно: Coincident
+При добавлении H/V или длины отсутствующие связи замыкания создаются явно: Coincident
 между End каждого Line и Start следующего, включая последний/первый. Подходящие
 существующие связи (в любой ориентации) сохраняют UUID; дубликаты запрещены.
-Новые Coincident добавляются в порядке кривых, затем запрошенные H/V. Они видны
-в discovery и result. После удаления последнего H/V Coincident **остаются**;
-скрытых Fixed/Distance нет. Этот API не удаляет closure и не возвращает такой
-Sketch в unconstrained v1. Снятие H/V освобождает условие, не обещает отката формы.
+Новые Coincident добавляются в порядке кривых, затем запрошенные H/V/length. Они видны
+в discovery и result. После удаления последних H/V/length Coincident **остаются**;
+скрытых Fixed или размеров нет. Этот API не удаляет closure и не возвращает такой
+Sketch в unconstrained v1. Снятие H/V/length освобождает условие, не обещает отката формы.
 
-Поддерживаются только H/V одного Line и Coincident его соседних стыков.
-Существующие H/V требуют полного набора closure; другие families/связи, imports,
+Поддерживаются H/V, положительный Distance между Start/End одного Line
+(сохранённая обратная ориентация endpoints также допустима) и Coincident его
+соседних стыков. Arbitrary point-to-point Distance между разными Lines, Fixed,
+formula/Parameter dimensions не становятся редактируемыми. Существующие H/V/length требуют полного набора closure; другие families/связи, imports,
 construction, arcs, неизвестные payload fields и более сложные документы получают
 refusal и сохраняются. Stored ordered polygon обязан оставаться допустимым.
 Сохранение проверяет baseline и изменённую модель cold rebuild, solver и topology refs.
@@ -47,7 +59,11 @@ curves/constraints — массивы для поддержанного Sketch, 
 constraints без правил — `[]`. Curves в stored порядке:
 `{curve_id,start_mm:[x,y],end_mm:[x,y]}`. Constraint в stored порядке:
 `{constraint_id,rule:{kind,a:{curve_id,at},b:{curve_id,at}}}`;
-kind — `horizontal`/`vertical`/`coincident`, at — `start`/`end`.
+kind — `horizontal`/`vertical`/`coincident`/`distance`, at — `start`/`end`.
+Distance дополнительно имеет required `distance: number` в mm. **Response поле
+остаётся `distance`**, request использует `distance_mm`; версии operation/schema
+не меняются. Endpoints/value/UUID берутся из принятого snapshot или опубликованного
+результата, не из текста и не из повторного открытия output.
 Это persisted IDs и исходные координаты, не экранные индексы или solver ordinals.
 
 Публикация: обычный envelope, schema_version 1,
@@ -108,6 +124,27 @@ Save Cancel, ошибка/отмена job и stale reply сохраняют о�
 solver, не меняет CLI/JSON или запрет coordinate drag constrained Sketch.
 [Проверки §25E-1](constraint-draft-history-verification.md).
 
+
+### §25F: поле длины и pending request
+
+`Edit constraints …` открывает `Sketch constraints — new copy`. Stored координаты
+показаны отдельно от pending/сохранённых связей и solved результата. Поле
+`Line length (mm)` принимает временно незавершённую строку; только успешное
+`Add length` проверяет её через `LineLengthMm::new` и добавляет один checkpoint.
+Внутренний checked тип хранит биты конечного положительного f64, поэтому точное Eq
+не допускает NaN/zero и не использует приблизительное сравнение истории.
+Ввод, выбор Line и отказ не очищают Redo. Undo/Redo восстанавливают только ordered
+request: выбранная Line и ещё не применённая строка поля остаются как есть.
+Save использует принятый request, а не неприменённый текст поля. Add не запускает
+solver. Running выключает поле и действия; новый draft сбрасывает поле и историю.
+
+Сохранённая длина отображается с mm и exact UUID; Remove работает для неё так же,
+как для H/V. Для замены выберите Remove существующей длины и Add length с новым
+числом до Save. Если закрытый H/V-прямоугольник получает несовместимые длины
+противоположных сторон, структурный request допустим, но настоящий solver
+отказывает до publish. Typed conflict именует существующие/proposed UUID;
+proposed ID при отказе не подтверждает наличие ограничения на диске.
+
 ### Точные типы и конфликт
 
 UUID и версии следуют общему [JSON v1](cli-json-v1.md). destination — UTF-8 строка
@@ -119,8 +156,8 @@ UUID и версии следуют общему [JSON v1](cli-json-v1.md). dest
 
 `constraint_conflict.sketch_id` идентифицирует выбранный Sketch; constraints —
 упорядоченные typed facts существующего `SketchConflict`, не solver ordinals.
-Текущий разрешённый класс выдаёт только три rule kinds выше. Defensive projection
-также понимает `fixed:{point,x,y}`, `distance:{a,b,distance}` (mm),
+Текущий разрешённый класс выдаёт четыре rule kinds выше. Defensive projection
+также понимает `fixed:{point,x,y}`,
 `equal_length`, `perpendicular`, `parallel` с a/b сегментами
 `{from:point,to:point}`; point имеет тот же `{curve_id,at}`. Неизвестное будущее
 правило отдаётся как `{kind:"unknown"}`: клиент останавливает автоматическую

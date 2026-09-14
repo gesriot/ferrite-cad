@@ -65,13 +65,16 @@ struct Fixture {
 }
 impl Fixture {
     fn new(native: bool) -> Self {
+        Self::with_points(native.then_some([[-20., -10.], [40., -8.], [42., 30.], [-20., 30.]]))
+    }
+    fn with_points(points: Option<[[f64; 2]; 4]>) -> Self {
         let root = tempfile::tempdir().expect("dir");
         let source = root.path().join("контур space.fcad");
         let request = root.path().join("request.json");
-        if native {
+        if let Some(points) = points {
             write(
                 &request,
-                &json!({"request_version":1,"points_mm":[[-20,-10],[40,-8],[42,30],[-20,30]],"height_mm":10}),
+                &json!({"request_version":1,"points_mm":points,"height_mm":10}),
             );
             reply(
                 cli()
@@ -206,6 +209,37 @@ fn constraint_discovery_requests_and_delivery_without_native() {
         );
         assert!(v["error"].get("constraint_conflict").is_none());
     }
+    for addition in [
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"horizontal","distance_mm":10}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"vertical","distance_mm":null}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"distance"}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"distance","distance_mm":null}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"distance","distance_mm":"30"}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"distance","distance_mm":true}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"distance","distance_mm":0}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"distance","distance_mm":-1}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"distance","distance_mm":30,"future":1}),
+    ] {
+        write(
+            &f.request,
+            &json!({"request_version":1,"remove":[],"add":[addition]}),
+        );
+        let v = reply(f.edit(&out).output().expect("invalid dimension"), OP, 2);
+        assert_eq!(v["error"]["kind"], "input");
+        assert!(v["error"].get("constraint_conflict").is_none());
+    }
+    let valid=json!({"request_version":1,"remove":[],"add":[{"curve_id":discovery["curves"][0]["curve_id"],"rule":"distance","distance_mm":30}]}).to_string();
+    for bad in ["1e999", "NaN", "Infinity"] {
+        std::fs::write(
+            &f.request,
+            valid.replace("\"distance_mm\":30", &format!("\"distance_mm\":{bad}")),
+        )
+        .expect("bad number");
+        assert_eq!(
+            reply(f.edit(&out).output().expect("bad JSON number"), OP, 2)["error"]["kind"],
+            "input"
+        );
+    }
     for both in [false, true] {
         let mut c = f.edit(&out);
         c.stdout(pipe::closed_pipe());
@@ -214,7 +248,10 @@ fn constraint_discovery_requests_and_delivery_without_native() {
         }
         assert_eq!(c.output().expect("refusal pipe").status.code(), Some(7));
     }
-    f.add(0, "horizontal");
+    write(
+        &f.request,
+        &serde_json::from_str::<Value>(&valid).expect("valid length"),
+    );
     if !ferritecad_occt::is_available() {
         let v = reply(f.edit(&out).output().expect("stub"), OP, 2);
         assert_eq!(v["error"]["kind"], "unsupported");
@@ -272,7 +309,10 @@ fn stored_same(a: &Path, b: &Path) {
 }
 /// Independent STL triangle integration, compared with the measured solved polygon;
 /// no arbitrary under-constrained position is pinned across solver platforms.
-fn geometry(path: &Path, horizontal: bool) {
+fn geometry_checked(
+    path: &Path,
+    check: impl FnOnce(&[[f64; 2]], &[[f64; 2]], &ferritecad_document::Sketch),
+) {
     let d = Document::open_read_only(path).expect("doc");
     let objects = d.objects().expect("objects");
     let o = objects
@@ -306,35 +346,11 @@ fn geometry(path: &Path, horizontal: bool) {
             "joint {i}: {end:?} != {next:?}"
         );
     }
-    let (line, axis) = if horizontal { (0, 1) } else { (1, 0) };
-    let SketchGeometry::Line {
-        start: old_a,
-        end: old_b,
-    } = s.curves[line].geometry
-    else {
-        panic!("line")
-    };
-    assert!(
-        (if horizontal {
-            old_a.y - old_b.y
-        } else {
-            old_a.x - old_b.x
-        })
-        .abs()
-            > 1.
-    );
-    assert!(
-        (starts[line][axis] - ends[line][axis]).abs() < 1e-7,
-        "H/V was NOT delivered to solver: {starts:?} {ends:?}"
-    );
-    assert!(
-        starts.iter().zip(&s.curves).any(|(p, c)| {
-            let SketchGeometry::Line { start, .. } = c.geometry else {
-                return false;
-            };
-            (p[0] - start.x).abs() > 0.1 || (p[1] - start.y).abs() > 0.1
-        }),
-        "slanted stored coordinates did not move"
+    check(&starts, &ends, s);
+    eprintln!(
+        "solved {}: DOF {}",
+        path.display(),
+        report.degrees_of_freedom()
     );
     let area: f64 = starts
         .iter()
@@ -434,6 +450,87 @@ fn geometry(path: &Path, horizontal: bool) {
                 .expect("artifact");
         }
     }
+}
+fn geometry(path: &Path, horizontal: bool) {
+    geometry_checked(path, |starts, ends, s| {
+        let (line, axis) = if horizontal { (0, 1) } else { (1, 0) };
+        let SketchGeometry::Line {
+            start: old_a,
+            end: old_b,
+        } = s.curves[line].geometry
+        else {
+            panic!("line")
+        };
+        assert!(
+            (if horizontal {
+                old_a.y - old_b.y
+            } else {
+                old_a.x - old_b.x
+            })
+            .abs()
+                > 1.
+        );
+        assert!(
+            (starts[line][axis] - ends[line][axis]).abs() < 1e-7,
+            "H/V was NOT delivered to solver: {starts:?} {ends:?}"
+        );
+        assert!(
+            starts.iter().zip(&s.curves).any(|(p, c)| {
+                let SketchGeometry::Line { start, .. } = c.geometry else {
+                    return false;
+                };
+                (p[0] - start.x).abs() > 0.1 || (p[1] - start.y).abs() > 0.1
+            }),
+            "slanted stored coordinates did not move"
+        );
+    });
+}
+fn length_geometry(path: &Path, lengths: &[(usize, f64)], rectangle: bool) {
+    geometry_checked(path, |starts, ends, s| {
+        for &(i, length) in lengths {
+            let dx = ends[i][0] - starts[i][0];
+            let dy = ends[i][1] - starts[i][1];
+            assert!(
+                (dx.hypot(dy) - length).abs() < 1e-6,
+                "length NOT solved: line {i}, {dx}/{dy}, expected {length}"
+            );
+            if !rectangle {
+                assert!(
+                    (dx.abs() - length).abs() > 0.01 && (dy.abs() - length).abs() > 0.01,
+                    "slanted length must not be a projection"
+                );
+            }
+        }
+        if rectangle {
+            let widths: Vec<_> = (0..2)
+                .map(|j| {
+                    starts
+                        .iter()
+                        .map(|p| p[j])
+                        .fold(f64::NEG_INFINITY, f64::max)
+                        - starts.iter().map(|p| p[j]).fold(f64::INFINITY, f64::min)
+                })
+                .collect();
+            assert!(
+                (widths[0] - 60.).abs() < 1e-6 && (widths[1] - 30.).abs() < 1e-6,
+                "{widths:?}"
+            );
+            assert_eq!(s.curves.len(), 4);
+            let area2 = starts
+                .iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    let b = starts[(i + 1) % 4];
+                    a[0] * b[1] - a[1] * b[0]
+                })
+                .sum::<f64>()
+                .abs();
+            assert!(
+                (area2 / 2. * 10. - 18000.).abs() < 1e-4,
+                "expected 18000 mm3, before independent STL integration"
+            );
+        }
+    });
 }
 #[test]
 fn native_constraint_copy_process_solves_slanted_h_v_and_removes_exact_ids() {
@@ -553,72 +650,82 @@ fn native_constraint_refusals_are_atomic() {
     if !native() {
         return;
     }
-    let f = Fixture::new(true);
-    let out = f.root.path().join("out.fcad");
-    let before = std::fs::read(&f.source).expect("source");
-    let curve = f.catalog["sketches"][0]["constraint_edit"]["curves"][0]["curve_id"].clone();
-    for bad in [
-        json!({"request_version":1,"remove":[],"add":[]}),
-        json!({"request_version":1,"remove":[],"add":[{"curve_id":curve,"rule":"horizontal"},{"curve_id":curve,"rule":"horizontal"}]}),
-        json!({"request_version":1,"remove":[],"add":[{"curve_id":curve,"rule":"horizontal"},{"curve_id":curve,"rule":"vertical"}]}),
-        json!({"request_version":1,"remove":[ferritecad_types::StableEntityId::new()],"add":[]}),
-    ] {
-        write(&f.request, &bad);
-        let names = entries(f.root.path());
-        assert_eq!(
-            reply(f.edit(&out).output().expect("refusal"), OP, 2)["error"]["kind"],
-            "input"
+    for length in [false, true] {
+        let f = Fixture::new(true);
+        let out = f.root.path().join("out.fcad");
+        let before = std::fs::read(&f.source).expect("source");
+        let curve = f.catalog["sketches"][0]["constraint_edit"]["curves"][0]["curve_id"].clone();
+        for bad in [
+            json!({"request_version":1,"remove":[],"add":[]}),
+            json!({"request_version":1,"remove":[],"add":[{"curve_id":curve,"rule":"horizontal"},{"curve_id":curve,"rule":"horizontal"}]}),
+            json!({"request_version":1,"remove":[],"add":[{"curve_id":curve,"rule":"horizontal"},{"curve_id":curve,"rule":"vertical"}]}),
+            json!({"request_version":1,"remove":[ferritecad_types::StableEntityId::new()],"add":[]}),
+        ] {
+            write(&f.request, &bad);
+            let names = entries(f.root.path());
+            assert_eq!(
+                reply(f.edit(&out).output().expect("refusal"), OP, 2)["error"]["kind"],
+                "input"
+            );
+            assert_eq!(entries(f.root.path()), names);
+        }
+        // All four lines horizontal collapse the area: a solved system is not a valid profile.
+        write(
+            &f.request,
+            &json!({"request_version":1,"remove":[],"add":f.catalog["sketches"][0]["constraint_edit"]["curves"].as_array().expect("curves").iter().map(|c|json!({"curve_id":c["curve_id"],"rule":"horizontal"})).collect::<Vec<_>>()}),
         );
+        reply(
+            f.edit(&out).output().expect("invalid solved profile"),
+            OP,
+            2,
+        );
+        assert!(!out.exists());
+        if length {
+            write(
+                &f.request,
+                &json!({"request_version":1,"remove":[],"add":[length_add(&f.catalog,0,50.)]}),
+            );
+        } else {
+            f.add(0, "horizontal");
+        }
+        std::fs::write(&out, b"occupied").expect("busy");
+        let names = entries(f.root.path());
+        reply(f.edit(&out).output().expect("no clobber"), OP, 2);
+        assert_eq!(std::fs::read(&out).expect("busy"), b"occupied");
         assert_eq!(entries(f.root.path()), names);
+        reply(f.edit(&f.source).output().expect("source"), OP, 2);
+        let alias = f.root.path().join("alias.fcad");
+        std::fs::hard_link(&f.source, &alias).expect("hardlink");
+        reply(f.edit(&alias).output().expect("alias"), OP, 2);
+        assert_eq!(std::fs::read(&alias).expect("alias"), before);
+        #[cfg(unix)]
+        {
+            let link = f.root.path().join("symlink.fcad");
+            std::os::unix::fs::symlink(&f.source, &link).expect("symlink");
+            reply(f.edit(&link).output().expect("symlink refusal"), OP, 2);
+        }
+        assert_eq!(std::fs::read(&f.source).expect("source"), before);
+        let mut d = Document::open(&f.source).expect("change");
+        let mut o = d.objects().expect("objects").remove(0);
+        o.name = Some("stale".into());
+        d.write(|w| w.put_object(o.id, o.parent, o.ordinal, o.name.as_deref(), &o.payload))
+            .expect("write");
+        d.close().expect("close");
+        let stale = f.root.path().join("stale.fcad");
+        let changed = std::fs::read(&f.source).expect("changed");
+        let r = reply(f.edit(&stale).output().expect("stale"), OP, 2);
+        assert_eq!(r["error"]["kind"], "input");
+        assert!(
+            r["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("changed")
+        );
+        assert!(!stale.exists());
+        assert_eq!(std::fs::read(&f.source).expect("preserved"), changed);
     }
-    // All four lines horizontal collapse the area: a solved system is not a valid profile.
-    write(
-        &f.request,
-        &json!({"request_version":1,"remove":[],"add":f.catalog["sketches"][0]["constraint_edit"]["curves"].as_array().expect("curves").iter().map(|c|json!({"curve_id":c["curve_id"],"rule":"horizontal"})).collect::<Vec<_>>()}),
-    );
-    reply(
-        f.edit(&out).output().expect("invalid solved profile"),
-        OP,
-        2,
-    );
-    assert!(!out.exists());
-    f.add(0, "horizontal");
-    std::fs::write(&out, b"occupied").expect("busy");
-    let names = entries(f.root.path());
-    reply(f.edit(&out).output().expect("no clobber"), OP, 2);
-    assert_eq!(std::fs::read(&out).expect("busy"), b"occupied");
-    assert_eq!(entries(f.root.path()), names);
-    reply(f.edit(&f.source).output().expect("source"), OP, 2);
-    let alias = f.root.path().join("alias.fcad");
-    std::fs::hard_link(&f.source, &alias).expect("hardlink");
-    reply(f.edit(&alias).output().expect("alias"), OP, 2);
-    assert_eq!(std::fs::read(&alias).expect("alias"), before);
-    #[cfg(unix)]
-    {
-        let link = f.root.path().join("symlink.fcad");
-        std::os::unix::fs::symlink(&f.source, &link).expect("symlink");
-        reply(f.edit(&link).output().expect("symlink refusal"), OP, 2);
-    }
-    assert_eq!(std::fs::read(&f.source).expect("source"), before);
-    let mut d = Document::open(&f.source).expect("change");
-    let mut o = d.objects().expect("objects").remove(0);
-    o.name = Some("stale".into());
-    d.write(|w| w.put_object(o.id, o.parent, o.ordinal, o.name.as_deref(), &o.payload))
-        .expect("write");
-    d.close().expect("close");
-    let stale = f.root.path().join("stale.fcad");
-    let changed = std::fs::read(&f.source).expect("changed");
-    let r = reply(f.edit(&stale).output().expect("stale"), OP, 2);
-    assert_eq!(r["error"]["kind"], "input");
-    assert!(
-        r["error"]["message"]
-            .as_str()
-            .expect("message")
-            .contains("changed")
-    );
-    assert!(!stale.exists());
-    assert_eq!(std::fs::read(&f.source).expect("preserved"), changed);
 }
+
 #[test]
 fn constraint_os_paths_and_flag_shaped_arguments() {
     let f = Fixture::new(false);
@@ -752,4 +859,243 @@ fn constraint_discovery_separates_document_and_feature_refusals() {
         assert_eq!(std::fs::read(&f.source).expect("unchanged"), before);
         assert_eq!(entries(f.root.path()), names);
     }
+}
+
+fn length_add(catalog: &Value, i: usize, mm: f64) -> Value {
+    json!({"curve_id":catalog["sketches"][0]["constraint_edit"]["curves"][i]["curve_id"],"rule":"distance","distance_mm":mm})
+}
+fn rectangle_edits(catalog: &Value) -> Value {
+    let mut add: Vec<_> = (0..4).map(|i| json!({"curve_id":catalog["sketches"][0]["constraint_edit"]["curves"][i]["curve_id"],"rule":if i%2==0 {"horizontal"} else {"vertical"}})).collect();
+    add.extend([length_add(catalog, 0, 60.), length_add(catalog, 1, 30.)]);
+    json!({"request_version":1,"remove":[],"add":add})
+}
+#[test]
+fn native_line_length_process_geometry_replacement_conflict_and_delivery() {
+    if !native() {
+        return;
+    }
+    let f = Fixture::with_points(Some([[-40., -20.], [40., -20.], [40., 20.], [-40., 20.]]));
+    let curves = &f.catalog["sketches"][0]["constraint_edit"]["curves"];
+    assert_eq!(curves[0]["start_mm"], json!([-40., -20.]));
+    assert_eq!(curves[0]["end_mm"], json!([40., -20.]));
+    assert_eq!(curves[1]["end_mm"], json!([40., 20.]));
+    let before = std::fs::read(&f.source).expect("source");
+    let mtime = std::fs::metadata(&f.source)
+        .expect("meta")
+        .modified()
+        .expect("mtime");
+    let out = f.root.path().join("length-rectangle.fcad");
+    let edits = rectangle_edits(&f.catalog);
+    for additions in [
+        json!([
+            length_add(&f.catalog, 0, 60.),
+            length_add(&f.catalog, 0, 60.)
+        ]),
+        json!([
+            length_add(&f.catalog, 0, 60.),
+            length_add(&f.catalog, 0, 30.)
+        ]),
+        json!([{"curve_id":ferritecad_types::StableEntityId::new(),"rule":"distance","distance_mm":60}]),
+    ] {
+        write(
+            &f.request,
+            &json!({"request_version":1,"remove":[],"add":additions}),
+        );
+        let directory = entries(f.root.path());
+        let refusal = reply(
+            f.edit(&out).output().expect("duplicate or foreign length"),
+            OP,
+            2,
+        );
+        assert_eq!(refusal["error"]["kind"], "input");
+        assert_eq!(entries(f.root.path()), directory);
+        assert_eq!(std::fs::read(&f.source).expect("source"), before);
+    }
+    write(&f.request, &edits);
+    let r = reply(f.edit(&out).output().expect("length publish"), OP, 0)["result"].clone();
+    assert_eq!(
+        r["added_constraints"]
+            .as_array()
+            .expect("constraints")
+            .len(),
+        10
+    );
+    let after = inspect(&out);
+    assert_eq!(after["sketches"][0]["constraint_edit"]["available"], true);
+    assert_eq!(
+        after["sketches"][0]["constraint_edit"]["constraints"],
+        r["added_constraints"]
+    );
+    for (i, mm) in [(8, 60.), (9, 30.)] {
+        let c = &r["added_constraints"][i];
+        assert_eq!(c["rule"]["kind"], "distance");
+        assert_eq!(c["rule"]["distance"], mm);
+        assert!(
+            c["rule"].get("distance_mm").is_none(),
+            "response wire unchanged"
+        );
+        assert_eq!(c["rule"]["a"]["at"], "start");
+        assert_eq!(c["rule"]["b"]["at"], "end");
+        assert_eq!(c["rule"]["a"]["curve_id"], c["rule"]["b"]["curve_id"]);
+    }
+    stored_same(&f.source, &out);
+    length_geometry(&out, &[(0, 60.), (1, 30.)], true);
+    let text_out = f.root.path().join("length-text.fcad");
+    let command = f.edit(&text_out);
+    let mut args: Vec<_> = command
+        .get_args()
+        .map(std::ffi::OsStr::to_os_string)
+        .collect();
+    assert_eq!(args.pop().expect("known final protocol flag"), "--json");
+    let text = cli().args(args).output().expect("text length publish");
+    assert!(text.status.success(), "{text:?}");
+    let text_catalog = inspect(&text_out);
+    let text_constraints = text_catalog["sketches"][0]["constraint_edit"]["constraints"]
+        .as_array()
+        .expect("text constraints");
+    let lines: Vec<_> = std::str::from_utf8(&text.stdout)
+        .expect("text stdout")
+        .lines()
+        .collect();
+    assert_eq!(lines.len(), 12);
+    assert_eq!(
+        lines[0],
+        format!(
+            "saved {} ({}, sketch {})",
+            text_out.display(),
+            text_catalog["document_id"].as_str().expect("document"),
+            text_catalog["sketches"][0]["sketch_id"]
+                .as_str()
+                .expect("Sketch")
+        )
+    );
+    for (i, c) in text_constraints.iter().enumerate() {
+        assert_eq!(
+            lines[i + 1],
+            format!(
+                "added constraint {}",
+                c["constraint_id"].as_str().expect("constraint")
+            )
+        );
+        assert_eq!(c["rule"], r["added_constraints"][i]["rule"]);
+    }
+    assert_eq!(
+        lines[11],
+        format!("degrees of freedom: {}", r["solve"]["degrees_of_freedom"])
+    );
+    stored_same(&f.source, &text_out);
+    let replacement = f.root.path().join("length-replaced.fcad");
+    let old = r["added_constraints"][8]["constraint_id"].clone();
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[old],"add":[length_add(&after,0,55.)]}),
+    );
+    let replace = reply(
+        f.edit_from(&out, &after, &replacement)
+            .output()
+            .expect("replace"),
+        OP,
+        0,
+    )["result"]
+        .clone();
+    assert_eq!(replace["removed_constraint_ids"], json!([old]));
+    assert_eq!(
+        replace["added_constraints"]
+            .as_array()
+            .expect("new length")
+            .len(),
+        1
+    );
+    assert_ne!(replace["added_constraints"][0]["constraint_id"], old);
+    let replaced = inspect(&replacement);
+    let mut expected = r["added_constraints"].as_array().expect("old").clone();
+    expected.remove(8);
+    expected.push(replace["added_constraints"][0].clone());
+    assert_eq!(
+        replaced["sketches"][0]["constraint_edit"]["constraints"],
+        json!(expected)
+    );
+    stored_same(&out, &replacement);
+    geometry_checked(&replacement, |starts, ends, _| {
+        assert!(((ends[0][0] - starts[0][0]).hypot(ends[0][1] - starts[0][1]) - 55.).abs() < 1e-6)
+    });
+    let removed = f.root.path().join("length-removed.fcad");
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[replace["added_constraints"][0]["constraint_id"]],"add":[]}),
+    );
+    reply(
+        f.edit_from(&replacement, &replaced, &removed)
+            .output()
+            .expect("remove exact"),
+        OP,
+        0,
+    );
+    expected.pop();
+    assert_eq!(
+        inspect(&removed)["sketches"][0]["constraint_edit"]["constraints"],
+        json!(expected)
+    );
+    stored_same(&replacement, &removed);
+    // Structural validation accepts these dimensions; the native solver must refuse.
+    let mut contradictory = edits.clone();
+    contradictory["add"]
+        .as_array_mut()
+        .expect("add")
+        .push(length_add(&f.catalog, 2, 70.));
+    write(&f.request, &contradictory);
+    let failed = f.root.path().join("conflict.fcad");
+    let directory = entries(f.root.path());
+    let refusal = reply(
+        f.edit(&failed).output().expect("real solve conflict"),
+        OP,
+        2,
+    );
+    assert_eq!(refusal["error"]["kind"], "constraint", "{refusal}");
+    let conflict = refusal["error"]["constraint_conflict"]["constraints"]
+        .as_array()
+        .expect("typed native conflict");
+    assert!(!conflict.is_empty());
+    assert!(conflict.iter().any(|c| c["rule"]["kind"] == "distance"));
+    assert!(conflict.iter().all(|c| c["constraint_id"].is_string()));
+    assert_eq!(entries(f.root.path()), directory);
+    assert!(!failed.exists());
+    // Valid length reaches publication even if its report cannot be delivered.
+    for both in [false, true] {
+        write(&f.request, &edits);
+        let lost = f.root.path().join(format!("length-lost-{both}.fcad"));
+        let mut cmd = f.edit(&lost);
+        cmd.stdout(pipe::closed_pipe());
+        if both {
+            cmd.stderr(pipe::closed_pipe());
+        }
+        assert_eq!(cmd.output().expect("lost report").status.code(), Some(7));
+        let d = Document::open_read_only(&lost).expect("published despite lost report");
+        assert!(d.validate().expect("valid").is_ok());
+        assert_eq!(
+            inspect(&lost)["sketches"][0]["constraint_edit"]["constraints"]
+                .as_array()
+                .expect("constraints")
+                .len(),
+            10
+        );
+        d.close().expect("close");
+    }
+    assert_eq!(std::fs::read(&f.source).expect("source"), before);
+    assert_eq!(
+        std::fs::metadata(&f.source)
+            .expect("meta")
+            .modified()
+            .expect("mtime"),
+        mtime
+    );
+    let slanted = Fixture::new(true);
+    write(
+        &slanted.request,
+        &json!({"request_version":1,"remove":[],"add":[length_add(&slanted.catalog,0,50.)]}),
+    );
+    let out = slanted.root.path().join("length-slanted.fcad");
+    reply(slanted.edit(&out).output().expect("slanted length"), OP, 0);
+    stored_same(&slanted.source, &out);
+    length_geometry(&out, &[(0, 50.)], false);
 }

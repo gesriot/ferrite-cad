@@ -2,7 +2,8 @@
 //! Text/JSON prepare one typed request; jobs owns solver/copy/publication.
 use clap::Args;
 use ferritecad_document::{
-    AddLineConstraint, Document, DocumentVersion, LineConstraintKind, SketchConstraintEdits,
+    AddLineConstraint, Document, DocumentVersion, LineConstraintKind, LineLengthMm,
+    SketchConstraintEdits,
 };
 use ferritecad_jobs::{
     EditSketchConstraintsRequest, EditedSketchConstraints, edit_sketch_constraints_copy,
@@ -20,7 +21,7 @@ pub struct EditConstraintsArgs {
     /// Full content_version from the same inspect snapshot as all chosen UUIDs.
     #[arg(long)]
     expect_version: ContentHash,
-    /// Request v1: remove exact H/V constraint UUIDs, then add Line H/V.
+    /// Request v1: remove exact constraint UUIDs, then add Line H/V or length in mm.
     #[arg(long)]
     request: PathBuf,
     /// New FCAD destination; no overwrite and no --force.
@@ -38,16 +39,34 @@ struct Input {
     add: Vec<Addition>,
 }
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Addition {
-    curve_id: StableEntityId,
-    rule: Kind,
+#[serde(tag = "rule", rename_all = "snake_case", deny_unknown_fields)]
+enum Addition {
+    Horizontal {
+        curve_id: StableEntityId,
+    },
+    Vertical {
+        curve_id: StableEntityId,
+    },
+    Distance {
+        curve_id: StableEntityId,
+        distance_mm: f64,
+    },
 }
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Kind {
-    Horizontal,
-    Vertical,
+impl Addition {
+    fn checked(self) -> Result<AddLineConstraint> {
+        let (curve, kind) = match self {
+            Self::Horizontal { curve_id } => (curve_id, LineConstraintKind::Horizontal),
+            Self::Vertical { curve_id } => (curve_id, LineConstraintKind::Vertical),
+            Self::Distance {
+                curve_id,
+                distance_mm,
+            } => (
+                curve_id,
+                LineConstraintKind::Distance(LineLengthMm::new(distance_mm)?),
+            ),
+        };
+        Ok(AddLineConstraint { curve, kind })
+    }
 }
 fn result(args: &EditConstraintsArgs) -> Result<EditedSketchConstraints> {
     if args.json {
@@ -69,6 +88,14 @@ fn result(args: &EditConstraintsArgs) -> Result<EditedSketchConstraints> {
             "unsupported constraint request_version; expected 1",
         ));
     }
+    let edits = SketchConstraintEdits {
+        remove: input.remove,
+        add: input
+            .add
+            .into_iter()
+            .map(Addition::checked)
+            .collect::<Result<_>>()?,
+    };
     let document = Document::open_read_only(&args.source)?;
     let expected = DocumentVersion {
         document_id: document.meta().document_id,
@@ -80,20 +107,7 @@ fn result(args: &EditConstraintsArgs) -> Result<EditedSketchConstraints> {
         expected,
         sketch: args.sketch,
         destination: args.output.clone(),
-        edits: SketchConstraintEdits {
-            remove: input.remove,
-            add: input
-                .add
-                .into_iter()
-                .map(|a| AddLineConstraint {
-                    curve: a.curve_id,
-                    kind: match a.rule {
-                        Kind::Horizontal => LineConstraintKind::Horizontal,
-                        Kind::Vertical => LineConstraintKind::Vertical,
-                    },
-                })
-                .collect(),
-        },
+        edits,
     };
     let mut kernel = ferritecad_occt::OcctKernel::new()?;
     edit_sketch_constraints_copy(&request, &mut kernel, &OperationContext::default())

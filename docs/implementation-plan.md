@@ -2520,8 +2520,34 @@ validator, worker и CLI сохраняются, solver при работе с �
 Повторный GUI проверил историю Add/Remove/Clear, Save Cancel и обе публикации;
 SQL/идентичности и STL/FBX совпали с CLI. Watchdog peak 327.14 MiB, swap без роста,
 exit 0; причина старого OOM не установлена. CI head/merge учитывается отдельно.
-Следующий §25F — сохраняемая длина выбранного Line (Distance Start/End) через
-прежний shared copy job, UI и CLI; реализация не начата.
+
+**§25F — реализована сохраняемая длина выбранного Line в mm.**
+Положительный конечный Distance между Start/End одного Line входит в тот же
+managed класс с H/V и adjacent Coincident. На Line допустимы одна ориентация и
+одна длина; замена — remove exact UUID + add с новым UUID. Closure и остальные
+identities сохраняются. Checked `LineLengthMm` не допускает NaN/zero/overflow
+в request/history. CLI request v1 аддитивно принимает `rule:"distance",distance_mm`,
+response сохраняет прежнее поле `distance`; schema/job/writer/FFI не менялись.
+UI `Edit constraints` применяет длину отдельным Add, без solver на ввод/Undo.
+Неприменённое поле и selection не входят в bounded историю. Native gates проверяют
+60×30×10 mm / 18000 mm³, наклонную длину, exact removal/replacement, реальный solver
+conflict, сохранность и delivery. [Контракт и рецепт](line-length-constraints.md),
+[локальные доказательства](line-length-constraints-verification.md).
+Изменения оставлены unstaged/uncommitted для независимого ревью; CI базы отдельно.
+
+Независимое ревью §25F не потребовало изменений кода. Повторены 367 domain/job/eval,
+47 CLI и 41 headless app tests; native/stub разделены. Живой macOS smoke закрыл
+исходное ограничение locked screen: Add lengths, invalid input/Redo, Save Cancel,
+publish/Open и exact replacement прошли. GUI/CLI SQL и STL/FBX совпали с явным
+сопоставлением новых IDs; измерены 60×30×10 / ≈18000 mm³ и 55×30×10 / 16500 mm³.
+Watchdog peak 277.03 MiB, swap без роста, exit 0; причина OOM неизвестна.
+CI head/merge учитывается отдельно.
+
+**§25F-1 — pending: прямая замена сохранённой длины в UI.**
+Одно действие над выбранным Line собирает прежний exact remove/add request и
+один шаг Undo, сохраняя остальные pending изменения. Повторное применение
+обновляет pending длину, возврат к stored значению отменяет только её замену;
+отказ/no-op сохраняет Redo. Общие jobs/CLI/schema не меняются. Реализация не начата.
 
 ## 15. Чего не делать до beta
 

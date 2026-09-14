@@ -1020,10 +1020,18 @@ mod tests {
             destination: old.destination.clone(),
             edits: ferritecad_document::SketchConstraintEdits {
                 remove: vec![],
-                add: vec![ferritecad_document::AddLineConstraint {
-                    curve: old.vertices[0].curve_id,
-                    kind: ferritecad_document::LineConstraintKind::Horizontal,
-                }],
+                add: vec![
+                    ferritecad_document::AddLineConstraint {
+                        curve: old.vertices[0].curve_id,
+                        kind: ferritecad_document::LineConstraintKind::Horizontal,
+                    },
+                    ferritecad_document::AddLineConstraint {
+                        curve: old.vertices[0].curve_id,
+                        kind: ferritecad_document::LineConstraintKind::Distance(
+                            ferritecad_document::LineLengthMm::new(60.).expect("length"),
+                        ),
+                    },
+                ],
             },
         }
     }

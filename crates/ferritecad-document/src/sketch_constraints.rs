@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Bounded persisted H/V editing. No solver, SQLite lifecycle or wire format.
+//! Bounded persisted Line orientation/length editing. No solver or wire format.
 use crate::{
     Document, ObjectPayload, ObjectRecord, Sketch, SketchConstraint, SketchConstraintRule,
     SketchPointRef, SketchPointSelector,
@@ -7,10 +7,29 @@ use crate::{
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId};
 use std::collections::BTreeSet;
 
+/// A finite, strictly positive Euclidean Line length in millimetres.
+/// Private validated bits make exact Eq safe: NaN and both zeros are excluded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineLengthMm(u64);
+impl LineLengthMm {
+    pub fn new(value: f64) -> Result<Self> {
+        if !value.is_finite() || value <= 0. {
+            return Err(CadError::input(
+                "Line length must be finite and positive in mm",
+            ));
+        }
+        Ok(Self(value.to_bits()))
+    }
+    pub fn get(self) -> f64 {
+        f64::from_bits(self.0)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineConstraintKind {
     Horizontal,
     Vertical,
+    Distance(LineLengthMm),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AddLineConstraint {
@@ -97,10 +116,18 @@ fn line_of(rule: SketchConstraintRule) -> Option<(StableEntityId, LineConstraint
     let (a, b, kind) = match rule {
         SketchConstraintRule::Horizontal { a, b } => (a, b, LineConstraintKind::Horizontal),
         SketchConstraintRule::Vertical { a, b } => (a, b, LineConstraintKind::Vertical),
+        SketchConstraintRule::Distance { a, b, distance } => (
+            a,
+            b,
+            LineConstraintKind::Distance(LineLengthMm::new(distance).ok()?),
+        ),
         _ => return None,
     };
     (a.curve == b.curve && unordered(a, b) == unordered(endpoints(a.curve).0, endpoints(a.curve).1))
         .then_some((a.curve, kind))
+}
+fn line_slot(curve: StableEntityId, kind: LineConstraintKind) -> (StableEntityId, bool) {
+    (curve, matches!(kind, LineConstraintKind::Distance(_)))
 }
 
 /// Preserve only this declared family of stored relationships; never simplify others.
@@ -114,10 +141,10 @@ fn managed(sketch: &Sketch) -> Result<()> {
         if !seen_ids.insert(c.id) {
             return Err(CadError::unsupported("duplicate constraint UUID"));
         }
-        if let Some((curve, _)) = line_of(c.rule) {
-            if !curve_ids.contains(&curve) || !lines.insert(curve) {
+        if let Some((curve, kind)) = line_of(c.rule) {
+            if !curve_ids.contains(&curve) || !lines.insert(line_slot(curve, kind)) {
                 return Err(CadError::unsupported(
-                    "constraint edit refuses duplicate H/V or H+V on a Line",
+                    "constraint edit refuses duplicate orientation or length on a Line",
                 ));
             }
         } else if let SketchConstraintRule::Coincident { a, b } = c.rule {
@@ -129,13 +156,13 @@ fn managed(sketch: &Sketch) -> Result<()> {
             }
         } else {
             return Err(CadError::unsupported(
-                "constraint edit supports only Line H/V and adjacent-joint Coincident families",
+                "constraint edit supports only Line H/V, positive Start/End length and adjacent-joint Coincident families",
             ));
         }
     }
     if !lines.is_empty() && joins != expected {
         return Err(CadError::unsupported(
-            "existing H/V require all persisted Coincident closure links",
+            "existing H/V or length require all persisted Coincident closure links",
         ));
     }
     Ok(())
@@ -166,7 +193,7 @@ fn retained(sketch: &Sketch, edits: &SketchConstraintEdits) -> Result<Vec<Sketch
             })?;
         if line_of(c.rule).is_none() {
             return Err(CadError::input(
-                "only H/V constraints may be removed; closure links are retained",
+                "only H/V or Line length constraints may be removed; closure links are retained",
             ));
         }
     }
@@ -178,7 +205,7 @@ fn retained(sketch: &Sketch, edits: &SketchConstraintEdits) -> Result<Vec<Sketch
         .collect();
     let mut lines: BTreeSet<_> = kept
         .iter()
-        .filter_map(|c| line_of(c.rule).map(|(id, _)| id))
+        .filter_map(|c| line_of(c.rule).map(|(id, kind)| line_slot(id, kind)))
         .collect();
     for add in &edits.add {
         if !sketch.curves.iter().any(|c| c.id == add.curve) {
@@ -187,10 +214,13 @@ fn retained(sketch: &Sketch, edits: &SketchConstraintEdits) -> Result<Vec<Sketch
                 add.curve
             )));
         }
-        if !lines.insert(add.curve) {
-            return Err(CadError::input(
-                "a Line may hold only one H/V; remove its current constraint first",
-            ));
+        if !lines.insert(line_slot(add.curve, add.kind)) {
+            return Err(CadError::input(match add.kind {
+                LineConstraintKind::Distance(_) => {
+                    "a Line may hold only one length; remove its current constraint first"
+                }
+                _ => "a Line may hold only one H/V; remove its current constraint first",
+            }));
         }
     }
     Ok(kept)
@@ -259,6 +289,11 @@ pub fn prepare_sketch_constraints(
         let rule = match add.kind {
             LineConstraintKind::Horizontal => SketchConstraintRule::Horizontal { a, b },
             LineConstraintKind::Vertical => SketchConstraintRule::Vertical { a, b },
+            LineConstraintKind::Distance(length) => SketchConstraintRule::Distance {
+                a,
+                b,
+                distance: length.get(),
+            },
         };
         let c = SketchConstraint {
             id: StableEntityId::new(),

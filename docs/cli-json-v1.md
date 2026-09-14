@@ -920,6 +920,18 @@ available/refusal/document_refusal и ordered stored curves/constraints.
 Это отдельная доступность: coordinate editing constrained Sketch остаётся запрещено.
 Точные поля, null/[]/unknown policy, request remove-before-add, closure retention,
 result и typed `error.constraint_conflict` описаны в
-[H/V contract](sketch-constraints-copy.md#json-v1). `operation` —
+[Line constraints contract](sketch-constraints-copy.md#json-v1). `operation` —
 `edit-sketch-constraints-copy`; только 0 (published), 2 (refused), 7 (delivery).
 Старые девять операций сохраняют wire и коды. [Запускаемый рецепт](sketch-constraints-copy.md#запускаемый-рецепт-агента).
+
+
+§25F сохраняет operation/schema/request v1. В `add` команды
+`edit-sketch-constraints-copy` доступны `{curve_id,rule:"horizontal"}`,
+`{curve_id,rule:"vertical"}` и `{curve_id,rule:"distance",distance_mm:N}`.
+N конечный и положительный, в mm, между Start/End **одного** Line. Лишний
+`distance_mm` у H/V, неизвестные/отсутствующие поля и неправильные типы запрещены.
+Discovery/result Distance возвращают прежнее поле **`distance`**, exact endpoints
+и constraint UUID. Ориентация H/V и одна длина могут сосуществовать; две длины
+одного Line запрещены. Замена — remove exact UUID + add с новым UUID, остальные
+IDs сохраняются. [Полный контракт и UI semantics](sketch-constraints-copy.md),
+[рецепт с независимым измерением геометрии](line-length-constraints.md).

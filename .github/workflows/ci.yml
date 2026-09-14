@@ -159,9 +159,10 @@ jobs:
             cargo test -p ferritecad-cli --test edit_constraints "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee "$gate.log"
             if grep -q 'skipped:' "$gate.log" || ! grep -Fq "test $gate ... ok" "$gate.log"; then exit 1; fi
           done
-          gate=constraints::tests::constraint_widgets_keep_draft_on_save_cancel_refusal_and_stale_reply
-          cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee constraints-draft.log
-          if grep -q 'skipped:' constraints-draft.log || ! grep -Fq "test $gate ... ok" constraints-draft.log; then exit 1; fi
+          for gate in constraints::tests::constraint_widgets_keep_draft_on_save_cancel_refusal_and_stale_reply constraints::tests::line_length_widgets_validate_input_without_changing_history_until_apply; do
+            cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee constraints-draft.log
+            if grep -q 'skipped:' constraints-draft.log || ! grep -Fq "test $gate ... ok" constraints-draft.log; then exit 1; fi
+          done
 
       - name: Verify memory guard cleanup without a viewer
         if: runner.os == 'macOS'

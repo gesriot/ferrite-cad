@@ -120,7 +120,13 @@ fn cells(path: &Path) -> BTreeMap<String, Vec<Vec<Value>>> {
 }
 #[test]
 fn constraint_write_preserves_claims_rows_metadata_and_remaining_ids() {
-    for optional in [false, true] {
+    for (optional, kind) in [false, true].into_iter().flat_map(|optional| {
+        [
+            LineConstraintKind::Horizontal,
+            LineConstraintKind::Distance(LineLengthMm::new(60.).expect("length")),
+        ]
+        .map(|kind| (optional, kind))
+    }) {
         let (root, d, id) = fixture();
         let path = root.path().join("source.fcad");
         d.close().expect("close");
@@ -145,12 +151,8 @@ fn constraint_write_preserves_claims_rows_metadata_and_remaining_ids() {
         let mut d = Document::open(&path).expect("open");
         let original = stored(&d, id);
         let meta = d.meta().clone();
-        let plan = prepare_sketch_constraints(
-            &d,
-            id,
-            &add(original.curves[0].id, LineConstraintKind::Horizontal),
-        )
-        .expect("plan");
+        let plan =
+            prepare_sketch_constraints(&d, id, &add(original.curves[0].id, kind)).expect("plan");
         assert_eq!(plan.added.len(), 5);
         d.write_sketch_constraints(&plan).expect("write");
         assert_eq!(d.meta(), &meta);
@@ -332,5 +334,147 @@ fn existing_reversed_closure_is_reused_and_other_families_are_refused() {
             d.write_sketch_constraints(&p).expect("write");
             assert_eq!(stored(&d, id).constraints[0].id, retained);
         }
+    }
+}
+
+#[test]
+fn line_length_is_checked_and_replacement_preserves_other_constraints() {
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1., -0., 0.] {
+        assert_eq!(
+            LineLengthMm::new(bad).expect_err("invalid length").kind(),
+            ErrorKind::Input
+        );
+    }
+    for good in [f64::MIN_POSITIVE, f64::from_bits(1), 30., f64::MAX] {
+        assert_eq!(
+            LineLengthMm::new(good).expect("finite positive").get(),
+            good
+        );
+    }
+    let (_root, mut d, id) = fixture();
+    let original = stored(&d, id);
+    let curve = original.curves[0].id;
+    let length = |v| LineConstraintKind::Distance(LineLengthMm::new(v).expect("length"));
+    let p = prepare_sketch_constraints(&d, id, &add(curve, length(60.)))
+        .expect("first length adds closure");
+    assert_eq!(p.added.len(), 5);
+    assert!(
+        matches!(p.added[4].rule, SketchConstraintRule::Distance { a, b, distance } if a.curve == curve && b.curve == curve && a.at == SketchPointSelector::Start && b.at == SketchPointSelector::End && distance == 60.)
+    );
+    d.write_sketch_constraints(&p).expect("length");
+    let h = prepare_sketch_constraints(&d, id, &add(curve, LineConstraintKind::Horizontal))
+        .expect("orientation alongside length");
+    d.write_sketch_constraints(&h).expect("H");
+    let before = stored(&d, id);
+    for edits in [
+        add(curve, length(60.)),
+        add(curve, length(61.)),
+        add(StableEntityId::new(), length(10.)),
+        add(curve, LineConstraintKind::Vertical),
+    ] {
+        assert_eq!(
+            prepare_sketch_constraints(&d, id, &edits)
+                .expect_err("duplicate/foreign")
+                .kind(),
+            ErrorKind::Input
+        );
+        assert_eq!(stored(&d, id), before);
+    }
+    let old = p.added[4].id;
+    let replacement = SketchConstraintEdits {
+        remove: vec![old],
+        add: vec![AddLineConstraint {
+            curve,
+            kind: length(55.),
+        }],
+    };
+    let p = prepare_sketch_constraints(&d, id, &replacement).expect("atomic replacement");
+    assert_eq!(p.removed, vec![old]);
+    assert_eq!(p.added.len(), 1);
+    assert_ne!(p.added[0].id, old);
+    let proposed_id = p.added[0].id;
+    d.write_sketch_constraints(&p).expect("replace");
+    let after = stored(&d, id);
+    assert_eq!(after.curves, original.curves);
+    assert_eq!(after.constraints.last().expect("length").id, proposed_id);
+    assert_eq!(
+        after.constraints[..5],
+        before
+            .constraints
+            .iter()
+            .filter(|c| c.id != old)
+            .copied()
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        ExtrudeEditSource::read(&d)
+            .expect("discovery")
+            .constraint_sketches[0]
+            .refusal
+            .is_none()
+    );
+    let remove = prepare_sketch_constraints(
+        &d,
+        id,
+        &SketchConstraintEdits {
+            remove: vec![proposed_id, h.added[0].id],
+            add: vec![],
+        },
+    )
+    .expect("remove both");
+    d.write_sketch_constraints(&remove).expect("remove");
+    assert_eq!(stored(&d, id).constraints, before.constraints[..4]);
+}
+
+#[test]
+fn arbitrary_distance_and_duplicate_lengths_refuse_whole_document() {
+    for case in ["cross-line", "same-point", "duplicate", "missing-closure"] {
+        let (_root, mut d, id) = fixture();
+        let curve = stored(&d, id).curves[0].id;
+        let p = prepare_sketch_constraints(
+            &d,
+            id,
+            &add(
+                curve,
+                LineConstraintKind::Distance(LineLengthMm::new(60.).expect("length")),
+            ),
+        )
+        .expect("prepare");
+        d.write_sketch_constraints(&p).expect("store");
+        let mut o = d.object(id).expect("object").expect("Sketch");
+        let ObjectPayload::Sketch(s) = &mut o.payload else {
+            panic!("Sketch")
+        };
+        let mut rule = s.constraints[4].rule;
+        if let SketchConstraintRule::Distance { a, b, .. } = &mut rule {
+            if case == "cross-line" {
+                b.curve = s.curves[1].id;
+            }
+            if case == "same-point" {
+                *b = *a;
+            }
+        }
+        s.constraints[4].rule = rule;
+        if case == "duplicate" {
+            s.constraints.push(SketchConstraint {
+                id: StableEntityId::new(),
+                rule,
+            });
+        }
+        if case == "missing-closure" {
+            s.constraints.remove(0);
+        }
+        d.write(|w| w.put_object(o.id, o.parent, o.ordinal, o.name.as_deref(), &o.payload))
+            .expect("foreign policy fixture");
+        let before = stored(&d, id);
+        let source = ExtrudeEditSource::read(&d).expect("discovery");
+        assert!(source.constraint_sketches[0].stored.is_none(), "{case}");
+        assert_eq!(
+            prepare_sketch_constraints(&d, id, &add(curve, LineConstraintKind::Horizontal))
+                .expect_err(case)
+                .kind(),
+            ErrorKind::Unsupported
+        );
+        assert_eq!(stored(&d, id), before);
     }
 }
