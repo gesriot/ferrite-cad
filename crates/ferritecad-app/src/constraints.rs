@@ -8,6 +8,39 @@ use ferritecad_jobs::{EditSketchConstraintsRequest, EditedSketchConstraints};
 use ferritecad_types::{ObjectId, Result, StableEntityId};
 use std::path::{Path, PathBuf};
 
+const HISTORY_LIMIT: usize = 128;
+
+/// Only pending requests belong to history, never selection or solver results.
+#[derive(Debug, Clone, Default)]
+struct History {
+    undo: Vec<SketchConstraintEdits>,
+    redo: Vec<SketchConstraintEdits>,
+}
+impl History {
+    fn push(stack: &mut Vec<SketchConstraintEdits>, edits: SketchConstraintEdits) {
+        if stack.len() == HISTORY_LIMIT {
+            stack.remove(0);
+        }
+        stack.push(edits);
+    }
+    fn change(&mut self, edits: &mut SketchConstraintEdits, next: SketchConstraintEdits) {
+        if *edits != next {
+            Self::push(&mut self.undo, std::mem::replace(edits, next));
+            self.redo.clear();
+        }
+    }
+    fn undo(&mut self, edits: &mut SketchConstraintEdits) {
+        if let Some(previous) = self.undo.pop() {
+            Self::push(&mut self.redo, std::mem::replace(edits, previous));
+        }
+    }
+    fn redo(&mut self, edits: &mut SketchConstraintEdits) {
+        if let Some(next) = self.redo.pop() {
+            Self::push(&mut self.undo, std::mem::replace(edits, next));
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Draft {
     source: PathBuf,
@@ -15,6 +48,7 @@ struct Draft {
     choice: ConstraintSketchChoice,
     selected: Option<StableEntityId>,
     edits: SketchConstraintEdits,
+    history: History,
     refusal: Option<String>,
 }
 #[derive(Debug, Default)]
@@ -49,6 +83,7 @@ impl Editor {
             choice: choice.clone(),
             selected: None,
             edits: Default::default(),
+            history: Default::default(),
             refusal: None,
         });
         true
@@ -103,9 +138,25 @@ impl Editor {
                     "Missing Coincident joints are added with H/V; closure remains after removal.",
                 );
                 ui.add_enabled_ui(!running, |ui| {
-                    if ui.button("Cancel constraints draft").clicked() {
-                        cancel = true;
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel constraints draft").clicked() {
+                            cancel = true;
+                        }
+                        if ui
+                            .add_enabled(!draft.history.undo.is_empty(), egui::Button::new("Undo"))
+                            .clicked()
+                        {
+                            draft.history.undo(&mut draft.edits);
+                            draft.refusal = None;
+                        }
+                        if ui
+                            .add_enabled(!draft.history.redo.is_empty(), egui::Button::new("Redo"))
+                            .clicked()
+                        {
+                            draft.history.redo(&mut draft.edits);
+                            draft.refusal = None;
+                        }
+                    });
                     let Some(stored) = &draft.choice.stored else {
                         return;
                     };
@@ -147,7 +198,7 @@ impl Editor {
                                 });
                                 match draft.choice.validate_edits(&proposed) {
                                     Ok(()) => {
-                                        draft.edits = proposed;
+                                        draft.history.change(&mut draft.edits, proposed);
                                         draft.refusal = None;
                                     }
                                     Err(e) => draft.refusal = Some(e.to_string()),
@@ -176,11 +227,13 @@ impl Editor {
                                         ui.label(format!("Line {}", short(curve)));
                                         let mut remove = draft.edits.remove.contains(&c.id);
                                         if ui.checkbox(&mut remove, "Remove").changed() {
+                                            let mut proposed = draft.edits.clone();
                                             if remove {
-                                                draft.edits.remove.push(c.id);
+                                                proposed.remove.push(c.id);
                                             } else {
-                                                draft.edits.remove.retain(|id| *id != c.id);
+                                                proposed.remove.retain(|id| *id != c.id);
                                             }
+                                            draft.history.change(&mut draft.edits, proposed);
                                             draft.refusal = None;
                                         }
                                     }
@@ -200,7 +253,7 @@ impl Editor {
                             }
                         });
                     if ui.button("Clear pending changes").clicked() {
-                        draft.edits = Default::default();
+                        draft.history.change(&mut draft.edits, Default::default());
                         draft.refusal = None;
                     }
                     if let Some(refusal) = &draft.refusal {
@@ -264,6 +317,14 @@ mod tests {
     use ferritecad_document::Document;
     use ferritecad_kernel::OperationContext;
     fn frame(ctx: &egui::Context, e: &mut Editor, events: Vec<egui::Event>) -> egui::FullOutput {
+        frame_running(ctx, e, events, false)
+    }
+    fn frame_running(
+        ctx: &egui::Context,
+        e: &mut Editor,
+        events: Vec<egui::Event>,
+        running: bool,
+    ) -> egui::FullOutput {
         let mut o = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -273,13 +334,16 @@ mod tests {
                 events,
                 ..Default::default()
             },
-            |ui| e.draw(ui, false),
+            |ui| e.draw(ui, running),
         );
         o.textures_delta.clear();
         o
     }
     fn click(ctx: &egui::Context, e: &mut Editor, label: &str) {
-        let out = frame(ctx, e, vec![]);
+        click_running(ctx, e, label, false);
+    }
+    fn click_running(ctx: &egui::Context, e: &mut Editor, label: &str, running: bool) {
+        let out = frame_running(ctx, e, vec![], running);
         let at = out
             .shapes
             .iter()
@@ -290,9 +354,9 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_else(|| panic!("not painted: {label}"));
-        frame(ctx, e, vec![egui::Event::PointerMoved(at)]);
+        frame_running(ctx, e, vec![egui::Event::PointerMoved(at)], running);
         for pressed in [true, false] {
-            frame(
+            frame_running(
                 ctx,
                 e,
                 vec![egui::Event::PointerButton {
@@ -301,6 +365,7 @@ mod tests {
                     pressed,
                     modifiers: Default::default(),
                 }],
+                running,
             );
         }
     }
@@ -320,6 +385,209 @@ mod tests {
         let source = ExtrudeEditSource::read(&d).expect("snapshot");
         d.close().expect("close");
         (root, path, source)
+    }
+    fn history_state(
+        e: &Editor,
+    ) -> (
+        SketchConstraintEdits,
+        Vec<SketchConstraintEdits>,
+        Vec<SketchConstraintEdits>,
+    ) {
+        let d = e.draft.as_ref().expect("draft");
+        (
+            d.edits.clone(),
+            d.history.undo.clone(),
+            d.history.redo.clone(),
+        )
+    }
+    #[test]
+    fn constraint_history_widgets_restore_requests_and_branch_only_on_changes() {
+        let (_root, path, source) = fixture();
+        let mut e = Editor::default();
+        assert!(e.begin(&path, &source, source.constraint_sketches[0].sketch));
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        click(&ctx, &mut e, "Undo");
+        click(&ctx, &mut e, "Redo");
+        click(&ctx, &mut e, "Clear pending changes");
+        assert_eq!(history_state(&e), Default::default());
+        click(&ctx, &mut e, "Segment 1");
+        click(&ctx, &mut e, "Add Horizontal");
+        let h = e.draft.as_ref().expect("draft").edits.clone();
+        assert_eq!(
+            h.add,
+            vec![AddLineConstraint {
+                curve: source.constraint_sketches[0]
+                    .stored
+                    .as_ref()
+                    .expect("stored")
+                    .curves[0]
+                    .id,
+                kind: LineConstraintKind::Horizontal
+            }]
+        );
+        click(&ctx, &mut e, "Undo");
+        let empty_with_redo = history_state(&e);
+        assert_eq!(empty_with_redo.0, SketchConstraintEdits::default());
+        // No-op Clear and disabled Undo cannot erase the redo branch.
+        click(&ctx, &mut e, "Clear pending changes");
+        click(&ctx, &mut e, "Undo");
+        click(&ctx, &mut e, "Segment 2");
+        assert_eq!(history_state(&e), empty_with_redo);
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(history_state(&e).0, h);
+        let after_redo = history_state(&e);
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(history_state(&e), after_redo);
+        click(&ctx, &mut e, "Add Vertical");
+        let hv = history_state(&e).0;
+        assert_eq!(hv.add[0], h.add[0]);
+        assert_eq!(hv.add[1].kind, LineConstraintKind::Vertical);
+        click(&ctx, &mut e, "Undo");
+        let branch = history_state(&e);
+        click(&ctx, &mut e, "Segment 1");
+        click(&ctx, &mut e, "Add Vertical");
+        assert!(e.draft.as_ref().expect("draft").refusal.is_some());
+        assert_eq!(history_state(&e), branch);
+        // Running disables both nonempty stacks and all request mutations.
+        for label in [
+            "Undo",
+            "Redo",
+            "Clear pending changes",
+            "Add Horizontal",
+            "Cancel constraints draft",
+            "Save constraints copy…",
+        ] {
+            click_running(&ctx, &mut e, label, true);
+            assert_eq!(history_state(&e), branch);
+            assert!(e.take_request().is_none());
+        }
+        click(&ctx, &mut e, "Redo");
+        assert!(e.draft.as_ref().expect("draft").refusal.is_none());
+        assert_eq!(history_state(&e).0, hv);
+        click(&ctx, &mut e, "Clear pending changes");
+        click(&ctx, &mut e, "Undo");
+        assert_eq!(history_state(&e).0, hv);
+        click(&ctx, &mut e, "Undo");
+        click(&ctx, &mut e, "Segment 3");
+        click(&ctx, &mut e, "Add Horizontal");
+        let branched = history_state(&e);
+        assert_eq!(branched.0.add[0], h.add[0]);
+        assert_eq!(
+            branched.0.add[1].curve,
+            source.constraint_sketches[0]
+                .stored
+                .as_ref()
+                .expect("stored")
+                .curves[2]
+                .id
+        );
+        assert!(branched.2.is_empty());
+        click(&ctx, &mut e, "Redo");
+        click(&ctx, &mut e, "Save constraints copy…");
+        assert_eq!(
+            e.take_request().expect("save current branch").edits,
+            branched.0
+        );
+    }
+
+    #[test]
+    fn constraint_history_remove_widgets_restore_exact_persisted_ids() {
+        let (_root, path, source) = fixture();
+        let choice = &source.constraint_sketches[0];
+        let mut document = Document::open(&path).expect("doc");
+        let prepared = ferritecad_document::prepare_sketch_constraints(
+            &document,
+            choice.sketch,
+            &SketchConstraintEdits {
+                remove: vec![],
+                add: vec![AddLineConstraint {
+                    curve: choice.stored.as_ref().expect("stored").curves[0].id,
+                    kind: LineConstraintKind::Horizontal,
+                }],
+            },
+        )
+        .expect("prepare persisted H");
+        document.write_sketch_constraints(&prepared).expect("write");
+        let source = ExtrudeEditSource::read(&document).expect("catalog");
+        document.close().expect("close");
+        let h = source.constraint_sketches[0]
+            .stored
+            .as_ref()
+            .expect("stored")
+            .constraints
+            .iter()
+            .find(|c| matches!(c.rule, SketchConstraintRule::Horizontal { .. }))
+            .expect("H")
+            .id;
+        let mut e = Editor::default();
+        assert!(e.begin(&path, &source, choice.sketch));
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        click(&ctx, &mut e, "Remove");
+        let removed = SketchConstraintEdits {
+            remove: vec![h],
+            add: vec![],
+        };
+        assert_eq!(history_state(&e).0, removed);
+        click(&ctx, &mut e, "Remove");
+        assert_eq!(history_state(&e).0, SketchConstraintEdits::default());
+        click(&ctx, &mut e, "Undo");
+        assert_eq!(history_state(&e).0, removed);
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(history_state(&e).0, SketchConstraintEdits::default());
+        click(&ctx, &mut e, "Undo");
+        click(&ctx, &mut e, "Undo");
+        assert_eq!(history_state(&e).0, SketchConstraintEdits::default());
+        click(&ctx, &mut e, "Redo");
+        click(&ctx, &mut e, "Save constraints copy…");
+        assert_eq!(e.take_request().expect("exact UUID request").edits, removed);
+    }
+
+    #[test]
+    fn constraint_history_bounds_both_stacks_and_retains_order() {
+        let mut history = History::default();
+        let mut edits = SketchConstraintEdits::default();
+        let states: Vec<_> = (0..=140)
+            .map(|_| SketchConstraintEdits {
+                remove: vec![StableEntityId::new(), StableEntityId::new()],
+                add: vec![
+                    AddLineConstraint {
+                        curve: StableEntityId::new(),
+                        kind: LineConstraintKind::Vertical,
+                    },
+                    AddLineConstraint {
+                        curve: StableEntityId::new(),
+                        kind: LineConstraintKind::Horizontal,
+                    },
+                ],
+            })
+            .collect();
+        for next in &states {
+            history.change(&mut edits, next.clone());
+            assert!(history.undo.len() <= HISTORY_LIMIT);
+            assert!(history.redo.len() <= HISTORY_LIMIT);
+        }
+        for expected in states[12..140].iter().rev() {
+            history.undo(&mut edits);
+            assert_eq!(&edits, expected);
+        }
+        assert!(history.undo.is_empty());
+        assert_eq!(history.redo.len(), HISTORY_LIMIT);
+        history.undo(&mut edits);
+        history.change(&mut edits, states[12].clone());
+        assert_eq!(history.redo.len(), HISTORY_LIMIT, "no-op preserves redo");
+        for expected in &states[13..] {
+            history.redo(&mut edits);
+            assert_eq!(&edits, expected);
+            assert!(history.undo.len() <= HISTORY_LIMIT);
+        }
+        assert_eq!(history.undo.len(), HISTORY_LIMIT);
+        assert!(history.redo.is_empty());
     }
     #[test]
     fn constraint_editor_keeps_actions_reachable_with_many_pending_additions() {
@@ -414,6 +682,8 @@ mod tests {
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(988., 768.));
             for label in [
                 "Cancel constraints draft",
+                "Undo",
+                "Redo",
                 "Clear pending changes",
                 "Save constraints copy…",
             ] {
@@ -426,6 +696,7 @@ mod tests {
                     "{label} must remain visible and reachable with many pending additions"
                 );
             }
+            let pending = e.draft.as_ref().expect("draft").edits.clone();
             click(&ctx, &mut e, "Save constraints copy…");
             assert_eq!(
                 e.take_request().expect("reachable Save").edits.add.len(),
@@ -433,6 +704,16 @@ mod tests {
             );
             click(&ctx, &mut e, "Clear pending changes");
             assert!(e.draft.as_ref().expect("draft").edits.add.is_empty());
+            click(&ctx, &mut e, "Undo");
+            assert_eq!(e.draft.as_ref().expect("draft").edits, pending);
+            click(&ctx, &mut e, "Redo");
+            assert_eq!(
+                e.draft.as_ref().expect("draft").edits,
+                SketchConstraintEdits::default()
+            );
+            click(&ctx, &mut e, "Undo");
+            click(&ctx, &mut e, "Save constraints copy…");
+            assert_eq!(e.take_request().expect("restored Save").edits, pending);
         }
     }
 
@@ -450,6 +731,12 @@ mod tests {
         click(&ctx, &mut e, "Add Horizontal");
         let kept = e.draft.as_ref().expect("draft").edits.clone();
         assert_eq!(kept.add.len(), 1);
+        click(&ctx, &mut e, "Segment 2");
+        click(&ctx, &mut e, "Add Vertical");
+        click(&ctx, &mut e, "Undo");
+        click(&ctx, &mut e, "Segment 1");
+        let history = history_state(&e);
+        assert!(!history.1.is_empty() && !history.2.is_empty());
         click(&ctx, &mut e, "Add Vertical");
         assert!(e.draft.as_ref().expect("draft").refusal.is_some());
         assert_eq!(e.draft.as_ref().expect("draft").edits, kept);
@@ -460,6 +747,7 @@ mod tests {
         assert!(e.take_request().is_none());
         // Save Cancel returns no path: no worker is started and this same draft is retryable.
         assert_eq!(e.draft.as_ref().expect("retained").edits, kept);
+        assert_eq!(history_state(&e), history);
         let mut state = crate::edits::Edits::default();
         for cancelled in [false, true] {
             let (tx, rx) = std::sync::mpsc::channel();
@@ -493,14 +781,19 @@ mod tests {
                 .is_none()
             );
             assert_eq!(e.draft.as_ref().expect("retained").edits, kept);
+            assert_eq!(history_state(&e), history);
             let g = rx.recv().expect("done");
             assert!(finish_edit(&mut e, &mut state, g, Err(error)).is_none());
             assert_eq!(e.draft.as_ref().expect("retained").edits, kept);
+            assert_eq!(history_state(&e), history);
         }
         click(&ctx, &mut e, "Clear pending changes");
         assert!(e.draft.as_ref().expect("draft").edits.add.is_empty());
         click(&ctx, &mut e, "Cancel constraints draft");
         assert!(!e.active());
+        assert!(e.begin(&path, &source, id));
+        assert_eq!(history_state(&e), Default::default());
+        e.dismiss();
         let mut forbidden = source.clone();
         forbidden.refusal = Some("document copy forbidden".into());
         assert!(!e.begin(&path, &forbidden, id));
@@ -550,9 +843,21 @@ mod tests {
         frame(&ctx, &mut e, vec![]);
         click(&ctx, &mut e, "Segment 1");
         click(&ctx, &mut e, "Add Horizontal");
+        let expected_edits = e.draft.as_ref().expect("draft").edits.clone();
+        click(&ctx, &mut e, "Undo");
+        assert_eq!(
+            e.draft.as_ref().expect("draft").edits,
+            SketchConstraintEdits::default()
+        );
+        click(&ctx, &mut e, "Redo");
         click(&ctx, &mut e, "Save constraints copy…");
         let request = e.take_request().expect("real widget request");
+        assert_eq!(request.edits, expected_edits);
+        assert_eq!(request.source, source);
+        assert_eq!(request.sketch, id);
+        assert_eq!(request.expected, reading.version);
         let kept = request.edits.clone();
+        let history = history_state(&e);
         let mut state = crate::edits::Edits::default();
         for occupied in [true, false] {
             let mut r = request.clone();
@@ -575,6 +880,7 @@ mod tests {
             if occupied {
                 assert!(open.is_none());
                 assert_eq!(e.draft.as_ref().expect("retained").edits, kept);
+                assert_eq!(history_state(&e), history);
                 assert_eq!(
                     std::fs::read(root.path().join("busy.fcad")).expect("busy"),
                     b"keep"
@@ -718,6 +1024,11 @@ mod tests {
         let after = ExtrudeEditSource::read(&d).expect("discover");
         d.close().expect("close");
         assert!(e.begin(&ui, &after, id));
+        assert_eq!(
+            history_state(&e),
+            Default::default(),
+            "published draft history is discarded"
+        );
         frame(&ctx, &mut e, vec![]);
         frame(&ctx, &mut e, vec![]);
         click(&ctx, &mut e, "Remove");
