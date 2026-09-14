@@ -2563,14 +2563,56 @@ unstaged/uncommitted для независимого ревью; CI базы о�
 интерактивный GUI по последнему указанию пользователя не запускался.
 Результаты CI опубликованного head и merge учитываются отдельно.
 
-**§25G — pending: закрепление вершины собственного Line-профиля.**
-Один явный Fixed endpoint с координатами XY/mm через существующий solver,
-общую copy-операцию, CLI и тонкий UI-адаптер. Сохранение, exact remove/add,
-DOF и настоящая геометрия должны подтверждаться после cold reopen; прежние
-stored координаты, UUID и closure сохраняются. Следующий bounded-срез — одна
-закреплённая вершина на профиль, не произвольная система новых constraints.
-Работа и проверки автономны без окон/экрана; интерактивный GUI smoke отложен.
-Реализация не начата.
+**§25G — реализовано закрепление одной вершины собственного Line-профиля.**
+Один явный Fixed endpoint с конечными XY/mm входит в тот же managed класс, что
+H/V, длина и adjacent Coincident: существующий `SketchConstraintRule::Fixed`,
+существующий перевод в solver, прежняя операция `edit_sketch_constraints_copy`,
+прежний narrow writer и прежний snapshot/cold/close/Keep путь. Новой команды,
+writer, rebuild, publish или схемы БД нет. Не более одного Fixed на профиль:
+второй add, второй сохранённый Fixed и ссылка на противоположный endpoint того
+же adjacent Coincident joint — структурные отказы до публикации. Checked
+`SketchCoordinateMm` допускает ноль и отрицательные mm и не допускает
+NaN/infinity/overflow в request и истории; оба нуля — одна координата, поэтому
+сравнения истории остаются корректными без NaN в Eq. Если Fixed — первое
+пользовательское ограничение, прежний маршрут так же создаёт все недостающие
+Coincident joints, и solver не разрывает контур. Удаление Fixed сохраняет
+closure, H/V и размеры; замена — прежний атомарный remove exact UUID + add.
+CLI request v1 аддитивно принимает `{"rule":"fixed","curve_id":UUID,
+"at":"start"|"end","x_mm":N,"y_mm":N}`; response/operation/schema и коды 0/2/7
+не менялись, Fixed сохраняет прежний DTO `point/x/y`. UI `Edit constraints`
+получил `Pin Start`/`Pin End`, поля Fixed X/Y и `Add Fixed point` в один прежний
+bounded `History::change`; persisted Fixed показан своим именем, координатами и
+UUID и удаляется по exact identity. Stored координаты остаются inputs solver и
+не перезаписываются решением. Native gates измеряют DOF 2 → 0 → 2 после cold
+reopen, 60×30×10 mm / 18000 mm³, положение закреплённой вершины, трансляцию при
+замене и сохранность остальных UUID/SQL. Coordinate drag/Snap constrained Sketch
+остаются запрещены; отверстий, новых форм, нескольких закреплений, произвольных
+ограничений, live solver drag, in-place Save и persistent undo нет.
+[Контракт и рецепт](fixed-sketch-vertex.md),
+[локальные доказательства и ограничения](fixed-sketch-vertex-verification.md).
+Изменения оставлены unstaged/uncommitted для независимого ревью; CI базы
+учитывается отдельно от нового diff. Интерактивный GUI smoke отложен по
+указанию пользователя и не считается пройденным.
+
+Независимое ревью §25G сохранило production-маршрут. Native process test теперь
+измеряет именно выбранный Start/End по UUID кривой, а не любую совпавшую вершину;
+worker test проверяет также побайтовое равенство UI/CLI FBX. Исправлено описание
+лимитов в README: одна длина на Line, один Fixed на профиль. Повторены domain,
+CLI, headless app и настоящий stub; рецепт и pinned ufbx исполнены независимо.
+Интерактивный GUI не запускался. CI опубликованного head/merge — отдельный этап.
+
+**§25H — pending: равенство длин двух Lines через UI и CLI.** Следующий
+продуктовый срез использует существующий `SketchConstraintRule::EqualLength`
+и общий constraint-copy job. Пара задаётся двумя persisted curve UUID одного
+managed Line-профиля; связь сохраняется как EqualLength, без копирования числа
+в Distance и без правки stored координат. Изменение ведущей длины должно менять
+обе стороны, сохраняя UUID самой связи. Первый сценарий: H/V, одна длина и Fixed
+оставляют DOF 1; EqualLength соседних сторон даёт квадрат с DOF 0; удаление
+равенства возвращает DOF 1. Самоссылки/дубликаты пары — структурный отказ,
+противоречивые размеры и избыточность — прежняя диагностика solver. UI выбирает
+две Lines и строит тот же ordered request v1, включая Undo/Redo и exact Remove.
+Без новых примитивов, схемы БД, FFI и live solver drag. Реализация не начата;
+локальные проверки следующего среза также не требуют окна или экрана.
 
 ## 15. Чего не делать до beta
 

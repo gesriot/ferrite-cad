@@ -2,8 +2,8 @@
 //! Disposable Line constraint request over stored facts; no solver or file reads.
 use ferritecad_document::{
     AddLineConstraint, ConstraintSketchChoice, DocumentVersion, ExtrudeEditSource,
-    LineConstraintKind, LineLengthMm, Sketch, SketchConstraintEdits, SketchConstraintRule,
-    SketchGeometry,
+    LineConstraintKind, LineEndpoint, LineLengthMm, Sketch, SketchConstraintEdits,
+    SketchConstraintRule, SketchCoordinateMm, SketchGeometry,
 };
 use ferritecad_jobs::{EditSketchConstraintsRequest, EditedSketchConstraints};
 use ferritecad_types::{ObjectId, Result, StableEntityId};
@@ -50,6 +50,9 @@ struct Draft {
     selected: Option<StableEntityId>,
     // Unapplied input, like selection, is not part of request Undo/Redo.
     length_mm: String,
+    endpoint: LineEndpoint,
+    pin_x_mm: String,
+    pin_y_mm: String,
     edits: SketchConstraintEdits,
     history: History,
     refusal: Option<String>,
@@ -86,6 +89,9 @@ impl Editor {
             choice: choice.clone(),
             selected: None,
             length_mm: String::new(),
+            endpoint: LineEndpoint::Start,
+            pin_x_mm: String::new(),
+            pin_y_mm: String::new(),
             edits: Default::default(),
             history: Default::default(),
             refusal: None,
@@ -279,6 +285,63 @@ impl Editor {
                     if let Some((id, length)) = saved_length {
                         ui.small(format!("Stored length {} mm · {id}", length.get()));
                     }
+                    ui.horizontal(|ui| {
+                        ui.label("Pin endpoint:");
+                        for endpoint in [LineEndpoint::Start, LineEndpoint::End] {
+                            ui.selectable_value(
+                                &mut draft.endpoint,
+                                endpoint,
+                                match endpoint {
+                                    LineEndpoint::Start => "Pin Start",
+                                    LineEndpoint::End => "Pin End",
+                                },
+                            );
+                        }
+                        // Stored inputs name the endpoint; the solved drawing is not read here.
+                        if let Some((x, y)) = draft
+                            .selected
+                            .and_then(|curve| stored_endpoint(stored, curve, draft.endpoint))
+                        {
+                            ui.small(format!(
+                                "Stored {} of the selected Line: ({x}, {y}) mm",
+                                draft.endpoint.as_str()
+                            ));
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Fixed X (mm):");
+                        ui.add(egui::TextEdit::singleline(&mut draft.pin_x_mm)
+                            .id_salt("fixed-x-mm").desired_width(80.));
+                        ui.label("Fixed Y (mm):");
+                        ui.add(egui::TextEdit::singleline(&mut draft.pin_y_mm)
+                            .id_salt("fixed-y-mm").desired_width(80.));
+                        if ui
+                            .add_enabled(draft.selected.is_some(), egui::Button::new("Add Fixed point"))
+                            .clicked()
+                        {
+                            let x = coordinate(&draft.pin_x_mm);
+                            let y = coordinate(&draft.pin_y_mm);
+                            match x.and_then(|x| y.map(|y| (x, y))).and_then(|(x, y)| {
+                                let mut proposed = draft.edits.clone();
+                                proposed.add.push(AddLineConstraint {
+                                    curve: draft.selected.expect("selected"),
+                                    kind: LineConstraintKind::Fixed {
+                                        at: draft.endpoint,
+                                        x,
+                                        y,
+                                    },
+                                });
+                                draft.choice.validate_edits(&proposed)?;
+                                Ok(proposed)
+                            }) {
+                                Ok(proposed) => {
+                                    draft.history.change(&mut draft.edits, proposed);
+                                    draft.refusal = None;
+                                }
+                                Err(e) => draft.refusal = Some(e.to_string()),
+                            }
+                        }
+                    });
                     ui.label("Persisted constraints:");
                     egui::ScrollArea::vertical()
                         .id_salt("stored-constraints")
@@ -295,6 +358,10 @@ impl Editor {
                                     SketchConstraintRule::Distance { a, distance, .. } => {
                                         (format!("Line length {distance} mm"), Some(a.curve))
                                     }
+                                    SketchConstraintRule::Fixed { point, x, y } => (
+                                        format!("Fixed point {} ({x}, {y}) mm", point.at.as_str()),
+                                        Some(point.curve),
+                                    ),
                                     _ => ("Coincident closure".to_owned(), None),
                                 };
                                 ui.horizontal_wrapped(|ui| {
@@ -413,6 +480,29 @@ fn replace_stored_length(
     proposed
 }
 
+/// The pin's stored endpoint, so the choice needs no solved drawing.
+fn stored_endpoint(sketch: &Sketch, curve: StableEntityId, at: LineEndpoint) -> Option<(f64, f64)> {
+    sketch.curves.iter().find(|c| c.id == curve).and_then(|c| {
+        let SketchGeometry::Line { start, end } = c.geometry else {
+            return None;
+        };
+        let p = match at {
+            LineEndpoint::Start => start,
+            LineEndpoint::End => end,
+        };
+        Some((p.x, p.y))
+    })
+}
+
+fn coordinate(text: &str) -> Result<SketchCoordinateMm> {
+    text.trim()
+        .parse::<f64>()
+        .map_err(|_| {
+            ferritecad_types::CadError::input("enter finite X and Y pin coordinates in mm")
+        })
+        .and_then(SketchCoordinateMm::new)
+}
+
 fn short(id: StableEntityId) -> String {
     id.to_string()[24..].to_owned()
 }
@@ -421,6 +511,9 @@ fn kind_name(kind: LineConstraintKind) -> String {
         LineConstraintKind::Horizontal => "Horizontal".into(),
         LineConstraintKind::Vertical => "Vertical".into(),
         LineConstraintKind::Distance(length) => format!("Line length {} mm", length.get()),
+        LineConstraintKind::Fixed { at, x, y } => {
+            format!("Fixed point {} ({}, {}) mm", at.as_str(), x.get(), y.get())
+        }
     }
 }
 
@@ -483,6 +576,9 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_else(|| panic!("not painted: {label}"));
+        click_at(ctx, e, at, running);
+    }
+    fn click_at(ctx: &egui::Context, e: &mut Editor, at: egui::Pos2, running: bool) {
         frame_running(ctx, e, vec![egui::Event::PointerMoved(at)], running);
         for pressed in [true, false] {
             frame_running(
@@ -497,6 +593,81 @@ mod tests {
                 running,
             );
         }
+    }
+    /// Bring a row of the bounded persisted catalogue into view. A long list
+    /// scrolls; the row is still reachable, which is the point.
+    fn scroll_to_row(ctx: &egui::Context, e: &mut Editor, prefix: &str) {
+        for _ in 0..40 {
+            let out = frame(ctx, e, vec![]);
+            let at = out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text().starts_with(prefix) => {
+                    Some(t.visual_bounding_rect())
+                }
+                _ => None,
+            });
+            match at {
+                Some(rect)
+                    if out.shapes.iter().any(|s| {
+                        matches!(&s.shape, egui::Shape::Text(t)
+                            if t.galley.text().starts_with(prefix)
+                                && s.clip_rect.contains_rect(rect))
+                    }) =>
+                {
+                    return;
+                }
+                _ => {}
+            }
+            let anchor = text_center(&frame(ctx, e, vec![]), "Persisted constraints:");
+            frame(
+                ctx,
+                e,
+                vec![
+                    egui::Event::PointerMoved(egui::pos2(anchor.x, anchor.y + 40.)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0., -30.),
+                        phase: egui::TouchPhase::Move,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+        }
+        panic!("row never became visible: {prefix}");
+    }
+    fn text_center(out: &egui::FullOutput, label: &str) -> egui::Pos2 {
+        out.shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == label => {
+                    Some(t.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("not painted: {label}"))
+    }
+    /// The catalogue paints one Remove per removable constraint; pick the one
+    /// that sits on the named row rather than whichever comes first.
+    fn click_remove_on_row(ctx: &egui::Context, e: &mut Editor, prefix: &str) {
+        scroll_to_row(ctx, e, prefix);
+        let out = frame(ctx, e, vec![]);
+        // The catalogue paints each row in order: name, Line, then its Remove.
+        let row = out
+            .shapes
+            .iter()
+            .position(
+                |s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().starts_with(prefix)),
+            )
+            .unwrap_or_else(|| panic!("no such row: {prefix}"));
+        let at = out.shapes[row..]
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Remove" => {
+                    Some(t.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no Remove after row: {prefix}"));
+        click_at(ctx, e, at, false);
     }
     fn fixture() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         let root = tempfile::tempdir().expect("dir");
@@ -597,18 +768,21 @@ mod tests {
         )
     }
     fn enter_length(ctx: &egui::Context, e: &mut Editor, value: &str, running: bool) {
+        enter_field(ctx, e, "Line length (mm):", value, running);
+    }
+    fn enter_field(ctx: &egui::Context, e: &mut Editor, label: &str, value: &str, running: bool) {
         let out = frame_running(ctx, e, vec![], running);
         let at = out
             .shapes
             .iter()
             .find_map(|s| match &s.shape {
-                egui::Shape::Text(t) if t.galley.text() == "Line length (mm):" => {
+                egui::Shape::Text(t) if t.galley.text() == label => {
                     let r = t.visual_bounding_rect();
                     Some(egui::pos2(r.right() + 30., r.center().y))
                 }
                 _ => None,
             })
-            .expect("length input label");
+            .unwrap_or_else(|| panic!("input label: {label}"));
         frame_running(ctx, e, vec![egui::Event::PointerMoved(at)], running);
         for pressed in [true, false] {
             frame_running(
@@ -1326,6 +1500,9 @@ mod tests {
                 "Clear pending changes",
                 "Add length",
                 "Replace length",
+                "Pin Start",
+                "Pin End",
+                "Add Fixed point",
                 "Save constraints copy…",
             ] {
                 assert!(
@@ -1441,6 +1618,559 @@ mod tests {
         forbidden.refusal = Some("document copy forbidden".into());
         assert!(!e.begin(&path, &forbidden, id));
     }
+    fn persist_pin(path: &Path) -> (ExtrudeEditSource, StableEntityId, StableEntityId) {
+        let mut document = Document::open(path).expect("doc");
+        let source = ExtrudeEditSource::read(&document).expect("catalog");
+        let choice = &source.constraint_sketches[0];
+        let curve = choice.stored.as_ref().expect("stored").curves[1].id;
+        let prepared = ferritecad_document::prepare_sketch_constraints(
+            &document,
+            choice.sketch,
+            &SketchConstraintEdits {
+                remove: vec![],
+                add: vec![AddLineConstraint {
+                    curve,
+                    kind: pin(LineEndpoint::End, 12.5, -0.5),
+                }],
+            },
+        )
+        .expect("prepare pin");
+        let id = prepared.added.last().expect("pin").id;
+        document
+            .write_sketch_constraints(&prepared)
+            .expect("write pin");
+        let source = ExtrudeEditSource::read(&document).expect("catalog");
+        document.close().expect("close");
+        (source, id, curve)
+    }
+    fn pin(at: LineEndpoint, x: f64, y: f64) -> LineConstraintKind {
+        LineConstraintKind::Fixed {
+            at,
+            x: SketchCoordinateMm::new(x).expect("x"),
+            y: SketchCoordinateMm::new(y).expect("y"),
+        }
+    }
+
+    #[test]
+    fn fixed_point_widgets_pick_an_endpoint_and_replace_the_stored_pin_in_one_step() {
+        let (_root, path, source) = fixture();
+        let mut e = Editor::default();
+        assert!(e.begin(&path, &source, source.constraint_sketches[0].sketch));
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        let curves = source.constraint_sketches[0]
+            .stored
+            .as_ref()
+            .expect("stored")
+            .curves
+            .clone();
+        let SketchGeometry::Line { start, end } = curves[0].geometry else {
+            panic!("line")
+        };
+        // The endpoint choice reads stored inputs, never a solved drawing.
+        click(&ctx, &mut e, "Segment 1");
+        assert!(painted(
+            &frame(&ctx, &mut e, vec![]),
+            &format!(
+                "Stored start of the selected Line: ({}, {}) mm",
+                start.x, start.y
+            )
+        ));
+        click(&ctx, &mut e, "Pin End");
+        assert!(painted(
+            &frame(&ctx, &mut e, vec![]),
+            &format!("Stored end of the selected Line: ({}, {}) mm", end.x, end.y)
+        ));
+        let empty = history_state(&e);
+        enter_field(&ctx, &mut e, "Fixed X (mm):", "10", false);
+        enter_field(&ctx, &mut e, "Fixed Y (mm):", "-5", false);
+        assert_eq!(history_state(&e), empty, "typing is not a checkpoint");
+        click(&ctx, &mut e, "Add Fixed point");
+        let accepted = history_state(&e).0;
+        assert_eq!(
+            accepted.add,
+            vec![AddLineConstraint {
+                curve: curves[0].id,
+                kind: pin(LineEndpoint::End, 10., -5.),
+            }]
+        );
+        assert!(
+            painted(
+                &frame(&ctx, &mut e, vec![]),
+                &format!("Fixed point end (10, -5) mm · Line {}", curves[0].id)
+            ),
+            "the pending entry names the pin, not a closure fallback label"
+        );
+
+        // A second pin on the same profile is refused by the shared validator.
+        let after_accept = history_state(&e);
+        click(&ctx, &mut e, "Add Fixed point");
+        assert!(
+            e.draft
+                .as_ref()
+                .expect("draft")
+                .refusal
+                .as_deref()
+                .is_some_and(|r| r.contains("one fixed endpoint")),
+            "the validator refuses a second pin"
+        );
+        assert_eq!(history_state(&e), after_accept);
+
+        // Invalid coordinates refuse without touching history or the Redo branch.
+        click(&ctx, &mut e, "Undo");
+        let branch = history_state(&e);
+        for (x, y) in [
+            ("", "0"),
+            ("0", ""),
+            ("-", "0"),
+            ("0", "1e-"),
+            ("NaN", "0"),
+            ("0", "inf"),
+            ("-inf", "0"),
+            ("1e309", "0"),
+            ("0", "-1e309"),
+            ("10 mm", "0"),
+        ] {
+            enter_field(&ctx, &mut e, "Fixed X (mm):", x, false);
+            enter_field(&ctx, &mut e, "Fixed Y (mm):", y, false);
+            click(&ctx, &mut e, "Add Fixed point");
+            assert!(
+                e.draft.as_ref().expect("draft").refusal.is_some(),
+                "{x}/{y}"
+            );
+            assert_eq!(history_state(&e), branch, "{x}/{y}");
+        }
+        let fields = {
+            let d = e.draft.as_ref().expect("draft");
+            (d.pin_x_mm.clone(), d.pin_y_mm.clone())
+        };
+        // A running job blocks the action and keeps the unapplied field.
+        enter_field(&ctx, &mut e, "Fixed X (mm):", "3", true);
+        click_running(&ctx, &mut e, "Add Fixed point", true);
+        assert_eq!(
+            (
+                e.draft.as_ref().expect("draft").pin_x_mm.clone(),
+                e.draft.as_ref().expect("draft").pin_y_mm.clone()
+            ),
+            fields
+        );
+        assert_eq!(history_state(&e), branch);
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(
+            history_state(&e).0,
+            accepted,
+            "Redo survives refusal and no-op"
+        );
+        click(&ctx, &mut e, "Save constraints copy…");
+        assert_eq!(
+            e.take_request().expect("Save accepted edits").edits,
+            accepted
+        );
+
+        // Zero and negative millimetres are ordinary coordinates; a real new
+        // edit after Undo is what clears the Redo branch.
+        click(&ctx, &mut e, "Clear pending changes");
+        enter_field(&ctx, &mut e, "Fixed X (mm):", "0", false);
+        enter_field(&ctx, &mut e, "Fixed Y (mm):", "-0", false);
+        click(&ctx, &mut e, "Add Fixed point");
+        assert_eq!(
+            history_state(&e).0.add[0].kind,
+            pin(LineEndpoint::End, 0., 0.),
+            "both zeros are one coordinate"
+        );
+        assert!(history_state(&e).2.is_empty(), "an actual edit clears Redo");
+
+        // A persisted pin is named, shows its coordinates and its UUID, and is
+        // removed by exact identity in the same request that adds the new one.
+        let (stored_source, pin_id, pinned_curve) = persist_pin(&path);
+        let mut e = Editor::default();
+        assert!(e.begin(
+            &path,
+            &stored_source,
+            stored_source.constraint_sketches[0].sketch
+        ));
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        assert!(painted(
+            &frame(&ctx, &mut e, vec![]),
+            &format!("Fixed point end (12.5, -0.5) mm · {pin_id}")
+        ));
+        click_remove_on_row(&ctx, &mut e, "Fixed point end (12.5, -0.5) mm");
+        assert_eq!(history_state(&e).0.remove, vec![pin_id]);
+        click(&ctx, &mut e, "Segment 3");
+        click(&ctx, &mut e, "Pin Start");
+        enter_field(&ctx, &mut e, "Fixed X (mm):", "-7.5", false);
+        enter_field(&ctx, &mut e, "Fixed Y (mm):", "4", false);
+        click(&ctx, &mut e, "Add Fixed point");
+        let replacement = history_state(&e).0;
+        assert_eq!(replacement.remove, vec![pin_id]);
+        assert_eq!(
+            replacement.add,
+            vec![AddLineConstraint {
+                curve: stored_source.constraint_sketches[0]
+                    .stored
+                    .as_ref()
+                    .expect("stored")
+                    .curves[2]
+                    .id,
+                kind: pin(LineEndpoint::Start, -7.5, 4.),
+            }]
+        );
+        assert_ne!(replacement.add[0].curve, pinned_curve);
+        stored_source.constraint_sketches[0]
+            .validate_edits(&replacement)
+            .expect("remove exact UUID and add in one request");
+        click(&ctx, &mut e, "Undo");
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(history_state(&e).0, replacement);
+        click(&ctx, &mut e, "Save constraints copy…");
+        assert_eq!(e.take_request().expect("Save").edits, replacement);
+
+        // Cancel keeps nothing behind and the editor closes.
+        click(&ctx, &mut e, "Cancel constraints draft");
+        assert!(!e.active());
+    }
+    #[test]
+    fn native_fixed_point_worker_and_cli_pin_the_same_solved_body() {
+        use crate::creates::tests::ferritecad;
+        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: constraint worker requires OCCT and PlaneGCS");
+            return;
+        }
+        let root = tempfile::tempdir().expect("dir");
+        let source = root.path().join("source.fcad");
+        let input = root.path().join("request.json");
+        std::fs::write(
+            &input,
+            r#"{"request_version":1,"points_mm":[[-40,-20],[40,-20],[40,20],[-40,20]],"height_mm":10}"#,
+        )
+        .expect("polygon");
+        let o = std::process::Command::new(ferritecad())
+            .arg("create-sketch-extrude")
+            .arg(&input)
+            .arg("-o")
+            .arg(&source)
+            .arg("--json")
+            .output()
+            .expect("create");
+        assert!(o.status.success(), "{o:?}");
+        crate::sketch::drag_tests::attach_source_claim(&source);
+        let sql_before = crate::sketch::drag_tests::sql_facts(&source);
+        let loaded = {
+            let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+            ferritecad_scene::snapshot_of(
+                &source,
+                &mut k,
+                |k, b| k.import_step(b),
+                &Default::default(),
+                &OperationContext::default(),
+            )
+            .expect("scene")
+        };
+        let reading = loaded.edit_source.expect("catalog");
+        let id = reading.constraint_sketches[0].sketch;
+        let curves = reading.constraint_sketches[0]
+            .stored
+            .as_ref()
+            .expect("stored")
+            .curves
+            .clone();
+        let original = std::fs::read(&source).expect("source");
+        let mut e = Editor::default();
+        assert!(e.begin(&source, &reading, id));
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        for (segment, label) in [
+            ("Segment 1", "Add Horizontal"),
+            ("Segment 2", "Add Vertical"),
+            ("Segment 3", "Add Horizontal"),
+            ("Segment 4", "Add Vertical"),
+        ] {
+            click(&ctx, &mut e, segment);
+            click(&ctx, &mut e, label);
+        }
+        for (segment, value) in [("Segment 1", "60"), ("Segment 2", "30")] {
+            click(&ctx, &mut e, segment);
+            enter_length(&ctx, &mut e, value, false);
+            click(&ctx, &mut e, "Add length");
+        }
+        click(&ctx, &mut e, "Segment 1");
+        click(&ctx, &mut e, "Pin Start");
+        enter_field(&ctx, &mut e, "Fixed X (mm):", "10", false);
+        enter_field(&ctx, &mut e, "Fixed Y (mm):", "-5", false);
+        click(&ctx, &mut e, "Add Fixed point");
+        let expected_edits = e.draft.as_ref().expect("draft").edits.clone();
+        assert_eq!(
+            expected_edits.add.last().expect("pin"),
+            &AddLineConstraint {
+                curve: curves[0].id,
+                kind: pin(LineEndpoint::Start, 10., -5.),
+            }
+        );
+        click(&ctx, &mut e, "Undo");
+        click(&ctx, &mut e, "Redo");
+        click(&ctx, &mut e, "Save constraints copy…");
+        let request = e.take_request().expect("real widget request");
+        assert_eq!(request.edits, expected_edits);
+        assert_eq!(request.expected, reading.version);
+        let mut state = crate::edits::Edits::default();
+        let mut r = request.clone();
+        r.destination = root.path().join("ui.fcad");
+        let (tx, rx) = std::sync::mpsc::channel();
+        state
+            .start_constraints(r, move |r, g, c| {
+                crate::edits::spawn_constraint_edit(r, c, move |result| {
+                    tx.send((g, result)).expect("reply")
+                })
+            })
+            .expect("worker");
+        let (g, result) = rx.recv().expect("worker reply");
+        let solved = result.as_ref().expect("published").solve.clone();
+        assert_eq!(
+            solved.degrees_of_freedom(),
+            0,
+            "the pin removed both translations"
+        );
+        let ui = root.path().join("ui.fcad");
+        assert_eq!(finish_edit(&mut e, &mut state, g, result), Some(ui.clone()));
+        assert!(!e.active());
+
+        // The peer CLI process replays the same ordered request over one source.
+        let additions = expected_edits
+            .add
+            .iter()
+            .map(|a| {
+                let rule = match a.kind {
+                    LineConstraintKind::Horizontal => r#""rule":"horizontal""#.to_owned(),
+                    LineConstraintKind::Vertical => r#""rule":"vertical""#.to_owned(),
+                    LineConstraintKind::Distance(length) => {
+                        format!(r#""rule":"distance","distance_mm":{}"#, length.get())
+                    }
+                    LineConstraintKind::Fixed { at, x, y } => format!(
+                        r#""rule":"fixed","at":"{}","x_mm":{},"y_mm":{}"#,
+                        at.as_str(),
+                        x.get(),
+                        y.get()
+                    ),
+                };
+                format!(r#"{{"curve_id":"{}",{rule}}}"#, a.curve)
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        std::fs::write(
+            &input,
+            format!(r#"{{"request_version":1,"remove":[],"add":[{additions}]}}"#),
+        )
+        .expect("typed IDs to peer request");
+        let cli = root.path().join("cli.fcad");
+        let o = std::process::Command::new(ferritecad())
+            .arg("edit-sketch-constraints-copy")
+            .arg(&source)
+            .arg("--sketch")
+            .arg(id.to_string())
+            .arg("--expect-version")
+            .arg(reading.version.content.to_string())
+            .arg("--request")
+            .arg(&input)
+            .arg("-o")
+            .arg(&cli)
+            .arg("--json")
+            .output()
+            .expect("peer CLI");
+        assert!(o.status.success(), "{o:?}");
+
+        let a = Document::open_read_only(&ui).expect("UI");
+        let b = Document::open_read_only(&cli).expect("CLI");
+        assert_eq!(a.meta(), b.meta());
+        assert_eq!(
+            a.topology_refs().expect("refs"),
+            b.topology_refs().expect("refs")
+        );
+        let mut pin_id = None;
+        for old in a.objects().expect("objects") {
+            let new = b.object(old.id).expect("read").expect("same id");
+            if let (
+                ferritecad_document::ObjectPayload::Sketch(s),
+                ferritecad_document::ObjectPayload::Sketch(t),
+            ) = (&old.payload, &new.payload)
+            {
+                assert_eq!(s.curves, t.curves, "stored coordinates are inputs");
+                assert_eq!(s.curves, curves, "the solve did not write itself back");
+                assert_eq!(s.constraints.len(), 11);
+                for (x, y) in s.constraints.iter().zip(&t.constraints) {
+                    assert_ne!(x.id, y.id, "only genuinely new UUIDs differ");
+                    assert_eq!(x.rule, y.rule);
+                }
+                let last = s.constraints.last().expect("pin");
+                assert_eq!(
+                    last.rule,
+                    SketchConstraintRule::Fixed {
+                        point: ferritecad_document::SketchPointRef::new(
+                            curves[0].id,
+                            ferritecad_document::SketchPointSelector::Start,
+                        ),
+                        x: 10.,
+                        y: -5.,
+                    }
+                );
+                pin_id = Some(last.id);
+            } else {
+                assert_eq!(old, new);
+            }
+        }
+        a.close().expect("close");
+        b.close().expect("close");
+        for path in [&ui, &cli] {
+            let after = crate::sketch::drag_tests::sql_facts(path);
+            assert_eq!(
+                sql_before.keys().collect::<Vec<_>>(),
+                after.keys().collect::<Vec<_>>()
+            );
+            for (table, rows) in &sql_before {
+                if table == "objects" {
+                    for row in rows {
+                        let actual = after[table]
+                            .iter()
+                            .find(|r| r[1] == row[1])
+                            .expect("same row");
+                        for col in 0..row.len() {
+                            if row[1] == rusqlite::types::Value::Blob(id.to_bytes().to_vec())
+                                && [3, 7, 8].contains(&col)
+                            {
+                                continue;
+                            }
+                            assert_eq!(row[col], actual[col], "object cell {col}");
+                        }
+                    }
+                } else if table == "capabilities" {
+                    assert_eq!(
+                        after[table]
+                            .iter()
+                            .filter(|r| r[1]
+                                != rusqlite::types::Value::Text(
+                                    ferritecad_document::SKETCH_CONSTRAINTS_CAPABILITY.into()
+                                ))
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                        *rows
+                    );
+                } else {
+                    assert_eq!(
+                        &after[table], rows,
+                        "{table}: source claims and unrelated rows"
+                    );
+                }
+            }
+        }
+
+        let mut outputs = vec![];
+        for path in [&ui, &cli] {
+            let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+            ferritecad_scene::snapshot_of(
+                path,
+                &mut k,
+                |k, b| k.import_step(b),
+                &Default::default(),
+                &OperationContext::default(),
+            )
+            .expect("async Open route");
+            let stl = path.with_extension("stl");
+            let fbx = path.with_extension("fbx");
+            for (op, dest) in [("export-stl", &stl), ("export-fbx", &fbx)] {
+                let o = std::process::Command::new(ferritecad())
+                    .arg(op)
+                    .arg(path)
+                    .arg("-o")
+                    .arg(dest)
+                    .output()
+                    .expect("export");
+                assert!(o.status.success(), "{o:?}");
+            }
+            outputs.push(std::fs::read(&stl).expect("STL"));
+            if let Some(dir) = std::env::var_os("FERRITECAD_CONSTRAINT_ARTIFACTS") {
+                std::fs::create_dir_all(&dir).expect("dir");
+                for p in [path.as_path(), stl.as_path(), fbx.as_path()] {
+                    std::fs::copy(p, Path::new(&dir).join(p.file_name().expect("name")))
+                        .expect("artifact");
+                }
+            }
+        }
+        assert_eq!(
+            outputs[0], outputs[1],
+            "UI and CLI pin the same solved Body"
+        );
+        assert_eq!(
+            std::fs::read(ui.with_extension("fbx")).expect("UI FBX"),
+            std::fs::read(cli.with_extension("fbx")).expect("CLI FBX"),
+            "UI and CLI publish the same FBX for the pinned Body"
+        );
+
+        // Independent integration of the published triangles: size, volume and
+        // where in XY the pinned vertex actually put the body.
+        let stl = &outputs[0];
+        let n = u32::from_le_bytes(stl[80..84].try_into().expect("count")) as usize;
+        assert_eq!(stl.len(), 84 + 50 * n);
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        let mut volume6 = 0.;
+        for i in 0..n {
+            let v: [f64; 9] = std::array::from_fn(|j| {
+                let at = 84 + 50 * i + 12 + 4 * j;
+                f64::from(f32::from_le_bytes(stl[at..at + 4].try_into().expect("f32")))
+            });
+            for p in v.chunks_exact(3) {
+                for j in 0..3 {
+                    lo[j] = lo[j].min(p[j]);
+                    hi[j] = hi[j].max(p[j]);
+                }
+            }
+            volume6 += v[0] * (v[4] * v[8] - v[5] * v[7])
+                + v[1] * (v[5] * v[6] - v[3] * v[8])
+                + v[2] * (v[3] * v[7] - v[4] * v[6]);
+        }
+        let extents: [f64; 3] = std::array::from_fn(|j| hi[j] - lo[j]);
+        assert!(
+            (extents[0] - 60.).abs() < 1e-4
+                && (extents[1] - 30.).abs() < 1e-4
+                && (extents[2] - 10.).abs() < 1e-4,
+            "{extents:?}"
+        );
+        assert!((volume6.abs() / 6. - 18000.).abs() < 0.02);
+        assert!(
+            (lo[0] - 10.).abs() < 1e-4 || (hi[0] - 10.).abs() < 1e-4,
+            "pinned X is not a corner of the body: {lo:?} {hi:?}"
+        );
+        assert!(
+            (lo[1] + 5.).abs() < 1e-4 || (hi[1] + 5.).abs() < 1e-4,
+            "pinned Y is not a corner of the body: {lo:?} {hi:?}"
+        );
+        assert_eq!(std::fs::read(&source).expect("source"), original);
+
+        // The persisted pin is named as a pin and removable by exact identity.
+        let d = Document::open_read_only(&ui).expect("published");
+        let after = ExtrudeEditSource::read(&d).expect("discover");
+        d.close().expect("close");
+        assert!(after.constraint_sketches[0].refusal.is_none());
+        assert!(e.begin(&ui, &after, id));
+        for _ in 0..2 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        let pin_row = format!("Fixed point start (10, -5) mm · {}", pin_id.expect("pin"));
+        scroll_to_row(&ctx, &mut e, &pin_row);
+        assert!(painted(&frame(&ctx, &mut e, vec![]), &pin_row));
+        click_remove_on_row(&ctx, &mut e, "Fixed point start (10, -5) mm");
+        click(&ctx, &mut e, "Save constraints copy…");
+        let removal = e.take_request().expect("removal");
+        assert_eq!(removal.edits.remove, vec![pin_id.expect("pin")]);
+        assert!(removal.edits.add.is_empty());
+    }
+
     #[test]
     fn native_constraint_worker_and_cli_preserve_model_and_solved_body() {
         native_constraint_worker_and_cli(false);
@@ -1573,6 +2303,12 @@ mod tests {
                     LineConstraintKind::Distance(length) => {
                         format!(r#""rule":"distance","distance_mm":{}"#, length.get())
                     }
+                    LineConstraintKind::Fixed { at, x, y } => format!(
+                        r#""rule":"fixed","at":"{}","x_mm":{},"y_mm":{}"#,
+                        at.as_str(),
+                        x.get(),
+                        y.get()
+                    ),
                 };
                 format!(r#"{{"curve_id":"{}",{rule}}}"#, a.curve)
             })

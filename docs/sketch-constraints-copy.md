@@ -32,7 +32,7 @@ Coincident, повторный H/V, H+V или две длины одного с
 новой длины: новый constraint UUID создаётся общей операцией один раз; остальные
 IDs сохраняются. Это не обновление значения с сохранением UUID заменённой связи.
 
-При добавлении H/V или длины отсутствующие связи замыкания создаются явно: Coincident
+При добавлении H/V, длины или Fixed отсутствующие связи замыкания создаются явно: Coincident
 между End каждого Line и Start следующего, включая последний/первый. Подходящие
 существующие связи (в любой ориентации) сохраняют UUID; дубликаты запрещены.
 Новые Coincident добавляются в порядке кривых, затем запрошенные H/V/length. Они видны
@@ -40,9 +40,23 @@ IDs сохраняются. Это не обновление значения с
 скрытых Fixed или размеров нет. Этот API не удаляет closure и не возвращает такой
 Sketch в unconstrained v1. Снятие H/V/length освобождает условие, не обещает отката формы.
 
+§25G аддитивно добавляет в request v1 четвёртую форму
+`{curve_id,rule:"fixed",at,x_mm,y_mm}`: `at` — строка `start` либо `end`,
+`x_mm`/`y_mm` — JSON numbers, после декодирования в f64 конечные миллиметры.
+Ноль и отрицательные координаты допустимы; NaN, infinity, overflow, строка,
+bool, null, отсутствие поля, любой другой `at` и лишний `distance_mm`
+отказываются. `at` не принимается H/V и Distance. **Не более одного Fixed на
+профиль**: второй add, второй сохранённый Fixed и add на противоположный
+endpoint того же adjacent Coincident joint — структурные отказы до публикации.
+Сохранённый Fixed не переназначается автоматически и не связывается с другим
+endpoint по близости координат. Замена — тот же атомарный remove exact UUID +
+add: новый constraint UUID создаёт общая операция один раз. Удаление Fixed
+сохраняет Coincident closure, H/V и длины.
+
 Поддерживаются H/V, положительный Distance между Start/End одного Line
-(сохранённая обратная ориентация endpoints также допустима) и Coincident его
-соседних стыков. Arbitrary point-to-point Distance между разными Lines, Fixed,
+(сохранённая обратная ориентация endpoints также допустима), один Fixed
+endpoint Line с конечными X/Y mm и Coincident его соседних стыков. Arbitrary
+point-to-point Distance между разными Lines, второй Fixed,
 formula/Parameter dimensions не становятся редактируемыми. Существующие H/V/length требуют полного набора closure; другие families/связи, imports,
 construction, arcs, неизвестные payload fields и более сложные документы получают
 refusal и сохраняются. Stored ordered polygon обязан оставаться допустимым.
@@ -60,9 +74,11 @@ constraints без правил — `[]`. Curves в stored порядке:
 `{curve_id,start_mm:[x,y],end_mm:[x,y]}`. Constraint в stored порядке:
 `{constraint_id,rule:{kind,a:{curve_id,at},b:{curve_id,at}}}`;
 kind — `horizontal`/`vertical`/`coincident`/`distance`, at — `start`/`end`.
-Distance дополнительно имеет required `distance: number` в mm. **Response поле
-остаётся `distance`**, request использует `distance_mm`; версии operation/schema
-не меняются. Endpoints/value/UUID берутся из принятого snapshot или опубликованного
+kind дополнительно принимает `fixed`. Distance имеет required `distance: number`
+в mm. **Response поле остаётся `distance`**, request использует `distance_mm`;
+версии operation/schema не меняются. Fixed сериализуется прежним DTO
+`{kind:"fixed",point:{curve_id,at},x,y}` — `point`/`x`/`y`, не `at`/`x_mm`/`y_mm`
+входного запроса и не `a`/`b`. Endpoints/value/UUID берутся из принятого snapshot или опубликованного
 результата, не из текста и не из повторного открытия output.
 Это persisted IDs и исходные координаты, не экранные индексы или solver ordinals.
 
@@ -293,3 +309,24 @@ print(json.dumps({"directory":str(root),"degrees_of_freedom":result["solve"]["de
 validation сами по себе не доказывают geometry: рецепт экспортирует после холодного
 rebuild и читает реальные STL/FBX. Удаление H освобождает условие; retained closure
 и будущие solves не обещают восстановить координаты какой-либо предыдущей сцены.
+
+### §25G: закрепление одной вершины профиля
+
+Тонкий UI-адаптер в том же окне `Edit constraints`. Над каталогом сохранённых
+связей: выбранный Line из прежнего segment list, явный `Pin Start`/`Pin End`,
+поля `Fixed X (mm)` и `Fixed Y (mm)` и действие `Add Fixed point`. Под ними
+строка «Stored start/end of the selected Line: (x, y) mm» показывает **stored**
+координату выбранного endpoint, поэтому выбор конца не требует чтения текущего
+solved drawing. Персистентный Fixed отображается в каталоге как
+`Fixed point <start|end> (x, y) mm · UUID` — своим именем, а не прежним
+fallback-ярлыком `Coincident closure` — и поддерживает тот же exact `Remove`.
+
+Один `Add Fixed point` — один прежний bounded `History::change`; неприменённые
+поля X/Y, выбор сегмента и выбор endpoint в историю не входят. Отказ валидатора
+(второй Fixed, нефинитное или непарсящееся число) и no-op сохраняют Redo и
+не меняют draft. Running блокирует действие и сохраняет набранное. Пустой draft
+в job не отправляется; Save Cancel, ошибка/отмена и stale reply сохраняют оба
+стека и edits. Замена закрепления собирается прежними средствами: `Remove` на
+сохранённом Fixed и `Add Fixed point` дают один атомарный remove+add request.
+UI и CLI используют одну предметную политику; UUID нового ограничения по-прежнему
+создаёт общая операция при реальной публикации, а не UI.
