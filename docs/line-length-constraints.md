@@ -7,6 +7,8 @@ Stored координаты остаются inputs solver. Translation under-co
 может изменяться; измерять нужно размеры/объём, а не фиксированное положение.
 Нет arbitrary point-to-point dimensions, formula/Parameter, solver preview,
 in-place Save или coordinate drag constrained Sketch.
+UI `Replace length` (§25F-1) собирает тот же remove/add request одним действием;
+CLI по-прежнему передаёт конечные массивы без имитации мыши.
 
 Ниже запускаемый рецепт через публичный CLI. Нужны OCCT + PlaneGCS, `FERRITECAD`
 и `FCAD_UFBX_READER` — путь к существующему pinned reader, собранному из

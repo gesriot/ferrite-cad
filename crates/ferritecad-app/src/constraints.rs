@@ -2,7 +2,8 @@
 //! Disposable Line constraint request over stored facts; no solver or file reads.
 use ferritecad_document::{
     AddLineConstraint, ConstraintSketchChoice, DocumentVersion, ExtrudeEditSource,
-    LineConstraintKind, LineLengthMm, SketchConstraintEdits, SketchConstraintRule, SketchGeometry,
+    LineConstraintKind, LineLengthMm, Sketch, SketchConstraintEdits, SketchConstraintRule,
+    SketchGeometry,
 };
 use ferritecad_jobs::{EditSketchConstraintsRequest, EditedSketchConstraints};
 use ferritecad_types::{ObjectId, Result, StableEntityId};
@@ -209,6 +210,9 @@ impl Editor {
                             }
                         }
                     });
+                    let saved_length = draft
+                        .selected
+                        .and_then(|curve| stored_line_length(stored, curve));
                     ui.horizontal(|ui| {
                         ui.label("Line length (mm):");
                         ui.add(egui::TextEdit::singleline(&mut draft.length_mm)
@@ -233,7 +237,48 @@ impl Editor {
                                 Err(e) => draft.refusal = Some(e.to_string()),
                             }
                         }
+                        if ui
+                            .add_enabled(saved_length.is_some(), egui::Button::new("Replace length"))
+                            .clicked()
+                        {
+                            let (id, previous) = saved_length.expect("stored length");
+                            match draft
+                                .length_mm
+                                .trim()
+                                .parse::<f64>()
+                                .map_err(|_| {
+                                    ferritecad_types::CadError::input(
+                                        "enter a finite positive Line length in mm",
+                                    )
+                                })
+                                .and_then(LineLengthMm::new)
+                                .and_then(|length| {
+                                    let proposed = replace_stored_length(
+                                        &draft.edits,
+                                        draft.selected.expect("selected"),
+                                        id,
+                                        previous,
+                                        length,
+                                    );
+                                    if proposed != draft.edits
+                                        && !(proposed.remove.is_empty() && proposed.add.is_empty())
+                                    {
+                                        draft.choice.validate_edits(&proposed)?;
+                                    }
+                                    Ok(proposed)
+                                })
+                            {
+                                Ok(proposed) => {
+                                    draft.history.change(&mut draft.edits, proposed);
+                                    draft.refusal = None;
+                                }
+                                Err(e) => draft.refusal = Some(e.to_string()),
+                            }
+                        }
                     });
+                    if let Some((id, length)) = saved_length {
+                        ui.small(format!("Stored length {} mm · {id}", length.get()));
+                    }
                     ui.label("Persisted constraints:");
                     egui::ScrollArea::vertical()
                         .id_salt("stored-constraints")
@@ -316,6 +361,58 @@ impl Editor {
         }
     }
 }
+
+fn stored_line_length(
+    sketch: &Sketch,
+    curve: StableEntityId,
+) -> Option<(StableEntityId, LineLengthMm)> {
+    sketch.constraints.iter().find_map(|c| match c.rule {
+        SketchConstraintRule::Distance { a, b, distance }
+            if a.curve == curve && b.curve == curve =>
+        {
+            LineLengthMm::new(distance)
+                .ok()
+                .map(|length| (c.id, length))
+        }
+        _ => None,
+    })
+}
+
+fn line_distance_on(add: &AddLineConstraint, curve: StableEntityId) -> bool {
+    add.curve == curve && matches!(add.kind, LineConstraintKind::Distance(_))
+}
+
+fn replace_stored_length(
+    edits: &SketchConstraintEdits,
+    curve: StableEntityId,
+    stored: StableEntityId,
+    previous: LineLengthMm,
+    length: LineLengthMm,
+) -> SketchConstraintEdits {
+    let mut proposed = edits.clone();
+    if length == previous {
+        proposed.remove.retain(|id| *id != stored);
+        proposed.add.retain(|add| !line_distance_on(add, curve));
+        return proposed;
+    }
+    if !proposed.remove.contains(&stored) {
+        proposed.remove.push(stored);
+    }
+    let addition = AddLineConstraint {
+        curve,
+        kind: LineConstraintKind::Distance(length),
+    };
+    match proposed
+        .add
+        .iter()
+        .position(|add| line_distance_on(add, curve))
+    {
+        Some(i) => proposed.add[i] = addition,
+        None => proposed.add.push(addition),
+    }
+    proposed
+}
+
 fn short(id: StableEntityId) -> String {
     id.to_string()[24..].to_owned()
 }
@@ -417,6 +514,73 @@ mod tests {
         let source = ExtrudeEditSource::read(&d).expect("snapshot");
         d.close().expect("close");
         (root, path, source)
+    }
+    fn persist_rectangle_lengths(path: &Path) -> ExtrudeEditSource {
+        let mut document = Document::open(path).expect("doc");
+        let source = ExtrudeEditSource::read(&document).expect("catalog");
+        let choice = &source.constraint_sketches[0];
+        let curves = &choice.stored.as_ref().expect("stored").curves;
+        let prepared = ferritecad_document::prepare_sketch_constraints(
+            &document,
+            choice.sketch,
+            &SketchConstraintEdits {
+                remove: vec![],
+                add: vec![
+                    AddLineConstraint {
+                        curve: curves[0].id,
+                        kind: LineConstraintKind::Horizontal,
+                    },
+                    AddLineConstraint {
+                        curve: curves[1].id,
+                        kind: LineConstraintKind::Vertical,
+                    },
+                    AddLineConstraint {
+                        curve: curves[0].id,
+                        kind: LineConstraintKind::Distance(LineLengthMm::new(60.).expect("60")),
+                    },
+                    AddLineConstraint {
+                        curve: curves[1].id,
+                        kind: LineConstraintKind::Distance(LineLengthMm::new(30.).expect("30")),
+                    },
+                ],
+            },
+        )
+        .expect("prepare");
+        document
+            .write_sketch_constraints(&prepared)
+            .expect("write lengths");
+        let mut object = document
+            .object(choice.sketch)
+            .expect("read")
+            .expect("sketch");
+        if let ferritecad_document::ObjectPayload::Sketch(sketch) = &mut object.payload {
+            for c in &mut sketch.constraints {
+                if let SketchConstraintRule::Distance { a, b, distance } = &mut c.rule
+                    && *distance == 60.
+                {
+                    std::mem::swap(a, b);
+                }
+            }
+        }
+        document
+            .write(|w| {
+                w.put_object(
+                    object.id,
+                    object.parent,
+                    object.ordinal,
+                    object.name.as_deref(),
+                    &object.payload,
+                )
+            })
+            .expect("reversed Distance endpoints remain selectable");
+        let source = ExtrudeEditSource::read(&document).expect("catalog");
+        document.close().expect("close");
+        source
+    }
+    fn painted(out: &egui::FullOutput, label: &str) -> bool {
+        out.shapes
+            .iter()
+            .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == label))
     }
     fn history_state(
         e: &Editor,
@@ -568,6 +732,278 @@ mod tests {
             history_state(&e).0.add[1].kind,
             LineConstraintKind::Distance(LineLengthMm::new(30.).expect("30"))
         );
+    }
+
+    #[test]
+    fn replace_line_length_widgets_build_one_remove_add_request() {
+        let (_root, path, _) = fixture();
+        let source = persist_rectangle_lengths(&path);
+        let sketch = source.constraint_sketches[0]
+            .stored
+            .as_ref()
+            .expect("stored");
+        let curves = &sketch.curves;
+        let h0 = sketch
+            .constraints
+            .iter()
+            .find(|c| {
+                matches!(
+                    c.rule,
+                    SketchConstraintRule::Horizontal { a, .. } if a.curve == curves[0].id
+                )
+            })
+            .expect("H")
+            .id;
+        let d60 = stored_line_length(sketch, curves[0].id).expect("stored 60 mm");
+        let d30 = stored_line_length(sketch, curves[1].id).expect("stored 30 mm");
+        assert_eq!(d60.1, LineLengthMm::new(60.).expect("60"));
+        let mut e = Editor::default();
+        assert!(e.begin(&path, &source, source.constraint_sketches[0].sketch));
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        assert!(!frame(&ctx, &mut e, vec![]).shapes.iter().any(|s| {
+            matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().starts_with("Stored length"))
+        }));
+        let idle = history_state(&e);
+        click(&ctx, &mut e, "Replace length");
+        assert_eq!(
+            history_state(&e),
+            idle,
+            "disabled without a selected stored length"
+        );
+        click(&ctx, &mut e, "Segment 3");
+        enter_length(&ctx, &mut e, "55", false);
+        assert_eq!(e.draft.as_ref().expect("draft").length_mm, "55");
+        click(&ctx, &mut e, "Replace length");
+        assert_eq!(history_state(&e), idle, "no stored length on this Line");
+        click(&ctx, &mut e, "Segment 1");
+        assert_eq!(
+            e.draft.as_ref().expect("draft").length_mm,
+            "55",
+            "selection does not overwrite the unapplied field"
+        );
+        assert!(frame(&ctx, &mut e, vec![]).shapes.iter().any(|s| matches!(
+            &s.shape,
+            egui::Shape::Text(t)
+                if t.galley.text() == format!("Stored length 60 mm · {}", d60.0)
+        )));
+        click(&ctx, &mut e, "Replace length");
+        let first = history_state(&e);
+        assert_eq!(first.0.remove, vec![d60.0]);
+        assert_eq!(
+            first.0.add,
+            vec![AddLineConstraint {
+                curve: curves[0].id,
+                kind: LineConstraintKind::Distance(LineLengthMm::new(55.).expect("55")),
+            }]
+        );
+        assert_eq!(first.1.len(), 1);
+        assert!(first.2.is_empty());
+        click(&ctx, &mut e, "Undo");
+        let empty_with_redo = history_state(&e);
+        assert_eq!(empty_with_redo.0, SketchConstraintEdits::default());
+        assert_eq!(empty_with_redo.2, vec![first.0.clone()]);
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(history_state(&e).0, first.0);
+        enter_length(&ctx, &mut e, "50", false);
+        click(&ctx, &mut e, "Replace length");
+        let second = history_state(&e);
+        assert_eq!(second.0.remove, vec![d60.0]);
+        assert_eq!(
+            second.0.add,
+            vec![AddLineConstraint {
+                curve: curves[0].id,
+                kind: LineConstraintKind::Distance(LineLengthMm::new(50.).expect("50")),
+            }]
+        );
+        assert_eq!(
+            second.1.len(),
+            2,
+            "in-place pending update is one checkpoint"
+        );
+        click(&ctx, &mut e, "Undo");
+        let at_55 = history_state(&e);
+        assert_eq!(at_55.0, first.0);
+        assert_eq!(at_55.2, vec![second.0.clone()]);
+        enter_length(&ctx, &mut e, "55", false);
+        click(&ctx, &mut e, "Replace length");
+        assert_eq!(history_state(&e), at_55, "same pending value is a no-op");
+        enter_length(&ctx, &mut e, "50", false);
+        click(&ctx, &mut e, "Replace length");
+        assert_eq!(history_state(&e).0, second.0);
+        assert!(history_state(&e).2.is_empty());
+        click(&ctx, &mut e, "Undo");
+        let branch = history_state(&e);
+        for value in ["", "-", "NaN", "inf", "0", "-1", "1e309"] {
+            enter_length(&ctx, &mut e, value, false);
+            click(&ctx, &mut e, "Replace length");
+            assert!(
+                e.draft.as_ref().expect("draft").refusal.is_some(),
+                "{value}"
+            );
+            assert_eq!(history_state(&e), branch, "{value}");
+        }
+        enter_length(&ctx, &mut e, "70", true);
+        click_running(&ctx, &mut e, "Replace length", true);
+        assert_eq!(history_state(&e), branch);
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(history_state(&e).0, second.0);
+        click(&ctx, &mut e, "Clear pending changes");
+        click(&ctx, &mut e, "Remove");
+        click(&ctx, &mut e, "Segment 3");
+        click(&ctx, &mut e, "Add Horizontal");
+        click(&ctx, &mut e, "Segment 4");
+        enter_length(&ctx, &mut e, "40", false);
+        click(&ctx, &mut e, "Add length");
+        click(&ctx, &mut e, "Segment 1");
+        enter_length(&ctx, &mut e, "55", false);
+        click(&ctx, &mut e, "Replace length");
+        let mixed = history_state(&e).0;
+        assert_eq!(mixed.remove, vec![h0, d60.0]);
+        assert_eq!(
+            mixed.add,
+            vec![
+                AddLineConstraint {
+                    curve: curves[2].id,
+                    kind: LineConstraintKind::Horizontal,
+                },
+                AddLineConstraint {
+                    curve: curves[3].id,
+                    kind: LineConstraintKind::Distance(LineLengthMm::new(40.).expect("40")),
+                },
+                AddLineConstraint {
+                    curve: curves[0].id,
+                    kind: LineConstraintKind::Distance(LineLengthMm::new(55.).expect("55")),
+                },
+            ]
+        );
+        enter_length(&ctx, &mut e, "50", false);
+        click(&ctx, &mut e, "Replace length");
+        let updated = history_state(&e).0;
+        assert_eq!(updated.remove, vec![h0, d60.0]);
+        assert_eq!(updated.add.len(), 3);
+        assert_eq!(
+            updated.add[2].kind,
+            LineConstraintKind::Distance(LineLengthMm::new(50.).expect("50"))
+        );
+        assert_eq!(&updated.add[..2], &mixed.add[..2]);
+        let before_revert = history_state(&e);
+        enter_length(&ctx, &mut e, "60", false);
+        click(&ctx, &mut e, "Replace length");
+        let reverted = history_state(&e).0;
+        assert_eq!(reverted.remove, vec![h0]);
+        assert!(!reverted.remove.contains(&d60.0));
+        assert!(!reverted.remove.contains(&d30.0));
+        assert_eq!(
+            reverted.add,
+            vec![
+                AddLineConstraint {
+                    curve: curves[2].id,
+                    kind: LineConstraintKind::Horizontal,
+                },
+                AddLineConstraint {
+                    curve: curves[3].id,
+                    kind: LineConstraintKind::Distance(LineLengthMm::new(40.).expect("40")),
+                },
+            ]
+        );
+        click(&ctx, &mut e, "Undo");
+        assert_eq!(history_state(&e).0, before_revert.0);
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(history_state(&e).0, reverted);
+        click(&ctx, &mut e, "Save constraints copy…");
+        assert_eq!(e.take_request().expect("restored request").edits, reverted);
+        let history = history_state(&e);
+        let mut state = crate::edits::Edits::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let generation = state
+            .start_constraints(
+                EditSketchConstraintsRequest {
+                    source: path.clone(),
+                    expected: source.version,
+                    sketch: source.constraint_sketches[0].sketch,
+                    edits: reverted.clone(),
+                    destination: PathBuf::new(),
+                },
+                move |_, g, _| std::thread::spawn(move || tx.send(g).expect("reply")),
+            )
+            .expect("start");
+        assert!(
+            finish_edit(
+                &mut e,
+                &mut state,
+                generation + 1,
+                Err(ferritecad_types::CadError::input("stale"))
+            )
+            .is_none()
+        );
+        assert_eq!(history_state(&e), history);
+        let g = rx.recv().expect("done");
+        assert!(
+            finish_edit(
+                &mut e,
+                &mut state,
+                g,
+                Err(ferritecad_types::CadError::topology(
+                    "lost stored reference"
+                ))
+            )
+            .is_none()
+        );
+        assert_eq!(history_state(&e), history);
+        click(&ctx, &mut e, "Clear pending changes");
+        click(&ctx, &mut e, "Segment 1");
+        enter_length(&ctx, &mut e, "55", false);
+        click(&ctx, &mut e, "Replace length");
+        enter_length(&ctx, &mut e, "60", false);
+        click(&ctx, &mut e, "Replace length");
+        assert_eq!(
+            history_state(&e).0,
+            SketchConstraintEdits::default(),
+            "return to stored length cancels only that replacement"
+        );
+        assert!(!painted(
+            &frame(&ctx, &mut e, vec![]),
+            "Save constraints copy…"
+        ));
+        // The Remove checkbox can leave a structurally invalid draft. A valid
+        // number must still pass the common validator before Replace changes it.
+        click(&ctx, &mut e, "Remove");
+        click(&ctx, &mut e, "Add Vertical");
+        click(&ctx, &mut e, "Remove");
+        click(&ctx, &mut e, "Remove");
+        click(&ctx, &mut e, "Undo");
+        let conflicting = history_state(&e);
+        assert!(conflicting.0.remove.is_empty());
+        assert_eq!(conflicting.0.add[0].kind, LineConstraintKind::Vertical);
+        assert!(!conflicting.2.is_empty());
+        enter_length(&ctx, &mut e, "55", false);
+        click(&ctx, &mut e, "Replace length");
+        assert_eq!(history_state(&e), conflicting);
+        assert!(
+            e.draft
+                .as_ref()
+                .expect("draft")
+                .refusal
+                .as_deref()
+                .expect("validator refusal")
+                .contains("only one H/V")
+        );
+        click(&ctx, &mut e, "Redo");
+        click(&ctx, &mut e, "Replace length");
+        let combined = history_state(&e).0;
+        assert_eq!(combined.remove, vec![h0, d60.0]);
+        assert_eq!(
+            combined.add[0], conflicting.0.add[0],
+            "same-Line V stays first"
+        );
+        assert_eq!(combined.add.len(), 2);
+        click(&ctx, &mut e, "Cancel constraints draft");
+        assert!(e.begin(&path, &source, source.constraint_sketches[0].sketch));
+        assert_eq!(history_state(&e), Default::default());
+        assert_eq!(e.draft.as_ref().expect("draft").length_mm, "");
     }
 
     #[test]
@@ -822,10 +1258,18 @@ mod tests {
                     object.id,
                     &SketchConstraintEdits {
                         remove: vec![],
-                        add: vec![AddLineConstraint {
-                            curve: sketch.curves.last().expect("curve").id,
-                            kind: LineConstraintKind::Horizontal,
-                        }],
+                        add: vec![
+                            AddLineConstraint {
+                                curve: sketch.curves.last().expect("curve").id,
+                                kind: LineConstraintKind::Horizontal,
+                            },
+                            AddLineConstraint {
+                                curve: sketch.curves.last().expect("curve").id,
+                                kind: LineConstraintKind::Distance(
+                                    LineLengthMm::new(42.).expect("42"),
+                                ),
+                            },
+                        ],
                     },
                 )
                 .expect("persisted H and all closure links");
@@ -838,6 +1282,16 @@ mod tests {
             let mut e = Editor::default();
             assert!(e.begin(&path, &source, object.id));
             let draft = e.draft.as_mut().expect("draft");
+            if constrained {
+                draft.selected = draft
+                    .choice
+                    .stored
+                    .as_ref()
+                    .expect("stored")
+                    .curves
+                    .last()
+                    .map(|c| c.id);
+            }
             draft.edits.add = draft
                 .choice
                 .stored
@@ -861,11 +1315,17 @@ mod tests {
             }
             let out = frame(&ctx, &mut e, vec![]);
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(988., 768.));
+            if constrained {
+                assert!(out.shapes.iter().any(|s| matches!(&s.shape,
+                    egui::Shape::Text(t) if t.galley.text().starts_with("Stored length 42 mm"))));
+            }
             for label in [
                 "Cancel constraints draft",
                 "Undo",
                 "Redo",
                 "Clear pending changes",
+                "Add length",
+                "Replace length",
                 "Save constraints copy…",
             ] {
                 assert!(
@@ -1278,5 +1738,272 @@ mod tests {
             ]
         );
         assert!(remove.edits.add.is_empty());
+        if !lengths {
+            return;
+        }
+        click(&ctx, &mut e, "Undo");
+        let sketch = after.constraint_sketches[0]
+            .stored
+            .as_ref()
+            .expect("sketch");
+        let (old_length, curve) = sketch
+            .constraints
+            .iter()
+            .find_map(|c| match c.rule {
+                SketchConstraintRule::Distance {
+                    a, distance: 60., ..
+                } => Some((c.id, a.curve)),
+                _ => None,
+            })
+            .expect("stored 60 mm");
+        click(&ctx, &mut e, "Segment 1");
+        enter_length(&ctx, &mut e, "55", false);
+        click(&ctx, &mut e, "Replace length");
+        let replaced = e.draft.as_ref().expect("draft").edits.clone();
+        assert_eq!(replaced.remove, vec![old_length]);
+        assert_eq!(
+            replaced.add,
+            vec![AddLineConstraint {
+                curve,
+                kind: LineConstraintKind::Distance(LineLengthMm::new(55.).expect("55")),
+            }]
+        );
+        click(&ctx, &mut e, "Undo");
+        assert_eq!(
+            e.draft.as_ref().expect("draft").edits,
+            SketchConstraintEdits::default()
+        );
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(e.draft.as_ref().expect("draft").edits, replaced);
+        click(&ctx, &mut e, "Save constraints copy…");
+        let request = e.take_request().expect("replace request");
+        assert_eq!(request.edits, replaced);
+        assert_eq!(request.source, ui);
+        assert_eq!(request.expected, after.version);
+        let kept = request.edits.clone();
+        let history = history_state(&e);
+        let original_constrained = std::fs::read(&ui).expect("constrained source");
+        let mut state = crate::edits::Edits::default();
+        for occupied in [true, false] {
+            let mut r = request.clone();
+            r.destination = root.path().join(if occupied {
+                "busy-replaced.fcad"
+            } else {
+                "ui-replaced.fcad"
+            });
+            if occupied {
+                std::fs::write(&r.destination, b"keep").expect("busy");
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            state
+                .start_constraints(r, move |r, g, c| {
+                    crate::edits::spawn_constraint_edit(r, c, move |result| {
+                        tx.send((g, result)).expect("reply")
+                    })
+                })
+                .expect("worker");
+            let (g, result) = rx.recv().expect("worker reply");
+            let open = finish_edit(&mut e, &mut state, g, result);
+            if occupied {
+                assert!(open.is_none());
+                assert_eq!(e.draft.as_ref().expect("retained").edits, kept);
+                assert_eq!(history_state(&e), history);
+                assert_eq!(
+                    std::fs::read(root.path().join("busy-replaced.fcad")).expect("busy"),
+                    b"keep"
+                );
+            } else {
+                assert_eq!(open, Some(root.path().join("ui-replaced.fcad")));
+                assert!(!e.active());
+            }
+        }
+        std::fs::write(
+            &input,
+            format!(
+                r#"{{"request_version":1,"remove":["{old_length}"],"add":[{{"curve_id":"{curve}","rule":"distance","distance_mm":55}}]}}"#
+            ),
+        )
+        .expect("peer replace request");
+        let cli_replaced = root.path().join("cli-replaced.fcad");
+        let ui_replaced = root.path().join("ui-replaced.fcad");
+        let o = std::process::Command::new(ferritecad())
+            .arg("edit-sketch-constraints-copy")
+            .arg(&ui)
+            .arg("--sketch")
+            .arg(id.to_string())
+            .arg("--expect-version")
+            .arg(after.version.content.to_string())
+            .arg("--request")
+            .arg(&input)
+            .arg("-o")
+            .arg(&cli_replaced)
+            .arg("--json")
+            .output()
+            .expect("peer CLI replace");
+        assert!(o.status.success(), "{o:?}");
+        let a = Document::open_read_only(&ui_replaced).expect("UI replace");
+        let b = Document::open_read_only(&cli_replaced).expect("CLI replace");
+        let source_doc = Document::open_read_only(&ui).expect("constrained source");
+        assert_eq!(a.meta(), b.meta());
+        assert_eq!(
+            a.dependencies().expect("deps"),
+            b.dependencies().expect("deps")
+        );
+        assert_eq!(
+            a.topology_refs().expect("refs"),
+            b.topology_refs().expect("refs")
+        );
+        let mut new_ui = None;
+        let mut new_cli = None;
+        for old in a.objects().expect("objects") {
+            let new = b.object(old.id).expect("read").expect("same id");
+            let src = source_doc.object(old.id).expect("read").expect("same id");
+            if let (
+                ferritecad_document::ObjectPayload::Sketch(s),
+                ferritecad_document::ObjectPayload::Sketch(t),
+                ferritecad_document::ObjectPayload::Sketch(u),
+            ) = (&old.payload, &new.payload, &src.payload)
+            {
+                assert_eq!(s.curves, t.curves);
+                assert_eq!(s.curves, u.curves);
+                assert_eq!(s.plane, t.plane);
+                assert_eq!(s.constraints.len(), u.constraints.len());
+                for (x, y) in s.constraints.iter().zip(&t.constraints) {
+                    match (x.rule, y.rule) {
+                        (
+                            SketchConstraintRule::Distance { distance: a_mm, .. },
+                            SketchConstraintRule::Distance { distance: b_mm, .. },
+                        ) if a_mm == 55. && b_mm == 55. => {
+                            assert_ne!(x.id, y.id);
+                            assert_ne!(x.id, old_length);
+                            assert_ne!(y.id, old_length);
+                            new_ui = Some(x.id);
+                            new_cli = Some(y.id);
+                            assert_eq!(x.rule, y.rule);
+                        }
+                        _ => assert_eq!(x, y, "every other constraint keeps its UUID"),
+                    }
+                }
+                assert!(!s.constraints.iter().any(|c| c.id == old_length));
+                assert_eq!(
+                    s.constraints
+                        .iter()
+                        .filter(|c| c.id != new_ui.expect("UI length"))
+                        .map(|c| c.id)
+                        .collect::<Vec<_>>(),
+                    u.constraints
+                        .iter()
+                        .filter(|c| c.id != old_length)
+                        .map(|c| c.id)
+                        .collect::<Vec<_>>()
+                );
+            } else {
+                assert_eq!(old, new);
+                assert_eq!(old, src);
+            }
+        }
+        a.close().expect("close");
+        b.close().expect("close");
+        source_doc.close().expect("close");
+        let sql_constrained = crate::sketch::drag_tests::sql_facts(&ui);
+        for path in [&ui_replaced, &cli_replaced] {
+            let after_sql = crate::sketch::drag_tests::sql_facts(path);
+            assert_eq!(
+                sql_constrained.keys().collect::<Vec<_>>(),
+                after_sql.keys().collect::<Vec<_>>()
+            );
+            for (table, rows) in &sql_constrained {
+                if table == "objects" {
+                    for row in rows {
+                        let actual = after_sql[table]
+                            .iter()
+                            .find(|r| r[1] == row[1])
+                            .expect("same row");
+                        for col in 0..row.len() {
+                            if row[1] == rusqlite::types::Value::Blob(id.to_bytes().to_vec())
+                                && [3, 7, 8].contains(&col)
+                            {
+                                continue;
+                            }
+                            assert_eq!(row[col], actual[col], "object cell {col}");
+                        }
+                    }
+                } else {
+                    assert_eq!(&after_sql[table], rows, "{table}: source claims retained");
+                }
+            }
+        }
+        let mut outputs = vec![];
+        for path in [&ui_replaced, &cli_replaced] {
+            let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+            ferritecad_scene::snapshot_of(
+                path,
+                &mut k,
+                |k, b| k.import_step(b),
+                &Default::default(),
+                &OperationContext::default(),
+            )
+            .expect("async Open route");
+            let stl = path.with_extension("stl");
+            let fbx = path.with_extension("fbx");
+            for op in ["export-stl", "export-fbx"] {
+                let dest = if op == "export-stl" { &stl } else { &fbx };
+                let o = std::process::Command::new(ferritecad())
+                    .arg(op)
+                    .arg(path)
+                    .arg("-o")
+                    .arg(dest)
+                    .output()
+                    .expect("export");
+                assert!(o.status.success(), "{o:?}");
+            }
+            outputs.push((
+                std::fs::read(&stl).expect("STL"),
+                std::fs::read(&fbx).expect("FBX"),
+            ));
+            if let Some(dir) = std::env::var_os("FERRITECAD_CONSTRAINT_ARTIFACTS") {
+                std::fs::create_dir_all(&dir).expect("dir");
+                for p in [path.as_path(), stl.as_path(), fbx.as_path()] {
+                    std::fs::copy(p, Path::new(&dir).join(p.file_name().expect("name")))
+                        .expect("artifact");
+                }
+            }
+        }
+        assert_eq!(
+            outputs[0], outputs[1],
+            "UI and CLI replacement exports match"
+        );
+        let stl = &outputs[0].0;
+        let n = u32::from_le_bytes(stl[80..84].try_into().expect("count")) as usize;
+        assert_eq!(stl.len(), 84 + 50 * n);
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        let mut volume6 = 0.;
+        for i in 0..n {
+            let v: [f64; 9] = std::array::from_fn(|j| {
+                let at = 84 + 50 * i + 12 + 4 * j;
+                f64::from(f32::from_le_bytes(stl[at..at + 4].try_into().expect("f32")))
+            });
+            for p in v.chunks_exact(3) {
+                for j in 0..3 {
+                    lo[j] = lo[j].min(p[j]);
+                    hi[j] = hi[j].max(p[j]);
+                }
+            }
+            volume6 += v[0] * (v[4] * v[8] - v[5] * v[7])
+                + v[1] * (v[5] * v[6] - v[3] * v[8])
+                + v[2] * (v[3] * v[7] - v[4] * v[6]);
+        }
+        let mut extents = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+        extents.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+        assert!(
+            (extents[0] - 10.).abs() < 1e-4
+                && (extents[1] - 30.).abs() < 1e-4
+                && (extents[2] - 55.).abs() < 1e-4,
+            "{extents:?}"
+        );
+        assert!((volume6.abs() / 6. - 16500.).abs() < 0.02);
+        assert_eq!(std::fs::read(&ui).expect("source"), original_constrained);
+        assert_ne!(new_ui.expect("UI length"), new_cli.expect("CLI length"));
     }
 }
