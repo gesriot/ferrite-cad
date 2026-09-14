@@ -2505,8 +2505,23 @@ widget test проверяет 32 добавления, новый и constraine
 и Clear. Native/stub проверки и повторный macOS GUI smoke прошли; сохранённые
 данные и STL/FBX совпали с CLI, closure UUID сохранены. Watchdog peak 231.08 MiB,
 swap без роста, exit 0. Причина старого OOM не установлена; head/merge CI отдельно.
-Следующий небольшой срез §25E-1 — ограниченные Undo/Redo pending H/V draft в UI,
-с прежним общим request и без изменения persisted модели; реализация не начата.
+
+**§25E-1 — реализованы ограниченные Undo/Redo pending H/V draft в UI.**
+Два стека по 128 точных ordered remove/add; успешный Add, переключение Remove и
+Clear непустого запроса дают один шаг. Отказ, выбор и no-op сохраняют Redo;
+фактическая новая правка очищает ветку Redo. Save Cancel/ошибка/отмена/stale reply
+сохраняют историю; закрытие draft после Cancel или publish её сбрасывает.
+Undo/Redo остаются видимыми над каталогами и выключены при job. Прежние request,
+validator, worker и CLI сохраняются, solver при работе с историей не запускается.
+[Контракт](sketch-constraints-copy.md#25e-1-история-несохранённого-hv-draft),
+[локальные проверки и ограничения](constraint-draft-history-verification.md).
+Независимое ревью не потребовало изменений кода: 39 native app tests, пять
+исполненных stub draft tests и один явный native skip, fmt/clippy прошли.
+Повторный GUI проверил историю Add/Remove/Clear, Save Cancel и обе публикации;
+SQL/идентичности и STL/FBX совпали с CLI. Watchdog peak 327.14 MiB, swap без роста,
+exit 0; причина старого OOM не установлена. CI head/merge учитывается отдельно.
+Следующий §25F — сохраняемая длина выбранного Line (Distance Start/End) через
+прежний shared copy job, UI и CLI; реализация не начата.
 
 ## 15. Чего не делать до beta
 
