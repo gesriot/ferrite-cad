@@ -15,7 +15,7 @@
 
 use std::ffi::{CStr, c_char, c_void};
 
-use ferritecad_kernel::{CancelToken, TessellationRefusal};
+use ferritecad_kernel::{CancelToken, FaceSurface, TessellationRefusal};
 use ferritecad_types::{CadError, Result};
 
 /// Must match `FC_OCCT_ERROR_CAPACITY` in `ferritecad_occt.h`.
@@ -32,6 +32,12 @@ const STATUS_INCOMPLETE_FACE_TESSELLATION: i32 = 7;
 
 pub(crate) const SEGMENT_LINE: i32 = 0;
 pub(crate) const SEGMENT_ARC: i32 = 1;
+/// A whole circle: a closed curve, and so a whole profile on its own.
+pub(crate) const SEGMENT_CIRCLE: i32 = 2;
+
+/// Must match the `FC_OCCT_SURFACE_*` constants in `ferritecad_occt.h`.
+const SURFACE_PLANE: i32 = 1;
+const SURFACE_CYLINDER: i32 = 2;
 
 /// Must match the `FC_OCCT_SUB_SHAPE_*` constants in `ferritecad_occt.h`.
 const SUB_SHAPE_FACE: i32 = 0;
@@ -208,6 +214,14 @@ unsafe extern "C" {
         shape: u64,
         out_face_count: *mut u64,
         out_volume: *mut f64,
+        out_error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_face_surface(
+        session: *mut RawSession,
+        shape: u64,
+        face: u64,
+        out_kind: *mut i32,
+        out_radius: *mut f64,
         out_error: *mut RawError,
     ) -> i32;
     fn fc_occt_encode_shape(
@@ -617,6 +631,23 @@ impl Session {
             unsafe { fc_occt_shape_stats(self.raw, shape, &mut faces, &mut volume, &mut error) };
         interpret(status, &error, "measuring a shape")?;
         Ok((faces, volume))
+    }
+
+    /// The analytic surface one face of a shape lies on.
+    pub(crate) fn face_surface(&mut self, shape: u64, face: u64) -> Result<FaceSurface> {
+        let mut kind = 0i32;
+        let mut radius = 0.0f64;
+        let mut error = RawError::empty();
+        // SAFETY: all out-parameters are valid for the call.
+        let status = unsafe {
+            fc_occt_face_surface(self.raw, shape, face, &mut kind, &mut radius, &mut error)
+        };
+        interpret(status, &error, "reading the surface a face lies on")?;
+        Ok(match kind {
+            SURFACE_PLANE => FaceSurface::Plane,
+            SURFACE_CYLINDER => FaceSurface::Cylinder { radius },
+            _ => FaceSurface::Other,
+        })
     }
 
     /// Serialises a shape, using the bridge's two-call length protocol.
@@ -1293,6 +1324,138 @@ mod tests {
         // synchronous bridge call.
         let polls = unsafe { &*(context as *const AtomicUsize) };
         i32::from(polls.fetch_add(1, Ordering::SeqCst) + 1 >= 3)
+    }
+
+    /// The numbers this crate sends across the boundary are the header's.
+    ///
+    /// A silent disagreement here is the worst kind: the struct layout would
+    /// still match, the call would still succeed, and the bridge would build
+    /// the wrong curve or describe the wrong surface.
+    #[test]
+    fn the_segment_and_surface_numbers_match_the_c_header() {
+        let header = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../ferritecad-occt-bridge/include/ferritecad_occt.h"
+        ));
+        for (name, value) in [
+            ("FC_OCCT_SEGMENT_LINE", SEGMENT_LINE),
+            ("FC_OCCT_SEGMENT_ARC", SEGMENT_ARC),
+            ("FC_OCCT_SEGMENT_CIRCLE", SEGMENT_CIRCLE),
+            ("FC_OCCT_SURFACE_PLANE", SURFACE_PLANE),
+            ("FC_OCCT_SURFACE_CYLINDER", SURFACE_CYLINDER),
+        ] {
+            let found = header.split_once(&format!("{name} = "));
+            assert!(found.is_some(), "{name} is declared in the header");
+            let declared = found
+                .expect("checked just above")
+                .1
+                .trim_start()
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>();
+            assert_eq!(declared, value.to_string(), "{name}");
+        }
+        // These values are also static_asserted against the actual C++ type
+        // in bridge.cpp. Neither compiler can silently move a field even if
+        // the struct still has the same size and every field name is present.
+        assert_eq!(std::mem::align_of::<Segment>(), 8);
+        assert_eq!(std::mem::size_of::<Segment>(), 80);
+        assert_eq!(std::mem::offset_of!(Segment, kind), 0);
+        assert_eq!(std::mem::offset_of!(Segment, start_x), 8);
+        assert_eq!(std::mem::offset_of!(Segment, start_y), 16);
+        assert_eq!(std::mem::offset_of!(Segment, end_x), 24);
+        assert_eq!(std::mem::offset_of!(Segment, end_y), 32);
+        assert_eq!(std::mem::offset_of!(Segment, center_x), 40);
+        assert_eq!(std::mem::offset_of!(Segment, center_y), 48);
+        assert_eq!(std::mem::offset_of!(Segment, radius), 56);
+        assert_eq!(std::mem::offset_of!(Segment, start_angle), 64);
+        assert_eq!(std::mem::offset_of!(Segment, end_angle), 72);
+    }
+
+    /// One whole circle, through the real bridge, with no corners at all.
+    #[test]
+    fn a_circular_profile_builds_an_analytic_cylinder_and_names_no_corner() {
+        let mut session = Session::new().expect("opens a real OCCT session");
+        let plane = Plane {
+            origin: [0.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        };
+        let mut circle = Segment::zeroed();
+        circle.kind = SEGMENT_CIRCLE;
+        circle.center_x = 12.0;
+        circle.center_y = -7.0;
+        circle.radius = 10.0;
+        let shape = session
+            .extrude(&plane, &[circle], 0.0, 15.0, &CancelToken::new())
+            .expect("one closed curve is a whole profile");
+
+        let (faces, volume) = session.shape_stats(shape).expect("stats");
+        assert_eq!(faces, 3);
+        let exact = std::f64::consts::PI * 100.0 * 15.0;
+        assert!(
+            (volume - exact).abs() < 1e-6 * exact,
+            "{volume} is not {exact}"
+        );
+
+        let side = session.side_faces(shape, 0).expect("the swept face");
+        assert_eq!(side.len(), 1);
+        assert_eq!(
+            session.face_surface(shape, side[0]).expect("surface"),
+            FaceSurface::Cylinder { radius: 10.0 }
+        );
+        for which in [0, 1] {
+            let cap = session.cap_faces(shape, which).expect("cap");
+            assert_eq!(cap.len(), 1);
+            assert_eq!(
+                session.face_surface(shape, cap[0]).expect("surface"),
+                FaceSurface::Plane
+            );
+            // A cap still meets the swept face along an edge.
+            assert_eq!(session.cap_edges(shape, 0, which).expect("edge").len(), 1);
+        }
+
+        // There is no corner, so there is no corner to ask about.
+        assert!(session.sweep_edges(shape, 0).is_err());
+        assert!(session.cap_vertices(shape, 0, 0).is_err());
+        // And a second segment asked for beyond the profile is still refused.
+        assert!(session.side_faces(shape, 1).is_err());
+
+        session.release(shape);
+        assert_eq!(session.live_shape_count(), 0);
+    }
+
+    /// A closed curve is a whole profile, and only that.
+    #[test]
+    fn the_bridge_refuses_a_circle_mixed_into_a_chain() {
+        let mut session = Session::new().expect("opens a real OCCT session");
+        let plane = Plane {
+            origin: [0.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        };
+        let mut circle = Segment::zeroed();
+        circle.kind = SEGMENT_CIRCLE;
+        circle.radius = 5.0;
+        let mut mixed = rectangle_segments().to_vec();
+        mixed.push(circle);
+        assert!(
+            session
+                .extrude(&plane, &mixed, 0.0, 2.0, &CancelToken::new())
+                .is_err()
+        );
+        // And a circle with no radius is refused rather than built.
+        let mut degenerate = Segment::zeroed();
+        degenerate.kind = SEGMENT_CIRCLE;
+        for radius in [0.0, -1.0, f64::NAN] {
+            degenerate.radius = radius;
+            assert!(
+                session
+                    .extrude(&plane, &[degenerate], 0.0, 2.0, &CancelToken::new())
+                    .is_err()
+            );
+        }
+        assert_eq!(session.live_shape_count(), 0);
     }
 
     #[test]

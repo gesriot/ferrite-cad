@@ -664,6 +664,45 @@ jobs:
           done
           echo "FCAD_SKETCH_CONSTRAINT_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
 
+      - name: Create an analytic circle through the native CLI and sketch worker
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          CARGO_BUILD_JOBS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          artifacts="$RUNNER_TEMP/circle"
+          mkdir -p "$artifacts"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH"; artifacts="$(cygpath -w "$artifacts")" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          export FCAD_CIRCLE_ARTIFACTS="$artifacts"
+          # Peer process must be this build before the app worker gate.
+          cargo build --release --features planegcs -p ferritecad-cli
+          for gate in native_circle_extrude_process_analytic_geometry_and_delivery native_circle_height_copy_keeps_the_circle_and_every_identity; do
+            cargo test --release --features planegcs -p ferritecad-cli --test circle_extrude \
+              "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee "$gate.log"
+            if grep -q 'skipped:' "$gate.log" || ! grep -Fq "test $gate ... ok" "$gate.log"; then
+              echo "::error::circle process gate $gate did not execute"; exit 1
+            fi
+          done
+          # ferritecad-occt has no planegcs feature of its own; its dev
+          # dependency on the evaluator carries the solver into these gates.
+          for pair in 'ferritecad-occt ferritecad-eval/planegcs ffi::tests::a_circular_profile_builds_an_analytic_cylinder_and_names_no_corner' 'ferritecad-occt ferritecad-eval/planegcs ffi::tests::the_bridge_refuses_a_circle_mixed_into_a_chain' 'ferritecad-occt ferritecad-eval/planegcs ffi::tests::the_segment_and_surface_numbers_match_the_c_header' 'ferritecad-app planegcs sketch::tests::native_circle_draft_and_cli_publish_equivalent_models' 'ferritecad-app planegcs sketch::tests::circle_widgets_submit_exact_numbers_and_keep_the_polygon_draft'; do
+            read -r package features gate <<< "$pair"
+            cargo test --release --features "$features" -p "$package" "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee "$package-circle.log"
+            if grep -q 'skipped:' "$package-circle.log" || ! grep -Fq "test $gate ... ok" "$package-circle.log"; then
+              echo "::error::circle gate $gate did not execute"; exit 1
+            fi
+          done
+          echo "FCAD_CIRCLE_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
+
       - name: Create, discover, edit and export through the JSON v1 CLI contract
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
@@ -750,6 +789,7 @@ jobs:
           source tools/check-fbx-complex.sh --release --features planegcs 2>&1 | tee fbx-json-tests.log
           grep -q '^FCAD_SKETCH_DRAG_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_SKETCH_CONSTRAINT_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_CIRCLE_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

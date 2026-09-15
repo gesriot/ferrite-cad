@@ -126,6 +126,19 @@ fn profile_from_curves(sketch: &Sketch, plane: SketchPlane) -> Result<Profile> {
         ));
     }
 
+    // One analytic curve that closes on itself is a whole profile by itself.
+    // It is read here rather than through the chain below, which exists to
+    // join segments end to end and has no endpoints to work with.
+    if let [only] = model.as_slice()
+        && let SketchGeometry::Circle { center, radius } = only.geometry
+    {
+        let segment = ProfileSegment::new(
+            only.id,
+            SegmentGeometry::circle(planar(center.x, center.y)?, radius)?,
+        );
+        return Profile::new(plane, ProfileLoop::closed_curve(segment)?, Vec::new());
+    }
+
     let mut segments = Vec::with_capacity(model.len());
     for curve in &model {
         segments.push(ProfileSegment::new(curve.id, segment_geometry(curve)?));
@@ -190,10 +203,14 @@ fn segment_geometry(curve: &SketchCurve) -> Result<SegmentGeometry> {
             *start_angle,
             *end_angle,
         ),
-        // A circle is a closed loop on its own, so it cannot be one segment of
-        // a chain; supporting it means supporting multi-loop profiles.
+        // A circle is a closed loop on its own. One of them alone is a profile
+        // and is read before this point; one among other model curves would be
+        // a second loop, which needs multi-loop profiles this slice does not
+        // build.
         SketchGeometry::Circle { .. } => Err(CadError::unsupported(format!(
-            "sketch curve {} is a circle, which this slice does not implement",
+            "sketch curve {} is a circle, which is a whole profile on its own; a circle \
+             alongside other model geometry needs more than one loop, which this slice does not \
+             implement",
             curve.id
         ))),
         SketchGeometry::Point { .. } => Err(CadError::unsupported(format!(
@@ -370,20 +387,89 @@ mod tests {
         assert_eq!(profile.outer().segments().len(), 4);
     }
 
-    #[test]
-    fn a_model_circle_is_unsupported_rather_than_approximated() {
-        let curves = vec![SketchCurve {
+    fn model_circle(center: (f64, f64), radius: f64) -> SketchCurve {
+        SketchCurve {
             id: StableEntityId::new(),
             construction: false,
             geometry: SketchGeometry::Circle {
-                center: Point2::ORIGIN,
-                radius: 5.0,
+                center: Point2::new(center.0, center.1).expect("finite"),
+                radius,
             },
-        }];
+        }
+    }
 
+    #[test]
+    fn one_model_circle_is_one_analytic_loop() {
+        let curve = model_circle((12.0, -7.0), 10.0);
+        let id = curve.id;
+        let profile = profile_from_sketch(
+            &sketch(vec![curve]),
+            ObjectId::new(),
+            SketchPlane::world_xy(),
+        )
+        .expect("a circle is a whole profile")
+        .profile;
+        assert!(profile.inner().is_empty());
+        let outer = profile.outer();
+        assert!(outer.is_closed_curve(), "not approximated by a chain");
+        assert_eq!(outer.joints().len(), 0);
+        let segment = outer.segments().first().expect("one curve");
+        assert_eq!(segment.label, id, "the circle's own identity");
+        assert!(
+            matches!(segment.geometry, SegmentGeometry::Circle { center, radius }
+                if (center.x, center.y, radius) == (12.0, -7.0, 10.0)),
+            "the kernel is handed a circle, not a polygon: {:?}",
+            segment.geometry
+        );
+    }
+
+    #[test]
+    fn a_circle_beside_other_model_geometry_is_a_second_loop_and_unsupported() {
+        // One circle is a profile; a circle *and* a square is two loops, which
+        // needs holes or multiple regions this slice does not build.
+        let mut curves = square_curves();
+        curves.push(model_circle((5.0, 5.0), 1.0));
         let err = profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
-            .expect_err("a circle is not a chain segment");
+            .expect_err("two loops are not one profile");
         assert_eq!(err.kind(), ErrorKind::Unsupported);
+        assert!(err.to_string().contains("whole profile on its own"));
+
+        // Two circles are two loops for the same reason.
+        let err = profile_from_sketch(
+            &sketch(vec![
+                model_circle((0.0, 0.0), 1.0),
+                model_circle((9.0, 0.0), 1.0),
+            ]),
+            ObjectId::new(),
+            SketchPlane::world_xy(),
+        )
+        .expect_err("two circles are two loops");
+        assert_eq!(err.kind(), ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn a_circle_with_no_radius_is_refused_before_the_kernel() {
+        for radius in [0.0, -3.0] {
+            let err = profile_from_sketch(
+                &sketch(vec![model_circle((0.0, 0.0), radius)]),
+                ObjectId::new(),
+                SketchPlane::world_xy(),
+            )
+            .expect_err("a circle needs a positive radius");
+            assert_eq!(err.kind(), ErrorKind::Input);
+        }
+    }
+
+    #[test]
+    fn a_lone_line_is_still_an_open_profile_rather_than_a_loop() {
+        // The circle exception must not become "one curve is always a loop".
+        let err = profile_from_sketch(
+            &sketch(vec![line((0.0, 0.0), (10.0, 0.0))]),
+            ObjectId::new(),
+            SketchPlane::world_xy(),
+        )
+        .expect_err("one line closes nothing");
+        assert_eq!(err.kind(), ErrorKind::Input);
     }
 
     #[test]

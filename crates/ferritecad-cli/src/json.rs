@@ -33,6 +33,7 @@ pub enum Operation {
     EditSketchConstraintsCopy,
     Create,
     CreateSketchExtrude,
+    CreateCircleExtrude,
     ExportStl,
     ExportFbx,
     ImportStep,

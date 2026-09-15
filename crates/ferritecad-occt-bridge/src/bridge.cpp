@@ -14,6 +14,7 @@
 #include <XSControl_WorkSession.hxx>
 
 #include <cmath>
+#include <cstddef>
 #include <map>
 #include <cstring>
 #include <exception>
@@ -32,6 +33,8 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepAdaptor_Surface.hxx>
+#include <gp_Circ.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <IFSelect_PrintCount.hxx>
 #include <IFSelect_ReturnStatus.hxx>
@@ -99,6 +102,22 @@
 #include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Vec.hxx>
+
+// FcOcctSegment is an existing ABI, including when a new kind uses only
+// some fields. Rust checks these same offsets; field-name presence in a header
+// cannot detect a reorder or a different compiler layout.
+static_assert(sizeof(FcOcctSegment) == 80, "FcOcctSegment ABI size changed");
+static_assert(alignof(FcOcctSegment) == 8, "FcOcctSegment ABI alignment changed");
+static_assert(offsetof(FcOcctSegment, kind) == 0, "FcOcctSegment.kind moved");
+static_assert(offsetof(FcOcctSegment, start_x) == 8, "FcOcctSegment.start_x moved");
+static_assert(offsetof(FcOcctSegment, start_y) == 16, "FcOcctSegment.start_y moved");
+static_assert(offsetof(FcOcctSegment, end_x) == 24, "FcOcctSegment.end_x moved");
+static_assert(offsetof(FcOcctSegment, end_y) == 32, "FcOcctSegment.end_y moved");
+static_assert(offsetof(FcOcctSegment, center_x) == 40, "FcOcctSegment.center_x moved");
+static_assert(offsetof(FcOcctSegment, center_y) == 48, "FcOcctSegment.center_y moved");
+static_assert(offsetof(FcOcctSegment, radius) == 56, "FcOcctSegment.radius moved");
+static_assert(offsetof(FcOcctSegment, start_angle) == 64, "FcOcctSegment.start_angle moved");
+static_assert(offsetof(FcOcctSegment, end_angle) == 72, "FcOcctSegment.end_angle moved");
 
 namespace {
 
@@ -441,10 +460,36 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
       write_error(out_error, "fc_occt_extrude was given a null argument");
       return FC_OCCT_INVALID_INPUT;
     }
-    if (segment_count < 2) {
+    // Either a chain of two or more segments meeting at corners, or exactly
+    // one curve that closes on itself. The second form has no corners at all,
+    // so nothing below may count one per segment.
+    const bool closed_curve =
+        segment_count == 1 && segments[0].kind == FC_OCCT_SEGMENT_CIRCLE;
+    if (segment_count < 2 && !closed_curve) {
       write_error(out_error,
-                  "a closed profile needs at least two segments, got " +
+                  "a closed profile needs at least two segments or one closed "
+                  "curve, got " +
                       std::to_string(segment_count));
+      return FC_OCCT_INVALID_INPUT;
+    }
+    if (!closed_curve) {
+      for (size_t i = 0; i < segment_count; ++i) {
+        if (segments[i].kind == FC_OCCT_SEGMENT_CIRCLE) {
+          write_error(out_error,
+                      "segment " + std::to_string(i) +
+                          " is a closed curve, which is a whole profile rather "
+                          "than one segment of a chain");
+          return FC_OCCT_INVALID_INPUT;
+        }
+      }
+    }
+    if (closed_curve &&
+        (!std::isfinite(segments[0].center_x) ||
+         !std::isfinite(segments[0].center_y) ||
+         !std::isfinite(segments[0].radius) || segments[0].radius <= 0.0)) {
+      write_error(out_error,
+                  "a circular profile needs a finite centre and a positive "
+                  "radius");
       return FC_OCCT_INVALID_INPUT;
     }
     if (!finite3(plane->origin) || !finite3(plane->x_axis) ||
@@ -491,9 +536,13 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
     // edges we built returned faces for one segment and nothing for the rest.
     // Sharing the vertices leaves MakeWire nothing to weld and every edge
     // keeps its identity, which is what makes the history complete.
+    //
+    // A closed curve shares no vertex with anything, so it builds none: the
+    // seam Open CASCADE puts on a circular edge belongs to that edge's
+    // parameterisation and is not a corner anybody drew.
     std::vector<TopoDS_Vertex> corners;
-    corners.reserve(segment_count);
-    for (size_t i = 0; i < segment_count; ++i) {
+    corners.reserve(closed_curve ? 0 : segment_count);
+    for (size_t i = 0; !closed_curve && i < segment_count; ++i) {
       const FcOcctSegment &segment = segments[i];
       double x = 0.0;
       double y = 0.0;
@@ -521,7 +570,23 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
     std::vector<TopoDS_Edge> edges;
     edges.reserve(segment_count);
     BRepBuilderAPI_MakeWire wire;
-    for (size_t i = 0; i < segment_count; ++i) {
+    if (closed_curve) {
+      // One analytic circle on the sketch plane, at the base of the sweep.
+      // BRepBuilderAPI_MakeEdge on a gp_Circ builds the whole closed edge and
+      // chooses its own seam vertex; no vertex of ours is involved, so there
+      // is nothing for MakeWire to weld and the edge keeps its identity.
+      const gp_Ax2 axis(to_model(segments[0].center_x, segments[0].center_y,
+                                 base_offset),
+                        frame.Direction(), frame.XDirection());
+      BRepBuilderAPI_MakeEdge builder(gp_Circ(axis, segments[0].radius));
+      if (!builder.IsDone()) {
+        write_error(out_error, "the circular profile does not describe an edge");
+        return FC_OCCT_INVALID_INPUT;
+      }
+      edges.push_back(builder.Edge());
+      wire.Add(edges.back());
+    }
+    for (size_t i = 0; !closed_curve && i < segment_count; ++i) {
       const FcOcctSegment &segment = segments[i];
       const TopoDS_Vertex &from = corners[i];
       const TopoDS_Vertex &to = corners[(i + 1) % segment_count];
@@ -645,8 +710,8 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
     // silently trimmed to fit the measured answer.
     TopTools_IndexedMapOfShape solid_edges;
     TopExp::MapShapes(record.shape, TopAbs_EDGE, solid_edges);
-    record.sweep_edges.resize(segment_count);
-    for (size_t j = 0; j < segment_count; ++j) {
+    record.sweep_edges.resize(corners.size());
+    for (size_t j = 0; j < corners.size(); ++j) {
       const NCollection_List<TopoDS_Shape> &swept = prism.Generated(corners[j]);
       for (NCollection_List<TopoDS_Shape>::Iterator it(swept); it.More();
            it.Next()) {
@@ -692,11 +757,11 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
     // reaches the caller instead of being trimmed to fit. A vertex outside the
     // finished solid is refused rather than passed on: it would name geometry
     // this shape does not have.
-    record.start_cap_vertices.resize(segment_count);
-    record.end_cap_vertices.resize(segment_count);
+    record.start_cap_vertices.resize(corners.size());
+    record.end_cap_vertices.resize(corners.size());
     TopTools_IndexedMapOfShape solid_vertices;
     TopExp::MapShapes(record.shape, TopAbs_VERTEX, solid_vertices);
-    for (size_t j = 0; j < segment_count; ++j) {
+    for (size_t j = 0; j < corners.size(); ++j) {
       for (int side = 0; side < 2; ++side) {
         const TopoDS_Shape landed = side == 0 ? prism.FirstShape(corners[j])
                                               : prism.LastShape(corners[j]);
@@ -963,6 +1028,53 @@ FcOcctStatus fc_occt_shape_stats(FcOcctSession *session, uint64_t shape,
 
     *out_face_count = faces;
     *out_volume = properties.Mass();
+    return FC_OCCT_OK;
+  });
+}
+
+FcOcctStatus fc_occt_face_surface(FcOcctSession *session, uint64_t shape,
+                                  uint64_t face, int32_t *out_kind,
+                                  double *out_radius,
+                                  FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr || out_kind == nullptr || out_radius == nullptr) {
+      write_error(out_error, "fc_occt_face_surface was given a null argument");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    if (face >= found->second.sub_shapes.size()) {
+      write_error(out_error, "sub-shape " + std::to_string(face) +
+                                 " was never handed out for this shape");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const TopoDS_Shape &sub = found->second.sub_shapes[face];
+    if (sub.IsNull() || sub.ShapeType() != TopAbs_FACE) {
+      write_error(out_error, "sub-shape " + std::to_string(face) +
+                                 " is not a face, so it lies on no surface");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    // Asked of the face's own surface rather than inferred from its mesh: a
+    // triangulated approximation of a cylinder would answer PLANE many times
+    // over, which is exactly the difference this call exists to report.
+    const BRepAdaptor_Surface adaptor(TopoDS::Face(sub));
+    *out_radius = 0.0;
+    switch (adaptor.GetType()) {
+    case GeomAbs_Plane:
+      *out_kind = FC_OCCT_SURFACE_PLANE;
+      break;
+    case GeomAbs_Cylinder:
+      *out_kind = FC_OCCT_SURFACE_CYLINDER;
+      *out_radius = adaptor.Cylinder().Radius();
+      break;
+    default:
+      *out_kind = FC_OCCT_SURFACE_OTHER;
+      break;
+    }
     return FC_OCCT_OK;
   });
 }

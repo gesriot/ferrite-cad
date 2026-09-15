@@ -140,6 +140,14 @@ pub enum SegmentGeometry {
         start_angle: f64,
         end_angle: f64,
     },
+    /// A whole circle.
+    ///
+    /// Unlike the other two this curve closes on itself, so it has no
+    /// endpoints and meets nothing at a corner. It is a loop on its own rather
+    /// than a link in a chain, which is why [`ProfileLoop::closed_curve`]
+    /// exists and why [`SegmentGeometry::start`] refuses it: a point picked
+    /// off a circle to stand in for an endpoint would be a vertex nobody drew.
+    Circle { center: PlanarPoint, radius: f64 },
 }
 
 impl SegmentGeometry {
@@ -150,6 +158,21 @@ impl SegmentGeometry {
             ));
         }
         Ok(Self::Line { start, end })
+    }
+
+    pub fn circle(center: PlanarPoint, radius: f64) -> Result<Self> {
+        let radius = normalize_f64(radius)?;
+        if radius <= 0.0 {
+            return Err(CadError::input(format!(
+                "a circle needs a positive radius, got {radius}"
+            )));
+        }
+        Ok(Self::Circle { center, radius })
+    }
+
+    /// Whether this curve closes on itself, and so is a whole loop.
+    pub fn is_closed(&self) -> bool {
+        matches!(self, Self::Circle { .. })
     }
 
     pub fn arc(center: PlanarPoint, radius: f64, start_angle: f64, end_angle: f64) -> Result<Self> {
@@ -179,6 +202,7 @@ impl SegmentGeometry {
                 center.x + radius * start_angle.cos(),
                 center.y + radius * start_angle.sin(),
             ),
+            Self::Circle { .. } => Err(no_endpoints()),
         }
     }
 
@@ -194,6 +218,7 @@ impl SegmentGeometry {
                 center.x + radius * end_angle.cos(),
                 center.y + radius * end_angle.sin(),
             ),
+            Self::Circle { .. } => Err(no_endpoints()),
         }
     }
 
@@ -217,8 +242,18 @@ impl SegmentGeometry {
                 hasher.f64(*start_angle).expect(VALIDATED);
                 hasher.f64(*end_angle).expect(VALIDATED);
             }
+            Self::Circle { center, radius } => {
+                hasher.field("circle");
+                center.feed(hasher);
+                hasher.f64(*radius).expect(VALIDATED);
+            }
         }
     }
+}
+
+/// Said in one place because it is one fact about one kind of curve.
+fn no_endpoints() -> CadError {
+    CadError::input("a closed curve has no endpoints, so it is a whole loop rather than a segment")
 }
 
 /// One segment of a profile, labelled by the caller.
@@ -239,13 +274,45 @@ impl ProfileSegment {
     }
 }
 
-/// A closed chain of segments.
+/// One closed boundary: either a chain of segments, or a single closed curve.
+///
+/// The two are different shapes of the same idea, not one shape with a lenient
+/// length check. A chain is held together at corners and has exactly as many
+/// corners as segments; a closed curve has no corners at all. Keeping them
+/// apart is what lets [`ProfileLoop::joints`] answer honestly for both — a
+/// single-segment chain would otherwise have to report a corner where a
+/// segment meets itself, which is not a place on the drawing.
+#[derive(Debug, Clone, PartialEq)]
+enum Shape {
+    Chain(Vec<ProfileSegment>),
+    Closed(ProfileSegment),
+}
+
+/// A closed boundary of a planar region.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProfileLoop {
-    segments: Vec<ProfileSegment>,
+    shape: Shape,
 }
 
 impl ProfileLoop {
+    /// Builds a loop from one curve that closes on itself.
+    ///
+    /// The curve must actually be closed. Wrapping an open segment here would
+    /// produce a loop with no corners and an unexplained gap, which is the one
+    /// failure the chain constructor exists to prevent.
+    pub fn closed_curve(segment: ProfileSegment) -> Result<Self> {
+        if !segment.geometry.is_closed() {
+            return Err(CadError::input(format!(
+                "profile segment {} does not close on itself, so it is a link in a chain rather \
+                 than a loop",
+                segment.label
+            )));
+        }
+        Ok(Self {
+            shape: Shape::Closed(segment),
+        })
+    }
+
     /// Builds a loop, checking that it closes and that no label repeats.
     ///
     /// Both checks exist because the failure they prevent is silent. An open
@@ -262,6 +329,17 @@ impl ProfileLoop {
 
         let mut seen = std::collections::BTreeSet::new();
         for segment in &segments {
+            // A closed curve has no endpoints to join to a neighbour, so it
+            // cannot be one link of a chain. Refused here rather than left to
+            // the join check below, which would report a missing endpoint as a
+            // gap in the drawing.
+            if segment.geometry.is_closed() {
+                return Err(CadError::input(format!(
+                    "profile segment {} is a closed curve, which is a whole loop rather than one \
+                     segment of a chain",
+                    segment.label
+                )));
+            }
             if !seen.insert(segment.label) {
                 return Err(CadError::input(format!(
                     "profile segment label {} appears twice; a label must name one segment",
@@ -286,11 +364,25 @@ impl ProfileLoop {
             }
         }
 
-        Ok(Self { segments })
+        Ok(Self {
+            shape: Shape::Chain(segments),
+        })
     }
 
     pub fn segments(&self) -> &[ProfileSegment] {
-        &self.segments
+        match &self.shape {
+            Shape::Chain(segments) => segments,
+            Shape::Closed(segment) => std::slice::from_ref(segment),
+        }
+    }
+
+    /// Whether this loop is one curve that closes on itself.
+    ///
+    /// Asked by consumers that have to say something per corner: a closed
+    /// curve has none, and that is a different answer from "the corners are
+    /// ambiguous".
+    pub fn is_closed_curve(&self) -> bool {
+        matches!(self.shape, Shape::Closed(_))
     }
 
     /// The unordered pair of segment labels meeting at each corner.
@@ -299,20 +391,39 @@ impl ProfileLoop {
     /// A two-segment loop therefore reports the same pair twice. Consumers
     /// naming topology must treat that pair as ambiguous rather than choosing
     /// one of the two corners by position.
+    ///
+    /// A loop that is one closed curve reports none: it has no corners, and a
+    /// joint of a segment with itself would be a name for a place that is not
+    /// on the drawing.
     pub fn joints(&self) -> impl ExactSizeIterator<Item = ProfileJoint> + '_ {
-        self.segments.iter().enumerate().map(|(index, segment)| {
-            let before =
-                self.segments[(index + self.segments.len() - 1) % self.segments.len()].label;
+        let corners: &[ProfileSegment] = match &self.shape {
+            Shape::Chain(segments) => segments,
+            Shape::Closed(_) => &[],
+        };
+        corners.iter().enumerate().map(move |(index, segment)| {
+            let before = corners[(index + corners.len() - 1) % corners.len()].label;
             ProfileJoint::new(before, segment.label)
                 .expect("profile segment labels are distinct by construction")
         })
     }
 
     fn feed(&self, hasher: &mut CanonicalHasher) {
-        hasher.field("loop").u64(self.segments.len() as u64);
-        for segment in &self.segments {
-            hasher.bytes(&segment.label.to_bytes());
-            segment.geometry.feed(hasher);
+        // The two shapes key apart by name, so a chain and a closed curve
+        // never collide even if they ever carried the same segments. Chains
+        // keep the bytes they always fed.
+        match &self.shape {
+            Shape::Chain(segments) => {
+                hasher.field("loop").u64(segments.len() as u64);
+                for segment in segments {
+                    hasher.bytes(&segment.label.to_bytes());
+                    segment.geometry.feed(hasher);
+                }
+            }
+            Shape::Closed(segment) => {
+                hasher.field("closed-loop");
+                hasher.bytes(&segment.label.to_bytes());
+                segment.geometry.feed(hasher);
+            }
         }
     }
 }
@@ -564,6 +675,104 @@ mod tests {
             .to_model(PlanarPoint::new(3.0, 4.0).expect("finite"))
             .expect("finite");
         assert_eq!(point, Point3::new(3.0, 4.0, 0.0).expect("finite"));
+    }
+
+    fn circle(radius: f64) -> Result<ProfileLoop> {
+        ProfileLoop::closed_curve(ProfileSegment::new(
+            StableEntityId::new(),
+            SegmentGeometry::circle(PlanarPoint::new(12.0, -7.0)?, radius)?,
+        ))
+    }
+
+    #[test]
+    fn a_whole_circle_is_one_loop_with_no_corners() {
+        let loop_ = circle(10.0).expect("a circle closes on itself");
+        assert_eq!(loop_.segments().len(), 1);
+        assert!(loop_.is_closed_curve());
+        assert_eq!(
+            loop_.joints().len(),
+            0,
+            "a circle has no corner, so it names none"
+        );
+        assert_eq!(loop_.joints().count(), 0);
+        // And it bounds a region like any other loop.
+        let profile = Profile::new(SketchPlane::world_xy(), loop_, Vec::new()).expect("valid");
+        assert_eq!(profile.segments().count(), 1);
+    }
+
+    #[test]
+    fn a_circle_has_no_endpoints_to_offer_a_chain() {
+        let geometry =
+            SegmentGeometry::circle(PlanarPoint::ORIGIN, 4.0).expect("a positive radius");
+        assert!(geometry.is_closed());
+        for end in [geometry.start(), geometry.end()] {
+            assert!(
+                end.expect_err("a circle has no endpoints")
+                    .to_string()
+                    .contains("no endpoints")
+            );
+        }
+        // So it cannot be one link of a chain, in either direction.
+        let a = PlanarPoint::new(0.0, 0.0).expect("finite");
+        let b = PlanarPoint::new(10.0, 0.0).expect("finite");
+        let err = ProfileLoop::new(vec![
+            ProfileSegment::new(
+                StableEntityId::new(),
+                SegmentGeometry::line(a, b).expect("ok"),
+            ),
+            ProfileSegment::new(StableEntityId::new(), geometry),
+        ])
+        .expect_err("a closed curve is not a segment of a chain");
+        assert!(err.to_string().contains("whole loop"));
+        // Nor may an open curve be presented as a whole loop.
+        let err = ProfileLoop::closed_curve(ProfileSegment::new(
+            StableEntityId::new(),
+            SegmentGeometry::line(a, b).expect("ok"),
+        ))
+        .expect_err("a line does not close on itself");
+        assert!(err.to_string().contains("does not close"));
+    }
+
+    #[test]
+    fn a_circle_with_no_radius_is_refused() {
+        for radius in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(SegmentGeometry::circle(PlanarPoint::ORIGIN, radius).is_err());
+        }
+    }
+
+    #[test]
+    fn a_circle_keys_by_its_centre_radius_and_kind() {
+        let key = |l: ProfileLoop| {
+            let mut hasher = CanonicalHasher::new("test");
+            Profile::new(SketchPlane::world_xy(), l, Vec::new())
+                .expect("valid")
+                .feed(&mut hasher);
+            hasher.finish()
+        };
+        let ten = key(circle(10.0).expect("circle"));
+        assert_ne!(
+            ten,
+            key(circle(10.5).expect("circle")),
+            "the radius reaches the cache key"
+        );
+        let elsewhere = ProfileLoop::closed_curve(ProfileSegment::new(
+            StableEntityId::new(),
+            SegmentGeometry::circle(PlanarPoint::new(0.0, 0.0).expect("finite"), 10.0)
+                .expect("circle"),
+        ))
+        .expect("circle");
+        assert_ne!(ten, key(elsewhere), "the centre reaches the cache key");
+        // And a chain keys the way it always did, so old cache entries stand.
+        let mut hasher = CanonicalHasher::new("test");
+        Profile::new(
+            SketchPlane::world_xy(),
+            square().expect("closes"),
+            Vec::new(),
+        )
+        .expect("valid")
+        .feed(&mut hasher);
+        let chain = hasher.finish();
+        assert_ne!(chain, ten);
     }
 
     #[test]

@@ -43,7 +43,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::PolygonExtrusion;
+use crate::{CircleExtrusion, PolygonExtrusion};
 use ferritecad_document::{
     Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, EntityKind,
     Expression, Extrude, ObjectPayload, Point2, SelectionRule, SemanticRole, Sketch, SketchCurve,
@@ -107,6 +107,26 @@ pub enum NewDocument {
     SamplePlate(PlateSize),
     /// A validated XY polygon, cold-checked before publication.
     SketchExtrude(PolygonExtrusion),
+    /// A validated XY circle, cold-checked before publication on the same
+    /// route. The circle stays analytic: nothing here turns it into a polygon
+    /// with many sides.
+    CircleExtrude(CircleExtrusion),
+}
+
+impl NewDocument {
+    /// Whether this content has geometry that must be built and checked before
+    /// anything is published.
+    ///
+    /// The one classification. Empty and the sample plate are stored models
+    /// with nothing to solve; every drawn profile is content whose only proof
+    /// that it is buildable is building it, so the kernel-free route refuses
+    /// it and the checked route proves it before the publication.
+    pub fn needs_kernel(&self) -> bool {
+        match self {
+            Self::Empty | Self::SamplePlate(_) => false,
+            Self::SketchExtrude(_) | Self::CircleExtrude(_) => true,
+        }
+    }
 }
 
 /// What one creation was asked to do.
@@ -194,33 +214,33 @@ pub fn create_document(
     request: CreateDocumentRequest<'_>,
     context: &OperationContext,
 ) -> Result<CreatedDocument> {
-    if matches!(request.content, NewDocument::SketchExtrude(_)) {
+    if request.content.needs_kernel() {
         return Err(ferritecad_types::CadError::unsupported(
-            "polygon creation requires a checked kernel route",
+            "drawn profile creation requires a checked kernel route",
         ));
     }
     create_checked(request, context, |_| Ok(()))
 }
 
-/// Same transaction/publication route, with a worker-owned kernel for the new
-/// polygon. The factory is called only after preflight and model construction.
+/// Same transaction/publication route, with a worker-owned kernel for a drawn
+/// profile. The factory is called only after preflight and model construction.
 pub fn create_document_with_kernel<K: GeometryKernel>(
     request: CreateDocumentRequest<'_>,
     factory: impl FnOnce() -> Result<K>,
     context: &OperationContext,
 ) -> Result<CreatedDocument> {
-    let polygon = matches!(request.content, NewDocument::SketchExtrude(_));
+    let drawn = request.content.needs_kernel();
     create_checked(request, context, |document| {
-        if !polygon {
+        if !drawn {
             return Ok(());
         }
         context.check_cancelled()?;
         let mut kernel = factory()?;
-        check_polygon(document, &mut kernel, context)
+        check_profile(document, &mut kernel, context)
     })
 }
 
-fn check_polygon(
+fn check_profile(
     document: &Document,
     kernel: &mut impl GeometryKernel,
     context: &OperationContext,
@@ -234,13 +254,13 @@ fn check_polygon(
     let checked = (|| {
         if built.shape_count() != 1 {
             return Err(ferritecad_types::CadError::kernel(
-                "polygon did not build one shape",
+                "the drawn profile did not build one shape",
             ));
         }
         for reference in document.topology_refs()? {
             if built.resolve(&reference)?.is_empty() {
                 return Err(ferritecad_types::CadError::topology(
-                    "polygon lost a stored reference",
+                    "the drawn profile lost a stored reference",
                 ));
             }
         }
@@ -316,6 +336,7 @@ fn build_checked(
         NewDocument::SketchExtrude(profile) => {
             populate_profile(&mut document, profile.points(), profile.height_mm(), "Body")?
         }
+        NewDocument::CircleExtrude(circle) => populate_circle(&mut document, circle, "Body")?,
     }
     check(&document)?;
     document.close()?;
@@ -476,6 +497,128 @@ fn populate_profile(
             selection: SelectionRule::AllDerivedFrom {
                 ancestor: first_segment,
             },
+            fallback_signature: None,
+        })?;
+
+        Ok(())
+    })
+}
+
+/// Puts one analytic circle and its extrusion into an empty document.
+///
+/// The same four objects, the same dependencies and the same semantic
+/// references as the polygon beside it — a datum plane, a sketch, an extrusion
+/// and a body — differing only in what the sketch holds: one
+/// [`SketchGeometry::Circle`] rather than a chain of lines. The circle keeps
+/// its own `StableEntityId`, and that identity is what the side reference
+/// names, so the cylindrical face is found again by what drew it rather than
+/// by where it landed among the faces.
+fn populate_circle(
+    document: &mut Document,
+    circle: &CircleExtrusion,
+    body_name: &str,
+) -> Result<()> {
+    let plane = ObjectId::new();
+    let sketch = ObjectId::new();
+    let extrude = ObjectId::new();
+    let body = ObjectId::new();
+    let curve = SketchCurve {
+        id: StableEntityId::new(),
+        construction: false,
+        geometry: SketchGeometry::Circle {
+            center: circle.center(),
+            radius: circle.radius_mm(),
+        },
+    };
+    let height = circle.height_mm();
+    let drawn = curve.id;
+
+    document.write(|writer| {
+        writer.put_object(
+            plane,
+            None,
+            0,
+            Some("XY"),
+            &ObjectPayload::DatumPlane(DatumPlane {
+                placement: Transform::IDENTITY,
+            }),
+        )?;
+        writer.put_object(
+            sketch,
+            None,
+            1,
+            Some("Profile"),
+            &ObjectPayload::Sketch(Sketch {
+                plane,
+                curves: vec![curve.clone()],
+                constraints: Vec::new(),
+            }),
+        )?;
+        writer.add_dependency(Dependency {
+            dependent: sketch,
+            dependency: plane,
+            role: DependencyRole::Plane,
+        })?;
+
+        writer.put_object(
+            body,
+            None,
+            3,
+            Some(body_name),
+            &ObjectPayload::Body(Body {
+                tip_feature: Some(extrude),
+            }),
+        )?;
+
+        writer.put_object(
+            extrude,
+            None,
+            2,
+            Some("Extrude1"),
+            &ObjectPayload::Extrude(Extrude {
+                profile: sketch,
+                end_condition: EndCondition::Blind {
+                    distance: Expression::constant(height)?,
+                },
+                reversed: false,
+                operation: SolidOperation::NewBody,
+                target_body: None,
+            }),
+        )?;
+        writer.add_dependency(Dependency {
+            dependent: extrude,
+            dependency: sketch,
+            role: DependencyRole::Profile,
+        })?;
+        writer.add_dependency(Dependency {
+            dependent: body,
+            dependency: extrude,
+            role: DependencyRole::BodyTip,
+        })?;
+
+        for side in [CapSide::Start, CapSide::End] {
+            writer.put_topology_ref(&TopologyRef {
+                id: StableEntityId::new(),
+                owner: extrude,
+                producer_feature: extrude,
+                expected_kind: EntityKind::Face,
+                output_role: SemanticRole::ExtrudeCap { side },
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            })?;
+        }
+
+        // "Every face raised from this circle." One cylindrical face today;
+        // the rule stays right if a later slice ever splits it.
+        writer.put_topology_ref(&TopologyRef {
+            id: StableEntityId::new(),
+            owner: extrude,
+            producer_feature: extrude,
+            expected_kind: EntityKind::Face,
+            output_role: SemanticRole::ExtrudeSide {
+                profile_segment: drawn,
+            },
+            selection: SelectionRule::AllDerivedFrom { ancestor: drawn },
             fallback_signature: None,
         })?;
 
@@ -1077,6 +1220,121 @@ mod tests {
             assert!(!destination.exists(), "{name} was refused and left behind");
         }
     }
+    /// Which contents the kernel-free route refuses, and which it still makes.
+    ///
+    /// The one classification, exercised rather than read: every drawn profile
+    /// needs a kernel to prove it builds, and the two stored models do not.
+    #[test]
+    fn drawn_profiles_need_the_checked_route_and_stored_models_do_not() {
+        let root = tempfile::tempdir().expect("dir");
+        let circle =
+            NewDocument::CircleExtrude(CircleExtrusion::new([12., -7.], 10., 15.).expect("circle"));
+        let polygon = NewDocument::SketchExtrude(
+            PolygonExtrusion::new(vec![[0., 0.], [10., 0.], [0., 10.]], 5.).expect("polygon"),
+        );
+        assert!(circle.needs_kernel() && polygon.needs_kernel());
+        assert!(!NewDocument::Empty.needs_kernel());
+        assert!(!plate(PlateSize::DEFAULT).needs_kernel());
+        for (name, content) in [("circle.fcad", circle), ("polygon.fcad", polygon)] {
+            let destination = root.path().join(name);
+            let error =
+                create_document(request(&destination, content), &OperationContext::default())
+                    .expect_err("a drawn profile is not published unchecked");
+            assert_eq!(error.kind(), ErrorKind::Unsupported);
+            assert!(error.to_string().contains("checked kernel route"));
+            assert!(!destination.exists(), "{name} was published unchecked");
+        }
+        assert!(entries(root.path()).is_empty(), "no scratch was left");
+        for (name, content) in [
+            ("empty.fcad", NewDocument::Empty),
+            ("plate.fcad", plate(PlateSize::DEFAULT)),
+        ] {
+            let destination = root.path().join(name);
+            create_document(request(&destination, content), &OperationContext::default())
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(destination.is_file());
+        }
+
+        // And the checked route really opens a kernel for a drawn profile, and
+        // really lets its verdict decide. The mock cannot draw a closed curve,
+        // so a circle it was asked about must not reach the destination — and
+        // the factory must have been asked at all.
+        use ferritecad_kernel::mock::MockKernel;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let opened = AtomicUsize::new(0);
+        let destination = root.path().join("unchecked.fcad");
+        let error = create_document_with_kernel(
+            request(
+                &destination,
+                NewDocument::CircleExtrude(
+                    CircleExtrusion::new([12., -7.], 10., 15.).expect("circle"),
+                ),
+            ),
+            || {
+                opened.fetch_add(1, Ordering::SeqCst);
+                Ok(MockKernel::new())
+            },
+            &OperationContext::default(),
+        )
+        .expect_err("a circle the kernel cannot build must not be published");
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+        assert_eq!(opened.load(Ordering::SeqCst), 1, "no kernel was opened");
+        assert!(!destination.exists(), "an unchecked circle was published");
+        // A stored model still takes no kernel at all on the same call.
+        let plate_path = root.path().join("checked-plate.fcad");
+        create_document_with_kernel(
+            request(&plate_path, plate(PlateSize::DEFAULT)),
+            || {
+                opened.fetch_add(1, Ordering::SeqCst);
+                Ok(MockKernel::new())
+            },
+            &OperationContext::default(),
+        )
+        .expect("the sample plate needs no kernel");
+        assert_eq!(
+            opened.load(Ordering::SeqCst),
+            1,
+            "a kernel was opened for a plate"
+        );
+        assert!(plate_path.is_file());
+    }
+
+    /// The kernel check really runs for a circle, and a kernel that cannot
+    /// build one publishes nothing.
+    ///
+    /// The mock draws every curve as its chord and so has no way to draw a
+    /// closed one; it refuses, which is exactly the shape of failure this
+    /// route has to survive. What the checked route does around that failure —
+    /// scratch, cancellation, the racer and the late cancel — is the one
+    /// `create_checked` the polygon gate below drives through every boundary.
+    #[test]
+    fn a_circle_that_cannot_be_built_publishes_nothing() {
+        use ferritecad_kernel::mock::MockKernel;
+        let dir = tempfile::tempdir().expect("dir");
+        let out = dir.path().join("circle.fcad");
+        let ctx = OperationContext::default();
+        let mut kernel = MockKernel::new();
+        let error = create_checked(
+            CreateDocumentRequest::new(
+                &out,
+                NewDocument::CircleExtrude(
+                    CircleExtrusion::new([12., -7.], 10., 15.).expect("circle"),
+                ),
+                "keep",
+            ),
+            &ctx,
+            |doc| check_profile(doc, &mut kernel, &ctx),
+        )
+        .expect_err("a circle this kernel cannot build is not published");
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+        assert_eq!(kernel.live_shape_count(), 0);
+        assert!(!out.exists());
+        assert!(
+            entries(dir.path()).is_empty(),
+            "scratch or sidecars remained"
+        );
+    }
+
     #[test]
     fn polygon_cold_check_cleanup_and_publication_boundaries() {
         use ferritecad_kernel::{ProgressSink, mock::MockKernel};
@@ -1092,80 +1350,90 @@ mod tests {
             10.,
         )
         .expect("polygon");
-        for event in [
-            "success",
-            "build failure",
-            "before",
-            "during",
-            "before publish",
-            "racer",
-            "late",
-        ] {
-            let dir = tempfile::tempdir().expect("dir");
-            let out = dir.path().join("new.fcad");
-            let cancel = CancelToken::new();
-            let stop = cancel.clone();
-            let target = out.clone();
-            let ctx = OperationContext::default()
-                .with_cancel(cancel.clone())
-                .with_progress(ProgressSink::new(move |f| {
-                    if event == "during" && (0.7..0.9).contains(&f) {
-                        stop.cancel();
-                    }
-                    if f == 0.9 {
-                        if event == "before publish" {
+        for (shape, content) in [("polygon", NewDocument::SketchExtrude(polygon.clone()))] {
+            for event in [
+                "success",
+                "build failure",
+                "before",
+                "during",
+                "before publish",
+                "racer",
+                "late",
+            ] {
+                let dir = tempfile::tempdir().expect("dir");
+                let out = dir.path().join("new.fcad");
+                let cancel = CancelToken::new();
+                let stop = cancel.clone();
+                let target = out.clone();
+                let ctx = OperationContext::default()
+                    .with_cancel(cancel.clone())
+                    .with_progress(ProgressSink::new(move |f| {
+                        if event == "during" && (0.7..0.9).contains(&f) {
                             stop.cancel();
                         }
-                        if event == "racer" {
-                            std::fs::write(&target, b"racer").expect("racer");
+                        if f == 0.9 {
+                            if event == "before publish" {
+                                stop.cancel();
+                            }
+                            if event == "racer" {
+                                std::fs::write(&target, b"racer").expect("racer");
+                            }
                         }
-                    }
-                    if f == 1.0 && event == "late" {
-                        stop.cancel();
-                    }
-                }));
-            if event == "before" {
-                cancel.cancel();
-            }
-            let mut kernel = MockKernel::new();
-            let result = create_checked(
-                CreateDocumentRequest::new(
-                    &out,
-                    NewDocument::SketchExtrude(polygon.clone()),
-                    "keep",
-                ),
-                &ctx,
-                |doc| {
-                    check_polygon(doc, &mut kernel, &ctx)?;
-                    if event == "build failure" {
-                        return Err(ferritecad_types::CadError::kernel("injected build failure"));
-                    }
-                    Ok(())
-                },
-            );
-            assert_eq!(
-                kernel.live_shape_count(),
-                0,
-                "{event}: shapes must be freed before dropping the kernel"
-            );
-            assert_eq!(
-                result.is_ok(),
-                matches!(event, "success" | "late"),
-                "{event}: {result:?}"
-            );
-            assert_eq!(out.exists(), matches!(event, "success" | "late" | "racer"));
-            assert_eq!(
-                entries(dir.path()).len(),
-                usize::from(out.exists()),
-                "scratch/sidecars after {event}"
-            );
-            if event == "racer" {
-                assert_eq!(std::fs::read(&out).expect("racer"), b"racer");
-            }
-            if result.is_ok() {
-                let d = Document::open_read_only(&out).expect("publication");
-                assert_eq!(d.objects().expect("objects").len(), 4);
-                d.close().expect("close");
+                        if f == 1.0 && event == "late" {
+                            stop.cancel();
+                        }
+                    }));
+                if event == "before" {
+                    cancel.cancel();
+                }
+                let mut kernel = MockKernel::new();
+                let result = create_checked(
+                    CreateDocumentRequest::new(&out, content.clone(), "keep"),
+                    &ctx,
+                    |doc| {
+                        check_profile(doc, &mut kernel, &ctx)?;
+                        if event == "build failure" {
+                            return Err(ferritecad_types::CadError::kernel(
+                                "injected build failure",
+                            ));
+                        }
+                        Ok(())
+                    },
+                );
+                assert_eq!(
+                    kernel.live_shape_count(),
+                    0,
+                    "{shape} {event}: shapes must be freed before dropping the kernel"
+                );
+                assert_eq!(
+                    result.is_ok(),
+                    matches!(event, "success" | "late"),
+                    "{shape} {event}: {result:?}"
+                );
+                assert_eq!(out.exists(), matches!(event, "success" | "late" | "racer"));
+                assert_eq!(
+                    entries(dir.path()).len(),
+                    usize::from(out.exists()),
+                    "scratch/sidecars after {shape} {event}"
+                );
+                if event == "racer" {
+                    assert_eq!(std::fs::read(&out).expect("racer"), b"racer");
+                }
+                if result.is_ok() {
+                    let d = Document::open_read_only(&out).expect("publication");
+                    assert_eq!(d.objects().expect("objects").len(), 4);
+                    let sketch = d
+                        .objects()
+                        .expect("objects")
+                        .into_iter()
+                        .find_map(|o| match o.payload {
+                            ObjectPayload::Sketch(s) => Some(s),
+                            _ => None,
+                        })
+                        .expect("sketch");
+                    assert_eq!(sketch.curves.len(), 6);
+                    d.close().expect("close");
+                }
             }
         }
     }

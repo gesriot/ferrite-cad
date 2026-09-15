@@ -34,7 +34,7 @@ stdout-логов рядом нет. Диагностика для челове�
 | Поле | Тип и правило |
 | --- | --- |
 | `schema_version` | integer, сейчас ровно `1` |
-| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate`, `create-sketch-extrude`, `edit-sketch-copy` или `edit-sketch-constraints-copy` |
+| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate`, `create-sketch-extrude`, `create-circle-extrude`, `edit-sketch-copy` или `edit-sketch-constraints-copy` |
 | `ok` | boolean |
 | `result` | объект соответствующей операции, присутствует только при `ok: true` |
 | `error` | объект ошибки, присутствует только при `ok: false` |
@@ -76,6 +76,31 @@ opt-in команда. `operation:"create-sketch-extrude"`, result с обяза
 обычный operational error/exit 2; потеря отчёта/exit 7. Семь прежних команд
 не меняются. Точные request v1, ограничения, правила UI/API и запускаемый рецепт:
 [Sketch → Extrude → FCAD](sketch-extrude-create.md). Это не JSON произвольной модели.
+
+## Создание аналитической окружности (§25J)
+
+`ferritecad create-circle-extrude <request.json> -o <new.fcad> [--json]` —
+отдельная opt-in команда с тем же envelope. `operation:"create-circle-extrude"`,
+result с обязательными `destination:string` и `document_id:UUIDv7` после
+cold-check и publish, exit 0; operational error/exit 2; потеря отчёта/exit 7.
+Прежние команды и их поля не меняются.
+
+Request v1 этой команды называет свою версию `schema_version` (не
+`request_version` соседнего polygon-запроса) и требует ровно четыре поля:
+
+```json
+{"schema_version":1,"center_mm":[12.0,-7.0],"radius_mm":10.0,"height_mm":15.0}
+```
+
+`center_mm` — ровно две конечные координаты в mm; `radius_mm` и `height_mm` —
+конечные строго положительные mm. Лишние поля (включая `request_version`,
+`points_mm`, `holes`), неизвестная версия, неправильные типы, null, NaN и
+Infinity отвергаются до создания kernel, без публикации и без scratch.
+Окружность остаётся аналитической: `inspect` показывает её Sketch как
+неподдерживаемый Line-редакторами (`editable:false`, `constraint_edit.available:false`),
+а тело имеет одну цилиндрическую поверхность. Точные ограничения, границы
+аналитического B-Rep и тесселяции и запускаемый рецепт:
+[окружность → Extrude → FCAD](circle-sketch-extrude.md).
 
 ## Результат validate (§24J)
 

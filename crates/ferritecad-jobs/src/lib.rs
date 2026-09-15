@@ -37,7 +37,7 @@
 
 mod create;
 mod polygon;
-pub use polygon::PolygonExtrusion;
+pub use polygon::{CircleExtrusion, PolygonExtrusion};
 mod edit;
 mod fbx;
 mod import;

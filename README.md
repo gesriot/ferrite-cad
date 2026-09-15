@@ -11,6 +11,12 @@ Create your own XY Line polygon with **Create sketch + Extrude…**, or run
 `ferritecad create-sketch-extrude request.json -o new.fcad --json`.
 Both clients save a real Sketch/Extrude/Body and cold-check it before publication.
 See the [bounded contract and executable agent recipe](docs/sketch-extrude-create.md).
+The same window and the same command line also make a cylinder from a centre, a
+radius and a height – **Profile: Circle** in that editor, or
+`ferritecad create-circle-extrude request.json -o new.fcad --json`. The circle
+stays a circle: the document stores a centre and a radius, and the solid has one
+cylindrical face rather than a ring of flat ones, whatever the exported mesh
+approximates it with. [Contract and recipe](docs/circle-sketch-extrude.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

@@ -44,7 +44,7 @@ mod result;
 pub mod mock;
 
 pub use context::{CancelToken, OperationContext, ProgressSink};
-pub use handle::{SessionId, ShapeHandle, SubShapeHandle, SubShapeKind};
+pub use handle::{FaceSurface, SessionId, ShapeHandle, SubShapeHandle, SubShapeKind};
 pub use identity::KernelIdentity;
 pub use kernel::{GeometryKernel, extrude_cache_key, tessellation_cache_key};
 pub use profile::{
