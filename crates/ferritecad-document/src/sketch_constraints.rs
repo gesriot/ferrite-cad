@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-//! Bounded persisted Line orientation/length/pin editing. No solver or wire format.
+//! Bounded persisted Line orientation/length/pin/equality editing. No solver or wire format.
 use crate::{
     Document, ObjectPayload, ObjectRecord, Sketch, SketchConstraint, SketchConstraintRule,
-    SketchPointRef, SketchPointSelector,
+    SketchPointRef, SketchPointSelector, SketchSegmentRef,
 };
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId};
 use std::collections::BTreeSet;
@@ -83,10 +83,24 @@ pub enum LineConstraintKind {
         y: SketchCoordinateMm,
     },
 }
+/// One requested addition.
+///
+/// The first four families say something about one Line, so they name one. An
+/// equal length is a relationship between two whole Lines and has no leading
+/// side, so it names both: a pair cannot be spelled by a single curve field
+/// without hiding one half of what the request means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AddLineConstraint {
-    pub curve: StableEntityId,
-    pub kind: LineConstraintKind,
+pub enum AddLineConstraint {
+    /// This Line's own orientation, length, or the profile's single pinned endpoint.
+    Line {
+        curve: StableEntityId,
+        kind: LineConstraintKind,
+    },
+    /// These two Lines of the same profile keep one Euclidean length between them.
+    EqualLength {
+        a: StableEntityId,
+        b: StableEntityId,
+    },
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SketchConstraintEdits {
@@ -164,6 +178,26 @@ fn closures(sketch: &Sketch) -> Vec<[SketchPointRef; 2]> {
         })
         .collect()
 }
+/// The Line a point pair spans, when it is exactly that Line's Start and End
+/// in either stored orientation.
+fn whole_line(a: SketchPointRef, b: SketchPointRef) -> Option<StableEntityId> {
+    let (start, end) = endpoints(a.curve);
+    (a.curve == b.curve && unordered(a, b) == unordered(start, end)).then_some(a.curve)
+}
+fn segment(curve: StableEntityId) -> SketchSegmentRef {
+    let (start, end) = endpoints(curve);
+    SketchSegmentRef::new(start, end)
+}
+/// The two distinct Lines a stored equal length relates, when both of its
+/// segments are whole Lines. Stored orientation of either segment is kept as it
+/// is; only what it names is read.
+fn equal_of(rule: SketchConstraintRule) -> Option<(StableEntityId, StableEntityId)> {
+    let SketchConstraintRule::EqualLength { a, b } = rule else {
+        return None;
+    };
+    let (x, y) = (whole_line(a.from, a.to)?, whole_line(b.from, b.to)?);
+    (x != y).then_some((x, y))
+}
 fn line_of(rule: SketchConstraintRule) -> Option<(StableEntityId, LineConstraintKind)> {
     if let SketchConstraintRule::Fixed { point, x, y } = rule {
         return Some((
@@ -185,16 +219,18 @@ fn line_of(rule: SketchConstraintRule) -> Option<(StableEntityId, LineConstraint
         ),
         _ => return None,
     };
-    (a.curve == b.curve && unordered(a, b) == unordered(endpoints(a.curve).0, endpoints(a.curve).1))
-        .then_some((a.curve, kind))
+    whole_line(a, b).map(|curve| (curve, kind))
 }
-/// What a request occupies: one orientation and one length per Line, and at
-/// most one pinned endpoint in the whole profile, whichever Line carries it.
+/// What a request occupies: one orientation and one length per Line, at most
+/// one pinned endpoint in the whole profile, whichever Line carries it, and one
+/// equal length per unordered pair of Lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Slot {
     Orientation(StableEntityId),
     Length(StableEntityId),
     Pin,
+    /// Sorted, so (A,B) and (B,A) are the same occupied slot.
+    Equal(StableEntityId, StableEntityId),
 }
 fn line_slot(curve: StableEntityId, kind: LineConstraintKind) -> Slot {
     match kind {
@@ -203,15 +239,46 @@ fn line_slot(curve: StableEntityId, kind: LineConstraintKind) -> Slot {
         LineConstraintKind::Fixed { .. } => Slot::Pin,
     }
 }
-fn occupied(kind: LineConstraintKind) -> &'static str {
-    match kind {
-        LineConstraintKind::Distance(_) => {
-            "a Line may hold only one length; remove its current constraint first"
+fn equal_slot(a: StableEntityId, b: StableEntityId) -> Slot {
+    if a <= b {
+        Slot::Equal(a, b)
+    } else {
+        Slot::Equal(b, a)
+    }
+}
+/// The slot a stored rule occupies and every Line it names, or `None` when the
+/// rule is not one this family manages.
+fn slot_of(rule: SketchConstraintRule) -> Option<(Slot, [StableEntityId; 2])> {
+    if let Some((a, b)) = equal_of(rule) {
+        return Some((equal_slot(a, b), [a, b]));
+    }
+    let (curve, kind) = line_of(rule)?;
+    Some((line_slot(curve, kind), [curve, curve]))
+}
+/// The slot a requested addition occupies, refusing a pair that is not one.
+fn requested(add: &AddLineConstraint) -> Result<(Slot, [StableEntityId; 2])> {
+    Ok(match *add {
+        AddLineConstraint::Line { curve, kind } => (line_slot(curve, kind), [curve, curve]),
+        AddLineConstraint::EqualLength { a, b } => {
+            if a == b {
+                return Err(CadError::input(
+                    "equal length relates two different Lines; this addition names one twice",
+                ));
+            }
+            (equal_slot(a, b), [a, b])
         }
-        LineConstraintKind::Fixed { .. } => {
+    })
+}
+fn occupied(slot: Slot) -> &'static str {
+    match slot {
+        Slot::Length(_) => "a Line may hold only one length; remove its current constraint first",
+        Slot::Pin => {
             "a profile may hold only one fixed endpoint; remove the stored one in the same request"
         }
-        _ => "a Line may hold only one H/V; remove its current constraint first",
+        Slot::Equal(..) => {
+            "these two Lines already hold an equal length; remove it in the same request"
+        }
+        Slot::Orientation(_) => "a Line may hold only one H/V; remove its current constraint first",
     }
 }
 
@@ -226,11 +293,12 @@ fn managed(sketch: &Sketch) -> Result<()> {
         if !seen_ids.insert(c.id) {
             return Err(CadError::unsupported("duplicate constraint UUID"));
         }
-        if let Some((curve, kind)) = line_of(c.rule) {
-            if !curve_ids.contains(&curve) || !lines.insert(line_slot(curve, kind)) {
-                return Err(CadError::unsupported(match kind {
-                    LineConstraintKind::Fixed { .. } => {
-                        "constraint edit supports at most one Fixed endpoint per profile"
+        if let Some((slot, curves)) = slot_of(c.rule) {
+            if !curves.iter().all(|c| curve_ids.contains(c)) || !lines.insert(slot) {
+                return Err(CadError::unsupported(match slot {
+                    Slot::Pin => "constraint edit supports at most one Fixed endpoint per profile",
+                    Slot::Equal(..) => {
+                        "constraint edit refuses a duplicate equal length on one pair of Lines"
                     }
                     _ => "constraint edit refuses duplicate orientation or length on a Line",
                 }));
@@ -244,13 +312,13 @@ fn managed(sketch: &Sketch) -> Result<()> {
             }
         } else {
             return Err(CadError::unsupported(
-                "constraint edit supports only Line H/V, positive Start/End length, one finite Fixed Line endpoint and adjacent-joint Coincident families",
+                "constraint edit supports only Line H/V, positive Start/End length, one finite Fixed Line endpoint, equal length between two whole Lines and adjacent-joint Coincident families",
             ));
         }
     }
     if !lines.is_empty() && joins != expected {
         return Err(CadError::unsupported(
-            "existing H/V, length or Fixed endpoint require all persisted Coincident closure links",
+            "existing H/V, length, equal length or Fixed endpoint require all persisted Coincident closure links",
         ));
     }
     Ok(())
@@ -279,9 +347,9 @@ fn retained(sketch: &Sketch, edits: &SketchConstraintEdits) -> Result<Vec<Sketch
                     "constraint {id} does not belong to the selected Sketch"
                 ))
             })?;
-        if line_of(c.rule).is_none() {
+        if slot_of(c.rule).is_none() {
             return Err(CadError::input(
-                "only H/V, Line length or the Fixed endpoint may be removed; closure links are retained",
+                "only H/V, Line length, equal length or the Fixed endpoint may be removed; closure links are retained",
             ));
         }
     }
@@ -293,17 +361,19 @@ fn retained(sketch: &Sketch, edits: &SketchConstraintEdits) -> Result<Vec<Sketch
         .collect();
     let mut lines: BTreeSet<_> = kept
         .iter()
-        .filter_map(|c| line_of(c.rule).map(|(id, kind)| line_slot(id, kind)))
+        .filter_map(|c| slot_of(c.rule).map(|(slot, _)| slot))
         .collect();
     for add in &edits.add {
-        if !sketch.curves.iter().any(|c| c.id == add.curve) {
-            return Err(CadError::input(format!(
-                "curve {} does not belong to the selected Sketch",
-                add.curve
-            )));
+        let (slot, curves) = requested(add)?;
+        for curve in curves {
+            if !sketch.curves.iter().any(|c| c.id == curve) {
+                return Err(CadError::input(format!(
+                    "curve {curve} does not belong to the selected Sketch"
+                )));
+            }
         }
-        if !lines.insert(line_slot(add.curve, add.kind)) {
-            return Err(CadError::input(occupied(add.kind)));
+        if !lines.insert(slot) {
+            return Err(CadError::input(occupied(slot)));
         }
     }
     Ok(kept)
@@ -368,19 +438,27 @@ pub fn prepare_sketch_constraints(
         }
     }
     for add in &edits.add {
-        let (a, b) = endpoints(add.curve);
-        let rule = match add.kind {
-            LineConstraintKind::Horizontal => SketchConstraintRule::Horizontal { a, b },
-            LineConstraintKind::Vertical => SketchConstraintRule::Vertical { a, b },
-            LineConstraintKind::Distance(length) => SketchConstraintRule::Distance {
-                a,
-                b,
-                distance: length.get(),
-            },
-            LineConstraintKind::Fixed { at, x, y } => SketchConstraintRule::Fixed {
-                point: SketchPointRef::new(add.curve, at.selector()),
-                x: x.get(),
-                y: y.get(),
+        let rule = match *add {
+            AddLineConstraint::Line { curve, kind } => {
+                let (a, b) = endpoints(curve);
+                match kind {
+                    LineConstraintKind::Horizontal => SketchConstraintRule::Horizontal { a, b },
+                    LineConstraintKind::Vertical => SketchConstraintRule::Vertical { a, b },
+                    LineConstraintKind::Distance(length) => SketchConstraintRule::Distance {
+                        a,
+                        b,
+                        distance: length.get(),
+                    },
+                    LineConstraintKind::Fixed { at, x, y } => SketchConstraintRule::Fixed {
+                        point: SketchPointRef::new(curve, at.selector()),
+                        x: x.get(),
+                        y: y.get(),
+                    },
+                }
+            }
+            AddLineConstraint::EqualLength { a, b } => SketchConstraintRule::EqualLength {
+                a: segment(a),
+                b: segment(b),
             },
         };
         let c = SketchConstraint {

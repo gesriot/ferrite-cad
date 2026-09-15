@@ -956,3 +956,27 @@ Discovery и `added_constraints` возвращают прежний DTO `{"kind
 ровно как Distance сохраняет поле `distance`. Замена — remove exact UUID + add
 в одном request; удаление Fixed не трогает Coincident closure, H/V и размеры.
 [Полный контракт и рецепт](fixed-sketch-vertex.md).
+
+§25H снова сохраняет operation/schema/request v1 и все exit-коды. В `add`
+аддитивно доступна пятая форма — ровно так и пишется:
+
+```json
+{"rule":"equal_length","a_curve_id":"UUID_A","b_curve_id":"UUID_B"}
+```
+
+Оба поля обязательны и называют **разные** целые Lines выбранного Sketch;
+ведущей стороны нет и числа у связи нет. `curve_id`, `distance_mm`, `at` и любые
+другие поля здесь лишние и отвергаются, как и `a_curve_id`/`b_curve_id` у
+прочих rules; не-UUID строка, число, bool и null отвергаются. Для занятости
+слота `(A,B)` и `(B,A)` — одна пара, и сохранённый сегмент, записанный
+End→Start, называет ту же Line. Self-pair, чужая Line, duplicate и reversed
+duplicate отвергаются до публикации как `input`; избыточность попадает в
+`solve.redundant_constraint_ids` опубликованного результата, а противоречие —
+в typed `error.constraint_conflict` с `kind:"equal_length"` среди фактов.
+
+Discovery и `added_constraints` возвращают прежний DTO `{"kind":"equal_length",
+"a":{"from","to"},"b":{"from","to"}}` — **сегменты `a`/`b` с `{curve_id,at}`, а
+не `a_curve_id`/`b_curve_id`**, и без поля `distance`. Замена — remove exact
+UUID + add в одном request; удаление равенства не трогает Coincident closure,
+H/V, длины и Fixed, а замена ведущей длины сохраняет UUID самого равенства.
+[Полный контракт и рецепт](equal-line-lengths.md).

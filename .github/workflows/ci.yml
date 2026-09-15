@@ -159,11 +159,11 @@ jobs:
             cargo test -p ferritecad-cli --test edit_constraints "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee "$gate.log"
             if grep -q 'skipped:' "$gate.log" || ! grep -Fq "test $gate ... ok" "$gate.log"; then exit 1; fi
           done
-          for gate in constraints::tests::constraint_widgets_keep_draft_on_save_cancel_refusal_and_stale_reply constraints::tests::line_length_widgets_validate_input_without_changing_history_until_apply constraints::tests::replace_line_length_widgets_build_one_remove_add_request constraints::tests::fixed_point_widgets_pick_an_endpoint_and_replace_the_stored_pin_in_one_step; do
+          for gate in constraints::tests::constraint_widgets_keep_draft_on_save_cancel_refusal_and_stale_reply constraints::tests::line_length_widgets_validate_input_without_changing_history_until_apply constraints::tests::replace_line_length_widgets_build_one_remove_add_request constraints::tests::fixed_point_widgets_pick_an_endpoint_and_replace_the_stored_pin_in_one_step constraints::tests::equal_length_widgets_pick_two_lines_and_name_the_persisted_pair constraints::tests::constraint_editor_keeps_actions_reachable_with_many_pending_additions; do
             cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee constraints-draft.log
             if grep -q 'skipped:' constraints-draft.log || ! grep -Fq "test $gate ... ok" constraints-draft.log; then exit 1; fi
           done
-          for gate in a_fixed_endpoint_is_checked_replaced_and_removed_without_touching_other_ids several_pins_or_an_unrepresentable_pin_refuse_the_whole_document; do
+          for gate in a_fixed_endpoint_is_checked_replaced_and_removed_without_touching_other_ids several_pins_or_an_unrepresentable_pin_refuse_the_whole_document equal_length_pairs_are_checked_stored_and_removed_without_touching_other_ids; do
             cargo test -p ferritecad-document --test constraint_edit "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee "$gate.log"
             if grep -q 'skipped:' "$gate.log" || ! grep -Fq "test $gate ... ok" "$gate.log"; then exit 1; fi
           done
