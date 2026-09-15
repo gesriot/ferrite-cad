@@ -21,8 +21,8 @@ pub struct EditConstraintsArgs {
     /// Full content_version from the same inspect snapshot as all chosen UUIDs.
     #[arg(long)]
     expect_version: ContentHash,
-    /// Request v1: remove exact constraint UUIDs, then add Line H/V, length in mm
-    /// or one Fixed Line endpoint at explicit X/Y mm.
+    /// Request v1: remove exact constraint UUIDs, then add Line H/V, length in mm,
+    /// one Fixed Line endpoint at explicit X/Y mm, or equal length between two Lines.
     #[arg(long)]
     request: PathBuf,
     /// New FCAD destination; no overwrite and no --force.
@@ -73,6 +73,11 @@ enum Addition {
         x_mm: f64,
         y_mm: f64,
     },
+    /// Two whole Lines of the selected Sketch, named in full; neither leads.
+    EqualLength {
+        a_curve_id: StableEntityId,
+        b_curve_id: StableEntityId,
+    },
 }
 impl Addition {
     fn checked(self) -> Result<AddLineConstraint> {
@@ -99,8 +104,17 @@ impl Addition {
                     y: SketchCoordinateMm::new(y_mm)?,
                 },
             ),
+            Self::EqualLength {
+                a_curve_id,
+                b_curve_id,
+            } => {
+                return Ok(AddLineConstraint::EqualLength {
+                    a: a_curve_id,
+                    b: b_curve_id,
+                });
+            }
         };
-        Ok(AddLineConstraint { curve, kind })
+        Ok(AddLineConstraint::Line { curve, kind })
     }
 }
 fn result(args: &EditConstraintsArgs) -> Result<EditedSketchConstraints> {

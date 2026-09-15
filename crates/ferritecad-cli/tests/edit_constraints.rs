@@ -252,6 +252,28 @@ fn constraint_discovery_requests_and_delivery_without_native() {
         assert_eq!(v["error"]["kind"], "input");
         assert!(v["error"].get("constraint_conflict").is_none());
     }
+    for addition in [
+        json!({"rule":"equal_length","a_curve_id":discovery["curves"][0]["curve_id"]}),
+        json!({"rule":"equal_length","b_curve_id":discovery["curves"][1]["curve_id"]}),
+        json!({"rule":"equal_length","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":discovery["curves"][1]["curve_id"],"curve_id":discovery["curves"][2]["curve_id"]}),
+        json!({"rule":"equal_length","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":discovery["curves"][1]["curve_id"],"distance_mm":30}),
+        json!({"rule":"equal_length","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":discovery["curves"][1]["curve_id"],"at":"start"}),
+        json!({"rule":"equal_length","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":null}),
+        json!({"rule":"equal_length","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":7}),
+        json!({"rule":"equal_length","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":"not-a-uuid"}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"equal_length"}),
+        json!({"rule":"equallength","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":discovery["curves"][1]["curve_id"]}),
+    ] {
+        write(
+            &f.request,
+            &json!({"request_version":1,"remove":[],"add":[addition]}),
+        );
+        // Wire-level refusals only: a self-pair is structural and is measured
+        // against a real document in the native gate below.
+        let v = reply(f.edit(&out).output().expect("invalid pair"), OP, 2);
+        assert_eq!(v["error"]["kind"], "input");
+        assert!(v["error"].get("constraint_conflict").is_none());
+    }
     let pin=json!({"request_version":1,"remove":[],"add":[{"curve_id":discovery["curves"][0]["curve_id"],"rule":"fixed","at":"start","x_mm":10,"y_mm":-5}]}).to_string();
     for (field, bad) in [
         ("x_mm", "NaN"),
@@ -1423,4 +1445,390 @@ fn native_fixed_endpoint_pins_the_body_and_removal_restores_two_degrees_of_freed
             .expect("mtime"),
         mtime
     );
+}
+
+fn equal_add(catalog: &Value, i: usize, j: usize) -> Value {
+    let c = &catalog["sketches"][0]["constraint_edit"]["curves"];
+    json!({"rule":"equal_length","a_curve_id":c[i]["curve_id"],"b_curve_id":c[j]["curve_id"]})
+}
+/// Where the named curve sits in the stored order the solved presentation uses.
+fn index_of(catalog: &Value, id: &Value) -> usize {
+    catalog["sketches"][0]["constraint_edit"]["curves"]
+        .as_array()
+        .expect("curves")
+        .iter()
+        .position(|c| c["curve_id"] == *id)
+        .expect("stored curve")
+}
+fn solved_length(starts: &[[f64; 2]], ends: &[[f64; 2]], i: usize) -> f64 {
+    (ends[i][0] - starts[i][0]).hypot(ends[i][1] - starts[i][1])
+}
+/// The solved footprint of a four-Line profile, before independent STL integration.
+fn square_of(starts: &[[f64; 2]], side: f64) {
+    let [lo, hi] = bounds(starts);
+    for j in 0..2 {
+        assert!((hi[j] - lo[j] - side).abs() < 1e-6, "{lo:?} {hi:?}");
+    }
+    let area2 = starts
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let b = starts[(i + 1) % starts.len()];
+            a[0] * b[1] - a[1] * b[0]
+        })
+        .sum::<f64>()
+        .abs();
+    assert!(
+        (area2 / 2. * 10. - side * side * 10.).abs() < 1e-4,
+        "expected {} mm3",
+        side * side * 10.
+    );
+}
+
+#[test]
+fn native_equal_length_ties_two_lines_and_removal_restores_the_free_dimension() {
+    if !native() {
+        return;
+    }
+    let f = Fixture::with_points(Some([[-40., -20.], [40., -20.], [40., 20.], [-40., 20.]]));
+    let before = std::fs::read(&f.source).expect("source");
+    let mtime = std::fs::metadata(&f.source)
+        .expect("meta")
+        .modified()
+        .expect("mtime");
+
+    // H/V, one length and one pin leave exactly one free dimension.
+    let base = f.root.path().join("one-size.fcad");
+    let mut add: Vec<_> = (0..4)
+        .map(|i| json!({"curve_id":f.catalog["sketches"][0]["constraint_edit"]["curves"][i]["curve_id"],"rule":if i%2==0 {"horizontal"} else {"vertical"}}))
+        .collect();
+    add.extend([
+        length_add(&f.catalog, 0, 60.),
+        pin_add(&f.catalog, 0, "start", 10., -5.),
+    ]);
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[],"add":add}),
+    );
+    let sized = reply(f.edit(&base).output().expect("one size and a pin"), OP, 0)["result"].clone();
+    assert_eq!(sized["solve"]["degrees_of_freedom"], 1);
+    let catalog = inspect(&base);
+    let base_ids = constraint_ids(&catalog);
+    assert_eq!(base_ids.len(), 10);
+    let length_id = catalog["sketches"][0]["constraint_edit"]["constraints"]
+        .as_array()
+        .expect("constraints")
+        .iter()
+        .find(|c| c["rule"]["kind"] == "distance")
+        .expect("leading length")["constraint_id"]
+        .clone();
+
+    // Structural refusals happen before the solver and publish nothing.
+    for add in [
+        json!([equal_add(&catalog, 0, 0)]),
+        json!([{"rule":"equal_length","a_curve_id":catalog["sketches"][0]["constraint_edit"]["curves"][0]["curve_id"],"b_curve_id":ferritecad_types::StableEntityId::new()}]),
+        json!([equal_add(&catalog, 0, 1), equal_add(&catalog, 0, 1)]),
+        json!([equal_add(&catalog, 0, 1), equal_add(&catalog, 1, 0)]),
+    ] {
+        let refused = f.root.path().join("never.fcad");
+        let directory = entries(f.root.path());
+        write(
+            &f.request,
+            &json!({"request_version":1,"remove":[],"add":add}),
+        );
+        let v = reply(
+            f.edit_from(&base, &catalog, &refused)
+                .output()
+                .expect("structural refusal"),
+            OP,
+            2,
+        );
+        assert_eq!(v["error"]["kind"], "input");
+        assert!(v["error"].get("constraint_conflict").is_none());
+        assert!(!refused.exists());
+        assert_eq!(entries(f.root.path()), directory);
+    }
+
+    // One equality between two named Lines removes the last dimension.
+    let square = f.root.path().join("square.fcad");
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[],"add":[equal_add(&catalog,0,1)]}),
+    );
+    let tied = reply(
+        f.edit_from(&base, &catalog, &square)
+            .output()
+            .expect("equal length"),
+        OP,
+        0,
+    )["result"]
+        .clone();
+    assert_eq!(tied["solve"]["degrees_of_freedom"], 0);
+    assert_eq!(tied["solve"]["redundant_constraint_ids"], json!([]));
+    let added = tied["added_constraints"].as_array().expect("added").clone();
+    assert_eq!(added.len(), 1, "closure already persisted");
+    let rule = &added[0]["rule"];
+    assert_eq!(rule["kind"], "equal_length");
+    let curves = &catalog["sketches"][0]["constraint_edit"]["curves"];
+    for (side, i) in [("a", 0), ("b", 1)] {
+        assert_eq!(rule[side]["from"]["curve_id"], curves[i]["curve_id"]);
+        assert_eq!(rule[side]["from"]["at"], "start");
+        assert_eq!(rule[side]["to"]["curve_id"], curves[i]["curve_id"]);
+        assert_eq!(rule[side]["to"]["at"], "end");
+    }
+    assert!(
+        rule.get("a_curve_id").is_none() && rule.get("b_curve_id").is_none(),
+        "the response DTO keeps its Segment a/b, not the request fields"
+    );
+    let equal_id = added[0]["constraint_id"].clone();
+    assert!(!base_ids.contains(&equal_id));
+    let square_catalog = inspect(&square);
+    assert_eq!(
+        constraint_ids(&square_catalog),
+        [base_ids.clone(), vec![equal_id.clone()]].concat()
+    );
+    stored_same(&base, &square);
+    let (i, j) = (
+        index_of(&square_catalog, &rule["a"]["from"]["curve_id"]),
+        index_of(&square_catalog, &rule["b"]["from"]["curve_id"]),
+    );
+    assert_ne!(i, j);
+    geometry_checked(&square, Some(0), |starts, ends, _| {
+        let (a, b) = (
+            solved_length(starts, ends, i),
+            solved_length(starts, ends, j),
+        );
+        assert!(
+            (a - b).abs() < 1e-6 && (a - 60.).abs() < 1e-6,
+            "the two Lines named by the equality are not both 60: {a} {b}"
+        );
+        square_of(starts, 60.);
+    });
+
+    // Changing the leading length moves both sides and keeps the equality UUID.
+    let smaller = f.root.path().join("smaller.fcad");
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[length_id],"add":[length_add(&square_catalog,0,45.)]}),
+    );
+    let replaced = reply(
+        f.edit_from(&square, &square_catalog, &smaller)
+            .output()
+            .expect("replace the leading length"),
+        OP,
+        0,
+    )["result"]
+        .clone();
+    assert_eq!(replaced["removed_constraint_ids"], json!([length_id]));
+    assert_eq!(replaced["solve"]["degrees_of_freedom"], 0);
+    let smaller_catalog = inspect(&smaller);
+    let smaller_ids = constraint_ids(&smaller_catalog);
+    let kept_rules: Vec<_> = square_catalog["sketches"][0]["constraint_edit"]["constraints"]
+        .as_array()
+        .expect("constraints")
+        .iter()
+        .filter(|c| c["constraint_id"] != length_id)
+        .cloned()
+        .collect();
+    assert_eq!(
+        smaller_catalog["sketches"][0]["constraint_edit"]["constraints"],
+        json!(
+            [
+                kept_rules,
+                replaced["added_constraints"]
+                    .as_array()
+                    .expect("new length")
+                    .clone()
+            ]
+            .concat()
+        ),
+        "replacement keeps every other constraint UUID, rule and order"
+    );
+    assert!(
+        smaller_ids.contains(&equal_id),
+        "the equality keeps its own UUID across a length replacement"
+    );
+    assert_eq!(smaller_ids.len(), 11);
+    stored_same(&square, &smaller);
+    geometry_checked(&smaller, Some(0), |starts, ends, _| {
+        let (a, b) = (
+            solved_length(starts, ends, i),
+            solved_length(starts, ends, j),
+        );
+        assert!(
+            (a - 45.).abs() < 1e-6 && (b - 45.).abs() < 1e-6,
+            "the equality did not follow the new leading length: {a} {b}"
+        );
+        square_of(starts, 45.);
+    });
+
+    // The stored pair occupies its slot in either order.
+    for add in [
+        json!([equal_add(&smaller_catalog, 0, 1)]),
+        json!([equal_add(&smaller_catalog, 1, 0)]),
+    ] {
+        write(
+            &f.request,
+            &json!({"request_version":1,"remove":[],"add":add}),
+        );
+        let refused = f.root.path().join("duplicate.fcad");
+        let v = reply(
+            f.edit_from(&smaller, &smaller_catalog, &refused)
+                .output()
+                .expect("stored duplicate"),
+            OP,
+            2,
+        );
+        assert_eq!(v["error"]["kind"], "input");
+        assert!(!refused.exists());
+    }
+
+    // Removing the exact equality gives the free dimension back and keeps the rest.
+    let freed = f.root.path().join("freed.fcad");
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[equal_id],"add":[]}),
+    );
+    let removed = reply(
+        f.edit_from(&smaller, &smaller_catalog, &freed)
+            .output()
+            .expect("remove the equality"),
+        OP,
+        0,
+    )["result"]
+        .clone();
+    assert_eq!(removed["solve"]["degrees_of_freedom"], 1);
+    assert_eq!(removed["added_constraints"], json!([]));
+    let freed_catalog = inspect(&freed);
+    assert_eq!(
+        constraint_ids(&freed_catalog),
+        smaller_ids
+            .iter()
+            .filter(|id| **id != equal_id)
+            .cloned()
+            .collect::<Vec<_>>(),
+        "every other UUID and its order survive"
+    );
+    let kinds: Vec<_> = freed_catalog["sketches"][0]["constraint_edit"]["constraints"]
+        .as_array()
+        .expect("constraints")
+        .iter()
+        .map(|c| c["rule"]["kind"].clone())
+        .collect();
+    assert_eq!(kinds.iter().filter(|k| **k == "coincident").count(), 4);
+    assert_eq!(kinds.iter().filter(|k| **k == "horizontal").count(), 2);
+    assert_eq!(kinds.iter().filter(|k| **k == "vertical").count(), 2);
+    assert_eq!(kinds.iter().filter(|k| **k == "distance").count(), 1);
+    assert_eq!(kinds.iter().filter(|k| **k == "fixed").count(), 1);
+    stored_same(&smaller, &freed);
+    // H/V, the leading length and the pin still hold in the solved model; only
+    // the side the equality used to tie is free again.
+    geometry_checked(&freed, Some(1), |starts, ends, _| {
+        assert!((solved_length(starts, ends, i) - 45.).abs() < 1e-6);
+        assert!(
+            (starts[0][0] - 10.).abs() < 1e-6 && (starts[0][1] + 5.).abs() < 1e-6,
+            "the pinned Start moved: {starts:?}"
+        );
+        for k in [0, 2] {
+            assert!(
+                (starts[k][1] - ends[k][1]).abs() < 1e-7,
+                "H lost on line {k}"
+            );
+        }
+        for k in [1, 3] {
+            assert!(
+                (starts[k][0] - ends[k][0]).abs() < 1e-7,
+                "V lost on line {k}"
+            );
+        }
+    });
+
+    // Redundancy is the real solver's diagnosis, not a structural refusal.
+    let redundant = f.root.path().join("redundant.fcad");
+    let mut both: Vec<_> = (0..4)
+        .map(|i| json!({"curve_id":f.catalog["sketches"][0]["constraint_edit"]["curves"][i]["curve_id"],"rule":if i%2==0 {"horizontal"} else {"vertical"}}))
+        .collect();
+    both.extend([
+        length_add(&f.catalog, 0, 60.),
+        length_add(&f.catalog, 1, 60.),
+        pin_add(&f.catalog, 0, "start", 10., -5.),
+        equal_add(&f.catalog, 0, 1),
+    ]);
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[],"add":both}),
+    );
+    let said_twice = reply(
+        f.edit(&redundant).output().expect("redundant equality"),
+        OP,
+        0,
+    )["result"]
+        .clone();
+    let equality = said_twice["added_constraints"]
+        .as_array()
+        .expect("added")
+        .iter()
+        .find(|c| c["rule"]["kind"] == "equal_length")
+        .expect("equality")["constraint_id"]
+        .clone();
+    assert_eq!(
+        said_twice["solve"]["redundant_constraint_ids"],
+        json!([equality]),
+        "the solver names the equality that says what two lengths already said"
+    );
+    assert_eq!(said_twice["solve"]["degrees_of_freedom"], 0);
+
+    // Contradictory stored lengths plus an equality are a real solver conflict.
+    let mut contradictory = rectangle_edits(&f.catalog);
+    contradictory["add"]
+        .as_array_mut()
+        .expect("add")
+        .push(equal_add(&f.catalog, 0, 1));
+    write(&f.request, &contradictory);
+    let failed = f.root.path().join("conflict.fcad");
+    let directory = entries(f.root.path());
+    let refusal = reply(f.edit(&failed).output().expect("solver conflict"), OP, 2);
+    assert_eq!(refusal["error"]["kind"], "constraint", "{refusal}");
+    let conflict = refusal["error"]["constraint_conflict"]["constraints"]
+        .as_array()
+        .expect("typed conflict");
+    assert!(conflict.iter().any(|c| c["rule"]["kind"] == "equal_length"));
+    assert!(conflict.iter().all(|c| c["constraint_id"].is_string()));
+    assert!(!failed.exists());
+    assert_eq!(entries(f.root.path()), directory);
+    assert_eq!(std::fs::read(&f.source).expect("source"), before);
+    assert_eq!(
+        std::fs::metadata(&f.source)
+            .expect("meta")
+            .modified()
+            .expect("mtime"),
+        mtime
+    );
+
+    // Equal length is the Euclidean length of a Line, not its X or Y extent.
+    let slanted = Fixture::new(true);
+    write(
+        &slanted.request,
+        &json!({"request_version":1,"remove":[],"add":[length_add(&slanted.catalog,0,50.),equal_add(&slanted.catalog,0,1)]}),
+    );
+    let out = slanted.root.path().join("slanted-equal.fcad");
+    reply(
+        slanted.edit(&out).output().expect("slanted equality"),
+        OP,
+        0,
+    );
+    stored_same(&slanted.source, &out);
+    geometry_checked(&out, None, |starts, ends, _| {
+        for k in [0, 1] {
+            let (dx, dy) = (ends[k][0] - starts[k][0], ends[k][1] - starts[k][1]);
+            assert!(
+                (dx.hypot(dy) - 50.).abs() < 1e-6,
+                "equal length is not Euclidean on line {k}: {dx}/{dy}"
+            );
+            assert!(
+                (dx.abs() - 50.).abs() > 0.01 && (dy.abs() - 50.).abs() > 0.01,
+                "a slanted equal length must not be an axis projection: {dx}/{dy}"
+            );
+        }
+    });
 }

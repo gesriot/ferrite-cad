@@ -2601,18 +2601,62 @@ worker test проверяет также побайтовое равенств�
 CLI, headless app и настоящий stub; рецепт и pinned ufbx исполнены независимо.
 Интерактивный GUI не запускался. CI опубликованного head/merge — отдельный этап.
 
-**§25H — pending: равенство длин двух Lines через UI и CLI.** Следующий
-продуктовый срез использует существующий `SketchConstraintRule::EqualLength`
-и общий constraint-copy job. Пара задаётся двумя persisted curve UUID одного
-managed Line-профиля; связь сохраняется как EqualLength, без копирования числа
-в Distance и без правки stored координат. Изменение ведущей длины должно менять
-обе стороны, сохраняя UUID самой связи. Первый сценарий: H/V, одна длина и Fixed
-оставляют DOF 1; EqualLength соседних сторон даёт квадрат с DOF 0; удаление
-равенства возвращает DOF 1. Самоссылки/дубликаты пары — структурный отказ,
-противоречивые размеры и избыточность — прежняя диагностика solver. UI выбирает
-две Lines и строит тот же ordered request v1, включая Undo/Redo и exact Remove.
-Без новых примитивов, схемы БД, FFI и live solver drag. Реализация не начата;
-локальные проверки следующего среза также не требуют окна или экрана.
+**§25H — реализовано равенство длин двух Lines одного профиля.**
+Пара двух persisted curve UUID входит в тот же managed класс, что H/V, длина,
+Fixed и adjacent Coincident: существующий `SketchConstraintRule::EqualLength`
+с двумя `SketchSegmentRef` Start→End, существующий перевод в solver, прежняя
+операция `edit_sketch_constraints_copy`, прежний narrow writer и прежний
+snapshot/cold/close/Keep путь. Новой команды, writer, rebuild, publish, схемы БД
+и FFI нет. Связь не хранит числа: она не копирует значение во второй Distance
+и не переписывает stored координаты, поэтому замена ведущей длины меняет обе
+стороны и сохраняет UUID самого равенства. Request честно называет оба curve
+UUID: прежний `AddLineConstraint` стал типобезопасным enum
+(`Line { curve, kind }` и `EqualLength { a, b }`), без фиктивного UUID, скрытого
+второго ID, клиентской таблицы связей и пары независимых Distance. Обе стороны —
+Start/End целой Line; `(A,B)` и `(B,A)` — один занятый слот, сохранённый
+reversed `SegmentRef` называет ту же Line и не канонизируется перезаписью.
+Self-pair, чужая Line, duplicate и reversed duplicate — структурные отказы до
+solver; remove exact UUID + add той же пары в одном запросе допустим. Своего
+анализа транзитивности и ранга здесь нет: избыточность и противоречие
+устанавливает настоящий solver (`redundant_constraint_ids` либо typed
+`constraint_conflict`). Если равенство — первое пользовательское ограничение,
+прежний маршрут так же создаёт все недостающие Coincident joints. CLI request v1
+аддитивно принимает `{"rule":"equal_length","a_curve_id":UUID_A,
+"b_curve_id":UUID_B}`; response/operation/schema и коды 0/2/7 не менялись,
+EqualLength сохраняет прежний DTO `a`/`b` Segment с endpoint refs. UI
+`Edit constraints` получил `Equal Line A`/`Equal Line B` из того же stored
+каталога, показ выбранной пары и `Add Equal length` в один прежний bounded
+`History::change`; persisted равенство показано своим именем, обеими Lines и
+UUID и удаляется по exact identity. Native gates измеряют DOF 1 → 0 → 1 после
+cold reopen, квадрат 60×60×10 mm / 36000 mm³, замену ведущей длины 60→45
+(45×45×10 mm / 20250 mm³) с сохранением UUID равенства, евклидову длину на
+наклонных Lines, настоящий redundant и настоящий solver conflict. Окружностей,
+дуг, отверстий, Parallel, Perpendicular, live solver drag, in-place Save и
+persistent undo нет; coordinate drag/Snap constrained Sketch остаются запрещены.
+[Контракт и рецепт](equal-line-lengths.md),
+[локальные доказательства и ограничения](equal-line-lengths-verification.md).
+Изменения оставлены unstaged/uncommitted для независимого ревью; CI базы
+учитывается отдельно от нового diff. Интерактивный GUI smoke отложен по
+указанию пользователя и не считается пройденным.
+
+Независимое ревью §25H не потребовало изменения предметного маршрута.
+Усилены существующие проверки: замена ведущей длины сохраняет все остальные
+constraint UUID, правила и порядок; успешная соседняя правка сохраняет exact
+reversed SegmentRef. Повторены native domain/CLI/headless app, настоящий stub,
+рецепт из Markdown и независимое чтение новых STL/FBX. В протоколе исправлен
+счётчик CI базы: 27/27. Интерактивный GUI не запускался; CI опубликованного
+head и merge учитывается отдельно.
+
+**§25I — следующий срез, pending: относительная ориентация двух Lines.**
+Добавить Parallel/Perpendicular через существующие model rules, solver и общий
+constraint copy job. Две явные Line UUID, retained pair validation, exact
+удаление, прежняя история UI и аддитивные request v1 формы CLI. Относительная
+ориентация должна работать и на наклонном профиле; H/V и переписывание stored
+координат не заменяют эту связь. Native доказательства включают cold reopen,
+нормированные cross/dot измерения выбранных сторон, DOF, сохранность UUID/SQL,
+изменение ведущей длины и независимый STL/FBX. Solver остаётся владельцем
+диагностики избыточности и конфликтов. Без GUI/GPU, новых схем/FFI, новых
+геометрических операций, live solver drag и in-place Save. Реализация не начата.
 
 ## 15. Чего не делать до beta
 

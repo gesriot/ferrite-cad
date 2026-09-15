@@ -21,8 +21,11 @@ Saved Line coordinates can be edited in a new copy through **Edit Sketch …** o
 keeps segment IDs/order and winding. **Edit H/V …** and
 `edit-sketch-constraints-copy` persist Horizontal/Vertical constraints in a new
 copy; [constraint contract and agent recipe](docs/sketch-constraints-copy.md).
-The same operation persists one [length per Line](docs/line-length-constraints.md)
-and [one pinned endpoint per profile at explicit X/Y mm](docs/fixed-sketch-vertex.md).
+The same operation persists one [length per Line](docs/line-length-constraints.md),
+[one pinned endpoint per profile at explicit X/Y mm](docs/fixed-sketch-vertex.md)
+and [equal length between two named Lines](docs/equal-line-lengths.md), which is
+one relationship rather than a copied number: changing the leading length moves
+both sides.
 The solver keeps joints closed through named Coincident constraints; stored
 coordinates remain inputs, and arbitrary constraint families are still unsupported.
 
@@ -715,7 +718,9 @@ constrained sketch, and a build that linked planegcs solves those constraints
 when it rebuilds: the profile it extrudes is the solved one, not the
 coordinates the curves were last left at. The viewer can create an unconstrained
 Line polygon (§25A) and add/remove persisted H/V in a new copy (§25E), with
-explicit Coincident closure. Other constraint families are outside that editor. A build with no solver refuses such a sketch rather than
+explicit Coincident closure; the same editor persists one length per Line (§25F),
+one pinned endpoint per profile (§25G) and one equal length per pair of Lines
+(§25H). Other constraint families are outside that editor. A build with no solver refuses such a sketch rather than
 building from the stored coordinates. What that solve found out – how much
 freedom each sketch has left, and which of its constraints repeat what the rest
 already said, each one explained in the document's own words rather than named

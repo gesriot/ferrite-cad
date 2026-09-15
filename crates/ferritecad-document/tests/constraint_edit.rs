@@ -88,7 +88,7 @@ fn stored(d: &Document, id: ObjectId) -> Sketch {
 fn add(curve: StableEntityId, kind: LineConstraintKind) -> SketchConstraintEdits {
     SketchConstraintEdits {
         remove: vec![],
-        add: vec![AddLineConstraint { curve, kind }],
+        add: vec![AddLineConstraint::Line { curve, kind }],
     }
 }
 fn cells(path: &Path) -> BTreeMap<String, Vec<Vec<Value>>> {
@@ -280,7 +280,7 @@ fn ordered_requests_refuse_duplicates_foreign_ids_and_closure_removal_atomically
     }
     let replace = SketchConstraintEdits {
         remove: vec![h],
-        add: vec![AddLineConstraint {
+        add: vec![AddLineConstraint::Line {
             curve,
             kind: LineConstraintKind::Vertical,
         }],
@@ -388,7 +388,7 @@ fn line_length_is_checked_and_replacement_preserves_other_constraints() {
     let old = p.added[4].id;
     let replacement = SketchConstraintEdits {
         remove: vec![old],
-        add: vec![AddLineConstraint {
+        add: vec![AddLineConstraint::Line {
             curve,
             kind: length(55.),
         }],
@@ -590,7 +590,7 @@ fn a_fixed_endpoint_is_checked_replaced_and_removed_without_touching_other_ids()
     // Exact remove + add in one request moves the pin and mints one new UUID.
     let replacement = SketchConstraintEdits {
         remove: vec![first],
-        add: vec![AddLineConstraint {
+        add: vec![AddLineConstraint::Line {
             curve: other,
             kind: pin(LineEndpoint::End, 0., 0.),
         }],
@@ -705,5 +705,276 @@ fn several_pins_or_an_unrepresentable_pin_refuse_the_whole_document() {
             ErrorKind::Unsupported
         );
         assert_eq!(stored(&d, id), before);
+    }
+}
+
+fn whole(curve: StableEntityId) -> SketchSegmentRef {
+    SketchSegmentRef::new(
+        SketchPointRef::new(curve, SketchPointSelector::Start),
+        SketchPointRef::new(curve, SketchPointSelector::End),
+    )
+}
+fn equal(a: StableEntityId, b: StableEntityId) -> SketchConstraintEdits {
+    SketchConstraintEdits {
+        remove: vec![],
+        add: vec![AddLineConstraint::EqualLength { a, b }],
+    }
+}
+
+#[test]
+fn equal_length_pairs_are_checked_stored_and_removed_without_touching_other_ids() {
+    let (root, mut d, id) = fixture();
+    let path = root.path().join("source.fcad");
+    let original = stored(&d, id);
+    let curves: Vec<_> = original.curves.iter().map(|c| c.id).collect();
+
+    // A pair is two different Lines of this Sketch. Nothing else is a pair.
+    for edits in [
+        equal(curves[0], curves[0]),
+        equal(curves[0], StableEntityId::new()),
+        equal(StableEntityId::new(), curves[1]),
+        SketchConstraintEdits {
+            remove: vec![],
+            add: vec![
+                AddLineConstraint::EqualLength {
+                    a: curves[0],
+                    b: curves[1],
+                },
+                AddLineConstraint::EqualLength {
+                    a: curves[1],
+                    b: curves[0],
+                },
+            ],
+        },
+        SketchConstraintEdits {
+            remove: vec![StableEntityId::new()],
+            add: vec![AddLineConstraint::EqualLength {
+                a: curves[0],
+                b: curves[1],
+            }],
+        },
+    ] {
+        let bytes = std::fs::read(&path).expect("bytes");
+        assert_eq!(
+            prepare_sketch_constraints(&d, id, &edits)
+                .expect_err("structural refusal before any solver")
+                .kind(),
+            ErrorKind::Input
+        );
+        assert_eq!(bytes, std::fs::read(&path).expect("unchanged"));
+    }
+
+    // Equal length as the first user constraint still persists every closure joint.
+    let p = prepare_sketch_constraints(&d, id, &equal(curves[0], curves[1])).expect("first pair");
+    assert_eq!(p.added.len(), 5, "four Coincident joints and the equality");
+    assert_eq!(
+        p.added.last().expect("equality").rule,
+        SketchConstraintRule::EqualLength {
+            a: whole(curves[0]),
+            b: whole(curves[1]),
+        },
+        "both sides are whole Lines, in stored order"
+    );
+    d.write_sketch_constraints(&p).expect("write pair");
+    let first = p.added.last().expect("equality").id;
+    let stored_now = stored(&d, id);
+    assert_eq!(stored_now.curves, original.curves, "coordinates are inputs");
+
+    // The same pair, either way round, is one occupied slot.
+    for edits in [equal(curves[0], curves[1]), equal(curves[1], curves[0])] {
+        assert_eq!(
+            prepare_sketch_constraints(&d, id, &edits)
+                .expect_err("duplicate pair")
+                .kind(),
+            ErrorKind::Input
+        );
+    }
+    // Other families and other pairs are untouched by that slot.
+    for edits in [
+        add(curves[0], LineConstraintKind::Horizontal),
+        add(
+            curves[2],
+            LineConstraintKind::Distance(LineLengthMm::new(60.).expect("length")),
+        ),
+        equal(curves[2], curves[3]),
+        equal(curves[1], curves[2]),
+    ] {
+        prepare_sketch_constraints(&d, id, &edits).expect("independent slot");
+    }
+
+    // A stored pair whose segments are written end-to-start is the same pair.
+    let mut o = d.object(id).expect("object").expect("Sketch");
+    let ObjectPayload::Sketch(s) = &mut o.payload else {
+        panic!("Sketch")
+    };
+    s.constraints.last_mut().expect("equality").rule = SketchConstraintRule::EqualLength {
+        a: SketchSegmentRef::new(
+            SketchPointRef::new(curves[1], SketchPointSelector::End),
+            SketchPointRef::new(curves[1], SketchPointSelector::Start),
+        ),
+        b: SketchSegmentRef::new(
+            SketchPointRef::new(curves[0], SketchPointSelector::End),
+            SketchPointRef::new(curves[0], SketchPointSelector::Start),
+        ),
+    };
+    d.write(|w| w.put_object(o.id, o.parent, o.ordinal, o.name.as_deref(), &o.payload))
+        .expect("reversed stored pair");
+    let reversed = stored(&d, id);
+    assert!(
+        ExtrudeEditSource::read(&d)
+            .expect("discovery")
+            .constraint_sketches[0]
+            .refusal
+            .is_none(),
+        "a reversed stored pair is still the managed family"
+    );
+    for edits in [equal(curves[0], curves[1]), equal(curves[1], curves[0])] {
+        assert_eq!(
+            prepare_sketch_constraints(&d, id, &edits)
+                .expect_err("reversed duplicate")
+                .kind(),
+            ErrorKind::Input
+        );
+    }
+    assert_eq!(stored(&d, id), reversed, "refusals rewrite nothing");
+
+    // A successful neighbouring edit must also keep the stored segment direction.
+    let p = prepare_sketch_constraints(&d, id, &add(curves[2], LineConstraintKind::Horizontal))
+        .expect("independent orientation next to a reversed pair");
+    d.write_sketch_constraints(&p).expect("write neighbour");
+    let with_neighbour = stored(&d, id);
+    assert_eq!(
+        with_neighbour.constraints[..reversed.constraints.len()],
+        reversed.constraints,
+        "successful edits retain the exact stored refs and UUIDs"
+    );
+    let p = prepare_sketch_constraints(
+        &d,
+        id,
+        &SketchConstraintEdits {
+            remove: vec![p.added[0].id],
+            add: vec![],
+        },
+    )
+    .expect("remove only the neighbour");
+    d.write_sketch_constraints(&p)
+        .expect("write neighbour removal");
+    assert_eq!(stored(&d, id), reversed);
+
+    // Remove the exact UUID and add the same pair back in one request.
+    let again = SketchConstraintEdits {
+        remove: vec![first],
+        add: vec![AddLineConstraint::EqualLength {
+            a: curves[1],
+            b: curves[0],
+        }],
+    };
+    let p = prepare_sketch_constraints(&d, id, &again).expect("retained remove then add");
+    assert_eq!(p.removed, vec![first]);
+    assert_eq!(p.added.len(), 1);
+    let second = p.added[0].id;
+    assert_ne!(second, first);
+    assert_eq!(
+        p.added[0].rule,
+        SketchConstraintRule::EqualLength {
+            a: whole(curves[1]),
+            b: whole(curves[0]),
+        }
+    );
+    d.write_sketch_constraints(&p).expect("write replacement");
+    let replaced = stored(&d, id);
+    assert_eq!(replaced.curves, original.curves);
+    assert_eq!(
+        replaced.constraints[..4],
+        stored_now.constraints[..4],
+        "closure UUIDs are untouched"
+    );
+    d.close().expect("close");
+    let baseline = cells(&path);
+
+    // Removing the equality keeps closure, every other UUID and every other cell.
+    let mut d = Document::open(&path).expect("reopen");
+    let removal = prepare_sketch_constraints(
+        &d,
+        id,
+        &SketchConstraintEdits {
+            remove: vec![second],
+            add: vec![],
+        },
+    )
+    .expect("remove exact equality");
+    assert!(removal.added.is_empty());
+    d.write_sketch_constraints(&removal).expect("write removal");
+    let after = stored(&d, id);
+    assert_eq!(after.curves, original.curves);
+    assert_eq!(after.constraints, replaced.constraints[..4]);
+    assert!(d.validate().expect("validate").is_ok());
+    d.close().expect("close");
+    let now = cells(&path);
+    assert_eq!(
+        baseline.keys().collect::<Vec<_>>(),
+        now.keys().collect::<Vec<_>>()
+    );
+    for (table, rows) in &baseline {
+        if table == "objects" {
+            for row in rows {
+                let actual = now[table].iter().find(|r| r[1] == row[1]).expect("same ID");
+                for col in 0..row.len() {
+                    if row[1] == Value::Blob(id.to_bytes().to_vec()) && [3, 7, 8].contains(&col) {
+                        continue;
+                    }
+                    assert_eq!(actual[col], row[col], "{table} cell {col}");
+                }
+            }
+        } else {
+            assert_eq!(&now[table], rows, "{table}");
+        }
+    }
+
+    // A stored equality that is not between two whole Lines is not this family.
+    let clean = std::fs::read(&path).expect("clean bytes");
+    for spanning in [
+        SketchConstraintRule::EqualLength {
+            a: whole(curves[0]),
+            b: whole(curves[0]),
+        },
+        SketchConstraintRule::EqualLength {
+            a: SketchSegmentRef::new(
+                SketchPointRef::new(curves[0], SketchPointSelector::Start),
+                SketchPointRef::new(curves[1], SketchPointSelector::End),
+            ),
+            b: whole(curves[2]),
+        },
+    ] {
+        let mut d = Document::open(&path).expect("reopen");
+        let mut o = d.object(id).expect("object").expect("Sketch");
+        let ObjectPayload::Sketch(s) = &mut o.payload else {
+            panic!("Sketch")
+        };
+        s.constraints.push(SketchConstraint {
+            id: StableEntityId::new(),
+            rule: spanning,
+        });
+        d.write(|w| w.put_object(o.id, o.parent, o.ordinal, o.name.as_deref(), &o.payload))
+            .expect("stored payload");
+        let before = stored(&d, id);
+        let source = ExtrudeEditSource::read(&d).expect("discovery");
+        assert!(source.constraint_sketches[0].stored.is_none());
+        assert!(
+            source.constraint_sketches[0]
+                .refusal
+                .as_deref()
+                .is_some_and(|r| !r.is_empty()),
+            "an unmanaged equality is explained, not silently dropped"
+        );
+        assert_eq!(
+            prepare_sketch_constraints(&d, id, &equal(curves[2], curves[3]))
+                .expect_err("whole document refusal")
+                .kind(),
+            ErrorKind::Unsupported
+        );
+        assert_eq!(stored(&d, id), before);
+        d.close().expect("close");
+        std::fs::write(&path, &clean).expect("restore the managed document");
     }
 }
