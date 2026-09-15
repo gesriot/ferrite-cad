@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 
 use ferritecad_exchange::Import;
 use ferritecad_kernel::{
-    ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, ExtrudeResult, GeometryKernel, History,
-    HistoryInput, KernelIdentity, Mesh, MeshEdgeRange, MeshEdges, MeshFaceRange, MeshVertexRange,
-    MeshVertices, OperationContext, SegmentGeometry, SessionId, ShapeHandle, SketchPlane,
-    SubShapeHandle, SubShapeKind, TessellationParams,
+    ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, ExtrudeResult, FaceSurface,
+    GeometryKernel, History, HistoryInput, KernelIdentity, Mesh, MeshEdgeRange, MeshEdges,
+    MeshFaceRange, MeshVertexRange, MeshVertices, OperationContext, SegmentGeometry, SessionId,
+    ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind, TessellationParams,
 };
 use ferritecad_types::{CadError, ContentHash, ProfileJoint, Result, Transform};
 
@@ -169,6 +169,18 @@ impl OcctKernel {
     /// or restored solid is the one that was requested.
     pub fn shape_stats(&mut self, shape: ShapeHandle) -> Result<(u64, f64)> {
         self.session.shape_stats(self.raw(shape)?)
+    }
+
+    /// The analytic surface one named face lies on.
+    ///
+    /// The one way to tell a solid whose side really is a cylinder from one
+    /// whose side is a fan of planes that a mesh would draw the same way.
+    pub fn face_surface(&mut self, face: SubShapeHandle) -> Result<FaceSurface> {
+        if face.kind() != SubShapeKind::Face {
+            return Err(CadError::input("only a face lies on a surface"));
+        }
+        let raw = self.raw(face.shape())?;
+        self.session.face_surface(raw, face.index())
     }
 
     /// Wraps a kernel payload in FerriteCAD's framing.
@@ -702,6 +714,12 @@ fn segment_of(geometry: &SegmentGeometry) -> ffi::Segment {
             segment.radius = *radius;
             segment.start_angle = *start_angle;
             segment.end_angle = *end_angle;
+        }
+        SegmentGeometry::Circle { center, radius } => {
+            segment.kind = ffi::SEGMENT_CIRCLE;
+            segment.center_x = center.x;
+            segment.center_y = center.y;
+            segment.radius = *radius;
         }
         // `SegmentGeometry` is non-exhaustive. An unknown variant reaching the
         // bridge as a zeroed line would be a silently wrong profile, so it is

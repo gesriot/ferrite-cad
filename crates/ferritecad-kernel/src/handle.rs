@@ -94,6 +94,19 @@ impl fmt::Display for SubShapeKind {
     }
 }
 
+/// What analytic surface a face of a built shape lies on.
+///
+/// Reported by a kernel rather than inferred from a mesh: a tessellated
+/// approximation of a cylinder is many planes, and telling those two apart is
+/// the only way to say that a circle stayed a circle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum FaceSurface {
+    Other,
+    Plane,
+    Cylinder { radius: f64 },
+}
+
 /// A face, edge or vertex inside a shape held by a kernel session.
 ///
 /// **Never persisted**, for the same reason as [`ShapeHandle`], and with more

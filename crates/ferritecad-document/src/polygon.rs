@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
-//! Bounded, unconstrained XY Line polygon creation input. No persistence IDs
-//! exist in a draft; the writer allocates those once when building the model.
+//! Bounded, unconstrained XY creation input: a Line polygon or one analytic
+//! circle. No persistence IDs exist in a draft; the writer allocates those once
+//! when building the model.
 use crate::Point2;
 use ferritecad_kernel::ExtrudeExtent;
 use ferritecad_types::{CadError, Result};
@@ -120,6 +121,58 @@ fn intersects(a: Point2, b: Point2, c: Point2, d: Point2, eps: f64) -> bool {
         || (cdb == 0 && within(c, d, b))
 }
 
+/// Shared UI/CLI validity policy for one analytic circle, in mm.
+///
+/// A circle is not a polygon with many sides: it is a centre and a radius, and
+/// it stays that in the document and in the B-Rep. Nothing here approximates
+/// it, so there is no vertex count to bound and no self-intersection to check —
+/// what is left is that every number is one a document will store.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CircleExtrusion {
+    center: Point2,
+    radius: f64,
+    height: f64,
+}
+
+impl CircleExtrusion {
+    /// The same bound the polygon editor uses, and for the same reason: a
+    /// first editor with a stated range, not a kernel limit.
+    pub const MAX_MM: f64 = 1e6;
+
+    pub fn new(center: [f64; 2], radius: f64, height: f64) -> Result<Self> {
+        let height = ExtrudeExtent::blind(height)?.total_length();
+        let center = Point2::new(center[0], center[1])?;
+        if !radius.is_finite() || radius <= 0. {
+            return Err(CadError::input(
+                "circle radius must be finite and positive in mm",
+            ));
+        }
+        if height > Self::MAX_MM
+            || radius > Self::MAX_MM
+            || center.x.abs() > Self::MAX_MM
+            || center.y.abs() > Self::MAX_MM
+        {
+            return Err(CadError::input(
+                "circle centre, radius and height must fit within 1000000 mm",
+            ));
+        }
+        Ok(Self {
+            center,
+            radius,
+            height,
+        })
+    }
+    pub fn center(&self) -> Point2 {
+        self.center
+    }
+    pub fn radius_mm(&self) -> f64 {
+        self.radius
+    }
+    pub fn height_mm(&self) -> f64 {
+        self.height
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +200,37 @@ mod tests {
         }
         for h in [0., -1., f64::NAN, f64::INFINITY] {
             assert!(PolygonExtrusion::new(vec![[0., 0.], [2., 0.], [0., 2.]], h).is_err());
+        }
+    }
+
+    #[test]
+    fn circle_policy_keeps_a_centre_and_a_positive_radius() {
+        let ok = CircleExtrusion::new([12., -7.], 10., 15.).expect("a circle");
+        assert_eq!((ok.center().x, ok.center().y), (12., -7.));
+        assert_eq!((ok.radius_mm(), ok.height_mm()), (10., 15.));
+        // Zero is a centre like any other, and a fractional radius is not a
+        // special case; only the radius and height have to be positive.
+        let small = CircleExtrusion::new([0., 0.], 0.25, 0.5).expect("small but real");
+        assert_eq!((small.radius_mm(), small.height_mm()), (0.25, 0.5));
+        for (center, radius, height) in [
+            ([0., 0.], 0., 10.),
+            ([0., 0.], -1., 10.),
+            ([0., 0.], f64::NAN, 10.),
+            ([0., 0.], f64::INFINITY, 10.),
+            ([f64::NAN, 0.], 5., 10.),
+            ([0., f64::INFINITY], 5., 10.),
+            ([0., 0.], 5., 0.),
+            ([0., 0.], 5., -1.),
+            ([0., 0.], 5., f64::NAN),
+            ([0., 0.], 5., f64::INFINITY),
+            ([2e6, 0.], 5., 10.),
+            ([0., 0.], 2e6, 10.),
+            ([0., 0.], 5., 2e6),
+        ] {
+            assert!(
+                CircleExtrusion::new(center, radius, height).is_err(),
+                "{center:?} r{radius} h{height}"
+            );
         }
     }
 }

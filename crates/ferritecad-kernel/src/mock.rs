@@ -264,6 +264,12 @@ impl GeometryKernel for MockKernel {
 
         // Every curve becomes its chord. Enough to exercise the contract, and
         // deliberately not enough to be mistaken for a real kernel.
+        if profile.outer().is_closed_curve() {
+            return Err(CadError::unsupported(
+                "the mock kernel draws every curve as its chord, and a closed curve has no chord; \
+                 refusing rather than inventing corners for it",
+            ));
+        }
         let mut planar = Vec::new();
         let mut labels = Vec::new();
         for segment in profile.outer().segments() {

@@ -2,7 +2,7 @@
 //! A disposable drawing, separate from the accepted scene and persisted model.
 //! No kernel, filesystem, IDs, or document mutation occurs while editing it.
 use ferritecad_document::{ExtrudeEditSource, SketchChoice, SketchVertex};
-use ferritecad_jobs::{EditSketchRequest, NewDocument, PolygonExtrusion};
+use ferritecad_jobs::{CircleExtrusion, EditSketchRequest, NewDocument, PolygonExtrusion};
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
 
@@ -22,6 +22,39 @@ impl Default for State {
     }
 }
 
+/// Which profile the open draft window is asking for.
+///
+/// A mode of one window rather than a second window: both produce the same
+/// `NewDocument` through the same worker, and switching between them must not
+/// throw away what was typed in the other.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    #[default]
+    Polygon,
+    Circle,
+}
+
+/// The numbers a circle needs, as typed.
+///
+/// Text for the same reason the polygon's are: a field being filled in passes
+/// through `-`, `1.` and empty, and what a number means is decided once, by
+/// the document, when the person says they are finished.
+#[derive(Debug, Clone, PartialEq)]
+struct CircleState {
+    center: [String; 2],
+    radius: String,
+    height: String,
+}
+impl Default for CircleState {
+    fn default() -> Self {
+        Self {
+            center: ["0".into(), "0".into()],
+            radius: "10".into(),
+            height: "10".into(),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Editor {
     pub(crate) constraints: crate::constraints::Editor,
@@ -33,6 +66,10 @@ pub(crate) struct Editor {
     canvas: Canvas,
     editing: Option<(EditSketchRequest, SketchChoice)>,
     pending_edit: Option<EditSketchRequest>,
+    /// Which profile the open window is asking for, and the circle's numbers.
+    /// Both outlive a trip through the other mode; only Cancel clears them.
+    mode: Mode,
+    circle: CircleState,
 }
 impl Editor {
     pub(crate) fn active(&self) -> bool {
@@ -154,6 +191,21 @@ impl Editor {
         self.draft = Some(State::default());
         self.next = ["0".into(), "0".into()];
     }
+    /// What the circle form is asking for, or why it is not a circle yet.
+    ///
+    /// Parses here and decides nothing else: whether a number that parses is
+    /// an acceptable size belongs to the document, which refuses what it will
+    /// not store and says why.
+    fn circle_content(&self) -> Result<NewDocument> {
+        Ok(NewDocument::CircleExtrude(CircleExtrusion::new(
+            [
+                number(&self.circle.center[0])?,
+                number(&self.circle.center[1])?,
+            ],
+            number(&self.circle.radius)?,
+            number(&self.circle.height)?,
+        )?))
+    }
     fn record(&mut self, before: State) {
         if self.draft.as_ref() != Some(&before) {
             self.push_undo(before);
@@ -224,7 +276,71 @@ impl Editor {
         .show(ui.ctx(), |ui| self.draw_draft(ui, running));
     }
 
+    /// The circle half of the same window.
+    ///
+    /// Four numbers and one action. The polygon draft beside it is untouched
+    /// while this is on screen, so switching back finds the points that were
+    /// already there.
+    fn draw_circle(&mut self, ui: &mut egui::Ui) {
+        ui.label("XY · mm · one analytic circle · Blind · NewBody");
+        ui.label("The circle is stored as a centre and a radius, and stays one in the solid.");
+        let [x, y] = &mut self.circle.center;
+        let fields: [(&str, &mut String); 4] = [
+            ("Center X", x),
+            ("Center Y", y),
+            ("Radius", &mut self.circle.radius),
+            ("Blind height", &mut self.circle.height),
+        ];
+        egui::Grid::new("ferritecad circle numbers")
+            .num_columns(3)
+            .show(ui, |ui| {
+                for (label, value) in fields {
+                    ui.label(label);
+                    ui.add(
+                        egui::TextEdit::singleline(value)
+                            .char_limit(64)
+                            .desired_width(120.),
+                    );
+                    ui.label("mm");
+                    ui.end_row();
+                }
+            });
+        match self.circle_content() {
+            Ok(content) => {
+                if ui.button("Save circle extrusion…").clicked() {
+                    self.pending = Some(content);
+                }
+            }
+            Err(error) => {
+                ui.colored_label(ui.visuals().error_fg_color, error.to_string());
+            }
+        }
+    }
+
     fn draw_draft(&mut self, ui: &mut egui::Ui, running: bool) {
+        // Editing a saved Sketch is not creating one, so it offers no choice
+        // of profile: the document already decided what it holds.
+        if self.editing.is_none() {
+            ui.add_enabled_ui(!running, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Profile:");
+                    ui.selectable_value(&mut self.mode, Mode::Polygon, "Line polygon");
+                    ui.selectable_value(&mut self.mode, Mode::Circle, "Circle");
+                });
+            });
+            if self.mode == Mode::Circle {
+                ui.add_enabled_ui(!running, |ui| {
+                    self.draw_circle(ui);
+                    if ui.button("Cancel draft").clicked() {
+                        self.dismiss();
+                    }
+                });
+                if running {
+                    ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
+                }
+                return;
+            }
+        }
         ui.label("XY · mm · Line polygon · Blind · NewBody");
         ui.label(if self.editing.is_some() {
             "Edit exact coordinates. Curve IDs, order, closure and height are retained."
@@ -872,6 +988,14 @@ mod tests {
         e: &mut Editor,
         events: Vec<egui::Event>,
     ) -> egui::FullOutput {
+        frame_running(ctx, e, events, false)
+    }
+    fn frame_running(
+        ctx: &egui::Context,
+        e: &mut Editor,
+        events: Vec<egui::Event>,
+        running: bool,
+    ) -> egui::FullOutput {
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -881,7 +1005,7 @@ mod tests {
                 events,
                 ..Default::default()
             },
-            |ui| e.draw(ui, true, false),
+            |ui| e.draw(ui, true, running),
         );
         output.textures_delta.clear();
         output
@@ -1017,6 +1141,310 @@ mod tests {
         assert_eq!(p.height_mm(), 10.);
         assert!(e.take_request().is_none());
     }
+    /// Opens the window, switches it to Circle and fills the four numbers in
+    /// through real widgets, leaving whatever the polygon half held alone.
+    fn draw_circle_through_widgets(
+        e: &mut Editor,
+        center: [&str; 2],
+        radius: &str,
+        height: &str,
+    ) -> egui::Context {
+        let ctx = egui::Context::default();
+        if !e.active() {
+            let out = frame(&ctx, e, vec![]);
+            click(&ctx, e, text_at(&out, "Create sketch + Extrude…"));
+        }
+        // A context that has not drawn this window yet has to lay it out
+        // before anything inside it can be found and pressed.
+        for _ in 0..3 {
+            frame(&ctx, e, vec![]);
+        }
+        let out = frame(&ctx, e, vec![]);
+        click(&ctx, e, text_at(&out, "Circle"));
+        for (label, value) in [
+            ("Center X", center[0]),
+            ("Center Y", center[1]),
+            ("Radius", radius),
+            ("Blind height", height),
+        ] {
+            let out = frame(&ctx, e, vec![]);
+            type_into_grid_row(&ctx, e, &out, label, value);
+        }
+        ctx
+    }
+
+    /// Types into the box on one row of the circle grid.
+    ///
+    /// The grid's first column is as wide as its widest label, so every box
+    /// starts at the same x. Anchoring on that label rather than on each row's
+    /// own puts the click inside the box for short labels as well as long
+    /// ones.
+    fn type_into_grid_row(
+        ctx: &egui::Context,
+        e: &mut Editor,
+        out: &egui::FullOutput,
+        label: &str,
+        value: &str,
+    ) {
+        let column = out
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Blind height" => {
+                    Some(t.visual_bounding_rect().right())
+                }
+                _ => None,
+            })
+            .expect("the widest label sets the column");
+        let row = text_at(out, label).y;
+        click(ctx, e, egui::pos2(column + 40., row));
+        frame(
+            ctx,
+            e,
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                },
+                egui::Event::Text(value.into()),
+            ],
+        );
+    }
+
+    #[test]
+    fn circle_widgets_submit_exact_numbers_and_keep_the_polygon_draft() {
+        let mut e = Editor::default();
+        let ctx = egui::Context::default();
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Create sketch + Extrude…"));
+        frame(&ctx, &mut e, vec![]);
+        // A polygon half-drawn before anyone asked for a circle.
+        let points = vec![
+            ["0".to_owned(), "0".to_owned()],
+            ["60".to_owned(), "0".to_owned()],
+            ["0".to_owned(), "40".to_owned()],
+        ];
+        e.draft.as_mut().expect("draft").points = points.clone();
+
+        let ctx = draw_circle_through_widgets(&mut e, ["12", "-7"], "10", "15");
+        assert_eq!(
+            e.draft.as_ref().expect("draft").points,
+            points,
+            "switching mode threw away the polygon draft"
+        );
+        assert_eq!(e.circle.center, ["12".to_owned(), "-7".to_owned()]);
+        assert_eq!(e.circle.radius, "10");
+        assert_eq!(e.circle.height, "15");
+
+        // A refusal is shown in the form and submits nothing.
+        for bad in ["0", "-4", "banana", ""] {
+            let out = frame(&ctx, &mut e, vec![]);
+            type_into_grid_row(&ctx, &mut e, &out, "Radius", bad);
+            let out = frame(&ctx, &mut e, vec![]);
+            assert!(e.circle_content().is_err(), "radius {bad:?} was accepted");
+            assert!(
+                !out.shapes.iter().any(|c| matches!(&c.shape,
+                    egui::Shape::Text(t) if t.galley.text() == "Save circle extrusion…")),
+                "radius {bad:?} still offered Save"
+            );
+            assert!(e.take_request().is_none());
+        }
+
+        let ctx = draw_circle_through_widgets(&mut e, ["12", "-7"], "10", "15");
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Save circle extrusion…"));
+        let NewDocument::CircleExtrude(c) = e.take_request().expect("one request") else {
+            panic!("the circle form asked for something else")
+        };
+        assert_eq!((c.center().x, c.center().y), (12., -7.));
+        assert_eq!((c.radius_mm(), c.height_mm()), (10., 15.));
+        assert!(e.take_request().is_none(), "one press, one request");
+
+        // While the submitted request is saving, only the toolbar can cancel
+        // the job. Draft actions must not discard the recovery state or change
+        // which form will reappear if the worker refuses the publication.
+        let before_circle = e.circle.clone();
+        for label in ["Cancel draft", "Line polygon", "Save circle extrusion…"] {
+            let out = frame_running(&ctx, &mut e, vec![], true);
+            let at = text_at(&out, label);
+            frame_running(&ctx, &mut e, vec![egui::Event::PointerMoved(at)], true);
+            for pressed in [true, false] {
+                frame_running(
+                    &ctx,
+                    &mut e,
+                    vec![egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    }],
+                    true,
+                );
+            }
+            assert!(e.active(), "{label} discarded a saving circle draft");
+            assert_eq!(e.mode, Mode::Circle, "{label} changed a saving profile");
+            assert_eq!(e.circle, before_circle);
+            assert_eq!(e.draft.as_ref().expect("draft").points, points);
+            assert!(e.take_request().is_none(), "{label} submitted twice");
+        }
+
+        // Back to the polygon: the points are still there, and so is its own
+        // action. Neither draft was ever the other's.
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Line polygon"));
+        assert_eq!(e.draft.as_ref().expect("draft").points, points);
+        let out = frame(&ctx, &mut e, vec![]);
+        text_at(&out, "Close contour");
+        // Cancel ends both, and leaves nothing pending.
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Cancel draft"));
+        assert!(!e.active());
+        assert!(e.take_request().is_none());
+    }
+
+    #[test]
+    fn native_circle_draft_and_cli_publish_equivalent_models() {
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: no OCCT for circle UI worker");
+            return;
+        }
+        use crate::creates::{
+            self,
+            tests::{ferritecad, read_semantics},
+        };
+        use std::sync::mpsc;
+        let d = tempfile::tempdir().expect("dir");
+        let ui = d.path().join("circle-ui.fcad");
+        let cli = d.path().join("circle-cli.fcad");
+        let input = d.path().join("circle-request.json");
+        let mut creates = creates::Creates::default();
+        draw_circle_through_widgets(&mut creates.sketch, ["12", "-7"], "10", "15");
+        let content = creates
+            .sketch
+            .circle_content()
+            .expect("the widgets describe a circle");
+        let before = creates.sketch.circle.clone();
+        let mut view = ferritecad_ui::ViewportInput::new();
+        let loads = crate::Loads::default();
+        let exports = crate::exports::Exports::default();
+
+        // A cancelled save dialog keeps the numbers that were typed.
+        assert!(
+            crate::start_new(
+                &mut creates,
+                &loads,
+                &exports,
+                &mut view,
+                content.clone(),
+                None,
+                |_, _, _, _| panic!("no worker on cancel")
+            )
+            .is_none()
+        );
+        assert_eq!(creates.sketch.circle, before);
+        // So does a destination that is already taken.
+        let busy = d.path().join("occupied.fcad");
+        std::fs::write(&busy, b"keep").expect("busy");
+        let (_, open) = creates::tests::run_to_completion(
+            &mut creates,
+            &mut view,
+            content.clone(),
+            Some(busy.clone()),
+        );
+        assert!(open.is_none());
+        assert_eq!(creates.sketch.circle, before);
+        assert_eq!(std::fs::read(busy).expect("busy"), b"keep");
+
+        let (tx, rx) = mpsc::channel();
+        let spawn = move |path: &std::path::Path,
+                          content,
+                          generation,
+                          cancel: &ferritecad_kernel::CancelToken| {
+            let path = path.to_path_buf();
+            let ctx = ferritecad_kernel::OperationContext::default().with_cancel(cancel.clone());
+            creates::spawn_create(
+                move || creates::run_create(&path, content, &ctx),
+                move |result| tx.send((generation, result)).expect("reply"),
+            )
+        };
+        crate::start_new(
+            &mut creates,
+            &loads,
+            &exports,
+            &mut view,
+            content.clone(),
+            Some(ui.clone()),
+            spawn,
+        )
+        .expect("worker");
+        let (generation, result) = rx.recv().expect("worker result");
+        assert_eq!(
+            creates::finish_create(&mut creates, &mut view, generation, result),
+            Some(ui.clone())
+        );
+        assert!(!creates.sketch.active());
+        // A reply for a request that is no longer current changes nothing.
+        assert!(
+            creates::finish_create(
+                &mut creates,
+                &mut view,
+                generation,
+                Err(ferritecad_types::CadError::kernel("stale")),
+            )
+            .is_none()
+        );
+        creates.stop_all();
+
+        std::fs::write(
+            &input,
+            r#"{"schema_version":1,"center_mm":[12.0,-7.0],"radius_mm":10.0,"height_mm":15.0}"#,
+        )
+        .expect("request");
+        let run = std::process::Command::new(ferritecad())
+            .arg("create-circle-extrude")
+            .arg(input)
+            .arg("-o")
+            .arg(&cli)
+            .arg("--json")
+            .output()
+            .expect("peer CLI");
+        assert!(run.status.success(), "{run:?}");
+
+        // The same model, said in two independently minted sets of UUIDs.
+        assert_eq!(read_semantics(&ui).0, read_semantics(&cli).0);
+        assert_ne!(read_semantics(&ui).1, read_semantics(&cli).1);
+        let mut bytes = Vec::new();
+        for path in [&ui, &cli] {
+            for (op, extension) in [("export-stl", "stl"), ("export-fbx", "fbx")] {
+                let out = path.with_extension(extension);
+                let result = std::process::Command::new(ferritecad())
+                    .arg(op)
+                    .arg(path)
+                    .arg("-o")
+                    .arg(&out)
+                    .output()
+                    .expect("export");
+                assert!(result.status.success(), "{result:?}");
+                if extension == "stl" {
+                    bytes.push(std::fs::read(&out).expect("STL"));
+                } else if let Some(dir) = std::env::var_os("FCAD_CIRCLE_ARTIFACTS") {
+                    // Read by the pinned ufbx reader in the same CI job. FBX
+                    // identity properties carry each document's own UUIDs, so
+                    // these two files are read rather than compared.
+                    let dir = std::path::Path::new(&dir);
+                    std::fs::create_dir_all(dir).expect("artifact directory");
+                    std::fs::copy(&out, dir.join(out.file_name().expect("name")))
+                        .expect("artifact");
+                }
+            }
+        }
+        assert_eq!(bytes[0], bytes[1], "one geometry, two documents");
+    }
+
     #[test]
     fn native_sketch_draft_and_cli_publish_equivalent_models() {
         if !ferritecad_occt::is_available() {

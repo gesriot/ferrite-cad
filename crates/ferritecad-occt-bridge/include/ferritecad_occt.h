@@ -60,7 +60,13 @@ typedef struct FcOcctError {
 typedef int32_t FcOcctSegmentKind;
 enum {
   FC_OCCT_SEGMENT_LINE = 0,
-  FC_OCCT_SEGMENT_ARC = 1
+  FC_OCCT_SEGMENT_ARC = 1,
+  /* A whole circle, given by `center_x`, `center_y` and `radius`.
+   *
+   * This curve closes on itself, so it is a whole profile rather than one link
+   * of a chain: it is accepted only as the single segment of the profile, and
+   * such a profile has no corners. See fc_occt_extrude. */
+  FC_OCCT_SEGMENT_CIRCLE = 2
 };
 
 /* One profile segment, in the sketch plane's own 2D coordinates.
@@ -203,6 +209,14 @@ void fc_occt_session_destroy(FcOcctSession *session) FC_OCCT_NOEXCEPT;
  * `base_offset` and `top_offset` are distances along the plane normal, so a
  * blind extrusion is (0, d) and a symmetric one is (-d, +d).
  *
+ * A profile is either two or more segments meeting at corners, or exactly one
+ * FC_OCCT_SEGMENT_CIRCLE, which closes on itself. The circle form has no
+ * corners, so it reports a joint count of zero: fc_occt_extrude_sweep_edges
+ * and fc_occt_extrude_cap_vertices refuse every joint index for such a shape
+ * rather than answering about a seam. The seam Open CASCADE puts on a circular
+ * edge is its own parameterisation and is never reported as a corner of the
+ * drawing. A circle mixed into a longer profile is refused.
+ *
  * Cancellation: `cancel` is consulted before the profile is built and again
  * before the sweep, and is also installed as an Open CASCADE progress
  * indicator. Be aware that BRepPrimAPI_MakePrism does not poll that indicator
@@ -315,6 +329,30 @@ FcOcctStatus fc_occt_extrude_cap_faces(FcOcctSession *session, uint64_t shape,
                                        int32_t which, uint64_t *out_ids,
                                        size_t capacity, size_t *out_count,
                                        FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/* What analytic surface a face lies on.
+ *
+ * Reported so a caller can tell an analytic solid from one that only looks
+ * like it in a mesh: a cylinder raised from a circle has one cylindrical side
+ * face of a known radius, while a polygon approximating that circle would have
+ * many planar ones. `out_radius` is meaningful only for
+ * FC_OCCT_SURFACE_CYLINDER and is set to 0 otherwise.
+ *
+ * `face` is a sub-shape identifier this session handed out — from
+ * fc_occt_extrude_side_faces or fc_occt_extrude_cap_faces — and must belong to
+ * `shape`. Anything that is not a face of that shape is refused rather than
+ * described. */
+typedef int32_t FcOcctSurfaceKind;
+enum {
+  FC_OCCT_SURFACE_OTHER = 0,
+  FC_OCCT_SURFACE_PLANE = 1,
+  FC_OCCT_SURFACE_CYLINDER = 2
+};
+
+FcOcctStatus fc_occt_face_surface(FcOcctSession *session, uint64_t shape,
+                                  uint64_t face, int32_t *out_kind,
+                                  double *out_radius,
+                                  FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*
  * Face count and volume of a shape.
