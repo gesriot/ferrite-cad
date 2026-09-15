@@ -980,3 +980,33 @@ Discovery и `added_constraints` возвращают прежний DTO `{"kind
 UUID + add в одном request; удаление равенства не трогает Coincident closure,
 H/V, длины и Fixed, а замена ведущей длины сохраняет UUID самого равенства.
 [Полный контракт и рецепт](equal-line-lengths.md).
+
+§25I снова сохраняет operation/schema/request v1 и все exit-коды. В `add`
+аддитивно доступны шестая и седьмая формы — ровно так и пишутся:
+
+```json
+{"rule":"parallel","a_curve_id":"UUID_A","b_curve_id":"UUID_B"}
+{"rule":"perpendicular","a_curve_id":"UUID_A","b_curve_id":"UUID_B"}
+```
+
+Оба поля обязательны и называют **разные** целые Lines выбранного Sketch;
+ведущей стороны нет, а числа и угла в градусах у связи нет. `curve_id`,
+`distance_mm`, `at` и любые другие поля здесь лишние и отвергаются, как и
+`a_curve_id`/`b_curve_id` у прочих rules; не-UUID строка, число, bool, null и
+`Parallel`/`perpendicularity` вместо точного имени отвергаются. Для занятости
+слота `(A,B)` и `(B,A)` — одна пара, и **один ответ на пару**: `parallel` и
+`perpendicular` занимают один слот, а `equal_length` на той же паре — отдельный.
+Self-pair, чужая Line, duplicate, другой ответ и reversed duplicate отвергаются
+до публикации как `input`; избыточность попадает в
+`solve.redundant_constraint_ids` опубликованного результата, а противоречие —
+в typed `error.constraint_conflict` с `kind:"parallel"`/`"perpendicular"` среди
+фактов.
+
+Discovery и `added_constraints` возвращают прежние DTO
+`{"kind":"parallel","a":{"from","to"},"b":{"from","to"}}` и
+`{"kind":"perpendicular",…}` — **сегменты `a`/`b` с `{curve_id,at}`, а не
+`a_curve_id`/`b_curve_id`**, и без поля `distance`. Замена — remove exact UUID +
+add в одном request, в том числе на другой ответ той же пары; удаление связи не
+трогает Coincident closure, H/V, длины, Fixed и остальные связи, а замена
+ведущей длины сохраняет их UUID.
+[Полный контракт и рецепт](line-pair-orientation.md).

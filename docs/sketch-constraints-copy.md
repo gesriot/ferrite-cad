@@ -1,4 +1,4 @@
-# §25E–H — ограничения Line в новой копии
+# §25E–I — ограничения Line в новой копии
 
 Контракт реализации: существующие собственные XY Line polygons, 3..256 сегментов,
 один positive literal Blind/NewBody и его Body. Stored координаты остаются
@@ -24,7 +24,7 @@ Start и End одного указанного Line, а не X/Y-проекци�
 infinity, overflow, zero/negative и любые неизвестные поля отказываются. Request ограничен 65536 bytes и 512 изменениями, должен быть непустым;
 неизвестные поля/версии/rules отказываются. Сначала все удаления в порядке remove,
 затем добавления в порядке add; request атомарен. Remove именует существующий H/V,
-Line length, Fixed или equal length constraint UUID выбранного Sketch. Повторное удаление, foreign UUID, удаление
+Line length, Fixed, equal length, Parallel или Perpendicular constraint UUID выбранного Sketch. Повторное удаление, foreign UUID, удаление
 Coincident, повторный H/V, H+V или две длины одного сегмента отказываются. Можно удалить H и
 добавить V в одном request. Один add всегда ссылается на Start/End указанного Line.
 Один Line может иметь H либо V и одну длину одновременно. Даже две одинаковые
@@ -32,11 +32,11 @@ Coincident, повторный H/V, H+V или две длины одного с
 новой длины: новый constraint UUID создаётся общей операцией один раз; остальные
 IDs сохраняются. Это не обновление значения с сохранением UUID заменённой связи.
 
-При добавлении H/V, длины, Fixed или равенства отсутствующие связи замыкания создаются явно: Coincident
+При добавлении H/V, длины, Fixed, равенства или относительной ориентации отсутствующие связи замыкания создаются явно: Coincident
 между End каждого Line и Start следующего, включая последний/первый. Подходящие
 существующие связи (в любой ориентации) сохраняют UUID; дубликаты запрещены.
 Новые Coincident добавляются в порядке кривых, затем запрошенные additions. Они видны
-в discovery и result. После удаления последних H/V/length/Fixed/равенств Coincident **остаются**;
+в discovery и result. После удаления последних H/V/length/Fixed/равенств/связей ориентации Coincident **остаются**;
 скрытых Fixed или размеров нет. Этот API не удаляет closure и не возвращает такой
 Sketch в unconstrained v1. Снятие H/V/length освобождает условие, не обещает отката формы.
 
@@ -68,10 +68,31 @@ exact UUID + add. Удаление равенства сохраняет Coincid
 их устанавливает настоящий solver через `redundant_constraint_ids` либо typed
 `constraint_conflict`.
 
+§25I аддитивно добавляет в request v1 шестую и седьмую формы
+`{"rule":"parallel","a_curve_id":UUID_A,"b_curve_id":UUID_B}` и
+`{"rule":"perpendicular","a_curve_id":UUID_A,"b_curve_id":UUID_B}` — точное
+написание. Оба поля обязательны, это canonical UUIDv7 двух **разных** целых
+Lines выбранного Sketch. `curve_id`, `distance_mm`, `at` и любые другие поля
+этими формами не принимаются; `a_curve_id`/`b_curve_id` не принимаются прочими
+rules. Ведущей стороны нет, числа и угла в градусах у связи нет: она задаёт
+только относительную ориентацию и потому держится на наклонном профиле, не
+подменяясь H/V и не переписывая stored координаты. Для занятости слота `(A,B)`
+и `(B,A)` — одна пара, и сохранённый `SegmentRef`, записанный End→Start,
+называет ту же Line. **Одна относительная ориентация на пару**: Parallel и
+Perpendicular — два ответа на один вопрос и занимают один слот, поэтому
+повторный тот же ответ, другой ответ и reversed-дубликат любого из них —
+структурные отказы до solver. `EqualLength` на той же паре — независимое
+свойство с собственным слотом и UUID. Замена — тот же атомарный remove exact
+UUID + add, в том числе на другой ответ той же пары. Удаление связи сохраняет
+Coincident closure, H/V, длины, Fixed и остальные связи. Избыточность и
+противоречие структурными категориями не являются: их устанавливает настоящий
+solver через `redundant_constraint_ids` либо typed `constraint_conflict`;
+анализа транзитивности, ранга и косвенных конфликтов здесь нет.
+
 Поддерживаются H/V, положительный Distance между Start/End одного Line
 (сохранённая обратная ориентация endpoints также допустима), один Fixed
-endpoint Line с конечными X/Y mm, EqualLength между двумя целыми Lines и
-Coincident его соседних стыков. Arbitrary
+endpoint Line с конечными X/Y mm, EqualLength, Parallel и Perpendicular между
+двумя целыми Lines и Coincident его соседних стыков. Arbitrary
 point-to-point Distance между разными Lines, второй Fixed,
 formula/Parameter dimensions не становятся редактируемыми. Существующие H/V/length требуют полного набора closure; другие families/связи, imports,
 construction, arcs, неизвестные payload fields и более сложные документы получают
@@ -90,13 +111,16 @@ constraints без правил — `[]`. Curves в stored порядке:
 `{curve_id,start_mm:[x,y],end_mm:[x,y]}`. Constraint в stored порядке:
 `{constraint_id,rule:{kind,a:{curve_id,at},b:{curve_id,at}}}`;
 kind — `horizontal`/`vertical`/`coincident`/`distance`, at — `start`/`end`.
-kind дополнительно принимает `fixed` и `equal_length`. Distance имеет required `distance: number`
+kind дополнительно принимает `fixed`, `equal_length`, `parallel` и `perpendicular`. Distance имеет required `distance: number`
 в mm. **Response поле остаётся `distance`**, request использует `distance_mm`;
 версии operation/schema не меняются. Fixed сериализуется прежним DTO
 `{kind:"fixed",point:{curve_id,at},x,y}` — `point`/`x`/`y`, не `at`/`x_mm`/`y_mm`
 входного запроса и не `a`/`b`. EqualLength сериализуется прежним DTO
 `{kind:"equal_length",a:{from,to},b:{from,to}}` с сегментами Start→End, а не
-`a_curve_id`/`b_curve_id` входного запроса; `distance` у него нет. Endpoints/value/UUID берутся из принятого snapshot или опубликованного
+`a_curve_id`/`b_curve_id` входного запроса; `distance` у него нет. Parallel и
+Perpendicular сериализуются теми же прежними DTO
+`{kind:"parallel"|"perpendicular",a:{from,to},b:{from,to}}` с сегментами
+Start→End и тоже без `distance`. Endpoints/value/UUID берутся из принятого snapshot или опубликованного
 результата, не из текста и не из повторного открытия output.
 Это persisted IDs и исходные координаты, не экранные индексы или solver ordinals.
 
@@ -351,11 +375,13 @@ UI и CLI используют одну предметную политику; U
 ### §25H: равенство длин двух Lines
 
 Тонкий UI-адаптер в том же окне `Edit constraints`. Над каталогом сохранённых
-связей строка `Equal length:` даёт `Equal Line A`, `Equal Line B` и
-`Add Equal length`. Обе стороны берутся из того же прежнего segment list: выбор
-сегмента и нажатие `Equal Line A`/`Equal Line B` запоминает эту Line как сторону
-пары, а строка `Pair: A <id> · B <id>` показывает выбранную пару (`none` до
-выбора). Второго каталога и второго списка нет.
+связей строка `Line pair:` даёт `Pair Line A` и `Pair Line B`, а следующая
+строка — действие `Add Equal length`. Обе стороны берутся из того же прежнего
+segment list: выбор сегмента и нажатие `Pair Line A`/`Pair Line B` запоминает
+эту Line как сторону пары, а строка `Pair: A <id> · B <id>` показывает выбранную
+пару (`none` до выбора). Второго каталога и второго списка нет. Строка названа
+нейтрально, потому что §25I просит у этой же пары ещё два действия; сами
+свойства независимы.
 
 Выбор сегмента и выбор любой стороны пары — selections: они не входят в bounded
 историю и не очищают Redo. Один успешный `Add Equal length` — один прежний
@@ -372,3 +398,28 @@ duplicate, чужая Line) и no-op сохраняют draft, оба стека
 одну предметную политику; UUID нового ограничения по-прежнему создаёт общая
 операция при реальной публикации, а не UI. Новые поля не вытесняют
 Save/Undo/Redo/Cancel за пределы доступной области окна.
+
+### §25I: относительная ориентация двух Lines
+
+Тот же тонкий адаптер и **та же выбранная пара**: к строке действий рядом с
+`Add Equal length` добавлены `Add Parallel` и `Add Perpendicular`. Второго
+каталога, второго выбора пары и второй формы здесь нет — один `Pair Line A` /
+`Pair Line B` обслуживает все три свойства, и оба выбранных UUID по-прежнему
+названы строкой `Pair: A <id> · B <id>`. Оба действия недоступны, пока не
+выбраны обе стороны.
+
+Выбор стороны — selection: он не входит в bounded историю и не очищает Redo.
+Один успешный `Add Parallel` или `Add Perpendicular` — один прежний
+`History::change`. Отказ общего валидатора (self-pair, чужая Line, тот же ответ,
+другой ответ на ту же пару, reversed duplicate) и no-op сохраняют draft, оба
+стека и Redo. Running блокирует оба действия и сохраняет обе стороны пары;
+solver на выбор, Add, Undo и redraw не запускается.
+
+Персистентная связь показана в каталоге как `Parallel · UUID` либо
+`Perpendicular · UUID` и `Lines <a> and <b>` — видом связи, exact UUID и обеими
+Lines, а не прежним fallback-ярлыком `Coincident closure` — и поддерживает тот
+же exact `Remove`. Замена собирается прежними средствами: `Remove` на
+сохранённой связи и `Add Parallel`/`Add Perpendicular` дают один атомарный
+remove+add request, в том числе смену ответа на ту же пару. Новые действия не
+вытесняют Save/Undo/Redo/Cancel и прежние Add/Replace за пределы доступной
+области окна.

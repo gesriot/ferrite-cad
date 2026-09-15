@@ -2647,16 +2647,70 @@ reversed SegmentRef. Повторены native domain/CLI/headless app, наст
 счётчик CI базы: 27/27. Интерактивный GUI не запускался; CI опубликованного
 head и merge учитывается отдельно.
 
-**§25I — следующий срез, pending: относительная ориентация двух Lines.**
-Добавить Parallel/Perpendicular через существующие model rules, solver и общий
-constraint copy job. Две явные Line UUID, retained pair validation, exact
-удаление, прежняя история UI и аддитивные request v1 формы CLI. Относительная
-ориентация должна работать и на наклонном профиле; H/V и переписывание stored
-координат не заменяют эту связь. Native доказательства включают cold reopen,
-нормированные cross/dot измерения выбранных сторон, DOF, сохранность UUID/SQL,
-изменение ведущей длины и независимый STL/FBX. Solver остаётся владельцем
-диагностики избыточности и конфликтов. Без GUI/GPU, новых схем/FFI, новых
-геометрических операций, live solver drag и in-place Save. Реализация не начата.
+**§25I — реализована относительная ориентация двух Lines.**
+Пара двух persisted curve UUID входит в тот же managed класс, что H/V, длина,
+Fixed, EqualLength и adjacent Coincident: существующие
+`SketchConstraintRule::Parallel` и `SketchConstraintRule::Perpendicular` с двумя
+`SketchSegmentRef` Start→End, существующий перевод в solver, прежняя операция
+`edit_sketch_constraints_copy`, прежний narrow writer и прежний
+snapshot/cold/close/Keep путь. Новой команды, writer, rebuild, publish, схемы БД,
+FFI и dependencies нет. Связь не хранит числа и не хранит угла: она говорит
+только об относительной ориентации, поэтому держится на наклонном профиле,
+который остаётся свободным вращаться, и не подменяется H/V или переписыванием
+stored координат. Request честно называет обе Lines: прежний типобезопасный
+`AddLineConstraint` получил третий вариант `Relation { a, b, relation }` с
+`LineRelation::Parallel`/`Perpendicular` — без фиктивного UUID, скрытой второй
+стороны и второго вычисленного размера. Обе стороны — Start/End целой Line;
+`(A,B)` и `(B,A)` — один занятый слот `Slot::Relation(min, max)`, сохранённый
+reversed `SegmentRef` называет ту же Line и не канонизируется перезаписью.
+**Один ответ на пару**: Parallel и Perpendicular делят этот слот, поэтому
+повторный тот же ответ, другой ответ и reversed-дубликат любого из них —
+структурные отказы до solver; `EqualLength` на той же паре — независимое
+свойство с собственным слотом и UUID. Remove exact UUID + add той же пары (в том
+числе другого ответа) в одном запросе допустим и проверяется по retained
+состоянию. Своего анализа транзитивности, ранга и косвенных конфликтов нет:
+избыточность и противоречие устанавливает настоящий solver
+(`redundant_constraint_ids` либо typed `constraint_conflict`). Если связь —
+первое пользовательское ограничение, прежний маршрут так же создаёт все
+недостающие Coincident joints. CLI request v1 аддитивно принимает
+`{"rule":"parallel","a_curve_id":UUID_A,"b_curve_id":UUID_B}` и
+`{"rule":"perpendicular",…}`; response/operation/schema и коды 0/2/7 не менялись,
+обе связи сохраняют прежний DTO `a`/`b` Segment с endpoint refs. UI
+`Edit constraints` получил нейтральную строку `Line pair:` с `Pair Line A`/
+`Pair Line B` (прежний выбор пары EqualLength, один каталог) и действия
+`Add Parallel`/`Add Perpendicular` рядом с `Add Equal length`, каждый в один
+прежний bounded `History::change`; persisted связь показана видом, обеими Lines
+и exact UUID и удаляется по exact identity. Native gates строят прямоугольник
+60×30 mm из одних отношений на наклонном профиле: **DOF 3** (восемь плоских
+степеней замкнутого четырёхугольника минус три формы и две размера — положение и
+поворот остаются), 18000 mm³ после cold reopen, замена ведущей длины 60→45 даёт
+13500 mm³ и сохраняет UUID всех связей, удаление exact `Perpendicular` даёт
+**DOF 4** и сохраняет оба `Parallel` и обе длины, а нормированные cross/dot
+измеряются именно по UUID выбранных сторон. Отдельно измерены настоящий
+redundant и настоящий solver conflict с typed diagnostics. Окружностей, дуг,
+отверстий, углов в градусах, Tangent/Symmetric, live solver drag, in-place Save
+и persistent undo нет; coordinate drag/Snap constrained Sketch остаются
+запрещены.
+[Контракт и рецепт](line-pair-orientation.md),
+[локальные доказательства и ограничения](line-pair-orientation-verification.md).
+Независимое ревью усилило сопоставление request → обе опубликованные Lines,
+добавило пять новых FBX в существующую pinned-reader кампанию CI и исправило
+учёт stub/domain skips. Native, настоящий stub, Markdown-рецепт и 16 малых
+constraint FBX проверены повторно. CI head и merge учитывается по точным SHA
+отдельно. Интерактивный GUI smoke отложен по указанию пользователя.
+
+**§25J — следующий срез, ещё не начат: аналитическая окружность → Extrude.**
+Один unconstrained XY Sketch с настоящей `Circle`, положительными радиусом и
+Blind-высотой, отдельный Body. Общий jobs-маршрут создания должен сохранять
+DatumPlane/Sketch/Extrude/Body, выполнять cold rebuild и проверку topology refs
+до атомарной публикации; UI и CLI лишь готовят один typed request. Окружность
+остаётся аналитической в документе и B-Rep, без замены многогранником или
+фиктивных curve UUID. Нужны минимальные изменения profile/eval/native bridge,
+доказанные аналитические объём и размеры, сохранение identity при повторном
+открытии и прежней правке высоты, STL/FBX и исполняемый JSON-рецепт. Первая UI
+форма задаёт центр, радиус и высоту численно; её worker проверяется headless.
+Circle constraints, отверстия, смешанные профили, mouse editing окружности,
+live solver и in-place Save в этот срез не входят. Локальный GUI отложен.
 
 ## 15. Чего не делать до beta
 
