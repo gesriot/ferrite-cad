@@ -50,10 +50,14 @@
 //! capability this build does not implement opens read-only.
 
 mod cache;
+mod circle_edit;
 mod document;
 mod edit;
 mod polygon;
 mod sketch_edit;
+pub use circle_edit::{
+    CircleChoice, CircleEdit, SavedCircle, circle_choices, replace_circle_geometry,
+};
 pub use polygon::{CircleExtrusion, PolygonExtrusion};
 pub use sketch_edit::{SketchChoice, SketchVertex, replace_sketch_coordinates, sketch_choices};
 mod envelope;

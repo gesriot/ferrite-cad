@@ -7,6 +7,7 @@
 //! here first.
 
 mod circle;
+mod edit_circle;
 mod edit_constraints;
 mod edit_sketch;
 mod export;
@@ -105,6 +106,8 @@ enum Command {
     EditExtrude(EditExtrudeArgs),
     /// Change saved Line coordinates in a new identity-preserving FCAD copy.
     EditSketchCopy(edit_sketch::EditSketchArgs),
+    /// Change a saved Circle's centre and radius in a new identity-preserving FCAD copy.
+    EditCircle(edit_circle::EditCircleArgs),
     /// Add/remove persisted Line H/V constraints, solving and publishing a new FCAD copy.
     EditSketchConstraintsCopy(edit_constraints::EditConstraintsArgs),
     /// Show a document's metadata, objects, graph and references.
@@ -335,6 +338,7 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::EditSketchCopy(args) => edit_sketch::run(args),
+        Command::EditCircle(args) => edit_circle::run(args),
         Command::EditSketchConstraintsCopy(args) => edit_constraints::run(args),
         Command::CreateSketchExtrude(args) => sketch::run(args),
         Command::CreateCircleExtrude(args) => circle::run(args),

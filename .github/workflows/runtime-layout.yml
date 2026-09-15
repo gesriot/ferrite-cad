@@ -684,8 +684,9 @@ jobs:
           export FCAD_CIRCLE_ARTIFACTS="$artifacts"
           # Peer process must be this build before the app worker gate.
           cargo build --release --features planegcs -p ferritecad-cli
-          for gate in native_circle_extrude_process_analytic_geometry_and_delivery native_circle_height_copy_keeps_the_circle_and_every_identity; do
-            cargo test --release --features planegcs -p ferritecad-cli --test circle_extrude \
+          for pair in 'circle_extrude native_circle_extrude_process_analytic_geometry_and_delivery' 'circle_extrude native_circle_height_copy_keeps_the_circle_and_every_identity' 'edit_circle circle_discovery_and_protocol_without_kernel' 'edit_circle native_circle_edit_moves_and_resizes_only_the_named_circle' 'edit_circle native_circle_edit_refusals_preserve_source_and_destinations'; do
+            read -r suite gate <<< "$pair"
+            cargo test --release --features planegcs -p ferritecad-cli --test "$suite" \
               "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee "$gate.log"
             if grep -q 'skipped:' "$gate.log" || ! grep -Fq "test $gate ... ok" "$gate.log"; then
               echo "::error::circle process gate $gate did not execute"; exit 1
@@ -693,7 +694,7 @@ jobs:
           done
           # ferritecad-occt has no planegcs feature of its own; its dev
           # dependency on the evaluator carries the solver into these gates.
-          for pair in 'ferritecad-occt ferritecad-eval/planegcs ffi::tests::a_circular_profile_builds_an_analytic_cylinder_and_names_no_corner' 'ferritecad-occt ferritecad-eval/planegcs ffi::tests::the_bridge_refuses_a_circle_mixed_into_a_chain' 'ferritecad-occt ferritecad-eval/planegcs ffi::tests::the_segment_and_surface_numbers_match_the_c_header' 'ferritecad-app planegcs sketch::tests::native_circle_draft_and_cli_publish_equivalent_models' 'ferritecad-app planegcs sketch::tests::circle_widgets_submit_exact_numbers_and_keep_the_polygon_draft'; do
+          for pair in 'ferritecad-occt ferritecad-eval/planegcs ffi::tests::a_circular_profile_builds_an_analytic_cylinder_and_names_no_corner' 'ferritecad-occt ferritecad-eval/planegcs ffi::tests::the_bridge_refuses_a_circle_mixed_into_a_chain' 'ferritecad-occt ferritecad-eval/planegcs ffi::tests::the_segment_and_surface_numbers_match_the_c_header' 'ferritecad-app planegcs sketch::tests::native_circle_draft_and_cli_publish_equivalent_models' 'ferritecad-app planegcs sketch::tests::circle_widgets_submit_exact_numbers_and_keep_the_polygon_draft' 'ferritecad-app planegcs sketch::tests::circle_edit_widgets_change_only_the_two_numbers_and_keep_the_draft' 'ferritecad-app planegcs sketch::tests::native_circle_edit_worker_and_cli_publish_equivalent_copies'; do
             read -r package features gate <<< "$pair"
             cargo test --release --features "$features" -p "$package" "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee "$package-circle.log"

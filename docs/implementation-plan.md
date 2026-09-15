@@ -2778,13 +2778,70 @@ Line-редакторы окружность по-прежнему отказы�
 
 Минимальные версии ОС остаются открытыми и определяются тем, что реально соберётся на этапе 0: для macOS это следствие выбора между universal binary и `lipo`, для Windows – выбранного MSVC runtime. Все остальные крупные решения зафиксированы в RFC и должны меняться только по результатам измерений этапа 0.
 
-**§25K — следующий срез: правка сохранённой окружности в копии (pending).**
-Численные центр и радиус существующей unconstrained XY Circle должны меняться
-через одну document/jobs операцию из UI и CLI. Сохранить document/object/curve
-UUID, высоту Extrude, dependencies, topology refs и остальные SQL-ячейки;
-переиспользовать существующий copy lifecycle, content-version guard, cold
-rebuild и атомарную no-clobber публикацию. Typed discovery берётся из того же
-снимка. Line-редакторы и их JSON-контракты остаются совместимыми. Проверки —
-headless worker/CLI, аналитический B-Rep, независимые STL/FBX, настоящий stub.
-Circle constraints, mouse drag, holes, смешанные профили и in-place Save в этот
-срез не входят. Реализация не начата; локальный GUI отложен.
+**§25K — реализована правка сохранённой окружности в копии.**
+Численные центр и радиус существующей unconstrained XY `Circle` меняются одной
+document/jobs операцией из UI и CLI. Новый `circle_edit` модуль document даёт
+typed каталог (`CircleChoice`/`SavedCircle`: Sketch UUID, Circle UUID,
+сохранённые `center_mm`/`radius_mm`/`height_mm`, доступность и причина отказа)
+из **того же** закреплённого `ExtrudeEditSource`, который уже читают UI и
+`inspect`; файл ради DTO второй раз не открывается, а прежний `vertices: null`
+не превращается в фиктивный polygon и `copy_access` сохраняет приоритет.
+Структурная проверка §25J и §25B теперь одна: общий `sketch_edit::frame`
+(один XY plane, Sketch, forward literal Blind `Extrude`/`NewBody`, Body, ровно
+три dependencies, lossless payload), поверх которого Line-ветка требует
+3..256 Lines, а circle-ветка — ровно одну неконструкционную неограниченную
+`Circle` внутри той же `CircleExtrusion` policy с **сохранённой** высотой.
+
+Запись идёт прежним `edit_object_copy`: тот же snapshot, baseline cold rebuild,
+проверка сохранности refs, повторная проверка версии источника перед
+публикацией, закрытие SQLite и атомарная no-clobber публикация. Новый вариант
+`CopyWrite::Circle` попадает в **строгую** ветку проверки refs — правило
+выражено методом `requires_resolved_references`, где послабление имеет только
+прежний extrude-вариант, а не всё остальное по умолчанию. Узкий
+`write_circle_geometry` меняет ровно payload и payload_hash выбранной строки,
+предварительно перечитывая её, чтобы отказаться при изменении между подготовкой
+и записью; второго SQLite copier нет. Сохраняются document UUID, object
+UUID/порядок/имена/parents, UUID окружности, остальные поля Sketch, высота и
+выражение Extrude, Body, dependencies, topology refs и все прочие SQL-ячейки,
+включая посторонние таблицы и capability rowids.
+
+CLI получил отдельную `edit-circle` в стиле `edit-sketch-copy` со строгим
+bounded request v1 `{"request_version":1,"curve_id":UUID,"center_mm":[x,y],
+"radius_mm":N}` — без высоты и без второго написания версии — и прежним
+envelope (`operation:"edit-circle"`, `destination`/`document_id`/`sketch_id`/
+`curve_id`, один объект + LF, коды 0/2/7, единственный прежний emitter).
+`inspect --json` получил отдельное `circle_edit`, не меняя смысла прежних
+`editable`/`vertices`/`constraint_edit`; discovery работает и в настоящем stub,
+а применение правки без ядра отказывается. UI встроил численную форму в тот же
+редактор и тот же worker: источник и версия берутся из принятой сцены,
+показываются сохранённые числа и оба UUID, высота показана и не редактируется,
+один подтверждённый Apply — один шаг bounded истории, а Save Cancel, отказ,
+конфликт версии, занятая цель и устаревший ответ сохраняют draft.
+
+Native gates измеряют (12,−7) r10 h15 → (−3.5,4.25) r6.75 при той же h15, и
+отдельно center-only и radius-only правки; после reopen и cold rebuild — три
+аналитические грани, `Cylinder` нужного радиуса, две `Plane` и объём πr²h;
+STL читается собственным parser при явном deflection по реальному периметру
+основания, FBX — pinned ufbx. Все refs разрешаются по сохранённым UUID, все
+SQL-ячейки сравниваются с коротким явным списком разрешённых изменений,
+источник остаётся побайтово цел. Настоящие cache Miss/Hit после изменения
+центра и радиуса не возвращают прежнюю окружность, а прежний `edit-extrude` после правки меняет высоту, не теряя
+identity окружности. Circle constraints, mouse drag, отверстия, смешанные
+профили, booleans, in-place Save и новая схема БД в срез не входят; контракты
+Line-редакторов не ослаблены.
+[Контракт и рецепт](edit-circle-copy.md),
+[локальные доказательства и ограничения](edit-circle-copy-verification.md).
+Изменения оставлены unstaged/uncommitted для независимого ревью; CI базы
+учитывается отдельно от нового diff. Интерактивный GUI smoke отложен по
+указанию пользователя и не считается пройденным.
+
+
+Независимое ревью §25K воспроизвело обход публичного writer: подготовленный
+mutable payload позволял подменить UUID окружности. Writer теперь заново
+выполняет общую подготовку и сравнивает весь payload; failing-first тест
+подменяет также plane, construction, радиус и проверяет устаревшую подготовку.
+UI получил явный Apply (один шаг Undo на все три числа) и восстановление
+черновика/истории при отказе Open уже опубликованной копии. Проверки заменили
+два cold rebuild на настоящий cache Miss/Hit, измеряют каждую реальную хорду
+STL, сравнивают UI/CLI FBX побайтово и проверяют exit 7 после реальной
+публикации. Native/stub пропуски отделены от исполненных проверок; GUI отложен.
