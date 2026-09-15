@@ -166,9 +166,10 @@ fi
 
 # §25J adds the analytic circle's actual publications — the CLI process, the
 # same model after a height edit, and the UI/peer-CLI pair — to this same
-# reader build. Small files, actually read rather than merely produced.
+# reader build, and §25K the copies its centre/radius edit publishes. Small
+# files, actually read rather than merely produced.
 if [ -n "${FCAD_CIRCLE_FBX_DIR:-}" ]; then
-    for name in circle circle-taller circle-ui circle-cli; do
+    for name in circle circle-taller circle-ui circle-cli circle-edited circle-edit-ui circle-edit-cli; do
         "$reader" --identity "$FCAD_CIRCLE_FBX_DIR/$name.fbx" | tee "$work/circle-$name-reader.txt"
         count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) failures=0$/\1/p' "$work/circle-$name-reader.txt")"
         [ -n "$count" ] && [ "$count" -ge 6 ] || {

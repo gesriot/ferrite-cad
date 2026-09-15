@@ -233,6 +233,10 @@ enum AppEvent {
         generation: u64,
         result: Result<ferritecad_jobs::EditedSketch>,
     },
+    CircleEdited {
+        generation: u64,
+        result: Result<ferritecad_jobs::EditedCircle>,
+    },
     Edited {
         generation: u64,
         result: Result<ferritecad_jobs::EditedDocument>,
@@ -2315,6 +2319,18 @@ impl ApplicationHandler<AppEvent> for App {
                 self.input.request_redraw();
                 self.request_frame_now(event_loop);
             }
+            AppEvent::CircleEdited { generation, result } => {
+                if let Some(path) = sketch::finish_circle_edit(
+                    &mut self.creates.sketch,
+                    &mut self.edits,
+                    generation,
+                    result,
+                ) {
+                    self.open(path);
+                }
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
+            }
             AppEvent::Edited { generation, result } => {
                 if let Some(path) = self.edits.finish(generation, result) {
                     self.open(path);
@@ -2547,6 +2563,9 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(request) = self.creates.sketch.take_edit_request() {
                             self.ask_where_to_edit_sketch(request);
+                        }
+                        if let Some(request) = self.creates.sketch.take_circle_edit_request() {
+                            self.ask_where_to_edit_circle(request);
                         }
                         if let Some(content) = self.creates.sketch.take_request() {
                             self.ask_where_to_create(content);
@@ -2975,6 +2994,35 @@ impl App {
             .start_sketch(request, move |request, generation, cancel| {
                 edits::spawn_sketch_edit(request, cancel, move |result| {
                     let _ = proxy.send_event(AppEvent::SketchEdited { generation, result });
+                })
+            });
+        self.input.request_redraw();
+    }
+
+    fn ask_where_to_edit_circle(&mut self, mut request: ferritecad_jobs::EditCircleRequest) {
+        if self.edits.running() {
+            return;
+        }
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Some(chosen) = self.dialogs.choose(
+            dialogs::Action::Edit,
+            rfd::FileDialog::new()
+                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
+                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_file_name("edited-circle.fcad")
+                .set_parent(live.window.as_ref()),
+            &mut self.input,
+        ) else {
+            return;
+        };
+        request.destination = chosen;
+        let proxy = self.proxy.clone();
+        self.edits
+            .start_circle(request, move |request, generation, cancel| {
+                edits::spawn_circle_edit(request, cancel, move |result| {
+                    let _ = proxy.send_event(AppEvent::CircleEdited { generation, result });
                 })
             });
         self.input.request_redraw();
@@ -3459,7 +3507,11 @@ impl App {
             let prepared = live.renderer.prepare(snapshot)?;
             live.renderer.prepare_sketches(prepared, drawings)
         });
-        commit_scene(&mut live.scene, &mut self.input, next)?;
+        let committed = commit_scene(&mut live.scene, &mut self.input, next);
+        self.creates
+            .sketch
+            .circle_load_finished(document, committed.is_ok());
+        committed?;
         exports::leave_document(&mut self.exports, &mut self.input);
         // The picture is current; the name on the window is the same fact.
         // Not asked of `App::document`, which already names the request in

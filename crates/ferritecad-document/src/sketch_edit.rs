@@ -60,6 +60,22 @@ pub(crate) fn supported(
     object: &ObjectRecord,
     allow_constraints: bool,
 ) -> Result<(Vec<SketchVertex>, f64)> {
+    let (sketch, height) = frame(document, objects, object)?;
+    Ok((lines(sketch, height, allow_constraints)?, height))
+}
+
+/// The structure every copy edit of a saved profile requires, and the height
+/// the profile is extruded by.
+///
+/// One place, because the Line editor and the circle editor demand exactly the
+/// same document around the sketch and differ only in what the sketch holds.
+/// Splitting this would let the two drift, and a class one editor accepted and
+/// the other refused would be a class nobody checked.
+pub(crate) fn frame<'a>(
+    document: &Document,
+    objects: &'a [ObjectRecord],
+    object: &'a ObjectRecord,
+) -> Result<(&'a crate::Sketch, f64)> {
     // Refuse unknown fields/noncanonical envelopes in the one payload we will
     // rewrite, rather than silently discard bytes this reader did not retain.
     require_lossless_payload(object)?;
@@ -118,6 +134,14 @@ pub(crate) fn supported(
             "sketch edit requires only plane, profile and body-tip dependencies",
         ));
     }
+    Ok((sketch, height))
+}
+
+fn lines(
+    sketch: &crate::Sketch,
+    height: f64,
+    allow_constraints: bool,
+) -> Result<Vec<SketchVertex>> {
     if (!allow_constraints && !sketch.constraints.is_empty())
         || sketch.curves.len() < 3
         || sketch.curves.len() > PolygonExtrusion::MAX_POINTS
@@ -153,7 +177,7 @@ pub(crate) fn supported(
     }
     PolygonExtrusion::new(vertices.iter().map(|v| v.start_mm).collect(), height)
         .map_err(|e| unsupported(&format!("saved polygon is outside edit policy: {e}")))?;
-    Ok((vertices, height))
+    Ok(vertices)
 }
 
 fn require_lossless_payload(object: &ObjectRecord) -> Result<()> {

@@ -30,6 +30,7 @@ pub enum Operation {
     Inspect,
     EditExtrude,
     EditSketchCopy,
+    EditCircle,
     EditSketchConstraintsCopy,
     Create,
     CreateSketchExtrude,
@@ -102,6 +103,10 @@ struct Sketch {
     name: Option<String>,
     vertices: Option<Vec<SketchVertex>>,
     constraint_edit: constraints::Discovery,
+    /// Whether this Sketch's analytic circle can be moved or resized, and the
+    /// circle itself. Its own answer: `editable`/`vertices` keep meaning what
+    /// they always did, which is whether the Line editor accepts this Sketch.
+    circle_edit: CircleDiscovery,
     editable: bool,
     refusal: Option<String>,
     document_refusal: Option<String>,
@@ -110,6 +115,42 @@ struct Sketch {
 struct SketchVertex {
     curve_id: ferritecad_types::StableEntityId,
     start_mm: [f64; 2],
+}
+
+/// What `edit-circle` would accept about one Sketch, from the same reading.
+///
+/// `available` folds in the document-wide refusal, which keeps its priority;
+/// `refusal` is this Sketch's own reason and `document_refusal` the shared
+/// one, exactly as `constraint_edit` reports them. `circle` is present for a
+/// supported Sketch and null otherwise — never an invented circle.
+#[derive(Serialize)]
+struct CircleDiscovery {
+    available: bool,
+    refusal: Option<String>,
+    document_refusal: Option<String>,
+    circle: Option<SavedCircle>,
+}
+#[derive(Serialize)]
+struct SavedCircle {
+    curve_id: ferritecad_types::StableEntityId,
+    center_mm: [f64; 2],
+    radius_mm: f64,
+    height_mm: f64,
+}
+impl CircleDiscovery {
+    fn new(choice: ferritecad_document::CircleChoice, document_refusal: Option<String>) -> Self {
+        Self {
+            available: choice.refusal.is_none() && document_refusal.is_none(),
+            refusal: choice.refusal,
+            document_refusal,
+            circle: choice.circle.map(|c| SavedCircle {
+                curve_id: c.curve_id,
+                center_mm: c.center_mm,
+                radius_mm: c.radius_mm,
+                height_mm: c.height_mm,
+            }),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -220,6 +261,11 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         .into_iter()
         .map(|c| (c.sketch, c))
         .collect();
+    let mut circle_choices: std::collections::BTreeMap<_, _> = source
+        .circle_sketches
+        .into_iter()
+        .map(|c| (c.sketch, c))
+        .collect();
     let result = Inspection {
         document_id: source.version.document_id,
         content_version: source.version.content,
@@ -239,6 +285,12 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
             .map(|s| Sketch {
                 constraint_edit: constraints::Discovery::new(
                     constraint_choices
+                        .remove(&s.sketch)
+                        .expect("same snapshot Sketch catalogue"),
+                    source.refusal.clone(),
+                ),
+                circle_edit: CircleDiscovery::new(
+                    circle_choices
                         .remove(&s.sketch)
                         .expect("same snapshot Sketch catalogue"),
                     source.refusal.clone(),

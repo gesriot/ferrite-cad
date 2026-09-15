@@ -31,6 +31,10 @@ pub struct ExtrudeEditSource {
     /// Coordinate edit catalogue on this same version (legacy type name retained).
     pub sketches: Vec<crate::SketchChoice>,
     pub constraint_sketches: Vec<crate::ConstraintSketchChoice>,
+    /// Analytic circle edit catalogue, from this same pinned reading. Every
+    /// catalogue here answers about the one `objects()` the version describes,
+    /// so a form never has to open the file again to learn what it may edit.
+    pub circle_sketches: Vec<crate::CircleChoice>,
     pub refusal: Option<String>,
 }
 
@@ -87,6 +91,7 @@ impl ExtrudeEditSource {
             features,
             sketches: crate::sketch_choices(document, &objects),
             constraint_sketches: crate::constraint_sketch_choices(document, &objects),
+            circle_sketches: crate::circle_choices(document, &objects),
             refusal,
         })
     }
@@ -773,6 +778,7 @@ mod tests {
         Ok(ExtrudeEditSource {
             sketches: crate::sketch_choices(document, &document.objects()?),
             constraint_sketches: crate::constraint_sketch_choices(document, &objects),
+            circle_sketches: crate::circle_choices(document, &objects),
             version: DocumentVersion {
                 document_id: document.meta().document_id,
                 content: document.content_version()?,

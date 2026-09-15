@@ -712,6 +712,68 @@ impl Document {
         )
     }
 
+    /// Write a prepared circle edit without replacing object ownership.
+    ///
+    /// Exactly the two cells this operation promises to edit: the selected
+    /// Sketch's payload and its hash. `put_object` would also clear source
+    /// claims and reissue ownership, which a centre and a radius have no
+    /// business doing. The row is re-read first, so a Sketch that changed
+    /// between preparation and write is refused rather than overwritten.
+    pub fn write_circle_geometry(&mut self, prepared: &ObjectRecord) -> Result<()> {
+        let current = self
+            .object(prepared.id)?
+            .ok_or_else(|| CadError::input("selected Sketch disappeared before circle write"))?;
+        if current.storage_bytes() != prepared.storage_bytes()
+            || current.parent != prepared.parent
+            || current.ordinal != prepared.ordinal
+            || current.name != prepared.name
+        {
+            return Err(CadError::input("Sketch changed after circle preparation"));
+        }
+        // A public ObjectRecord is mutable: its old storage bytes do not prove
+        // that its new payload changes only geometry. Reconstruct the permitted
+        // edit against the current document and compare the entire payload.
+        let (curve_id, center, radius_mm) = crate::circle_edit::prepared_circle(prepared)?;
+        let checked = crate::replace_circle_geometry(
+            self,
+            prepared.id,
+            &crate::CircleEdit {
+                curve_id,
+                center_mm: [center.x, center.y],
+                radius_mm,
+            },
+        )?;
+        if checked.payload != prepared.payload {
+            return Err(CadError::input(
+                "circle write may change only centre and radius",
+            ));
+        }
+        let bytes = prepared.payload.to_storage_bytes()?;
+        let hash = ContentHash::of_bytes(&bytes);
+        self.write_transaction(
+            |writer| {
+                let changed = writer
+                    .tx
+                    .execute(
+                        "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
+                        params![
+                            bytes,
+                            hash.as_bytes().as_slice(),
+                            prepared.id.to_bytes().as_slice()
+                        ],
+                    )
+                    .map_err(|e| CadError::io("writing Circle geometry", e))?;
+                if changed != 1 {
+                    return Err(CadError::input(
+                        "selected Sketch disappeared before circle write",
+                    ));
+                }
+                Ok(())
+            },
+            false,
+        )
+    }
+
     /// Write a prepared H/V edit without replacing object ownership. Exactly the
     /// selected payload/hash/header and its required constraint capability may change.
     pub fn write_sketch_constraints(

@@ -121,6 +121,56 @@ pub fn edit_sketch_copy<K: GeometryKernel + ?Sized>(
 }
 
 #[derive(Debug, Clone)]
+pub struct EditCircleRequest {
+    pub source: PathBuf,
+    pub expected: DocumentVersion,
+    pub sketch: ObjectId,
+    /// The circle to move or resize, named by its own UUID. No height: the
+    /// saved extrusion decides that, and `edit_extrude_copy` changes it.
+    pub edit: ferritecad_document::CircleEdit,
+    pub destination: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditedCircle {
+    pub destination: PathBuf,
+    pub document_id: ferritecad_types::DocumentId,
+    pub sketch: ObjectId,
+    pub curve: StableEntityId,
+}
+
+/// Change the centre and radius of one saved analytic circle in a new copy.
+///
+/// The same snapshot, baseline rebuild, reference check, version recheck and
+/// atomic publication every other copy edit uses; only the prepared payload
+/// differs. Nothing here opens a second copier or relaxes the reference rule.
+pub fn edit_circle_copy<K: GeometryKernel + ?Sized>(
+    request: &EditCircleRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+) -> Result<EditedCircle> {
+    context.check_cancelled()?;
+    edit_object_copy(
+        &request.source,
+        request.expected,
+        &request.destination,
+        kernel,
+        context,
+        |source| {
+            ferritecad_document::replace_circle_geometry(source, request.sketch, &request.edit)
+                .map(CopyWrite::Circle)
+        },
+        |_, _| Ok(()),
+    )?;
+    Ok(EditedCircle {
+        destination: request.destination.clone(),
+        document_id: request.expected.document_id,
+        sketch: request.sketch,
+        curve: request.edit.curve_id,
+    })
+}
+
+#[derive(Debug, Clone)]
 pub struct EditSketchConstraintsRequest {
     pub source: PathBuf,
     pub expected: DocumentVersion,
@@ -179,13 +229,26 @@ enum CopyWrite {
         Vec<ferritecad_document::SketchVertex>,
     ),
     Constraints(ferritecad_document::PreparedSketchConstraints),
+    Circle(ferritecad_document::ObjectRecord),
 }
 impl CopyWrite {
     fn object(&self) -> &ferritecad_document::ObjectRecord {
         match self {
-            Self::Object(o) | Self::Coordinates(o, _) => o,
+            Self::Object(o) | Self::Coordinates(o, _) | Self::Circle(o) => o,
             Self::Constraints(p) => p.object(),
         }
+    }
+
+    /// Whether every reference the saved model already resolved must still
+    /// resolve after the edit.
+    ///
+    /// True for every edit to a profile: moving a vertex, a constraint or a
+    /// circle may not cost the document a name it had. An extrusion distance
+    /// edit is the one that predates the rule and keeps its weaker promise,
+    /// so it is named here rather than everything else being exempted by
+    /// default.
+    fn requires_resolved_references(&self) -> bool {
+        !matches!(self, Self::Object(_))
     }
 }
 
@@ -230,8 +293,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     // unresolved ref may remain unresolved; a previously resolved one may not
     // be lost. Rebuild errors (including solver diagnostics) always refuse.
     let baseline = checked_rebuild(&document, kernel, &phase(context, 0.1, 0.4), None, None)?.0;
-    if !matches!(&prepared, CopyWrite::Object(_))
-        && baseline.len() != document.topology_refs()?.len()
+    if prepared.requires_resolved_references() && baseline.len() != document.topology_refs()?.len()
     {
         return Err(CadError::topology(
             "saved sketch has unresolved topology references",
@@ -254,6 +316,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
             document.write_sketch_coordinates(selected.id, vertices)?
         }
         CopyWrite::Constraints(p) => document.write_sketch_constraints(p)?,
+        CopyWrite::Circle(prepared) => document.write_circle_geometry(prepared)?,
         CopyWrite::Object(_) => document.write(write)?,
     }
     let constraints = match &prepared {

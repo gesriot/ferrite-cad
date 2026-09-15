@@ -17,6 +17,10 @@ radius and a height – **Profile: Circle** in that editor, or
 stays a circle: the document stores a centre and a radius, and the solid has one
 cylindrical face rather than a ring of flat ones, whatever the exported mesh
 approximates it with. [Contract and recipe](docs/circle-sketch-extrude.md).
+A saved circle's centre and radius can then be changed in a new copy through
+**Edit circle …** or `edit-circle`: the circle keeps its identity, the extrusion
+keeps its height, and everything else in the document is carried over unchanged.
+[Contract and recipe](docs/edit-circle-copy.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

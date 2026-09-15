@@ -34,7 +34,7 @@ stdout-логов рядом нет. Диагностика для челове�
 | Поле | Тип и правило |
 | --- | --- |
 | `schema_version` | integer, сейчас ровно `1` |
-| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate`, `create-sketch-extrude`, `create-circle-extrude`, `edit-sketch-copy` или `edit-sketch-constraints-copy` |
+| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate`, `create-sketch-extrude`, `create-circle-extrude`, `edit-sketch-copy`, `edit-circle` или `edit-sketch-constraints-copy` |
 | `ok` | boolean |
 | `result` | объект соответствующей операции, присутствует только при `ok: true` |
 | `error` | объект ошибки, присутствует только при `ok: false` |
@@ -101,6 +101,36 @@ Infinity отвергаются до создания kernel, без публи�
 а тело имеет одну цилиндрическую поверхность. Точные ограничения, границы
 аналитического B-Rep и тесселяции и запускаемый рецепт:
 [окружность → Extrude → FCAD](circle-sketch-extrude.md).
+
+## Правка сохранённой окружности (§25K)
+
+`ferritecad edit-circle <source.fcad> --sketch UUID --expect-version HASH
+--request <request.json> -o <copy.fcad> [--json]` — отдельная opt-in команда с
+тем же envelope. `operation:"edit-circle"`, result с обязательными
+`destination`, `document_id`, `sketch_id` и `curve_id` после cold-check и
+publish, exit 0; operational error/exit 2; потеря отчёта/exit 7. Прежние команды
+и их поля не меняются.
+
+Request v1 — строго четыре поля, `request_version` (единственное написание
+версии этой команды):
+
+```json
+{"request_version":1,"curve_id":"UUID","center_mm":[12.0,-7.0],"radius_mm":10.0}
+```
+
+`curve_id` — UUID **сохранённой** окружности; `center_mm` — ровно две конечные
+координаты; `radius_mm` — конечное строго положительное число mm. `height_mm`,
+`schema_version`, `vertices` и любые другие поля лишние и отвергаются: высоту
+меняет прежний `edit-extrude`.
+
+`inspect --json` получает у каждой строки `sketches` отдельное поле
+`circle_edit` с обязательными `available`, `refusal`, `document_refusal` и
+`circle`. Прежние `editable`, `vertices` и `constraint_edit` сохраняют смысл —
+они отвечают про Line-редакторы. `circle` — объект
+`{curve_id, center_mm, radius_mm, height_mm}` для поддержанного Sketch и `null`
+иначе. Discovery работает и в сборке без ядра; применение правки без ядра
+отказывается. Точные ограничения, правила UI/API и запускаемый рецепт:
+[правка окружности в копии](edit-circle-copy.md).
 
 ## Результат validate (§24J)
 

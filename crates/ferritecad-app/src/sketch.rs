@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: MIT
 //! A disposable drawing, separate from the accepted scene and persisted model.
 //! No kernel, filesystem, IDs, or document mutation occurs while editing it.
-use ferritecad_document::{ExtrudeEditSource, SketchChoice, SketchVertex};
-use ferritecad_jobs::{CircleExtrusion, EditSketchRequest, NewDocument, PolygonExtrusion};
+use ferritecad_document::{
+    CircleChoice, CircleEdit, ExtrudeEditSource, SketchChoice, SketchVertex,
+};
+use ferritecad_jobs::{
+    CircleExtrusion, EditCircleRequest, EditSketchRequest, NewDocument, PolygonExtrusion,
+};
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
 
@@ -70,10 +74,30 @@ pub(crate) struct Editor {
     /// Both outlive a trip through the other mode; only Cancel clears them.
     mode: Mode,
     circle: CircleState,
+    /// The saved circle being edited, with the request it was read from.
+    editing_circle: Option<(EditCircleRequest, CircleChoice)>,
+    pending_circle_edit: Option<EditCircleRequest>,
+    /// The circle draft's own bounded history, under the same policy and the
+    /// same bound as the polygon draft's beside it.
+    circle_undo: Vec<CircleState>,
+    circle_redo: Vec<CircleState>,
+    circle_applied: Option<CircleState>,
+    /// Publication is complete, but its picture has not yet been accepted.
+    /// Keep one recovery draft without preventing the ordinary async Open.
+    published_circle: Option<(PathBuf, Box<Editor>)>,
 }
+/// How many draft checkpoints either editor keeps. One bound, one policy.
+const DRAFT_HISTORY: usize = 128;
+fn push_bounded<T>(stack: &mut Vec<T>, value: T) {
+    if stack.len() == DRAFT_HISTORY {
+        stack.remove(0);
+    }
+    stack.push(value);
+}
+
 impl Editor {
     pub(crate) fn active(&self) -> bool {
-        self.draft.is_some() || self.constraints.active()
+        self.draft.is_some() || self.editing_circle.is_some() || self.constraints.active()
     }
     pub(crate) fn dismiss(&mut self) {
         *self = Self::default();
@@ -83,6 +107,107 @@ impl Editor {
     }
     pub(crate) fn take_edit_request(&mut self) -> Option<EditSketchRequest> {
         self.pending_edit.take()
+    }
+    pub(crate) fn take_circle_edit_request(&mut self) -> Option<EditCircleRequest> {
+        self.pending_circle_edit.take()
+    }
+    /// Begin editing one saved analytic circle of the accepted scene.
+    ///
+    /// The path and the version come from the reading that was accepted, so a
+    /// later Open that has not been accepted cannot retarget this draft.
+    pub(crate) fn begin_circle_edit(
+        &mut self,
+        path: &Path,
+        source: &ExtrudeEditSource,
+        id: ferritecad_types::ObjectId,
+    ) -> bool {
+        if self.active() || source.refusal.is_some() {
+            return false;
+        }
+        let Some(choice) = source
+            .circle_sketches
+            .iter()
+            .find(|c| c.sketch == id && c.refusal.is_none())
+        else {
+            return false;
+        };
+        let Some(saved) = &choice.circle else {
+            return false;
+        };
+        self.dismiss();
+        self.mode = Mode::Circle;
+        self.circle = CircleState {
+            center: saved.center_mm.map(|n| n.to_string()),
+            radius: saved.radius_mm.to_string(),
+            height: saved.height_mm.to_string(),
+        };
+        self.circle_applied = Some(self.circle.clone());
+        self.editing_circle = Some((
+            EditCircleRequest {
+                source: path.to_path_buf(),
+                expected: source.version,
+                sketch: id,
+                edit: CircleEdit {
+                    curve_id: saved.curve_id,
+                    center_mm: saved.center_mm,
+                    radius_mm: saved.radius_mm,
+                },
+                destination: PathBuf::new(),
+            },
+            choice.clone(),
+        ));
+        true
+    }
+    /// What the circle edit form is asking for, or why it is not an edit yet.
+    fn circle_edit_request(&self) -> Result<EditCircleRequest> {
+        let (basis, choice) = self
+            .editing_circle
+            .as_ref()
+            .ok_or_else(|| CadError::input("no saved Circle draft"))?;
+        let mut request = basis.clone();
+        request.edit = CircleEdit {
+            // The saved identity, never one read back out of a text box.
+            curve_id: basis.edit.curve_id,
+            center_mm: [
+                number(&self.circle.center[0])?,
+                number(&self.circle.center[1])?,
+            ],
+            radius_mm: number(&self.circle.radius)?,
+        };
+        choice.validate_circle(&request.edit)?;
+        Ok(request)
+    }
+    fn apply_circle(&mut self) -> Result<()> {
+        let request = self.circle_edit_request()?;
+        self.circle.center = request.edit.center_mm.map(|n| n.to_string());
+        self.circle.radius = request.edit.radius_mm.to_string();
+        let before = self
+            .circle_applied
+            .replace(self.circle.clone())
+            .ok_or_else(|| CadError::input("no applied Circle draft"))?;
+        if self.circle != before {
+            push_bounded(&mut self.circle_undo, before);
+            self.circle_redo.clear();
+        }
+        Ok(())
+    }
+    fn circle_published(&mut self, path: &Path) {
+        let mut saved = std::mem::take(self);
+        saved.published_circle = None;
+        self.published_circle = Some((path.to_path_buf(), Box::new(saved)));
+    }
+    /// Called only for a current load, after scene preparation/commit decides.
+    pub(crate) fn circle_load_finished(&mut self, path: &Path, accepted: bool) {
+        if accepted {
+            self.published_circle = None;
+        } else if self
+            .published_circle
+            .as_ref()
+            .is_some_and(|(p, _)| p == path)
+        {
+            let (_, saved) = self.published_circle.take().expect("matching publication");
+            *self = *saved;
+        }
     }
     pub(crate) fn begin_edit(
         &mut self,
@@ -157,6 +282,23 @@ impl Editor {
                     response.on_hover_text(reason);
                 }
             }
+            for choice in &source.circle_sketches {
+                let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
+                let response = ui.add_enabled(
+                    can_begin && refusal.is_none(),
+                    egui::Button::new(format!(
+                        "Edit circle {} — {}…",
+                        choice.name.as_deref().unwrap_or("Unnamed"),
+                        choice.sketch
+                    )),
+                );
+                if response.clicked() {
+                    self.begin_circle_edit(path, source, choice.sketch);
+                }
+                if let Some(reason) = refusal {
+                    response.on_hover_text(reason);
+                }
+            }
         }
     }
     fn edit_request(&self) -> Result<EditSketchRequest> {
@@ -212,13 +354,22 @@ impl Editor {
         }
     }
     fn push_undo(&mut self, before: State) {
-        if self.undo.len() == 128 {
-            self.undo.remove(0);
-        }
-        self.undo.push(before);
+        push_bounded(&mut self.undo, before);
         self.redo.clear();
     }
     fn undo(&mut self) {
+        if self.editing_circle.is_some() {
+            if let Some(previous) = self.circle_undo.pop() {
+                push_bounded(
+                    &mut self.circle_redo,
+                    self.circle_applied
+                        .replace(previous.clone())
+                        .expect("applied circle"),
+                );
+                self.circle = previous;
+            }
+            return;
+        }
         if let Some(previous) = self.undo.pop()
             && let Some(current) = self.draft.replace(previous)
         {
@@ -226,6 +377,18 @@ impl Editor {
         }
     }
     fn redo(&mut self) {
+        if self.editing_circle.is_some() {
+            if let Some(next) = self.circle_redo.pop() {
+                push_bounded(
+                    &mut self.circle_undo,
+                    self.circle_applied
+                        .replace(next.clone())
+                        .expect("applied circle"),
+                );
+                self.circle = next;
+            }
+            return;
+        }
         if let Some(next) = self.redo.pop()
             && let Some(current) = self.draft.replace(next)
         {
@@ -266,7 +429,9 @@ impl Editor {
             }
             return;
         }
-        egui::Window::new(if self.editing.is_some() {
+        egui::Window::new(if self.editing_circle.is_some() {
+            "Edit saved Circle — new copy"
+        } else if self.editing.is_some() {
             "Edit saved Sketch — new copy"
         } else {
             "Sketch + Extrude — new document"
@@ -317,7 +482,120 @@ impl Editor {
         }
     }
 
+    /// The saved-circle half of the same window.
+    ///
+    /// Shows what is stored, by identity, and offers the two numbers this edit
+    /// may change. The height is shown because it decides what they mean and
+    /// is deliberately not editable here: `Edit extrusion` owns it.
+    fn draw_circle_edit(&mut self, ui: &mut egui::Ui) {
+        let Some((request, choice)) = &self.editing_circle else {
+            return;
+        };
+        ui.label("XY · mm · saved analytic circle · centre and radius only");
+        ui.small(format!(
+            "Sketch {} · {}",
+            request.sketch,
+            request.source.display()
+        ));
+        if let Some(saved) = &choice.circle {
+            ui.small(format!(
+                "Circle {} · saved centre ({}, {}) mm · radius {} mm · height {} mm",
+                saved.curve_id,
+                saved.center_mm[0],
+                saved.center_mm[1],
+                saved.radius_mm,
+                saved.height_mm
+            ));
+        }
+        let height = self.circle.height.clone();
+        let [x, y] = &mut self.circle.center;
+        let fields: [(&str, &mut String); 3] = [
+            ("Center X", x),
+            ("Center Y", y),
+            ("Radius", &mut self.circle.radius),
+        ];
+        egui::Grid::new("ferritecad saved circle numbers")
+            .num_columns(3)
+            .show(ui, |ui| {
+                for (label, value) in fields {
+                    ui.label(label);
+                    ui.add(
+                        egui::TextEdit::singleline(value)
+                            .char_limit(64)
+                            .desired_width(120.),
+                    );
+                    ui.label("mm");
+                    ui.end_row();
+                }
+                ui.label("Blind height");
+                ui.label(&height);
+                ui.label("mm (retained)");
+                ui.end_row();
+            });
+        match self.circle_edit_request() {
+            Ok(request) => {
+                let pending = self.circle_applied.as_ref() != Some(&self.circle);
+                if ui
+                    .add_enabled(pending, egui::Button::new("Apply circle change"))
+                    .clicked()
+                {
+                    self.apply_circle().expect("validated circle draft");
+                }
+                let applied = self.circle_applied.as_ref() == Some(&self.circle);
+                if ui
+                    .add_enabled(applied, egui::Button::new("Save edited circle copy…"))
+                    .clicked()
+                {
+                    self.pending_circle_edit = Some(request);
+                }
+                if !applied {
+                    ui.small("Apply the numbers before saving the copy.");
+                }
+            }
+            Err(error) => {
+                ui.colored_label(ui.visuals().error_fg_color, error.to_string());
+            }
+        }
+    }
+
     fn draw_draft(&mut self, ui: &mut egui::Ui, running: bool) {
+        if self.editing_circle.is_some() {
+            ui.add_enabled_ui(!running, |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            !self.circle_undo.is_empty(),
+                            egui::Button::new("Undo draft"),
+                        )
+                        .clicked()
+                    {
+                        self.undo();
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.circle_redo.is_empty(),
+                            egui::Button::new("Redo draft"),
+                        )
+                        .clicked()
+                    {
+                        self.redo();
+                    }
+                    if ui.button("Cancel draft").clicked() {
+                        self.dismiss();
+                    }
+                });
+            });
+            // Cancel took the draft down; there is nothing left to draw.
+            if self.editing_circle.is_none() {
+                return;
+            }
+            ui.add_enabled_ui(!running, |ui| self.draw_circle_edit(ui));
+            if running {
+                ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
+            }
+            ui.small("Undo/redo changes only this draft; history ends at publication.");
+            return;
+        }
         // Editing a saved Sketch is not creating one, so it offers no choice
         // of profile: the document already decided what it holds.
         if self.editing.is_none() {
@@ -523,6 +801,25 @@ pub(crate) fn finish_edit(
         editor.dismiss();
     }
     edits.finish_sketch(generation, result)
+}
+
+/// Finish one circle edit at the application boundary.
+///
+/// The draft survives everything except a publication: a refusal, a stale
+/// version and a reply for a request that is no longer current all leave the
+/// numbers on screen to try again with.
+pub(crate) fn finish_circle_edit(
+    editor: &mut Editor,
+    edits: &mut crate::edits::Edits,
+    generation: u64,
+    result: Result<ferritecad_jobs::EditedCircle>,
+) -> Option<PathBuf> {
+    if edits.accepts(generation)
+        && let Ok(saved) = &result
+    {
+        editor.circle_published(&saved.destination);
+    }
+    edits.finish_circle(generation, result)
 }
 
 /// Drawing coordinates are a view of numbers, never a source of modelling rules.
@@ -1303,6 +1600,373 @@ mod tests {
         click(&ctx, &mut e, text_at(&out, "Cancel draft"));
         assert!(!e.active());
         assert!(e.take_request().is_none());
+    }
+
+    /// A real source document with one saved analytic circle, and the accepted
+    /// reading of it that a form is allowed to take its facts from.
+    fn saved_circle(root: &Path) -> (PathBuf, ferritecad_document::ExtrudeEditSource) {
+        use crate::creates::tests::ferritecad;
+        let source = root.join("original.fcad");
+        let input = root.join("create.json");
+        std::fs::write(
+            &input,
+            r#"{"schema_version":1,"center_mm":[12.0,-7.0],"radius_mm":10.0,"height_mm":15.0}"#,
+        )
+        .expect("input");
+        let p = std::process::Command::new(ferritecad())
+            .arg("create-circle-extrude")
+            .arg(&input)
+            .arg("-o")
+            .arg(&source)
+            .arg("--json")
+            .output()
+            .expect("create");
+        assert!(p.status.success(), "{p:?}");
+        let loaded = {
+            let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+            ferritecad_scene::snapshot_of(
+                &source,
+                &mut k,
+                |k, b| k.import_step(b),
+                &Default::default(),
+                &ferritecad_kernel::OperationContext::default(),
+            )
+            .expect("accepted scene")
+        };
+        (source, loaded.edit_source.expect("accepted edit facts"))
+    }
+
+    #[test]
+    fn circle_edit_widgets_change_only_the_two_numbers_and_keep_the_draft() {
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: no OCCT for the accepted scene this form reads");
+            return;
+        }
+        let root = tempfile::tempdir().expect("directory");
+        let (source, reading) = saved_circle(root.path());
+        let saved = reading.circle_sketches[0]
+            .circle
+            .clone()
+            .expect("a supported circle");
+        let id = reading.circle_sketches[0].sketch;
+
+        let mut e = Editor::default();
+        assert!(
+            !e.begin_circle_edit(&source, &reading, ferritecad_types::ObjectId::new()),
+            "a Sketch this document does not have"
+        );
+        assert!(!e.active());
+        assert!(e.begin_circle_edit(&source, &reading, id));
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        // The form opens on what is stored, and says which circle it is.
+        assert_eq!(e.circle.center, ["12".to_owned(), "-7".to_owned()]);
+        assert_eq!(e.circle.radius, "10");
+        assert_eq!(e.circle.height, "15");
+        let out = frame(&ctx, &mut e, vec![]);
+        assert!(
+            out.shapes.iter().any(|c| matches!(&c.shape,
+                egui::Shape::Text(t) if t.galley.text().contains(&saved.curve_id.to_string()))),
+            "the saved circle is named by its own UUID"
+        );
+        assert!(
+            out.shapes.iter().any(|c| matches!(&c.shape,
+                egui::Shape::Text(t) if t.galley.text().contains(&id.to_string()))),
+            "so is the Sketch that holds it"
+        );
+
+        // All three fields can change over many frames before one Apply.
+        let out = frame(&ctx, &mut e, vec![]);
+        type_into_grid_row(&ctx, &mut e, &out, "Center X", "-3.5");
+        let out = frame(&ctx, &mut e, vec![]);
+        type_into_grid_row(&ctx, &mut e, &out, "Center Y", "4.25");
+        let out = frame(&ctx, &mut e, vec![]);
+        type_into_grid_row(&ctx, &mut e, &out, "Radius", "6.75");
+        assert_eq!(e.circle.center, ["-3.5".to_owned(), "4.25".to_owned()]);
+        assert_eq!(e.circle.radius, "6.75");
+        assert_eq!(
+            e.circle.height, "15",
+            "the height is not this form's to change"
+        );
+
+        assert!(e.circle_undo.is_empty(), "typing is not an Apply");
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Save edited circle copy…"));
+        assert!(
+            e.take_circle_edit_request().is_none(),
+            "unapplied numbers cannot publish"
+        );
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Apply circle change"));
+        assert_eq!(e.circle_undo.len(), 1, "one Apply, one history step");
+        // Undo and redo walk the whole confirmed change.
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Undo draft"));
+        assert_eq!(e.circle.radius, "10");
+        assert_eq!(e.circle.center, ["12", "-7"]);
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Redo draft"));
+        assert_eq!(e.circle.radius, "6.75");
+
+        // A number the document will not store is refused in the form, and
+        // offers nothing to save.
+        for bad in ["0", "-2", "banana", ""] {
+            let out = frame(&ctx, &mut e, vec![]);
+            type_into_grid_row(&ctx, &mut e, &out, "Radius", bad);
+            let out = frame(&ctx, &mut e, vec![]);
+            assert!(e.circle_edit_request().is_err(), "radius {bad:?}");
+            assert!(
+                !out.shapes.iter().any(|c| matches!(&c.shape,
+                    egui::Shape::Text(t) if t.galley.text() == "Save edited circle copy…")),
+                "radius {bad:?} still offered Save"
+            );
+            assert!(e.take_circle_edit_request().is_none());
+            assert!(e.active(), "a refusal keeps the draft");
+        }
+        let out = frame(&ctx, &mut e, vec![]);
+        type_into_grid_row(&ctx, &mut e, &out, "Radius", "6.75");
+
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Save edited circle copy…"));
+        let request = e.take_circle_edit_request().expect("submit");
+        assert!(
+            e.take_circle_edit_request().is_none(),
+            "one press, one request"
+        );
+        assert_eq!(request.source, source, "the accepted scene's own path");
+        assert_eq!(request.expected, reading.version);
+        assert_eq!(request.sketch, id);
+        assert_eq!(
+            request.edit.curve_id, saved.curve_id,
+            "the saved identity, not a number read back out of a box"
+        );
+        assert_eq!(request.edit.center_mm, [-3.5, 4.25]);
+        assert_eq!(request.edit.radius_mm, 6.75);
+        // A dialog that answers nothing leaves the same draft to try again.
+        assert!(e.active());
+        assert_eq!(e.circle.radius, "6.75");
+
+        // While a job is running the form is disabled: pressing Save again
+        // makes no second request, typing changes nothing, and the draft and
+        // its history stay exactly as they were.
+        let kept = e.circle.clone();
+        let history = (e.circle_undo.clone(), e.circle_redo.clone());
+        frame_running(&ctx, &mut e, vec![], true);
+        let out = frame_running(&ctx, &mut e, vec![], true);
+        let save = text_at(&out, "Save edited circle copy…");
+        for pressed in [true, false] {
+            frame_running(
+                &ctx,
+                &mut e,
+                vec![egui::Event::PointerButton {
+                    pos: save,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                }],
+                true,
+            );
+        }
+        assert!(
+            e.take_circle_edit_request().is_none(),
+            "a running job takes no second request"
+        );
+        assert_eq!(e.circle, kept, "and loses nothing that was typed");
+        assert_eq!((e.circle_undo.clone(), e.circle_redo.clone()), history);
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Cancel draft"));
+        assert!(!e.active(), "Cancel ends the draft");
+        assert!(e.take_circle_edit_request().is_none());
+    }
+
+    #[test]
+    fn native_circle_edit_worker_and_cli_publish_equivalent_copies() {
+        use crate::creates::tests::{ferritecad, read_semantics};
+        use ferritecad_document::Document;
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: no OCCT for the saved Circle worker");
+            return;
+        }
+        let root = tempfile::tempdir().expect("directory");
+        let (source, reading) = saved_circle(root.path());
+        let bytes = std::fs::read(&source).expect("source");
+        let modified = std::fs::metadata(&source)
+            .expect("metadata")
+            .modified()
+            .expect("mtime");
+        let id = reading.circle_sketches[0].sketch;
+        let curve = reading.circle_sketches[0]
+            .circle
+            .as_ref()
+            .expect("supported")
+            .curve_id;
+
+        let mut e = Editor::default();
+        assert!(e.begin_circle_edit(&source, &reading, id));
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        for (label, value) in [
+            ("Center X", "-3.5"),
+            ("Center Y", "4.25"),
+            ("Radius", "6.75"),
+        ] {
+            let out = frame(&ctx, &mut e, vec![]);
+            type_into_grid_row(&ctx, &mut e, &out, label, value);
+        }
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Apply circle change"));
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Save edited circle copy…"));
+        let request = e.take_circle_edit_request().expect("submit");
+        let kept = e.circle.clone();
+
+        let mut edits = crate::edits::Edits::default();
+        for occupied in [true, false] {
+            let mut request = request.clone();
+            request.destination =
+                root.path()
+                    .join(if occupied { "occupied.fcad" } else { "ui.fcad" });
+            if occupied {
+                std::fs::write(&request.destination, b"keep").expect("sentinel");
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let generation = edits
+                .start_circle(request.clone(), move |r, g, c| {
+                    crate::edits::spawn_circle_edit(r, c, move |result| {
+                        tx.send((g, result)).expect("reply")
+                    })
+                })
+                .expect("worker");
+            assert!(
+                edits
+                    .start_circle(request, |_, _, _| panic!("duplicate worker"))
+                    .is_none(),
+                "a running job takes no second request"
+            );
+            // A reply for a request that is no longer current changes nothing.
+            assert!(
+                finish_circle_edit(
+                    &mut e,
+                    &mut edits,
+                    generation + 1,
+                    Err(CadError::input("stale response"))
+                )
+                .is_none()
+            );
+            assert_eq!(e.circle, kept);
+            let (g, result) = rx.recv().expect("completed");
+            let path = finish_circle_edit(&mut e, &mut edits, g, result);
+            if occupied {
+                assert!(path.is_none(), "a taken destination publishes nothing");
+                assert_eq!(e.circle, kept, "and keeps the draft to retry with");
+                assert_eq!(
+                    std::fs::read(root.path().join("occupied.fcad")).expect("sentinel"),
+                    b"keep"
+                );
+            } else {
+                assert_eq!(path, Some(root.path().join("ui.fcad")));
+                assert!(!e.active(), "published draft must not block async Open");
+                e.circle_load_finished(Path::new("another.fcad"), false);
+                assert!(!e.active(), "an unrelated load failure cannot restore it");
+                e.circle_load_finished(&root.path().join("ui.fcad"), false);
+                assert!(e.active(), "failed preparation restores the draft");
+                assert_eq!(e.circle, kept);
+                assert_eq!(e.circle_undo.len(), 1, "history survives failed Open");
+                e.circle_published(&root.path().join("ui.fcad"));
+                e.circle_load_finished(&root.path().join("ui.fcad"), true);
+                assert!(!e.active());
+                assert!(e.published_circle.is_none());
+            }
+        }
+
+        // The peer CLI applies the same request to the same source.
+        let input = root.path().join("edit.json");
+        std::fs::write(
+            &input,
+            format!(
+                r#"{{"request_version":1,"curve_id":"{curve}","center_mm":[{},{}],"radius_mm":{}}}"#,
+                request.edit.center_mm[0], request.edit.center_mm[1], request.edit.radius_mm
+            ),
+        )
+        .expect("request");
+        let cli = root.path().join("cli.fcad");
+        let p = std::process::Command::new(ferritecad())
+            .arg("edit-circle")
+            .arg(&source)
+            .arg("--sketch")
+            .arg(id.to_string())
+            .arg("--expect-version")
+            .arg(reading.version.content.to_string())
+            .arg("--request")
+            .arg(&input)
+            .arg("-o")
+            .arg(&cli)
+            .arg("--json")
+            .output()
+            .expect("peer CLI");
+        assert!(p.status.success(), "{p:?}");
+
+        // One source, one request: the two copies are the same document, with
+        // the same identities. Only the instant each was written may differ.
+        let ui = root.path().join("ui.fcad");
+        assert_eq!(read_semantics(&ui), read_semantics(&cli));
+        let a = Document::open_read_only(&ui).expect("UI");
+        let b = Document::open_read_only(&cli).expect("CLI");
+        assert_eq!(a.meta().document_id, b.meta().document_id);
+        assert_eq!(a.objects().expect("objects"), b.objects().expect("objects"));
+        assert_eq!(
+            a.dependencies().expect("deps"),
+            b.dependencies().expect("deps")
+        );
+        assert_eq!(
+            a.topology_refs().expect("refs"),
+            b.topology_refs().expect("refs")
+        );
+        a.close().expect("close");
+        b.close().expect("close");
+
+        let mut meshes = Vec::new();
+        let mut fbxs = Vec::new();
+        for (path, name) in [(&ui, "circle-edit-ui"), (&cli, "circle-edit-cli")] {
+            for (op, extension) in [("export-stl", "stl"), ("export-fbx", "fbx")] {
+                let out = path.with_extension(extension);
+                let p = std::process::Command::new(ferritecad())
+                    .arg(op)
+                    .arg(path)
+                    .arg("-o")
+                    .arg(&out)
+                    .output()
+                    .expect("export");
+                assert!(p.status.success(), "{p:?}");
+                if extension == "stl" {
+                    meshes.push(std::fs::read(&out).expect("STL"));
+                } else {
+                    fbxs.push(std::fs::read(&out).expect("FBX"));
+                    if let Some(dir) = std::env::var_os("FCAD_CIRCLE_ARTIFACTS") {
+                        // Read by the pinned ufbx reader in the same CI job.
+                        let dir = std::path::Path::new(&dir);
+                        std::fs::create_dir_all(dir).expect("artifact directory");
+                        std::fs::copy(&out, dir.join(format!("{name}.fbx"))).expect("artifact");
+                    }
+                }
+            }
+        }
+        assert_eq!(meshes[0], meshes[1], "one geometry, two copies");
+        assert_eq!(fbxs[0], fbxs[1], "same stored identities, same FBX");
+        assert_eq!(std::fs::read(&source).expect("source"), bytes);
+        assert_eq!(
+            std::fs::metadata(&source)
+                .expect("metadata")
+                .modified()
+                .expect("mtime"),
+            modified
+        );
     }
 
     #[test]
