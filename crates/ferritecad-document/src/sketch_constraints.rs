@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Bounded persisted Line orientation/length/pin/equality editing. No solver or wire format.
+//! Bounded persisted Line orientation/length/pin/equality/relation editing. No solver or wire format.
 use crate::{
     Document, ObjectPayload, ObjectRecord, Sketch, SketchConstraint, SketchConstraintRule,
     SketchPointRef, SketchPointSelector, SketchSegmentRef,
@@ -83,12 +83,31 @@ pub enum LineConstraintKind {
         y: SketchCoordinateMm,
     },
 }
+/// Which relative orientation two Lines keep.
+///
+/// This says nothing about either Line's own direction, which is what makes it
+/// different from `Horizontal`/`Vertical`: it holds on a profile at any angle,
+/// and the profile is free to rotate while it holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineRelation {
+    Parallel,
+    Perpendicular,
+}
+impl LineRelation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Parallel => "Parallel",
+            Self::Perpendicular => "Perpendicular",
+        }
+    }
+}
+
 /// One requested addition.
 ///
 /// The first four families say something about one Line, so they name one. An
-/// equal length is a relationship between two whole Lines and has no leading
-/// side, so it names both: a pair cannot be spelled by a single curve field
-/// without hiding one half of what the request means.
+/// equal length and a relative orientation are relationships between two whole
+/// Lines and have no leading side, so they name both: a pair cannot be spelled
+/// by a single curve field without hiding one half of what the request means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddLineConstraint {
     /// This Line's own orientation, length, or the profile's single pinned endpoint.
@@ -100,6 +119,12 @@ pub enum AddLineConstraint {
     EqualLength {
         a: StableEntityId,
         b: StableEntityId,
+    },
+    /// These two Lines of the same profile keep one relative orientation.
+    Relation {
+        a: StableEntityId,
+        b: StableEntityId,
+        relation: LineRelation,
     },
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -188,15 +213,28 @@ fn segment(curve: StableEntityId) -> SketchSegmentRef {
     let (start, end) = endpoints(curve);
     SketchSegmentRef::new(start, end)
 }
-/// The two distinct Lines a stored equal length relates, when both of its
+/// The two distinct Lines a stored pair relationship relates, when both of its
 /// segments are whole Lines. Stored orientation of either segment is kept as it
 /// is; only what it names is read.
+fn related(a: SketchSegmentRef, b: SketchSegmentRef) -> Option<(StableEntityId, StableEntityId)> {
+    let (x, y) = (whole_line(a.from, a.to)?, whole_line(b.from, b.to)?);
+    (x != y).then_some((x, y))
+}
 fn equal_of(rule: SketchConstraintRule) -> Option<(StableEntityId, StableEntityId)> {
     let SketchConstraintRule::EqualLength { a, b } = rule else {
         return None;
     };
-    let (x, y) = (whole_line(a.from, a.to)?, whole_line(b.from, b.to)?);
-    (x != y).then_some((x, y))
+    related(a, b)
+}
+/// The two distinct Lines a stored Parallel or Perpendicular relates. Which of
+/// the two it is does not change the slot: they are two answers to one question.
+fn relation_of(rule: SketchConstraintRule) -> Option<(StableEntityId, StableEntityId)> {
+    match rule {
+        SketchConstraintRule::Parallel { a, b } | SketchConstraintRule::Perpendicular { a, b } => {
+            related(a, b)
+        }
+        _ => None,
+    }
 }
 fn line_of(rule: SketchConstraintRule) -> Option<(StableEntityId, LineConstraintKind)> {
     if let SketchConstraintRule::Fixed { point, x, y } = rule {
@@ -222,8 +260,9 @@ fn line_of(rule: SketchConstraintRule) -> Option<(StableEntityId, LineConstraint
     whole_line(a, b).map(|curve| (curve, kind))
 }
 /// What a request occupies: one orientation and one length per Line, at most
-/// one pinned endpoint in the whole profile, whichever Line carries it, and one
-/// equal length per unordered pair of Lines.
+/// one pinned endpoint in the whole profile, whichever Line carries it, one
+/// equal length per unordered pair of Lines, and one relative orientation per
+/// unordered pair of Lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Slot {
     Orientation(StableEntityId),
@@ -231,6 +270,10 @@ enum Slot {
     Pin,
     /// Sorted, so (A,B) and (B,A) are the same occupied slot.
     Equal(StableEntityId, StableEntityId),
+    /// Sorted for the same reason. Parallel and Perpendicular answer one
+    /// question about the pair, so they share this slot; an equal length on the
+    /// same pair is a different question and has its own.
+    Relation(StableEntityId, StableEntityId),
 }
 fn line_slot(curve: StableEntityId, kind: LineConstraintKind) -> Slot {
     match kind {
@@ -239,18 +282,25 @@ fn line_slot(curve: StableEntityId, kind: LineConstraintKind) -> Slot {
         LineConstraintKind::Fixed { .. } => Slot::Pin,
     }
 }
+fn sorted(a: StableEntityId, b: StableEntityId) -> (StableEntityId, StableEntityId) {
+    if a <= b { (a, b) } else { (b, a) }
+}
 fn equal_slot(a: StableEntityId, b: StableEntityId) -> Slot {
-    if a <= b {
-        Slot::Equal(a, b)
-    } else {
-        Slot::Equal(b, a)
-    }
+    let (a, b) = sorted(a, b);
+    Slot::Equal(a, b)
+}
+fn relation_slot(a: StableEntityId, b: StableEntityId) -> Slot {
+    let (a, b) = sorted(a, b);
+    Slot::Relation(a, b)
 }
 /// The slot a stored rule occupies and every Line it names, or `None` when the
 /// rule is not one this family manages.
 fn slot_of(rule: SketchConstraintRule) -> Option<(Slot, [StableEntityId; 2])> {
     if let Some((a, b)) = equal_of(rule) {
         return Some((equal_slot(a, b), [a, b]));
+    }
+    if let Some((a, b)) = relation_of(rule) {
+        return Some((relation_slot(a, b), [a, b]));
     }
     let (curve, kind) = line_of(rule)?;
     Some((line_slot(curve, kind), [curve, curve]))
@@ -267,6 +317,14 @@ fn requested(add: &AddLineConstraint) -> Result<(Slot, [StableEntityId; 2])> {
             }
             (equal_slot(a, b), [a, b])
         }
+        AddLineConstraint::Relation { a, b, .. } => {
+            if a == b {
+                return Err(CadError::input(
+                    "a relative orientation relates two different Lines; this addition names one twice",
+                ));
+            }
+            (relation_slot(a, b), [a, b])
+        }
     })
 }
 fn occupied(slot: Slot) -> &'static str {
@@ -277,6 +335,9 @@ fn occupied(slot: Slot) -> &'static str {
         }
         Slot::Equal(..) => {
             "these two Lines already hold an equal length; remove it in the same request"
+        }
+        Slot::Relation(..) => {
+            "these two Lines already hold a Parallel or Perpendicular; remove it in the same request"
         }
         Slot::Orientation(_) => "a Line may hold only one H/V; remove its current constraint first",
     }
@@ -300,6 +361,9 @@ fn managed(sketch: &Sketch) -> Result<()> {
                     Slot::Equal(..) => {
                         "constraint edit refuses a duplicate equal length on one pair of Lines"
                     }
+                    Slot::Relation(..) => {
+                        "constraint edit refuses more than one Parallel or Perpendicular on one pair of Lines"
+                    }
                     _ => "constraint edit refuses duplicate orientation or length on a Line",
                 }));
             }
@@ -312,13 +376,13 @@ fn managed(sketch: &Sketch) -> Result<()> {
             }
         } else {
             return Err(CadError::unsupported(
-                "constraint edit supports only Line H/V, positive Start/End length, one finite Fixed Line endpoint, equal length between two whole Lines and adjacent-joint Coincident families",
+                "constraint edit supports only Line H/V, positive Start/End length, one finite Fixed Line endpoint, equal length or Parallel/Perpendicular between two whole Lines and adjacent-joint Coincident families",
             ));
         }
     }
     if !lines.is_empty() && joins != expected {
         return Err(CadError::unsupported(
-            "existing H/V, length, equal length or Fixed endpoint require all persisted Coincident closure links",
+            "existing H/V, length, equal length, Parallel/Perpendicular or Fixed endpoint require all persisted Coincident closure links",
         ));
     }
     Ok(())
@@ -349,7 +413,7 @@ fn retained(sketch: &Sketch, edits: &SketchConstraintEdits) -> Result<Vec<Sketch
             })?;
         if slot_of(c.rule).is_none() {
             return Err(CadError::input(
-                "only H/V, Line length, equal length or the Fixed endpoint may be removed; closure links are retained",
+                "only H/V, Line length, equal length, Parallel/Perpendicular or the Fixed endpoint may be removed; closure links are retained",
             ));
         }
     }
@@ -460,6 +524,13 @@ pub fn prepare_sketch_constraints(
                 a: segment(a),
                 b: segment(b),
             },
+            AddLineConstraint::Relation { a, b, relation } => {
+                let (a, b) = (segment(a), segment(b));
+                match relation {
+                    LineRelation::Parallel => SketchConstraintRule::Parallel { a, b },
+                    LineRelation::Perpendicular => SketchConstraintRule::Perpendicular { a, b },
+                }
+            }
         };
         let c = SketchConstraint {
             id: StableEntityId::new(),

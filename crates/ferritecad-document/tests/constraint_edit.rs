@@ -978,3 +978,303 @@ fn equal_length_pairs_are_checked_stored_and_removed_without_touching_other_ids(
         std::fs::write(&path, &clean).expect("restore the managed document");
     }
 }
+
+fn relation(a: StableEntityId, b: StableEntityId, relation: LineRelation) -> SketchConstraintEdits {
+    SketchConstraintEdits {
+        remove: vec![],
+        add: vec![AddLineConstraint::Relation { a, b, relation }],
+    }
+}
+
+#[test]
+fn line_relations_are_checked_stored_and_removed_without_touching_other_ids() {
+    use LineRelation::{Parallel, Perpendicular};
+    let (root, mut d, id) = fixture();
+    let path = root.path().join("source.fcad");
+    let original = stored(&d, id);
+    let curves: Vec<_> = original.curves.iter().map(|c| c.id).collect();
+
+    // A relative orientation relates two different Lines of this Sketch.
+    for edits in [
+        relation(curves[0], curves[0], Parallel),
+        relation(curves[0], curves[0], Perpendicular),
+        relation(curves[0], StableEntityId::new(), Parallel),
+        relation(StableEntityId::new(), curves[1], Perpendicular),
+        SketchConstraintEdits {
+            remove: vec![],
+            add: vec![
+                AddLineConstraint::Relation {
+                    a: curves[0],
+                    b: curves[1],
+                    relation: Parallel,
+                },
+                AddLineConstraint::Relation {
+                    a: curves[1],
+                    b: curves[0],
+                    relation: Parallel,
+                },
+            ],
+        },
+        // Parallel and Perpendicular answer one question about one pair, so
+        // asking both at once is asking the same slot twice.
+        SketchConstraintEdits {
+            remove: vec![],
+            add: vec![
+                AddLineConstraint::Relation {
+                    a: curves[0],
+                    b: curves[1],
+                    relation: Parallel,
+                },
+                AddLineConstraint::Relation {
+                    a: curves[1],
+                    b: curves[0],
+                    relation: Perpendicular,
+                },
+            ],
+        },
+        SketchConstraintEdits {
+            remove: vec![StableEntityId::new()],
+            add: vec![AddLineConstraint::Relation {
+                a: curves[0],
+                b: curves[1],
+                relation: Perpendicular,
+            }],
+        },
+    ] {
+        let bytes = std::fs::read(&path).expect("bytes");
+        assert_eq!(
+            prepare_sketch_constraints(&d, id, &edits)
+                .expect_err("structural refusal before any solver")
+                .kind(),
+            ErrorKind::Input
+        );
+        assert_eq!(bytes, std::fs::read(&path).expect("unchanged"));
+    }
+
+    // A relation as the first user constraint still persists every closure joint.
+    let p = prepare_sketch_constraints(&d, id, &relation(curves[0], curves[2], Parallel))
+        .expect("first relation");
+    assert_eq!(p.added.len(), 5, "four Coincident joints and the relation");
+    assert_eq!(
+        p.added.last().expect("relation").rule,
+        SketchConstraintRule::Parallel {
+            a: whole(curves[0]),
+            b: whole(curves[2]),
+        },
+        "both sides are whole Lines, in stored order"
+    );
+    d.write_sketch_constraints(&p).expect("write relation");
+    let first = p.added.last().expect("relation").id;
+    let stored_now = stored(&d, id);
+    assert_eq!(stored_now.curves, original.curves, "coordinates are inputs");
+
+    // That pair's orientation slot is taken, either way round and either kind.
+    for edits in [
+        relation(curves[0], curves[2], Parallel),
+        relation(curves[2], curves[0], Parallel),
+        relation(curves[0], curves[2], Perpendicular),
+        relation(curves[2], curves[0], Perpendicular),
+    ] {
+        assert_eq!(
+            prepare_sketch_constraints(&d, id, &edits)
+                .expect_err("one orientation per pair")
+                .kind(),
+            ErrorKind::Input
+        );
+    }
+    // An equal length on the very same pair is a different property, and other
+    // pairs and other families are untouched by that slot.
+    for edits in [
+        equal(curves[0], curves[2]),
+        add(curves[0], LineConstraintKind::Horizontal),
+        add(
+            curves[1],
+            LineConstraintKind::Distance(LineLengthMm::new(60.).expect("length")),
+        ),
+        relation(curves[1], curves[3], Parallel),
+        relation(curves[0], curves[1], Perpendicular),
+    ] {
+        prepare_sketch_constraints(&d, id, &edits).expect("independent slot");
+    }
+
+    // A stored relation whose segments are written end-to-start is the same pair.
+    let mut o = d.object(id).expect("object").expect("Sketch");
+    let ObjectPayload::Sketch(s) = &mut o.payload else {
+        panic!("Sketch")
+    };
+    s.constraints.last_mut().expect("relation").rule = SketchConstraintRule::Parallel {
+        a: SketchSegmentRef::new(
+            SketchPointRef::new(curves[2], SketchPointSelector::End),
+            SketchPointRef::new(curves[2], SketchPointSelector::Start),
+        ),
+        b: SketchSegmentRef::new(
+            SketchPointRef::new(curves[0], SketchPointSelector::End),
+            SketchPointRef::new(curves[0], SketchPointSelector::Start),
+        ),
+    };
+    d.write(|w| w.put_object(o.id, o.parent, o.ordinal, o.name.as_deref(), &o.payload))
+        .expect("reversed stored relation");
+    let reversed = stored(&d, id);
+    assert!(
+        ExtrudeEditSource::read(&d)
+            .expect("discovery")
+            .constraint_sketches[0]
+            .refusal
+            .is_none(),
+        "a reversed stored relation is still the managed family"
+    );
+    for edits in [
+        relation(curves[0], curves[2], Parallel),
+        relation(curves[2], curves[0], Perpendicular),
+    ] {
+        assert_eq!(
+            prepare_sketch_constraints(&d, id, &edits)
+                .expect_err("reversed duplicate")
+                .kind(),
+            ErrorKind::Input
+        );
+    }
+    assert_eq!(stored(&d, id), reversed, "refusals rewrite nothing");
+
+    // A successful neighbouring edit must also keep the stored segment direction.
+    let p = prepare_sketch_constraints(&d, id, &add(curves[1], LineConstraintKind::Horizontal))
+        .expect("independent orientation next to a reversed relation");
+    d.write_sketch_constraints(&p).expect("write neighbour");
+    let with_neighbour = stored(&d, id);
+    assert_eq!(
+        with_neighbour.constraints[..reversed.constraints.len()],
+        reversed.constraints,
+        "successful edits retain the exact stored refs and UUIDs"
+    );
+    let p = prepare_sketch_constraints(
+        &d,
+        id,
+        &SketchConstraintEdits {
+            remove: vec![p.added[0].id],
+            add: vec![],
+        },
+    )
+    .expect("remove only the neighbour");
+    d.write_sketch_constraints(&p)
+        .expect("write neighbour removal");
+    assert_eq!(stored(&d, id), reversed);
+
+    // Remove the exact UUID and give the same pair the other relation in one
+    // request: the slot is checked against what the request retains.
+    let again = SketchConstraintEdits {
+        remove: vec![first],
+        add: vec![AddLineConstraint::Relation {
+            a: curves[2],
+            b: curves[0],
+            relation: Perpendicular,
+        }],
+    };
+    let p = prepare_sketch_constraints(&d, id, &again).expect("retained remove then add");
+    assert_eq!(p.removed, vec![first]);
+    assert_eq!(p.added.len(), 1);
+    let second = p.added[0].id;
+    assert_ne!(second, first);
+    assert_eq!(
+        p.added[0].rule,
+        SketchConstraintRule::Perpendicular {
+            a: whole(curves[2]),
+            b: whole(curves[0]),
+        }
+    );
+    d.write_sketch_constraints(&p).expect("write replacement");
+    let replaced = stored(&d, id);
+    assert_eq!(replaced.curves, original.curves);
+    assert_eq!(
+        replaced.constraints[..4],
+        stored_now.constraints[..4],
+        "closure UUIDs are untouched"
+    );
+    d.close().expect("close");
+    let baseline = cells(&path);
+
+    // Removing the relation keeps closure, every other UUID and every other cell.
+    let mut d = Document::open(&path).expect("reopen");
+    let removal = prepare_sketch_constraints(
+        &d,
+        id,
+        &SketchConstraintEdits {
+            remove: vec![second],
+            add: vec![],
+        },
+    )
+    .expect("remove exact relation");
+    assert!(removal.added.is_empty());
+    d.write_sketch_constraints(&removal).expect("write removal");
+    let after = stored(&d, id);
+    assert_eq!(after.curves, original.curves);
+    assert_eq!(after.constraints, replaced.constraints[..4]);
+    assert!(d.validate().expect("validate").is_ok());
+    d.close().expect("close");
+    let now = cells(&path);
+    assert_eq!(
+        baseline.keys().collect::<Vec<_>>(),
+        now.keys().collect::<Vec<_>>()
+    );
+    for (table, rows) in &baseline {
+        if table == "objects" {
+            for row in rows {
+                let actual = now[table].iter().find(|r| r[1] == row[1]).expect("same ID");
+                for col in 0..row.len() {
+                    if row[1] == Value::Blob(id.to_bytes().to_vec()) && [3, 7, 8].contains(&col) {
+                        continue;
+                    }
+                    assert_eq!(actual[col], row[col], "{table} cell {col}");
+                }
+            }
+        } else {
+            assert_eq!(&now[table], rows, "{table}");
+        }
+    }
+
+    // A stored relation that is not between two whole Lines is not this family.
+    let clean = std::fs::read(&path).expect("clean bytes");
+    for spanning in [
+        SketchConstraintRule::Parallel {
+            a: whole(curves[0]),
+            b: whole(curves[0]),
+        },
+        SketchConstraintRule::Perpendicular {
+            a: SketchSegmentRef::new(
+                SketchPointRef::new(curves[0], SketchPointSelector::Start),
+                SketchPointRef::new(curves[1], SketchPointSelector::End),
+            ),
+            b: whole(curves[2]),
+        },
+    ] {
+        let mut d = Document::open(&path).expect("reopen");
+        let mut o = d.object(id).expect("object").expect("Sketch");
+        let ObjectPayload::Sketch(s) = &mut o.payload else {
+            panic!("Sketch")
+        };
+        s.constraints.push(SketchConstraint {
+            id: StableEntityId::new(),
+            rule: spanning,
+        });
+        d.write(|w| w.put_object(o.id, o.parent, o.ordinal, o.name.as_deref(), &o.payload))
+            .expect("stored payload");
+        let before = stored(&d, id);
+        let source = ExtrudeEditSource::read(&d).expect("discovery");
+        assert!(source.constraint_sketches[0].stored.is_none());
+        assert!(
+            source.constraint_sketches[0]
+                .refusal
+                .as_deref()
+                .is_some_and(|r| !r.is_empty()),
+            "an unmanaged relation is explained, not silently dropped"
+        );
+        assert_eq!(
+            prepare_sketch_constraints(&d, id, &relation(curves[2], curves[3], Parallel))
+                .expect_err("whole document refusal")
+                .kind(),
+            ErrorKind::Unsupported
+        );
+        assert_eq!(stored(&d, id), before);
+        d.close().expect("close");
+        std::fs::write(&path, &clean).expect("restore the managed document");
+    }
+}

@@ -263,6 +263,24 @@ fn constraint_discovery_requests_and_delivery_without_native() {
         json!({"rule":"equal_length","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":"not-a-uuid"}),
         json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"equal_length"}),
         json!({"rule":"equallength","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":discovery["curves"][1]["curve_id"]}),
+        json!({"rule":"parallel","a_curve_id":discovery["curves"][0]["curve_id"]}),
+        json!({"rule":"parallel","b_curve_id":discovery["curves"][1]["curve_id"]}),
+        json!({"rule":"perpendicular","a_curve_id":discovery["curves"][0]["curve_id"]}),
+        json!({"rule":"perpendicular","b_curve_id":discovery["curves"][1]["curve_id"]}),
+        json!({"rule":"parallel","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":discovery["curves"][1]["curve_id"],"curve_id":discovery["curves"][2]["curve_id"]}),
+        json!({"rule":"parallel","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":discovery["curves"][1]["curve_id"],"distance_mm":30}),
+        json!({"rule":"perpendicular","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":discovery["curves"][1]["curve_id"],"at":"start"}),
+        json!({"rule":"perpendicular","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":discovery["curves"][1]["curve_id"],"future":1}),
+        json!({"rule":"parallel","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":null}),
+        json!({"rule":"parallel","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":7}),
+        json!({"rule":"perpendicular","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":true}),
+        json!({"rule":"perpendicular","a_curve_id":"not-a-uuid","b_curve_id":discovery["curves"][1]["curve_id"]}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"parallel"}),
+        json!({"rule":"Parallel","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":discovery["curves"][1]["curve_id"]}),
+        json!({"rule":"perpendicularity","a_curve_id":discovery["curves"][0]["curve_id"],"b_curve_id":discovery["curves"][1]["curve_id"]}),
+        // The pair fields belong to the pair rules and to nothing else.
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"horizontal","a_curve_id":discovery["curves"][1]["curve_id"]}),
+        json!({"curve_id":discovery["curves"][0]["curve_id"],"rule":"distance","distance_mm":30,"b_curve_id":discovery["curves"][1]["curve_id"]}),
     ] {
         write(
             &f.request,
@@ -883,23 +901,22 @@ fn constraint_discovery_separates_document_and_feature_refusals() {
             let ObjectPayload::Sketch(s) = &mut o.payload else {
                 panic!("sketch")
             };
-            let segment = |i: usize| {
-                ferritecad_document::SketchSegmentRef::new(
-                    ferritecad_document::SketchPointRef::new(
-                        s.curves[i].id,
-                        ferritecad_document::SketchPointSelector::Start,
-                    ),
-                    ferritecad_document::SketchPointRef::new(
-                        s.curves[i].id,
-                        ferritecad_document::SketchPointSelector::End,
-                    ),
+            // Arbitrary point-to-point Distance between two different Lines is
+            // still outside the managed class, and says so. Perpendicular over
+            // two whole Lines used to stand here and is now supported (§25I),
+            // which is exactly why it is no longer the example.
+            let end_of = |i: usize| {
+                ferritecad_document::SketchPointRef::new(
+                    s.curves[i].id,
+                    ferritecad_document::SketchPointSelector::End,
                 )
             };
             s.constraints.push(ferritecad_document::SketchConstraint {
                 id: ferritecad_types::StableEntityId::new(),
-                rule: ferritecad_document::SketchConstraintRule::Perpendicular {
-                    a: segment(0),
-                    b: segment(1),
+                rule: ferritecad_document::SketchConstraintRule::Distance {
+                    a: end_of(0),
+                    b: end_of(2),
+                    distance: 30.,
                 },
             });
             d.write(|w| w.put_object(o.id, o.parent, o.ordinal, o.name.as_deref(), &o.payload))
@@ -1831,4 +1848,414 @@ fn native_equal_length_ties_two_lines_and_removal_restores_the_free_dimension() 
             );
         }
     });
+}
+
+fn relation_add(catalog: &Value, rule: &str, i: usize, j: usize) -> Value {
+    let c = &catalog["sketches"][0]["constraint_edit"]["curves"];
+    json!({"rule":rule,"a_curve_id":c[i]["curve_id"],"b_curve_id":c[j]["curve_id"]})
+}
+/// The unit direction of one solved Line. A relative orientation is scored on
+/// directions, so a side that solved to nothing would satisfy anything.
+fn direction(starts: &[[f64; 2]], ends: &[[f64; 2]], i: usize) -> [f64; 2] {
+    let (dx, dy) = (ends[i][0] - starts[i][0], ends[i][1] - starts[i][1]);
+    let length = dx.hypot(dy);
+    assert!(length > 1., "line {i} solved to a degenerate {length} mm");
+    [dx / length, dy / length]
+}
+fn cross(a: [f64; 2], b: [f64; 2]) -> f64 {
+    a[0] * b[1] - a[1] * b[0]
+}
+fn dot(a: [f64; 2], b: [f64; 2]) -> f64 {
+    a[0] * b[0] + a[1] * b[1]
+}
+/// The two stored-order indices one published pair rule names, in its own order.
+fn related_indices(catalog: &Value, rule: &Value) -> (usize, usize) {
+    for side in ["a", "b"] {
+        assert_eq!(rule[side]["from"]["curve_id"], rule[side]["to"]["curve_id"]);
+        assert_eq!(rule[side]["from"]["at"], "start");
+        assert_eq!(rule[side]["to"]["at"], "end");
+    }
+    assert!(
+        rule.get("a_curve_id").is_none()
+            && rule.get("b_curve_id").is_none()
+            && rule.get("distance").is_none(),
+        "the response DTO keeps its Segment a/b, not the request fields"
+    );
+    let (i, j) = (
+        index_of(catalog, &rule["a"]["from"]["curve_id"]),
+        index_of(catalog, &rule["b"]["from"]["curve_id"]),
+    );
+    assert_ne!(i, j);
+    (i, j)
+}
+/// The solved footprint of a profile whose shape relative orientation decided.
+/// Its area is what the sides say; its axis-aligned extents are not, because
+/// the whole profile is still free to turn.
+fn area_of(starts: &[[f64; 2]]) -> f64 {
+    starts
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let b = starts[(i + 1) % starts.len()];
+            a[0] * b[1] - a[1] * b[0]
+        })
+        .sum::<f64>()
+        .abs()
+        / 2.
+}
+/// Neither side of this profile may have become an axis, which is what a
+/// Parallel or Perpendicular quietly replaced by H/V would look like.
+fn slanted(starts: &[[f64; 2]], ends: &[[f64; 2]]) {
+    for i in 0..starts.len() {
+        let u = direction(starts, ends, i);
+        assert!(
+            u[0].abs() > 0.01 && u[1].abs() > 0.01,
+            "line {i} solved onto an axis: {u:?}"
+        );
+    }
+}
+
+#[test]
+fn native_line_relations_orient_two_lines_and_removal_restores_the_free_dimension() {
+    if !native() {
+        return;
+    }
+    let f = Fixture::new(true);
+    let before = std::fs::read(&f.source).expect("source");
+    let mtime = std::fs::metadata(&f.source)
+        .expect("meta")
+        .modified()
+        .expect("mtime");
+
+    // A rectangle built only out of relative orientation and two sizes. The
+    // closed four-Line profile has eight planar degrees of freedom; two
+    // Parallels and one Perpendicular fix its shape to a rectangle (three), and
+    // the two lengths fix its size, leaving exactly the three the profile is
+    // entitled to keep: two of position and one of rotation. The solver is
+    // asked to confirm that count, and reports nothing redundant.
+    let rectangle = f.root.path().join("relations-rect.fcad");
+    let add = json!([
+        relation_add(&f.catalog, "parallel", 0, 2),
+        relation_add(&f.catalog, "parallel", 1, 3),
+        relation_add(&f.catalog, "perpendicular", 0, 1),
+        length_add(&f.catalog, 0, 60.),
+        length_add(&f.catalog, 1, 30.),
+    ]);
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[],"add":add}),
+    );
+    let built = reply(
+        f.edit(&rectangle).output().expect("relative orientation"),
+        OP,
+        0,
+    )["result"]
+        .clone();
+    assert_eq!(built["solve"]["degrees_of_freedom"], 3);
+    assert_eq!(built["solve"]["redundant_constraint_ids"], json!([]));
+    let added = built["added_constraints"]
+        .as_array()
+        .expect("added")
+        .clone();
+    assert_eq!(added.len(), 9, "four Coincident joints and five additions");
+    let kinds: Vec<_> = added.iter().map(|c| c["rule"]["kind"].clone()).collect();
+    assert_eq!(
+        kinds,
+        json!([
+            "coincident",
+            "coincident",
+            "coincident",
+            "coincident",
+            "parallel",
+            "parallel",
+            "perpendicular",
+            "distance",
+            "distance"
+        ])
+        .as_array()
+        .expect("kinds")
+        .clone()
+    );
+    // Measure the requested pair, not just whichever pair the response names.
+    // Other corners of a rectangle can satisfy the same relation too.
+    for (published, requested) in added[4..7]
+        .iter()
+        .zip(add.as_array().expect("requested additions"))
+    {
+        let rule = &published["rule"];
+        assert_eq!(rule["kind"], requested["rule"]);
+        for (side, field) in [("a", "a_curve_id"), ("b", "b_curve_id")] {
+            for endpoint in ["from", "to"] {
+                assert_eq!(
+                    rule[side][endpoint]["curve_id"], requested[field],
+                    "published relation must name the requested {side} Line"
+                );
+            }
+        }
+    }
+    let rect_catalog = inspect(&rectangle);
+    let rect_ids = constraint_ids(&rect_catalog);
+    let named = |kind: &str, nth: usize| -> (Value, (usize, usize)) {
+        let c = added
+            .iter()
+            .filter(|c| c["rule"]["kind"] == kind)
+            .nth(nth)
+            .expect("published relation")
+            .clone();
+        let pair = related_indices(&rect_catalog, &c["rule"]);
+        (c["constraint_id"].clone(), pair)
+    };
+    let (parallel_id, (p0, p1)) = named("parallel", 0);
+    let (other_parallel_id, (q0, q1)) = named("parallel", 1);
+    let (perpendicular_id, (r0, r1)) = named("perpendicular", 0);
+    let length_id = added
+        .iter()
+        .find(|c| c["rule"]["kind"] == "distance")
+        .expect("leading length")["constraint_id"]
+        .clone();
+    stored_same(&f.source, &rectangle);
+    // Exactly the UUIDs the relations name are measured, not any side that
+    // happens to fit. The profile remains non-axis-aligned; its angle is free.
+    let measured = move |starts: &[[f64; 2]], ends: &[[f64; 2]], long: f64| {
+        for (a, b) in [(p0, p1), (q0, q1)] {
+            let (u, v) = (direction(starts, ends, a), direction(starts, ends, b));
+            assert!(
+                cross(u, v).abs() < 1e-7 && dot(u, v).abs() > 1. - 1e-7,
+                "Lines {a} and {b} are not parallel: {u:?} {v:?}"
+            );
+        }
+        let (u, v) = (direction(starts, ends, r0), direction(starts, ends, r1));
+        assert!(
+            dot(u, v).abs() < 1e-7 && cross(u, v).abs() > 1. - 1e-7,
+            "Lines {r0} and {r1} are not perpendicular: {u:?} {v:?}"
+        );
+        assert!((solved_length(starts, ends, 0) - long).abs() < 1e-6);
+        assert!((solved_length(starts, ends, 1) - 30.).abs() < 1e-6);
+        slanted(starts, ends);
+    };
+    geometry_checked(&rectangle, Some(3), |starts, ends, _| {
+        measured(starts, ends, 60.);
+        assert!(
+            (area_of(starts) * 10. - 18000.).abs() < 1e-4,
+            "expected 18000 mm3, before independent STL integration"
+        );
+    });
+
+    // Structural refusals happen before the solver and publish nothing.
+    for add in [
+        json!([relation_add(&rect_catalog, "parallel", 0, 0)]),
+        json!([relation_add(&rect_catalog, "perpendicular", 2, 2)]),
+        json!([{"rule":"parallel","a_curve_id":rect_catalog["sketches"][0]["constraint_edit"]["curves"][0]["curve_id"],"b_curve_id":ferritecad_types::StableEntityId::new()}]),
+        // One question per pair, whichever way round it is asked and whichever
+        // of the two answers it asks for.
+        json!([relation_add(&rect_catalog, "parallel", p0, p1)]),
+        json!([relation_add(&rect_catalog, "parallel", p1, p0)]),
+        json!([relation_add(&rect_catalog, "perpendicular", p0, p1)]),
+        json!([relation_add(&rect_catalog, "perpendicular", p1, p0)]),
+        json!([
+            relation_add(&rect_catalog, "parallel", 1, 2),
+            relation_add(&rect_catalog, "perpendicular", 2, 1)
+        ]),
+    ] {
+        let refused = f.root.path().join("never.fcad");
+        let directory = entries(f.root.path());
+        write(
+            &f.request,
+            &json!({"request_version":1,"remove":[],"add":add}),
+        );
+        let v = reply(
+            f.edit_from(&rectangle, &rect_catalog, &refused)
+                .output()
+                .expect("structural refusal"),
+            OP,
+            2,
+        );
+        assert_eq!(v["error"]["kind"], "input");
+        assert!(v["error"].get("constraint_conflict").is_none());
+        assert!(!refused.exists());
+        assert_eq!(entries(f.root.path()), directory);
+    }
+    // An equal length on a pair that already holds a relative orientation is a
+    // different property of the same two Lines, not a second answer to one
+    // question, so it is accepted and published.
+    let both = f.root.path().join("relations-and-equal.fcad");
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[],"add":[equal_add(&rect_catalog,p0,p1)]}),
+    );
+    let independent = reply(
+        f.edit_from(&rectangle, &rect_catalog, &both)
+            .output()
+            .expect("independent property"),
+        OP,
+        0,
+    )["result"]
+        .clone();
+    assert_eq!(
+        independent["added_constraints"][0]["rule"]["kind"],
+        "equal_length"
+    );
+    assert_eq!(
+        constraint_ids(&inspect(&both)).len(),
+        rect_ids.len() + 1,
+        "the equality is one more constraint, not a replacement"
+    );
+
+    // Changing the leading length keeps every relation, its UUID and the shape.
+    let smaller = f.root.path().join("relations-smaller.fcad");
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[length_id],"add":[length_add(&rect_catalog,0,45.)]}),
+    );
+    let replaced = reply(
+        f.edit_from(&rectangle, &rect_catalog, &smaller)
+            .output()
+            .expect("replace the leading length"),
+        OP,
+        0,
+    )["result"]
+        .clone();
+    assert_eq!(replaced["removed_constraint_ids"], json!([length_id]));
+    assert_eq!(replaced["solve"]["degrees_of_freedom"], 3);
+    let smaller_catalog = inspect(&smaller);
+    let smaller_ids = constraint_ids(&smaller_catalog);
+    let kept_rules: Vec<_> = rect_catalog["sketches"][0]["constraint_edit"]["constraints"]
+        .as_array()
+        .expect("constraints")
+        .iter()
+        .filter(|c| c["constraint_id"] != length_id)
+        .cloned()
+        .collect();
+    assert_eq!(
+        smaller_catalog["sketches"][0]["constraint_edit"]["constraints"],
+        json!(
+            [
+                kept_rules,
+                replaced["added_constraints"]
+                    .as_array()
+                    .expect("new length")
+                    .clone()
+            ]
+            .concat()
+        ),
+        "replacement keeps every other constraint UUID, rule and order"
+    );
+    for id in [&parallel_id, &other_parallel_id, &perpendicular_id] {
+        assert!(
+            smaller_ids.contains(id),
+            "a relation keeps its own UUID across a length replacement"
+        );
+    }
+    stored_same(&rectangle, &smaller);
+    geometry_checked(&smaller, Some(3), |starts, ends, _| {
+        measured(starts, ends, 45.);
+        assert!(
+            (area_of(starts) * 10. - 13500.).abs() < 1e-4,
+            "expected 13500 mm3, before independent STL integration"
+        );
+    });
+
+    // Removing the exact Perpendicular gives one degree of freedom back and
+    // leaves every other relationship standing. Where the freed profile lands
+    // is the solver's business; that it kept both Parallels and both sizes is
+    // not.
+    let freed = f.root.path().join("relations-freed.fcad");
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[perpendicular_id],"add":[]}),
+    );
+    let removed = reply(
+        f.edit_from(&smaller, &smaller_catalog, &freed)
+            .output()
+            .expect("remove the perpendicular"),
+        OP,
+        0,
+    )["result"]
+        .clone();
+    assert_eq!(removed["added_constraints"], json!([]));
+    assert_eq!(removed["solve"]["degrees_of_freedom"], 4);
+    let freed_catalog = inspect(&freed);
+    assert_eq!(
+        constraint_ids(&freed_catalog),
+        smaller_ids
+            .iter()
+            .filter(|id| **id != perpendicular_id)
+            .cloned()
+            .collect::<Vec<_>>(),
+        "every other UUID and its order survive"
+    );
+    stored_same(&smaller, &freed);
+    geometry_checked(&freed, Some(4), |starts, ends, _| {
+        for (a, b) in [(p0, p1), (q0, q1)] {
+            let (u, v) = (direction(starts, ends, a), direction(starts, ends, b));
+            assert!(
+                cross(u, v).abs() < 1e-7,
+                "Lines {a} and {b} lost their Parallel: {u:?} {v:?}"
+            );
+        }
+        assert!((solved_length(starts, ends, 0) - 45.).abs() < 1e-6);
+        assert!((solved_length(starts, ends, 1) - 30.).abs() < 1e-6);
+    });
+
+    // Redundancy is the real solver's diagnosis, not a structural refusal: a
+    // fourth corner that the other three already decided.
+    let redundant = f.root.path().join("relations-redundant.fcad");
+    let mut said_again = add.as_array().expect("add").clone();
+    said_again.push(relation_add(&f.catalog, "perpendicular", 1, 2));
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[],"add":said_again}),
+    );
+    let twice = reply(
+        f.edit(&redundant).output().expect("redundant corner"),
+        OP,
+        0,
+    )["result"]
+        .clone();
+    let repeated = twice["added_constraints"]
+        .as_array()
+        .expect("added")
+        .iter()
+        .filter(|c| c["rule"]["kind"] == "perpendicular")
+        .nth(1)
+        .expect("the fourth corner")["constraint_id"]
+        .clone();
+    assert_eq!(
+        twice["solve"]["redundant_constraint_ids"],
+        json!([repeated]),
+        "the solver names the corner the other relations already decided"
+    );
+    assert_eq!(twice["solve"]["degrees_of_freedom"], 3);
+
+    // A relation that contradicts the rest is a real solver conflict.
+    let mut contradictory = add.as_array().expect("add").clone();
+    contradictory.push(relation_add(&f.catalog, "parallel", 1, 2));
+    write(
+        &f.request,
+        &json!({"request_version":1,"remove":[],"add":contradictory}),
+    );
+    let failed = f.root.path().join("relations-conflict.fcad");
+    let directory = entries(f.root.path());
+    let refusal = reply(f.edit(&failed).output().expect("solver conflict"), OP, 2);
+    assert_eq!(refusal["error"]["kind"], "constraint", "{refusal}");
+    let conflict = refusal["error"]["constraint_conflict"]["constraints"]
+        .as_array()
+        .expect("typed conflict");
+    assert!(conflict.iter().any(|c| c["rule"]["kind"] == "parallel"));
+    assert!(
+        conflict
+            .iter()
+            .any(|c| c["rule"]["kind"] == "perpendicular")
+    );
+    assert!(conflict.iter().all(|c| c["constraint_id"].is_string()));
+    assert!(!failed.exists());
+    assert_eq!(entries(f.root.path()), directory);
+    assert_eq!(std::fs::read(&f.source).expect("source"), before);
+    assert_eq!(
+        std::fs::metadata(&f.source)
+            .expect("meta")
+            .modified()
+            .expect("mtime"),
+        mtime
+    );
 }

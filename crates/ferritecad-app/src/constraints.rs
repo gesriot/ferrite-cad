@@ -2,7 +2,7 @@
 //! Disposable Line constraint request over stored facts; no solver or file reads.
 use ferritecad_document::{
     AddLineConstraint, ConstraintSketchChoice, DocumentVersion, ExtrudeEditSource,
-    LineConstraintKind, LineEndpoint, LineLengthMm, Sketch, SketchConstraintEdits,
+    LineConstraintKind, LineEndpoint, LineLengthMm, LineRelation, Sketch, SketchConstraintEdits,
     SketchConstraintRule, SketchCoordinateMm, SketchGeometry,
 };
 use ferritecad_jobs::{EditSketchConstraintsRequest, EditedSketchConstraints};
@@ -53,9 +53,10 @@ struct Draft {
     endpoint: LineEndpoint,
     pin_x_mm: String,
     pin_y_mm: String,
-    // The equal-length pair is two explicit picks from the same stored catalogue.
-    equal_a: Option<StableEntityId>,
-    equal_b: Option<StableEntityId>,
+    // The pair both relationship families use is two explicit picks from the
+    // same stored catalogue; there is no second list to keep in step with it.
+    pair_a: Option<StableEntityId>,
+    pair_b: Option<StableEntityId>,
     edits: SketchConstraintEdits,
     history: History,
     refusal: Option<String>,
@@ -95,8 +96,8 @@ impl Editor {
             endpoint: LineEndpoint::Start,
             pin_x_mm: String::new(),
             pin_y_mm: String::new(),
-            equal_a: None,
-            equal_b: None,
+            pair_a: None,
+            pair_b: None,
             edits: Default::default(),
             history: Default::default(),
             refusal: None,
@@ -349,31 +350,49 @@ impl Editor {
                     });
                     // Two explicit picks from the same stored list; neither leads.
                     ui.horizontal(|ui| {
-                        ui.label("Equal length:");
+                        ui.label("Line pair:");
                         let picked = draft.selected.is_some();
                         if ui
-                            .add_enabled(picked, egui::Button::new("Equal Line A"))
+                            .add_enabled(picked, egui::Button::new("Pair Line A"))
                             .clicked()
                         {
-                            draft.equal_a = draft.selected;
+                            draft.pair_a = draft.selected;
                         }
                         if ui
-                            .add_enabled(picked, egui::Button::new("Equal Line B"))
+                            .add_enabled(picked, egui::Button::new("Pair Line B"))
                             .clicked()
                         {
-                            draft.equal_b = draft.selected;
+                            draft.pair_b = draft.selected;
                         }
-                        if ui
-                            .add_enabled(
-                                draft.equal_a.is_some() && draft.equal_b.is_some(),
-                                egui::Button::new("Add Equal length"),
-                            )
-                            .clicked()
-                        {
+                        ui.small(format!(
+                            "Pair: A {} · B {}",
+                            picked_line(draft.pair_a),
+                            picked_line(draft.pair_b)
+                        ));
+                    });
+                    // One picked pair, three independent things it can be asked
+                    // to keep: a length, and a relative orientation either way.
+                    ui.horizontal(|ui| {
+                        let both = draft.pair_a.is_some() && draft.pair_b.is_some();
+                        for (label, make) in [
+                            (
+                                "Add Equal length",
+                                None::<LineRelation>,
+                            ),
+                            ("Add Parallel", Some(LineRelation::Parallel)),
+                            ("Add Perpendicular", Some(LineRelation::Perpendicular)),
+                        ] {
+                            if !ui.add_enabled(both, egui::Button::new(label)).clicked() {
+                                continue;
+                            }
+                            let (a, b) = (
+                                draft.pair_a.expect("Line A"),
+                                draft.pair_b.expect("Line B"),
+                            );
                             let mut proposed = draft.edits.clone();
-                            proposed.add.push(AddLineConstraint::EqualLength {
-                                a: draft.equal_a.expect("Line A"),
-                                b: draft.equal_b.expect("Line B"),
+                            proposed.add.push(match make {
+                                Some(relation) => AddLineConstraint::Relation { a, b, relation },
+                                None => AddLineConstraint::EqualLength { a, b },
                             });
                             match draft.choice.validate_edits(&proposed) {
                                 Ok(()) => {
@@ -383,11 +402,6 @@ impl Editor {
                                 Err(e) => draft.refusal = Some(e.to_string()),
                             }
                         }
-                        ui.small(format!(
-                            "Pair: A {} · B {}",
-                            picked_line(draft.equal_a),
-                            picked_line(draft.equal_b)
-                        ));
                     });
                     ui.label("Persisted constraints:");
                     egui::ScrollArea::vertical()
@@ -411,7 +425,15 @@ impl Editor {
                                     ),
                                     SketchConstraintRule::EqualLength { a, b } => (
                                         "Equal length".to_owned(),
-                                        Some(two_lines(a.from.curve, b.from.curve)),
+                                        Some(two_lines(a.from.curve, b.from.curve, "=")),
+                                    ),
+                                    SketchConstraintRule::Parallel { a, b } => (
+                                        LineRelation::Parallel.as_str().to_owned(),
+                                        Some(two_lines(a.from.curve, b.from.curve, "and")),
+                                    ),
+                                    SketchConstraintRule::Perpendicular { a, b } => (
+                                        LineRelation::Perpendicular.as_str().to_owned(),
+                                        Some(two_lines(a.from.curve, b.from.curve, "and")),
                                     ),
                                     _ => ("Coincident closure".to_owned(), None),
                                 };
@@ -566,8 +588,8 @@ fn short(id: StableEntityId) -> String {
 fn one_line(curve: StableEntityId) -> String {
     format!("Line {}", short(curve))
 }
-fn two_lines(a: StableEntityId, b: StableEntityId) -> String {
-    format!("Lines {} = {}", short(a), short(b))
+fn two_lines(a: StableEntityId, b: StableEntityId, joins: &str) -> String {
+    format!("Lines {} {joins} {}", short(a), short(b))
 }
 fn picked_line(id: Option<StableEntityId>) -> String {
     id.map_or_else(|| "none".to_owned(), short)
@@ -586,6 +608,9 @@ fn addition_name(add: &AddLineConstraint) -> String {
     match *add {
         AddLineConstraint::Line { curve, kind } => format!("{} · Line {curve}", kind_name(kind)),
         AddLineConstraint::EqualLength { a, b } => format!("Equal length · Lines {a} = {b}"),
+        AddLineConstraint::Relation { a, b, relation } => {
+            format!("{} · Lines {a} and {b}", relation.as_str())
+        }
     }
 }
 
@@ -614,13 +639,13 @@ mod tests {
     fn kind_of(add: &AddLineConstraint) -> LineConstraintKind {
         match *add {
             AddLineConstraint::Line { kind, .. } => kind,
-            AddLineConstraint::EqualLength { .. } => panic!("equal length names no single Line"),
+            _ => panic!("a pair relationship names no single Line"),
         }
     }
     fn curve_of(add: &AddLineConstraint) -> StableEntityId {
         match *add {
             AddLineConstraint::Line { curve, .. } => curve,
-            AddLineConstraint::EqualLength { .. } => panic!("equal length names no single Line"),
+            _ => panic!("a pair relationship names no single Line"),
         }
     }
     /// One addition as the peer CLI spells it in request v1.
@@ -630,6 +655,13 @@ mod tests {
                 return format!(
                     r#"{{"rule":"equal_length","a_curve_id":"{a}","b_curve_id":"{b}"}}"#
                 );
+            }
+            AddLineConstraint::Relation { a, b, relation } => {
+                let rule = match relation {
+                    LineRelation::Parallel => "parallel",
+                    LineRelation::Perpendicular => "perpendicular",
+                };
+                return format!(r#"{{"rule":"{rule}","a_curve_id":"{a}","b_curve_id":"{b}"}}"#);
             }
             AddLineConstraint::Line { curve, kind } => (curve, kind),
         };
@@ -1613,9 +1645,11 @@ mod tests {
                 "Pin Start",
                 "Pin End",
                 "Add Fixed point",
-                "Equal Line A",
-                "Equal Line B",
+                "Pair Line A",
+                "Pair Line B",
                 "Add Equal length",
+                "Add Parallel",
+                "Add Perpendicular",
                 "Save constraints copy…",
             ] {
                 assert!(
@@ -1998,9 +2032,9 @@ mod tests {
         // Picking either side is a selection, and selections are not history.
         let empty = history_state(&e);
         click(&ctx, &mut e, "Segment 1");
-        click(&ctx, &mut e, "Equal Line A");
+        click(&ctx, &mut e, "Pair Line A");
         click(&ctx, &mut e, "Segment 2");
-        click(&ctx, &mut e, "Equal Line B");
+        click(&ctx, &mut e, "Pair Line B");
         assert_eq!(
             history_state(&e),
             empty,
@@ -2033,9 +2067,9 @@ mod tests {
         let after_accept = history_state(&e);
         for (a, b) in [(0, 1), (1, 0), (0, 0)] {
             click(&ctx, &mut e, &format!("Segment {}", a + 1));
-            click(&ctx, &mut e, "Equal Line A");
+            click(&ctx, &mut e, "Pair Line A");
             click(&ctx, &mut e, &format!("Segment {}", b + 1));
-            click(&ctx, &mut e, "Equal Line B");
+            click(&ctx, &mut e, "Pair Line B");
             click(&ctx, &mut e, "Add Equal length");
             assert!(
                 e.draft.as_ref().expect("draft").refusal.is_some(),
@@ -2075,15 +2109,15 @@ mod tests {
         let out = frame(&ctx, &mut e, vec![]);
         assert!(painted(&out, &row), "persisted equality names itself");
         assert!(
-            painted(&out, &two_lines(pair[0], pair[1])),
+            painted(&out, &two_lines(pair[0], pair[1], "=")),
             "persisted equality names both of its Lines"
         );
         click_remove_on_row(&ctx, &mut e, &row);
         assert_eq!(history_state(&e).0.remove, vec![equal_id]);
         click(&ctx, &mut e, "Segment 1");
-        click(&ctx, &mut e, "Equal Line A");
+        click(&ctx, &mut e, "Pair Line A");
         click(&ctx, &mut e, "Segment 4");
-        click(&ctx, &mut e, "Equal Line B");
+        click(&ctx, &mut e, "Pair Line B");
         click(&ctx, &mut e, "Add Equal length");
         let replacement = history_state(&e).0;
         assert_eq!(replacement.remove, vec![equal_id]);
@@ -2097,6 +2131,198 @@ mod tests {
         stored_source.constraint_sketches[0]
             .validate_edits(&replacement)
             .expect("remove exact UUID and add one pair in one request");
+        click(&ctx, &mut e, "Undo");
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(history_state(&e).0, replacement);
+        click(&ctx, &mut e, "Save constraints copy…");
+        assert_eq!(e.take_request().expect("Save").edits, replacement);
+        click(&ctx, &mut e, "Cancel constraints draft");
+        assert!(!e.active());
+    }
+
+    fn persist_relation(
+        path: &Path,
+        relation: LineRelation,
+    ) -> (ExtrudeEditSource, StableEntityId, [StableEntityId; 2]) {
+        let mut document = Document::open(path).expect("doc");
+        let source = ExtrudeEditSource::read(&document).expect("catalog");
+        let choice = &source.constraint_sketches[0];
+        let curves = &choice.stored.as_ref().expect("stored").curves;
+        let pair = [curves[1].id, curves[2].id];
+        let prepared = ferritecad_document::prepare_sketch_constraints(
+            &document,
+            choice.sketch,
+            &SketchConstraintEdits {
+                remove: vec![],
+                add: vec![AddLineConstraint::Relation {
+                    a: pair[0],
+                    b: pair[1],
+                    relation,
+                }],
+            },
+        )
+        .expect("prepare relation");
+        let id = prepared.added.last().expect("relation").id;
+        document
+            .write_sketch_constraints(&prepared)
+            .expect("write relation");
+        let source = ExtrudeEditSource::read(&document).expect("catalog");
+        document.close().expect("close");
+        (source, id, pair)
+    }
+
+    #[test]
+    fn line_relation_widgets_pick_two_lines_and_name_the_persisted_relation() {
+        let (_root, path, source) = fixture();
+        let mut e = Editor::default();
+        assert!(e.begin(&path, &source, source.constraint_sketches[0].sketch));
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        let curves: Vec<_> = source.constraint_sketches[0]
+            .stored
+            .as_ref()
+            .expect("stored")
+            .curves
+            .iter()
+            .map(|c| c.id)
+            .collect();
+
+        // The pair is picked once, from the one stored catalogue, and serves
+        // every relationship; picking is selection, and selection is not history.
+        let empty = history_state(&e);
+        click(&ctx, &mut e, "Segment 1");
+        click(&ctx, &mut e, "Pair Line A");
+        click(&ctx, &mut e, "Segment 2");
+        click(&ctx, &mut e, "Pair Line B");
+        assert_eq!(
+            history_state(&e),
+            empty,
+            "picking a Line is not a checkpoint"
+        );
+        assert!(painted(
+            &frame(&ctx, &mut e, vec![]),
+            &format!("Pair: A {} · B {}", short(curves[0]), short(curves[1]))
+        ));
+
+        click(&ctx, &mut e, "Add Parallel");
+        let accepted = history_state(&e).0;
+        assert_eq!(
+            accepted.add,
+            vec![AddLineConstraint::Relation {
+                a: curves[0],
+                b: curves[1],
+                relation: LineRelation::Parallel,
+            }]
+        );
+        assert!(
+            painted(
+                &frame(&ctx, &mut e, vec![]),
+                &format!("Parallel · Lines {} and {}", curves[0], curves[1])
+            ),
+            "the pending entry names the relation and both Lines"
+        );
+
+        // One question per pair: the other answer, the same answer again, either
+        // way round, and a Line paired with itself are refused by the shared
+        // validator without touching history or Redo.
+        let after_accept = history_state(&e);
+        for (a, b, label) in [
+            (0, 1, "Add Perpendicular"),
+            (1, 0, "Add Perpendicular"),
+            (0, 1, "Add Parallel"),
+            (1, 0, "Add Parallel"),
+            (0, 0, "Add Parallel"),
+            (0, 0, "Add Perpendicular"),
+        ] {
+            click(&ctx, &mut e, &format!("Segment {}", a + 1));
+            click(&ctx, &mut e, "Pair Line A");
+            click(&ctx, &mut e, &format!("Segment {}", b + 1));
+            click(&ctx, &mut e, "Pair Line B");
+            click(&ctx, &mut e, label);
+            assert!(
+                e.draft.as_ref().expect("draft").refusal.is_some(),
+                "{label} ({a}, {b}) must be refused"
+            );
+            assert_eq!(history_state(&e), after_accept, "{label} ({a}, {b})");
+        }
+
+        // A running job blocks the action and keeps both picks.
+        click(&ctx, &mut e, "Segment 1");
+        click(&ctx, &mut e, "Pair Line A");
+        click(&ctx, &mut e, "Segment 2");
+        click(&ctx, &mut e, "Pair Line B");
+        click_running(&ctx, &mut e, "Add Perpendicular", true);
+        assert_eq!(history_state(&e), after_accept);
+        click(&ctx, &mut e, "Undo");
+        assert_eq!(history_state(&e).0, SketchConstraintEdits::default());
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(history_state(&e).0, accepted, "Redo survives refusal");
+
+        // An equal length on the very same pair is a different property, so the
+        // same two picks may also be asked for it.
+        click(&ctx, &mut e, "Add Equal length");
+        let with_equality = history_state(&e).0;
+        assert_eq!(
+            with_equality.add,
+            [
+                accepted.add.clone(),
+                vec![AddLineConstraint::EqualLength {
+                    a: curves[0],
+                    b: curves[1],
+                }]
+            ]
+            .concat()
+        );
+        click(&ctx, &mut e, "Save constraints copy…");
+        assert_eq!(
+            e.take_request().expect("Save accepted edits").edits,
+            with_equality
+        );
+
+        // A persisted relation is named by its kind, shows both Lines and its
+        // UUID, and is removed by exact identity in the same request as the
+        // other answer for that pair.
+        let (stored_source, relation_id, pair) =
+            persist_relation(&path, LineRelation::Perpendicular);
+        let mut e = Editor::default();
+        assert!(e.begin(
+            &path,
+            &stored_source,
+            stored_source.constraint_sketches[0].sketch
+        ));
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        let row = format!("Perpendicular · {relation_id}");
+        scroll_to_row(&ctx, &mut e, &row);
+        let out = frame(&ctx, &mut e, vec![]);
+        assert!(painted(&out, &row), "persisted relation names itself");
+        assert!(
+            painted(&out, &two_lines(pair[0], pair[1], "and")),
+            "persisted relation names both of its Lines"
+        );
+        click_remove_on_row(&ctx, &mut e, &row);
+        assert_eq!(history_state(&e).0.remove, vec![relation_id]);
+        click(&ctx, &mut e, "Segment 2");
+        click(&ctx, &mut e, "Pair Line A");
+        click(&ctx, &mut e, "Segment 3");
+        click(&ctx, &mut e, "Pair Line B");
+        click(&ctx, &mut e, "Add Parallel");
+        let replacement = history_state(&e).0;
+        assert_eq!(replacement.remove, vec![relation_id]);
+        assert_eq!(
+            replacement.add,
+            vec![AddLineConstraint::Relation {
+                a: pair[0],
+                b: pair[1],
+                relation: LineRelation::Parallel,
+            }]
+        );
+        stored_source.constraint_sketches[0]
+            .validate_edits(&replacement)
+            .expect("remove exact UUID and add the other answer in one request");
         click(&ctx, &mut e, "Undo");
         click(&ctx, &mut e, "Redo");
         assert_eq!(history_state(&e).0, replacement);
@@ -2489,9 +2715,9 @@ mod tests {
         enter_field(&ctx, &mut e, "Fixed X (mm):", "10", false);
         enter_field(&ctx, &mut e, "Fixed Y (mm):", "-5", false);
         click(&ctx, &mut e, "Add Fixed point");
-        click(&ctx, &mut e, "Equal Line A");
+        click(&ctx, &mut e, "Pair Line A");
         click(&ctx, &mut e, "Segment 2");
-        click(&ctx, &mut e, "Equal Line B");
+        click(&ctx, &mut e, "Pair Line B");
         click(&ctx, &mut e, "Add Equal length");
         let expected_edits = e.draft.as_ref().expect("draft").edits.clone();
         assert_eq!(
@@ -2732,6 +2958,331 @@ mod tests {
             "{extents:?}"
         );
         assert!((volume6.abs() / 6. - 36000.).abs() < 0.04);
+        assert_eq!(std::fs::read(&source).expect("source"), original);
+    }
+
+    #[test]
+    fn native_line_relations_worker_and_cli_orient_the_same_solved_body() {
+        use crate::creates::tests::ferritecad;
+        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: constraint worker requires OCCT and PlaneGCS");
+            return;
+        }
+        let root = tempfile::tempdir().expect("dir");
+        let source = root.path().join("source.fcad");
+        let input = root.path().join("request.json");
+        // A slanted stored profile: nothing here may quietly become H/V.
+        std::fs::write(
+            &input,
+            r#"{"request_version":1,"points_mm":[[-20,-10],[40,-8],[42,30],[-20,30]],"height_mm":10}"#,
+        )
+        .expect("polygon");
+        let o = std::process::Command::new(ferritecad())
+            .arg("create-sketch-extrude")
+            .arg(&input)
+            .arg("-o")
+            .arg(&source)
+            .arg("--json")
+            .output()
+            .expect("create");
+        assert!(o.status.success(), "{o:?}");
+        crate::sketch::drag_tests::attach_source_claim(&source);
+        let sql_before = crate::sketch::drag_tests::sql_facts(&source);
+        let original = std::fs::read(&source).expect("source");
+        let d = Document::open_read_only(&source).expect("doc");
+        let reading = ExtrudeEditSource::read(&d).expect("catalog");
+        d.close().expect("close");
+        let id = reading.constraint_sketches[0].sketch;
+        let curves = reading.constraint_sketches[0]
+            .stored
+            .as_ref()
+            .expect("stored")
+            .curves
+            .clone();
+        let mut e = Editor::default();
+        assert!(e.begin(&source, &reading, id));
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        // Opposite sides parallel, one corner square, two sizes: a rectangle
+        // asked for as relationships, with no Line's own direction named.
+        for (a, b, label) in [
+            (1, 3, "Add Parallel"),
+            (2, 4, "Add Parallel"),
+            (1, 2, "Add Perpendicular"),
+        ] {
+            click(&ctx, &mut e, &format!("Segment {a}"));
+            click(&ctx, &mut e, "Pair Line A");
+            click(&ctx, &mut e, &format!("Segment {b}"));
+            click(&ctx, &mut e, "Pair Line B");
+            click(&ctx, &mut e, label);
+        }
+        for (segment, mm) in [("Segment 1", "60"), ("Segment 2", "30")] {
+            click(&ctx, &mut e, segment);
+            enter_length(&ctx, &mut e, mm, false);
+            click(&ctx, &mut e, "Add length");
+        }
+        let expected_edits = e.draft.as_ref().expect("draft").edits.clone();
+        assert_eq!(
+            expected_edits.add[..3],
+            [
+                AddLineConstraint::Relation {
+                    a: curves[0].id,
+                    b: curves[2].id,
+                    relation: LineRelation::Parallel,
+                },
+                AddLineConstraint::Relation {
+                    a: curves[1].id,
+                    b: curves[3].id,
+                    relation: LineRelation::Parallel,
+                },
+                AddLineConstraint::Relation {
+                    a: curves[0].id,
+                    b: curves[1].id,
+                    relation: LineRelation::Perpendicular,
+                },
+            ]
+        );
+        click(&ctx, &mut e, "Undo");
+        click(&ctx, &mut e, "Redo");
+        click(&ctx, &mut e, "Save constraints copy…");
+        let request = e.take_request().expect("real widget request");
+        assert_eq!(request.edits, expected_edits);
+        assert_eq!(request.expected, reading.version);
+        let mut state = crate::edits::Edits::default();
+        let mut r = request.clone();
+        let ui = root.path().join("relation-ui.fcad");
+        r.destination = ui.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        state
+            .start_constraints(r, move |r, g, c| {
+                crate::edits::spawn_constraint_edit(r, c, move |result| {
+                    tx.send((g, result)).expect("reply")
+                })
+            })
+            .expect("worker");
+        let (g, result) = rx.recv().expect("worker reply");
+        let solved = result.as_ref().expect("published").solve.clone();
+        assert_eq!(
+            solved.degrees_of_freedom(),
+            3,
+            "a rectangle of a known size is still free to sit and to turn"
+        );
+        assert!(solved.redundant().is_empty());
+        assert_eq!(finish_edit(&mut e, &mut state, g, result), Some(ui.clone()));
+        assert!(!e.active());
+
+        // The peer CLI process replays the same ordered request over one source.
+        let additions = expected_edits
+            .add
+            .iter()
+            .map(peer_addition)
+            .collect::<Vec<_>>()
+            .join(",");
+        for rule in [r#""rule":"parallel""#, r#""rule":"perpendicular""#] {
+            assert!(additions.contains(rule), "{additions}");
+        }
+        std::fs::write(
+            &input,
+            format!(r#"{{"request_version":1,"remove":[],"add":[{additions}]}}"#),
+        )
+        .expect("typed IDs to peer request");
+        let cli = root.path().join("relation-cli.fcad");
+        let o = std::process::Command::new(ferritecad())
+            .arg("edit-sketch-constraints-copy")
+            .arg(&source)
+            .arg("--sketch")
+            .arg(id.to_string())
+            .arg("--expect-version")
+            .arg(reading.version.content.to_string())
+            .arg("--request")
+            .arg(&input)
+            .arg("-o")
+            .arg(&cli)
+            .arg("--json")
+            .output()
+            .expect("peer CLI");
+        assert!(o.status.success(), "{o:?}");
+
+        // Only genuinely new constraint UUIDs differ between the two routes.
+        let a = Document::open_read_only(&ui).expect("UI");
+        let b = Document::open_read_only(&cli).expect("CLI");
+        assert_eq!(a.meta(), b.meta());
+        assert_eq!(
+            a.topology_refs().expect("refs"),
+            b.topology_refs().expect("refs")
+        );
+        let whole = |curve: &ferritecad_document::SketchCurve| {
+            ferritecad_document::SketchSegmentRef::new(
+                ferritecad_document::SketchPointRef::new(
+                    curve.id,
+                    ferritecad_document::SketchPointSelector::Start,
+                ),
+                ferritecad_document::SketchPointRef::new(
+                    curve.id,
+                    ferritecad_document::SketchPointSelector::End,
+                ),
+            )
+        };
+        for old in a.objects().expect("objects") {
+            let new = b.object(old.id).expect("read").expect("same id");
+            if let (
+                ferritecad_document::ObjectPayload::Sketch(s),
+                ferritecad_document::ObjectPayload::Sketch(t),
+            ) = (&old.payload, &new.payload)
+            {
+                assert_eq!(s.curves, t.curves, "stored coordinates are inputs");
+                assert_eq!(s.curves, curves, "the solve did not write itself back");
+                assert_eq!(s.constraints.len(), 9);
+                for (x, y) in s.constraints.iter().zip(&t.constraints) {
+                    assert_ne!(x.id, y.id, "only genuinely new UUIDs differ");
+                    assert_eq!(x.rule, y.rule);
+                }
+                assert_eq!(
+                    s.constraints[4..7]
+                        .iter()
+                        .map(|c| c.rule)
+                        .collect::<Vec<_>>(),
+                    vec![
+                        SketchConstraintRule::Parallel {
+                            a: whole(&curves[0]),
+                            b: whole(&curves[2]),
+                        },
+                        SketchConstraintRule::Parallel {
+                            a: whole(&curves[1]),
+                            b: whole(&curves[3]),
+                        },
+                        SketchConstraintRule::Perpendicular {
+                            a: whole(&curves[0]),
+                            b: whole(&curves[1]),
+                        },
+                    ]
+                );
+            } else {
+                assert_eq!(old, new);
+            }
+        }
+        a.close().expect("close");
+        b.close().expect("close");
+        for path in [&ui, &cli] {
+            let after = crate::sketch::drag_tests::sql_facts(path);
+            assert_eq!(
+                sql_before.keys().collect::<Vec<_>>(),
+                after.keys().collect::<Vec<_>>()
+            );
+            for (table, rows) in &sql_before {
+                if table == "objects" {
+                    for row in rows {
+                        let actual = after[table]
+                            .iter()
+                            .find(|r| r[1] == row[1])
+                            .expect("same row");
+                        for col in 0..row.len() {
+                            if row[1] == rusqlite::types::Value::Blob(id.to_bytes().to_vec())
+                                && [3, 7, 8].contains(&col)
+                            {
+                                continue;
+                            }
+                            assert_eq!(row[col], actual[col], "object cell {col}");
+                        }
+                    }
+                } else if table == "capabilities" {
+                    assert_eq!(
+                        after[table]
+                            .iter()
+                            .filter(|r| r[1]
+                                != rusqlite::types::Value::Text(
+                                    ferritecad_document::SKETCH_CONSTRAINTS_CAPABILITY.into()
+                                ))
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                        *rows
+                    );
+                } else {
+                    assert_eq!(
+                        &after[table], rows,
+                        "{table}: source claims and unrelated rows"
+                    );
+                }
+            }
+        }
+
+        let mut outputs = vec![];
+        for path in [&ui, &cli] {
+            let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+            ferritecad_scene::snapshot_of(
+                path,
+                &mut k,
+                |k, b| k.import_step(b),
+                &Default::default(),
+                &OperationContext::default(),
+            )
+            .expect("async Open route");
+            let stl = path.with_extension("stl");
+            let fbx = path.with_extension("fbx");
+            for (op, dest) in [("export-stl", &stl), ("export-fbx", &fbx)] {
+                let o = std::process::Command::new(ferritecad())
+                    .arg(op)
+                    .arg(path)
+                    .arg("-o")
+                    .arg(dest)
+                    .output()
+                    .expect("export");
+                assert!(o.status.success(), "{o:?}");
+            }
+            outputs.push(std::fs::read(&stl).expect("STL"));
+            if let Some(dir) = std::env::var_os("FERRITECAD_CONSTRAINT_ARTIFACTS") {
+                std::fs::create_dir_all(&dir).expect("dir");
+                for p in [path.as_path(), stl.as_path(), fbx.as_path()] {
+                    std::fs::copy(p, Path::new(&dir).join(p.file_name().expect("name")))
+                        .expect("artifact");
+                }
+            }
+        }
+        assert_eq!(
+            outputs[0], outputs[1],
+            "UI and CLI orient the same solved Body"
+        );
+        assert_eq!(
+            std::fs::read(ui.with_extension("fbx")).expect("UI FBX"),
+            std::fs::read(cli.with_extension("fbx")).expect("CLI FBX"),
+            "UI and CLI publish the same FBX for the oriented Body"
+        );
+
+        // Independent integration of the published triangles. The sides were
+        // asked for, so the volume is; the footprint is free to turn, so its
+        // axis-aligned extents are only asked to prove it did not turn onto the
+        // axes, which is what a Parallel replaced by H/V would look like.
+        let stl = &outputs[0];
+        let n = u32::from_le_bytes(stl[80..84].try_into().expect("count")) as usize;
+        assert_eq!(stl.len(), 84 + 50 * n);
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        let mut volume6 = 0.;
+        for i in 0..n {
+            let v: [f64; 9] = std::array::from_fn(|j| {
+                let at = 84 + 50 * i + 12 + 4 * j;
+                f64::from(f32::from_le_bytes(stl[at..at + 4].try_into().expect("f32")))
+            });
+            for p in v.chunks_exact(3) {
+                for j in 0..3 {
+                    lo[j] = lo[j].min(p[j]);
+                    hi[j] = hi[j].max(p[j]);
+                }
+            }
+            volume6 += v[0] * (v[4] * v[8] - v[5] * v[7])
+                + v[1] * (v[5] * v[6] - v[3] * v[8])
+                + v[2] * (v[3] * v[7] - v[4] * v[6]);
+        }
+        let extents: [f64; 3] = std::array::from_fn(|j| hi[j] - lo[j]);
+        assert!((volume6.abs() / 6. - 18000.).abs() < 0.02, "{extents:?}");
+        assert!((extents[2] - 10.).abs() < 1e-4, "{extents:?}");
+        assert!(
+            extents[0] > 60.05 && extents[1] > 30.05,
+            "a turned 60 x 30 rectangle must overhang both axes: {extents:?}"
+        );
         assert_eq!(std::fs::read(&source).expect("source"), original);
     }
 

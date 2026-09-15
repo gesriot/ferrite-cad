@@ -25,7 +25,10 @@ The same operation persists one [length per Line](docs/line-length-constraints.m
 [one pinned endpoint per profile at explicit X/Y mm](docs/fixed-sketch-vertex.md)
 and [equal length between two named Lines](docs/equal-line-lengths.md), which is
 one relationship rather than a copied number: changing the leading length moves
-both sides.
+both sides. The same pair of named Lines can also be held
+[parallel or perpendicular](docs/line-pair-orientation.md) — a relative
+orientation, so it holds on a profile at any angle and leaves it free to turn,
+which is what makes it different from Horizontal/Vertical.
 The solver keeps joints closed through named Coincident constraints; stored
 coordinates remain inputs, and arbitrary constraint families are still unsupported.
 
@@ -719,8 +722,9 @@ when it rebuilds: the profile it extrudes is the solved one, not the
 coordinates the curves were last left at. The viewer can create an unconstrained
 Line polygon (§25A) and add/remove persisted H/V in a new copy (§25E), with
 explicit Coincident closure; the same editor persists one length per Line (§25F),
-one pinned endpoint per profile (§25G) and one equal length per pair of Lines
-(§25H). Other constraint families are outside that editor. A build with no solver refuses such a sketch rather than
+one pinned endpoint per profile (§25G), one equal length per pair of Lines
+(§25H) and one relative orientation — parallel or perpendicular — per pair of
+Lines (§25I). Other constraint families are outside that editor. A build with no solver refuses such a sketch rather than
 building from the stored coordinates. What that solve found out – how much
 freedom each sketch has left, and which of its constraints repeat what the rest
 already said, each one explained in the document's own words rather than named

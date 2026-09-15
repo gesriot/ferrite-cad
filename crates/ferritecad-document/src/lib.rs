@@ -88,6 +88,6 @@ pub use validate::{Diagnostic, Severity, ValidationReport};
 mod sketch_constraints;
 pub use sketch_constraints::{
     AddLineConstraint, ConstraintSketchChoice, LineConstraintKind, LineEndpoint, LineLengthMm,
-    PreparedSketchConstraints, SketchConstraintEdits, SketchCoordinateMm,
+    LineRelation, PreparedSketchConstraints, SketchConstraintEdits, SketchCoordinateMm,
     constraint_sketch_choices, prepare_sketch_constraints,
 };

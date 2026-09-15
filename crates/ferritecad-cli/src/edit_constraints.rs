@@ -3,7 +3,7 @@
 use clap::Args;
 use ferritecad_document::{
     AddLineConstraint, Document, DocumentVersion, LineConstraintKind, LineEndpoint, LineLengthMm,
-    SketchConstraintEdits, SketchCoordinateMm,
+    LineRelation, SketchConstraintEdits, SketchCoordinateMm,
 };
 use ferritecad_jobs::{
     EditSketchConstraintsRequest, EditedSketchConstraints, edit_sketch_constraints_copy,
@@ -22,7 +22,8 @@ pub struct EditConstraintsArgs {
     #[arg(long)]
     expect_version: ContentHash,
     /// Request v1: remove exact constraint UUIDs, then add Line H/V, length in mm,
-    /// one Fixed Line endpoint at explicit X/Y mm, or equal length between two Lines.
+    /// one Fixed Line endpoint at explicit X/Y mm, or equal length, parallel or
+    /// perpendicular between two Lines.
     #[arg(long)]
     request: PathBuf,
     /// New FCAD destination; no overwrite and no --force.
@@ -78,6 +79,16 @@ enum Addition {
         a_curve_id: StableEntityId,
         b_curve_id: StableEntityId,
     },
+    /// The same two named sides, keeping a relative orientation instead of a
+    /// length. Neither leads here either, so neither can be left out.
+    Parallel {
+        a_curve_id: StableEntityId,
+        b_curve_id: StableEntityId,
+    },
+    Perpendicular {
+        a_curve_id: StableEntityId,
+        b_curve_id: StableEntityId,
+    },
 }
 impl Addition {
     fn checked(self) -> Result<AddLineConstraint> {
@@ -111,6 +122,26 @@ impl Addition {
                 return Ok(AddLineConstraint::EqualLength {
                     a: a_curve_id,
                     b: b_curve_id,
+                });
+            }
+            Self::Parallel {
+                a_curve_id,
+                b_curve_id,
+            } => {
+                return Ok(AddLineConstraint::Relation {
+                    a: a_curve_id,
+                    b: b_curve_id,
+                    relation: LineRelation::Parallel,
+                });
+            }
+            Self::Perpendicular {
+                a_curve_id,
+                b_curve_id,
+            } => {
+                return Ok(AddLineConstraint::Relation {
+                    a: a_curve_id,
+                    b: b_curve_id,
+                    relation: LineRelation::Perpendicular,
                 });
             }
         };
