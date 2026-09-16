@@ -831,23 +831,50 @@ impl Document {
             ));
         };
         let version = sketch.schema_version();
-        if sketch.constraints.is_empty() {
-            return Err(CadError::input(
-                "constraint editing retains persisted closure",
-            ));
+        // What this write may not do is lose a relationship it did not remove.
+        // The rule is stated as the thing it protects — every Coincident
+        // closure link the stored sketch already holds is still here — rather
+        // than as "there is at least one constraint", which was the same rule
+        // for a Line profile and the wrong one for a circle: a circle has no
+        // joints, so removing its last dimension legitimately leaves none.
+        let ObjectPayload::Sketch(stored) = &current.payload else {
+            return Err(CadError::input("the selected object is not a Sketch"));
+        };
+        let kept: std::collections::BTreeSet<_> = sketch
+            .constraints
+            .iter()
+            .filter(|c| matches!(c.rule, crate::SketchConstraintRule::Coincident { .. }))
+            .map(|c| c.id)
+            .collect();
+        if let Some(lost) = stored
+            .constraints
+            .iter()
+            .filter(|c| matches!(c.rule, crate::SketchConstraintRule::Coincident { .. }))
+            .find(|c| !kept.contains(&c.id))
+        {
+            return Err(CadError::input(format!(
+                "constraint editing retains persisted closure, and this would drop {}",
+                lost.id
+            )));
         }
+        // Every capability the payload now declares, because a circle
+        // constraint declares one the Line families do not. Upserted one by
+        // one: the general index rebuild deletes optional rows and reissues
+        // rowids, and no other declaration changed.
+        let declared = sketch.required_capabilities();
         self.write_transaction(|writer| {
             let changed = writer.tx.execute(
                 "UPDATE objects SET schema_version=?1,payload=?2,payload_hash=?3 WHERE id=?4",
                 params![version,bytes,hash.as_bytes().as_slice(),selected.id.to_bytes().as_slice()],
             ).map_err(|e| CadError::io("writing Sketch constraints",e))?;
             if changed != 1 { return Err(CadError::input("selected Sketch disappeared before constraint write")); }
-            // Upsert only this capability. The general index rebuild deletes
-            // optional rows and reissues rowids; no other declaration changed.
-            writer.tx.execute(
-                "INSERT INTO capabilities(name,required) VALUES(?1,1) ON CONFLICT(name) DO UPDATE SET required=1 WHERE required<>1",
-                params![crate::SKETCH_CONSTRAINTS_CAPABILITY],
-            ).map_err(|e| CadError::io("recording Sketch constraint capability",e))?;
+            for name in &declared {
+                if name == crate::CORE_CAPABILITY { continue; }
+                writer.tx.execute(
+                    "INSERT INTO capabilities(name,required) VALUES(?1,1) ON CONFLICT(name) DO UPDATE SET required=1 WHERE required<>1",
+                    params![name],
+                ).map_err(|e| CadError::io("recording Sketch constraint capability",e))?;
+            }
             Ok(())
         },false)
     }

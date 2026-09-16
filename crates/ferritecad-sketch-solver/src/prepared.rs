@@ -17,13 +17,19 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{Constraint, ConstraintId, NotFinite, PointId, Position, Sketch, SolverError};
+use crate::{
+    Circle, CircleId, Constraint, ConstraintId, NotFinite, PointId, Position, Sketch, SolverError,
+};
 
 pub(crate) struct Prepared {
     /// Points in storage order; the native parameter block is two doubles per
     /// entry, in this order.
     point_ids: Vec<PointId>,
     index_of: BTreeMap<PointId, usize>,
+    /// Circles in storage order; the native radius block is one double per
+    /// entry, in this order, and sits after the point block.
+    circles: Vec<Circle>,
+    circle_index_of: BTreeMap<CircleId, usize>,
     /// Two values per point, x then y.
     pub(crate) state: Vec<f64>,
     /// Constraints in storage order, as the caller stated them.
@@ -44,6 +50,7 @@ impl std::fmt::Debug for Prepared {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Prepared")
             .field("points", &self.point_ids.len())
+            .field("circles", &self.circles.len())
             .field("constraints", &self.constraints.len())
             .finish()
     }
@@ -93,6 +100,35 @@ impl Prepared {
             state[index * 2 + 1] = position.y;
         }
 
+        // Circles after the points, because a circle names a centre and the
+        // centre has to exist before it can be named. A circle whose centre is
+        // not a point of this sketch is refused here rather than range-checked
+        // by the shim: the shim can say the index is out of range, but only
+        // this side knows which circle the caller called it.
+        let mut circles = Vec::with_capacity(sketch.circles().len());
+        let mut circle_index_of = BTreeMap::new();
+        for circle in sketch.circles() {
+            if circle_index_of
+                .insert(circle.circle, circles.len())
+                .is_some()
+            {
+                return Err(SolverError::DuplicateCircle(circle.circle));
+            }
+            if !index_of.contains_key(&circle.center) {
+                return Err(SolverError::UnknownCenter {
+                    circle: circle.circle,
+                    point: circle.center,
+                });
+            }
+            // A radius is a length. Zero and negative are not small circles,
+            // they are not circles, and planegcs would take either as a
+            // starting guess and wander from it.
+            if !circle.radius.is_finite() || circle.radius <= 0.0 {
+                return Err(NotFinite::CircleRadius(circle.circle).into());
+            }
+            circles.push(*circle);
+        }
+
         let mut caller_ids = Vec::with_capacity(sketch.constraints().len());
         let mut constraints = Vec::with_capacity(sketch.constraints().len());
         let mut named = BTreeSet::new();
@@ -108,7 +144,23 @@ impl Prepared {
                     });
                 }
             }
+            for circle in constraint.circles() {
+                if !circle_index_of.contains_key(&circle) {
+                    return Err(SolverError::UnknownCircle {
+                        constraint: id,
+                        circle,
+                    });
+                }
+            }
             if constraint.parameters().iter().any(|v| !v.is_finite()) {
+                return Err(NotFinite::ConstraintParameter(id).into());
+            }
+            // A radius constraint asking for nothing or for less than nothing
+            // is refused here rather than handed over: planegcs would accept
+            // the equation and solve towards a circle that cannot exist.
+            if let Constraint::Radius { radius, .. } = constraint
+                && radius <= 0.0
+            {
                 return Err(NotFinite::ConstraintParameter(id).into());
             }
             caller_ids.push(id);
@@ -118,6 +170,8 @@ impl Prepared {
         Ok(Self {
             point_ids,
             index_of,
+            circles,
+            circle_index_of,
             state,
             constraints,
             caller_ids,
@@ -126,6 +180,32 @@ impl Prepared {
 
     pub(crate) fn points(&self) -> usize {
         self.point_ids.len()
+    }
+
+    pub(crate) fn circle_count(&self) -> usize {
+        self.circles.len()
+    }
+
+    /// The circles in storage order, as the caller stated them.
+    pub(crate) fn circles(&self) -> &[Circle] {
+        &self.circles
+    }
+
+    /// Where a circle's radius sits in the native radius block.
+    pub(crate) fn circle_slot(&self, circle: CircleId) -> usize {
+        self.circle_index_of
+            .get(&circle)
+            .copied()
+            .expect("every stored constraint names a circle this table contains")
+    }
+
+    /// The circles, as the caller named them, at the radii in `radii`.
+    pub(crate) fn solved_circles(&self, radii: &[f64]) -> Vec<Circle> {
+        self.circles
+            .iter()
+            .enumerate()
+            .map(|(index, circle)| Circle::new(circle.circle, circle.center, radii[index]))
+            .collect()
     }
 
     /// Where a point's x sits in the parameter block. Its y is the next slot.

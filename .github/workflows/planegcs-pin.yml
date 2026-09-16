@@ -510,10 +510,27 @@ jobs:
           set -euo pipefail
           for skip in \
             'skipped: this build did not link planegcs' \
-            'skipped: this build has no sketch solver'
+            'skipped: this build has no sketch solver' \
+            'skipped: this build has no planegcs'
           do
             if grep -qF "$skip" product.txt lab.txt; then
               echo "::error::a gate skipped itself under FERRITECAD_REQUIRE_PLANEGCS=1"
+              exit 1
+            fi
+          done
+          # §25N: the analytic circle's own measurements, by name. The package
+          # run above already includes them, but a named check is what says they
+          # executed rather than that the package compiled.
+          for gate in \
+            a_free_circle_has_three_degrees_of_freedom_and_each_constraint_removes_its_own \
+            a_solved_circle_carries_the_radius_and_centre_it_was_asked_for \
+            two_circles_answer_for_themselves_whichever_order_they_were_added_in \
+            two_different_radii_on_one_circle_conflict_and_two_equal_ones_are_redundant \
+            a_circle_the_contract_cannot_state_is_refused_before_any_library_is_asked \
+            a_circle_keeps_the_identity_and_centre_it_was_given
+          do
+            if ! grep -Fq "test $gate ... ok" product.txt; then
+              echo "::error::circle solver gate $gate did not execute and pass"
               exit 1
             fi
           done

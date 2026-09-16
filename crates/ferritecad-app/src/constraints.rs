@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 //! Disposable Line constraint request over stored facts; no solver or file reads.
 use ferritecad_document::{
-    AddLineConstraint, ConstraintSketchChoice, DocumentVersion, ExtrudeEditSource,
-    LineConstraintKind, LineEndpoint, LineLengthMm, LineRelation, Sketch, SketchConstraintEdits,
-    SketchConstraintRule, SketchCoordinateMm, SketchGeometry,
+    AddLineConstraint, AddSketchConstraint, CircleConstraintKind, CircleRadiusMm,
+    ConstraintSketchChoice, DocumentVersion, ExtrudeEditSource, LineConstraintKind, LineEndpoint,
+    LineLengthMm, LineRelation, Sketch, SketchConstraintEdits, SketchConstraintRule,
+    SketchCoordinateMm, SketchGeometry,
 };
 use ferritecad_jobs::{EditSketchConstraintsRequest, EditedSketchConstraints};
 use ferritecad_types::{ObjectId, Result, StableEntityId};
@@ -50,6 +51,11 @@ struct Draft {
     selected: Option<StableEntityId>,
     // Unapplied input, like selection, is not part of request Undo/Redo.
     length_mm: String,
+    /// The circle radius being typed, for a profile that is one analytic
+    /// circle. Its own field beside `length_mm`: a Line length and a circle
+    /// radius are different dimensions of different geometry, and one box for
+    /// both would carry a number from one family into the other.
+    radius_mm: String,
     endpoint: LineEndpoint,
     pin_x_mm: String,
     pin_y_mm: String,
@@ -93,6 +99,7 @@ impl Editor {
             choice: choice.clone(),
             selected: None,
             length_mm: String::new(),
+            radius_mm: String::new(),
             endpoint: LineEndpoint::Start,
             pin_x_mm: String::new(),
             pin_y_mm: String::new(),
@@ -143,7 +150,10 @@ impl Editor {
             .default_width(600.)
             .resizable(false)
             .show(ui.ctx(), |ui| {
-                ui.label("Select a stored Line. Solver runs only when saving the new copy.");
+                ui.label(
+                    "Select a stored Line, or the analytic Circle. Solver runs only when saving \
+                     the new copy.",
+                );
                 ui.small(format!(
                     "Sketch {} · {}",
                     draft.choice.sketch,
@@ -198,6 +208,133 @@ impl Editor {
                                 }
                             }
                         });
+                    // One analytic circle, offered as itself. No entry above
+                    // describes it — it has no start and no end — so it gets
+                    // its own row naming its UUID and the two numbers the
+                    // document stores as the solver's starting guess.
+                    let circles: Vec<_> = stored
+                        .curves
+                        .iter()
+                        .filter_map(|c| match c.geometry {
+                            SketchGeometry::Circle { center, radius } => {
+                                Some((c.id, center, radius))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    for (id, center, radius) in &circles {
+                        ui.selectable_value(
+                            &mut draft.selected,
+                            Some(*id),
+                            format!(
+                                "Circle · {} · centre ({}, {}) mm · radius {} mm",
+                                short(*id), center.x, center.y, radius
+                            ),
+                        );
+                    }
+                    if !circles.is_empty() {
+                        ui.horizontal(|ui| {
+                            ui.label("Radius mm");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut draft.radius_mm)
+                                    .char_limit(32)
+                                    .desired_width(90.),
+                            );
+                            if ui
+                                .add_enabled(
+                                    draft.selected.is_some(),
+                                    egui::Button::new("Add radius"),
+                                )
+                                .clicked()
+                            {
+                                // Parsed here and judged nowhere else: what a
+                                // number that parses may be is the document's
+                                // rule, asked through `validate_edits` below.
+                                match draft
+                                    .radius_mm
+                                    .trim()
+                                    .parse::<f64>()
+                                    .ok()
+                                    .and_then(|v| CircleRadiusMm::new(v).ok())
+                                {
+                                    Some(radius) => {
+                                        let mut proposed = draft.edits.clone();
+                                        proposed.add.push(AddSketchConstraint::Circle {
+                                            curve: draft.selected.expect("selected"),
+                                            kind: CircleConstraintKind::Radius(radius),
+                                        });
+                                        match draft.choice.validate_edits(&proposed) {
+                                            Ok(()) => {
+                                                draft.history.change(&mut draft.edits, proposed);
+                                                draft.refusal = None;
+                                            }
+                                            Err(e) => draft.refusal = Some(e.to_string()),
+                                        }
+                                    }
+                                    None => {
+                                        draft.refusal =
+                                            Some("Enter a positive radius in mm.".to_owned());
+                                    }
+                                }
+                            }
+                            if ui
+                                .add_enabled(
+                                    draft.selected.is_some(),
+                                    egui::Button::new("Add Fixed centre"),
+                                )
+                                .clicked()
+                            {
+                                match (
+                                    draft.pin_x_mm.trim().parse::<f64>().ok(),
+                                    draft.pin_y_mm.trim().parse::<f64>().ok(),
+                                ) {
+                                    (Some(x), Some(y)) => {
+                                        match (
+                                            SketchCoordinateMm::new(x),
+                                            SketchCoordinateMm::new(y),
+                                        ) {
+                                            (Ok(x), Ok(y)) => {
+                                                let mut proposed = draft.edits.clone();
+                                                proposed.add.push(
+                                                    AddSketchConstraint::Circle {
+                                                        curve: draft.selected.expect("selected"),
+                                                        kind:
+                                                            CircleConstraintKind::FixedCenter {
+                                                                x,
+                                                                y,
+                                                            },
+                                                    },
+                                                );
+                                                match draft.choice.validate_edits(&proposed) {
+                                                    Ok(()) => {
+                                                        draft
+                                                            .history
+                                                            .change(&mut draft.edits, proposed);
+                                                        draft.refusal = None;
+                                                    }
+                                                    Err(e) => {
+                                                        draft.refusal = Some(e.to_string())
+                                                    }
+                                                }
+                                            }
+                                            _ => {
+                                                draft.refusal = Some(
+                                                    "Enter finite centre coordinates in mm."
+                                                        .to_owned(),
+                                                )
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        draft.refusal = Some(
+                                            "Enter the centre X and Y in mm below.".to_owned(),
+                                        )
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    if circles.is_empty() {
                     ui.horizontal(|ui| {
                         for (label, kind) in [
                             ("Add Horizontal", LineConstraintKind::Horizontal),
@@ -208,10 +345,10 @@ impl Editor {
                                 .clicked()
                             {
                                 let mut proposed = draft.edits.clone();
-                                proposed.add.push(AddLineConstraint::Line {
+                                proposed.add.push(AddSketchConstraint::Line(AddLineConstraint::Line {
                                     curve: draft.selected.expect("selected"),
                                     kind,
-                                });
+                                }));
                                 match draft.choice.validate_edits(&proposed) {
                                     Ok(()) => {
                                         draft.history.change(&mut draft.edits, proposed);
@@ -235,10 +372,10 @@ impl Editor {
                                 .and_then(LineLengthMm::new);
                             match length.and_then(|length| {
                                 let mut proposed = draft.edits.clone();
-                                proposed.add.push(AddLineConstraint::Line {
+                                proposed.add.push(AddSketchConstraint::Line(AddLineConstraint::Line {
                                     curve: draft.selected.expect("selected"),
                                     kind: LineConstraintKind::Distance(length),
-                                });
+                                }));
                                 draft.choice.validate_edits(&proposed)?;
                                 Ok(proposed)
                             }) {
@@ -314,6 +451,7 @@ impl Editor {
                             ));
                         }
                     });
+                    }
                     ui.horizontal(|ui| {
                         ui.label("Fixed X (mm):");
                         ui.add(egui::TextEdit::singleline(&mut draft.pin_x_mm)
@@ -321,7 +459,7 @@ impl Editor {
                         ui.label("Fixed Y (mm):");
                         ui.add(egui::TextEdit::singleline(&mut draft.pin_y_mm)
                             .id_salt("fixed-y-mm").desired_width(80.));
-                        if ui
+                        if circles.is_empty() && ui
                             .add_enabled(draft.selected.is_some(), egui::Button::new("Add Fixed point"))
                             .clicked()
                         {
@@ -329,14 +467,14 @@ impl Editor {
                             let y = coordinate(&draft.pin_y_mm);
                             match x.and_then(|x| y.map(|y| (x, y))).and_then(|(x, y)| {
                                 let mut proposed = draft.edits.clone();
-                                proposed.add.push(AddLineConstraint::Line {
+                                proposed.add.push(AddSketchConstraint::Line(AddLineConstraint::Line {
                                     curve: draft.selected.expect("selected"),
                                     kind: LineConstraintKind::Fixed {
                                         at: draft.endpoint,
                                         x,
                                         y,
                                     },
-                                });
+                                }));
                                 draft.choice.validate_edits(&proposed)?;
                                 Ok(proposed)
                             }) {
@@ -348,6 +486,7 @@ impl Editor {
                             }
                         }
                     });
+                    if circles.is_empty() {
                     // Two explicit picks from the same stored list; neither leads.
                     ui.horizontal(|ui| {
                         ui.label("Line pair:");
@@ -390,10 +529,10 @@ impl Editor {
                                 draft.pair_b.expect("Line B"),
                             );
                             let mut proposed = draft.edits.clone();
-                            proposed.add.push(match make {
+                            proposed.add.push(AddSketchConstraint::Line(match make {
                                 Some(relation) => AddLineConstraint::Relation { a, b, relation },
                                 None => AddLineConstraint::EqualLength { a, b },
-                            });
+                            }));
                             match draft.choice.validate_edits(&proposed) {
                                 Ok(()) => {
                                     draft.history.change(&mut draft.edits, proposed);
@@ -403,6 +542,7 @@ impl Editor {
                             }
                         }
                     });
+                    }
                     ui.label("Persisted constraints:");
                     egui::ScrollArea::vertical()
                         .id_salt("stored-constraints")
@@ -419,6 +559,15 @@ impl Editor {
                                     SketchConstraintRule::Distance { a, distance, .. } => {
                                         (format!("Line length {distance} mm"), Some(one_line(a.curve)))
                                     }
+                                    SketchConstraintRule::Radius { curve, radius } => (
+                                        format!("Radius {radius} mm"),
+                                        Some(format!("Circle {curve}")),
+                                    ),
+                                    SketchConstraintRule::Fixed { point, x, y }
+                                        if point.at == ferritecad_document::SketchPointSelector::Center => (
+                                        format!("Fixed centre ({x}, {y}) mm"),
+                                        Some(format!("Circle {}", point.curve)),
+                                    ),
                                     SketchConstraintRule::Fixed { point, x, y } => (
                                         format!("Fixed point {} ({x}, {y}) mm", point.at.as_str()),
                                         Some(one_line(point.curve)),
@@ -456,7 +605,11 @@ impl Editor {
                                 });
                             }
                             if stored.constraints.is_empty() {
-                                ui.label("None. Closure links will be explicit in the saved copy.");
+                                ui.label(if circles.is_empty() {
+                                    "None. Closure links will be explicit in the saved copy."
+                                } else {
+                                    "None. The circle is already closed."
+                                });
                             }
                         });
                     ui.label("Pending additions:");
@@ -518,13 +671,13 @@ fn stored_line_length(
     })
 }
 
-fn line_distance_on(add: &AddLineConstraint, curve: StableEntityId) -> bool {
+fn line_distance_on(add: &AddSketchConstraint, curve: StableEntityId) -> bool {
     matches!(
         *add,
-        AddLineConstraint::Line {
+        AddSketchConstraint::Line(AddLineConstraint::Line {
             curve: on,
             kind: LineConstraintKind::Distance(_)
-        } if on == curve
+        }) if on == curve
     )
 }
 
@@ -544,10 +697,10 @@ fn replace_stored_length(
     if !proposed.remove.contains(&stored) {
         proposed.remove.push(stored);
     }
-    let addition = AddLineConstraint::Line {
+    let addition = AddSketchConstraint::Line(AddLineConstraint::Line {
         curve,
         kind: LineConstraintKind::Distance(length),
-    };
+    });
     match proposed
         .add
         .iter()
@@ -604,12 +757,27 @@ fn kind_name(kind: LineConstraintKind) -> String {
         }
     }
 }
-fn addition_name(add: &AddLineConstraint) -> String {
-    match *add {
+fn addition_name(add: &AddSketchConstraint) -> String {
+    let line = match *add {
+        AddSketchConstraint::Circle { curve, kind } => {
+            return format!("{} · Circle {curve}", circle_kind_name(kind));
+        }
+        AddSketchConstraint::Line(line) => line,
+    };
+    match line {
         AddLineConstraint::Line { curve, kind } => format!("{} · Line {curve}", kind_name(kind)),
         AddLineConstraint::EqualLength { a, b } => format!("Equal length · Lines {a} = {b}"),
         AddLineConstraint::Relation { a, b, relation } => {
             format!("{} · Lines {a} and {b}", relation.as_str())
+        }
+    }
+}
+
+fn circle_kind_name(kind: CircleConstraintKind) -> String {
+    match kind {
+        CircleConstraintKind::Radius(radius) => format!("Radius {} mm", radius.get()),
+        CircleConstraintKind::FixedCenter { x, y } => {
+            format!("Fixed centre ({}, {}) mm", x.get(), y.get())
         }
     }
 }
@@ -636,21 +804,37 @@ mod tests {
     use ferritecad_document::Document;
     use ferritecad_kernel::OperationContext;
     /// The single-Line halves of a pending request, in the request's own words.
-    fn kind_of(add: &AddLineConstraint) -> LineConstraintKind {
+    fn kind_of(add: &AddSketchConstraint) -> LineConstraintKind {
         match *add {
-            AddLineConstraint::Line { kind, .. } => kind,
+            AddSketchConstraint::Line(AddLineConstraint::Line { kind, .. }) => kind,
             _ => panic!("a pair relationship names no single Line"),
         }
     }
-    fn curve_of(add: &AddLineConstraint) -> StableEntityId {
+    fn curve_of(add: &AddSketchConstraint) -> StableEntityId {
         match *add {
-            AddLineConstraint::Line { curve, .. } => curve,
+            AddSketchConstraint::Line(AddLineConstraint::Line { curve, .. }) => curve,
             _ => panic!("a pair relationship names no single Line"),
         }
     }
     /// One addition as the peer CLI spells it in request v1.
-    fn peer_addition(add: &AddLineConstraint) -> String {
-        let (curve, kind) = match *add {
+    fn peer_addition(add: &AddSketchConstraint) -> String {
+        let add = match *add {
+            AddSketchConstraint::Circle { curve, kind } => {
+                return match kind {
+                    CircleConstraintKind::Radius(radius) => format!(
+                        r#"{{"rule":"radius","curve_id":"{curve}","radius_mm":{}}}"#,
+                        radius.get()
+                    ),
+                    CircleConstraintKind::FixedCenter { x, y } => format!(
+                        r#"{{"rule":"fixed","curve_id":"{curve}","at":"center","x_mm":{},"y_mm":{}}}"#,
+                        x.get(),
+                        y.get()
+                    ),
+                };
+            }
+            AddSketchConstraint::Line(line) => line,
+        };
+        let (curve, kind) = match add {
             AddLineConstraint::EqualLength { a, b } => {
                 return format!(
                     r#"{{"rule":"equal_length","a_curve_id":"{a}","b_curve_id":"{b}"}}"#
@@ -839,22 +1023,22 @@ mod tests {
             &SketchConstraintEdits {
                 remove: vec![],
                 add: vec![
-                    AddLineConstraint::Line {
+                    AddSketchConstraint::Line(AddLineConstraint::Line {
                         curve: curves[0].id,
                         kind: LineConstraintKind::Horizontal,
-                    },
-                    AddLineConstraint::Line {
+                    }),
+                    AddSketchConstraint::Line(AddLineConstraint::Line {
                         curve: curves[1].id,
                         kind: LineConstraintKind::Vertical,
-                    },
-                    AddLineConstraint::Line {
+                    }),
+                    AddSketchConstraint::Line(AddLineConstraint::Line {
                         curve: curves[0].id,
                         kind: LineConstraintKind::Distance(LineLengthMm::new(60.).expect("60")),
-                    },
-                    AddLineConstraint::Line {
+                    }),
+                    AddSketchConstraint::Line(AddLineConstraint::Line {
                         curve: curves[1].id,
                         kind: LineConstraintKind::Distance(LineLengthMm::new(30.).expect("30")),
-                    },
+                    }),
                 ],
             },
         )
@@ -1110,10 +1294,10 @@ mod tests {
         assert_eq!(first.0.remove, vec![d60.0]);
         assert_eq!(
             first.0.add,
-            vec![AddLineConstraint::Line {
+            vec![AddSketchConstraint::Line(AddLineConstraint::Line {
                 curve: curves[0].id,
                 kind: LineConstraintKind::Distance(LineLengthMm::new(55.).expect("55")),
-            }]
+            })]
         );
         assert_eq!(first.1.len(), 1);
         assert!(first.2.is_empty());
@@ -1129,10 +1313,10 @@ mod tests {
         assert_eq!(second.0.remove, vec![d60.0]);
         assert_eq!(
             second.0.add,
-            vec![AddLineConstraint::Line {
+            vec![AddSketchConstraint::Line(AddLineConstraint::Line {
                 curve: curves[0].id,
                 kind: LineConstraintKind::Distance(LineLengthMm::new(50.).expect("50")),
-            }]
+            })]
         );
         assert_eq!(
             second.1.len(),
@@ -1181,18 +1365,18 @@ mod tests {
         assert_eq!(
             mixed.add,
             vec![
-                AddLineConstraint::Line {
+                AddSketchConstraint::Line(AddLineConstraint::Line {
                     curve: curves[2].id,
                     kind: LineConstraintKind::Horizontal,
-                },
-                AddLineConstraint::Line {
+                }),
+                AddSketchConstraint::Line(AddLineConstraint::Line {
                     curve: curves[3].id,
                     kind: LineConstraintKind::Distance(LineLengthMm::new(40.).expect("40")),
-                },
-                AddLineConstraint::Line {
+                }),
+                AddSketchConstraint::Line(AddLineConstraint::Line {
                     curve: curves[0].id,
                     kind: LineConstraintKind::Distance(LineLengthMm::new(55.).expect("55")),
-                },
+                }),
             ]
         );
         enter_length(&ctx, &mut e, "50", false);
@@ -1215,14 +1399,14 @@ mod tests {
         assert_eq!(
             reverted.add,
             vec![
-                AddLineConstraint::Line {
+                AddSketchConstraint::Line(AddLineConstraint::Line {
                     curve: curves[2].id,
                     kind: LineConstraintKind::Horizontal,
-                },
-                AddLineConstraint::Line {
+                }),
+                AddSketchConstraint::Line(AddLineConstraint::Line {
                     curve: curves[3].id,
                     kind: LineConstraintKind::Distance(LineLengthMm::new(40.).expect("40")),
-                },
+                }),
             ]
         );
         click(&ctx, &mut e, "Undo");
@@ -1340,7 +1524,7 @@ mod tests {
         let h = e.draft.as_ref().expect("draft").edits.clone();
         assert_eq!(
             h.add,
-            vec![AddLineConstraint::Line {
+            vec![AddSketchConstraint::Line(AddLineConstraint::Line {
                 curve: source.constraint_sketches[0]
                     .stored
                     .as_ref()
@@ -1348,7 +1532,7 @@ mod tests {
                     .curves[0]
                     .id,
                 kind: LineConstraintKind::Horizontal
-            }]
+            })]
         );
         click(&ctx, &mut e, "Undo");
         let empty_with_redo = history_state(&e);
@@ -1429,10 +1613,10 @@ mod tests {
                 choice.sketch,
                 &SketchConstraintEdits {
                     remove: vec![],
-                    add: vec![AddLineConstraint::Line {
+                    add: vec![AddSketchConstraint::Line(AddLineConstraint::Line {
                         curve: choice.stored.as_ref().expect("stored").curves[0].id,
                         kind,
-                    }],
+                    })],
                 },
             )
             .expect("prepare persisted H");
@@ -1489,14 +1673,14 @@ mod tests {
             .map(|_| SketchConstraintEdits {
                 remove: vec![StableEntityId::new(), StableEntityId::new()],
                 add: vec![
-                    AddLineConstraint::Line {
+                    AddSketchConstraint::Line(AddLineConstraint::Line {
                         curve: StableEntityId::new(),
                         kind: LineConstraintKind::Vertical,
-                    },
-                    AddLineConstraint::Line {
+                    }),
+                    AddSketchConstraint::Line(AddLineConstraint::Line {
                         curve: StableEntityId::new(),
                         kind: LineConstraintKind::Horizontal,
-                    },
+                    }),
                 ],
             })
             .collect();
@@ -1575,16 +1759,16 @@ mod tests {
                     &SketchConstraintEdits {
                         remove: vec![],
                         add: vec![
-                            AddLineConstraint::Line {
+                            AddSketchConstraint::Line(AddLineConstraint::Line {
                                 curve: sketch.curves.last().expect("curve").id,
                                 kind: LineConstraintKind::Horizontal,
-                            },
-                            AddLineConstraint::Line {
+                            }),
+                            AddSketchConstraint::Line(AddLineConstraint::Line {
                                 curve: sketch.curves.last().expect("curve").id,
                                 kind: LineConstraintKind::Distance(
                                     LineLengthMm::new(42.).expect("42"),
                                 ),
-                            },
+                            }),
                         ],
                     },
                 )
@@ -1616,9 +1800,11 @@ mod tests {
                 .curves
                 .iter()
                 .step_by(2)
-                .map(|c| AddLineConstraint::Line {
-                    curve: c.id,
-                    kind: LineConstraintKind::Horizontal,
+                .map(|c| {
+                    AddSketchConstraint::Line(AddLineConstraint::Line {
+                        curve: c.id,
+                        kind: LineConstraintKind::Horizontal,
+                    })
                 })
                 .collect();
             draft
@@ -1775,10 +1961,10 @@ mod tests {
             choice.sketch,
             &SketchConstraintEdits {
                 remove: vec![],
-                add: vec![AddLineConstraint::Line {
+                add: vec![AddSketchConstraint::Line(AddLineConstraint::Line {
                     curve,
                     kind: pin(LineEndpoint::End, 12.5, -0.5),
-                }],
+                })],
             },
         )
         .expect("prepare pin");
@@ -1796,6 +1982,367 @@ mod tests {
             x: SketchCoordinateMm::new(x).expect("x"),
             y: SketchCoordinateMm::new(y).expect("y"),
         }
+    }
+
+    /// A real §25J cylinder and the accepted reading a form may read from.
+    fn circle_fixture() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
+        let root = tempfile::tempdir().expect("dir");
+        let path = root.path().join("cylinder.fcad");
+        ferritecad_jobs::create_document_with_kernel(
+            ferritecad_jobs::CreateDocumentRequest::new(
+                &path,
+                ferritecad_jobs::NewDocument::CircleExtrude(
+                    ferritecad_document::CircleExtrusion::new([12., -7.], 10., 15.)
+                        .expect("a circle"),
+                ),
+                "test",
+            ),
+            ferritecad_occt::OcctKernel::new,
+            &OperationContext::default(),
+        )
+        .expect("source");
+        let d = Document::open_read_only(&path).expect("doc");
+        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        d.close().expect("close");
+        (root, path, source)
+    }
+
+    /// The circle half of the same form, through real widgets and real clicks.
+    #[test]
+    fn circle_widgets_add_a_radius_and_a_fixed_centre_as_one_request_each() {
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: no OCCT for the accepted scene this form reads");
+            return;
+        }
+        let (_root, path, source) = circle_fixture();
+        let id = source.constraint_sketches[0].sketch;
+        let stored = source.constraint_sketches[0]
+            .stored
+            .clone()
+            .expect("a supported circle profile");
+        let curve = stored.curves[0].id;
+
+        let mut e = Editor::default();
+        assert!(e.begin(&path, &source, id), "the circle profile is offered");
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+
+        // The form names the circle by its own UUID and its stored numbers, and
+        // offers no Line row for it.
+        let out = frame(&ctx, &mut e, vec![]);
+        let drawn: Vec<String> = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            drawn
+                .iter()
+                .any(|l| l.starts_with("Circle ·") && l.contains("radius 10 mm")),
+            "the form does not offer the stored circle: {drawn:?}"
+        );
+        assert!(
+            !drawn.iter().any(|l| l.starts_with("Segment ")),
+            "a circle profile offered a Line segment: {drawn:?}"
+        );
+
+        // Nothing is selected yet, so nothing may be added.
+        click(&ctx, &mut e, "Add radius");
+        assert!(
+            e.draft.as_ref().expect("draft").edits.add.is_empty(),
+            "an unselected circle accepted a radius"
+        );
+
+        click(&ctx, &mut e, &format!("Circle · {}", short(curve)));
+        assert_eq!(e.draft.as_ref().expect("draft").selected, Some(curve));
+
+        // A radius that is not a positive number is refused in the form and
+        // changes no history.
+        for bad in ["", "0", "-4", "banana"] {
+            enter_field(&ctx, &mut e, "Radius mm", bad, false);
+            click(&ctx, &mut e, "Add radius");
+            let draft = e.draft.as_ref().expect("draft");
+            assert!(draft.edits.add.is_empty(), "radius {bad:?} was accepted");
+            assert!(draft.refusal.is_some(), "radius {bad:?} said nothing");
+            assert!(draft.history.undo.is_empty());
+        }
+
+        // One accepted radius is one request and one history step.
+        enter_field(&ctx, &mut e, "Radius mm", "6.75", false);
+        click(&ctx, &mut e, "Add radius");
+        let draft = e.draft.as_ref().expect("draft");
+        assert_eq!(draft.refusal, None);
+        assert_eq!(
+            draft.edits.add,
+            vec![AddSketchConstraint::Circle {
+                curve,
+                kind: CircleConstraintKind::Radius(CircleRadiusMm::new(6.75).expect("positive")),
+            }]
+        );
+        assert_eq!(draft.history.undo.len(), 1, "one add, one step");
+
+        // A second radius on the same circle is the occupied slot, refused by
+        // the document's own rule rather than by a copy of it here.
+        enter_field(&ctx, &mut e, "Radius mm", "8.125", false);
+        click(&ctx, &mut e, "Add radius");
+        let draft = e.draft.as_ref().expect("draft");
+        assert_eq!(draft.edits.add.len(), 1, "a second radius was accepted");
+        assert!(
+            draft
+                .refusal
+                .as_deref()
+                .is_some_and(|r| r.contains("only one radius")),
+            "{:?}",
+            draft.refusal
+        );
+
+        // The centre pin uses the same X/Y boxes the Line pin uses, and lands
+        // as a circle addition with the centre selector.
+        enter_field(&ctx, &mut e, "Fixed X (mm):", "-3.5", false);
+        enter_field(&ctx, &mut e, "Fixed Y (mm):", "4.25", false);
+        click(&ctx, &mut e, "Add Fixed centre");
+        let draft = e.draft.as_ref().expect("draft");
+        assert_eq!(draft.refusal, None);
+        assert_eq!(draft.edits.add.len(), 2);
+        assert_eq!(
+            draft.edits.add[1],
+            AddSketchConstraint::Circle {
+                curve,
+                kind: CircleConstraintKind::FixedCenter {
+                    x: SketchCoordinateMm::new(-3.5).expect("finite"),
+                    y: SketchCoordinateMm::new(4.25).expect("finite"),
+                },
+            }
+        );
+        assert_eq!(draft.history.undo.len(), 2);
+
+        // Undo and Redo move the request and ask no job for anything.
+        click(&ctx, &mut e, "Undo");
+        assert_eq!(e.draft.as_ref().expect("draft").edits.add.len(), 1);
+        assert!(e.take_request().is_none(), "Undo submitted a job");
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(e.draft.as_ref().expect("draft").edits.add.len(), 2);
+        assert!(e.take_request().is_none(), "Redo submitted a job");
+
+        // Saving hands over exactly the request the widgets built.
+        click(&ctx, &mut e, "Save constraints copy…");
+        let request = e.take_request().expect("real widget request");
+        assert_eq!(request.sketch, id);
+        assert_eq!(request.source, path);
+        assert_eq!(request.expected, source.version);
+        assert_eq!(request.edits.remove, Vec::new());
+        assert_eq!(request.edits.add.len(), 2);
+        assert!(e.take_request().is_none(), "one press, one request");
+
+        // Reopen a persisted request: the radius must remain editable by its
+        // own UUID, rather than falling into the non-removable closure row.
+        let mut document = Document::open(&path).expect("open fixture");
+        let prepared =
+            ferritecad_document::prepare_sketch_constraints(&document, id, &request.edits)
+                .expect("prepare circle constraints");
+        let radius_id = prepared.added[0].id;
+        let pin_id = prepared.added[1].id;
+        document
+            .write_sketch_constraints(&prepared)
+            .expect("persist");
+        let reading = ExtrudeEditSource::read(&document).expect("read persisted");
+        document.close().expect("close");
+        let mut e = Editor::default();
+        let ctx = egui::Context::default();
+        assert!(e.begin(&path, &reading, id));
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        let radius_row = format!("Radius 6.75 mm · {radius_id}");
+        let out = frame(&ctx, &mut e, vec![]);
+        assert!(
+            painted(&out, &radius_row),
+            "persisted Radius must not be labelled closure"
+        );
+        assert!(painted(
+            &out,
+            &format!("Fixed centre (-3.5, 4.25) mm · {pin_id}")
+        ));
+        assert!(
+            !painted(&out, "Add Horizontal"),
+            "circle must not offer Line actions"
+        );
+        assert!(!painted(&out, "Pin Start"), "circle has no endpoints");
+        click_remove_on_row(&ctx, &mut e, &radius_row);
+        assert_eq!(history_state(&e).0.remove, vec![radius_id]);
+        click(&ctx, &mut e, &format!("Circle · {}", short(curve)));
+        enter_field(&ctx, &mut e, "Radius mm", "8.125", false);
+        click(&ctx, &mut e, "Add radius");
+        let replacement = history_state(&e).0;
+        assert_eq!(replacement.remove, vec![radius_id]);
+        assert_eq!(
+            replacement.add,
+            vec![AddSketchConstraint::Circle {
+                curve,
+                kind: CircleConstraintKind::Radius(CircleRadiusMm::new(8.125).expect("radius")),
+            }]
+        );
+        click(&ctx, &mut e, "Undo");
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(history_state(&e).0, replacement);
+        click(&ctx, &mut e, "Save constraints copy…");
+        assert_eq!(
+            e.take_request().expect("replacement request").edits,
+            replacement
+        );
+        // Removing both is also possible; the centre remains a separate UUID.
+        click(&ctx, &mut e, "Clear pending changes");
+        click_remove_on_row(&ctx, &mut e, &radius_row);
+        click_remove_on_row(
+            &ctx,
+            &mut e,
+            &format!("Fixed centre (-3.5, 4.25) mm · {pin_id}"),
+        );
+        click(&ctx, &mut e, "Save constraints copy…");
+        let removed = e.take_request().expect("remove both request").edits;
+        assert_eq!(removed.remove, vec![radius_id, pin_id]);
+        assert!(removed.add.is_empty());
+    }
+
+    #[test]
+    fn native_circle_constraint_worker_and_cli_publish_the_same_solid() {
+        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+            eprintln!("skipped: circle constraint worker needs OCCT and planegcs");
+            return;
+        }
+        let (root, path, source) = circle_fixture();
+        let before = std::fs::read(&path).expect("source");
+        let choice = &source.constraint_sketches[0];
+        let curve = choice.stored.as_ref().expect("circle").curves[0].id;
+        let mut e = Editor::default();
+        let ctx = egui::Context::default();
+        assert!(e.begin(&path, &source, choice.sketch));
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        click(&ctx, &mut e, &format!("Circle · {}", short(curve)));
+        enter_field(&ctx, &mut e, "Radius mm", "6.75", false);
+        click(&ctx, &mut e, "Add radius");
+        enter_field(&ctx, &mut e, "Fixed X (mm):", "-3.5", false);
+        enter_field(&ctx, &mut e, "Fixed Y (mm):", "4.25", false);
+        click(&ctx, &mut e, "Add Fixed centre");
+        click(&ctx, &mut e, "Save constraints copy…");
+        let mut request = e.take_request().expect("widget request");
+        let additions = request
+            .edits
+            .add
+            .iter()
+            .map(peer_addition)
+            .collect::<Vec<_>>()
+            .join(",");
+        let ui = root.path().join("worker.fcad");
+        request.destination = ui.clone();
+        let mut state = crate::edits::Edits::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        state
+            .start_constraints(request, move |r, g, c| {
+                crate::edits::spawn_constraint_edit(r, c, move |result| {
+                    tx.send((g, result)).expect("reply")
+                })
+            })
+            .expect("worker");
+        let (g, result) = rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("worker response");
+        assert_eq!(
+            result
+                .as_ref()
+                .expect("published")
+                .solve
+                .as_ref()
+                .expect("solve")
+                .degrees_of_freedom(),
+            0
+        );
+        assert_eq!(finish_edit(&mut e, &mut state, g, result), Some(ui.clone()));
+        assert!(!e.active());
+        let input = root.path().join("request.json");
+        std::fs::write(
+            &input,
+            format!(r#"{{"request_version":1,"remove":[],"add":[{additions}]}}"#),
+        )
+        .expect("input");
+        let peer = root.path().join("peer.fcad");
+        let result = std::process::Command::new(crate::creates::tests::ferritecad())
+            .arg("edit-sketch-constraints-copy")
+            .arg(&path)
+            .arg("--sketch")
+            .arg(choice.sketch.to_string())
+            .arg("--expect-version")
+            .arg(source.version.content.to_string())
+            .arg("--request")
+            .arg(input)
+            .arg("-o")
+            .arg(&peer)
+            .arg("--json")
+            .output()
+            .expect("peer");
+        assert!(result.status.success(), "{result:?}");
+        let a = Document::open_read_only(&ui).expect("worker copy");
+        let b = Document::open_read_only(&peer).expect("CLI copy");
+        assert_eq!(a.meta().document_id, b.meta().document_id);
+        assert_eq!(
+            a.topology_refs().expect("refs"),
+            b.topology_refs().expect("refs")
+        );
+        assert_eq!(
+            a.dependencies().expect("dependencies"),
+            b.dependencies().expect("dependencies")
+        );
+        for mut left in a.objects().expect("objects") {
+            let right = b.object(left.id).expect("read").expect("same object");
+            if let (
+                ferritecad_document::ObjectPayload::Sketch(s),
+                ferritecad_document::ObjectPayload::Sketch(t),
+            ) = (&mut left.payload, &right.payload)
+            {
+                assert_eq!(s.curves, choice.stored.as_ref().expect("stored").curves);
+                assert_eq!(s.constraints.len(), 2);
+                for (x, y) in s.constraints.iter_mut().zip(&t.constraints) {
+                    assert_ne!(x.id, y.id, "only newly minted UUIDs differ");
+                    x.id = y.id;
+                }
+                assert_eq!(s, t);
+            } else {
+                assert_eq!(left, right);
+            }
+        }
+        a.close().expect("close");
+        b.close().expect("close");
+        for format in ["stl", "fbx"] {
+            let mut exports = Vec::new();
+            for model in [&ui, &peer] {
+                let output = model.with_extension(format);
+                let result = std::process::Command::new(crate::creates::tests::ferritecad())
+                    .arg(format!("export-{format}"))
+                    .arg(model)
+                    .arg("-o")
+                    .arg(&output)
+                    .arg("--json")
+                    .output()
+                    .expect("export");
+                assert!(result.status.success(), "{result:?}");
+                exports.push(std::fs::read(output).expect("export bytes"));
+            }
+            assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
+        }
+        assert_eq!(std::fs::read(&path).expect("source"), before);
     }
 
     #[test]
@@ -1838,10 +2385,10 @@ mod tests {
         let accepted = history_state(&e).0;
         assert_eq!(
             accepted.add,
-            vec![AddLineConstraint::Line {
+            vec![AddSketchConstraint::Line(AddLineConstraint::Line {
                 curve: curves[0].id,
                 kind: pin(LineEndpoint::End, 10., -5.),
-            }]
+            })]
         );
         assert!(
             painted(
@@ -1956,7 +2503,7 @@ mod tests {
         assert_eq!(replacement.remove, vec![pin_id]);
         assert_eq!(
             replacement.add,
-            vec![AddLineConstraint::Line {
+            vec![AddSketchConstraint::Line(AddLineConstraint::Line {
                 curve: stored_source.constraint_sketches[0]
                     .stored
                     .as_ref()
@@ -1964,7 +2511,7 @@ mod tests {
                     .curves[2]
                     .id,
                 kind: pin(LineEndpoint::Start, -7.5, 4.),
-            }]
+            })]
         );
         assert_ne!(curve_of(&replacement.add[0]), pinned_curve);
         stored_source.constraint_sketches[0]
@@ -1991,10 +2538,10 @@ mod tests {
             choice.sketch,
             &SketchConstraintEdits {
                 remove: vec![],
-                add: vec![AddLineConstraint::EqualLength {
+                add: vec![AddSketchConstraint::Line(AddLineConstraint::EqualLength {
                     a: pair[0],
                     b: pair[1],
-                }],
+                })],
             },
         )
         .expect("prepare equality");
@@ -2049,10 +2596,10 @@ mod tests {
         let accepted = history_state(&e).0;
         assert_eq!(
             accepted.add,
-            vec![AddLineConstraint::EqualLength {
+            vec![AddSketchConstraint::Line(AddLineConstraint::EqualLength {
                 a: curves[0],
                 b: curves[1],
-            }]
+            })]
         );
         assert!(
             painted(
@@ -2123,10 +2670,10 @@ mod tests {
         assert_eq!(replacement.remove, vec![equal_id]);
         assert_eq!(
             replacement.add,
-            vec![AddLineConstraint::EqualLength {
+            vec![AddSketchConstraint::Line(AddLineConstraint::EqualLength {
                 a: curves[0],
                 b: curves[3],
-            }]
+            })]
         );
         stored_source.constraint_sketches[0]
             .validate_edits(&replacement)
@@ -2154,11 +2701,11 @@ mod tests {
             choice.sketch,
             &SketchConstraintEdits {
                 remove: vec![],
-                add: vec![AddLineConstraint::Relation {
+                add: vec![AddSketchConstraint::Line(AddLineConstraint::Relation {
                     a: pair[0],
                     b: pair[1],
                     relation,
-                }],
+                })],
             },
         )
         .expect("prepare relation");
@@ -2210,11 +2757,11 @@ mod tests {
         let accepted = history_state(&e).0;
         assert_eq!(
             accepted.add,
-            vec![AddLineConstraint::Relation {
+            vec![AddSketchConstraint::Line(AddLineConstraint::Relation {
                 a: curves[0],
                 b: curves[1],
                 relation: LineRelation::Parallel,
-            }]
+            })]
         );
         assert!(
             painted(
@@ -2268,10 +2815,10 @@ mod tests {
             with_equality.add,
             [
                 accepted.add.clone(),
-                vec![AddLineConstraint::EqualLength {
+                vec![AddSketchConstraint::Line(AddLineConstraint::EqualLength {
                     a: curves[0],
                     b: curves[1],
-                }]
+                })]
             ]
             .concat()
         );
@@ -2314,11 +2861,11 @@ mod tests {
         assert_eq!(replacement.remove, vec![relation_id]);
         assert_eq!(
             replacement.add,
-            vec![AddLineConstraint::Relation {
+            vec![AddSketchConstraint::Line(AddLineConstraint::Relation {
                 a: pair[0],
                 b: pair[1],
                 relation: LineRelation::Parallel,
-            }]
+            })]
         );
         stored_source.constraint_sketches[0]
             .validate_edits(&replacement)
@@ -2407,10 +2954,10 @@ mod tests {
         let expected_edits = e.draft.as_ref().expect("draft").edits.clone();
         assert_eq!(
             expected_edits.add.last().expect("pin"),
-            &AddLineConstraint::Line {
+            &AddSketchConstraint::Line(AddLineConstraint::Line {
                 curve: curves[0].id,
                 kind: pin(LineEndpoint::Start, 10., -5.),
-            }
+            })
         );
         click(&ctx, &mut e, "Undo");
         click(&ctx, &mut e, "Redo");
@@ -2430,7 +2977,12 @@ mod tests {
             })
             .expect("worker");
         let (g, result) = rx.recv().expect("worker reply");
-        let solved = result.as_ref().expect("published").solve.clone();
+        let solved = result
+            .as_ref()
+            .expect("published")
+            .solve
+            .clone()
+            .expect("a Line profile keeps its closure, so there is always a solve");
         assert_eq!(
             solved.degrees_of_freedom(),
             0,
@@ -2722,10 +3274,10 @@ mod tests {
         let expected_edits = e.draft.as_ref().expect("draft").edits.clone();
         assert_eq!(
             expected_edits.add.last().expect("equality"),
-            &AddLineConstraint::EqualLength {
+            &AddSketchConstraint::Line(AddLineConstraint::EqualLength {
                 a: curves[0].id,
                 b: curves[1].id,
-            }
+            })
         );
         click(&ctx, &mut e, "Undo");
         click(&ctx, &mut e, "Redo");
@@ -2746,7 +3298,12 @@ mod tests {
             })
             .expect("worker");
         let (g, result) = rx.recv().expect("worker reply");
-        let solved = result.as_ref().expect("published").solve.clone();
+        let solved = result
+            .as_ref()
+            .expect("published")
+            .solve
+            .clone()
+            .expect("a Line profile keeps its closure, so there is always a solve");
         assert_eq!(
             solved.degrees_of_freedom(),
             0,
@@ -3028,21 +3585,21 @@ mod tests {
         assert_eq!(
             expected_edits.add[..3],
             [
-                AddLineConstraint::Relation {
+                AddSketchConstraint::Line(AddLineConstraint::Relation {
                     a: curves[0].id,
                     b: curves[2].id,
                     relation: LineRelation::Parallel,
-                },
-                AddLineConstraint::Relation {
+                }),
+                AddSketchConstraint::Line(AddLineConstraint::Relation {
                     a: curves[1].id,
                     b: curves[3].id,
                     relation: LineRelation::Parallel,
-                },
-                AddLineConstraint::Relation {
+                }),
+                AddSketchConstraint::Line(AddLineConstraint::Relation {
                     a: curves[0].id,
                     b: curves[1].id,
                     relation: LineRelation::Perpendicular,
-                },
+                }),
             ]
         );
         click(&ctx, &mut e, "Undo");
@@ -3064,7 +3621,12 @@ mod tests {
             })
             .expect("worker");
         let (g, result) = rx.recv().expect("worker reply");
-        let solved = result.as_ref().expect("published").solve.clone();
+        let solved = result
+            .as_ref()
+            .expect("published")
+            .solve
+            .clone()
+            .expect("a Line profile keeps its closure, so there is always a solve");
         assert_eq!(
             solved.degrees_of_freedom(),
             3,
@@ -3599,10 +4161,10 @@ mod tests {
         assert_eq!(replaced.remove, vec![old_length]);
         assert_eq!(
             replaced.add,
-            vec![AddLineConstraint::Line {
+            vec![AddSketchConstraint::Line(AddLineConstraint::Line {
                 curve,
                 kind: LineConstraintKind::Distance(LineLengthMm::new(55.).expect("55")),
-            }]
+            })]
         );
         click(&ctx, &mut e, "Undo");
         assert_eq!(

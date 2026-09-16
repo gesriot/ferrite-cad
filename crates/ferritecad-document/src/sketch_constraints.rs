@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! Bounded persisted Line orientation/length/pin/equality/relation editing. No solver or wire format.
 use crate::{
-    Document, ObjectPayload, ObjectRecord, Sketch, SketchConstraint, SketchConstraintRule,
-    SketchPointRef, SketchPointSelector, SketchSegmentRef,
+    CircleExtrusion, Document, ObjectPayload, ObjectRecord, Sketch, SketchConstraint,
+    SketchConstraintRule, SketchGeometry, SketchPointRef, SketchPointSelector, SketchSegmentRef,
 };
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId};
 use std::collections::BTreeSet;
@@ -127,10 +127,79 @@ pub enum AddLineConstraint {
         relation: LineRelation,
     },
 }
+/// A finite, strictly positive circle radius in millimetres.
+///
+/// Its own type beside [`LineLengthMm`] rather than that one reused: a length
+/// between two points and the radius of a circle are different quantities of
+/// the same unit, and a request that could spell one where the other belongs
+/// would be one field away from giving a circle a line's dimension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CircleRadiusMm(u64);
+impl CircleRadiusMm {
+    pub fn new(value: f64) -> Result<Self> {
+        if !value.is_finite() || value <= 0. {
+            return Err(CadError::input(
+                "circle radius must be finite and positive in mm",
+            ));
+        }
+        Ok(Self(value.to_bits()))
+    }
+    pub fn get(self) -> f64 {
+        f64::from_bits(self.0)
+    }
+}
+
+/// What one addition says about one circle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CircleConstraintKind {
+    /// This circle's own radius in mm.
+    Radius(CircleRadiusMm),
+    /// This circle's centre pinned at explicit millimetres.
+    FixedCenter {
+        x: SketchCoordinateMm,
+        y: SketchCoordinateMm,
+    },
+}
+
+/// One requested addition, whichever geometry it is about.
+///
+/// Split by geometry rather than widened: [`AddLineConstraint`] keeps saying
+/// exactly what it always said about lines, and a circle addition cannot be
+/// spelled in its vocabulary by accident. The two families never mix in one
+/// sketch — a profile this editor manages is all lines or one circle — so the
+/// split is also what the request is really made of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddSketchConstraint {
+    Line(AddLineConstraint),
+    /// This circle's radius, or its pinned centre.
+    Circle {
+        curve: StableEntityId,
+        kind: CircleConstraintKind,
+    },
+}
+
+impl From<AddLineConstraint> for AddSketchConstraint {
+    fn from(line: AddLineConstraint) -> Self {
+        Self::Line(line)
+    }
+}
+
+/// Which geometry a managed profile is made of.
+///
+/// Read from the curves and from nothing else. The two families take different
+/// constraints, different slots and different closure rules, and deciding
+/// which is which once is what keeps every one of those from being guessed
+/// again further down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Family {
+    Lines,
+    Circle,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SketchConstraintEdits {
     pub remove: Vec<StableEntityId>,
-    pub add: Vec<AddLineConstraint>,
+    pub add: Vec<AddSketchConstraint>,
 }
 
 /// Same objects()/content-version snapshot as coordinate discovery; independent eligibility.
@@ -175,12 +244,57 @@ pub fn constraint_sketch_choices(
 }
 
 fn supported(document: &Document, objects: &[ObjectRecord], object: &ObjectRecord) -> Result<f64> {
-    let (_, height) = crate::sketch_edit::supported(document, objects, object, true)?;
-    let ObjectPayload::Sketch(sketch) = &object.payload else {
-        unreachable!("checked")
-    };
-    managed(sketch)?;
-    Ok(height)
+    supported_family(document, objects, object).map(|(_, height)| height)
+}
+
+/// The frame, the geometry family and the height, all from one reading.
+fn supported_family(
+    document: &Document,
+    objects: &[ObjectRecord],
+    object: &ObjectRecord,
+) -> Result<(Family, f64)> {
+    // The frame every copy edit of a saved profile requires is checked once,
+    // in the one place that owns it, before either family is considered.
+    let (sketch, height) = crate::sketch_edit::frame(document, objects, object)?;
+    let family = classify(sketch)?;
+    match family {
+        // Unchanged: the Line editor's own class, checked by its own code, so
+        // a profile it managed before this slice is managed identically now.
+        Family::Lines => {
+            crate::sketch_edit::supported(document, objects, object, true)?;
+        }
+        Family::Circle => {
+            let (_, center, radius) = crate::circle_edit::analytic_circle(&sketch.curves[0])?;
+            // The stored geometry has to be inside the policy new numbers are
+            // judged by, and it is the *same* policy: one numeric rule, asked
+            // here, in the request check and at creation alike.
+            CircleExtrusion::new([center.x, center.y], radius, height).map_err(|e| {
+                CadError::unsupported(format!("saved circle is outside edit policy: {e}"))
+            })?;
+        }
+    }
+    managed(sketch, family)?;
+    Ok((family, height))
+}
+
+/// Which family this sketch's curves make it, or why it is neither.
+fn classify(sketch: &Sketch) -> Result<Family> {
+    if sketch
+        .curves
+        .iter()
+        .all(|c| matches!(c.geometry, SketchGeometry::Line { .. }))
+        && !sketch.curves.is_empty()
+    {
+        return Ok(Family::Lines);
+    }
+    if let [only] = sketch.curves.as_slice()
+        && matches!(only.geometry, SketchGeometry::Circle { .. })
+    {
+        return Ok(Family::Circle);
+    }
+    Err(CadError::unsupported(
+        "constraint edit supports a profile of Lines or one analytic Circle",
+    ))
 }
 
 fn endpoints(curve: StableEntityId) -> (SketchPointRef, SketchPointRef) {
@@ -274,6 +388,12 @@ enum Slot {
     /// question about the pair, so they share this slot; an equal length on the
     /// same pair is a different question and has its own.
     Relation(StableEntityId, StableEntityId),
+    /// The one radius of one circle.
+    ///
+    /// Its own slot rather than [`Slot::Length`] reused: the two are different
+    /// dimensions of different geometry, and sharing a slot would make a
+    /// document's refusal message name a Line where a circle stands.
+    Radius(StableEntityId),
 }
 fn line_slot(curve: StableEntityId, kind: LineConstraintKind) -> Slot {
     match kind {
@@ -293,6 +413,21 @@ fn relation_slot(a: StableEntityId, b: StableEntityId) -> Slot {
     let (a, b) = sorted(a, b);
     Slot::Relation(a, b)
 }
+/// The slot a stored circle rule occupies, and the circle it names.
+///
+/// A pinned centre takes the profile-wide [`Slot::Pin`], the same slot a pinned
+/// Line endpoint takes: a profile holds one pin whichever geometry carries it,
+/// and the two families never share a profile anyway.
+fn circle_slot_of(rule: SketchConstraintRule) -> Option<(Slot, StableEntityId)> {
+    match rule {
+        SketchConstraintRule::Radius { curve, .. } => Some((Slot::Radius(curve), curve)),
+        SketchConstraintRule::Fixed { point, .. } if point.at == SketchPointSelector::Center => {
+            Some((Slot::Pin, point.curve))
+        }
+        _ => None,
+    }
+}
+
 /// The slot a stored rule occupies and every Line it names, or `None` when the
 /// rule is not one this family manages.
 fn slot_of(rule: SketchConstraintRule) -> Option<(Slot, [StableEntityId; 2])> {
@@ -306,8 +441,20 @@ fn slot_of(rule: SketchConstraintRule) -> Option<(Slot, [StableEntityId; 2])> {
     Some((line_slot(curve, kind), [curve, curve]))
 }
 /// The slot a requested addition occupies, refusing a pair that is not one.
-fn requested(add: &AddLineConstraint) -> Result<(Slot, [StableEntityId; 2])> {
-    Ok(match *add {
+fn requested(add: &AddSketchConstraint) -> Result<(Slot, [StableEntityId; 2])> {
+    let add = match *add {
+        AddSketchConstraint::Circle { curve, kind } => {
+            return Ok((
+                match kind {
+                    CircleConstraintKind::Radius(_) => Slot::Radius(curve),
+                    CircleConstraintKind::FixedCenter { .. } => Slot::Pin,
+                },
+                [curve, curve],
+            ));
+        }
+        AddSketchConstraint::Line(line) => line,
+    };
+    Ok(match add {
         AddLineConstraint::Line { curve, kind } => (line_slot(curve, kind), [curve, curve]),
         AddLineConstraint::EqualLength { a, b } => {
             if a == b {
@@ -340,11 +487,15 @@ fn occupied(slot: Slot) -> &'static str {
             "these two Lines already hold a Parallel or Perpendicular; remove it in the same request"
         }
         Slot::Orientation(_) => "a Line may hold only one H/V; remove its current constraint first",
+        Slot::Radius(_) => "a circle may hold only one radius; remove its current constraint first",
     }
 }
 
 /// Preserve only this declared family of stored relationships; never simplify others.
-fn managed(sketch: &Sketch) -> Result<()> {
+fn managed(sketch: &Sketch, family: Family) -> Result<()> {
+    if family == Family::Circle {
+        return managed_circle(sketch);
+    }
     let curve_ids: BTreeSet<_> = sketch.curves.iter().map(|c| c.id).collect();
     let expected: BTreeSet<_> = closures(sketch).into_iter().collect();
     let mut seen_ids = BTreeSet::new();
@@ -388,9 +539,42 @@ fn managed(sketch: &Sketch) -> Result<()> {
     Ok(())
 }
 
+/// The circle family's own version of the same rule.
+///
+/// A circle has no joints, so there is no closure to require and no Coincident
+/// to preserve: what a managed circle profile may hold is one radius and one
+/// pinned centre, both about the one curve, and nothing else.
+fn managed_circle(sketch: &Sketch) -> Result<()> {
+    let curve = sketch.curves[0].id;
+    let mut seen_ids = BTreeSet::new();
+    let mut slots = BTreeSet::new();
+    for c in &sketch.constraints {
+        if !seen_ids.insert(c.id) {
+            return Err(CadError::unsupported("duplicate constraint UUID"));
+        }
+        let Some((slot, named)) = circle_slot_of(c.rule) else {
+            return Err(CadError::unsupported(
+                "constraint edit supports only one positive radius and one fixed centre on an \
+                 analytic Circle",
+            ));
+        };
+        if named != curve || !slots.insert(slot) {
+            return Err(CadError::unsupported(match slot {
+                Slot::Pin => "constraint edit supports at most one fixed centre per circle",
+                _ => "constraint edit refuses more than one radius on a circle",
+            }));
+        }
+    }
+    Ok(())
+}
+
 /// Validate the atomic remove-then-add request without minting IDs or solving.
-fn retained(sketch: &Sketch, edits: &SketchConstraintEdits) -> Result<Vec<SketchConstraint>> {
-    managed(sketch)?;
+fn retained(
+    sketch: &Sketch,
+    family: Family,
+    edits: &SketchConstraintEdits,
+) -> Result<Vec<SketchConstraint>> {
+    managed(sketch, family)?;
     let count = edits.remove.len().saturating_add(edits.add.len());
     if count == 0 || count > 512 {
         return Err(CadError::input(
@@ -411,9 +595,13 @@ fn retained(sketch: &Sketch, edits: &SketchConstraintEdits) -> Result<Vec<Sketch
                     "constraint {id} does not belong to the selected Sketch"
                 ))
             })?;
-        if slot_of(c.rule).is_none() {
+        let removable = match family {
+            Family::Lines => slot_of(c.rule).is_some(),
+            Family::Circle => circle_slot_of(c.rule).is_some(),
+        };
+        if !removable {
             return Err(CadError::input(
-                "only H/V, Line length, equal length, Parallel/Perpendicular or the Fixed endpoint may be removed; closure links are retained",
+                "only H/V, Line length, equal length, Parallel/Perpendicular, the Fixed endpoint, a circle radius or a fixed centre may be removed; closure links are retained",
             ));
         }
     }
@@ -425,10 +613,28 @@ fn retained(sketch: &Sketch, edits: &SketchConstraintEdits) -> Result<Vec<Sketch
         .collect();
     let mut lines: BTreeSet<_> = kept
         .iter()
-        .filter_map(|c| slot_of(c.rule).map(|(slot, _)| slot))
+        .filter_map(|c| match family {
+            Family::Lines => slot_of(c.rule).map(|(slot, _)| slot),
+            Family::Circle => circle_slot_of(c.rule).map(|(slot, _)| slot),
+        })
         .collect();
     for add in &edits.add {
         let (slot, curves) = requested(add)?;
+        // An addition has to speak the family's own vocabulary. A radius asked
+        // of a Line profile and an H/V asked of a circle are both requests for
+        // geometry that is not there, and saying so beats storing a constraint
+        // the solver would then be asked to make sense of.
+        let fits = matches!(
+            (family, add),
+            (Family::Lines, AddSketchConstraint::Line(_))
+                | (Family::Circle, AddSketchConstraint::Circle { .. })
+        );
+        if !fits {
+            return Err(CadError::input(match family {
+                Family::Lines => "this Sketch is a Line profile and takes no circle constraint",
+                Family::Circle => "this Sketch is one analytic Circle and takes no Line constraint",
+            }));
+        }
         for curve in curves {
             if !sketch.curves.iter().any(|c| c.id == curve) {
                 return Err(CadError::input(format!(
@@ -448,7 +654,8 @@ impl ConstraintSketchChoice {
             .stored
             .as_ref()
             .ok_or_else(|| CadError::unsupported("unsupported constraint Sketch choice"))?;
-        retained(sketch, edits).map(|_| ())
+        let family = classify(sketch)?;
+        retained(sketch, family, edits).map(|_| ())
     }
 }
 
@@ -477,13 +684,14 @@ pub fn prepare_sketch_constraints(
         .find(|o| o.id == id)
         .cloned()
         .ok_or_else(|| CadError::input("selected Sketch UUID does not exist"))?;
-    let height_mm = supported(document, &objects, &object)?;
+    let (family, height_mm) = supported_family(document, &objects, &object)?;
     let ObjectPayload::Sketch(sketch) = &mut object.payload else {
         unreachable!("checked")
     };
-    let mut kept = retained(sketch, edits)?;
+    let mut kept = retained(sketch, family, edits)?;
     let mut added = Vec::new();
-    if !edits.add.is_empty() {
+    // A circle has no joints to close, so nothing is appended on its behalf.
+    if family == Family::Lines && !edits.add.is_empty() {
         for (i, pair) in closures(sketch).into_iter().enumerate() {
             if kept.iter().any(
                 |c| matches!(c.rule,SketchConstraintRule::Coincident{a,b} if unordered(a,b)==pair),
@@ -502,7 +710,30 @@ pub fn prepare_sketch_constraints(
         }
     }
     for add in &edits.add {
-        let rule = match *add {
+        let line = match *add {
+            AddSketchConstraint::Circle { curve, kind } => {
+                let rule = match kind {
+                    CircleConstraintKind::Radius(radius) => SketchConstraintRule::Radius {
+                        curve,
+                        radius: radius.get(),
+                    },
+                    CircleConstraintKind::FixedCenter { x, y } => SketchConstraintRule::Fixed {
+                        point: SketchPointRef::new(curve, SketchPointSelector::Center),
+                        x: x.get(),
+                        y: y.get(),
+                    },
+                };
+                let c = SketchConstraint {
+                    id: StableEntityId::new(),
+                    rule,
+                };
+                kept.push(c);
+                added.push(c);
+                continue;
+            }
+            AddSketchConstraint::Line(line) => line,
+        };
+        let rule = match line {
             AddLineConstraint::Line { curve, kind } => {
                 let (a, b) = endpoints(curve);
                 match kind {

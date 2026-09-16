@@ -46,3 +46,12 @@ pub use document_graph::DocumentGraph;
 pub use plan::{RebuildPlan, plan_full_rebuild, plan_rebuild};
 pub use presentation::{PresentedCurve, SketchPresentation};
 pub use solve::{ConflictingConstraint, SketchConflict, SketchSolveReport};
+
+/// Whether this build can solve a constrained sketch at all.
+///
+/// Forwarded rather than re-derived, so a caller that depends on the evaluator
+/// asks the crate that owns the library instead of guessing from a feature
+/// flag. A sketch with no constraints never needs an answer to this.
+pub fn solver_available() -> bool {
+    ferritecad_sketch_solver::is_available()
+}

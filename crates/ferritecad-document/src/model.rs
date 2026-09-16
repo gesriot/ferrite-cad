@@ -75,6 +75,34 @@ pub const EXTRUDE_CAP_VERTEX_CAPABILITY: &str = "topology.extrude-cap-vertex.v1"
 /// layout v1, and stays writable by a reader that lacks this.
 pub const SKETCH_CONSTRAINTS_CAPABILITY: &str = "sketch.constraints.v1";
 
+/// The capability a sketch depends on once a constraint speaks about a circle.
+///
+/// # Why a second name and a third layout, rather than more words under the first
+///
+/// `sketch.constraints.v1` announces a vocabulary: the eight families whose
+/// references are points and segments of lines. A build that implements it can
+/// read every one of them and rewrite the sketch without losing anything.
+/// Adding `Radius`, and a point selector that means the centre of a circle,
+/// widens that vocabulary — and a build written against v1 has no way to know
+/// it was widened. Left under the same name, such a build would see a
+/// capability it implements, decode what it recognised, and write the sketch
+/// back with the constraint it did not recognise quietly gone.
+///
+/// So the layout moves as well as the name. A sketch holding a circle
+/// constraint is stored at payload v3, which is not in
+/// [`ObjectKind::readable_schema_versions`] for any build that predates this
+/// one: that build preserves the object verbatim and opens the document
+/// read-only, which is the refusal that actually protects the data. The
+/// capability is what makes the *reason* legible — in the `capabilities` table,
+/// in negotiation at open time, and to a person reading either — rather than
+/// leaving a v3 sketch announcing only what a v2 one did.
+///
+/// Declared only by a sketch that actually holds such a constraint. A sketch of
+/// lines and their relationships is still a v2 sketch requiring
+/// [`SKETCH_CONSTRAINTS_CAPABILITY`] alone, and an unconstrained sketch is
+/// still a v1 sketch that any build can rewrite.
+pub const SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY: &str = "sketch.constraints.circle.v1";
+
 /// The capability an [`ImportedStep`] object depends on.
 ///
 /// Declared separately from [`CORE_CAPABILITY`] so a reader that understands
@@ -155,6 +183,11 @@ impl ObjectKind {
                 CORE_CAPABILITY.to_owned(),
                 SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
             ],
+            (Self::Sketch, 3) => vec![
+                CORE_CAPABILITY.to_owned(),
+                SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
+                SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY.to_owned(),
+            ],
             _ => vec![CORE_CAPABILITY.to_owned()],
         }
     }
@@ -169,7 +202,11 @@ impl ObjectKind {
     pub fn known_capabilities(self) -> &'static [&'static str] {
         match self {
             Self::ImportedStep => &[IMPORTED_STEP_CAPABILITY],
-            Self::Sketch => &[CORE_CAPABILITY, SKETCH_CONSTRAINTS_CAPABILITY],
+            Self::Sketch => &[
+                CORE_CAPABILITY,
+                SKETCH_CONSTRAINTS_CAPABILITY,
+                SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
+            ],
             _ => &[CORE_CAPABILITY],
         }
     }
@@ -187,10 +224,11 @@ impl ObjectKind {
             // scene can stand in for. v1 and v2 objects are still read and
             // still written back as themselves; see [`ImportedStep::scene`].
             Self::ImportedStep => 3,
-            // v2 added the constraint list. v1 sketches are still read and
-            // still written, because a sketch with no constraints is a v1
-            // sketch; see [`Sketch::schema_version`].
-            Self::Sketch => 2,
+            // v2 added the constraint list. v3 added the vocabulary that
+            // speaks about circles. v1 and v2 sketches are still read and
+            // still written as themselves, because what a sketch is stored at
+            // is decided by what it holds; see [`Sketch::schema_version`].
+            Self::Sketch => 3,
             _ => 1,
         }
     }
@@ -202,7 +240,7 @@ impl ObjectKind {
     pub fn readable_schema_versions(self) -> &'static [u32] {
         match self {
             Self::ImportedStep => &[3, 2, 1],
-            Self::Sketch => &[2, 1],
+            Self::Sketch => &[3, 2, 1],
             _ => &[1],
         }
     }
@@ -412,6 +450,15 @@ pub enum SketchPointSelector {
     Start,
     /// The end of a [`SketchGeometry::Line`].
     End,
+    /// The centre of a [`SketchGeometry::Circle`].
+    ///
+    /// Its own word rather than `At` or `Start` borrowed for the occasion. A
+    /// centre is not the position of a point and not an endpoint of a line;
+    /// spelling it as either would make every stored constraint ambiguous the
+    /// moment a sketch held both kinds of curve, and would make a document
+    /// written by this build unreadable by any build that took the name at
+    /// face value.
+    Center,
 }
 
 impl SketchPointSelector {
@@ -420,6 +467,7 @@ impl SketchPointSelector {
             Self::At => "at",
             Self::Start => "start",
             Self::End => "end",
+            Self::Center => "center",
         }
     }
 
@@ -429,6 +477,7 @@ impl SketchPointSelector {
             (self, geometry),
             (Self::At, SketchGeometry::Point { .. })
                 | (Self::Start | Self::End, SketchGeometry::Line { .. })
+                | (Self::Center, SketchGeometry::Circle { .. })
         )
     }
 }
@@ -530,6 +579,14 @@ pub enum SketchConstraintRule {
         a: SketchSegmentRef,
         b: SketchSegmentRef,
     },
+    /// A circle has the radius it is told, in millimetres.
+    ///
+    /// Names a curve rather than a point reference, because a radius is not a
+    /// point of anything: it is the circle's own scalar. The centre is said
+    /// the ordinary way, as a [`SketchPointRef`] with
+    /// [`SketchPointSelector::Center`], so `Fixed` pins it with no second
+    /// vocabulary.
+    Radius { curve: StableEntityId, radius: f64 },
 }
 
 impl SketchConstraintRule {
@@ -541,6 +598,7 @@ impl SketchConstraintRule {
     /// Adding a family means adding an arm here and nowhere else.
     pub fn points(&self) -> Vec<SketchPointRef> {
         match *self {
+            Self::Radius { .. } => Vec::new(),
             Self::Fixed { point, .. } => vec![point],
             Self::Coincident { a, b }
             | Self::Distance { a, b, .. }
@@ -550,6 +608,34 @@ impl SketchConstraintRule {
                 vec![a.from, a.to, b.from, b.to]
             }
         }
+    }
+
+    /// Every whole curve this rule names, which is none for the families that
+    /// speak in points and segments.
+    ///
+    /// The counterpart of [`SketchConstraintRule::points`], and kept apart
+    /// from it for the same reason the solver keeps its two identifier types
+    /// apart: a list that mixed a curve with a point of a curve would have to
+    /// be read with a rule about which entries meant which.
+    pub fn curves(&self) -> Vec<StableEntityId> {
+        match *self {
+            Self::Radius { curve, .. } => vec![curve],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether this rule needs the circle vocabulary to be understood.
+    ///
+    /// A build that has not heard of circles in sketches can read and rewrite
+    /// everything else; this is the line between the two, and it is drawn in
+    /// one place so that the stored layout, the declared capability and the
+    /// validation cannot disagree about where it is.
+    pub fn needs_circle_vocabulary(&self) -> bool {
+        matches!(self, Self::Radius { .. })
+            || self
+                .points()
+                .iter()
+                .any(|point| point.at == SketchPointSelector::Center)
     }
 
     /// The segments this rule names, which is none for the point families.
@@ -570,6 +656,9 @@ impl SketchConstraintRule {
             }
             Self::Distance { distance, .. } => {
                 validate_positive(distance, "constraint distance")?;
+            }
+            Self::Radius { radius, .. } => {
+                validate_positive(radius, "constraint radius")?;
             }
             _ => {}
         }
@@ -631,9 +720,22 @@ impl Sketch {
     /// Decided by what it holds, not by what this build is capable of writing.
     /// A sketch with no constraints is a v1 sketch however new the build is,
     /// and stamping v2 on it would tell every older reader to keep its hands
-    /// off a document it can handle perfectly well.
+    /// off a document it can handle perfectly well. The same rule puts the
+    /// circle vocabulary at v3 only when a constraint actually uses it: a
+    /// profile of lines and their relationships stays a v2 sketch that a build
+    /// predating this one still rewrites safely.
     pub fn schema_version(&self) -> u32 {
-        if self.constraints.is_empty() { 1 } else { 2 }
+        if self.constraints.is_empty() {
+            1
+        } else if self
+            .constraints
+            .iter()
+            .any(|c| c.rule.needs_circle_vocabulary())
+        {
+            3
+        } else {
+            2
+        }
     }
 
     /// What a reader must implement to rewrite this sketch. See
@@ -700,6 +802,22 @@ impl Sketch {
             // constrained sketches are held together by, and a document that
             // dropped constraints on it would lose the sketch's skeleton while
             // keeping its skin.
+            for curve in constraint.rule.curves() {
+                let Some(geometry) = geometry_of.get(&curve) else {
+                    return Err(CadError::input(format!(
+                        "constraint {} refers to curve {curve}, which is not a curve of this \
+                         sketch",
+                        constraint.id
+                    )));
+                };
+                if !matches!(geometry, SketchGeometry::Circle { .. }) {
+                    return Err(CadError::input(format!(
+                        "constraint {} gives a radius to {curve}, which is a {} and has none",
+                        constraint.id,
+                        geometry.kind_name(),
+                    )));
+                }
+            }
             for point in constraint.rule.points() {
                 let Some(geometry) = geometry_of.get(&point.curve) else {
                     return Err(CadError::input(format!(

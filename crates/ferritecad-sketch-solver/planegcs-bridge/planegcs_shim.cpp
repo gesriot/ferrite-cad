@@ -7,12 +7,28 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstddef>
 #include <cstring>
 #include <exception>
 #include <memory>
 #include <vector>
 
 #include "GCS.h"
+
+// The Rust side declares these same two structs and asserts the same numbers.
+// A header that still lists every field cannot detect a reorder or a different
+// compiler layout; these can.
+static_assert(sizeof(FcGcsConstraint) == 48, "FcGcsConstraint ABI size changed");
+static_assert(alignof(FcGcsConstraint) == 8, "FcGcsConstraint ABI alignment changed");
+static_assert(offsetof(FcGcsConstraint, kind) == 0, "FcGcsConstraint.kind moved");
+static_assert(offsetof(FcGcsConstraint, points) == 4, "FcGcsConstraint.points moved");
+static_assert(offsetof(FcGcsConstraint, circles) == 20, "FcGcsConstraint.circles moved");
+static_assert(offsetof(FcGcsConstraint, value) == 32, "FcGcsConstraint.value moved");
+static_assert(offsetof(FcGcsConstraint, value2) == 40, "FcGcsConstraint.value2 moved");
+static_assert(sizeof(FcGcsCircle) == 16, "FcGcsCircle ABI size changed");
+static_assert(alignof(FcGcsCircle) == 8, "FcGcsCircle ABI alignment changed");
+static_assert(offsetof(FcGcsCircle, center) == 0, "FcGcsCircle.center moved");
+static_assert(offsetof(FcGcsCircle, radius) == 8, "FcGcsCircle.radius moved");
 
 namespace {
 
@@ -37,29 +53,58 @@ bool is_point(size_t point_count, int32_t index) {
   return index >= 0 && static_cast<size_t>(index) < point_count;
 }
 
-bool has_valid_points(const FcGcsConstraint &constraint,
-                      size_t point_count) {
-  int used = 0;
+bool is_circle(size_t circle_count, int32_t index) {
+  return index >= 0 && static_cast<size_t>(index) < circle_count;
+}
+
+/// Checks a constraint names the geometry it is allowed to name, and no other.
+///
+/// Both halves matter. The used entries have to be in range, and the unused
+/// ones have to be empty: a point index left in `circles`, or a circle index
+/// left in `points`, would name real geometry of the wrong kind, and a system
+/// built from it would solve and be wrong rather than fail.
+bool has_valid_references(const FcGcsConstraint &constraint, size_t point_count,
+                          size_t circle_count) {
+  int points_used = 0;
+  int circles_used = 0;
   switch (constraint.kind) {
     case FC_GCS_FIXED:
-      used = 1;
+      points_used = 1;
       break;
     case FC_GCS_COINCIDENT:
     case FC_GCS_DISTANCE:
     case FC_GCS_HORIZONTAL:
     case FC_GCS_VERTICAL:
-      used = 2;
+      points_used = 2;
       break;
     case FC_GCS_EQUAL_LENGTH:
     case FC_GCS_PERPENDICULAR:
     case FC_GCS_PARALLEL:
-      used = 4;
+      points_used = 4;
+      break;
+    case FC_GCS_CIRCLE_RADIUS:
+      circles_used = 1;
       break;
     default:
       return false;
   }
-  for (int i = 0; i < used; ++i) {
+  for (int i = 0; i < points_used; ++i) {
     if (!is_point(point_count, constraint.points[i])) {
+      return false;
+    }
+  }
+  for (int i = points_used; i < 4; ++i) {
+    if (constraint.points[i] != -1) {
+      return false;
+    }
+  }
+  for (int i = 0; i < circles_used; ++i) {
+    if (!is_circle(circle_count, constraint.circles[i])) {
+      return false;
+    }
+  }
+  for (int i = circles_used; i < 2; ++i) {
+    if (constraint.circles[i] != -1) {
       return false;
     }
   }
@@ -75,6 +120,11 @@ struct Session {
   std::vector<double> state;
   std::vector<double *> parameters;
   std::vector<GCS::Point> points;
+  // One unknown per circle, held by pointer inside each GCS::Circle. Reserved
+  // once and never grown, for the same reason `values` is: planegcs keeps the
+  // address, not the number.
+  std::vector<double> radii;
+  std::vector<GCS::Circle> circles;
   // Held by pointer inside planegcs, so this must never reallocate and the
   // slots must stay put for the session's whole life.
   std::vector<double> values;
@@ -89,9 +139,11 @@ struct Session {
 }  // namespace
 
 extern "C" FcGcsSession *fc_gcs_session_create(
-    const double *start, size_t point_count, const FcGcsConstraint *constraints,
+    const double *start, size_t point_count, const FcGcsCircle *circles,
+    size_t circle_count, const FcGcsConstraint *constraints,
     size_t constraint_count) noexcept {
   if ((point_count > 0 && start == nullptr) ||
+      (circle_count > 0 && circles == nullptr) ||
       (constraint_count > 0 && constraints == nullptr)) {
     return nullptr;
   }
@@ -104,7 +156,9 @@ extern "C" FcGcsSession *fc_gcs_session_create(
       session->state.assign(start, start + point_count * 2);
     }
     session->points.reserve(point_count);
-    session->parameters.reserve(point_count * 2);
+    session->parameters.reserve(point_count * 2 + circle_count);
+    session->radii.reserve(circle_count);
+    session->circles.reserve(circle_count);
     session->values.reserve(constraint_count * 2);
     session->fixed_value_of.assign(constraint_count, -1);
 
@@ -117,10 +171,27 @@ extern "C" FcGcsSession *fc_gcs_session_create(
       session->parameters.push_back(point.y);
     }
 
+    // Circles after the points, so a circle can name one as its centre. Its
+    // radius becomes an unknown of its own: three parameters for a circle, not
+    // two points standing in for one.
+    for (size_t i = 0; i < circle_count; ++i) {
+      const FcGcsCircle &given = circles[i];
+      if (!is_point(point_count, given.center) ||
+          !std::isfinite(given.radius) || given.radius <= 0.0) {
+        return nullptr;
+      }
+      session->radii.push_back(given.radius);
+      GCS::Circle circle;
+      circle.center = session->points[static_cast<size_t>(given.center)];
+      circle.rad = &session->radii[i];
+      session->circles.push_back(circle);
+      session->parameters.push_back(circle.rad);
+    }
+
     for (size_t i = 0; i < constraint_count; ++i) {
       const FcGcsConstraint &c = constraints[i];
       const int tag = static_cast<int>(i) + 1;
-      if (!has_valid_points(c, point_count)) {
+      if (!has_valid_references(c, point_count, circle_count)) {
         return nullptr;
       }
 
@@ -177,6 +248,17 @@ extern "C" FcGcsSession *fc_gcs_session_create(
           GCS::Line a = line_of(session->points, c.points[0], c.points[1]);
           GCS::Line b = line_of(session->points, c.points[2], c.points[3]);
           session->system.addConstraintParallel(a, b, tag);
+          break;
+        }
+        case FC_GCS_CIRCLE_RADIUS: {
+          if (!std::isfinite(c.value) || c.value <= 0.0) {
+            return nullptr;
+          }
+          const size_t slot = session->values.size();
+          session->values.push_back(c.value);
+          session->system.addConstraintCircleRadius(
+              session->circles[static_cast<size_t>(c.circles[0])],
+              &session->values[slot], tag);
           break;
         }
         default:
@@ -348,6 +430,21 @@ extern "C" int32_t fc_gcs_session_state(const FcGcsSession *handle, double *out,
   // pointer for a zero-length memcpy.
   if (count > 0) {
     std::memcpy(out, session->state.data(), count * sizeof(double));
+  }
+  return FC_GCS_SUCCESS;
+}
+
+extern "C" int32_t fc_gcs_session_radii(const FcGcsSession *handle, double *out,
+                                        size_t count) noexcept {
+  if (handle == nullptr || (count > 0 && out == nullptr)) {
+    return FC_GCS_INVALID_INPUT;
+  }
+  const Session *session = reinterpret_cast<const Session *>(handle);
+  if (count != session->radii.size()) {
+    return FC_GCS_INVALID_INPUT;
+  }
+  if (count > 0) {
+    std::memcpy(out, session->radii.data(), count * sizeof(double));
   }
   return FC_GCS_SUCCESS;
 }

@@ -7,7 +7,7 @@
 //! cannot act on those, and a message containing one invites somebody to
 //! depend on it.
 
-use crate::{ConstraintId, PointId};
+use crate::{CircleId, ConstraintId, PointId};
 
 /// Why there is no solver to call.
 ///
@@ -34,6 +34,10 @@ pub enum NotFinite {
     PointCoordinate(PointId),
     #[error("constraint {0:?} carries a value that is not finite")]
     ConstraintParameter(ConstraintId),
+    /// A radius that is not a positive finite length. Zero and negative are
+    /// not small circles; they are not circles.
+    #[error("circle {0:?} has a radius that is not a positive finite length")]
+    CircleRadius(CircleId),
 }
 
 /// A refusal from the native solver itself.
@@ -67,9 +71,24 @@ pub enum SolverError {
         point: PointId,
     },
 
+    /// A constraint refers to a circle the sketch does not contain.
+    #[error("constraint {constraint:?} refers to {circle:?}, which is not in this sketch")]
+    UnknownCircle {
+        constraint: ConstraintId,
+        circle: CircleId,
+    },
+
+    /// A circle names a centre the sketch does not contain.
+    #[error("circle {circle:?} is centred on {point:?}, which is not in this sketch")]
+    UnknownCenter { circle: CircleId, point: PointId },
+
     /// The same point identifier was used twice.
     #[error("{0:?} appears more than once in this sketch")]
     DuplicatePoint(PointId),
+
+    /// The same circle identifier was used twice.
+    #[error("{0:?} appears more than once in this sketch")]
+    DuplicateCircle(CircleId),
 
     /// The same constraint identifier was used twice.
     ///

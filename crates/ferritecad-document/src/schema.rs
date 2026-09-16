@@ -34,6 +34,7 @@ pub const SUPPORTED_CAPABILITIES: &[&str] = &[
     "core.part.v1",
     "exchange.step.imported.v1",
     "sketch.constraints.v1",
+    "sketch.constraints.circle.v1",
     "topology.extrude-cap-edge.v1",
     "topology.extrude-sweep-edge.v1",
     "topology.extrude-cap-vertex.v1",

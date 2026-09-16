@@ -2,8 +2,9 @@
 //! Text/JSON prepare one typed request; jobs owns solver/copy/publication.
 use clap::Args;
 use ferritecad_document::{
-    AddLineConstraint, Document, DocumentVersion, LineConstraintKind, LineEndpoint, LineLengthMm,
-    LineRelation, SketchConstraintEdits, SketchCoordinateMm,
+    AddLineConstraint, AddSketchConstraint, CircleConstraintKind, CircleRadiusMm, Document,
+    DocumentVersion, LineConstraintKind, LineEndpoint, LineLengthMm, LineRelation,
+    SketchConstraintEdits, SketchCoordinateMm,
 };
 use ferritecad_jobs::{
     EditSketchConstraintsRequest, EditedSketchConstraints, edit_sketch_constraints_copy,
@@ -22,8 +23,9 @@ pub struct EditConstraintsArgs {
     #[arg(long)]
     expect_version: ContentHash,
     /// Request v1: remove exact constraint UUIDs, then add Line H/V, length in mm,
-    /// one Fixed Line endpoint at explicit X/Y mm, or equal length, parallel or
-    /// perpendicular between two Lines.
+    /// one Fixed Line endpoint at explicit X/Y mm, equal length, parallel or
+    /// perpendicular between two Lines, or — on a Sketch that is one analytic
+    /// Circle — a radius in mm and a Fixed centre at explicit X/Y mm.
     #[arg(long)]
     request: PathBuf,
     /// New FCAD destination; no overwrite and no --force.
@@ -40,18 +42,25 @@ struct Input {
     remove: Vec<StableEntityId>,
     add: Vec<Addition>,
 }
-/// The request spells a Line endpoint, never the `at` of point geometry.
+/// Which point a `fixed` addition pins.
+///
+/// A Line endpoint or the centre of a circle, never the `at` of point geometry
+/// and never one borrowed for the other: a request that spelled a centre as
+/// `start` would pin whichever point a later reader thought that meant.
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum At {
     Start,
     End,
+    Center,
 }
-impl From<At> for LineEndpoint {
-    fn from(at: At) -> Self {
-        match at {
-            At::Start => Self::Start,
-            At::End => Self::End,
+impl At {
+    /// The Line endpoint this names, or `None` when it names a centre.
+    fn endpoint(&self) -> Option<LineEndpoint> {
+        match self {
+            Self::Start => Some(LineEndpoint::Start),
+            Self::End => Some(LineEndpoint::End),
+            Self::Center => None,
         }
     }
 }
@@ -89,9 +98,51 @@ enum Addition {
         a_curve_id: StableEntityId,
         b_curve_id: StableEntityId,
     },
+    /// The radius of the named analytic Circle, in mm.
+    ///
+    /// Its own rule rather than `distance` reused: a distance is between two
+    /// points and a radius is a circle's own scalar, and one request that could
+    /// spell either would be one field away from giving a circle a length it
+    /// does not have.
+    Radius {
+        curve_id: StableEntityId,
+        radius_mm: f64,
+    },
 }
 impl Addition {
-    fn checked(self) -> Result<AddLineConstraint> {
+    fn checked(self) -> Result<AddSketchConstraint> {
+        // The two circle forms are decided first, because neither is a Line
+        // addition and neither may be built through the Line vocabulary below.
+        match self {
+            Self::Radius {
+                curve_id,
+                radius_mm,
+            } => {
+                return Ok(AddSketchConstraint::Circle {
+                    curve: curve_id,
+                    kind: CircleConstraintKind::Radius(CircleRadiusMm::new(radius_mm)?),
+                });
+            }
+            Self::Fixed {
+                curve_id,
+                at: At::Center,
+                x_mm,
+                y_mm,
+            } => {
+                return Ok(AddSketchConstraint::Circle {
+                    curve: curve_id,
+                    kind: CircleConstraintKind::FixedCenter {
+                        x: SketchCoordinateMm::new(x_mm)?,
+                        y: SketchCoordinateMm::new(y_mm)?,
+                    },
+                });
+            }
+            _ => {}
+        }
+        self.line().map(AddSketchConstraint::Line)
+    }
+
+    fn line(self) -> Result<AddLineConstraint> {
         let (curve, kind) = match self {
             Self::Horizontal { curve_id } => (curve_id, LineConstraintKind::Horizontal),
             Self::Vertical { curve_id } => (curve_id, LineConstraintKind::Vertical),
@@ -110,7 +161,10 @@ impl Addition {
             } => (
                 curve_id,
                 LineConstraintKind::Fixed {
-                    at: at.into(),
+                    // A centre was taken above, so what is left is an endpoint.
+                    at: at.endpoint().ok_or_else(|| {
+                        CadError::input("a fixed centre belongs to a circle, not to a Line")
+                    })?,
                     x: SketchCoordinateMm::new(x_mm)?,
                     y: SketchCoordinateMm::new(y_mm)?,
                 },
@@ -143,6 +197,13 @@ impl Addition {
                     b: b_curve_id,
                     relation: LineRelation::Perpendicular,
                 });
+            }
+            // Both circle forms were answered before this, so reaching here
+            // with one would be a bug rather than a request to interpret.
+            Self::Radius { .. } => {
+                return Err(CadError::input(
+                    "a radius belongs to a circle, not to a Line",
+                ));
             }
         };
         Ok(AddLineConstraint::Line { curve, kind })
@@ -213,7 +274,13 @@ pub fn run(args: EditConstraintsArgs) -> Result<ExitCode> {
         for id in r.removed {
             println!("removed constraint {id}");
         }
-        println!("degrees of freedom: {}", r.solve.degrees_of_freedom());
+        match &r.solve {
+            Some(solve) => println!("degrees of freedom: {}", solve.degrees_of_freedom()),
+            // Nothing left to solve, so nothing to report about it. Said out
+            // loud rather than printed as a zero, which would claim the
+            // drawing cannot move.
+            None => println!("degrees of freedom: not measured; no constraints remain"),
+        }
         Ok(ExitCode::SUCCESS)
     }
 }

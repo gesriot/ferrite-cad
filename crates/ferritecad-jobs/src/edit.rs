@@ -239,7 +239,16 @@ pub struct EditedSketchConstraints {
     pub sketch: ObjectId,
     pub added: Vec<ferritecad_document::SketchConstraint>,
     pub removed: Vec<StableEntityId>,
-    pub solve: ferritecad_eval::SketchSolveReport,
+    /// What the solve found out, and `None` when the edit left nothing to
+    /// solve.
+    ///
+    /// Reachable only since a profile could be one analytic circle: a Line
+    /// profile keeps its Coincident closure however many dimensions are taken
+    /// off it, so there was always a system. A circle has no joints, so
+    /// removing its last constraint leaves a drawing with no relationships —
+    /// and a sketch with none asks the solver nothing, exactly as a document
+    /// written before constraints existed does.
+    pub solve: Option<ferritecad_eval::SketchSolveReport>,
 }
 
 pub fn edit_sketch_constraints_copy<K: GeometryKernel + ?Sized>(
@@ -268,9 +277,7 @@ pub fn edit_sketch_constraints_copy<K: GeometryKernel + ?Sized>(
                 sketch: request.sketch,
                 added: prepared.added.clone(),
                 removed: prepared.removed.clone(),
-                solve: solve.ok_or_else(|| {
-                    CadError::constraint("changed constrained Sketch produced no solve report")
-                })?,
+                solve,
             })
         },
     )
@@ -375,8 +382,18 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         CopyWrite::Annulus(prepared) => document.write_annulus_geometry(prepared)?,
         CopyWrite::Object(_) => document.write(write)?,
     }
+    // A solve is asked for only when the edited sketch still has something to
+    // solve. Taking the last constraint off a circle leaves a drawing with no
+    // relationships, and demanding a report for it would make an unconstrained
+    // sketch require a solver — the one thing a document written before
+    // constraints existed must never start doing.
     let constraints = match &prepared {
-        CopyWrite::Constraints(p) => Some((selected.id, p.height_mm)),
+        CopyWrite::Constraints(p) => match &p.object().payload {
+            ObjectPayload::Sketch(sketch) if !sketch.constraints.is_empty() => {
+                Some((selected.id, p.height_mm))
+            }
+            _ => None,
+        },
         _ => None,
     };
     let (_, solve) = checked_rebuild(
@@ -459,30 +476,61 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
             let picture = built.sketch_presentation(id).ok_or_else(|| {
                 CadError::constraint("changed constrained Sketch produced no presentation")
             })?;
+            // What the solved drawing has to be is a question about its
+            // geometry, so it is asked of the geometry. A Line profile has to
+            // still close and still be a polygon this build would publish; one
+            // analytic circle has no joints to lose and is judged by the circle
+            // policy instead. Neither check is a second copy of the numeric
+            // rules — both call the same policy the creation route calls.
             let mut starts = Vec::new();
             let mut ends = Vec::new();
+            let mut circles = Vec::new();
             for curve in picture.curves() {
-                let ferritecad_document::SketchGeometry::Line { start, end } = curve.geometry()
-                else {
-                    return Err(CadError::unsupported(
-                        "constraint edit solved a non-Line curve",
-                    ));
-                };
-                starts.push([start.x, start.y]);
-                ends.push([end.x, end.y]);
-            }
-            for (i, end) in ends.iter().enumerate() {
-                let next = starts[(i + 1) % starts.len()];
-                if (end[0] - next[0]).abs() > ferritecad_document::PolygonExtrusion::TOLERANCE_MM
-                    || (end[1] - next[1]).abs()
-                        > ferritecad_document::PolygonExtrusion::TOLERANCE_MM
-                {
-                    return Err(CadError::constraint(
-                        "solved constraint polygon lost an adjacent joint",
-                    ));
+                match *curve.geometry() {
+                    ferritecad_document::SketchGeometry::Line { start, end } => {
+                        starts.push([start.x, start.y]);
+                        ends.push([end.x, end.y]);
+                    }
+                    ferritecad_document::SketchGeometry::Circle { center, radius } => {
+                        circles.push(([center.x, center.y], radius));
+                    }
+                    _ => {
+                        return Err(CadError::unsupported(
+                            "constraint edit solved a curve that is neither a Line nor a Circle",
+                        ));
+                    }
                 }
             }
-            ferritecad_document::PolygonExtrusion::new(starts, height)?;
+            if starts.is_empty() == circles.is_empty() {
+                return Err(CadError::unsupported(
+                    "a constrained profile is Lines or one Circle, and this solved to neither",
+                ));
+            }
+            if circles.is_empty() {
+                for (i, end) in ends.iter().enumerate() {
+                    let next = starts[(i + 1) % starts.len()];
+                    if (end[0] - next[0]).abs()
+                        > ferritecad_document::PolygonExtrusion::TOLERANCE_MM
+                        || (end[1] - next[1]).abs()
+                            > ferritecad_document::PolygonExtrusion::TOLERANCE_MM
+                    {
+                        return Err(CadError::constraint(
+                            "solved constraint polygon lost an adjacent joint",
+                        ));
+                    }
+                }
+                ferritecad_document::PolygonExtrusion::new(starts, height)?;
+            } else {
+                let [(center, radius)] = circles.as_slice() else {
+                    return Err(CadError::unsupported(
+                        "constraint edit supports one analytic Circle per profile",
+                    ));
+                };
+                // The solved numbers, not the saved guess: a solve that moved
+                // the circle outside what this build will publish has to be
+                // refused here rather than at the kernel.
+                ferritecad_document::CircleExtrusion::new(*center, *radius, height)?;
+            }
             Some(report.clone())
         } else {
             None
@@ -1140,16 +1188,20 @@ mod tests {
             edits: ferritecad_document::SketchConstraintEdits {
                 remove: vec![],
                 add: vec![
-                    ferritecad_document::AddLineConstraint::Line {
-                        curve: old.vertices[0].curve_id,
-                        kind: ferritecad_document::LineConstraintKind::Horizontal,
-                    },
-                    ferritecad_document::AddLineConstraint::Line {
-                        curve: old.vertices[0].curve_id,
-                        kind: ferritecad_document::LineConstraintKind::Distance(
-                            ferritecad_document::LineLengthMm::new(60.).expect("length"),
-                        ),
-                    },
+                    ferritecad_document::AddSketchConstraint::Line(
+                        ferritecad_document::AddLineConstraint::Line {
+                            curve: old.vertices[0].curve_id,
+                            kind: ferritecad_document::LineConstraintKind::Horizontal,
+                        },
+                    ),
+                    ferritecad_document::AddSketchConstraint::Line(
+                        ferritecad_document::AddLineConstraint::Line {
+                            curve: old.vertices[0].curve_id,
+                            kind: ferritecad_document::LineConstraintKind::Distance(
+                                ferritecad_document::LineLengthMm::new(60.).expect("length"),
+                            ),
+                        },
+                    ),
                 ],
             },
         }

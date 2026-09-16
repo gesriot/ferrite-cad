@@ -88,7 +88,10 @@ fn stored(d: &Document, id: ObjectId) -> Sketch {
 fn add(curve: StableEntityId, kind: LineConstraintKind) -> SketchConstraintEdits {
     SketchConstraintEdits {
         remove: vec![],
-        add: vec![AddLineConstraint::Line { curve, kind }],
+        add: vec![AddSketchConstraint::Line(AddLineConstraint::Line {
+            curve,
+            kind,
+        })],
     }
 }
 fn cells(path: &Path) -> BTreeMap<String, Vec<Vec<Value>>> {
@@ -280,10 +283,10 @@ fn ordered_requests_refuse_duplicates_foreign_ids_and_closure_removal_atomically
     }
     let replace = SketchConstraintEdits {
         remove: vec![h],
-        add: vec![AddLineConstraint::Line {
+        add: vec![AddSketchConstraint::Line(AddLineConstraint::Line {
             curve,
             kind: LineConstraintKind::Vertical,
-        }],
+        })],
     };
     let p = prepare_sketch_constraints(&d, id, &replace).expect("remove before add");
     assert_eq!(p.removed, vec![h]);
@@ -388,10 +391,10 @@ fn line_length_is_checked_and_replacement_preserves_other_constraints() {
     let old = p.added[4].id;
     let replacement = SketchConstraintEdits {
         remove: vec![old],
-        add: vec![AddLineConstraint::Line {
+        add: vec![AddSketchConstraint::Line(AddLineConstraint::Line {
             curve,
             kind: length(55.),
-        }],
+        })],
     };
     let p = prepare_sketch_constraints(&d, id, &replacement).expect("atomic replacement");
     assert_eq!(p.removed, vec![old]);
@@ -590,10 +593,10 @@ fn a_fixed_endpoint_is_checked_replaced_and_removed_without_touching_other_ids()
     // Exact remove + add in one request moves the pin and mints one new UUID.
     let replacement = SketchConstraintEdits {
         remove: vec![first],
-        add: vec![AddLineConstraint::Line {
+        add: vec![AddSketchConstraint::Line(AddLineConstraint::Line {
             curve: other,
             kind: pin(LineEndpoint::End, 0., 0.),
-        }],
+        })],
     };
     let p = prepare_sketch_constraints(&d, id, &replacement).expect("atomic pin replacement");
     assert_eq!(p.removed, vec![first]);
@@ -717,7 +720,10 @@ fn whole(curve: StableEntityId) -> SketchSegmentRef {
 fn equal(a: StableEntityId, b: StableEntityId) -> SketchConstraintEdits {
     SketchConstraintEdits {
         remove: vec![],
-        add: vec![AddLineConstraint::EqualLength { a, b }],
+        add: vec![AddSketchConstraint::Line(AddLineConstraint::EqualLength {
+            a,
+            b,
+        })],
     }
 }
 
@@ -736,22 +742,22 @@ fn equal_length_pairs_are_checked_stored_and_removed_without_touching_other_ids(
         SketchConstraintEdits {
             remove: vec![],
             add: vec![
-                AddLineConstraint::EqualLength {
+                AddSketchConstraint::Line(AddLineConstraint::EqualLength {
                     a: curves[0],
                     b: curves[1],
-                },
-                AddLineConstraint::EqualLength {
+                }),
+                AddSketchConstraint::Line(AddLineConstraint::EqualLength {
                     a: curves[1],
                     b: curves[0],
-                },
+                }),
             ],
         },
         SketchConstraintEdits {
             remove: vec![StableEntityId::new()],
-            add: vec![AddLineConstraint::EqualLength {
+            add: vec![AddSketchConstraint::Line(AddLineConstraint::EqualLength {
                 a: curves[0],
                 b: curves[1],
-            }],
+            })],
         },
     ] {
         let bytes = std::fs::read(&path).expect("bytes");
@@ -864,10 +870,10 @@ fn equal_length_pairs_are_checked_stored_and_removed_without_touching_other_ids(
     // Remove the exact UUID and add the same pair back in one request.
     let again = SketchConstraintEdits {
         remove: vec![first],
-        add: vec![AddLineConstraint::EqualLength {
+        add: vec![AddSketchConstraint::Line(AddLineConstraint::EqualLength {
             a: curves[1],
             b: curves[0],
-        }],
+        })],
     };
     let p = prepare_sketch_constraints(&d, id, &again).expect("retained remove then add");
     assert_eq!(p.removed, vec![first]);
@@ -982,7 +988,11 @@ fn equal_length_pairs_are_checked_stored_and_removed_without_touching_other_ids(
 fn relation(a: StableEntityId, b: StableEntityId, relation: LineRelation) -> SketchConstraintEdits {
     SketchConstraintEdits {
         remove: vec![],
-        add: vec![AddLineConstraint::Relation { a, b, relation }],
+        add: vec![AddSketchConstraint::Line(AddLineConstraint::Relation {
+            a,
+            b,
+            relation,
+        })],
     }
 }
 
@@ -1003,16 +1013,16 @@ fn line_relations_are_checked_stored_and_removed_without_touching_other_ids() {
         SketchConstraintEdits {
             remove: vec![],
             add: vec![
-                AddLineConstraint::Relation {
+                AddSketchConstraint::Line(AddLineConstraint::Relation {
                     a: curves[0],
                     b: curves[1],
                     relation: Parallel,
-                },
-                AddLineConstraint::Relation {
+                }),
+                AddSketchConstraint::Line(AddLineConstraint::Relation {
                     a: curves[1],
                     b: curves[0],
                     relation: Parallel,
-                },
+                }),
             ],
         },
         // Parallel and Perpendicular answer one question about one pair, so
@@ -1020,25 +1030,25 @@ fn line_relations_are_checked_stored_and_removed_without_touching_other_ids() {
         SketchConstraintEdits {
             remove: vec![],
             add: vec![
-                AddLineConstraint::Relation {
+                AddSketchConstraint::Line(AddLineConstraint::Relation {
                     a: curves[0],
                     b: curves[1],
                     relation: Parallel,
-                },
-                AddLineConstraint::Relation {
+                }),
+                AddSketchConstraint::Line(AddLineConstraint::Relation {
                     a: curves[1],
                     b: curves[0],
                     relation: Perpendicular,
-                },
+                }),
             ],
         },
         SketchConstraintEdits {
             remove: vec![StableEntityId::new()],
-            add: vec![AddLineConstraint::Relation {
+            add: vec![AddSketchConstraint::Line(AddLineConstraint::Relation {
                 a: curves[0],
                 b: curves[1],
                 relation: Perpendicular,
-            }],
+            })],
         },
     ] {
         let bytes = std::fs::read(&path).expect("bytes");
@@ -1163,11 +1173,11 @@ fn line_relations_are_checked_stored_and_removed_without_touching_other_ids() {
     // request: the slot is checked against what the request retains.
     let again = SketchConstraintEdits {
         remove: vec![first],
-        add: vec![AddLineConstraint::Relation {
+        add: vec![AddSketchConstraint::Line(AddLineConstraint::Relation {
             a: curves[2],
             b: curves[0],
             relation: Perpendicular,
-        }],
+        })],
     };
     let p = prepare_sketch_constraints(&d, id, &again).expect("retained remove then add");
     assert_eq!(p.removed, vec![first]);

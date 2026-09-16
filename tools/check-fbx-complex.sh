@@ -206,3 +206,14 @@ if [ -n "${FCAD_ANNULUS_EDIT_FBX_DIR:-}" ]; then
     done
     echo "FCAD_ANNULUS_EDIT_UFBX_EXECUTED"
 fi
+
+# §25N adds the copy its radius/centre constraints publish to the same reader
+# build: one small file, actually read rather than merely produced.
+if [ -n "${FCAD_CIRCLE_CONSTRAINT_FBX_DIR:-}" ]; then
+    "$reader" --identity "$FCAD_CIRCLE_CONSTRAINT_FBX_DIR/circle-constraint-cli.fbx" | tee "$work/circle-constraint-reader.txt"
+    count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) failures=0$/\1/p' "$work/circle-constraint-reader.txt")"
+    [ -n "$count" ] && [ "$count" -ge 6 ] || {
+        echo "error: pinned reader did not verify circle constraint FBX" >&2; exit 1;
+    }
+    echo "FCAD_CIRCLE_CONSTRAINT_UFBX_EXECUTED"
+fi

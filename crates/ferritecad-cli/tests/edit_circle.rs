@@ -602,7 +602,24 @@ fn circle_discovery_and_protocol_without_kernel() {
     assert!(discovery["circle"]["curve_id"].is_string());
     assert_eq!(sketch["editable"], false, "the Line editor is unchanged");
     assert!(sketch["vertices"].is_null(), "no invented polygon");
-    assert_eq!(sketch["constraint_edit"]["available"], false);
+    // The constraint editor accepts this Sketch since §25N added the circle
+    // families, and says so about a circle rather than about Lines: it offers
+    // the analytic circle and no invented segment.
+    assert_eq!(sketch["constraint_edit"]["available"], true);
+    assert_eq!(
+        sketch["constraint_edit"]["curves"],
+        json!([]),
+        "a circle profile offers no Line"
+    );
+    assert_eq!(
+        sketch["constraint_edit"]["circles"][0]["curve_id"], discovery["circle"]["curve_id"],
+        "both discoveries name the same stored circle"
+    );
+    assert_eq!(
+        sketch["constraint_edit"]["circles"][0]["radius_mm"], 10.0,
+        "the stored radius, which is the solver's starting guess"
+    );
+    assert_eq!(sketch["constraint_edit"]["constraints"], json!([]));
 
     // Wire-level refusals are decided before anything opens a kernel; the ones
     // marked `Domain` are decided against the real document, so a build with no
