@@ -34,7 +34,7 @@ stdout-логов рядом нет. Диагностика для челове�
 | Поле | Тип и правило |
 | --- | --- |
 | `schema_version` | integer, сейчас ровно `1` |
-| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate`, `create-sketch-extrude`, `create-circle-extrude`, `edit-sketch-copy`, `edit-circle` или `edit-sketch-constraints-copy` |
+| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate`, `create-sketch-extrude`, `create-circle-extrude`, `create-annular-extrude`, `edit-sketch-copy`, `edit-circle` или `edit-sketch-constraints-copy` |
 | `ok` | boolean |
 | `result` | объект соответствующей операции, присутствует только при `ok: true` |
 | `error` | объект ошибки, присутствует только при `ok: false` |
@@ -101,6 +101,51 @@ Infinity отвергаются до создания kernel, без публи�
 а тело имеет одну цилиндрическую поверхность. Точные ограничения, границы
 аналитического B-Rep и тесселяции и запускаемый рецепт:
 [окружность → Extrude → FCAD](circle-sketch-extrude.md).
+
+## Создание полой детали (§25L)
+
+`ferritecad create-annular-extrude <request.json> -o <new.fcad> [--json]` —
+отдельная opt-in команда с тем же envelope. `operation:"create-annular-extrude"`,
+exit 0 после cold-check и publish; operational error/exit 2; потеря отчёта после
+состоявшейся публикации/exit 7. Прежние команды и их поля не меняются.
+
+Request v1 называет свою версию `schema_version`, как и соседний
+`create-circle-extrude`, который он расширяет, и требует ровно пять полей:
+
+```json
+{"schema_version":1,"center_mm":[12.0,-7.0],"outer_radius_mm":10.0,
+ "inner_radius_mm":4.0,"height_mm":15.0}
+```
+
+`center_mm` — ровно две конечные координаты в mm, **общий** центр обеих
+окружностей; `outer_radius_mm`, `inner_radius_mm` и `height_mm` — конечные
+строго положительные mm, причём `inner < outer` и разность не меньше 0.001 mm.
+Отдельного центра у отверстия нет: класс этой команды концентрический. Лишние
+поля (включая `request_version`, `radius_mm`, `holes`, `inner_center_mm`),
+неизвестная версия, неправильные типы, null, NaN и Infinity отвергаются до
+создания kernel, без публикации и без scratch.
+
+`result` называет каждый созданный объект, чтобы читателю не приходилось
+угадывать по имени или порядку — и, в частности, называет **обе** окружности:
+
+| Поле | Значение |
+| --- | --- |
+| `destination` | string, опубликованный путь |
+| `document_id` | UUIDv7 нового документа |
+| `sketch_id` | UUIDv7 созданного Sketch |
+| `extrude_id` | UUIDv7 созданного Extrude |
+| `body_id` | UUIDv7 созданного Body |
+| `outer_curve_id` | UUIDv7 `Circle`, ограничивающей деталь |
+| `inner_curve_id` | UUIDv7 `Circle`, образующей отверстие |
+
+Оба UUID окружностей обязательны и различны; ни один не выводится из другого, и
+оба берутся из самого создания, а не из повторного чтения файла. Обе окружности
+остаются аналитическими: `inspect` показывает их Sketch неподдерживаемым и
+Line-редакторами (`editable:false`), и редактором окружности §25K
+(`circle_edit.available:false`, `circle_edit.circle:null`), а тело имеет две
+цилиндрические поверхности радиусов R и r. Точные ограничения, числовая policy,
+границы аналитического B-Rep и тесселяции и запускаемый рецепт:
+[окружность с отверстием → Extrude → FCAD](annular-sketch-extrude.md).
 
 ## Правка сохранённой окружности (§25K)
 

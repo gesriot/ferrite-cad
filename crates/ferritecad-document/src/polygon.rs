@@ -173,6 +173,104 @@ impl CircleExtrusion {
     }
 }
 
+/// Shared UI/CLI validity policy for one circular hole in one circular
+/// boundary, in mm.
+///
+/// Two analytic circles about one centre, and nothing else: both stay a centre
+/// and a radius in the document and in the B-Rep, so there is still no vertex
+/// count to bound and no self-intersection to check. What is added over
+/// [`CircleExtrusion`] is the two facts that make a hole a hole — the circles
+/// share a centre, and the wall between them is thick enough to be a wall.
+///
+/// # Why the wall has a minimum
+///
+/// This slice uses a conservative 0.001 mm wall floor, four orders of magnitude
+/// above the kernel's 1e-7 mm linear tolerance. Thin walls can still build, so
+/// successful construction alone is not an accuracy guarantee. Comparisons of
+/// thin-wall volumes must use the stable `pi * (R-r) * (R+r) * h` reference;
+/// subtracting the squared radii loses precision in the reference itself.
+/// The floor is a product policy, not a universal error bound for OCCT.
+///
+/// Stored centres must be within the kernel's linear tolerance in Euclidean
+/// distance. Their coordinates are preserved rather than snapped together.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnnularExtrusion {
+    center: Point2,
+    outer_radius: f64,
+    inner_radius: f64,
+    height: f64,
+}
+
+impl AnnularExtrusion {
+    /// The same bound as the polygon and circle editors, for the same reason.
+    pub const MAX_MM: f64 = CircleExtrusion::MAX_MM;
+    /// Thinnest wall this slice will publish, in mm. See the type's own note.
+    pub const MIN_WALL_MM: f64 = 1e-3;
+    /// How close two centres must be to be one centre, in mm.
+    pub const CONCENTRIC_MM: f64 = ferritecad_types::Tolerance::DEFAULT_LINEAR;
+
+    pub fn new(
+        center: [f64; 2],
+        outer_radius: f64,
+        inner_radius: f64,
+        height: f64,
+    ) -> Result<Self> {
+        // The boundary is checked by the policy that already exists for one
+        // circle, so a boundary this accepts is one `CircleExtrusion` would
+        // accept too and the two cannot drift apart on centres, radii,
+        // heights, finiteness or the 1e6 bound.
+        let outer = CircleExtrusion::new(center, outer_radius, height)?;
+        if !inner_radius.is_finite() || inner_radius <= 0. {
+            return Err(CadError::input(
+                "inner radius must be finite and positive in mm",
+            ));
+        }
+        if inner_radius >= outer.radius_mm() {
+            return Err(CadError::input(
+                "inner radius must be smaller than the outer radius; a hole is inside its boundary",
+            ));
+        }
+        // Add at the radius scale so decimal boundary inputs such as 10 and
+        // 9.999 are not rejected by cancellation in their difference. Rounding
+        // here is at most one radius ULP (far below the kernel tolerance).
+        if outer.radius_mm() < inner_radius + Self::MIN_WALL_MM {
+            return Err(CadError::input(format!(
+                "the wall between the two radii is {} mm, and this slice publishes at least {} mm",
+                outer.radius_mm() - inner_radius,
+                Self::MIN_WALL_MM
+            )));
+        }
+        Ok(Self {
+            center: outer.center(),
+            outer_radius: outer.radius_mm(),
+            inner_radius,
+            height: outer.height_mm(),
+        })
+    }
+
+    /// Whether two stored centres are the one centre this policy requires.
+    ///
+    /// Asked of a saved document rather than of a request, which is why it is
+    /// here and not folded into [`Self::new`]: a request names one centre and
+    /// cannot disagree with itself.
+    pub fn concentric(a: Point2, b: Point2) -> bool {
+        (a.x - b.x).hypot(a.y - b.y) <= Self::CONCENTRIC_MM
+    }
+
+    pub fn center(&self) -> Point2 {
+        self.center
+    }
+    pub fn outer_radius_mm(&self) -> f64 {
+        self.outer_radius
+    }
+    pub fn inner_radius_mm(&self) -> f64 {
+        self.inner_radius
+    }
+    pub fn height_mm(&self) -> f64 {
+        self.height
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,5 +330,82 @@ mod tests {
                 "{center:?} r{radius} h{height}"
             );
         }
+    }
+
+    #[test]
+    fn annular_policy_wants_one_centre_and_a_wall_thick_enough_to_be_one() {
+        let ok = AnnularExtrusion::new([12., -7.], 10., 4., 15.).expect("an annulus");
+        assert_eq!((ok.center().x, ok.center().y), (12., -7.));
+        assert_eq!(ok.outer_radius_mm(), 10.);
+        assert_eq!(ok.inner_radius_mm(), 4.);
+        assert_eq!(ok.height_mm(), 15.);
+        // Fractional radii are not a special case, and the wall may be exactly
+        // the minimum.
+        let thin = AnnularExtrusion::new([-3.5, 4.25], 6.75, 6.749, 2.5).expect("a thin wall");
+        AnnularExtrusion::new([0., 0.], 10., 9.999, 15.)
+            .expect("decimal minimum wall must not depend on subtraction rounding");
+        assert!(AnnularExtrusion::new([0., 0.], 10., 9.99900001, 15.).is_err());
+        assert!(
+            thin.outer_radius_mm() - thin.inner_radius_mm() >= AnnularExtrusion::MIN_WALL_MM,
+            "a wall at the minimum is accepted, not rounded through it"
+        );
+        for (outer, inner) in [(10., 10.), (10., 12.), (10., 9.9995)] {
+            assert!(
+                AnnularExtrusion::new([0., 0.], outer, inner, 5.).is_err(),
+                "R{outer} r{inner}"
+            );
+        }
+        for inner in [0., -1., f64::NAN, f64::INFINITY] {
+            assert!(
+                AnnularExtrusion::new([0., 0.], 10., inner, 5.).is_err(),
+                "r{inner}"
+            );
+        }
+        // Everything the boundary policy refuses, this refuses too: it is the
+        // same policy, asked once.
+        for (center, outer, height) in [
+            ([0., 0.], 0., 10.),
+            ([0., 0.], f64::NAN, 10.),
+            ([f64::NAN, 0.], 10., 10.),
+            ([0., 0.], 10., 0.),
+            ([0., 0.], 10., f64::INFINITY),
+            ([2e6, 0.], 10., 10.),
+            ([0., 0.], 2e6, 10.),
+            ([0., 0.], 10., 2e6),
+        ] {
+            assert!(
+                AnnularExtrusion::new(center, outer, 1., height).is_err(),
+                "{center:?} R{outer} h{height}"
+            );
+        }
+    }
+
+    #[test]
+    fn concentric_is_the_kernels_own_idea_of_one_point() {
+        let at = |x, y| Point2::new(x, y).expect("finite");
+        assert!(AnnularExtrusion::concentric(at(12., -7.), at(12., -7.)));
+        // Inside the kernel's confusion the two centres are one point.
+        let nudge = AnnularExtrusion::CONCENTRIC_MM / 2.;
+        let diagonal = AnnularExtrusion::CONCENTRIC_MM * 0.9;
+        assert!(!AnnularExtrusion::concentric(
+            at(0., 0.),
+            at(diagonal, diagonal)
+        ));
+        assert!(AnnularExtrusion::concentric(
+            at(12., -7.),
+            at(12. + nudge, -7. - nudge)
+        ));
+        // Ten times it is two points, and a millimetre plainly is.
+        let apart = AnnularExtrusion::CONCENTRIC_MM * 10.;
+        assert!(!AnnularExtrusion::concentric(
+            at(12., -7.),
+            at(12. + apart, -7.)
+        ));
+        assert!(!AnnularExtrusion::concentric(at(12., -7.), at(12., -6.)));
+        assert_eq!(
+            AnnularExtrusion::CONCENTRIC_MM,
+            ferritecad_types::Tolerance::DEFAULT_LINEAR,
+            "concentricity is the kernel's point tolerance, not a second opinion"
+        );
     }
 }

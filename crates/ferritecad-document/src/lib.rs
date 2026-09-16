@@ -58,7 +58,7 @@ mod sketch_edit;
 pub use circle_edit::{
     CircleChoice, CircleEdit, SavedCircle, circle_choices, replace_circle_geometry,
 };
-pub use polygon::{CircleExtrusion, PolygonExtrusion};
+pub use polygon::{AnnularExtrusion, CircleExtrusion, PolygonExtrusion};
 pub use sketch_edit::{SketchChoice, SketchVertex, replace_sketch_coordinates, sketch_choices};
 mod envelope;
 mod graph;

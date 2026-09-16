@@ -35,6 +35,7 @@ pub enum Operation {
     Create,
     CreateSketchExtrude,
     CreateCircleExtrude,
+    CreateAnnularExtrude,
     ExportStl,
     ExportFbx,
     ImportStep,
@@ -237,6 +238,47 @@ impl From<ferritecad_jobs::CreatedDocument> for Created {
             destination: created.destination().to_path_buf(),
             document_id: created.document_id(),
         }
+    }
+}
+
+/// What `create-annular-extrude` published, named object by object.
+///
+/// Every identifier comes from the creation itself rather than from a second
+/// reading of the file, so nothing here is matched by name, by object order or
+/// by which circle happens to be bigger. Both circles are named, because a
+/// reader of this report has to be able to address the outer wall and the bore
+/// separately and neither is findable from the other.
+#[derive(Serialize)]
+pub struct CreatedAnnulus {
+    pub destination: PathBuf,
+    pub document_id: DocumentId,
+    pub sketch_id: ObjectId,
+    pub extrude_id: ObjectId,
+    pub body_id: ObjectId,
+    pub outer_curve_id: ferritecad_types::StableEntityId,
+    pub inner_curve_id: ferritecad_types::StableEntityId,
+}
+
+impl TryFrom<ferritecad_jobs::CreatedDocument> for CreatedAnnulus {
+    type Error = CadError;
+
+    /// Fallible because the creation reports identities only for the content
+    /// that has them. A missing set means this command was handed a creation of
+    /// some other kind, which is a defect here rather than something to paper
+    /// over with a placeholder UUID.
+    fn try_from(created: ferritecad_jobs::CreatedDocument) -> Result<Self> {
+        let annulus = created.annulus().ok_or_else(|| {
+            CadError::kernel("the creation published no annular identities to report")
+        })?;
+        Ok(Self {
+            destination: created.destination().to_path_buf(),
+            document_id: created.document_id(),
+            sketch_id: annulus.sketch,
+            extrude_id: annulus.extrude,
+            body_id: annulus.body,
+            outer_curve_id: annulus.outer_curve,
+            inner_curve_id: annulus.inner_curve,
+        })
     }
 }
 

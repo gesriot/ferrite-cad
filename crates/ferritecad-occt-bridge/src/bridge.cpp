@@ -67,6 +67,7 @@
 #include <mutex>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
+#include <Precision.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
@@ -139,9 +140,10 @@ struct ShapeRecord {
   /// it, in segment order. Empty for a segment that produced none.
   std::vector<std::vector<uint64_t>> start_cap_edges;
   std::vector<std::vector<uint64_t>> end_cap_edges;
-  /// The edge swept from each corner of the profile, indexed by joint. Joint
-  /// `j` is the corner where segment `j - 1` meets segment `j`, counting round
-  /// the loop, which is the corner the shared vertex `corners[j]` sits at.
+  /// The edge swept from each corner of the profile, indexed by joint. Joints
+  /// run loop by loop in the order the caller passed them; within a loop,
+  /// joint `j` is the corner where that loop's segment `j - 1` meets its
+  /// segment `j`, which is the corner the shared vertex `corners[j]` sits at.
   /// Empty for a corner that swept none.
   std::vector<std::vector<uint64_t>> sweep_edges;
   /// The vertex each corner of the profile reaches on each cap, indexed by
@@ -450,47 +452,84 @@ void fc_occt_session_destroy(FcOcctSession *session) noexcept { delete session; 
 
 FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                              const FcOcctSegment *segments,
-                             size_t segment_count, double base_offset,
+                             size_t segment_count,
+                             const size_t *loop_segment_counts,
+                             size_t loop_count, double base_offset,
                              double top_offset, FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
                              FcOcctError *out_error) noexcept {
   return guarded(out_error, [&]() -> FcOcctStatus {
     if (session == nullptr || plane == nullptr || segments == nullptr ||
-        out_shape == nullptr) {
+        loop_segment_counts == nullptr || out_shape == nullptr) {
       write_error(out_error, "fc_occt_extrude was given a null argument");
       return FC_OCCT_INVALID_INPUT;
     }
-    // Either a chain of two or more segments meeting at corners, or exactly
-    // one curve that closes on itself. The second form has no corners at all,
-    // so nothing below may count one per segment.
-    const bool closed_curve =
-        segment_count == 1 && segments[0].kind == FC_OCCT_SEGMENT_CIRCLE;
-    if (segment_count < 2 && !closed_curve) {
-      write_error(out_error,
-                  "a closed profile needs at least two segments or one closed "
-                  "curve, got " +
-                      std::to_string(segment_count));
+    if (loop_count == 0) {
+      write_error(out_error, "a region is bounded by at least one loop");
       return FC_OCCT_INVALID_INPUT;
     }
-    if (!closed_curve) {
-      for (size_t i = 0; i < segment_count; ++i) {
-        if (segments[i].kind == FC_OCCT_SEGMENT_CIRCLE) {
-          write_error(out_error,
-                      "segment " + std::to_string(i) +
-                          " is a closed curve, which is a whole profile rather "
-                          "than one segment of a chain");
-          return FC_OCCT_INVALID_INPUT;
-        }
+    // The lengths must partition `segments` exactly, and that is settled
+    // before a single segment is read through them. Accumulated against the
+    // remaining room rather than summed and compared, so a length whose total
+    // would wrap is refused instead of wrapping into a plausible one.
+    size_t partitioned = 0;
+    for (size_t l = 0; l < loop_count; ++l) {
+      if (loop_segment_counts[l] > segment_count - partitioned) {
+        write_error(out_error, "the loop lengths do not partition the " +
+                                   std::to_string(segment_count) +
+                                   " segments: loop " + std::to_string(l) +
+                                   " claims " +
+                                   std::to_string(loop_segment_counts[l]) +
+                                   " with " +
+                                   std::to_string(segment_count - partitioned) +
+                                   " left");
+        return FC_OCCT_INVALID_INPUT;
       }
+      partitioned += loop_segment_counts[l];
     }
-    if (closed_curve &&
-        (!std::isfinite(segments[0].center_x) ||
-         !std::isfinite(segments[0].center_y) ||
-         !std::isfinite(segments[0].radius) || segments[0].radius <= 0.0)) {
-      write_error(out_error,
-                  "a circular profile needs a finite centre and a positive "
-                  "radius");
+    if (partitioned != segment_count) {
+      write_error(out_error, "the loop lengths account for " +
+                                 std::to_string(partitioned) + " of " +
+                                 std::to_string(segment_count) + " segments");
       return FC_OCCT_INVALID_INPUT;
+    }
+
+    // Every loop separately is either a chain of two or more segments meeting
+    // at corners, or exactly one curve that closes on itself. The second form
+    // has no corners at all, so nothing below may count one per segment.
+    //
+    // `closed_curve` is decided per loop and kept, because the loop after a
+    // circle may well be a chain and must not inherit the circle's answer.
+    std::vector<bool> closed_curve(loop_count, false);
+    for (size_t l = 0, at = 0; l < loop_count; at += loop_segment_counts[l], ++l) {
+      const size_t length = loop_segment_counts[l];
+      closed_curve[l] =
+          length == 1 && segments[at].kind == FC_OCCT_SEGMENT_CIRCLE;
+      if (length < 2 && !closed_curve[l]) {
+        write_error(out_error, "loop " + std::to_string(l) +
+                                   " needs at least two segments or one closed "
+                                   "curve, got " +
+                                   std::to_string(length));
+        return FC_OCCT_INVALID_INPUT;
+      }
+      if (!closed_curve[l]) {
+        for (size_t i = at; i < at + length; ++i) {
+          if (segments[i].kind == FC_OCCT_SEGMENT_CIRCLE) {
+            write_error(out_error,
+                        "segment " + std::to_string(i) +
+                            " is a closed curve, which is a whole loop rather "
+                            "than one segment of a chain");
+            return FC_OCCT_INVALID_INPUT;
+          }
+        }
+      } else if (!std::isfinite(segments[at].center_x) ||
+                 !std::isfinite(segments[at].center_y) ||
+                 !std::isfinite(segments[at].radius) ||
+                 segments[at].radius <= 0.0) {
+        write_error(out_error, "a circular loop needs a finite centre and a "
+                               "positive radius");
+        return FC_OCCT_INVALID_INPUT;
+      }
     }
     if (!finite3(plane->origin) || !finite3(plane->x_axis) ||
         !finite3(plane->normal) || !std::isfinite(base_offset) ||
@@ -540,95 +579,199 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
     // A closed curve shares no vertex with anything, so it builds none: the
     // seam Open CASCADE puts on a circular edge belongs to that edge's
     // parameterisation and is not a corner anybody drew.
+    //
+    // `corners` and `edges` are built across every loop in the order the
+    // caller gave them, which is exactly what `joint_index` and
+    // `segment_index` mean in the header. Each chain wraps within its own
+    // loop, so loop 1's last segment closes onto loop 1's first rather than
+    // onto the boundary's.
     std::vector<TopoDS_Vertex> corners;
-    corners.reserve(closed_curve ? 0 : segment_count);
-    for (size_t i = 0; !closed_curve && i < segment_count; ++i) {
-      const FcOcctSegment &segment = segments[i];
-      double x = 0.0;
-      double y = 0.0;
-      if (segment.kind == FC_OCCT_SEGMENT_LINE) {
-        x = segment.start_x;
-        y = segment.start_y;
-      } else if (segment.kind == FC_OCCT_SEGMENT_ARC) {
-        x = segment.center_x + segment.radius * std::cos(segment.start_angle);
-        y = segment.center_y + segment.radius * std::sin(segment.start_angle);
-      } else {
-        write_error(out_error, "segment " + std::to_string(i) +
-                                   " has an unknown kind " +
-                                   std::to_string(segment.kind));
-        return FC_OCCT_UNSUPPORTED;
-      }
-      if (!std::isfinite(x) || !std::isfinite(y)) {
-        write_error(out_error,
-                    "segment " + std::to_string(i) + " starts at a non-finite "
-                                                     "point");
-        return FC_OCCT_INVALID_INPUT;
-      }
-      corners.push_back(BRepBuilderAPI_MakeVertex(to_model(x, y, base_offset)));
-    }
-
     std::vector<TopoDS_Edge> edges;
+    std::vector<TopoDS_Wire> wires;
     edges.reserve(segment_count);
-    BRepBuilderAPI_MakeWire wire;
-    if (closed_curve) {
-      // One analytic circle on the sketch plane, at the base of the sweep.
-      // BRepBuilderAPI_MakeEdge on a gp_Circ builds the whole closed edge and
-      // chooses its own seam vertex; no vertex of ours is involved, so there
-      // is nothing for MakeWire to weld and the edge keeps its identity.
-      const gp_Ax2 axis(to_model(segments[0].center_x, segments[0].center_y,
-                                 base_offset),
-                        frame.Direction(), frame.XDirection());
-      BRepBuilderAPI_MakeEdge builder(gp_Circ(axis, segments[0].radius));
-      if (!builder.IsDone()) {
-        write_error(out_error, "the circular profile does not describe an edge");
-        return FC_OCCT_INVALID_INPUT;
-      }
-      edges.push_back(builder.Edge());
-      wire.Add(edges.back());
-    }
-    for (size_t i = 0; !closed_curve && i < segment_count; ++i) {
-      const FcOcctSegment &segment = segments[i];
-      const TopoDS_Vertex &from = corners[i];
-      const TopoDS_Vertex &to = corners[(i + 1) % segment_count];
-
-      TopoDS_Edge edge;
-      if (segment.kind == FC_OCCT_SEGMENT_LINE) {
-        edge = BRepBuilderAPI_MakeEdge(from, to);
-      } else {
-        // Three points define the arc unambiguously, which avoids having to
-        // agree with OCCT about parameterisation and sweep direction.
-        const double mid_angle =
-            segment.start_angle +
-            0.5 * (segment.end_angle - segment.start_angle);
-        const gp_Pnt through =
-            to_model(segment.center_x + segment.radius * std::cos(mid_angle),
-                     segment.center_y + segment.radius * std::sin(mid_angle),
-                     base_offset);
-        GC_MakeArcOfCircle arc(BRep_Tool::Pnt(from), through,
-                               BRep_Tool::Pnt(to));
-        if (!arc.IsDone()) {
-          write_error(out_error, "segment " + std::to_string(i) +
-                                     " does not describe an arc");
+    wires.reserve(loop_count);
+    for (size_t l = 0, at = 0; l < loop_count; at += loop_segment_counts[l], ++l) {
+      const size_t length = loop_segment_counts[l];
+      const size_t corner_base = corners.size();
+      for (size_t i = 0; !closed_curve[l] && i < length; ++i) {
+        const FcOcctSegment &segment = segments[at + i];
+        double x = 0.0;
+        double y = 0.0;
+        if (segment.kind == FC_OCCT_SEGMENT_LINE) {
+          x = segment.start_x;
+          y = segment.start_y;
+        } else if (segment.kind == FC_OCCT_SEGMENT_ARC) {
+          x = segment.center_x + segment.radius * std::cos(segment.start_angle);
+          y = segment.center_y + segment.radius * std::sin(segment.start_angle);
+        } else {
+          write_error(out_error, "segment " + std::to_string(at + i) +
+                                     " has an unknown kind " +
+                                     std::to_string(segment.kind));
+          return FC_OCCT_UNSUPPORTED;
+        }
+        if (!std::isfinite(x) || !std::isfinite(y)) {
+          write_error(out_error, "segment " + std::to_string(at + i) +
+                                     " starts at a non-finite point");
           return FC_OCCT_INVALID_INPUT;
         }
-        edge = BRepBuilderAPI_MakeEdge(arc.Value(), from, to);
+        corners.push_back(
+            BRepBuilderAPI_MakeVertex(to_model(x, y, base_offset)));
       }
 
-      edges.push_back(edge);
-      wire.Add(edge);
+      BRepBuilderAPI_MakeWire wire;
+      if (closed_curve[l]) {
+        // One analytic circle on the sketch plane, at the base of the sweep.
+        // BRepBuilderAPI_MakeEdge on a gp_Circ builds the whole closed edge and
+        // chooses its own seam vertex; no vertex of ours is involved, so there
+        // is nothing for MakeWire to weld and the edge keeps its identity.
+        const gp_Ax2 axis(
+            to_model(segments[at].center_x, segments[at].center_y, base_offset),
+            frame.Direction(), frame.XDirection());
+        BRepBuilderAPI_MakeEdge builder(gp_Circ(axis, segments[at].radius));
+        if (!builder.IsDone()) {
+          write_error(out_error, "loop " + std::to_string(l) +
+                                     " is a circle that describes no edge");
+          return FC_OCCT_INVALID_INPUT;
+        }
+        edges.push_back(builder.Edge());
+        wire.Add(edges.back());
+      }
+      for (size_t i = 0; !closed_curve[l] && i < length; ++i) {
+        const FcOcctSegment &segment = segments[at + i];
+        const TopoDS_Vertex &from = corners[corner_base + i];
+        const TopoDS_Vertex &to = corners[corner_base + (i + 1) % length];
+
+        TopoDS_Edge edge;
+        if (segment.kind == FC_OCCT_SEGMENT_LINE) {
+          edge = BRepBuilderAPI_MakeEdge(from, to);
+        } else {
+          // Three points define the arc unambiguously, which avoids having to
+          // agree with OCCT about parameterisation and sweep direction.
+          const double mid_angle =
+              segment.start_angle +
+              0.5 * (segment.end_angle - segment.start_angle);
+          const gp_Pnt through =
+              to_model(segment.center_x + segment.radius * std::cos(mid_angle),
+                       segment.center_y + segment.radius * std::sin(mid_angle),
+                       base_offset);
+          GC_MakeArcOfCircle arc(BRep_Tool::Pnt(from), through,
+                                 BRep_Tool::Pnt(to));
+          if (!arc.IsDone()) {
+            write_error(out_error, "segment " + std::to_string(at + i) +
+                                       " does not describe an arc");
+            return FC_OCCT_INVALID_INPUT;
+          }
+          edge = BRepBuilderAPI_MakeEdge(arc.Value(), from, to);
+        }
+
+        edges.push_back(edge);
+        wire.Add(edge);
+      }
+
+      if (!wire.IsDone()) {
+        write_error(out_error, "the segments of loop " + std::to_string(l) +
+                                   " do not form a closed wire");
+        return FC_OCCT_INVALID_INPUT;
+      }
+      wires.push_back(wire.Wire());
     }
 
-    if (!wire.IsDone()) {
-      write_error(out_error, "the profile segments do not form a closed wire");
-      return FC_OCCT_INVALID_INPUT;
+    // A hole runs the opposite way round the plane from the boundary it is cut
+    // out of. Which way round the caller drew it is not something this bridge
+    // can assume — a circle built from gp_Circ runs one way and a chain of
+    // lines runs whichever way it was typed — so each hole is *tried* rather
+    // than trusted: the orientation that makes a valid face with a cavity is
+    // the one used, and a wire that makes one in neither orientation is
+    // refused. Deciding it here is what makes the face an annulus in the first
+    // place; a face assembled from same-sense wires is not a region with a
+    // hole that later needs repairing, it is a different face, and the prism
+    // raised from it would have its cavity wherever Open CASCADE chose to put
+    // it.
+    //
+    // BRepCheck_Analyzer is the arbiter for both the choice and the result, so
+    // nothing here can settle on an orientation that was not checked. It
+    // answers the question the wire construction above cannot: whether each
+    // hole really lies strictly inside the boundary and outside its siblings.
+    const auto planar_area = [](const TopoDS_Face &of) {
+      GProp_GProps properties;
+      BRepGProp::SurfaceProperties(of, properties);
+      return properties.Mass();
+    };
+    double boundary_area = 0.0;
+    if (loop_count > 1) {
+      BRepBuilderAPI_MakeFace bounded(sketch_plane, wires[0]);
+      if (!bounded.IsDone()) {
+        write_error(out_error, "the boundary loop does not bound a face on its "
+                               "plane");
+        return FC_OCCT_INVALID_INPUT;
+      }
+      boundary_area = planar_area(bounded.Face());
+    }
+    // A hole that takes nothing away is not a hole. The smallest area Open
+    // CASCADE can tell from none at this model scale is Precision::Confusion
+    // squared, so anything at or below that is a wire the caller drew rather
+    // than a region, and reporting it as a cavity would hand back the whole
+    // boundary with two extra faces named on it and no complaint.
+    const double least_area = Precision::Confusion() * Precision::Confusion();
+
+    std::vector<TopoDS_Wire> holes;
+    holes.reserve(loop_count - 1);
+    for (size_t l = 1; l < loop_count; ++l) {
+      bool chosen = false;
+      for (int attempt = 0; attempt < 2 && !chosen; ++attempt) {
+        const TopoDS_Wire candidate =
+            attempt == 0 ? TopoDS::Wire(wires[l].Reversed()) : wires[l];
+        BRepBuilderAPI_MakeFace trial(sketch_plane, wires[0]);
+        if (!trial.IsDone()) {
+          write_error(out_error, "the boundary loop does not bound a face on "
+                                 "its plane");
+          return FC_OCCT_INVALID_INPUT;
+        }
+        trial.Add(candidate);
+        if (!trial.IsDone()) {
+          continue;
+        }
+        const TopoDS_Face candidate_face = trial.Face();
+        if (BRepCheck_Analyzer(candidate_face).IsValid() == Standard_True &&
+            boundary_area - planar_area(candidate_face) > least_area) {
+          holes.push_back(candidate);
+          chosen = true;
+        }
+      }
+      if (!chosen) {
+        write_error(out_error,
+                    "loop " + std::to_string(l) +
+                        " does not enclose a region strictly inside the "
+                        "profile's boundary, so it cuts no cavity out of it");
+        return FC_OCCT_INVALID_INPUT;
+      }
     }
 
-    BRepBuilderAPI_MakeFace face_builder(sketch_plane, wire.Wire());
+    BRepBuilderAPI_MakeFace face_builder(sketch_plane, wires[0]);
     if (!face_builder.IsDone()) {
-      write_error(out_error, "the profile does not bound a face on its plane");
+      write_error(out_error, "the boundary loop does not bound a face on its "
+                             "plane");
       return FC_OCCT_INVALID_INPUT;
+    }
+    for (const TopoDS_Wire &hole : holes) {
+      face_builder.Add(hole);
+      if (!face_builder.IsDone()) {
+        write_error(out_error, "the profile's holes cannot be cut out of its "
+                               "boundary together");
+        return FC_OCCT_INVALID_INPUT;
+      }
     }
     const TopoDS_Face face = face_builder.Face();
+    // Asked again of the whole face, because each hole was only checked
+    // against the boundary: two holes that each sit inside it may still
+    // overlap each other. The one-loop profile keeps exactly the checks it has
+    // always had, so nothing that used to build stops building.
+    if (loop_count > 1 && BRepCheck_Analyzer(face).IsValid() != Standard_True) {
+      write_error(out_error,
+                  "the profile's holes do not lie strictly inside its boundary "
+                  "as separate regions, so it bounds no face with a cavity");
+      return FC_OCCT_INVALID_INPUT;
+    }
 
     if (cancelled(cancel, cancel_context)) {
       return FC_OCCT_CANCELLED;

@@ -5,8 +5,9 @@ use ferritecad_exchange::Import;
 use ferritecad_kernel::{
     ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, ExtrudeResult, FaceSurface,
     GeometryKernel, History, HistoryInput, KernelIdentity, Mesh, MeshEdgeRange, MeshEdges,
-    MeshFaceRange, MeshVertexRange, MeshVertices, OperationContext, SegmentGeometry, SessionId,
-    ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind, TessellationParams,
+    MeshFaceRange, MeshVertexRange, MeshVertices, OperationContext, ProfileLoop, ProfileSegment,
+    SegmentGeometry, SessionId, ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind,
+    TessellationParams,
 };
 use ferritecad_types::{CadError, ContentHash, ProfileJoint, Result, Transform};
 
@@ -289,18 +290,24 @@ impl GeometryKernel for OcctKernel {
         context.check_cancelled()?;
 
         let profile = request.profile();
-        if !profile.inner().is_empty() {
-            return Err(CadError::unsupported(
-                "a profile with holes needs more than one wire, which this slice does not build",
-            ));
-        }
-
         let plane = plane_of(profile.plane());
-        let outer = profile.outer().segments();
-        let mut segments = Vec::with_capacity(outer.len());
-        for segment in outer {
-            segments.push(segment_of(&segment.geometry));
-        }
+
+        // Every loop, boundary first, in one list with the lengths that
+        // partition it. The order is the contract: `segment_index` and
+        // `joint_index` below, and in the bridge, both count through the loops
+        // in exactly this order, and `Profile::segments` yields them the same
+        // way. A profile with no holes produces one length and the single list
+        // it always produced.
+        let loops: Vec<&ProfileLoop> = std::iter::once(profile.outer())
+            .chain(profile.inner())
+            .collect();
+        let loop_segment_counts: Vec<usize> =
+            loops.iter().map(|entry| entry.segments().len()).collect();
+        let drawn: Vec<&ProfileSegment> = loops.iter().flat_map(|entry| entry.segments()).collect();
+        let segments: Vec<ffi::Segment> = drawn
+            .iter()
+            .map(|segment| segment_of(&segment.geometry))
+            .collect();
 
         let (base_offset, top_offset) = match request.extent() {
             ExtrudeExtent::Blind { distance } => {
@@ -322,9 +329,14 @@ impl GeometryKernel for OcctKernel {
         // note on fc_occt_extrude — so the honest report is "started" and
         // "finished" rather than an invented curve between them.
         context.progress().report(0.0);
-        let raw =
-            self.session
-                .extrude(&plane, &segments, base_offset, top_offset, context.cancel())?;
+        let raw = self.session.extrude(
+            &plane,
+            &segments,
+            &loop_segment_counts,
+            base_offset,
+            top_offset,
+            context.cancel(),
+        )?;
         context.progress().report(1.0);
 
         let shape = ShapeHandle::new(self.session_id, raw);
@@ -336,7 +348,7 @@ impl GeometryKernel for OcctKernel {
             context.check_cancelled()?;
 
             let mut history = History::new();
-            for (index, segment) in outer.iter().enumerate() {
+            for (index, segment) in drawn.iter().enumerate() {
                 for face in self.session.side_faces(raw, index)? {
                     history.record_generated(
                         HistoryInput::Segment(segment.label),
@@ -365,7 +377,7 @@ impl GeometryKernel for OcctKernel {
             // rename the edges of the ones that stayed.
             let mut start_cap_edges = BTreeMap::new();
             let mut end_cap_edges = BTreeMap::new();
-            for (index, segment) in outer.iter().enumerate() {
+            for (index, segment) in drawn.iter().enumerate() {
                 for (which, into) in [(0, &mut start_cap_edges), (1, &mut end_cap_edges)] {
                     let mut named = self.session.cap_edges(raw, index, which)?.into_iter();
                     let Some(id) = named.next() else {
@@ -406,7 +418,13 @@ impl GeometryKernel for OcctKernel {
             // them. On a loop of two segments both corners are where the same
             // two segments meet, and there is no honest way to say which is
             // meant, so both are left unnamed rather than one being chosen.
-            let joints: Vec<ProfileJoint> = profile.outer().joints().collect();
+            //
+            // Collected loop by loop, in the same order the segments were
+            // sent, so joint `j` here is the corner the bridge answers about
+            // for `j`. A loop that is one closed curve contributes none, which
+            // is why a pair of circles reports no corners at all rather than a
+            // seam nobody drew.
+            let joints: Vec<ProfileJoint> = loops.iter().flat_map(|entry| entry.joints()).collect();
             let mut seen: BTreeMap<ProfileJoint, usize> = BTreeMap::new();
             for joint in &joints {
                 *seen.entry(*joint).or_insert(0) += 1;

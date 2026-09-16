@@ -178,3 +178,17 @@ if [ -n "${FCAD_CIRCLE_FBX_DIR:-}" ]; then
     done
     echo "FCAD_CIRCLE_UFBX_EXECUTED"
 fi
+
+# §25L adds the hollow part's actual publications to the same reader build: the
+# CLI process, the same model after a height edit, and the UI/peer-CLI pair.
+# Four more small files, actually read rather than merely produced.
+if [ -n "${FCAD_ANNULUS_FBX_DIR:-}" ]; then
+    for name in annulus annulus-taller annulus-ui annulus-cli; do
+        "$reader" --identity "$FCAD_ANNULUS_FBX_DIR/$name.fbx" | tee "$work/annulus-$name-reader.txt"
+        count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) failures=0$/\1/p' "$work/annulus-$name-reader.txt")"
+        [ -n "$count" ] && [ "$count" -ge 6 ] || {
+            echo "error: pinned reader did not verify annular $name FBX" >&2; exit 1;
+        }
+    done
+    echo "FCAD_ANNULUS_UFBX_EXECUTED"
+fi

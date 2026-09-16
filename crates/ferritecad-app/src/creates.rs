@@ -269,9 +269,11 @@ impl Creates {
                 let destination = destination.clone();
                 self.status = match outcome {
                     Ok(created) => {
-                        self.sketch.dismiss();
                         if !self.cancel_requested {
+                            self.sketch.draft_published(created.destination());
                             open = Some(created.destination().to_path_buf());
+                        } else {
+                            self.sketch.dismiss();
                         }
                         CreateStatus::Made { destination }
                     }

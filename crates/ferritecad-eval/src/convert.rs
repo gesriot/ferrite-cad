@@ -9,13 +9,14 @@
 //! than being approximated into something plausible.
 
 use ferritecad_document::{
-    DatumPlane, EndCondition, Extrude, Sketch, SketchCurve, SketchGeometry, SolidOperation,
+    AnnularExtrusion, DatumPlane, EndCondition, Extrude, Point2, Sketch, SketchCurve,
+    SketchGeometry, SolidOperation,
 };
 use ferritecad_kernel::{
     ExtrudeExtent, ExtrudeRequest, PlanarPoint, Profile, ProfileLoop, ProfileSegment,
     SegmentGeometry, SketchPlane,
 };
-use ferritecad_types::{CadError, ObjectId, Point3, Result, Vec3};
+use ferritecad_types::{CadError, ObjectId, Point3, Result, StableEntityId, Vec3};
 
 use crate::presentation::SketchPresentation;
 use crate::solve::SketchSolveReport;
@@ -139,6 +140,26 @@ fn profile_from_curves(sketch: &Sketch, plane: SketchPlane) -> Result<Profile> {
         return Profile::new(plane, ProfileLoop::closed_curve(segment)?, Vec::new());
     }
 
+    // Two of them are a boundary and a hole, for the one nesting this slice
+    // builds. Read here for the same reason: neither closed curve has an
+    // endpoint the chain below could follow.
+    if let [first, second] = model.as_slice()
+        && let SketchGeometry::Circle {
+            center: first_center,
+            radius: first_radius,
+        } = first.geometry
+        && let SketchGeometry::Circle {
+            center: second_center,
+            radius: second_radius,
+        } = second.geometry
+    {
+        return annulus_from_circles(
+            plane,
+            (first.id, first_center, first_radius),
+            (second.id, second_center, second_radius),
+        );
+    }
+
     let mut segments = Vec::with_capacity(model.len());
     for curve in &model {
         segments.push(ProfileSegment::new(curve.id, segment_geometry(curve)?));
@@ -146,6 +167,68 @@ fn profile_from_curves(sketch: &Sketch, plane: SketchPlane) -> Result<Profile> {
 
     let ordered = chain_into_one_loop(segments)?;
     Profile::new(plane, ProfileLoop::new(ordered)?, Vec::new())
+}
+
+/// One circular hole in one circular boundary, from two stored circles.
+///
+/// # Which circle is the boundary is a question about the geometry
+///
+/// The larger radius bounds the region and the smaller one is the hole. That is
+/// read from the two radii and from nothing else — in particular not from the
+/// order the two curves happen to sit in the sketch, which is presentation
+/// order and may be either way round. A sketch whose two circles are stored the
+/// other way round is the same drawing and must extrude to the same solid, with
+/// each wall still belonging to the circle that drew it.
+///
+/// Everything narrower than that is the published policy, asked of
+/// [`AnnularExtrusion`] rather than restated here: one centre within the
+/// kernel's own point tolerance, a hole strictly inside its boundary, and a
+/// wall thick enough that the solid is the one that was asked for. A drawing
+/// outside it is refused rather than approximated into the nearest one that
+/// would build.
+fn annulus_from_circles(
+    plane: SketchPlane,
+    first: (StableEntityId, Point2, f64),
+    second: (StableEntityId, Point2, f64),
+) -> Result<Profile> {
+    let (outer, inner) = if first.2 >= second.2 {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    if !AnnularExtrusion::concentric(outer.1, inner.1) {
+        return Err(CadError::unsupported(format!(
+            "sketch curves {} and {} are circles about different centres, and an off-centre hole \
+             needs more than this slice builds",
+            outer.0, inner.0
+        )));
+    }
+    // The stored numbers have to be inside the policy a new one is judged by,
+    // or a document written by something else could extrude to a solid this
+    // slice would refuse to create.
+    AnnularExtrusion::new(
+        [outer.1.x, outer.1.y],
+        outer.2,
+        inner.2,
+        // A height this function does not have and does not need: the extent is
+        // the extrusion's, and is checked where it is read. One that a document
+        // will store stands in so the two radii can be judged on their own.
+        1.0,
+    )
+    .map_err(|error| {
+        CadError::unsupported(format!(
+            "sketch curves {} and {} are two circles this slice will not extrude: {error}",
+            outer.0, inner.0
+        ))
+    })?;
+
+    let loop_of = |(id, center, radius): (StableEntityId, Point2, f64)| -> Result<ProfileLoop> {
+        ProfileLoop::closed_curve(ProfileSegment::new(
+            id,
+            SegmentGeometry::circle(planar(center.x, center.y)?, radius)?,
+        ))
+    };
+    Profile::new(plane, loop_of(outer)?, vec![loop_of(inner)?])
 }
 
 /// Builds an extrusion request from a stored feature.
@@ -203,14 +286,13 @@ fn segment_geometry(curve: &SketchCurve) -> Result<SegmentGeometry> {
             *start_angle,
             *end_angle,
         ),
-        // A circle is a closed loop on its own. One of them alone is a profile
-        // and is read before this point; one among other model curves would be
-        // a second loop, which needs multi-loop profiles this slice does not
-        // build.
+        // A circle is a closed loop on its own. One alone is a profile and two
+        // are a boundary and a hole; both are read before this point. What is
+        // left is a circle mixed in with lines or arcs, which would be a loop
+        // beside a chain — more than one region, rather than one with a hole.
         SketchGeometry::Circle { .. } => Err(CadError::unsupported(format!(
-            "sketch curve {} is a circle, which is a whole profile on its own; a circle \
-             alongside other model geometry needs more than one loop, which this slice does not \
-             implement",
+            "sketch curve {} is a circle, which is a whole loop on its own; a circle alongside \
+             lines or arcs needs more than the one boundary and one hole this slice builds",
             curve.id
         ))),
         SketchGeometry::Point { .. } => Err(CadError::unsupported(format!(
@@ -424,27 +506,151 @@ mod tests {
     }
 
     #[test]
-    fn a_circle_beside_other_model_geometry_is_a_second_loop_and_unsupported() {
-        // One circle is a profile; a circle *and* a square is two loops, which
-        // needs holes or multiple regions this slice does not build.
+    fn a_circle_beside_lines_is_a_loop_beside_a_chain_and_unsupported() {
+        // One circle is a profile and two concentric ones are a region with a
+        // hole; a circle *and* a square is two regions, which needs more.
         let mut curves = square_curves();
         curves.push(model_circle((5.0, 5.0), 1.0));
         let err = profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
-            .expect_err("two loops are not one profile");
+            .expect_err("a loop beside a chain is not one region");
         assert_eq!(err.kind(), ErrorKind::Unsupported);
-        assert!(err.to_string().contains("whole profile on its own"));
+        assert!(err.to_string().contains("whole loop on its own"));
+    }
 
-        // Two circles are two loops for the same reason.
-        let err = profile_from_sketch(
-            &sketch(vec![
+    /// Two concentric circles are one region with a hole, whichever order they
+    /// are stored in.
+    #[test]
+    fn two_concentric_circles_are_a_boundary_and_a_hole_in_either_stored_order() {
+        let outer = model_circle((12.0, -7.0), 10.0);
+        let inner = model_circle((12.0, -7.0), 4.0);
+        // Both orders, because presentation order is not a fact about the
+        // drawing and must not decide which circle is the boundary.
+        for curves in [
+            vec![outer.clone(), inner.clone()],
+            vec![inner.clone(), outer.clone()],
+        ] {
+            let profile =
+                profile_from_sketch(&sketch(curves), ObjectId::new(), SketchPlane::world_xy())
+                    .expect("a circle inside a circle is a region with a hole")
+                    .profile;
+
+            let boundary = profile.outer();
+            assert!(boundary.is_closed_curve(), "not approximated by a chain");
+            assert_eq!(boundary.joints().len(), 0);
+            let drawn = boundary.segments().first().expect("one curve");
+            assert_eq!(drawn.label, outer.id, "the larger circle bounds the region");
+            assert!(matches!(
+                drawn.geometry,
+                SegmentGeometry::Circle { center, radius }
+                    if (center.x, center.y, radius) == (12.0, -7.0, 10.0)
+            ));
+
+            assert_eq!(profile.inner().len(), 1);
+            let hole = &profile.inner()[0];
+            assert!(hole.is_closed_curve());
+            assert_eq!(hole.joints().len(), 0);
+            let drawn = hole.segments().first().expect("one curve");
+            assert_eq!(drawn.label, inner.id, "the smaller circle is the hole");
+            assert!(matches!(
+                drawn.geometry,
+                SegmentGeometry::Circle { center, radius }
+                    if (center.x, center.y, radius) == (12.0, -7.0, 4.0)
+            ));
+            assert_eq!(profile.segments().count(), 2);
+        }
+    }
+
+    #[test]
+    fn two_circles_outside_the_annular_policy_are_refused_rather_than_approximated() {
+        for (what, a, b) in [
+            // Side by side: two regions, not one with a hole.
+            (
+                "disjoint",
                 model_circle((0.0, 0.0), 1.0),
                 model_circle((9.0, 0.0), 1.0),
+            ),
+            // Nested but off centre: geometry the kernel builds, outside this slice.
+            (
+                "eccentric",
+                model_circle((0.0, 0.0), 10.0),
+                model_circle((3.0, 0.0), 4.0),
+            ),
+            // The same circle twice: no wall at all.
+            (
+                "coincident",
+                model_circle((0.0, 0.0), 5.0),
+                model_circle((0.0, 0.0), 5.0),
+            ),
+            // A wall below the published minimum.
+            (
+                "hairline",
+                model_circle((0.0, 0.0), 10.0),
+                model_circle((0.0, 0.0), 9.9999),
+            ),
+            // Outside the shared 1e6 bound.
+            (
+                "huge",
+                model_circle((0.0, 0.0), 2e6),
+                model_circle((0.0, 0.0), 4.0),
+            ),
+        ] {
+            let err = profile_from_sketch(
+                &sketch(vec![a, b]),
+                ObjectId::new(),
+                SketchPlane::world_xy(),
+            )
+            .expect_err(what);
+            assert_eq!(err.kind(), ErrorKind::Unsupported, "{what}: {err}");
+        }
+        // A circle that is not a circle at all is still refused before this.
+        for radius in [0.0, -3.0] {
+            assert!(
+                profile_from_sketch(
+                    &sketch(vec![
+                        model_circle((0.0, 0.0), 10.0),
+                        model_circle((0.0, 0.0), radius),
+                    ]),
+                    ObjectId::new(),
+                    SketchPlane::world_xy(),
+                )
+                .is_err(),
+                "r{radius}"
+            );
+        }
+    }
+
+    #[test]
+    fn three_circles_are_more_than_one_hole_and_unsupported() {
+        let err = profile_from_sketch(
+            &sketch(vec![
+                model_circle((0.0, 0.0), 10.0),
+                model_circle((0.0, 0.0), 6.0),
+                model_circle((0.0, 0.0), 2.0),
             ]),
             ObjectId::new(),
             SketchPlane::world_xy(),
         )
-        .expect_err("two circles are two loops");
+        .expect_err("two holes are not one hole");
         assert_eq!(err.kind(), ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn a_construction_circle_does_not_become_a_hole() {
+        // Construction geometry bounds no face, so a model circle with a
+        // construction circle inside it is still one plain cylinder.
+        let mut inner = model_circle((0.0, 0.0), 4.0);
+        inner.construction = true;
+        let profile = profile_from_sketch(
+            &sketch(vec![model_circle((0.0, 0.0), 10.0), inner]),
+            ObjectId::new(),
+            SketchPlane::world_xy(),
+        )
+        .expect("one model circle")
+        .profile;
+        assert!(
+            profile.inner().is_empty(),
+            "a construction circle is not a hole"
+        );
     }
 
     #[test]
