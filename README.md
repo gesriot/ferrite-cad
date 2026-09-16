@@ -21,6 +21,11 @@ A saved circle's centre and radius can then be changed in a new copy through
 **Edit circle …** or `edit-circle`: the circle keeps its identity, the extrusion
 keeps its height, and everything else in the document is carried over unchanged.
 [Contract and recipe](docs/edit-circle-copy.md).
+A hollow circular part uses **Profile: Circle with hole** or
+`create-annular-extrude`; [creation contract](docs/annular-sketch-extrude.md).
+Its shared centre and both radii can be changed through **Edit annulus …** or
+`edit-annular`, preserving both circle identities and the height in a new copy.
+[Editing contract and recipe](docs/edit-annular-copy.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

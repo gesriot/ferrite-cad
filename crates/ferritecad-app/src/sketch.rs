@@ -2,11 +2,12 @@
 //! A disposable drawing, separate from the accepted scene and persisted model.
 //! No kernel, filesystem, IDs, or document mutation occurs while editing it.
 use ferritecad_document::{
-    CircleChoice, CircleEdit, ExtrudeEditSource, SketchChoice, SketchVertex,
+    AnnulusChoice, AnnulusEdit, CircleChoice, CircleEdit, ExtrudeEditSource, SketchChoice,
+    SketchVertex,
 };
 use ferritecad_jobs::{
-    AnnularExtrusion, CircleExtrusion, EditCircleRequest, EditSketchRequest, NewDocument,
-    PolygonExtrusion,
+    AnnularExtrusion, CircleExtrusion, EditAnnulusRequest, EditCircleRequest, EditSketchRequest,
+    NewDocument, PolygonExtrusion,
 };
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
@@ -112,6 +113,13 @@ pub(crate) struct Editor {
     circle_undo: Vec<CircleState>,
     circle_redo: Vec<CircleState>,
     circle_applied: Option<CircleState>,
+    /// The saved pair of circles being edited, with the request it was read
+    /// from, and that draft's own bounded history under the same policy.
+    editing_annulus: Option<(EditAnnulusRequest, AnnulusChoice)>,
+    pending_annulus_edit: Option<EditAnnulusRequest>,
+    annulus_undo: Vec<AnnulusState>,
+    annulus_redo: Vec<AnnulusState>,
+    annulus_applied: Option<AnnulusState>,
     /// Publication is complete, but its picture has not yet been accepted.
     /// Keep one recovery draft without preventing the ordinary async Open.
     published_draft: Option<(PathBuf, Box<Editor>)>,
@@ -127,7 +135,10 @@ fn push_bounded<T>(stack: &mut Vec<T>, value: T) {
 
 impl Editor {
     pub(crate) fn active(&self) -> bool {
-        self.draft.is_some() || self.editing_circle.is_some() || self.constraints.active()
+        self.draft.is_some()
+            || self.editing_circle.is_some()
+            || self.editing_annulus.is_some()
+            || self.constraints.active()
     }
     pub(crate) fn dismiss(&mut self) {
         *self = Self::default();
@@ -140,6 +151,98 @@ impl Editor {
     }
     pub(crate) fn take_circle_edit_request(&mut self) -> Option<EditCircleRequest> {
         self.pending_circle_edit.take()
+    }
+    pub(crate) fn take_annulus_edit_request(&mut self) -> Option<EditAnnulusRequest> {
+        self.pending_annulus_edit.take()
+    }
+    /// Begin editing one saved pair of concentric circles of the accepted scene.
+    ///
+    /// The path and the version come from the reading that was accepted, so a
+    /// later Open that has not been accepted cannot retarget this draft. The
+    /// form opens on the bounding circle's stored centre; applying an edit puts
+    /// both circles at exactly one centre, which the two may not be already.
+    pub(crate) fn begin_annulus_edit(
+        &mut self,
+        path: &Path,
+        source: &ExtrudeEditSource,
+        id: ferritecad_types::ObjectId,
+    ) -> bool {
+        if self.active() || source.refusal.is_some() {
+            return false;
+        }
+        let Some(choice) = source
+            .annulus_sketches
+            .iter()
+            .find(|c| c.sketch == id && c.refusal.is_none())
+        else {
+            return false;
+        };
+        let Some(saved) = &choice.annulus else {
+            return false;
+        };
+        self.dismiss();
+        self.mode = Mode::Annulus;
+        self.annulus = AnnulusState {
+            center: saved.center_mm.map(|n| n.to_string()),
+            outer_radius: saved.outer_radius_mm.to_string(),
+            inner_radius: saved.inner_radius_mm.to_string(),
+            height: saved.height_mm.to_string(),
+        };
+        self.annulus_applied = Some(self.annulus.clone());
+        self.editing_annulus = Some((
+            EditAnnulusRequest {
+                source: path.to_path_buf(),
+                expected: source.version,
+                sketch: id,
+                edit: AnnulusEdit {
+                    outer_curve_id: saved.outer_curve_id,
+                    inner_curve_id: saved.inner_curve_id,
+                    center_mm: saved.center_mm,
+                    outer_radius_mm: saved.outer_radius_mm,
+                    inner_radius_mm: saved.inner_radius_mm,
+                },
+                destination: PathBuf::new(),
+            },
+            choice.clone(),
+        ));
+        true
+    }
+    /// What the annular edit form is asking for, or why it is not an edit yet.
+    fn annulus_edit_request(&self) -> Result<EditAnnulusRequest> {
+        let (basis, choice) = self
+            .editing_annulus
+            .as_ref()
+            .ok_or_else(|| CadError::input("no saved annulus draft"))?;
+        let mut request = basis.clone();
+        request.edit = AnnulusEdit {
+            // The saved identities in their saved roles, never ones read back
+            // out of a text box.
+            outer_curve_id: basis.edit.outer_curve_id,
+            inner_curve_id: basis.edit.inner_curve_id,
+            center_mm: [
+                number(&self.annulus.center[0])?,
+                number(&self.annulus.center[1])?,
+            ],
+            outer_radius_mm: number(&self.annulus.outer_radius)?,
+            inner_radius_mm: number(&self.annulus.inner_radius)?,
+        };
+        choice.validate_annulus(&request.edit)?;
+        Ok(request)
+    }
+    fn apply_annulus(&mut self) -> Result<()> {
+        let request = self.annulus_edit_request()?;
+        self.annulus.center = request.edit.center_mm.map(|n| n.to_string());
+        self.annulus.outer_radius = request.edit.outer_radius_mm.to_string();
+        self.annulus.inner_radius = request.edit.inner_radius_mm.to_string();
+        let before = self
+            .annulus_applied
+            .replace(self.annulus.clone())
+            .ok_or_else(|| CadError::input("no applied annulus draft"))?;
+        if self.annulus != before {
+            push_bounded(&mut self.annulus_undo, before);
+            self.annulus_redo.clear();
+        }
+        Ok(())
     }
     /// Begin editing one saved analytic circle of the accepted scene.
     ///
@@ -329,6 +432,23 @@ impl Editor {
                     response.on_hover_text(reason);
                 }
             }
+            for choice in &source.annulus_sketches {
+                let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
+                let response = ui.add_enabled(
+                    can_begin && refusal.is_none(),
+                    egui::Button::new(format!(
+                        "Edit annulus {} — {}…",
+                        choice.name.as_deref().unwrap_or("Unnamed"),
+                        choice.sketch
+                    )),
+                );
+                if response.clicked() {
+                    self.begin_annulus_edit(path, source, choice.sketch);
+                }
+                if let Some(reason) = refusal {
+                    response.on_hover_text(reason);
+                }
+            }
         }
     }
     fn edit_request(&self) -> Result<EditSketchRequest> {
@@ -405,6 +525,18 @@ impl Editor {
         self.redo.clear();
     }
     fn undo(&mut self) {
+        if self.editing_annulus.is_some() {
+            if let Some(previous) = self.annulus_undo.pop() {
+                push_bounded(
+                    &mut self.annulus_redo,
+                    self.annulus_applied
+                        .replace(previous.clone())
+                        .expect("applied annulus"),
+                );
+                self.annulus = previous;
+            }
+            return;
+        }
         if self.editing_circle.is_some() {
             if let Some(previous) = self.circle_undo.pop() {
                 push_bounded(
@@ -424,6 +556,18 @@ impl Editor {
         }
     }
     fn redo(&mut self) {
+        if self.editing_annulus.is_some() {
+            if let Some(next) = self.annulus_redo.pop() {
+                push_bounded(
+                    &mut self.annulus_undo,
+                    self.annulus_applied
+                        .replace(next.clone())
+                        .expect("applied annulus"),
+                );
+                self.annulus = next;
+            }
+            return;
+        }
         if self.editing_circle.is_some() {
             if let Some(next) = self.circle_redo.pop() {
                 push_bounded(
@@ -476,7 +620,9 @@ impl Editor {
             }
             return;
         }
-        egui::Window::new(if self.editing_circle.is_some() {
+        egui::Window::new(if self.editing_annulus.is_some() {
+            "Edit saved annulus — new copy"
+        } else if self.editing_circle.is_some() {
             "Edit saved Circle — new copy"
         } else if self.editing.is_some() {
             "Edit saved Sketch — new copy"
@@ -648,7 +794,125 @@ impl Editor {
         }
     }
 
+    /// The saved-annulus half of the same window.
+    ///
+    /// Shows what is stored, by identity, and offers the three numbers this edit
+    /// may change. The height is shown because it decides what they mean and is
+    /// deliberately not editable here: `Edit extrusion` owns it.
+    fn draw_annulus_edit(&mut self, ui: &mut egui::Ui) {
+        let Some((request, choice)) = &self.editing_annulus else {
+            return;
+        };
+        ui.label("XY · mm · saved annular profile · one centre and both radii");
+        ui.small(format!(
+            "Sketch {} · {}",
+            request.sketch,
+            request.source.display()
+        ));
+        if let Some(saved) = &choice.annulus {
+            ui.small(format!(
+                "Boundary {} · saved centre ({}, {}) mm · radius {} mm",
+                saved.outer_curve_id, saved.center_mm[0], saved.center_mm[1], saved.outer_radius_mm
+            ));
+            ui.small(format!(
+                "Bore {} · saved centre ({}, {}) mm · radius {} mm · height {} mm",
+                saved.inner_curve_id,
+                saved.inner_center_mm[0],
+                saved.inner_center_mm[1],
+                saved.inner_radius_mm,
+                saved.height_mm
+            ));
+        }
+        let height = self.annulus.height.clone();
+        let [x, y] = &mut self.annulus.center;
+        let fields: [(&str, &mut String); 4] = [
+            ("Center X", x),
+            ("Center Y", y),
+            ("Outer radius", &mut self.annulus.outer_radius),
+            ("Inner radius", &mut self.annulus.inner_radius),
+        ];
+        egui::Grid::new("ferritecad saved annulus numbers")
+            .num_columns(3)
+            .show(ui, |ui| {
+                for (label, value) in fields {
+                    ui.label(label);
+                    ui.add(
+                        egui::TextEdit::singleline(value)
+                            .char_limit(64)
+                            .desired_width(120.),
+                    );
+                    ui.label("mm");
+                    ui.end_row();
+                }
+                ui.label("Blind height");
+                ui.label(&height);
+                ui.label("mm (retained)");
+                ui.end_row();
+            });
+        match self.annulus_edit_request() {
+            Ok(request) => {
+                let pending = self.annulus_applied.as_ref() != Some(&self.annulus);
+                if ui
+                    .add_enabled(pending, egui::Button::new("Apply annulus change"))
+                    .clicked()
+                {
+                    self.apply_annulus().expect("validated annulus draft");
+                }
+                let applied = self.annulus_applied.as_ref() == Some(&self.annulus);
+                if ui
+                    .add_enabled(applied, egui::Button::new("Save edited annulus copy…"))
+                    .clicked()
+                {
+                    self.pending_annulus_edit = Some(request);
+                }
+                if !applied {
+                    ui.small("Apply the numbers before saving the copy.");
+                }
+            }
+            Err(error) => {
+                ui.colored_label(ui.visuals().error_fg_color, error.to_string());
+            }
+        }
+    }
+
     fn draw_draft(&mut self, ui: &mut egui::Ui, running: bool) {
+        if self.editing_annulus.is_some() {
+            ui.add_enabled_ui(!running, |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            !self.annulus_undo.is_empty(),
+                            egui::Button::new("Undo draft"),
+                        )
+                        .clicked()
+                    {
+                        self.undo();
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.annulus_redo.is_empty(),
+                            egui::Button::new("Redo draft"),
+                        )
+                        .clicked()
+                    {
+                        self.redo();
+                    }
+                    if ui.button("Cancel draft").clicked() {
+                        self.dismiss();
+                    }
+                });
+            });
+            // Cancel took the draft down; there is nothing left to draw.
+            if self.editing_annulus.is_none() {
+                return;
+            }
+            ui.add_enabled_ui(!running, |ui| self.draw_annulus_edit(ui));
+            if running {
+                ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
+            }
+            ui.small("Undo/redo changes only this draft; history ends at publication.");
+            return;
+        }
         if self.editing_circle.is_some() {
             ui.add_enabled_ui(!running, |ui| {
                 ui.horizontal(|ui| {
@@ -916,6 +1180,26 @@ pub(crate) fn finish_circle_edit(
         editor.draft_published(&saved.destination);
     }
     edits.finish_circle(generation, result)
+}
+
+/// Finish one annulus edit at the application boundary.
+///
+/// The same two steps the circle edit takes, through the same shared draft
+/// mechanism: a published copy hands its draft to `draft_published` so an Open
+/// that is later refused can give it back, and the generation check stays the
+/// worker state's.
+pub(crate) fn finish_annulus_edit(
+    editor: &mut Editor,
+    edits: &mut crate::edits::Edits,
+    generation: u64,
+    result: Result<ferritecad_jobs::EditedAnnulus>,
+) -> Option<PathBuf> {
+    if edits.accepts(generation)
+        && let Ok(saved) = &result
+    {
+        editor.draft_published(&saved.destination);
+    }
+    edits.finish_annulus(generation, result)
 }
 
 /// Drawing coordinates are a view of numbers, never a source of modelling rules.
@@ -2421,6 +2705,434 @@ mod tests {
                 } else {
                     fbxs.push(std::fs::read(&out).expect("FBX"));
                     if let Some(dir) = std::env::var_os("FCAD_CIRCLE_ARTIFACTS") {
+                        // Read by the pinned ufbx reader in the same CI job.
+                        let dir = std::path::Path::new(&dir);
+                        std::fs::create_dir_all(dir).expect("artifact directory");
+                        std::fs::copy(&out, dir.join(format!("{name}.fbx"))).expect("artifact");
+                    }
+                }
+            }
+        }
+        assert_eq!(meshes[0], meshes[1], "one geometry, two copies");
+        assert_eq!(fbxs[0], fbxs[1], "same stored identities, same FBX");
+        assert_eq!(std::fs::read(&source).expect("source"), bytes);
+        assert_eq!(
+            std::fs::metadata(&source)
+                .expect("metadata")
+                .modified()
+                .expect("mtime"),
+            modified
+        );
+    }
+
+    /// A real §25L source and the accepted reading a form may read facts from.
+    fn saved_annulus(root: &Path) -> (PathBuf, ferritecad_document::ExtrudeEditSource) {
+        use crate::creates::tests::ferritecad;
+        let source = root.join("original.fcad");
+        let input = root.join("create.json");
+        std::fs::write(
+            &input,
+            concat!(
+                r#"{"schema_version":1,"center_mm":[12.0,-7.0],"#,
+                r#""outer_radius_mm":10.0,"inner_radius_mm":4.0,"height_mm":15.0}"#
+            ),
+        )
+        .expect("input");
+        let p = std::process::Command::new(ferritecad())
+            .arg("create-annular-extrude")
+            .arg(&input)
+            .arg("-o")
+            .arg(&source)
+            .arg("--json")
+            .output()
+            .expect("create");
+        assert!(p.status.success(), "{p:?}");
+        let loaded = {
+            let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+            ferritecad_scene::snapshot_of(
+                &source,
+                &mut k,
+                |k, b| k.import_step(b),
+                &Default::default(),
+                &ferritecad_kernel::OperationContext::default(),
+            )
+            .expect("accepted scene")
+        };
+        (source, loaded.edit_source.expect("accepted edit facts"))
+    }
+
+    #[test]
+    fn annulus_edit_widgets_change_only_the_three_numbers_and_keep_the_draft() {
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: no OCCT for the accepted scene this form reads");
+            return;
+        }
+        let root = tempfile::tempdir().expect("directory");
+        let (source, reading) = saved_annulus(root.path());
+        let saved = reading.annulus_sketches[0]
+            .annulus
+            .clone()
+            .expect("a supported annulus");
+        let id = reading.annulus_sketches[0].sketch;
+
+        let mut e = Editor::default();
+        // A Sketch this document does not have cannot be edited.
+        assert!(!e.begin_annulus_edit(&source, &reading, ferritecad_types::ObjectId::new()));
+        assert!(!e.active());
+        assert!(e.begin_annulus_edit(&source, &reading, id));
+        // And a second begin on a live draft is refused rather than retargeting.
+        assert!(!e.begin_annulus_edit(&source, &reading, id));
+
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        // The form opens on what is stored, and says which two circles it is.
+        assert_eq!(e.annulus.center, ["12".to_owned(), "-7".to_owned()]);
+        assert_eq!(e.annulus.outer_radius, "10");
+        assert_eq!(e.annulus.inner_radius, "4");
+        assert_eq!(e.annulus.height, "15");
+        let out = frame(&ctx, &mut e, vec![]);
+        let drawn: Vec<String> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        for needle in [
+            saved.outer_curve_id.to_string(),
+            saved.inner_curve_id.to_string(),
+            id.to_string(),
+        ] {
+            assert!(
+                drawn.iter().any(|line| line.contains(&needle)),
+                "the form does not name {needle}: {drawn:?}"
+            );
+        }
+        assert!(
+            drawn.iter().any(|l| l.contains("mm (retained)")),
+            "the height is shown as retained rather than editable"
+        );
+
+        for (label, value) in [
+            ("Center X", "-3.5"),
+            ("Center Y", "4.25"),
+            ("Outer radius", "6.75"),
+            ("Inner radius", "2.125"),
+        ] {
+            let out = frame(&ctx, &mut e, vec![]);
+            type_into_annulus_row(&ctx, &mut e, &out, label, value);
+        }
+        assert_eq!(e.annulus.center, ["-3.5".to_owned(), "4.25".to_owned()]);
+        assert_eq!(e.annulus.outer_radius, "6.75");
+        assert_eq!(e.annulus.inner_radius, "2.125");
+        assert_eq!(
+            e.annulus.height, "15",
+            "the height is not this form's to change"
+        );
+        assert!(e.annulus_undo.is_empty(), "typing is not an Apply");
+
+        // Save is unavailable until the numbers are applied, and submits nothing.
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Save edited annulus copy…"));
+        assert!(
+            e.take_annulus_edit_request().is_none(),
+            "an unapplied draft submitted a request"
+        );
+
+        // One Apply is one history step for all three numbers together.
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Apply annulus change"));
+        assert_eq!(e.annulus_undo.len(), 1, "one Apply, one history step");
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Undo draft"));
+        assert_eq!(e.annulus.outer_radius, "10");
+        assert_eq!(e.annulus.inner_radius, "4");
+        assert_eq!(e.annulus.center, ["12", "-7"]);
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Redo draft"));
+        assert_eq!(e.annulus.outer_radius, "6.75");
+        assert_eq!(e.annulus.inner_radius, "2.125");
+        assert!(
+            e.take_annulus_edit_request().is_none(),
+            "undo and redo ask no job for anything"
+        );
+
+        // Every refusal is shown in the form and offers no Save.
+        for (field, bad) in [
+            ("Inner radius", "10"),
+            ("Inner radius", "12"),
+            ("Inner radius", "9.9999"),
+            ("Inner radius", "0"),
+            ("Inner radius", "-4"),
+            ("Inner radius", "banana"),
+            ("Outer radius", "0"),
+            ("Outer radius", "2e6"),
+            ("Center X", "banana"),
+        ] {
+            let out = frame(&ctx, &mut e, vec![]);
+            type_into_annulus_row(&ctx, &mut e, &out, field, bad);
+            let out = frame(&ctx, &mut e, vec![]);
+            assert!(
+                e.annulus_edit_request().is_err(),
+                "{field} {bad:?} was accepted"
+            );
+            assert!(
+                !out.shapes.iter().any(|c| matches!(&c.shape,
+                    egui::Shape::Text(t) if t.galley.text() == "Save edited annulus copy…")),
+                "{field} {bad:?} still offered Save"
+            );
+            assert!(e.take_annulus_edit_request().is_none());
+            let out = frame(&ctx, &mut e, vec![]);
+            type_into_annulus_row(
+                &ctx,
+                &mut e,
+                &out,
+                field,
+                match field {
+                    "Inner radius" => "2.125",
+                    "Outer radius" => "6.75",
+                    _ => "-3.5",
+                },
+            );
+        }
+
+        // Back to a request, and the identities come from the reading rather
+        // than from anything typed.
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Apply annulus change"));
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Save edited annulus copy…"));
+        let request = e.take_annulus_edit_request().expect("submit");
+        assert!(
+            e.take_annulus_edit_request().is_none(),
+            "one press, one request"
+        );
+        assert_eq!(request.sketch, id);
+        assert_eq!(request.source, source);
+        assert_eq!(request.expected, reading.version);
+        assert_eq!(request.edit.outer_curve_id, saved.outer_curve_id);
+        assert_eq!(request.edit.inner_curve_id, saved.inner_curve_id);
+        assert_eq!(request.edit.center_mm, [-3.5, 4.25]);
+        assert_eq!(request.edit.outer_radius_mm, 6.75);
+        assert_eq!(request.edit.inner_radius_mm, 2.125);
+
+        // While the request is saving, the form is disabled and no draft action
+        // discards it.
+        let kept = e.annulus.clone();
+        let history = (e.annulus_undo.clone(), e.annulus_redo.clone());
+        for label in ["Cancel draft", "Save edited annulus copy…", "Undo draft"] {
+            let out = frame_running(&ctx, &mut e, vec![], true);
+            let at = text_at(&out, label);
+            frame_running(&ctx, &mut e, vec![egui::Event::PointerMoved(at)], true);
+            for pressed in [true, false] {
+                frame_running(
+                    &ctx,
+                    &mut e,
+                    vec![egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    }],
+                    true,
+                );
+            }
+            assert!(e.active(), "{label} discarded a saving annulus draft");
+            assert_eq!(e.annulus, kept, "{label}");
+            assert_eq!(
+                (e.annulus_undo.clone(), e.annulus_redo.clone()),
+                history,
+                "{label} changed the history"
+            );
+            assert!(e.take_annulus_edit_request().is_none(), "{label} submitted");
+        }
+
+        // Cancel ends the draft and leaves nothing pending.
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Cancel draft"));
+        assert!(!e.active());
+        assert!(e.take_annulus_edit_request().is_none());
+    }
+
+    #[test]
+    fn native_annulus_edit_worker_and_cli_publish_equivalent_copies() {
+        use crate::creates::tests::{ferritecad, read_semantics};
+        use ferritecad_document::Document;
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: no OCCT for the saved annulus worker");
+            return;
+        }
+        let root = tempfile::tempdir().expect("directory");
+        let (source, reading) = saved_annulus(root.path());
+        let bytes = std::fs::read(&source).expect("source");
+        let modified = std::fs::metadata(&source)
+            .expect("metadata")
+            .modified()
+            .expect("mtime");
+        let id = reading.annulus_sketches[0].sketch;
+        let saved = reading.annulus_sketches[0]
+            .annulus
+            .clone()
+            .expect("supported");
+
+        let mut e = Editor::default();
+        assert!(e.begin_annulus_edit(&source, &reading, id));
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        for (label, value) in [
+            ("Center X", "-3.5"),
+            ("Center Y", "4.25"),
+            ("Outer radius", "6.75"),
+            ("Inner radius", "2.125"),
+        ] {
+            let out = frame(&ctx, &mut e, vec![]);
+            type_into_annulus_row(&ctx, &mut e, &out, label, value);
+        }
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Apply annulus change"));
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Save edited annulus copy…"));
+        let request = e.take_annulus_edit_request().expect("submit");
+        let kept = e.annulus.clone();
+
+        let mut edits = crate::edits::Edits::default();
+        for occupied in [true, false] {
+            let mut request = request.clone();
+            request.destination =
+                root.path()
+                    .join(if occupied { "occupied.fcad" } else { "ui.fcad" });
+            if occupied {
+                std::fs::write(&request.destination, b"keep").expect("sentinel");
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let generation = edits
+                .start_annulus(request.clone(), move |r, g, c| {
+                    crate::edits::spawn_annulus_edit(r, c, move |result| {
+                        tx.send((g, result)).expect("reply")
+                    })
+                })
+                .expect("worker");
+            assert!(
+                edits
+                    .start_annulus(request, |_, _, _| panic!("duplicate worker"))
+                    .is_none(),
+                "a running job takes no second request"
+            );
+            // A reply for a request that is no longer current changes nothing.
+            assert!(
+                finish_annulus_edit(
+                    &mut e,
+                    &mut edits,
+                    generation + 1,
+                    Err(CadError::input("stale response"))
+                )
+                .is_none()
+            );
+            assert_eq!(e.annulus, kept);
+            let (g, result) = rx.recv().expect("completed");
+            let path = finish_annulus_edit(&mut e, &mut edits, g, result);
+            if occupied {
+                assert!(path.is_none(), "a taken destination publishes nothing");
+                assert_eq!(e.annulus, kept, "and keeps the draft to retry with");
+                assert_eq!(
+                    std::fs::read(root.path().join("occupied.fcad")).expect("sentinel"),
+                    b"keep"
+                );
+            } else {
+                assert_eq!(path, Some(root.path().join("ui.fcad")));
+                assert!(!e.active(), "published draft must not block async Open");
+                e.draft_load_finished(Path::new("another.fcad"), false);
+                assert!(!e.active(), "an unrelated load failure cannot restore it");
+                e.draft_load_finished(&root.path().join("ui.fcad"), false);
+                assert!(e.active(), "failed preparation restores the draft");
+                assert_eq!(e.annulus, kept);
+                assert_eq!(e.annulus_undo.len(), 1, "history survives failed Open");
+                e.draft_published(&root.path().join("ui.fcad"));
+                e.draft_load_finished(&root.path().join("ui.fcad"), true);
+                assert!(!e.active());
+                assert!(e.published_draft.is_none());
+            }
+        }
+
+        // The peer CLI applies the same request to the same source.
+        let input = root.path().join("edit.json");
+        std::fs::write(
+            &input,
+            format!(
+                concat!(
+                    r#"{{"request_version":1,"outer_curve_id":"{}","inner_curve_id":"{}","#,
+                    r#""center_mm":[{},{}],"outer_radius_mm":{},"inner_radius_mm":{}}}"#
+                ),
+                saved.outer_curve_id,
+                saved.inner_curve_id,
+                request.edit.center_mm[0],
+                request.edit.center_mm[1],
+                request.edit.outer_radius_mm,
+                request.edit.inner_radius_mm
+            ),
+        )
+        .expect("request");
+        let cli = root.path().join("cli.fcad");
+        let p = std::process::Command::new(ferritecad())
+            .arg("edit-annular")
+            .arg(&source)
+            .arg("--sketch")
+            .arg(id.to_string())
+            .arg("--expect-version")
+            .arg(reading.version.content.to_string())
+            .arg("--request")
+            .arg(&input)
+            .arg("-o")
+            .arg(&cli)
+            .arg("--json")
+            .output()
+            .expect("peer CLI");
+        assert!(p.status.success(), "{p:?}");
+
+        // One source, one request: the two copies are the same document, with
+        // the same identities. Only the instant each was written may differ.
+        let ui = root.path().join("ui.fcad");
+        assert_eq!(read_semantics(&ui), read_semantics(&cli));
+        let a = Document::open_read_only(&ui).expect("UI");
+        let b = Document::open_read_only(&cli).expect("CLI");
+        assert_eq!(a.meta().document_id, b.meta().document_id);
+        assert_eq!(a.objects().expect("objects"), b.objects().expect("objects"));
+        assert_eq!(
+            a.dependencies().expect("deps"),
+            b.dependencies().expect("deps")
+        );
+        assert_eq!(
+            a.topology_refs().expect("refs"),
+            b.topology_refs().expect("refs")
+        );
+        a.close().expect("close");
+        b.close().expect("close");
+
+        let mut meshes = Vec::new();
+        let mut fbxs = Vec::new();
+        for (path, name) in [(&ui, "annulus-edit-ui"), (&cli, "annulus-edit-cli")] {
+            for (op, extension) in [("export-stl", "stl"), ("export-fbx", "fbx")] {
+                let out = path.with_extension(extension);
+                let p = std::process::Command::new(ferritecad())
+                    .arg(op)
+                    .arg(path)
+                    .arg("-o")
+                    .arg(&out)
+                    .output()
+                    .expect("export");
+                assert!(p.status.success(), "{p:?}");
+                if extension == "stl" {
+                    meshes.push(std::fs::read(&out).expect("STL"));
+                } else {
+                    fbxs.push(std::fs::read(&out).expect("FBX"));
+                    if let Some(dir) = std::env::var_os("FCAD_ANNULUS_EDIT_ARTIFACTS") {
                         // Read by the pinned ufbx reader in the same CI job.
                         let dir = std::path::Path::new(&dir);
                         std::fs::create_dir_all(dir).expect("artifact directory");

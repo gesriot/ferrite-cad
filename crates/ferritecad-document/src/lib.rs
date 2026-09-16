@@ -49,12 +49,16 @@
 //! byte-for-byte and written back unchanged, and a document requiring a
 //! capability this build does not implement opens read-only.
 
+mod annulus_edit;
 mod cache;
 mod circle_edit;
 mod document;
 mod edit;
 mod polygon;
 mod sketch_edit;
+pub use annulus_edit::{
+    AnnulusChoice, AnnulusEdit, SavedAnnulus, annulus_choices, replace_annulus_geometry,
+};
 pub use circle_edit::{
     CircleChoice, CircleEdit, SavedCircle, circle_choices, replace_circle_geometry,
 };

@@ -756,6 +756,63 @@ jobs:
           done
           echo "FCAD_ANNULUS_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
 
+      - name: Edit one saved annular profile through the native CLI and worker
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          CARGO_BUILD_JOBS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          artifacts="$RUNNER_TEMP/annulus-edit"
+          mkdir -p "$artifacts"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH"; artifacts="$(cygpath -w "$artifacts")" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          export FCAD_ANNULUS_EDIT_ARTIFACTS="$artifacts"
+          # Peer process must be this build before the app worker gate.
+          cargo build --release --features planegcs -p ferritecad-cli
+          for gate in annulus_discovery_and_protocol_without_kernel \
+            native_annulus_edit_moves_and_resizes_only_the_named_pair \
+            native_annulus_edit_ignores_the_order_the_circles_are_stored_in \
+            native_annulus_edit_refusals_preserve_source_and_destinations \
+            native_annulus_edit_cancellation_races_and_cleanup_are_atomic
+          do
+            cargo test --release --features planegcs -p ferritecad-cli --test edit_annular \
+              "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee "$gate.log"
+            if grep -q 'skipped:' "$gate.log" || ! grep -Fq "test $gate ... ok" "$gate.log"; then
+              echo "::error::annulus edit process gate $gate did not execute"; exit 1
+            fi
+          done
+          # An explicit sentinel survives Bash whitespace splitting; an empty
+          # features column would shift the test name into --features.
+          for pair in \
+            'ferritecad-document - annulus_edit::tests::a_saved_pair_is_discovered_by_radius_in_either_stored_order' \
+            'ferritecad-document - annulus_edit::tests::only_the_two_named_circles_and_only_their_geometry_is_rewritten' \
+            'ferritecad-document - annulus_edit::tests::the_annulus_writer_refuses_forged_payloads_and_stale_preparations' \
+            'ferritecad-document - annulus_edit::tests::each_of_the_three_numbers_can_move_on_its_own' \
+            'ferritecad-app planegcs sketch::tests::annulus_edit_widgets_change_only_the_three_numbers_and_keep_the_draft' \
+            'ferritecad-app planegcs sketch::tests::native_annulus_edit_worker_and_cli_publish_equivalent_copies'
+          do
+            read -r package features gate <<< "$pair"
+            if [ "$features" != - ]; then
+              cargo test --release --features "$features" -p "$package" "$gate" \
+                -- --exact --nocapture --test-threads=1 2>&1 | tee "$package-annulus-edit.log"
+            else
+              cargo test --release -p "$package" "$gate" \
+                -- --exact --nocapture --test-threads=1 2>&1 | tee "$package-annulus-edit.log"
+            fi
+            if grep -q 'skipped:' "$package-annulus-edit.log" \
+               || ! grep -Fq "test $gate ... ok" "$package-annulus-edit.log"; then
+              echo "::error::annulus edit gate $gate did not execute"; exit 1
+            fi
+          done
+          echo "FCAD_ANNULUS_EDIT_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
+
       - name: Create, discover, edit and export through the JSON v1 CLI contract
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
@@ -844,6 +901,7 @@ jobs:
           grep -q '^FCAD_SKETCH_CONSTRAINT_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CIRCLE_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_ANNULUS_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_ANNULUS_EDIT_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

@@ -8,6 +8,7 @@
 
 mod annulus;
 mod circle;
+mod edit_annular;
 mod edit_circle;
 mod edit_constraints;
 mod edit_sketch;
@@ -112,6 +113,9 @@ enum Command {
     EditSketchCopy(edit_sketch::EditSketchArgs),
     /// Change a saved Circle's centre and radius in a new identity-preserving FCAD copy.
     EditCircle(edit_circle::EditCircleArgs),
+    /// Change a saved annular profile's shared centre and both radii in a new
+    /// identity-preserving FCAD copy. Height is unchanged; use edit-extrude.
+    EditAnnular(edit_annular::EditAnnularArgs),
     /// Add/remove persisted Line H/V constraints, solving and publishing a new FCAD copy.
     EditSketchConstraintsCopy(edit_constraints::EditConstraintsArgs),
     /// Show a document's metadata, objects, graph and references.
@@ -343,6 +347,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::EditSketchCopy(args) => edit_sketch::run(args),
         Command::EditCircle(args) => edit_circle::run(args),
+        Command::EditAnnular(args) => edit_annular::run(args),
         Command::EditSketchConstraintsCopy(args) => edit_constraints::run(args),
         Command::CreateSketchExtrude(args) => sketch::run(args),
         Command::CreateCircleExtrude(args) => circle::run(args),

@@ -171,6 +171,60 @@ pub fn edit_circle_copy<K: GeometryKernel + ?Sized>(
 }
 
 #[derive(Debug, Clone)]
+pub struct EditAnnulusRequest {
+    pub source: PathBuf,
+    pub expected: DocumentVersion,
+    pub sketch: ObjectId,
+    /// The two circles to move and resize, each named by its own UUID in the
+    /// role it already holds. No height: the saved extrusion decides that, and
+    /// `edit_extrude_copy` changes it.
+    pub edit: ferritecad_document::AnnulusEdit,
+    pub destination: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditedAnnulus {
+    pub destination: PathBuf,
+    pub document_id: ferritecad_types::DocumentId,
+    pub sketch: ObjectId,
+    pub outer_curve: StableEntityId,
+    pub inner_curve: StableEntityId,
+}
+
+/// Change the shared centre and both radii of one saved annular profile in a
+/// new copy.
+///
+/// The same snapshot, baseline rebuild, reference check, version recheck and
+/// atomic publication every other copy edit uses; only the prepared payload
+/// differs. Nothing here opens a second copier or relaxes the reference rule.
+pub fn edit_annulus_copy<K: GeometryKernel + ?Sized>(
+    request: &EditAnnulusRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+) -> Result<EditedAnnulus> {
+    context.check_cancelled()?;
+    edit_object_copy(
+        &request.source,
+        request.expected,
+        &request.destination,
+        kernel,
+        context,
+        |source| {
+            ferritecad_document::replace_annulus_geometry(source, request.sketch, &request.edit)
+                .map(CopyWrite::Annulus)
+        },
+        |_, _| Ok(()),
+    )?;
+    Ok(EditedAnnulus {
+        destination: request.destination.clone(),
+        document_id: request.expected.document_id,
+        sketch: request.sketch,
+        outer_curve: request.edit.outer_curve_id,
+        inner_curve: request.edit.inner_curve_id,
+    })
+}
+
+#[derive(Debug, Clone)]
 pub struct EditSketchConstraintsRequest {
     pub source: PathBuf,
     pub expected: DocumentVersion,
@@ -230,11 +284,12 @@ enum CopyWrite {
     ),
     Constraints(ferritecad_document::PreparedSketchConstraints),
     Circle(ferritecad_document::ObjectRecord),
+    Annulus(ferritecad_document::ObjectRecord),
 }
 impl CopyWrite {
     fn object(&self) -> &ferritecad_document::ObjectRecord {
         match self {
-            Self::Object(o) | Self::Coordinates(o, _) | Self::Circle(o) => o,
+            Self::Object(o) | Self::Coordinates(o, _) | Self::Circle(o) | Self::Annulus(o) => o,
             Self::Constraints(p) => p.object(),
         }
     }
@@ -317,6 +372,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         }
         CopyWrite::Constraints(p) => document.write_sketch_constraints(p)?,
         CopyWrite::Circle(prepared) => document.write_circle_geometry(prepared)?,
+        CopyWrite::Annulus(prepared) => document.write_annulus_geometry(prepared)?,
         CopyWrite::Object(_) => document.write(write)?,
     }
     let constraints = match &prepared {
