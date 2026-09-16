@@ -163,6 +163,23 @@ impl Edits {
     ) -> Option<PathBuf> {
         self.finish_path(generation, result.map(|r| r.destination))
     }
+    pub(crate) fn start_annulus(
+        &mut self,
+        request: ferritecad_jobs::EditAnnulusRequest,
+        spawn: impl FnOnce(ferritecad_jobs::EditAnnulusRequest, u64, CancelToken) -> JoinHandle<()>,
+    ) -> Option<u64> {
+        let destination = request.destination.clone();
+        self.start_at(&destination, |generation, cancel| {
+            spawn(request, generation, cancel)
+        })
+    }
+    pub(crate) fn finish_annulus(
+        &mut self,
+        generation: u64,
+        result: Result<ferritecad_jobs::EditedAnnulus>,
+    ) -> Option<PathBuf> {
+        self.finish_path(generation, result.map(|r| r.destination))
+    }
     pub(crate) fn start_constraints(
         &mut self,
         request: ferritecad_jobs::EditSketchConstraintsRequest,
@@ -295,6 +312,20 @@ pub(crate) fn spawn_circle_edit(
         move |context| {
             let mut kernel = ferritecad_occt::OcctKernel::new()?;
             ferritecad_jobs::edit_circle_copy(&request, &mut kernel, context)
+        },
+        deliver,
+    )
+}
+pub(crate) fn spawn_annulus_edit(
+    request: ferritecad_jobs::EditAnnulusRequest,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ferritecad_jobs::EditedAnnulus>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn_job(
+        cancel,
+        move |context| {
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            ferritecad_jobs::edit_annulus_copy(&request, &mut kernel, context)
         },
         deliver,
     )

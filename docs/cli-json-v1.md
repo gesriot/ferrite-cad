@@ -34,7 +34,7 @@ stdout-логов рядом нет. Диагностика для челове�
 | Поле | Тип и правило |
 | --- | --- |
 | `schema_version` | integer, сейчас ровно `1` |
-| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate`, `create-sketch-extrude`, `create-circle-extrude`, `create-annular-extrude`, `edit-sketch-copy`, `edit-circle` или `edit-sketch-constraints-copy` |
+| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate`, `create-sketch-extrude`, `create-circle-extrude`, `create-annular-extrude`, `edit-sketch-copy`, `edit-circle`, `edit-annular` или `edit-sketch-constraints-copy` |
 | `ok` | boolean |
 | `result` | объект соответствующей операции, присутствует только при `ok: true` |
 | `error` | объект ошибки, присутствует только при `ok: false` |
@@ -146,6 +146,41 @@ Line-редакторами (`editable:false`), и редактором окру
 цилиндрические поверхности радиусов R и r. Точные ограничения, числовая policy,
 границы аналитического B-Rep и тесселяции и запускаемый рецепт:
 [окружность с отверстием → Extrude → FCAD](annular-sketch-extrude.md).
+
+## Правка сохранённой кольцевой пары (§25M)
+
+`ferritecad edit-annular <source.fcad> --sketch UUID --expect-version HASH
+--request <request.json> -o <copy.fcad> [--json]` — отдельная opt-in команда с
+тем же envelope. `operation:"edit-annular"`, result с обязательными
+`destination`, `document_id`, `sketch_id`, `outer_curve_id` и `inner_curve_id`
+после cold-check и publish, exit 0; operational error/exit 2; потеря отчёта/exit
+7. Прежние команды и их поля не меняются.
+
+Request v1 — строго шесть полей, `request_version` (единственное написание
+версии этой команды):
+
+```json
+{"request_version":1,"outer_curve_id":"UUID","inner_curve_id":"UUID",
+ "center_mm":[-3.5,4.25],"outer_radius_mm":6.75,"inner_radius_mm":2.125}
+```
+
+`outer_curve_id` и `inner_curve_id` — UUID **сохранённых** окружностей, каждый в
+той роли, которую он уже занимает: перестановка ролей, один UUID дважды и чужой
+UUID отвергаются. `center_mm` — ровно две конечные координаты, **общий** центр
+обеих окружностей; отдельного центра у отверстия здесь нет, класс
+концентрический. `outer_radius_mm` и `inner_radius_mm` — конечные строго
+положительные mm, `inner < outer`, разность не меньше 0.001 mm. `height_mm`,
+`radius_mm`, `inner_center_mm` и любые другие поля лишние и отвергаются: высоту
+меняет прежний `edit-extrude`.
+
+`inspect --json` получает у каждой строки `sketches` аддитивное `annulus_edit` с
+`available`/`refusal`/`document_refusal` и `annulus`, который называет оба UUID в
+их ролях, **оба** сохранённых центра, оба радиуса и высоту — или `null` для
+неподдержанного Sketch. Прежние `editable`, `vertices`, `circle_edit`,
+`constraint_edit` и приоритет документного отказа не меняются. Discovery и
+структурные отказы работают в сборке без ядра; применение правки без ядра
+отказывается. Точные ограничения, правила UI/writer и запускаемый рецепт:
+[правка кольцевой пары в новой копии](edit-annular-copy.md).
 
 ## Правка сохранённой окружности (§25K)
 

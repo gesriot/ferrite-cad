@@ -713,43 +713,75 @@ impl Document {
     }
 
     /// Write a prepared circle edit without replacing object ownership.
+    pub fn write_circle_geometry(&mut self, prepared: &ObjectRecord) -> Result<()> {
+        self.write_prepared_sketch_geometry(prepared, "circle", |document, prepared| {
+            let (curve_id, center, radius_mm) = crate::circle_edit::prepared_circle(prepared)?;
+            crate::replace_circle_geometry(
+                document,
+                prepared.id,
+                &crate::CircleEdit {
+                    curve_id,
+                    center_mm: [center.x, center.y],
+                    radius_mm,
+                },
+            )
+        })
+    }
+
+    /// Write a prepared annular edit without replacing object ownership.
     ///
-    /// Exactly the two cells this operation promises to edit: the selected
+    /// The pair of circles goes through exactly the guard one circle does, with
+    /// its own re-derivation: both UUIDs, both roles, the shared centre and both
+    /// radii have to come back out of the prepared payload as a request the
+    /// saved document would have accepted.
+    pub fn write_annulus_geometry(&mut self, prepared: &ObjectRecord) -> Result<()> {
+        self.write_prepared_sketch_geometry(prepared, "annulus", |document, prepared| {
+            let edit = crate::annulus_edit::prepared_annulus(prepared)?;
+            crate::replace_annulus_geometry(document, prepared.id, &edit)
+        })
+    }
+
+    /// The narrow payload write both analytic-profile edits share.
+    ///
+    /// Exactly the two cells such an operation promises to edit: the selected
     /// Sketch's payload and its hash. `put_object` would also clear source
     /// claims and reissue ownership, which a centre and a radius have no
     /// business doing. The row is re-read first, so a Sketch that changed
     /// between preparation and write is refused rather than overwritten.
-    pub fn write_circle_geometry(&mut self, prepared: &ObjectRecord) -> Result<()> {
-        let current = self
-            .object(prepared.id)?
-            .ok_or_else(|| CadError::input("selected Sketch disappeared before circle write"))?;
+    ///
+    /// One place, because this is the guard rather than a convenience: a public
+    /// `ObjectRecord` is mutable, so its old storage bytes do not prove that its
+    /// new payload changes only geometry. `rederive` rebuilds the permitted edit
+    /// against the *current* document from the prepared payload's own numbers,
+    /// and the entire payload is then compared. Two copies of that could drift,
+    /// and the one that drifted would be the one that accepted a forgery.
+    fn write_prepared_sketch_geometry(
+        &mut self,
+        prepared: &ObjectRecord,
+        what: &str,
+        rederive: impl FnOnce(&Self, &ObjectRecord) -> Result<ObjectRecord>,
+    ) -> Result<()> {
+        let current = self.object(prepared.id)?.ok_or_else(|| {
+            CadError::input(format!("selected Sketch disappeared before {what} write"))
+        })?;
         if current.storage_bytes() != prepared.storage_bytes()
             || current.parent != prepared.parent
             || current.ordinal != prepared.ordinal
             || current.name != prepared.name
         {
-            return Err(CadError::input("Sketch changed after circle preparation"));
+            return Err(CadError::input(format!(
+                "Sketch changed after {what} preparation"
+            )));
         }
-        // A public ObjectRecord is mutable: its old storage bytes do not prove
-        // that its new payload changes only geometry. Reconstruct the permitted
-        // edit against the current document and compare the entire payload.
-        let (curve_id, center, radius_mm) = crate::circle_edit::prepared_circle(prepared)?;
-        let checked = crate::replace_circle_geometry(
-            self,
-            prepared.id,
-            &crate::CircleEdit {
-                curve_id,
-                center_mm: [center.x, center.y],
-                radius_mm,
-            },
-        )?;
+        let checked = rederive(self, prepared)?;
         if checked.payload != prepared.payload {
-            return Err(CadError::input(
-                "circle write may change only centre and radius",
-            ));
+            return Err(CadError::input(format!(
+                "{what} write may change only centre and radius"
+            )));
         }
         let bytes = prepared.payload.to_storage_bytes()?;
         let hash = ContentHash::of_bytes(&bytes);
+        let disappeared = format!("selected Sketch disappeared before {what} write");
         self.write_transaction(
             |writer| {
                 let changed = writer
@@ -762,11 +794,9 @@ impl Document {
                             prepared.id.to_bytes().as_slice()
                         ],
                     )
-                    .map_err(|e| CadError::io("writing Circle geometry", e))?;
+                    .map_err(|e| CadError::io("writing analytic Sketch geometry", e))?;
                 if changed != 1 {
-                    return Err(CadError::input(
-                        "selected Sketch disappeared before circle write",
-                    ));
+                    return Err(CadError::input(disappeared));
                 }
                 Ok(())
             },

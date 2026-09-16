@@ -9,7 +9,7 @@
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId};
 
 use crate::{
-    CircleExtrusion, Document, ObjectPayload, ObjectRecord, Point2, SketchGeometry,
+    CircleExtrusion, Document, ObjectPayload, ObjectRecord, Point2, SketchCurve, SketchGeometry,
     sketch_edit::frame,
 };
 
@@ -86,23 +86,32 @@ pub(crate) fn supported(
             "circle edit requires exactly one unconstrained Circle",
         ));
     }
-    let curve = &sketch.curves[0];
+    let (curve_id, center, radius) = analytic_circle(&sketch.curves[0])?;
+    // What is already stored has to be inside the policy an edit is judged by,
+    // or the first accepted edit would silently narrow the document.
+    CircleExtrusion::new([center.x, center.y], radius, height)
+        .map_err(|e| unsupported(&format!("saved circle is outside edit policy: {e}")))?;
+    Ok(SavedCircle {
+        curve_id,
+        center_mm: [center.x, center.y],
+        radius_mm: radius,
+        height_mm: height,
+    })
+}
+
+/// One stored curve read as a circle a copy edit may move or resize.
+///
+/// Shared with the annular editor beside this, which needs the same reading
+/// twice. Only the reading is shared: how many circles a Sketch must hold, and
+/// what the numbers then have to satisfy, is each editor's own question.
+pub(crate) fn analytic_circle(curve: &SketchCurve) -> Result<(StableEntityId, Point2, f64)> {
     if curve.construction {
         return Err(unsupported("construction geometry bounds no face"));
     }
     let SketchGeometry::Circle { center, radius } = curve.geometry else {
         return Err(unsupported("circle edit supports only a Circle"));
     };
-    // What is already stored has to be inside the policy an edit is judged by,
-    // or the first accepted edit would silently narrow the document.
-    CircleExtrusion::new([center.x, center.y], radius, height)
-        .map_err(|e| unsupported(&format!("saved circle is outside edit policy: {e}")))?;
-    Ok(SavedCircle {
-        curve_id: curve.id,
-        center_mm: [center.x, center.y],
-        radius_mm: radius,
-        height_mm: height,
-    })
+    Ok((curve.id, center, radius))
 }
 
 /// Prepare only the selected payload. The Sketch and Circle IDs are retained.

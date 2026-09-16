@@ -35,6 +35,8 @@ pub struct ExtrudeEditSource {
     /// catalogue here answers about the one `objects()` the version describes,
     /// so a form never has to open the file again to learn what it may edit.
     pub circle_sketches: Vec<crate::CircleChoice>,
+    /// Analytic circle-pair edit catalogue, from that same pinned reading.
+    pub annulus_sketches: Vec<crate::AnnulusChoice>,
     pub refusal: Option<String>,
 }
 
@@ -92,6 +94,7 @@ impl ExtrudeEditSource {
             sketches: crate::sketch_choices(document, &objects),
             constraint_sketches: crate::constraint_sketch_choices(document, &objects),
             circle_sketches: crate::circle_choices(document, &objects),
+            annulus_sketches: crate::annulus_choices(document, &objects),
             refusal,
         })
     }
@@ -779,6 +782,7 @@ mod tests {
             sketches: crate::sketch_choices(document, &document.objects()?),
             constraint_sketches: crate::constraint_sketch_choices(document, &objects),
             circle_sketches: crate::circle_choices(document, &objects),
+            annulus_sketches: crate::annulus_choices(document, &objects),
             version: DocumentVersion {
                 document_id: document.meta().document_id,
                 content: document.content_version()?,

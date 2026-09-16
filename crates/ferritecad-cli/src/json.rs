@@ -31,6 +31,7 @@ pub enum Operation {
     EditExtrude,
     EditSketchCopy,
     EditCircle,
+    EditAnnular,
     EditSketchConstraintsCopy,
     Create,
     CreateSketchExtrude,
@@ -108,6 +109,11 @@ struct Sketch {
     /// circle itself. Its own answer: `editable`/`vertices` keep meaning what
     /// they always did, which is whether the Line editor accepts this Sketch.
     circle_edit: CircleDiscovery,
+    /// Whether this Sketch's pair of analytic circles can be moved or resized,
+    /// and the pair itself. Its own answer beside the others: `editable`,
+    /// `vertices`, `constraint_edit` and `circle_edit` keep meaning exactly what
+    /// they always did about their own editors.
+    annulus_edit: AnnulusDiscovery,
     editable: bool,
     refusal: Option<String>,
     document_refusal: Option<String>,
@@ -149,6 +155,53 @@ impl CircleDiscovery {
                 center_mm: c.center_mm,
                 radius_mm: c.radius_mm,
                 height_mm: c.height_mm,
+            }),
+        }
+    }
+}
+
+/// What `edit-annular` would accept about one Sketch, from the same reading.
+///
+/// `available` folds in the document-wide refusal, which keeps its priority;
+/// `refusal` is this Sketch's own reason and `document_refusal` the shared one,
+/// exactly as the two discoveries beside it report them. `annulus` is present
+/// for a supported Sketch and null otherwise — never an invented pair.
+#[derive(Serialize)]
+struct AnnulusDiscovery {
+    available: bool,
+    refusal: Option<String>,
+    document_refusal: Option<String>,
+    annulus: Option<SavedAnnulus>,
+}
+/// Both circles as stored, each named in the role the radii give it.
+///
+/// Both centres are reported because concentric means "within the kernel's
+/// linear tolerance", not "bit-identical": a caller that showed one of them as
+/// the pair's centre would be saying something the document does not.
+#[derive(Serialize)]
+struct SavedAnnulus {
+    outer_curve_id: ferritecad_types::StableEntityId,
+    inner_curve_id: ferritecad_types::StableEntityId,
+    center_mm: [f64; 2],
+    inner_center_mm: [f64; 2],
+    outer_radius_mm: f64,
+    inner_radius_mm: f64,
+    height_mm: f64,
+}
+impl AnnulusDiscovery {
+    fn new(choice: ferritecad_document::AnnulusChoice, document_refusal: Option<String>) -> Self {
+        Self {
+            available: choice.refusal.is_none() && document_refusal.is_none(),
+            refusal: choice.refusal,
+            document_refusal,
+            annulus: choice.annulus.map(|a| SavedAnnulus {
+                outer_curve_id: a.outer_curve_id,
+                inner_curve_id: a.inner_curve_id,
+                center_mm: a.center_mm,
+                inner_center_mm: a.inner_center_mm,
+                outer_radius_mm: a.outer_radius_mm,
+                inner_radius_mm: a.inner_radius_mm,
+                height_mm: a.height_mm,
             }),
         }
     }
@@ -308,6 +361,11 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         .into_iter()
         .map(|c| (c.sketch, c))
         .collect();
+    let mut annulus_choices: std::collections::BTreeMap<_, _> = source
+        .annulus_sketches
+        .into_iter()
+        .map(|c| (c.sketch, c))
+        .collect();
     let result = Inspection {
         document_id: source.version.document_id,
         content_version: source.version.content,
@@ -333,6 +391,12 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 ),
                 circle_edit: CircleDiscovery::new(
                     circle_choices
+                        .remove(&s.sketch)
+                        .expect("same snapshot Sketch catalogue"),
+                    source.refusal.clone(),
+                ),
+                annulus_edit: AnnulusDiscovery::new(
+                    annulus_choices
                         .remove(&s.sketch)
                         .expect("same snapshot Sketch catalogue"),
                     source.refusal.clone(),
