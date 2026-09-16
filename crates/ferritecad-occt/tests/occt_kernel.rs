@@ -632,11 +632,91 @@ fn the_operations_this_slice_omits_say_so() {
     kernel.release(result.shape);
 }
 
+/// A closed chain of lines inside another one, cut out of it.
+///
+/// A hole of lines rather than of circles, so what is being exercised is the
+/// loop machinery itself and not a special case for two concentric circles.
+fn rectangular_hole(from: (f64, f64), to: (f64, f64)) -> Result<ProfileLoop> {
+    let corners = [
+        PlanarPoint::new(from.0, from.1)?,
+        PlanarPoint::new(from.0, to.1)?,
+        PlanarPoint::new(to.0, to.1)?,
+        PlanarPoint::new(to.0, from.1)?,
+    ];
+    let mut segments = Vec::new();
+    for (index, start) in corners.iter().enumerate() {
+        segments.push(ProfileSegment::new(
+            StableEntityId::new(),
+            SegmentGeometry::line(*start, corners[(index + 1) % corners.len()])?,
+        ));
+    }
+    ProfileLoop::new(segments)
+}
+
 #[test]
-fn a_profile_with_holes_is_refused() {
+fn a_rectangular_hole_becomes_a_cavity_in_the_prism() {
+    let mut kernel = kernel_or_skip!();
+    let plate = rectangle(20.0, 20.0, 2.0).expect("a valid rectangle");
+    // Wound the other way round the plane from the boundary, which is what a
+    // hole is. The adapter reverses it again when it builds the face; the
+    // point here is that either winding is a hole rather than a second plate.
+    let hole = rectangular_hole((5.0, 5.0), (10.0, 12.0)).expect("closes");
+    let hole_labels: Vec<_> = hole.segments().iter().map(|s| s.label).collect();
+
+    let profile = Profile::new(
+        SketchPlane::world_xy(),
+        plate.request.profile().outer().clone(),
+        vec![hole],
+    )
+    .expect("valid as a profile");
+    let request = ExtrudeRequest::new(profile, ExtrudeExtent::blind(2.0).expect("positive"), false);
+    let result = kernel
+        .extrude(&request, &OperationContext::default())
+        .expect("a rectangle with a rectangular hole is one region");
+
+    // Four outer walls, four bore walls and two caps.
+    let (faces, volume) = kernel.shape_stats(result.shape).expect("stats");
+    assert_eq!(faces, 10);
+    let exact = (20.0 * 20.0 - 5.0 * 7.0) * 2.0;
+    assert!(
+        (volume - exact).abs() < 1e-9 * exact,
+        "{volume} is not {exact}; a lost hole would be {}",
+        20.0 * 20.0 * 2.0
+    );
+    assert!(kernel.is_valid(result.shape).expect("checked"));
+
+    // Every segment of both loops raised its own face, filed under its own
+    // label rather than under a position.
+    for label in plate.labels.iter().chain(&hole_labels) {
+        assert_eq!(
+            result
+                .history
+                .generated(HistoryInput::Segment(*label))
+                .count(),
+            1,
+            "segment {label} raised no wall of its own"
+        );
+    }
+    // The two loops' corners are different corners, and the sweep named one
+    // edge at each of the eight.
+    assert_eq!(result.sweep_edges.len(), 8);
+    assert_eq!(result.start_cap_vertices.len(), 8);
+    assert_eq!(result.end_cap_vertices.len(), 8);
+
+    kernel.release(result.shape);
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
+fn a_hole_that_encloses_nothing_is_refused() {
     let mut kernel = kernel_or_skip!();
     let outer = rectangle(20.0, 20.0, 2.0).expect("a valid rectangle");
 
+    // Out along a line and straight back: a slit of no area, which closes as a
+    // loop and bounds no region. Open CASCADE will happily build a face with
+    // such a wire on it — the face is valid and its area is unchanged — so the
+    // adapter has to say the hole cuts nothing rather than handing back the
+    // whole plate with two extra faces named on it.
     let hole = ProfileLoop::new(vec![
         ProfileSegment::new(
             StableEntityId::new(),
@@ -667,8 +747,8 @@ fn a_profile_with_holes_is_refused() {
     let request = ExtrudeRequest::new(profile, ExtrudeExtent::blind(2.0).expect("positive"), false);
     let err = kernel
         .extrude(&request, &OperationContext::default())
-        .expect_err("holes need more than one wire");
+        .expect_err("a slit of no area is not a cavity");
 
-    assert_eq!(err.kind(), ErrorKind::Unsupported);
+    assert_eq!(err.kind(), ErrorKind::Input);
     assert_eq!(kernel.live_shape_count(), 0);
 }

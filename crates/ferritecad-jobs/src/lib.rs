@@ -37,7 +37,7 @@
 
 mod create;
 mod polygon;
-pub use polygon::{CircleExtrusion, PolygonExtrusion};
+pub use polygon::{AnnularExtrusion, CircleExtrusion, PolygonExtrusion};
 mod edit;
 mod fbx;
 mod import;
@@ -48,8 +48,8 @@ mod validate;
 pub use validate::{ValidatedDocument, validate_document};
 
 pub use create::{
-    CreateDocumentRequest, CreatedDocument, NewDocument, PlateSize, create_document,
-    create_document_with_kernel,
+    CreateDocumentRequest, CreatedAnnulus, CreatedDocument, NewDocument, PlateSize,
+    create_document, create_document_with_kernel,
 };
 pub use edit::{
     EditCircleRequest, EditExtrudeRequest, EditSketchConstraintsRequest, EditSketchRequest,

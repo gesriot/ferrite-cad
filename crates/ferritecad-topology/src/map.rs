@@ -255,14 +255,20 @@ impl TopologyMap {
             shape: Some(result.shape),
             ..FeatureNames::default()
         };
-        let profile_segments: BTreeSet<StableEntityId> = profile
-            .outer()
-            .segments()
-            .iter()
+        // Every loop of the profile, not only the one that bounds it. A
+        // segment of a hole was swept exactly as a segment of the boundary was,
+        // and it raised a face of the same solid; a check that only knew the
+        // boundary would refuse the bore's own name as pointing at nothing.
+        let loops = || std::iter::once(profile.outer()).chain(profile.inner());
+        let profile_segments: BTreeSet<StableEntityId> = loops()
+            .flat_map(|entry| entry.segments())
             .map(|segment| segment.label)
             .collect();
+        // Counted across every loop together, because a pair that arises at a
+        // corner of the boundary *and* at a corner of a hole names neither of
+        // them, exactly as a pair arising twice within one loop does.
         let mut profile_joints: BTreeMap<ProfileJoint, usize> = BTreeMap::new();
-        for joint in profile.outer().joints() {
+        for joint in loops().flat_map(|entry| entry.joints()) {
             *profile_joints.entry(joint).or_insert(0) += 1;
         }
 
@@ -275,9 +281,10 @@ impl TopologyMap {
             names.end_cap.insert(*face);
         }
 
-        // Only the outer loop: this slice builds no profile with holes, and a
-        // segment of a loop that was never swept has no face to name.
-        for segment in profile.outer().segments() {
+        // One entry per segment of every loop: each raised its own faces, and
+        // the bore's wall belongs to the circle that drew it just as the outer
+        // wall belongs to the circle that drew that.
+        for segment in loops().flat_map(|entry| entry.segments()) {
             for face in result
                 .history
                 .generated(HistoryInput::Segment(segment.label))
@@ -307,7 +314,7 @@ impl TopologyMap {
                 if !profile_segments.contains(segment) {
                     return Err(CadError::topology(format!(
                         "feature {producer} reported {what} for segment {segment}, which is not \
-                         in the swept outer profile"
+                         in the swept profile"
                     )));
                 }
                 check_kind(*edge, result.shape, producer, what, SubShapeKind::Edge)?;
@@ -326,7 +333,7 @@ impl TopologyMap {
                 if !profile_segments.contains(&segment) {
                     return Err(CadError::topology(format!(
                         "feature {producer} reported an extrusion sweep edge for {joint}, and \
-                         segment {segment} is not in the swept outer profile"
+                         segment {segment} is not in the swept profile"
                     )));
                 }
             }
@@ -334,7 +341,7 @@ impl TopologyMap {
                 None => {
                     return Err(CadError::topology(format!(
                         "feature {producer} reported an extrusion sweep edge for {joint}, but its \
-                         segments do not meet in the swept outer profile"
+                         segments do not meet in the swept profile"
                     )));
                 }
                 Some(1) => {}
@@ -385,7 +392,7 @@ impl TopologyMap {
                     if !profile_segments.contains(&segment) {
                         return Err(CadError::topology(format!(
                             "feature {producer} reported {what} for {joint}, and segment \
-                             {segment} is not in the swept outer profile"
+                             {segment} is not in the swept profile"
                         )));
                     }
                 }
@@ -393,7 +400,7 @@ impl TopologyMap {
                     None => {
                         return Err(CadError::topology(format!(
                             "feature {producer} reported {what} for {joint}, but its segments do \
-                             not meet in the swept outer profile"
+                             not meet in the swept profile"
                         )));
                     }
                     Some(1) => {}

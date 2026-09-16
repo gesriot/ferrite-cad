@@ -63,9 +63,9 @@ enum {
   FC_OCCT_SEGMENT_ARC = 1,
   /* A whole circle, given by `center_x`, `center_y` and `radius`.
    *
-   * This curve closes on itself, so it is a whole profile rather than one link
-   * of a chain: it is accepted only as the single segment of the profile, and
-   * such a profile has no corners. See fc_occt_extrude. */
+   * This curve closes on itself, so it is a whole loop rather than one link of
+   * a chain: it is accepted only as the single segment of a loop, and such a
+   * loop has no corners. See fc_occt_extrude. */
   FC_OCCT_SEGMENT_CIRCLE = 2
 };
 
@@ -204,18 +204,51 @@ FcOcctStatus fc_occt_session_create(FcOcctSession **out_session,
 void fc_occt_session_destroy(FcOcctSession *session) FC_OCCT_NOEXCEPT;
 
 /*
- * Sweeps a closed planar profile into a solid.
+ * Sweeps a closed planar region into a solid.
  *
  * `base_offset` and `top_offset` are distances along the plane normal, so a
  * blind extrusion is (0, d) and a symmetric one is (-d, +d).
  *
- * A profile is either two or more segments meeting at corners, or exactly one
- * FC_OCCT_SEGMENT_CIRCLE, which closes on itself. The circle form has no
- * corners, so it reports a joint count of zero: fc_occt_extrude_sweep_edges
- * and fc_occt_extrude_cap_vertices refuse every joint index for such a shape
- * rather than answering about a seam. The seam Open CASCADE puts on a circular
- * edge is its own parameterisation and is never reported as a corner of the
- * drawing. A circle mixed into a longer profile is refused.
+ * # Loop boundaries
+ *
+ * `segments` holds every segment of every loop, and `loop_segment_counts`
+ * holds `loop_count` lengths that partition it: loop 0 owns the first
+ * `loop_segment_counts[0]` entries, loop 1 the next, and so on. The lengths
+ * must sum to exactly `segment_count`, and a sum that does not refuses the
+ * call rather than sweeping part of a drawing. Loop 0 bounds the region and
+ * every later loop is a hole in it; which loop is which is the caller's
+ * decision, read from its geometry, and is not re-derived here.
+ *
+ * The boundaries are a separate argument because `segment_count` alone cannot
+ * express them, and no existing argument is reinterpreted to carry them. A
+ * one-loop caller passes `loop_count` 1 and a single length equal to
+ * `segment_count`, which is exactly the profile this entry point built before.
+ *
+ * Each loop on its own is either two or more segments meeting at corners, or
+ * exactly one FC_OCCT_SEGMENT_CIRCLE, which closes on itself. The circle form
+ * has no corners, so it contributes no joints: the seam Open CASCADE puts on a
+ * circular edge belongs to that edge's parameterisation and is never reported
+ * as a corner of the drawing. A circle mixed into a longer loop is refused.
+ *
+ * A hole runs the opposite way round the plane from the boundary it is cut out
+ * of, and which way round the caller drew it is not assumed: each hole is added
+ * in whichever of its two orientations both makes a face BRepCheck_Analyzer
+ * accepts and measurably reduces that face's area. The finished face is then
+ * checked again, because holes that each sit inside the boundary may still
+ * overlap each other. So a wire that is not strictly inside the boundary,
+ * coincides with it, crosses another hole, or encloses no region at all refuses
+ * the call instead of producing a solid whose cavity is wherever Open CASCADE
+ * happened to put it — or, for a wire of no area, a solid with no cavity and no
+ * complaint.
+ *
+ * # What the indices mean
+ *
+ * `segment_index` in fc_occt_extrude_side_faces and fc_occt_extrude_cap_edges
+ * indexes `segments`, so it spans every loop in the order they were given.
+ * `joint_index` in fc_occt_extrude_sweep_edges and
+ * fc_occt_extrude_cap_vertices counts corners in that same loop order: the
+ * corners of loop 0 first, then loop 1's, and a loop that is one closed curve
+ * contributes none. For a one-loop profile both are what they always were.
  *
  * Cancellation: `cancel` is consulted before the profile is built and again
  * before the sweep, and is also installed as an Open CASCADE progress
@@ -229,13 +262,18 @@ void fc_occt_session_destroy(FcOcctSession *session) FC_OCCT_NOEXCEPT;
  */
 FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                              const FcOcctSegment *segments,
-                             size_t segment_count, double base_offset,
+                             size_t segment_count,
+                             const size_t *loop_segment_counts,
+                             size_t loop_count, double base_offset,
                              double top_offset, FcOcctCancelFn cancel,
                              void *cancel_context, uint64_t *out_shape,
                              FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*
  * The faces the sweep raised from one profile segment.
+ *
+ * `segment_index` indexes the `segments` array fc_occt_extrude was given, so on
+ * a profile with holes it spans every loop in the order they were passed.
  *
  * Call with `capacity` 0 to learn the count, then again with a buffer. The
  * two-call shape keeps allocation on the caller's side.
@@ -270,10 +308,12 @@ FcOcctStatus fc_occt_extrude_cap_edges(FcOcctSession *session, uint64_t shape,
 /*
  * The edge swept from one corner of the profile.
  *
- * `joint_index` counts corners the way the segments are counted: joint `j` is
- * where segment `j - 1` meets segment `j` round the loop, so joint 0 is where
- * the last segment meets the first. Everything the algorithm generated there
- * comes back, so a count other than one is reported rather than trimmed.
+ * `joint_index` counts corners loop by loop, in the order the loops were
+ * passed: within one loop, joint `j` is where that loop's segment `j - 1` meets
+ * its segment `j`, so its joint 0 is where its last segment meets its first. A
+ * loop that is one closed curve contributes no corners and so no indices.
+ * Everything the algorithm generated there comes back, so a count other than
+ * one is reported rather than trimmed.
  *
  * The association is BRepPrimAPI_MakePrism's own answer for the corner vertex
  * the two input edges already share, and was measured before it was relied on.
@@ -294,9 +334,10 @@ FcOcctStatus fc_occt_extrude_sweep_edges(FcOcctSession *session, uint64_t shape,
 /*
  * The vertex one corner of the profile reaches on one cap.
  *
- * `joint_index` counts corners the way the segments are counted, exactly as
- * fc_occt_extrude_sweep_edges does: corner `j` is where segment `j - 1` meets
- * segment `j`. `which` is 0 for the start cap and 1 for the end cap.
+ * `joint_index` counts corners exactly as fc_occt_extrude_sweep_edges does:
+ * loop by loop in the order the loops were passed, corner `j` of a loop being
+ * where its segment `j - 1` meets its segment `j`. `which` is 0 for the start
+ * cap and 1 for the end cap.
  *
  * Positional on purpose. Whether the unordered pair of segments meeting at a
  * corner names that corner uniquely is not a question this layer can answer: a

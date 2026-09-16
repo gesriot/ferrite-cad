@@ -155,6 +155,8 @@ unsafe extern "C" {
         plane: *const Plane,
         segments: *const Segment,
         segment_count: usize,
+        loop_segment_counts: *const usize,
+        loop_count: usize,
         base_offset: f64,
         top_offset: f64,
         cancel: Option<CancelFn>,
@@ -513,14 +515,36 @@ impl Session {
         Ok(Self { raw })
     }
 
+    /// Sweeps one planar region, whose loops are given by their lengths.
+    ///
+    /// `loop_segment_counts` partitions `segments`: the first loop bounds the
+    /// region and the rest are holes in it. The partition is checked here
+    /// before the pointers are handed over, so a caller that built the two
+    /// arrays inconsistently is refused on this side of the boundary rather
+    /// than being trusted to have counted right — the bridge checks it again,
+    /// and neither check stands alone.
     pub(crate) fn extrude(
         &mut self,
         plane: &Plane,
         segments: &[Segment],
+        loop_segment_counts: &[usize],
         base_offset: f64,
         top_offset: f64,
         cancel: &CancelToken,
     ) -> Result<u64> {
+        if loop_segment_counts.is_empty() {
+            return Err(CadError::input("a region is bounded by at least one loop"));
+        }
+        let partitioned: Option<usize> = loop_segment_counts
+            .iter()
+            .try_fold(0usize, |total, length| total.checked_add(*length));
+        if partitioned != Some(segments.len()) {
+            return Err(CadError::input(format!(
+                "the loop lengths {loop_segment_counts:?} do not partition {} profile segments",
+                segments.len()
+            )));
+        }
+
         let mut shape = 0u64;
         let mut error = RawError::empty();
 
@@ -528,7 +552,8 @@ impl Session {
         // the only time the bridge may invoke the trampoline.
         let context = cancel as *const CancelToken as *mut c_void;
 
-        // SAFETY: the slice is non-empty and lives across the call; the
+        // SAFETY: both slices are non-empty and live across the call, and the
+        // lengths were just checked to partition the segments exactly; the
         // out-parameters are valid; the bridge is noexcept.
         let status = unsafe {
             fc_occt_extrude(
@@ -536,6 +561,8 @@ impl Session {
                 plane,
                 segments.as_ptr(),
                 segments.len(),
+                loop_segment_counts.as_ptr(),
+                loop_segment_counts.len(),
                 base_offset,
                 top_offset,
                 Some(cancel_trampoline),
@@ -1319,6 +1346,19 @@ mod tests {
         ]
     }
 
+    /// One whole circle as the bridge receives it.
+    ///
+    /// Named apart from the local `circle` bindings in the single-circle tests
+    /// beside this, which are values rather than a constructor.
+    fn whole_circle(center_x: f64, center_y: f64, radius: f64) -> Segment {
+        let mut segment = Segment::zeroed();
+        segment.kind = SEGMENT_CIRCLE;
+        segment.center_x = center_x;
+        segment.center_y = center_y;
+        segment.radius = radius;
+        segment
+    }
+
     extern "C" fn cancel_on_third_poll(context: *mut c_void) -> i32 {
         // SAFETY: the test passes a live `AtomicUsize` for the duration of the
         // synchronous bridge call.
@@ -1355,6 +1395,42 @@ mod tests {
                 .collect::<String>();
             assert_eq!(declared, value.to_string(), "{name}");
         }
+        // The loop boundaries are a pair of arguments, not a field, so their
+        // agreement cannot be static_asserted. Read out of the header's own
+        // declaration instead: the extern above and the header must name the
+        // same two parameters in the same place, or the bridge would read the
+        // lengths out of `base_offset`.
+        let declared = header
+            .split_once("FcOcctStatus fc_occt_extrude(FcOcctSession *session")
+            .expect("the header declares fc_occt_extrude")
+            .1
+            .split_once(';')
+            .expect("the declaration ends")
+            .0;
+        let order: Vec<&str> = [
+            "const FcOcctPlane *plane",
+            "const FcOcctSegment *segments",
+            "size_t segment_count",
+            "const size_t *loop_segment_counts",
+            "size_t loop_count",
+            "double base_offset",
+            "double top_offset",
+            "FcOcctCancelFn cancel",
+            "void *cancel_context",
+            "uint64_t *out_shape",
+            "FcOcctError *out_error",
+        ]
+        .into_iter()
+        .collect();
+        let mut at = 0;
+        for parameter in order {
+            let found = declared[at..].find(parameter);
+            assert!(
+                found.is_some(),
+                "fc_occt_extrude declares {parameter} after position {at}"
+            );
+            at += found.expect("checked just above") + parameter.len();
+        }
         // These values are also static_asserted against the actual C++ type
         // in bridge.cpp. Neither compiler can silently move a field even if
         // the struct still has the same size and every field name is present.
@@ -1387,7 +1463,7 @@ mod tests {
         circle.center_y = -7.0;
         circle.radius = 10.0;
         let shape = session
-            .extrude(&plane, &[circle], 0.0, 15.0, &CancelToken::new())
+            .extrude(&plane, &[circle], &[1], 0.0, 15.0, &CancelToken::new())
             .expect("one closed curve is a whole profile");
 
         let (faces, volume) = session.shape_stats(shape).expect("stats");
@@ -1425,6 +1501,250 @@ mod tests {
         assert_eq!(session.live_shape_count(), 0);
     }
 
+    /// One circular hole in one circular boundary, through the real bridge.
+    ///
+    /// Two closed curves, no corners anywhere, and the two cylindrical faces
+    /// told apart by which loop raised them rather than by where they landed
+    /// among the faces. The volume is the analytic annulus rather than the full
+    /// cylinder, which is the one measurement a lost inner wire cannot pass.
+    #[test]
+    fn an_annular_profile_builds_two_analytic_cylinders_and_names_no_corner() {
+        let mut session = Session::new().expect("opens a real OCCT session");
+        let plane = Plane {
+            origin: [0.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        };
+        let shape = session
+            .extrude(
+                &plane,
+                &[
+                    whole_circle(12.0, -7.0, 10.0),
+                    whole_circle(12.0, -7.0, 4.0),
+                ],
+                &[1, 1],
+                0.0,
+                15.0,
+                &CancelToken::new(),
+            )
+            .expect("a circle inside a circle bounds a region with a hole");
+
+        let (faces, volume) = session.shape_stats(shape).expect("stats");
+        assert_eq!(faces, 4, "two cylindrical walls and two planar caps");
+        let exact = std::f64::consts::PI * (100.0 - 16.0) * 15.0;
+        assert!(
+            (volume - exact).abs() < 1e-9 * exact,
+            "{volume} is not the annulus {exact}; a full cylinder would be {}",
+            std::f64::consts::PI * 100.0 * 15.0
+        );
+        assert!(session.is_valid(shape).expect("checked"));
+
+        // Each wall belongs to the loop that drew it, in the order the loops
+        // were given. Swapping these two answers is the failure a solid with
+        // the right volume and the wrong identities would have.
+        for (index, radius) in [(0, 10.0), (1, 4.0)] {
+            let side = session.side_faces(shape, index).expect("the swept face");
+            assert_eq!(side.len(), 1, "loop {index} raised one wall");
+            assert_eq!(
+                session.face_surface(shape, side[0]).expect("surface"),
+                FaceSurface::Cylinder { radius },
+                "loop {index}"
+            );
+        }
+        for which in [0, 1] {
+            let cap = session.cap_faces(shape, which).expect("cap");
+            assert_eq!(cap.len(), 1);
+            assert_eq!(
+                session.face_surface(shape, cap[0]).expect("surface"),
+                FaceSurface::Plane
+            );
+            // Both walls still meet both caps along an edge each.
+            for segment in [0, 1] {
+                assert_eq!(
+                    session
+                        .cap_edges(shape, segment, which)
+                        .expect("edge")
+                        .len(),
+                    1
+                );
+            }
+        }
+
+        // Neither loop has a corner, so neither has one to ask about, and
+        // nothing beyond the two loops exists to ask about either.
+        assert!(session.sweep_edges(shape, 0).is_err());
+        assert!(session.cap_vertices(shape, 0, 0).is_err());
+        assert!(session.side_faces(shape, 2).is_err());
+
+        // The mesh of that solid is a mesh of four faces, not of three.
+        let mesh = session
+            .tessellate(shape, 0.05, 0.1, false, &CancelToken::new())
+            .expect("the annulus tessellates");
+        assert_eq!(mesh.face_shapes.len(), 4);
+        assert!(mesh.indices.len() >= 3 * 4);
+
+        // And the names survive the archive the warm cache stores.
+        let named: Vec<u64> = (0..2)
+            .map(|i| session.side_faces(shape, i).expect("side")[0])
+            .collect();
+        let (bytes, slots) = session
+            .encode_shape_named(shape, &named)
+            .expect("archives the walls");
+        let (restored, back) = session
+            .decode_shape_named(&bytes, &slots)
+            .expect("restores them");
+        assert_eq!(back.len(), 2);
+        for ((id, kind), radius) in back.iter().zip([10.0, 4.0]) {
+            assert_eq!(*kind, RawSubShapeKind::Face);
+            assert_eq!(
+                session.face_surface(restored, *id).expect("surface"),
+                FaceSurface::Cylinder { radius }
+            );
+        }
+        let (faces, restored_volume) = session.shape_stats(restored).expect("stats");
+        assert_eq!(faces, 4);
+        assert!((restored_volume - volume).abs() < 1e-9 * exact);
+
+        session.release(restored);
+        session.release(shape);
+        assert_eq!(session.live_shape_count(), 0);
+    }
+
+    /// A hole has to be a hole, and the bridge says so rather than guessing.
+    ///
+    /// Nesting the wrong way round, coinciding with the boundary and lying
+    /// beside it are three different drawings and one refusal: none of them
+    /// bounds a region with a cavity, and each would otherwise produce a solid
+    /// whose cavity is wherever Open CASCADE chose to put it.
+    #[test]
+    fn the_bridge_refuses_a_hole_that_is_not_strictly_inside_the_boundary() {
+        let mut session = Session::new().expect("opens a real OCCT session");
+        let plane = Plane {
+            origin: [0.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        };
+        for (what, loops) in [
+            (
+                "inverted",
+                [whole_circle(0.0, 0.0, 4.0), whole_circle(0.0, 0.0, 10.0)],
+            ),
+            (
+                "coincident",
+                [whole_circle(0.0, 0.0, 5.0), whole_circle(0.0, 0.0, 5.0)],
+            ),
+            (
+                "disjoint",
+                [whole_circle(0.0, 0.0, 2.0), whole_circle(9.0, 0.0, 2.0)],
+            ),
+        ] {
+            let error = session
+                .extrude(&plane, &loops, &[1, 1], 0.0, 3.0, &CancelToken::new())
+                .expect_err(what);
+            assert_eq!(error.kind(), ErrorKind::Input, "{what}: {error}");
+            assert!(
+                error.to_string().contains("strictly inside"),
+                "{what}: {error}"
+            );
+        }
+        // Properly nested but off centre is geometry this bridge builds. The
+        // narrower concentric class is a policy the evaluator applies, and
+        // this records that the refusal above is about nesting, not centres.
+        let eccentric = session
+            .extrude(
+                &plane,
+                &[whole_circle(0.0, 0.0, 10.0), whole_circle(3.0, 0.0, 4.0)],
+                &[1, 1],
+                0.0,
+                2.0,
+                &CancelToken::new(),
+            )
+            .expect("an off-centre hole is still a hole");
+        session.release(eccentric);
+        assert_eq!(session.live_shape_count(), 0);
+    }
+
+    /// The loop lengths have to partition the segments, and both sides say so.
+    ///
+    /// Checked in this crate before the pointers cross, and again in the bridge
+    /// with the same rule. Neither check stands alone: the first keeps a
+    /// miscounted call away from native code, and the second means the ABI is
+    /// safe for any caller rather than for this one.
+    #[test]
+    fn loop_lengths_must_partition_the_profile_segments() {
+        let mut session = Session::new().expect("opens a real OCCT session");
+        let plane = Plane {
+            origin: [0.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        };
+        let two = [whole_circle(0.0, 0.0, 10.0), whole_circle(0.0, 0.0, 4.0)];
+        for counts in [
+            Vec::new(),
+            vec![1],
+            vec![1, 1, 1],
+            vec![3],
+            vec![0, 2],
+            // A length whose running total would wrap is refused, not wrapped.
+            vec![usize::MAX, 1],
+            vec![usize::MAX, usize::MAX],
+        ] {
+            let error = session
+                .extrude(&plane, &two, &counts, 0.0, 2.0, &CancelToken::new())
+                .expect_err(&format!("{counts:?}"));
+            assert_eq!(error.kind(), ErrorKind::Input, "{counts:?}: {error}");
+            // Exercise the C ABI independently of the Rust preflight. Every
+            // pointer addresses a live allocation; only the partition is bad.
+            let mut shape = 0;
+            let mut raw_error = RawError::empty();
+            // SAFETY: session, plane, slices and output pointers are valid for
+            // the call, with their real allocation lengths. No callback.
+            let status = unsafe {
+                fc_occt_extrude(
+                    session.raw,
+                    &plane,
+                    two.as_ptr(),
+                    two.len(),
+                    counts.as_ptr(),
+                    counts.len(),
+                    0.0,
+                    2.0,
+                    None,
+                    std::ptr::null_mut(),
+                    &mut shape,
+                    &mut raw_error,
+                )
+            };
+            assert_eq!(
+                interpret(status, &raw_error, "raw partition")
+                    .expect_err("invalid C partition")
+                    .kind(),
+                ErrorKind::Input
+            );
+            assert_eq!(shape, 0);
+            assert_eq!(session.live_shape_count(), 0);
+        }
+        // Two circles in one loop reach the bridge, which refuses them as a
+        // chain of closed curves rather than building one of them.
+        let error = session
+            .extrude(&plane, &two, &[2], 0.0, 2.0, &CancelToken::new())
+            .expect_err("a chain of two circles is not a loop");
+        assert!(error.to_string().contains("whole loop"), "{error}");
+        // And the one-loop spelling is exactly what it always was.
+        let plate = session
+            .extrude(
+                &plane,
+                &rectangle_segments(),
+                &[4],
+                0.0,
+                2.0,
+                &CancelToken::new(),
+            )
+            .expect("one loop of four lines");
+        session.release(plate);
+        assert_eq!(session.live_shape_count(), 0);
+    }
+
     /// A closed curve is a whole profile, and only that.
     #[test]
     fn the_bridge_refuses_a_circle_mixed_into_a_chain() {
@@ -1441,7 +1761,14 @@ mod tests {
         mixed.push(circle);
         assert!(
             session
-                .extrude(&plane, &mixed, 0.0, 2.0, &CancelToken::new())
+                .extrude(
+                    &plane,
+                    &mixed,
+                    &[mixed.len()],
+                    0.0,
+                    2.0,
+                    &CancelToken::new()
+                )
                 .is_err()
         );
         // And a circle with no radius is refused rather than built.
@@ -1451,7 +1778,7 @@ mod tests {
             degenerate.radius = radius;
             assert!(
                 session
-                    .extrude(&plane, &[degenerate], 0.0, 2.0, &CancelToken::new())
+                    .extrude(&plane, &[degenerate], &[1], 0.0, 2.0, &CancelToken::new())
                     .is_err()
             );
         }
@@ -1467,7 +1794,14 @@ mod tests {
             normal: [0.0, 0.0, 1.0],
         };
         let shape = session
-            .extrude(&plane, &rectangle_segments(), 0.0, 2.0, &CancelToken::new())
+            .extrude(
+                &plane,
+                &rectangle_segments(),
+                &[4],
+                0.0,
+                2.0,
+                &CancelToken::new(),
+            )
             .expect("builds a prism");
         let polls = AtomicUsize::new(0);
         let mut vertices = 0usize;
@@ -1523,7 +1857,14 @@ mod tests {
             normal: [0.0, 0.0, 1.0],
         };
         let original = session
-            .extrude(&plane, &rectangle_segments(), 0.0, 2.0, &CancelToken::new())
+            .extrude(
+                &plane,
+                &rectangle_segments(),
+                &[4],
+                0.0,
+                2.0,
+                &CancelToken::new(),
+            )
             .expect("builds a prism");
         let bytes = session.encode_shape(original).expect("encodes");
 

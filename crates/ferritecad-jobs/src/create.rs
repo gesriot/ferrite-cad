@@ -43,7 +43,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{CircleExtrusion, PolygonExtrusion};
+use crate::{AnnularExtrusion, CircleExtrusion, PolygonExtrusion};
 use ferritecad_document::{
     Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, EntityKind,
     Expression, Extrude, ObjectPayload, Point2, SelectionRule, SemanticRole, Sketch, SketchCurve,
@@ -111,6 +111,11 @@ pub enum NewDocument {
     /// route. The circle stays analytic: nothing here turns it into a polygon
     /// with many sides.
     CircleExtrude(CircleExtrusion),
+    /// A validated XY circle with one concentric circular hole, cold-checked
+    /// before publication on the same route. Two analytic circles, each with
+    /// its own identity; the hole is a loop of the one profile rather than a
+    /// second solid or an export-time mask.
+    AnnularExtrude(AnnularExtrusion),
 }
 
 impl NewDocument {
@@ -124,7 +129,7 @@ impl NewDocument {
     pub fn needs_kernel(&self) -> bool {
         match self {
             Self::Empty | Self::SamplePlate(_) => false,
-            Self::SketchExtrude(_) | Self::CircleExtrude(_) => true,
+            Self::SketchExtrude(_) | Self::CircleExtrude(_) | Self::AnnularExtrude(_) => true,
         }
     }
 }
@@ -180,6 +185,29 @@ impl<'a> CreateDocumentRequest<'a> {
 pub struct CreatedDocument {
     destination: PathBuf,
     document_id: DocumentId,
+    annulus: Option<CreatedAnnulus>,
+}
+
+/// What a published annular document calls the objects it was given.
+///
+/// Reported because that document's own contract names them: it holds two
+/// circles, and a reader has to be able to say which stored curve is the
+/// boundary and which the hole without counting rows or reading names. The
+/// identifiers are the ones the writer minted, handed back rather than looked
+/// up again afterwards.
+///
+/// Only this content reports them. Empty, the sample plate, the polygon and the
+/// single circle each publish a contract that names the document and no more,
+/// and widening those to add one would change three published answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreatedAnnulus {
+    pub sketch: ObjectId,
+    pub extrude: ObjectId,
+    pub body: ObjectId,
+    /// The circle that bounds the region.
+    pub outer_curve: StableEntityId,
+    /// The circle that is the hole.
+    pub inner_curve: StableEntityId,
 }
 
 impl CreatedDocument {
@@ -194,6 +222,14 @@ impl CreatedDocument {
     /// description are two documents, and nothing may make them one.
     pub fn document_id(&self) -> DocumentId {
         self.document_id
+    }
+
+    /// What this creation called the objects of an annular document.
+    ///
+    /// `None` for every other content, which is the honest answer: nothing was
+    /// identified because nothing needed to be.
+    pub fn annulus(&self) -> Option<CreatedAnnulus> {
+        self.annulus
     }
 }
 
@@ -283,7 +319,7 @@ fn create_checked(
     }
     context.cancel().check()?;
 
-    let (temporary, document_id) = build_checked(&request, check)?;
+    let (temporary, document_id, annulus) = build_checked(&request, check)?;
     // The SQLite connection is closed; only publication remains.
     context.progress().report(0.9);
 
@@ -301,6 +337,7 @@ fn create_checked(
     Ok(CreatedDocument {
         destination: request.destination.to_path_buf(),
         document_id,
+        annulus,
     })
 }
 
@@ -318,7 +355,7 @@ fn create_checked(
 fn build_checked(
     request: &CreateDocumentRequest<'_>,
     check: impl FnOnce(&Document) -> Result<()>,
-) -> Result<(Temporary, DocumentId)> {
+) -> Result<(Temporary, DocumentId, Option<CreatedAnnulus>)> {
     let temporary = Temporary::beside(request.destination)?;
 
     let mut document = Document::create_with(
@@ -330,6 +367,7 @@ fn build_checked(
 
     // One transaction for the whole model. A refusal inside it rolls back
     // everything, and the scratch document goes with the guard either way.
+    let mut annulus = None;
     match &request.content {
         NewDocument::Empty => {}
         NewDocument::SamplePlate(size) => populate_sample_plate(&mut document, *size)?,
@@ -337,10 +375,13 @@ fn build_checked(
             populate_profile(&mut document, profile.points(), profile.height_mm(), "Body")?
         }
         NewDocument::CircleExtrude(circle) => populate_circle(&mut document, circle, "Body")?,
+        NewDocument::AnnularExtrude(annular) => {
+            annulus = Some(populate_annulus(&mut document, annular, "Body")?)
+        }
     }
     check(&document)?;
     document.close()?;
-    Ok((temporary, document_id))
+    Ok((temporary, document_id, annulus))
 }
 
 /// What a caller is told about a destination that is already taken.
@@ -624,6 +665,149 @@ fn populate_circle(
 
         Ok(())
     })
+}
+
+/// Puts one analytic circle, one concentric circular hole and their extrusion
+/// into an empty document.
+///
+/// The same four objects, the same three dependencies and the same two cap
+/// references as the plain circle beside it, differing in two ways and no
+/// others: the sketch holds two [`SketchGeometry::Circle`] rather than one, and
+/// there are two side references rather than one — one per circle, each naming
+/// the wall raised from that circle by the circle's own identity.
+///
+/// Two references rather than one covering both, because the two walls are two
+/// different faces of the finished part: the outside of the tube and the inside
+/// of its bore. A single "every face raised from this profile" rule would
+/// resolve to both and give a later feature no way to say which it meant.
+///
+/// Which circle is written first is not a fact this model carries. The
+/// evaluator reads the boundary and the hole from the two radii, so nothing
+/// downstream depends on the order, and the writer stores them in the order the
+/// request names them.
+fn populate_annulus(
+    document: &mut Document,
+    annular: &AnnularExtrusion,
+    body_name: &str,
+) -> Result<CreatedAnnulus> {
+    let plane = ObjectId::new();
+    let sketch = ObjectId::new();
+    let extrude = ObjectId::new();
+    let body = ObjectId::new();
+    let circle = |radius| SketchCurve {
+        id: StableEntityId::new(),
+        construction: false,
+        geometry: SketchGeometry::Circle {
+            center: annular.center(),
+            radius,
+        },
+    };
+    let outer = circle(annular.outer_radius_mm());
+    let inner = circle(annular.inner_radius_mm());
+    let identities = CreatedAnnulus {
+        sketch,
+        extrude,
+        body,
+        outer_curve: outer.id,
+        inner_curve: inner.id,
+    };
+    let height = annular.height_mm();
+
+    document.write(|writer| {
+        writer.put_object(
+            plane,
+            None,
+            0,
+            Some("XY"),
+            &ObjectPayload::DatumPlane(DatumPlane {
+                placement: Transform::IDENTITY,
+            }),
+        )?;
+        writer.put_object(
+            sketch,
+            None,
+            1,
+            Some("Profile"),
+            &ObjectPayload::Sketch(Sketch {
+                plane,
+                curves: vec![outer.clone(), inner.clone()],
+                constraints: Vec::new(),
+            }),
+        )?;
+        writer.add_dependency(Dependency {
+            dependent: sketch,
+            dependency: plane,
+            role: DependencyRole::Plane,
+        })?;
+
+        writer.put_object(
+            body,
+            None,
+            3,
+            Some(body_name),
+            &ObjectPayload::Body(Body {
+                tip_feature: Some(extrude),
+            }),
+        )?;
+
+        writer.put_object(
+            extrude,
+            None,
+            2,
+            Some("Extrude1"),
+            &ObjectPayload::Extrude(Extrude {
+                profile: sketch,
+                end_condition: EndCondition::Blind {
+                    distance: Expression::constant(height)?,
+                },
+                reversed: false,
+                operation: SolidOperation::NewBody,
+                target_body: None,
+            }),
+        )?;
+        writer.add_dependency(Dependency {
+            dependent: extrude,
+            dependency: sketch,
+            role: DependencyRole::Profile,
+        })?;
+        writer.add_dependency(Dependency {
+            dependent: body,
+            dependency: extrude,
+            role: DependencyRole::BodyTip,
+        })?;
+
+        for side in [CapSide::Start, CapSide::End] {
+            writer.put_topology_ref(&TopologyRef {
+                id: StableEntityId::new(),
+                owner: extrude,
+                producer_feature: extrude,
+                expected_kind: EntityKind::Face,
+                output_role: SemanticRole::ExtrudeCap { side },
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            })?;
+        }
+
+        // "Every face raised from this circle", once per circle. One
+        // cylindrical face each today; the rule stays right if a later slice
+        // ever splits one.
+        for drawn in [outer.id, inner.id] {
+            writer.put_topology_ref(&TopologyRef {
+                id: StableEntityId::new(),
+                owner: extrude,
+                producer_feature: extrude,
+                expected_kind: EntityKind::Face,
+                output_role: SemanticRole::ExtrudeSide {
+                    profile_segment: drawn,
+                },
+                selection: SelectionRule::AllDerivedFrom { ancestor: drawn },
+                fallback_signature: None,
+            })?;
+        }
+
+        Ok(())
+    })?;
+    Ok(identities)
 }
 
 #[cfg(test)]

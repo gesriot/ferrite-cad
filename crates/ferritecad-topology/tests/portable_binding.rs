@@ -965,9 +965,7 @@ fn a_joint_naming_a_segment_the_profile_never_had_is_refused_when_recorded() {
         .expect_err("a joint of a segment this profile never swept");
     assert_eq!(refusal.kind(), ErrorKind::Topology);
     assert!(
-        refusal
-            .to_string()
-            .contains("is not in the swept outer profile"),
+        refusal.to_string().contains("is not in the swept profile"),
         "{refusal}"
     );
 
@@ -1156,9 +1154,7 @@ fn a_cap_vertex_keyed_by_a_segment_of_another_profile_is_refused() {
         .expect_err("a corner of a segment this profile never swept");
     assert_eq!(refusal.kind(), ErrorKind::Topology);
     assert!(
-        refusal
-            .to_string()
-            .contains("is not in the swept outer profile"),
+        refusal.to_string().contains("is not in the swept profile"),
         "{refusal}"
     );
     assert!(refusal.to_string().contains(&stranger.to_string()));

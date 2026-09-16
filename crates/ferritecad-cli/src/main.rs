@@ -6,6 +6,7 @@
 //! interface will later need to know about a document should be answerable
 //! here first.
 
+mod annulus;
 mod circle;
 mod edit_circle;
 mod edit_constraints;
@@ -101,6 +102,9 @@ enum Command {
     CreateSketchExtrude(sketch::SketchArgs),
     /// Create one analytic XY circle with a positive Blind extrusion from JSON request v1.
     CreateCircleExtrude(circle::CircleArgs),
+    /// Create two concentric analytic XY circles - a hollow part - with a positive
+    /// Blind extrusion from JSON request v1.
+    CreateAnnularExtrude(annulus::AnnulusArgs),
     /// Change one constant Blind extrusion and save a new .fcad of the same model.
     /// Preserves identities; never overwrites source or output. Requires a kernel.
     EditExtrude(EditExtrudeArgs),
@@ -342,6 +346,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::EditSketchConstraintsCopy(args) => edit_constraints::run(args),
         Command::CreateSketchExtrude(args) => sketch::run(args),
         Command::CreateCircleExtrude(args) => circle::run(args),
+        Command::CreateAnnularExtrude(args) => annulus::run(args),
         Command::Create(args) if args.json => Ok(json::emit(
             json::Operation::Create,
             create_result(args).map(json::Created::from),

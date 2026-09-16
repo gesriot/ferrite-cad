@@ -5,7 +5,8 @@ use ferritecad_document::{
     CircleChoice, CircleEdit, ExtrudeEditSource, SketchChoice, SketchVertex,
 };
 use ferritecad_jobs::{
-    CircleExtrusion, EditCircleRequest, EditSketchRequest, NewDocument, PolygonExtrusion,
+    AnnularExtrusion, CircleExtrusion, EditCircleRequest, EditSketchRequest, NewDocument,
+    PolygonExtrusion,
 };
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
@@ -36,6 +37,8 @@ enum Mode {
     #[default]
     Polygon,
     Circle,
+    /// One circle with one concentric circular hole: a hollow part.
+    Annulus,
 }
 
 /// The numbers a circle needs, as typed.
@@ -59,6 +62,30 @@ impl Default for CircleState {
     }
 }
 
+/// The numbers a circle with one concentric hole needs, as typed.
+///
+/// Its own state rather than a circle's with a field added, for the same
+/// reason the circle's is its own: switching profile must not throw away what
+/// was typed in the other, and a shared radius would make "Radius" mean two
+/// different things depending on which form was last open.
+#[derive(Debug, Clone, PartialEq)]
+struct AnnulusState {
+    center: [String; 2],
+    outer_radius: String,
+    inner_radius: String,
+    height: String,
+}
+impl Default for AnnulusState {
+    fn default() -> Self {
+        Self {
+            center: ["0".into(), "0".into()],
+            outer_radius: "10".into(),
+            inner_radius: "4".into(),
+            height: "10".into(),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Editor {
     pub(crate) constraints: crate::constraints::Editor,
@@ -74,6 +101,9 @@ pub(crate) struct Editor {
     /// Both outlive a trip through the other mode; only Cancel clears them.
     mode: Mode,
     circle: CircleState,
+    /// The annular form's numbers. Outlives a trip through either other mode,
+    /// exactly as the circle's do; only Cancel clears them.
+    annulus: AnnulusState,
     /// The saved circle being edited, with the request it was read from.
     editing_circle: Option<(EditCircleRequest, CircleChoice)>,
     pending_circle_edit: Option<EditCircleRequest>,
@@ -84,7 +114,7 @@ pub(crate) struct Editor {
     circle_applied: Option<CircleState>,
     /// Publication is complete, but its picture has not yet been accepted.
     /// Keep one recovery draft without preventing the ordinary async Open.
-    published_circle: Option<(PathBuf, Box<Editor>)>,
+    published_draft: Option<(PathBuf, Box<Editor>)>,
 }
 /// How many draft checkpoints either editor keeps. One bound, one policy.
 const DRAFT_HISTORY: usize = 128;
@@ -191,21 +221,21 @@ impl Editor {
         }
         Ok(())
     }
-    fn circle_published(&mut self, path: &Path) {
+    pub(crate) fn draft_published(&mut self, path: &Path) {
         let mut saved = std::mem::take(self);
-        saved.published_circle = None;
-        self.published_circle = Some((path.to_path_buf(), Box::new(saved)));
+        saved.published_draft = None;
+        self.published_draft = Some((path.to_path_buf(), Box::new(saved)));
     }
     /// Called only for a current load, after scene preparation/commit decides.
-    pub(crate) fn circle_load_finished(&mut self, path: &Path, accepted: bool) {
+    pub(crate) fn draft_load_finished(&mut self, path: &Path, accepted: bool) {
         if accepted {
-            self.published_circle = None;
+            self.published_draft = None;
         } else if self
-            .published_circle
+            .published_draft
             .as_ref()
             .is_some_and(|(p, _)| p == path)
         {
-            let (_, saved) = self.published_circle.take().expect("matching publication");
+            let (_, saved) = self.published_draft.take().expect("matching publication");
             *self = *saved;
         }
     }
@@ -348,6 +378,23 @@ impl Editor {
             number(&self.circle.height)?,
         )?))
     }
+    /// What the annular form is asking for, or why it is not one yet.
+    ///
+    /// Parses here and decides nothing else, exactly as the circle form does:
+    /// whether two radii that parse are a boundary and a hole — concentric, one
+    /// inside the other, with a wall thick enough to be a wall — belongs to the
+    /// document, which refuses what it will not store and says why.
+    fn annulus_content(&self) -> Result<NewDocument> {
+        Ok(NewDocument::AnnularExtrude(AnnularExtrusion::new(
+            [
+                number(&self.annulus.center[0])?,
+                number(&self.annulus.center[1])?,
+            ],
+            number(&self.annulus.outer_radius)?,
+            number(&self.annulus.inner_radius)?,
+            number(&self.annulus.height)?,
+        )?))
+    }
     fn record(&mut self, before: State) {
         if self.draft.as_ref() != Some(&before) {
             self.push_undo(before);
@@ -482,6 +529,49 @@ impl Editor {
         }
     }
 
+    /// The annular half of the same window.
+    ///
+    /// Five numbers and one action. Both other drafts beside it are untouched
+    /// while this is on screen, so switching back finds what was already there.
+    fn draw_annulus(&mut self, ui: &mut egui::Ui) {
+        ui.label("XY · mm · two concentric analytic circles · Blind · NewBody");
+        ui.label(
+            "The hole is a loop of the same profile, so it is in the solid and in every export.",
+        );
+        let [x, y] = &mut self.annulus.center;
+        let fields: [(&str, &mut String); 5] = [
+            ("Center X", x),
+            ("Center Y", y),
+            ("Outer radius", &mut self.annulus.outer_radius),
+            ("Inner radius", &mut self.annulus.inner_radius),
+            ("Blind height", &mut self.annulus.height),
+        ];
+        egui::Grid::new("ferritecad annulus numbers")
+            .num_columns(3)
+            .show(ui, |ui| {
+                for (label, value) in fields {
+                    ui.label(label);
+                    ui.add(
+                        egui::TextEdit::singleline(value)
+                            .char_limit(64)
+                            .desired_width(120.),
+                    );
+                    ui.label("mm");
+                    ui.end_row();
+                }
+            });
+        match self.annulus_content() {
+            Ok(content) => {
+                if ui.button("Save annular extrusion…").clicked() {
+                    self.pending = Some(content);
+                }
+            }
+            Err(error) => {
+                ui.colored_label(ui.visuals().error_fg_color, error.to_string());
+            }
+        }
+    }
+
     /// The saved-circle half of the same window.
     ///
     /// Shows what is stored, by identity, and offers the two numbers this edit
@@ -604,11 +694,17 @@ impl Editor {
                     ui.label("Profile:");
                     ui.selectable_value(&mut self.mode, Mode::Polygon, "Line polygon");
                     ui.selectable_value(&mut self.mode, Mode::Circle, "Circle");
+                    ui.selectable_value(&mut self.mode, Mode::Annulus, "Circle with hole");
                 });
             });
-            if self.mode == Mode::Circle {
+            if matches!(self.mode, Mode::Circle | Mode::Annulus) {
+                let annular = self.mode == Mode::Annulus;
                 ui.add_enabled_ui(!running, |ui| {
-                    self.draw_circle(ui);
+                    if annular {
+                        self.draw_annulus(ui);
+                    } else {
+                        self.draw_circle(ui);
+                    }
                     if ui.button("Cancel draft").clicked() {
                         self.dismiss();
                     }
@@ -817,7 +913,7 @@ pub(crate) fn finish_circle_edit(
     if edits.accepts(generation)
         && let Ok(saved) = &result
     {
-        editor.circle_published(&saved.destination);
+        editor.draft_published(&saved.destination);
     }
     edits.finish_circle(generation, result)
 }
@@ -1493,6 +1589,49 @@ mod tests {
                 _ => None,
             })
             .expect("the widest label sets the column");
+        replace_box_on_row(ctx, e, out, column, label, value);
+    }
+
+    /// Types into the box on one row of the annular grid.
+    ///
+    /// The column is taken from the widest of *this* grid's own labels rather
+    /// than from one label chosen in advance: this form has five of them and
+    /// which is widest is a property of the font, not something to assert.
+    fn type_into_annulus_row(
+        ctx: &egui::Context,
+        e: &mut Editor,
+        out: &egui::FullOutput,
+        label: &str,
+        value: &str,
+    ) {
+        let column = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t)
+                    if matches!(
+                        t.galley.text(),
+                        "Center X" | "Center Y" | "Outer radius" | "Inner radius" | "Blind height"
+                    ) =>
+                {
+                    Some(t.visual_bounding_rect().right())
+                }
+                _ => None,
+            })
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(column.is_finite(), "the annular grid drew no labels");
+        replace_box_on_row(ctx, e, out, column, label, value);
+    }
+
+    /// Clicks into the box on `label`'s row and replaces what it holds.
+    fn replace_box_on_row(
+        ctx: &egui::Context,
+        e: &mut Editor,
+        out: &egui::FullOutput,
+        column: f32,
+        label: &str,
+        value: &str,
+    ) {
         let row = text_at(out, label).y;
         click(ctx, e, egui::pos2(column + 40., row));
         frame(
@@ -1509,6 +1648,38 @@ mod tests {
                 egui::Event::Text(value.into()),
             ],
         );
+    }
+
+    /// Opens the window, switches it to the annular profile and fills its five
+    /// numbers in through real widgets, leaving the other two drafts alone.
+    fn draw_annulus_through_widgets(
+        e: &mut Editor,
+        center: [&str; 2],
+        outer: &str,
+        inner: &str,
+        height: &str,
+    ) -> egui::Context {
+        let ctx = egui::Context::default();
+        if !e.active() {
+            let out = frame(&ctx, e, vec![]);
+            click(&ctx, e, text_at(&out, "Create sketch + Extrude…"));
+        }
+        for _ in 0..3 {
+            frame(&ctx, e, vec![]);
+        }
+        let out = frame(&ctx, e, vec![]);
+        click(&ctx, e, text_at(&out, "Circle with hole"));
+        for (label, value) in [
+            ("Center X", center[0]),
+            ("Center Y", center[1]),
+            ("Outer radius", outer),
+            ("Inner radius", inner),
+            ("Blind height", height),
+        ] {
+            let out = frame(&ctx, e, vec![]);
+            type_into_annulus_row(&ctx, e, &out, label, value);
+        }
+        ctx
     }
 
     #[test]
@@ -1600,6 +1771,307 @@ mod tests {
         click(&ctx, &mut e, text_at(&out, "Cancel draft"));
         assert!(!e.active());
         assert!(e.take_request().is_none());
+    }
+
+    #[test]
+    fn annulus_widgets_submit_exact_numbers_and_keep_the_other_drafts() {
+        let mut e = Editor::default();
+        let ctx = egui::Context::default();
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Create sketch + Extrude…"));
+        frame(&ctx, &mut e, vec![]);
+        // A polygon half-drawn, and a circle typed, before anyone asked for a
+        // hole. Neither may be disturbed by the third form.
+        let points = vec![
+            ["0".to_owned(), "0".to_owned()],
+            ["60".to_owned(), "0".to_owned()],
+            ["0".to_owned(), "40".to_owned()],
+        ];
+        e.draft.as_mut().expect("draft").points = points.clone();
+        draw_circle_through_widgets(&mut e, ["1", "2"], "3", "4");
+        let circle = e.circle.clone();
+
+        let ctx = draw_annulus_through_widgets(&mut e, ["12", "-7"], "10", "4", "15");
+        assert_eq!(e.mode, Mode::Annulus);
+        assert_eq!(e.draft.as_ref().expect("draft").points, points);
+        assert_eq!(
+            e.circle, circle,
+            "the circle draft is not the annulus draft"
+        );
+        assert_eq!(e.annulus.center, ["12".to_owned(), "-7".to_owned()]);
+        assert_eq!(e.annulus.outer_radius, "10");
+        assert_eq!(e.annulus.inner_radius, "4");
+        assert_eq!(e.annulus.height, "15");
+
+        // Every refusal is shown in the form and submits nothing: a hole as
+        // big as its boundary, a hole bigger than it, a wall thinner than the
+        // policy allows, and a number that is not one.
+        for (field, bad) in [
+            ("Inner radius", "10"),
+            ("Inner radius", "12"),
+            ("Inner radius", "9.9999"),
+            ("Inner radius", "0"),
+            ("Inner radius", "-4"),
+            ("Inner radius", "banana"),
+            ("Outer radius", "0"),
+            ("Blind height", "0"),
+        ] {
+            let out = frame(&ctx, &mut e, vec![]);
+            type_into_annulus_row(&ctx, &mut e, &out, field, bad);
+            let out = frame(&ctx, &mut e, vec![]);
+            assert!(e.annulus_content().is_err(), "{field} {bad:?} was accepted");
+            assert!(
+                !out.shapes.iter().any(|c| matches!(&c.shape,
+                    egui::Shape::Text(t) if t.galley.text() == "Save annular extrusion…")),
+                "{field} {bad:?} still offered Save"
+            );
+            assert!(e.take_request().is_none());
+            // Put the form back to something that submits before the next one.
+            let out = frame(&ctx, &mut e, vec![]);
+            type_into_annulus_row(
+                &ctx,
+                &mut e,
+                &out,
+                field,
+                match field {
+                    "Inner radius" => "4",
+                    "Outer radius" => "10",
+                    _ => "15",
+                },
+            );
+        }
+
+        // An empty box cannot be reached by selecting and replacing, so it is
+        // emptied directly. The form has to refuse it like any other
+        // non-number rather than reading it as a zero.
+        e.annulus.inner_radius.clear();
+        assert!(e.annulus_content().is_err(), "an empty radius was accepted");
+        let out = frame(&ctx, &mut e, vec![]);
+        assert!(
+            !out.shapes.iter().any(|c| matches!(&c.shape,
+                egui::Shape::Text(t) if t.galley.text() == "Save annular extrusion…")),
+            "an empty radius still offered Save"
+        );
+        assert!(e.take_request().is_none());
+
+        let ctx = draw_annulus_through_widgets(&mut e, ["12", "-7"], "10", "4", "15");
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Save annular extrusion…"));
+        let NewDocument::AnnularExtrude(a) = e.take_request().expect("one request") else {
+            panic!("the annular form asked for something else")
+        };
+        assert_eq!((a.center().x, a.center().y), (12., -7.));
+        assert_eq!(a.outer_radius_mm(), 10.);
+        assert_eq!(a.inner_radius_mm(), 4.);
+        assert_eq!(a.height_mm(), 15.);
+        assert!(e.take_request().is_none(), "one press, one request");
+
+        // While that request is saving, only the toolbar can cancel the job.
+        let before = e.annulus.clone();
+        for label in ["Cancel draft", "Circle", "Save annular extrusion…"] {
+            let out = frame_running(&ctx, &mut e, vec![], true);
+            let at = text_at(&out, label);
+            frame_running(&ctx, &mut e, vec![egui::Event::PointerMoved(at)], true);
+            for pressed in [true, false] {
+                frame_running(
+                    &ctx,
+                    &mut e,
+                    vec![egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    }],
+                    true,
+                );
+            }
+            assert!(e.active(), "{label} discarded a saving annular draft");
+            assert_eq!(e.mode, Mode::Annulus, "{label} changed a saving profile");
+            assert_eq!(e.annulus, before);
+            assert_eq!(e.circle, circle);
+            assert_eq!(e.draft.as_ref().expect("draft").points, points);
+            assert!(e.take_request().is_none(), "{label} submitted twice");
+        }
+
+        // Back through the other two: both are still exactly as they were.
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Circle"));
+        assert_eq!(e.circle, circle);
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Line polygon"));
+        assert_eq!(e.draft.as_ref().expect("draft").points, points);
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Circle with hole"));
+        assert_eq!(e.annulus, before);
+        // Cancel ends all three, and leaves nothing pending.
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Cancel draft"));
+        assert!(!e.active());
+        assert!(e.take_request().is_none());
+    }
+
+    /// The window's worker and the shipped command publish the same part.
+    #[test]
+    fn native_annulus_draft_and_cli_publish_equivalent_models() {
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: no OCCT for annulus UI worker");
+            return;
+        }
+        use crate::creates::{
+            self,
+            tests::{ferritecad, read_semantics},
+        };
+        use std::sync::mpsc;
+        let d = tempfile::tempdir().expect("dir");
+        let ui = d.path().join("annulus-ui.fcad");
+        let cli = d.path().join("annulus-cli.fcad");
+        let input = d.path().join("annulus-request.json");
+        let mut creates = creates::Creates::default();
+        draw_annulus_through_widgets(&mut creates.sketch, ["12", "-7"], "10", "4", "15");
+        let content = creates
+            .sketch
+            .annulus_content()
+            .expect("the widgets describe an annulus");
+        let before = creates.sketch.annulus.clone();
+        let mut view = ferritecad_ui::ViewportInput::new();
+        let loads = crate::Loads::default();
+        let exports = crate::exports::Exports::default();
+
+        // A cancelled save dialog keeps the numbers that were typed.
+        assert!(
+            crate::start_new(
+                &mut creates,
+                &loads,
+                &exports,
+                &mut view,
+                content.clone(),
+                None,
+                |_, _, _, _| panic!("no worker on cancel")
+            )
+            .is_none()
+        );
+        assert_eq!(creates.sketch.annulus, before);
+        // So does a destination that is already taken.
+        let busy = d.path().join("occupied.fcad");
+        std::fs::write(&busy, b"keep").expect("busy");
+        let (_, open) = creates::tests::run_to_completion(
+            &mut creates,
+            &mut view,
+            content.clone(),
+            Some(busy.clone()),
+        );
+        assert!(open.is_none());
+        assert_eq!(creates.sketch.annulus, before);
+        assert_eq!(std::fs::read(busy).expect("busy"), b"keep");
+
+        let (tx, rx) = mpsc::channel();
+        let spawn = move |path: &std::path::Path,
+                          content,
+                          generation,
+                          cancel: &ferritecad_kernel::CancelToken| {
+            let path = path.to_path_buf();
+            let ctx = ferritecad_kernel::OperationContext::default().with_cancel(cancel.clone());
+            creates::spawn_create(
+                move || creates::run_create(&path, content, &ctx),
+                move |result| tx.send((generation, result)).expect("reply"),
+            )
+        };
+        crate::start_new(
+            &mut creates,
+            &loads,
+            &exports,
+            &mut view,
+            content.clone(),
+            Some(ui.clone()),
+            spawn,
+        )
+        .expect("worker");
+        let (generation, result) = rx.recv().expect("worker result");
+        assert_eq!(
+            creates::finish_create(&mut creates, &mut view, generation, result),
+            Some(ui.clone())
+        );
+        assert!(!creates.sketch.active());
+        // Publication must retain the draft until the async Open is accepted.
+        creates
+            .sketch
+            .draft_load_finished(Path::new("unrelated.fcad"), false);
+        assert!(!creates.sketch.active());
+        creates.sketch.draft_load_finished(&ui, false);
+        assert!(
+            creates.sketch.active(),
+            "failed Open must restore the published draft"
+        );
+        assert_eq!(creates.sketch.annulus, before);
+        assert_eq!(creates.sketch.annulus_content().expect("restored"), content);
+        assert!(
+            creates.sketch.take_request().is_none(),
+            "restoring must not resubmit"
+        );
+        creates.sketch.draft_published(&ui);
+        creates.sketch.draft_load_finished(&ui, true);
+        assert!(!creates.sketch.active());
+        assert!(creates.sketch.published_draft.is_none());
+        // A reply for a request that is no longer current changes nothing.
+        assert!(
+            creates::finish_create(
+                &mut creates,
+                &mut view,
+                generation,
+                Err(ferritecad_types::CadError::kernel("stale")),
+            )
+            .is_none()
+        );
+        creates.stop_all();
+
+        std::fs::write(
+            &input,
+            concat!(
+                r#"{"schema_version":1,"center_mm":[12.0,-7.0],"#,
+                r#""outer_radius_mm":10.0,"inner_radius_mm":4.0,"height_mm":15.0}"#
+            ),
+        )
+        .expect("request");
+        let run = std::process::Command::new(ferritecad())
+            .arg("create-annular-extrude")
+            .arg(input)
+            .arg("-o")
+            .arg(&cli)
+            .arg("--json")
+            .output()
+            .expect("peer CLI");
+        assert!(run.status.success(), "{run:?}");
+
+        // The same model, said in two independently minted sets of UUIDs.
+        assert_eq!(read_semantics(&ui).0, read_semantics(&cli).0);
+        assert_ne!(read_semantics(&ui).1, read_semantics(&cli).1);
+        let mut bytes = Vec::new();
+        for path in [&ui, &cli] {
+            for (op, extension) in [("export-stl", "stl"), ("export-fbx", "fbx")] {
+                let out = path.with_extension(extension);
+                let result = std::process::Command::new(ferritecad())
+                    .arg(op)
+                    .arg(path)
+                    .arg("-o")
+                    .arg(&out)
+                    .output()
+                    .expect("export");
+                assert!(result.status.success(), "{result:?}");
+                if extension == "stl" {
+                    bytes.push(std::fs::read(&out).expect("STL"));
+                } else if let Some(dir) = std::env::var_os("FCAD_ANNULUS_ARTIFACTS") {
+                    // Read by the pinned ufbx reader in the same CI job. FBX
+                    // identity properties carry each document's own UUIDs, so
+                    // these two files are read rather than compared.
+                    let dir = std::path::Path::new(&dir);
+                    std::fs::create_dir_all(dir).expect("artifact directory");
+                    std::fs::copy(&out, dir.join(out.file_name().expect("name")))
+                        .expect("artifact");
+                }
+            }
+        }
+        assert_eq!(bytes[0], bytes[1], "one geometry, two documents");
     }
 
     /// A real source document with one saved analytic circle, and the accepted
@@ -1872,16 +2344,16 @@ mod tests {
             } else {
                 assert_eq!(path, Some(root.path().join("ui.fcad")));
                 assert!(!e.active(), "published draft must not block async Open");
-                e.circle_load_finished(Path::new("another.fcad"), false);
+                e.draft_load_finished(Path::new("another.fcad"), false);
                 assert!(!e.active(), "an unrelated load failure cannot restore it");
-                e.circle_load_finished(&root.path().join("ui.fcad"), false);
+                e.draft_load_finished(&root.path().join("ui.fcad"), false);
                 assert!(e.active(), "failed preparation restores the draft");
                 assert_eq!(e.circle, kept);
                 assert_eq!(e.circle_undo.len(), 1, "history survives failed Open");
-                e.circle_published(&root.path().join("ui.fcad"));
-                e.circle_load_finished(&root.path().join("ui.fcad"), true);
+                e.draft_published(&root.path().join("ui.fcad"));
+                e.draft_load_finished(&root.path().join("ui.fcad"), true);
                 assert!(!e.active());
-                assert!(e.published_circle.is_none());
+                assert!(e.published_draft.is_none());
             }
         }
 
