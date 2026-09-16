@@ -405,6 +405,32 @@ jobs:
       # The combined build. This is the first one there has ever been.
       # ---------------------------------------------------------------------
 
+      - name: Build circles with OCCT and refuse constraints without the solver
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '0'
+          CARGO_BUILD_JOBS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          # No feature means no solver, even though its library exists. The
+          # following native build restores the shipped CLI in the same target.
+          case '${{ matrix.name }}' in
+            windows) export PATH="$FCAD_OCCT_LIB_DIR:$PATH" ;;
+            macos) export DYLD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR"; export DYLD_FALLBACK_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR" ;;
+            linux) export LD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR" ;;
+          esac
+          gate=occt_without_solver_builds_plain_circles_and_refuses_circle_constraints
+          cargo build --release --no-default-features -p ferritecad-cli
+          cargo test --release --no-default-features -p ferritecad-cli \
+            --test circle_constraints "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee circle-no-solver.log
+          if grep -q 'skipped:' circle-no-solver.log \
+             || ! grep -Fq "test $gate ... ok" circle-no-solver.log; then
+            echo "::error::mixed OCCT/no-solver gate did not execute"; exit 1
+          fi
+
       - name: Build the real application and the command line tool against both
         id: build
         env:
@@ -813,6 +839,68 @@ jobs:
           done
           echo "FCAD_ANNULUS_EDIT_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
 
+      - name: Constrain one saved circle's radius and centre through CLI and worker
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          CARGO_BUILD_JOBS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          artifacts="$RUNNER_TEMP/circle-constraints"
+          mkdir -p "$artifacts"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH"; artifacts="$(cygpath -w "$artifacts")" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          export FCAD_CIRCLE_CONSTRAINT_ARTIFACTS="$artifacts"
+          # Peer process must be this build before the app worker gate.
+          cargo build --release --features planegcs -p ferritecad-cli
+          for gate in circle_constraint_discovery_and_protocol_without_native \
+            native_circle_radius_and_pinned_centre_drive_the_solid \
+            native_circle_constraint_refusals_and_late_delivery_are_atomic
+          do
+            cargo test --release --features planegcs -p ferritecad-cli \
+              --test circle_constraints "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee "$gate.log"
+            if grep -q 'skipped:' "$gate.log" || ! grep -Fq "test $gate ... ok" "$gate.log"; then
+              echo "::error::circle constraint process gate $gate did not execute"; exit 1
+            fi
+          done
+          # Two separate invocations rather than one loop over a table with an
+          # optional column. `read -r a b c` collapses a missing middle field,
+          # which is how a packaged command can pass `bash -n` and still run the
+          # wrong argv; there is no middle field here to get wrong.
+          cargo test --release -p ferritecad-document --test sketch_constraints \
+            -- --nocapture --test-threads=1 2>&1 | tee capabilities.log
+          for gate in \
+            a_circle_constraint_declares_the_circle_vocabulary_and_cannot_under_declare_it \
+            a_radius_naming_no_circle_is_refused_by_the_persistence_boundary
+          do
+            if ! grep -Fq "test $gate ... ok" capabilities.log; then
+              echo "::error::capability gate $gate did not execute and pass"; exit 1
+            fi
+          done
+          if grep -q 'skipped:' capabilities.log; then
+            echo "::error::a capability gate skipped itself"; exit 1
+          fi
+
+          for ui_gate in \
+            constraints::tests::circle_widgets_add_a_radius_and_a_fixed_centre_as_one_request_each \
+            constraints::tests::native_circle_constraint_worker_and_cli_publish_the_same_solid
+          do
+            cargo test --release --features planegcs -p ferritecad-app "$ui_gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee circle-constraint-ui.log
+            if grep -q 'skipped:' circle-constraint-ui.log \
+               || ! grep -Fq "test $ui_gate ... ok" circle-constraint-ui.log; then
+              echo "::error::circle constraint UI gate did not execute"; exit 1
+            fi
+          done
+          echo "FCAD_CIRCLE_CONSTRAINT_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
+
       - name: Create, discover, edit and export through the JSON v1 CLI contract
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
@@ -902,6 +990,7 @@ jobs:
           grep -q '^FCAD_CIRCLE_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_ANNULUS_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_ANNULUS_EDIT_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_CIRCLE_CONSTRAINT_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

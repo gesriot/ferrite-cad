@@ -16,12 +16,12 @@
 use crate::Constraint;
 use crate::prepared::Prepared;
 
-/// The largest single constraint residual at `state`.
+/// The largest single constraint residual at `state` and `radii`.
 ///
 /// In the units of whichever constraint produced it: lengths for distances,
 /// squared quantities for equal-length and perpendicularity. That is why the
 /// limit it is judged against is a number and not a tolerance in millimetres.
-pub(crate) fn worst(prepared: &Prepared, state: &[f64]) -> f64 {
+pub(crate) fn worst(prepared: &Prepared, state: &[f64], radii: &[f64]) -> f64 {
     let at = |slot: usize| (state[slot], state[slot + 1]);
     let mut worst = 0.0f64;
     let mut note = |value: f64| worst = worst.max(value.abs());
@@ -29,6 +29,13 @@ pub(crate) fn worst(prepared: &Prepared, state: &[f64]) -> f64 {
     for constraint in &prepared.constraints {
         let slot = |point| prepared.slot_of(point);
         match *constraint {
+            // Measured against the radius that came back, which is the whole
+            // point: planegcs reports "minimised" for a system it could not
+            // satisfy, and the number it was asked for is the one thing that
+            // would agree with itself no matter what it returned.
+            Constraint::Radius { circle, radius } => {
+                note(radii[prepared.circle_slot(circle)] - radius);
+            }
             Constraint::Coincident { a, b } => {
                 let ((ax, ay), (bx, by)) = (at(slot(a)), at(slot(b)));
                 note(ax - bx);

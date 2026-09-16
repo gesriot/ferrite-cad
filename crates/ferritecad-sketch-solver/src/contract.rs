@@ -24,6 +24,43 @@ pub struct PointId(pub u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ConstraintId(pub u64);
 
+/// A circle of the sketch, named by whoever owns the sketch.
+///
+/// The same promise as [`PointId`], and kept in its own numbering rather than
+/// borrowed from the points: a circle is not a point, and a caller that had to
+/// know which point identifier stood for which circle would be keeping the
+/// solver's bookkeeping on its behalf.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CircleId(pub u64);
+
+/// A circle: a centre that is an addressable point, and a radius of its own.
+///
+/// Three unknowns, said as what they are. The centre is a [`PointId`] because
+/// it *is* a point of the sketch — everything that can be said about a point
+/// can be said about it, and [`Constraint::Fixed`] pins it without a second
+/// vocabulary for doing so. The radius is a scalar with no position, so it is
+/// not a second point and not a length between invented endpoints: either of
+/// those would give the solver two parameters where the geometry has one, and
+/// would report degrees of freedom nobody's drawing has.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct Circle {
+    pub circle: CircleId,
+    pub center: PointId,
+    /// On the way in a starting guess, on the way out an answer.
+    pub radius: f64,
+}
+
+impl Circle {
+    pub fn new(circle: CircleId, center: PointId, radius: f64) -> Self {
+        Self {
+            circle,
+            center,
+            radius,
+        }
+    }
+}
+
 /// Where a point is: on the way in as a starting guess, on the way out as an
 /// answer.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -42,12 +79,19 @@ impl Position {
 
 /// One relationship a solved sketch has to satisfy.
 ///
-/// These eight are the ones the solver comparison measured, and nothing here
-/// is wider than what was measured. Arcs, circles, tangency and symmetry are
-/// what planegcs was chosen for and are not in this slice.
+/// The eight the solver comparison measured, plus the radius of a circle.
+/// Arcs, tangency and symmetry are what planegcs was chosen for and are still
+/// not here.
+///
+/// A circle's *centre* takes no family of its own: it is a [`PointId`], so
+/// [`Constraint::Fixed`] and everything else that names a point already names
+/// it. Only the radius needed a word, because only the radius is a quantity no
+/// point can stand for.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum Constraint {
+    /// A circle has the radius it is told.
+    Radius { circle: CircleId, radius: f64 },
     /// Two points occupy the same place.
     Coincident { a: PointId, b: PointId },
     /// A point is pinned where it is told.
@@ -87,6 +131,7 @@ impl Constraint {
     /// references and solved against another.
     pub(crate) fn points(&self) -> Vec<PointId> {
         match *self {
+            Self::Radius { .. } => Vec::new(),
             Self::Fixed { point, .. } => vec![point],
             Self::Coincident { a, b }
             | Self::Distance { a, b, .. }
@@ -98,11 +143,25 @@ impl Constraint {
         }
     }
 
+    /// Every circle this constraint refers to, in the order it names them.
+    ///
+    /// The counterpart of [`Constraint::points`], kept apart from it for the
+    /// reason the two identifier types are kept apart: a list that mixed them
+    /// would have to be read with a rule about which entries meant which, and
+    /// the rule is exactly what a validation pass must not have to guess.
+    pub(crate) fn circles(&self) -> Vec<CircleId> {
+        match *self {
+            Self::Radius { circle, .. } => vec![circle],
+            _ => Vec::new(),
+        }
+    }
+
     /// The numbers this constraint carries, which must all be finite.
     pub(crate) fn parameters(&self) -> Vec<f64> {
         match *self {
             Self::Fixed { x, y, .. } => vec![x, y],
             Self::Distance { distance, .. } => vec![distance],
+            Self::Radius { radius, .. } => vec![radius],
             _ => Vec::new(),
         }
     }
@@ -117,6 +176,7 @@ impl Constraint {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Sketch {
     points: Vec<Position>,
+    circles: Vec<Circle>,
     constraints: Vec<(ConstraintId, Constraint)>,
 }
 
@@ -130,6 +190,17 @@ impl Sketch {
         self
     }
 
+    /// Adds a circle whose centre is a point this sketch already has.
+    ///
+    /// The centre is named rather than created here, so a caller that wants to
+    /// constrain it says so with an ordinary point constraint. A centre this
+    /// sketch does not contain is refused when the sketch is prepared, beside
+    /// every other reference that names nothing.
+    pub fn add_circle(&mut self, id: CircleId, center: PointId, radius: f64) -> &mut Self {
+        self.circles.push(Circle::new(id, center, radius));
+        self
+    }
+
     pub fn add_constraint(&mut self, id: ConstraintId, constraint: Constraint) -> &mut Self {
         self.constraints.push((id, constraint));
         self
@@ -137,6 +208,10 @@ impl Sketch {
 
     pub fn points(&self) -> &[Position] {
         &self.points
+    }
+
+    pub fn circles(&self) -> &[Circle] {
+        &self.circles
     }
 
     pub fn constraints(&self) -> &[(ConstraintId, Constraint)] {
@@ -205,6 +280,7 @@ impl Diagnosis {
 #[non_exhaustive]
 pub struct Solution {
     positions: Vec<Position>,
+    circles: Vec<Circle>,
     degrees_of_freedom: usize,
     redundant: Vec<ConstraintId>,
     worst_residual: f64,
@@ -213,12 +289,14 @@ pub struct Solution {
 impl Solution {
     pub(crate) fn new(
         positions: Vec<Position>,
+        circles: Vec<Circle>,
         degrees_of_freedom: usize,
         redundant: Vec<ConstraintId>,
         worst_residual: f64,
     ) -> Self {
         Self {
             positions,
+            circles,
             degrees_of_freedom,
             redundant,
             worst_residual,
@@ -232,6 +310,20 @@ impl Solution {
 
     pub fn position(&self, point: PointId) -> Option<Position> {
         self.positions.iter().copied().find(|p| p.point == point)
+    }
+
+    /// Every circle as it ended up, one entry per circle of the sketch.
+    ///
+    /// The centre is here as well as in [`Solution::positions`], and is the
+    /// same answer read twice rather than two answers: a circle's centre is a
+    /// point of the sketch, and this is the convenience of not having to know
+    /// which one.
+    pub fn circles(&self) -> &[Circle] {
+        &self.circles
+    }
+
+    pub fn circle(&self, circle: CircleId) -> Option<Circle> {
+        self.circles.iter().copied().find(|c| c.circle == circle)
     }
 
     pub fn degrees_of_freedom(&self) -> usize {

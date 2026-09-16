@@ -44,6 +44,11 @@ both sides. The same pair of named Lines can also be held
 [parallel or perpendicular](docs/line-pair-orientation.md) — a relative
 orientation, so it holds on a profile at any angle and leaves it free to turn,
 which is what makes it different from Horizontal/Vertical.
+The same editor also constrains a saved analytic circle: a radius in mm and its
+centre pinned at explicit X/Y mm, addressed by the circle's own identifier rather
+than by a point of it. The published copy takes its cylinder from the solved
+radius and centre; [contract, solver architecture and recipe](docs/circle-radius-constraints.md),
+[local measurements and limits](docs/circle-radius-constraints-verification.md).
 The solver keeps joints closed through named Coincident constraints; stored
 coordinates remain inputs, and arbitrary constraint families are still unsupported.
 
@@ -739,7 +744,9 @@ Line polygon (§25A) and add/remove persisted H/V in a new copy (§25E), with
 explicit Coincident closure; the same editor persists one length per Line (§25F),
 one pinned endpoint per profile (§25G), one equal length per pair of Lines
 (§25H) and one relative orientation — parallel or perpendicular — per pair of
-Lines (§25I). Other constraint families are outside that editor. A build with no solver refuses such a sketch rather than
+Lines (§25I). The same editor gives one saved analytic circle a radius and a
+pinned centre (§25N), which are the circle's own parameters rather than a
+relationship between points. Other constraint families are outside that editor. A build with no solver refuses such a sketch rather than
 building from the stored coordinates. What that solve found out – how much
 freedom each sketch has left, and which of its constraints repeat what the rest
 already said, each one explained in the document's own words rather than named

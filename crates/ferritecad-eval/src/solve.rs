@@ -41,8 +41,9 @@
 //! Nothing in the document. The answer is applied to a clone, which is handed
 //! to the profile arithmetic and dropped. Constraints, identifiers,
 //! construction flags, the plane and the order of the curves are carried
-//! across untouched; only the three stored coordinate pairs a solver can
-//! answer for — `Point.At`, `Line.Start` and `Line.End` — are written.
+//! across untouched. Solved `Point.At`, `Line.Start`, `Line.End` and
+//! `Circle.Center` coordinates and each circle's solved radius replace only
+//! the temporary clone's geometry.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -292,11 +293,16 @@ fn conflicting_constraints(
 /// refused, which is the honest answer: this build cannot say where that point
 /// went.
 fn stored_points(geometry: &SketchGeometry) -> &'static [SketchPointSelector] {
-    use SketchPointSelector::{At, End, Start};
+    use SketchPointSelector::{At, Center, End, Start};
     match geometry {
         SketchGeometry::Point { .. } => &[At],
         SketchGeometry::Line { .. } => &[Start, End],
-        SketchGeometry::Circle { .. } | SketchGeometry::Arc { .. } => &[],
+        // A circle's centre is a point of the sketch like any other, so it is
+        // solved for like any other and `Fixed` pins it with no second
+        // vocabulary. Its radius is not a point and is carried separately; see
+        // [`Translation::read`].
+        SketchGeometry::Circle { .. } => &[Center],
+        SketchGeometry::Arc { .. } => &[],
         _ => &[],
     }
 }
@@ -322,6 +328,10 @@ fn write_point(
         }
         (SketchPointSelector::End, SketchGeometry::Line { end, .. }) => {
             *end = value;
+            Ok(())
+        }
+        (SketchPointSelector::Center, SketchGeometry::Circle { center, .. }) => {
+            *center = value;
             Ok(())
         }
         (selector, geometry) => Err(CadError::constraint(format!(
@@ -350,6 +360,12 @@ struct Translation {
     point_of: BTreeMap<SketchPointRef, solver::PointId>,
     /// And back again.
     point_ref: BTreeMap<solver::PointId, SketchPointRef>,
+    /// The document's word for a circle to the solver's, for this solve only.
+    ///
+    /// A circle is a curve, so it is keyed by the curve's own identity rather
+    /// than by a point reference: its centre has one of those already, and the
+    /// two would be two names for different things under one key.
+    circle_of: BTreeMap<StableEntityId, solver::CircleId>,
     /// The solver's word for a constraint back to the document's.
     ///
     /// Only this direction is kept. The forward one is the act of allocating,
@@ -367,6 +383,7 @@ impl std::fmt::Debug for Translation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Translation")
             .field("points", &self.point_of.len())
+            .field("circles", &self.circle_of.len())
             .field("constraints", &self.constraint_ref.len())
             .finish()
     }
@@ -385,8 +402,20 @@ impl Translation {
         let mut stated = solver::Sketch::new();
         let mut point_of = BTreeMap::new();
         let mut point_ref = BTreeMap::new();
+        let mut circle_of = BTreeMap::new();
+        // Collected while the points are walked and added afterwards, because
+        // a circle names its centre and the solver contract requires the
+        // centre to exist by the time it is named.
+        let mut circles: Vec<(StableEntityId, SketchPointRef, f64)> = Vec::new();
 
         for curve in &sketch.curves {
+            if let SketchGeometry::Circle { radius, .. } = curve.geometry {
+                circles.push((
+                    curve.id,
+                    SketchPointRef::new(curve.id, SketchPointSelector::Center),
+                    radius,
+                ));
+            }
             for &selector in stored_points(&curve.geometry) {
                 let reference = SketchPointRef::new(curve.id, selector);
                 let Some(at) = stored_coordinate(&curve.geometry, selector) else {
@@ -408,10 +437,26 @@ impl Translation {
             }
         }
 
+        for (curve, center, radius) in circles {
+            let id = solver::CircleId(circle_of.len() as u64);
+            let Some(&at) = point_of.get(&center) else {
+                // Persistence refuses a circle whose centre this walk did not
+                // record, so reaching this means a sketch built in memory and
+                // never validated. Refusing beats solving a circle with a
+                // centre nobody stated.
+                return Err(CadError::constraint(format!(
+                    "this sketch's circle {curve} has no centre to solve for"
+                )));
+            };
+            circle_of.insert(curve, id);
+            stated.add_circle(id, at, radius);
+        }
+
         let mut translation = Self {
             stated,
             point_of,
             point_ref,
+            circle_of,
             constraint_ref: BTreeMap::new(),
         };
 
@@ -443,6 +488,9 @@ impl Translation {
         for reference in constraint.rule.points() {
             self.point(reference, constraint.id)?;
         }
+        for curve in constraint.rule.curves() {
+            self.circle(curve, constraint.id)?;
+        }
 
         let point = |reference| self.point(reference, constraint.id);
         let segment = |segment: SketchSegmentRef| -> Result<(solver::PointId, solver::PointId)> {
@@ -454,6 +502,10 @@ impl Translation {
         // millimetres, because the two contracts were written to say the same
         // eight things in the same units.
         Ok(match constraint.rule {
+            SketchConstraintRule::Radius { curve, radius } => solver::Constraint::Radius {
+                circle: self.circle(curve, constraint.id)?,
+                radius,
+            },
             SketchConstraintRule::Coincident { a, b } => solver::Constraint::Coincident {
                 a: point(a)?,
                 b: point(b)?,
@@ -509,6 +561,20 @@ impl Translation {
             CadError::constraint(format!(
                 "constraint {constraint} names {reference}, which is not a stored point of this \
                  sketch"
+            ))
+        })
+    }
+
+    /// The solver's word for one of this sketch's circles.
+    fn circle(
+        &self,
+        curve: StableEntityId,
+        constraint: StableEntityId,
+    ) -> Result<solver::CircleId> {
+        self.circle_of.get(&curve).copied().ok_or_else(|| {
+            CadError::constraint(format!(
+                "constraint {constraint} gives a radius to {curve}, which is not a stored circle \
+                 of this sketch"
             ))
         })
     }
@@ -586,6 +652,33 @@ impl Translation {
     fn apply(&self, sketch: &Sketch, solution: &solver::Solution) -> Result<Sketch> {
         let mut solved = sketch.clone();
         for curve in &mut solved.curves {
+            // A radius is the one answer that is not a coordinate, so it is
+            // written from the circle the solver answered for rather than
+            // through the point table. A circle whose radius came back as
+            // nothing is refused rather than stored: the solver contract
+            // already refuses one, and a second opinion here that disagreed
+            // would be the one that published it.
+            if let Some(&id) = self.circle_of.get(&curve.id) {
+                let answered = solution.circle(id).ok_or_else(|| {
+                    CadError::constraint(format!(
+                        "the solver returned no radius for circle {}, which it was asked about",
+                        curve.id
+                    ))
+                })?;
+                let SketchGeometry::Circle { radius, .. } = &mut curve.geometry else {
+                    return Err(CadError::constraint(format!(
+                        "the solver answered for circle {}, which is no longer one",
+                        curve.id
+                    )));
+                };
+                if !answered.radius.is_finite() || answered.radius <= 0.0 {
+                    return Err(CadError::constraint(format!(
+                        "the solver answered {} for the radius of {}, which is not a circle",
+                        answered.radius, curve.id
+                    )));
+                }
+                *radius = answered.radius;
+            }
             for &selector in stored_points(&curve.geometry) {
                 let reference = SketchPointRef::new(curve.id, selector);
                 let Some(&id) = self.point_of.get(&reference) else {
@@ -754,6 +847,7 @@ fn stored_coordinate(geometry: &SketchGeometry, selector: SketchPointSelector) -
         (SketchPointSelector::At, SketchGeometry::Point { at }) => Some(*at),
         (SketchPointSelector::Start, SketchGeometry::Line { start, .. }) => Some(*start),
         (SketchPointSelector::End, SketchGeometry::Line { end, .. }) => Some(*end),
+        (SketchPointSelector::Center, SketchGeometry::Circle { center, .. }) => Some(*center),
         _ => None,
     }
 }
@@ -936,8 +1030,10 @@ mod tests {
         );
     }
 
+    /// A circle states three unknowns: its centre as a point, its radius as a
+    /// scalar of its own.
     #[test]
-    fn a_circle_offers_no_point_to_solve_for() {
+    fn a_circle_states_its_centre_as_a_point_and_its_radius_as_a_scalar() {
         let circle = StableEntityId::new();
         let sketch = sketch(
             vec![SketchCurve {
@@ -951,9 +1047,19 @@ mod tests {
             Vec::new(),
         );
         let translation = Translation::read(&sketch).expect("translates");
-        assert!(
-            translation.stated().points().is_empty(),
-            "a circle's centre is not a point this slice can solve for"
+        let stated = translation.stated();
+        // One point, and it is the centre: a circle adds no invented rim point
+        // to stand in for its radius.
+        assert_eq!(stated.points().len(), 1);
+        assert_eq!((stated.points()[0].x, stated.points()[0].y), (1.0, 2.0));
+        assert_eq!(stated.circles().len(), 1);
+        assert_eq!(stated.circles()[0].radius, 3.0);
+        assert_eq!(stated.circles()[0].center, stated.points()[0].point);
+        // And the centre is reachable by the word the document uses for it.
+        let reference = SketchPointRef::new(circle, SketchPointSelector::Center);
+        assert_eq!(
+            translation.point(reference, StableEntityId::new()).ok(),
+            Some(stated.points()[0].point)
         );
     }
 

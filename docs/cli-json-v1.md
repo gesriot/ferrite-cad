@@ -1060,6 +1060,36 @@ result и typed `error.constraint_conflict` описаны в
 Старые девять операций сохраняют wire и коды. [Запускаемый рецепт](sketch-constraints-copy.md#запускаемый-рецепт-агента).
 
 
+§25N снова сохраняет operation/schema/request v1 и все exit-коды. В `add`
+аддитивно доступны две формы для Sketch, который **есть одна аналитическая
+окружность**, и `at` прежнего `fixed` получает третье значение:
+
+```json
+{"rule":"radius","curve_id":"UUID_FROM_DISCOVERY","radius_mm":6.75}
+{"rule":"fixed","curve_id":"UUID_FROM_DISCOVERY","at":"center","x_mm":-3.5,"y_mm":4.25}
+```
+
+`radius` — своё правило, а не `distance`: расстояние между двумя точками и
+радиус окружности разные величины. `at:"center"` закрепляет центр окружности;
+`start`/`end` по-прежнему закрепляют конец Line, и ни одно не подставляется за
+другое. Слоты: один радиус на окружность, один pin на профиль; замена — remove
+exact UUID + add. Line-правило на круговом профиле и круговое правило на
+Line-профиле отвергаются.
+
+`constraint_edit` в `inspect --json` получает **отдельный** список `circles`
+(`curve_id`, `center_mm`, `radius_mm` — сохранённое приближение, не решённые
+значения); `curves` остаётся списком Lines и для кругового профиля пуст.
+`constraints` получает `{"kind":"radius","curve_id":…,"radius":N}`, а `fixed` —
+`point.at` равный `"center"`. Прежние поля, `circle_edit` и `annulus_edit`
+смысла не меняют; `circle_edit.available` становится false, пока окружность
+несёт ограничения, и снова true после их удаления.
+
+`result.solve` становится **nullable**: `null`, когда правка сняла последнее
+ограничение и решать стало нечего. Для Line-профиля это недостижимо — closure
+links остаются, — поэтому прежние ответы не меняются. Ноль степеней свободы и
+отсутствие системы — разные факты, и null говорит второй.
+[Полный контракт, архитектура solver и рецепт](circle-radius-constraints.md).
+
 §25F сохраняет operation/schema/request v1. В `add` команды
 `edit-sketch-constraints-copy` доступны `{curve_id,rule:"horizontal"}`,
 `{curve_id,rule:"vertical"}` и `{curve_id,rule:"distance",distance_mm:N}`.

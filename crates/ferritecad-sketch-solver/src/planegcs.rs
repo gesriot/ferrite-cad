@@ -83,7 +83,7 @@ mod linked {
     use std::os::raw::c_char;
 
     use super::Prepared;
-    use crate::{Constraint, NativeFailure, PointId, SolverError};
+    use crate::{CircleId, Constraint, NativeFailure, PointId, SolverError};
 
     /// The shim's own return codes. Not planegcs's: those are an
     /// implementation detail of a library that may renumber them, and none of
@@ -101,14 +101,59 @@ mod linked {
     const EQUAL_LENGTH: i32 = 5;
     const PERPENDICULAR: i32 = 6;
     const PARALLEL: i32 = 7;
+    const CIRCLE_RADIUS: i32 = 8;
+
+    /// One circle as the shim reads it: a centre by point index, and a radius.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub(super) struct RawCircle {
+        center: i32,
+        radius: f64,
+    }
 
     #[repr(C)]
     #[derive(Debug, Clone, Copy)]
     pub(super) struct RawConstraint {
         kind: i32,
         points: [i32; 4],
+        /// Circle references, never point references. The shim checks that
+        /// whichever array a kind does not use is left empty, so an index put
+        /// in the wrong one is refused rather than resolved against the wrong
+        /// geometry.
+        circles: [i32; 2],
         value: f64,
         value2: f64,
+    }
+
+    /// The layout the shim `static_assert`s on its own side.
+    ///
+    /// Asserted here as well because the two declarations are written out
+    /// separately: a field added to one and not the other still compiles, and
+    /// every call then reads the wrong bytes at the wrong offsets.
+    pub(super) fn assert_abi_layout() {
+        assert_eq!(std::mem::size_of::<RawConstraint>(), 48);
+        assert_eq!(std::mem::align_of::<RawConstraint>(), 8);
+        assert_eq!(std::mem::offset_of!(RawConstraint, kind), 0);
+        assert_eq!(std::mem::offset_of!(RawConstraint, points), 4);
+        assert_eq!(std::mem::offset_of!(RawConstraint, circles), 20);
+        assert_eq!(std::mem::offset_of!(RawConstraint, value), 32);
+        assert_eq!(std::mem::offset_of!(RawConstraint, value2), 40);
+        assert_eq!(std::mem::size_of::<RawCircle>(), 16);
+        assert_eq!(std::mem::align_of::<RawCircle>(), 8);
+        assert_eq!(std::mem::offset_of!(RawCircle, center), 0);
+        assert_eq!(std::mem::offset_of!(RawCircle, radius), 8);
+    }
+
+    /// The circles, as indices into the point block the shim was given.
+    pub(super) fn encode_circles(prepared: &Prepared) -> Vec<RawCircle> {
+        prepared
+            .circles()
+            .iter()
+            .map(|circle| RawCircle {
+                center: (prepared.slot_of(circle.center) / 2) as i32,
+                radius: circle.radius,
+            })
+            .collect()
     }
 
     /// Lays the caller's constraints out the way the shim reads them.
@@ -120,15 +165,23 @@ mod linked {
         let blank = RawConstraint {
             kind: 0,
             points: [-1; 4],
+            circles: [-1; 2],
             value: 0.0,
             value2: 0.0,
         };
         // The shim indexes points; a slot is two doubles, so it halves back.
         let at = |point: PointId| (prepared.slot_of(point) / 2) as i32;
+        let circle_at = |circle: CircleId| prepared.circle_slot(circle) as i32;
         prepared
             .constraints
             .iter()
             .map(|constraint| match *constraint {
+                Constraint::Radius { circle, radius } => RawConstraint {
+                    kind: CIRCLE_RADIUS,
+                    circles: [circle_at(circle), -1],
+                    value: radius,
+                    ..blank
+                },
                 Constraint::Coincident { a, b } => RawConstraint {
                     kind: COINCIDENT,
                     points: [at(a), at(b), -1, -1],
@@ -139,6 +192,7 @@ mod linked {
                     points: [at(point), -1, -1, -1],
                     value: x,
                     value2: y,
+                    ..blank
                 },
                 Constraint::Distance { a, b, distance } => RawConstraint {
                     kind: DISTANCE,
@@ -179,6 +233,8 @@ mod linked {
         pub(super) fn fc_gcs_session_create(
             start: *const f64,
             point_count: usize,
+            circles: *const RawCircle,
+            circle_count: usize,
             constraints: *const RawConstraint,
             constraint_count: usize,
         ) -> *mut c_void;
@@ -201,6 +257,11 @@ mod linked {
         ) -> i32;
         pub(super) fn fc_gcs_session_solve(session: *mut c_void) -> i32;
         pub(super) fn fc_gcs_session_state(
+            session: *const c_void,
+            out: *mut f64,
+            count: usize,
+        ) -> i32;
+        pub(super) fn fc_gcs_session_radii(
             session: *const c_void,
             out: *mut f64,
             count: usize,
@@ -291,13 +352,20 @@ impl Drop for Session {
 #[cfg(planegcs_linked)]
 impl Session {
     fn new(prepared: Prepared) -> Result<Self, SolverError> {
+        // Checked before the first call of every session, so a layout that
+        // drifted is caught by the gate that built the system rather than by a
+        // coordinate that came back wrong.
+        linked::assert_abi_layout();
         let encoded = linked::encode(&prepared);
-        // SAFETY: both slices live across the call and their lengths travel
-        // with them; the shim range-checks every point reference again.
+        let circles = linked::encode_circles(&prepared);
+        // SAFETY: all three slices live across the call and their lengths
+        // travel with them; the shim range-checks every reference again.
         let raw = unsafe {
             linked::fc_gcs_session_create(
                 prepared.state.as_ptr(),
                 prepared.points(),
+                circles.as_ptr(),
+                circles.len(),
                 encoded.as_ptr(),
                 encoded.len(),
             )
@@ -413,6 +481,20 @@ impl Session {
         Ok(out)
     }
 
+    /// The radii, asked for separately from the coordinates.
+    ///
+    /// A radius that came back as nothing or as less than nothing is not a
+    /// circle, whatever the solver's status said: planegcs may minimise its
+    /// way to a negative parameter, and a document built from one would carry
+    /// geometry no kernel will take.
+    fn radii(&self) -> Result<Vec<f64>, SolverError> {
+        let mut out = vec![0.0; self.prepared.circle_count()];
+        // SAFETY: the buffer is exactly the size the shim is told.
+        let status = unsafe { linked::fc_gcs_session_radii(self.raw, out.as_mut_ptr(), out.len()) };
+        linked::ok(status, crate::NativeFailure::Refused)?;
+        Ok(out)
+    }
+
     /// Solves an already diagnosed and partitioned system, and judges it.
     ///
     /// No positions leave this function unless every constraint the caller
@@ -427,11 +509,21 @@ impl Session {
             });
         }
         let state = self.state()?;
+        let radii = self.radii()?;
+        // A radius the solver moved to zero or below is refused here rather
+        // than published: the residual would be satisfied by a circle of
+        // negative radius on the way to one of positive radius, and nothing
+        // downstream would know the difference until a kernel refused it.
+        if radii.iter().any(|r| !r.is_finite() || *r <= 0.0) {
+            return Ok(Outcome::DidNotConverge {
+                worst_residual: None,
+            });
+        }
         // Measured against what the caller asked for, not against what the
         // solver says about itself. planegcs reports "minimised the error
         // function" for a sketch that has no solution, and that status alone
         // would call the 10-10-40 triangle solved.
-        let worst = crate::residual::worst(&self.prepared, &state);
+        let worst = crate::residual::worst(&self.prepared, &state, &radii);
         // Finiteness is tested by name rather than left to a negated
         // comparison: a state carrying NaN produces a NaN residual, which
         // compares false against every limit, and the reader should see that
@@ -443,6 +535,7 @@ impl Session {
         }
         Ok(Outcome::Solved(crate::Solution::new(
             self.prepared.positions(&state),
+            self.prepared.solved_circles(&radii),
             diagnosed.degrees_of_freedom,
             diagnosed.redundant.clone(),
             worst,

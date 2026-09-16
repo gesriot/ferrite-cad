@@ -83,9 +83,10 @@ pub use model::{
     EXTRUDE_CAP_VERTEX_CAPABILITY, EXTRUDE_SWEEP_EDGE_CAPABILITY, EndCondition, EntityKind,
     Expression, Extrude, GeomSignature, IMPORTED_STEP_CAPABILITY, ImportedDefinitionRef,
     ImportedStep, ImporterIdentity, ObjectKind, ObjectPayload, Parameter, Point2,
-    SKETCH_CONSTRAINTS_CAPABILITY, STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch,
-    SketchConstraint, SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef,
-    SketchPointSelector, SketchSegmentRef, SolidOperation, TopologyRef,
+    SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY, SKETCH_CONSTRAINTS_CAPABILITY, STEP_SOURCE_FORMAT,
+    SelectionRule, SemanticRole, Sketch, SketchConstraint, SketchConstraintRule, SketchCurve,
+    SketchGeometry, SketchPointRef, SketchPointSelector, SketchSegmentRef, SolidOperation,
+    TopologyRef,
 };
 pub use schema::{
     CACHE_EXTENSION, DOCUMENT_EXTENSION, FORMAT_VERSION, MINIMUM_READER_VERSION,
@@ -95,7 +96,8 @@ pub use validate::{Diagnostic, Severity, ValidationReport};
 
 mod sketch_constraints;
 pub use sketch_constraints::{
-    AddLineConstraint, ConstraintSketchChoice, LineConstraintKind, LineEndpoint, LineLengthMm,
-    LineRelation, PreparedSketchConstraints, SketchConstraintEdits, SketchCoordinateMm,
+    AddLineConstraint, AddSketchConstraint, CircleConstraintKind, CircleRadiusMm,
+    ConstraintSketchChoice, LineConstraintKind, LineEndpoint, LineLengthMm, LineRelation,
+    PreparedSketchConstraints, SketchConstraintEdits, SketchCoordinateMm,
     constraint_sketch_choices, prepare_sketch_constraints,
 };

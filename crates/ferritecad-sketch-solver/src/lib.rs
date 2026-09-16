@@ -44,7 +44,8 @@ mod prepared;
 mod residual;
 
 pub use contract::{
-    Constraint, ConstraintId, Diagnosis, Outcome, PointId, Position, Sketch, Solution,
+    Circle, CircleId, Constraint, ConstraintId, Diagnosis, Outcome, PointId, Position, Sketch,
+    Solution,
 };
 pub use error::{NativeFailure, NotFinite, SolverError, Unavailable};
 pub use planegcs::Drag;

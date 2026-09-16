@@ -12,9 +12,9 @@
 
 use ferritecad_document::{
     Access, CORE_CAPABILITY, DatumPlane, Dependency, DependencyRole, Document, Envelope,
-    ObjectKind, ObjectPayload, Point2, SKETCH_CONSTRAINTS_CAPABILITY, Sketch, SketchConstraint,
-    SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef, SketchPointSelector,
-    SketchSegmentRef,
+    ObjectKind, ObjectPayload, Point2, SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
+    SKETCH_CONSTRAINTS_CAPABILITY, Sketch, SketchConstraint, SketchConstraintRule, SketchCurve,
+    SketchGeometry, SketchPointRef, SketchPointSelector, SketchSegmentRef,
 };
 use ferritecad_types::{ContentHash, ErrorKind, ObjectId, StableEntityId, Transform};
 use tempfile::TempDir;
@@ -974,6 +974,283 @@ fn a_constraint_family_this_build_does_not_know_is_kept_verbatim() {
     );
 }
 
+/// One circle, with a radius and a pinned centre, as §25N stores it.
+fn circle_corpus() -> (SketchCurve, Vec<SketchConstraint>) {
+    let circle = SketchCurve {
+        id: StableEntityId::new(),
+        construction: false,
+        geometry: SketchGeometry::Circle {
+            center: Point2::new(12.0, -7.0).expect("finite"),
+            radius: 10.0,
+        },
+    };
+    let constraints = vec![
+        SketchConstraint {
+            id: StableEntityId::new(),
+            rule: SketchConstraintRule::Radius {
+                curve: circle.id,
+                radius: 6.75,
+            },
+        },
+        SketchConstraint {
+            id: StableEntityId::new(),
+            rule: SketchConstraintRule::Fixed {
+                point: SketchPointRef::new(circle.id, SketchPointSelector::Center),
+                x: -3.5,
+                y: 4.25,
+            },
+        },
+    ];
+    (circle, constraints)
+}
+
+/// What a circle constraint makes a sketch declare, in both directions.
+///
+/// The dangerous direction is under-declaring: a v2 header over a payload that
+/// speaks about a circle tells a build written against v2 that the document is
+/// safe to rewrite, and that build would drop the constraint without ever
+/// knowing it was there.
+#[test]
+fn a_circle_constraint_declares_the_circle_vocabulary_and_cannot_under_declare_it() {
+    let (circle, constraints) = circle_corpus();
+    let plane = ObjectId::new();
+
+    let unconstrained = Sketch {
+        plane,
+        curves: vec![circle.clone()],
+        constraints: Vec::new(),
+    };
+    assert_eq!(unconstrained.schema_version(), 1, "a circle alone is v1");
+    assert_eq!(unconstrained.required_capabilities(), vec![CORE_CAPABILITY]);
+
+    // A radius alone, a pinned centre alone, and both together each need the
+    // circle vocabulary; none of them is a v2 sketch.
+    for (what, only) in [
+        ("a radius", vec![constraints[0]]),
+        ("a pinned centre", vec![constraints[1]]),
+        ("both", constraints.clone()),
+    ] {
+        let sketch = Sketch {
+            plane,
+            curves: vec![circle.clone()],
+            constraints: only,
+        };
+        assert_eq!(sketch.schema_version(), 3, "{what}");
+        assert_eq!(
+            sketch.required_capabilities(),
+            vec![
+                CORE_CAPABILITY,
+                SKETCH_CONSTRAINTS_CAPABILITY,
+                SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY
+            ],
+            "{what}"
+        );
+    }
+
+    // A profile of Lines and their relationships is still a v2 sketch, so a
+    // build that predates this slice still rewrites it safely.
+    let Corpus {
+        curves,
+        constraints: lines,
+    } = corpus();
+    let line_profile = Sketch {
+        plane,
+        curves,
+        constraints: lines,
+    };
+    assert_eq!(line_profile.schema_version(), 2);
+    assert_eq!(
+        line_profile.required_capabilities(),
+        vec![CORE_CAPABILITY, SKETCH_CONSTRAINTS_CAPABILITY]
+    );
+
+    // Both halves of the dishonest envelope are refused, by the same check the
+    // Line families are held to.
+    let sketch = Sketch {
+        plane,
+        curves: vec![circle.clone()],
+        constraints: constraints.clone(),
+    };
+    let honest = ObjectPayload::Sketch(sketch.clone())
+        .to_storage_bytes()
+        .expect("serialises");
+    let envelope = Envelope::from_bytes(&honest).expect("envelope");
+    assert_eq!(envelope.schema_version, 3);
+    assert_eq!(
+        envelope.required_capabilities,
+        vec![
+            CORE_CAPABILITY,
+            SKETCH_CONSTRAINTS_CAPABILITY,
+            SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY
+        ]
+    );
+    for (what, version, capabilities) in [
+        (
+            "a v2 header over a circle constraint",
+            2,
+            vec![
+                CORE_CAPABILITY.to_owned(),
+                SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
+            ],
+        ),
+        (
+            "a v3 header that omits the circle capability",
+            3,
+            vec![
+                CORE_CAPABILITY.to_owned(),
+                SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
+            ],
+        ),
+        (
+            "a v1 header over a circle constraint",
+            1,
+            vec![CORE_CAPABILITY.to_owned()],
+        ),
+    ] {
+        let lie = Envelope::new("sketch", version, capabilities, envelope.payload.clone())
+            .to_bytes()
+            .expect("serialises");
+        let error = ObjectPayload::from_storage_bytes(&lie)
+            .expect_err(what)
+            .kind();
+        assert_eq!(error, ErrorKind::Input, "{what}");
+    }
+
+    // And the same payload under a capability *newer* than this build's set is
+    // preserved verbatim rather than half read: the road the next circle family
+    // arrives by, checked on a circle payload rather than only on a Line one.
+    let (_dir, path) = workspace();
+    let id = store(&path, unconstrained);
+    let future = Envelope::new(
+        "sketch",
+        4,
+        vec![
+            CORE_CAPABILITY.to_owned(),
+            SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
+            SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY.to_owned(),
+            "sketch.constraints.circle.v2".to_owned(),
+        ],
+        envelope.payload.clone(),
+    )
+    .to_bytes()
+    .expect("serialises");
+    overwrite(&path, id, &future, 4);
+    let document = Document::open(&path).expect("a future capability opens read-only");
+    match document.access() {
+        Access::ReadOnly { reason } => {
+            assert!(reason.contains("sketch.constraints.circle.v2"), "{reason}")
+        }
+        other => panic!("expected read-only access, got {other:?}"),
+    }
+    let record = document.object(id).expect("reads").expect("is there");
+    match &record.payload {
+        ObjectPayload::Unknown(_) => {}
+        other => panic!("a future circle family was interpreted as {other:?}"),
+    }
+    assert_eq!(
+        record.payload.to_storage_bytes().expect("writes back"),
+        future,
+        "a payload this build cannot read must go back exactly as it came"
+    );
+}
+
+/// A radius has to name a circle of this sketch, and only a circle.
+#[test]
+fn a_radius_naming_no_circle_is_refused_by_the_persistence_boundary() {
+    let (circle, constraints) = circle_corpus();
+    let plane = ObjectId::new();
+    let elsewhere = StableEntityId::new();
+
+    // A curve this sketch does not have.
+    let sketch = Sketch {
+        plane,
+        curves: vec![circle.clone()],
+        constraints: vec![SketchConstraint {
+            id: StableEntityId::new(),
+            rule: SketchConstraintRule::Radius {
+                curve: elsewhere,
+                radius: 4.0,
+            },
+        }],
+    };
+    let error = ObjectPayload::Sketch(sketch)
+        .to_storage_bytes()
+        .expect_err("a radius must name a curve of this sketch");
+    assert!(
+        error.to_string().contains("not a curve of this sketch"),
+        "{error}"
+    );
+
+    // A Line, which has no radius.
+    let a_line = line((0.0, 0.0), (10.0, 0.0));
+    let sketch = Sketch {
+        plane,
+        curves: vec![a_line.clone()],
+        constraints: vec![SketchConstraint {
+            id: StableEntityId::new(),
+            rule: SketchConstraintRule::Radius {
+                curve: a_line.id,
+                radius: 4.0,
+            },
+        }],
+    };
+    let error = ObjectPayload::Sketch(sketch)
+        .to_storage_bytes()
+        .expect_err("a Line has no radius");
+    assert!(error.to_string().contains("has none"), "{error}");
+
+    // A centre selector on a Line, which has no centre.
+    let sketch = Sketch {
+        plane,
+        curves: vec![a_line.clone()],
+        constraints: vec![SketchConstraint {
+            id: StableEntityId::new(),
+            rule: SketchConstraintRule::Fixed {
+                point: SketchPointRef::new(a_line.id, SketchPointSelector::Center),
+                x: 0.0,
+                y: 0.0,
+            },
+        }],
+    };
+    let error = ObjectPayload::Sketch(sketch)
+        .to_storage_bytes()
+        .expect_err("a Line has no centre");
+    assert!(error.to_string().contains("no such point"), "{error}");
+
+    // A radius that is not a positive length.
+    for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        let sketch = Sketch {
+            plane,
+            curves: vec![circle.clone()],
+            constraints: vec![SketchConstraint {
+                id: StableEntityId::new(),
+                rule: SketchConstraintRule::Radius {
+                    curve: circle.id,
+                    radius: bad,
+                },
+            }],
+        };
+        assert!(
+            ObjectPayload::Sketch(sketch).to_storage_bytes().is_err(),
+            "a radius of {bad} was stored"
+        );
+    }
+
+    // And the honest pair stores and reads back as itself.
+    let sketch = Sketch {
+        plane,
+        curves: vec![circle],
+        constraints,
+    };
+    let bytes = ObjectPayload::Sketch(sketch.clone())
+        .to_storage_bytes()
+        .expect("stores");
+    match ObjectPayload::from_storage_bytes(&bytes).expect("reads") {
+        ObjectPayload::Sketch(read) => assert_eq!(read, sketch),
+        other => panic!("read back as {other:?}"),
+    }
+}
+
 #[test]
 fn the_stored_bytes_change_when_a_constraint_changes() {
     let Corpus {
@@ -1152,7 +1429,16 @@ fn the_kind_and_the_payload_agree_about_what_a_sketch_declares() {
         ObjectKind::Sketch.required_capabilities(2),
         vec![CORE_CAPABILITY, SKETCH_CONSTRAINTS_CAPABILITY]
     );
-    assert_eq!(ObjectKind::Sketch.readable_schema_versions(), &[2, 1]);
+    assert_eq!(
+        ObjectKind::Sketch.required_capabilities(3),
+        vec![
+            CORE_CAPABILITY,
+            SKETCH_CONSTRAINTS_CAPABILITY,
+            SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY
+        ],
+        "the circle vocabulary announces itself as well as the constraint one"
+    );
+    assert_eq!(ObjectKind::Sketch.readable_schema_versions(), &[3, 2, 1]);
 
     let Corpus {
         curves,
