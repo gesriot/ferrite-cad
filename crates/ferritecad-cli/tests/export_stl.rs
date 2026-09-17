@@ -315,34 +315,64 @@ fn several_bodies_are_listed_rather_than_guessed_between() {
     }
     std::fs::remove_file(&out).expect("clears the probe's output");
 
-    // A second body over the same feature. Contrived, but the ambiguity it
-    // creates is the real one: two things a person could have meant.
+    // A second body, made the way a second body is made: its own feature over
+    // the same drawing. Two bodies sharing one tip would be one solid shown
+    // twice, which the validator refuses; the ambiguity this test is about is
+    // two real solids a person could have meant.
     let second = ObjectId::new();
+    let second_feature = ObjectId::new();
     let mut document = Document::open(&path).expect("opens");
-    let (first, tip) = document
-        .objects()
-        .expect("reads")
-        .into_iter()
-        .find_map(|object| match object.payload {
+    let objects = document.objects().expect("reads");
+    let (first, tip) = objects
+        .iter()
+        .find_map(|object| match &object.payload {
             ObjectPayload::Body(body) => body.tip_feature.map(|tip| (object.id, tip)),
             _ => None,
         })
         .expect("the plate has a body over a feature");
+    let profile = objects
+        .iter()
+        .find_map(|object| match &object.payload {
+            ObjectPayload::Extrude(feature) if object.id == tip => Some(feature.profile),
+            _ => None,
+        })
+        .expect("the tip feature reads a profile");
 
     document
         .write(|w| {
             w.put_object(
-                second,
+                second_feature,
                 None,
                 4,
+                Some("Extrude2"),
+                &ObjectPayload::Extrude(ferritecad_document::Extrude {
+                    profile,
+                    end_condition: ferritecad_document::EndCondition::Blind {
+                        distance: ferritecad_document::Expression::constant(3.0)?,
+                    },
+                    reversed: false,
+                    operation: ferritecad_document::SolidOperation::NewBody,
+                    target_body: None,
+                    previous: None,
+                }),
+            )?;
+            w.add_dependency(Dependency {
+                dependent: second_feature,
+                dependency: profile,
+                role: DependencyRole::Profile,
+            })?;
+            w.put_object(
+                second,
+                None,
+                5,
                 Some("Second"),
                 &ObjectPayload::Body(Body {
-                    tip_feature: Some(tip),
+                    tip_feature: Some(second_feature),
                 }),
             )?;
             w.add_dependency(Dependency {
                 dependent: second,
-                dependency: tip,
+                dependency: second_feature,
                 role: DependencyRole::BodyTip,
             })?;
             Ok(())
@@ -390,13 +420,16 @@ fn several_bodies_are_listed_rather_than_guessed_between() {
     let mut document = Document::open(&path).expect("opens again");
     document
         .write(|w| {
+            // Only the name changes. The body keeps its own feature, because
+            // two bodies over one tip is a document the validator refuses and
+            // this test is about names, not about that.
             w.put_object(
                 second,
                 None,
-                4,
+                5,
                 Some(&first_text),
                 &ObjectPayload::Body(Body {
-                    tip_feature: Some(tip),
+                    tip_feature: Some(second_feature),
                 }),
             )?;
             Ok(())

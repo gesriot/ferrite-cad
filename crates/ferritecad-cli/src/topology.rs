@@ -237,6 +237,14 @@ fn describe_role(role: &SemanticRole) -> String {
         SemanticRole::ExtrudeSide { profile_segment } => {
             format!("extrude side from segment {profile_segment}")
         }
+        SemanticRole::CarriedCap { side } => match side {
+            CapSide::Start => "carried cap start".to_owned(),
+            CapSide::End => "carried cap end".to_owned(),
+            _ => "carried cap (unknown side)".to_owned(),
+        },
+        SemanticRole::CarriedSide { profile_segment } => {
+            format!("carried side from segment {profile_segment}")
+        }
         SemanticRole::SketchSegment { segment } => format!("sketch segment {segment}"),
         SemanticRole::FilletFace { source_edge } => format!("fillet face from edge {source_edge}"),
         _ => "unknown semantic role".to_owned(),

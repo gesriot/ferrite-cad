@@ -121,19 +121,9 @@ fn report(document: &Document, built: &RebuildResult, kernel: String) -> Result<
             }
             ObjectPayload::Extrude(_) => {
                 if let Some(names) = built.topology().feature(*id) {
-                    let caps = [
-                        ferritecad_document::CapSide::Start,
-                        ferritecad_document::CapSide::End,
-                    ]
-                    .into_iter()
-                    .filter_map(|side| names.cap(side))
-                    .map(|faces| faces.len())
-                    .sum::<usize>();
-                    let sides: usize = names
-                        .named_segments()
-                        .map(|segment| names.side(segment).count())
-                        .sum();
-                    write!(line, "solid, {} named faces", caps + sides)
+                    // Every face this feature named, its own and the ones it
+                    // carried forward, counted where the names live.
+                    write!(line, "solid, {} named faces", names.named_face_count())
                         .expect("writing to a String cannot fail");
                 }
             }

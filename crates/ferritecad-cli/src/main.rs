@@ -8,6 +8,7 @@
 
 mod annulus;
 mod circle;
+mod cut;
 mod edit_annular;
 mod edit_circle;
 mod edit_constraints;
@@ -118,6 +119,9 @@ enum Command {
     EditAnnular(edit_annular::EditAnnularArgs),
     /// Add/remove persisted Line H/V constraints, solving and publishing a new FCAD copy.
     EditSketchConstraintsCopy(edit_constraints::EditConstraintsArgs),
+    /// Cut a circular tool into a saved Body to a stated depth, publishing a new
+    /// FCAD copy. The body keeps its identity and the cut becomes its tip.
+    CutCircularCopy(cut::CutArgs),
     /// Show a document's metadata, objects, graph and references.
     Inspect(InspectArgs),
     /// Check stored consistency without writes, migration or a geometry kernel.
@@ -348,6 +352,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::EditSketchCopy(args) => edit_sketch::run(args),
         Command::EditCircle(args) => edit_circle::run(args),
         Command::EditAnnular(args) => edit_annular::run(args),
+        Command::CutCircularCopy(args) => cut::run(args),
         Command::EditSketchConstraintsCopy(args) => edit_constraints::run(args),
         Command::CreateSketchExtrude(args) => sketch::run(args),
         Command::CreateCircleExtrude(args) => circle::run(args),

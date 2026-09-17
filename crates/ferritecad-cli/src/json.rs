@@ -33,6 +33,7 @@ pub enum Operation {
     EditCircle,
     EditAnnular,
     EditSketchConstraintsCopy,
+    CutCircularCopy,
     Create,
     CreateSketchExtrude,
     CreateCircleExtrude,
@@ -211,6 +212,61 @@ impl AnnulusDiscovery {
 struct Body {
     body_id: ObjectId,
     name: Option<String>,
+    /// Whether a circular cut can be added to this body, and what the operation
+    /// would be cutting into. Its own answer beside the sketch editors, which
+    /// keep saying exactly what they always said about their own classes.
+    cut_edit: CutDiscovery,
+}
+
+/// What `cut-circular-copy` would accept about one Body, from the same reading.
+#[derive(Serialize)]
+struct CutDiscovery {
+    available: bool,
+    refusal: Option<String>,
+    document_refusal: Option<String>,
+    target: Option<SavedCutTarget>,
+}
+
+/// The part a cut would go into, as stored.
+///
+/// The plane and the direction are reported rather than left to be assumed: a
+/// caller that said "on the base plane, along +Z" without asking would be
+/// promising the only thing this slice does as if it were a choice.
+#[derive(Serialize)]
+struct SavedCutTarget {
+    body_id: ObjectId,
+    plane_id: ObjectId,
+    /// The feature the cut would modify, which is the body's tip today.
+    tip_feature_id: ObjectId,
+    profile_sketch_id: ObjectId,
+    height_mm: f64,
+    /// `[[min_x, min_y], [max_x, max_y]]` of the rectangular part, in mm, so a
+    /// form can offer a centre inside it without guessing.
+    extents_mm: [[f64; 2]; 2],
+    /// The one direction a cut runs here, said out loud.
+    direction: &'static str,
+    /// How far the tool must stay from the part's outer wall.
+    wall_clearance_mm: f64,
+}
+
+impl CutDiscovery {
+    fn new(choice: ferritecad_document::CutChoice, document_refusal: Option<String>) -> Self {
+        Self {
+            available: choice.refusal.is_none() && document_refusal.is_none(),
+            refusal: choice.refusal,
+            document_refusal,
+            target: choice.target.map(|t| SavedCutTarget {
+                body_id: t.body,
+                plane_id: t.plane,
+                tip_feature_id: t.tip_feature,
+                profile_sketch_id: t.profile,
+                height_mm: t.height_mm,
+                extents_mm: t.extents_mm,
+                direction: "+z along the plane normal",
+                wall_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
+            }),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -366,6 +422,8 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         .into_iter()
         .map(|c| (c.sketch, c))
         .collect();
+    let mut cut_choices: std::collections::BTreeMap<_, _> =
+        source.cut_bodies.into_iter().map(|c| (c.body, c)).collect();
     let result = Inspection {
         document_id: source.version.document_id,
         content_version: source.version.content,
@@ -427,13 +485,23 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 refusal: feature.refusal,
             })
             .collect(),
-        bodies: ferritecad_jobs::stl_bodies(&document)?
-            .into_iter()
-            .map(|body| Body {
-                body_id: body.id,
-                name: body.name,
-            })
-            .collect(),
+        bodies: {
+            // Project the same Cut catalogue the UI receives; do not read and
+            // classify the objects again for this JSON view.
+            ferritecad_jobs::stl_bodies(&document)?
+                .into_iter()
+                .map(|body| Body {
+                    body_id: body.id,
+                    name: body.name,
+                    cut_edit: CutDiscovery::new(
+                        cut_choices
+                            .remove(&body.id)
+                            .expect("same snapshot Body catalogue"),
+                        source.refusal.clone(),
+                    ),
+                })
+                .collect()
+        },
     };
     document.close()?;
     Ok(result)

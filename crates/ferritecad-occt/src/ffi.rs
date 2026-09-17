@@ -39,6 +39,11 @@ pub(crate) const SEGMENT_CIRCLE: i32 = 2;
 const SURFACE_PLANE: i32 = 1;
 const SURFACE_CYLINDER: i32 = 2;
 
+/// Must match the `FC_OCCT_CARRIED_*` constants in `ferritecad_occt.h`.
+pub(crate) const CARRIED_KEPT: i32 = 0;
+pub(crate) const CARRIED_MODIFIED: i32 = 1;
+pub(crate) const CARRIED_DELETED: i32 = 2;
+
 /// Must match the `FC_OCCT_SUB_SHAPE_*` constants in `ferritecad_occt.h`.
 const SUB_SHAPE_FACE: i32 = 0;
 const SUB_SHAPE_EDGE: i32 = 1;
@@ -162,6 +167,33 @@ unsafe extern "C" {
         cancel: Option<CancelFn>,
         cancel_context: *mut c_void,
         out_shape: *mut u64,
+        out_error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_cut(
+        session: *mut RawSession,
+        target: u64,
+        tool: u64,
+        cancel: Option<CancelFn>,
+        cancel_context: *mut c_void,
+        out_shape: *mut u64,
+        out_removed_volume: *mut f64,
+        out_error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_cut_carried(
+        session: *mut RawSession,
+        result: u64,
+        input: u64,
+        input_sub: u64,
+        out_kind: *mut i32,
+        out_ids: *mut u64,
+        capacity: usize,
+        out_count: *mut usize,
+        out_error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_sub_shape_count(
+        session: *mut RawSession,
+        shape: u64,
+        out_count: *mut usize,
         out_error: *mut RawError,
     ) -> i32;
     fn fc_occt_extrude_side_faces(
@@ -573,6 +605,104 @@ impl Session {
         };
         interpret(status, &error, "extruding a profile")?;
         Ok(shape)
+    }
+
+    /// Removes the material of `tool` from `target`.
+    ///
+    /// Returns the new shape and how much material went, so the caller can say
+    /// what happened without measuring the result a second time.
+    pub(crate) fn cut(
+        &mut self,
+        target: u64,
+        tool: u64,
+        cancel: &CancelToken,
+    ) -> Result<(u64, f64)> {
+        let mut shape = 0u64;
+        let mut removed = 0.0f64;
+        let mut error = RawError::empty();
+        let context = cancel as *const CancelToken as *mut c_void;
+        // SAFETY: the out-parameters are valid for the call, the token is
+        // borrowed for exactly its duration, and the bridge is noexcept.
+        let status = unsafe {
+            fc_occt_cut(
+                self.raw,
+                target,
+                tool,
+                Some(cancel_trampoline),
+                context,
+                &mut shape,
+                &mut removed,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "cutting one shape out of another")?;
+        Ok((shape, removed))
+    }
+
+    /// How many sub-shapes of a shape this session has handed out.
+    pub(crate) fn sub_shape_count(&mut self, shape: u64) -> Result<usize> {
+        let mut count = 0usize;
+        let mut error = RawError::empty();
+        // SAFETY: the out-parameter is valid for the call.
+        let status = unsafe { fc_occt_sub_shape_count(self.raw, shape, &mut count, &mut error) };
+        interpret(status, &error, "counting the sub-shapes a shape has named")?;
+        Ok(count)
+    }
+
+    /// What a cut did to one named sub-shape of one of its inputs.
+    pub(crate) fn cut_carried(
+        &mut self,
+        result: u64,
+        input: u64,
+        input_sub: u64,
+    ) -> Result<(i32, Vec<u64>)> {
+        const WHAT: &str = "reading what a cut did to one of its inputs";
+        let mut kind = 0i32;
+        let mut count = 0usize;
+        let mut error = RawError::empty();
+        // SAFETY: a null buffer with zero capacity is the documented way to
+        // ask for the count; the out-parameters are valid for the call.
+        let status = unsafe {
+            fc_occt_cut_carried(
+                self.raw,
+                result,
+                input,
+                input_sub,
+                &mut kind,
+                std::ptr::null_mut(),
+                0,
+                &mut count,
+                &mut error,
+            )
+        };
+        interpret(status, &error, WHAT)?;
+        if count == 0 {
+            return Ok((kind, Vec::new()));
+        }
+        let mut ids = vec![0u64; count];
+        let mut written = 0usize;
+        // SAFETY: the buffer holds exactly the reported count.
+        let status = unsafe {
+            fc_occt_cut_carried(
+                self.raw,
+                result,
+                input,
+                input_sub,
+                &mut kind,
+                ids.as_mut_ptr(),
+                ids.len(),
+                &mut written,
+                &mut error,
+            )
+        };
+        interpret(status, &error, WHAT)?;
+        if written != ids.len() {
+            return Err(CadError::kernel(format!(
+                "the bridge reported {} sub-shapes and then wrote {written}",
+                ids.len()
+            )));
+        }
+        Ok((kind, ids))
     }
 
     pub(crate) fn side_faces(&mut self, shape: u64, segment_index: usize) -> Result<Vec<u64>> {
@@ -1383,6 +1513,9 @@ mod tests {
             ("FC_OCCT_SEGMENT_CIRCLE", SEGMENT_CIRCLE),
             ("FC_OCCT_SURFACE_PLANE", SURFACE_PLANE),
             ("FC_OCCT_SURFACE_CYLINDER", SURFACE_CYLINDER),
+            ("FC_OCCT_CARRIED_KEPT", CARRIED_KEPT),
+            ("FC_OCCT_CARRIED_MODIFIED", CARRIED_MODIFIED),
+            ("FC_OCCT_CARRIED_DELETED", CARRIED_DELETED),
         ] {
             let found = header.split_once(&format!("{name} = "));
             assert!(found.is_some(), "{name} is declared in the header");

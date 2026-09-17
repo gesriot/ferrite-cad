@@ -7,9 +7,9 @@
 use std::convert::Infallible;
 
 use ferritecad_kernel::{
-    ArchiveSlot, BrepBlob, ExtrudeRequest, ExtrudeResult, FaceSurface, GeometryKernel,
-    KernelIdentity, Mesh, OperationContext, OperationResult, ShapeHandle, SubShapeHandle,
-    TessellationParams,
+    ArchiveSlot, BrepBlob, CutRequest, CutResult, ExtrudeRequest, ExtrudeResult, FaceSurface,
+    GeometryKernel, KernelIdentity, Mesh, OperationContext, OperationResult, ShapeHandle,
+    SubShapeHandle, TessellationParams,
 };
 use ferritecad_types::{CadError, Result, Transform};
 
@@ -81,6 +81,15 @@ impl GeometryKernel for OcctKernel {
         _request: &ExtrudeRequest,
         _context: &OperationContext,
     ) -> Result<ExtrudeResult> {
+        match self.0 {}
+    }
+
+    fn cut(
+        &mut self,
+        _request: &CutRequest,
+        _track: &[SubShapeHandle],
+        _context: &OperationContext,
+    ) -> Result<CutResult> {
         match self.0 {}
     }
 

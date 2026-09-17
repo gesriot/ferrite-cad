@@ -268,6 +268,7 @@ fn write(path: &Path, placement: Transform, sketches: &[Spec<'_>]) {
                             reversed: false,
                             operation: SolidOperation::NewBody,
                             target_body: None,
+                            previous: None,
                         }),
                     )?;
                     w.add_dependency(Dependency {

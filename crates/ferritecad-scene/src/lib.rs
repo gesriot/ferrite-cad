@@ -2726,6 +2726,7 @@ mod tests {
                             reversed: false,
                             operation: SolidOperation::NewBody,
                             target_body: None,
+                            previous: None,
                         }),
                     )?;
                     w.add_dependency(Dependency {
@@ -3169,6 +3170,17 @@ mod tests {
     }
 
     impl GeometryKernel for RefusesMesh {
+        /// Delegated: this double is about something else, and a cut it
+        /// answered differently would be a second kernel.
+        fn cut(
+            &mut self,
+            request: &ferritecad_kernel::CutRequest,
+            track: &[ferritecad_kernel::SubShapeHandle],
+            context: &OperationContext,
+        ) -> Result<ferritecad_kernel::CutResult> {
+            self.inner.cut(request, track, context)
+        }
+
         fn identity(&self) -> &KernelIdentity {
             self.inner.identity()
         }
@@ -4460,6 +4472,17 @@ mod tests {
     }
 
     impl GeometryKernel for StopsAfterBuilding {
+        /// Delegated: this double is about something else, and a cut it
+        /// answered differently would be a second kernel.
+        fn cut(
+            &mut self,
+            request: &ferritecad_kernel::CutRequest,
+            track: &[ferritecad_kernel::SubShapeHandle],
+            context: &OperationContext,
+        ) -> Result<ferritecad_kernel::CutResult> {
+            self.inner.cut(request, track, context)
+        }
+
         fn identity(&self) -> &KernelIdentity {
             self.inner.identity()
         }
@@ -4802,6 +4825,17 @@ mod tests {
     }
 
     impl GeometryKernel for ReversesFaces {
+        /// Delegated: this double is about something else, and a cut it
+        /// answered differently would be a second kernel.
+        fn cut(
+            &mut self,
+            request: &ferritecad_kernel::CutRequest,
+            track: &[ferritecad_kernel::SubShapeHandle],
+            context: &OperationContext,
+        ) -> Result<ferritecad_kernel::CutResult> {
+            self.inner.cut(request, track, context)
+        }
+
         fn identity(&self) -> &KernelIdentity {
             self.inner.identity()
         }
@@ -5022,6 +5056,7 @@ mod tests {
                         reversed: false,
                         operation: SolidOperation::NewBody,
                         target_body: None,
+                        previous: None,
                     }),
                 )?;
                 w.add_dependency(Dependency {
@@ -5092,6 +5127,17 @@ mod tests {
     }
 
     impl GeometryKernel for RaisesTwoFaces {
+        /// Delegated: this double is about something else, and a cut it
+        /// answered differently would be a second kernel.
+        fn cut(
+            &mut self,
+            request: &ferritecad_kernel::CutRequest,
+            track: &[ferritecad_kernel::SubShapeHandle],
+            context: &OperationContext,
+        ) -> Result<ferritecad_kernel::CutResult> {
+            self.inner.cut(request, track, context)
+        }
+
         fn identity(&self) -> &KernelIdentity {
             self.inner.identity()
         }

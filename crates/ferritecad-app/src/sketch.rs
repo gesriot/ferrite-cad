@@ -90,6 +90,10 @@ impl Default for AnnulusState {
 #[derive(Debug, Default)]
 pub(crate) struct Editor {
     pub(crate) constraints: crate::constraints::Editor,
+    /// The circular cut form. Its own editor beside the constraint one: a cut
+    /// is added to a body's history, not to a drawing, and it reads a different
+    /// catalogue of the same pinned reading.
+    pub(crate) cuts: crate::cuts::Editor,
     draft: Option<State>,
     undo: Vec<State>,
     redo: Vec<State>,
@@ -139,6 +143,7 @@ impl Editor {
             || self.editing_circle.is_some()
             || self.editing_annulus.is_some()
             || self.constraints.active()
+            || self.cuts.active()
     }
     pub(crate) fn dismiss(&mut self) {
         *self = Self::default();
@@ -154,6 +159,9 @@ impl Editor {
     }
     pub(crate) fn take_annulus_edit_request(&mut self) -> Option<EditAnnulusRequest> {
         self.pending_annulus_edit.take()
+    }
+    pub(crate) fn take_cut_request(&mut self) -> Option<ferritecad_jobs::CircularCutRequest> {
+        self.cuts.take_request()
     }
     /// Begin editing one saved pair of concentric circles of the accepted scene.
     ///
@@ -393,6 +401,7 @@ impl Editor {
     ) {
         if !self.active() {
             self.constraints.choices(ui, can_begin, path, source);
+            self.cuts.choices(ui, can_begin, path, source);
         }
         if self.active() {
             return;
@@ -609,6 +618,10 @@ impl Editor {
     pub(crate) fn draw(&mut self, ui: &mut egui::Ui, can_begin: bool, running: bool) {
         if self.constraints.active() {
             self.constraints.draw(ui, running);
+            return;
+        }
+        if self.cuts.active() {
+            self.cuts.draw(ui, running);
             return;
         }
         if !self.active() {

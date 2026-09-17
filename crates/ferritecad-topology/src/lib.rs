@@ -25,7 +25,8 @@
 //!
 //! `ExtrudeCap` and `ExtrudeSide`, which is what the current vertical path —
 //! datum, sketch of lines and arcs, extrusion producing a new body — actually
-//! produces. `SketchSegment` and `FilletFace` are refused as
+//! produces, and `CarriedCap`/`CarriedSide`, which is what a boolean leaves of
+//! the feature it consumed. `SketchSegment` and `FilletFace` are refused as
 //! [`CadError::Unsupported`][ferritecad_types::CadError::Unsupported]: the
 //! geometry kernel does not yet emit a shape for a sketch on its own, and
 //! inventing a handle for one would be a name with nothing behind it.
@@ -37,5 +38,5 @@ mod resolve;
 
 pub use archive::{ArchivedFeature, BoundName, archive_feature, restore_feature};
 pub use codec::ARCHIVE_CACHE_KIND;
-pub use map::{FeatureNames, RestoredNames, TopologyMap};
+pub use map::{CarriedName, FeatureNames, RestoredNames, TopologyMap};
 pub use resolve::resolve;

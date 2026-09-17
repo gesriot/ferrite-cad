@@ -35,9 +35,11 @@ pub const SUPPORTED_CAPABILITIES: &[&str] = &[
     "exchange.step.imported.v1",
     "sketch.constraints.v1",
     "sketch.constraints.circle.v1",
+    "feature.predecessor.v1",
     "topology.extrude-cap-edge.v1",
     "topology.extrude-sweep-edge.v1",
     "topology.extrude-cap-vertex.v1",
+    "topology.carried-face.v1",
 ];
 
 /// `PRAGMA application_id` for a document: the ASCII bytes `FCAD`.

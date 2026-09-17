@@ -128,6 +128,7 @@ fn populate(document: &mut Document, height: f64, order: &[usize]) -> Result<Pla
                 reversed: false,
                 operation: SolidOperation::NewBody,
                 target_body: None,
+                previous: None,
             }),
         )?;
         w.add_dependency(Dependency {
@@ -165,6 +166,7 @@ fn populate(document: &mut Document, height: f64, order: &[usize]) -> Result<Pla
                 reversed: false,
                 operation: SolidOperation::NewBody,
                 target_body: None,
+                previous: None,
             }),
         )?;
         w.add_dependency(Dependency {
@@ -468,8 +470,27 @@ fn a_later_failure_releases_what_the_cache_restored() {
             _ => None,
         })
         .expect("the second extrusion exists");
+    // Initially these are independent bodies. Once the second feature
+    // consumes the first, only its body may own the combined history.
+    assert_eq!(
+        document
+            .objects()
+            .expect("reads objects")
+            .into_iter()
+            .find_map(|object| match object.payload {
+                ObjectPayload::Body(body) if object.id == plate.body => Some(body.tip_feature),
+                _ => None,
+            }),
+        Some(Some(plate.extrude))
+    );
+
+    // Said the way this build says it: a feature that changes an existing
+    // solid names the *feature* whose result it changes. Naming the body
+    // instead would close the loop the body's own tip edge opens, and the
+    // document would fail to order rather than reaching the conversion this
+    // test is about.
     unsupported.operation = SolidOperation::Add;
-    unsupported.target_body = Some(plate.body);
+    unsupported.previous = Some(plate.extrude);
     document
         .write(|w| {
             w.put_object(
@@ -481,11 +502,28 @@ fn a_later_failure_releases_what_the_cache_restored() {
             )?;
             w.add_dependency(Dependency {
                 dependent: plate.second,
-                dependency: plate.body,
-                role: DependencyRole::TargetBody,
+                dependency: plate.extrude,
+                role: DependencyRole::Predecessor,
+            })?;
+            w.put_object(
+                plate.body,
+                None,
+                3,
+                Some("Plate"),
+                &ObjectPayload::Body(Body { tip_feature: None }),
+            )?;
+            w.remove_dependency(Dependency {
+                dependent: plate.body,
+                dependency: plate.extrude,
+                role: DependencyRole::BodyTip,
             })
         })
         .expect("writes");
+    let report = document.validate().expect("validates");
+    assert!(
+        report.is_ok(),
+        "the failure must follow cache restoration: {report:?}"
+    );
 
     let mut kernel = MockKernel::new();
     let mut cache = store(dir.path(), &kernel, document_id);

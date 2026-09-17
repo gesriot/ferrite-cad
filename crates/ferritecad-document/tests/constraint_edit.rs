@@ -51,6 +51,7 @@ fn fixture() -> (tempfile::TempDir, Document, ObjectId) {
                     reversed: false,
                     operation: SolidOperation::NewBody,
                     target_body: None,
+                    previous: None,
                 }),
             ),
             (

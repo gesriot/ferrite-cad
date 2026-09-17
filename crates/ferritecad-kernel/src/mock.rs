@@ -19,9 +19,9 @@ use crate::context::OperationContext;
 use crate::handle::{SessionId, ShapeHandle, SubShapeHandle, SubShapeKind};
 use crate::identity::KernelIdentity;
 use crate::kernel::GeometryKernel;
-use crate::request::{ExtrudeExtent, ExtrudeRequest, TessellationParams};
+use crate::request::{CutRequest, ExtrudeExtent, ExtrudeRequest, TessellationParams};
 use crate::result::{
-    ArchiveSlot, BrepBlob, ExtrudeResult, History, HistoryInput, Mesh, MeshFaceRange,
+    ArchiveSlot, BrepBlob, CutResult, ExtrudeResult, History, HistoryInput, Mesh, MeshFaceRange,
     OperationResult,
 };
 
@@ -347,6 +347,25 @@ impl GeometryKernel for MockKernel {
             // And no edges along the sweep either, for the same reason.
             sweep_edges: BTreeMap::new(),
         })
+    }
+
+    /// Refused, honestly.
+    ///
+    /// This kernel is polygon arithmetic: it has no surface intersection, so
+    /// there is no boolean it could compute. Returning the target unchanged, or
+    /// a bounding box with a notch in it, would let every layer above be tested
+    /// against a cut that never happened — which is exactly the kind of green
+    /// test this double exists to avoid.
+    fn cut(
+        &mut self,
+        _request: &CutRequest,
+        _track: &[SubShapeHandle],
+        context: &OperationContext,
+    ) -> Result<CutResult> {
+        context.check_cancelled()?;
+        Err(CadError::unsupported(
+            "the mock kernel computes prisms and implements no boolean; a cut needs a real kernel",
+        ))
     }
 
     fn transform(

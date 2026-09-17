@@ -663,7 +663,30 @@ fn native_constraint_copy_process_solves_slanted_h_v_and_removes_exact_ids() {
         assert_eq!(choice["available"], true);
         assert_eq!(after["sketches"][0]["editable"], false);
         assert_eq!(after["features"], f.catalog["features"]);
-        assert_eq!(after["bodies"], f.catalog["bodies"]);
+        // Identity and name, not the whole row: a body also reports whether
+        // another operation would accept it, and constraining this profile
+        // honestly changes that answer. The identity is what a constraint edit
+        // promises to keep.
+        let identities = |value: &Value| -> Vec<Value> {
+            value
+                .as_array()
+                .expect("bodies")
+                .iter()
+                .map(|body| json!({"body_id": body["body_id"], "name": body["name"]}))
+                .collect()
+        };
+        assert_eq!(
+            identities(&after["bodies"]),
+            identities(&f.catalog["bodies"])
+        );
+        assert_eq!(after["bodies"][0]["cut_edit"]["available"], false);
+        assert!(
+            after["bodies"][0]["cut_edit"]["refusal"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("unconstrained")),
+            "a constrained profile refuses the cut route for its own reason: {:?}",
+            after["bodies"][0]["cut_edit"]["refusal"]
+        );
         geometry(&out, h);
         let constraint = &choice["constraints"][4]["constraint_id"];
         write(

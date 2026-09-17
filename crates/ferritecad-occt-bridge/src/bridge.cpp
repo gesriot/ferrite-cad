@@ -35,6 +35,7 @@
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <gp_Circ.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <IFSelect_PrintCount.hxx>
 #include <IFSelect_ReturnStatus.hxx>
@@ -156,6 +157,18 @@ struct ShapeRecord {
   /// Identifier to sub-shape. The identifiers mean nothing outside this
   /// session, which is exactly what the Rust side promises about them.
   std::vector<TopoDS_Shape> sub_shapes;
+  /// What a boolean did to each registered sub-shape of each of its inputs.
+  ///
+  /// Filled by fc_occt_cut and read by fc_occt_cut_carried. It lives on the
+  /// *result* record because that is what the answers are about, and it is
+  /// computed while the algorithm object is alive: Open CASCADE can say what
+  /// became of an input only for as long as the operation exists, and a layer
+  /// that asked afterwards would have to match geometry instead of reading
+  /// history.
+  ///
+  /// Keyed by (input shape identifier, that shape's sub-shape index).
+  std::map<std::pair<uint64_t, uint64_t>, std::pair<int32_t, std::vector<uint64_t>>>
+      carried;
 
   uint64_t remember(const TopoDS_Shape &sub) {
     // The same OCCT face can be reported through more than one route. It must
@@ -941,6 +954,191 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
   });
 }
 
+FcOcctStatus fc_occt_cut(FcOcctSession *session, uint64_t target, uint64_t tool,
+                         FcOcctCancelFn cancel, void *cancel_context,
+                         uint64_t *out_shape, double *out_removed_volume,
+                         FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr || out_shape == nullptr ||
+        out_removed_volume == nullptr) {
+      write_error(out_error, "fc_occt_cut was given a null argument");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    if (target == tool) {
+      write_error(out_error, "a cut needs two different shapes");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const auto target_found = session->shapes.find(target);
+    if (target_found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(target) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    const auto tool_found = session->shapes.find(tool);
+    if (tool_found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(tool) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    if (cancelled(cancel, cancel_context)) {
+      write_error(out_error, "the cut was cancelled before it began");
+      return FC_OCCT_CANCELLED;
+    }
+
+    // Measured before, so "this removed material" is a difference rather than
+    // a guess about what a smaller number means.
+    GProp_GProps before;
+    BRepGProp::VolumeProperties(target_found->second.shape, before);
+
+    BRepAlgoAPI_Cut algorithm;
+    // Earlier feature results remain live and may be archived or resolved
+    // after this operation. Copy any sub-shape the boolean needs to update.
+    algorithm.SetNonDestructive(true);
+    TopTools_ListOfShape arguments;
+    arguments.Append(target_found->second.shape);
+    TopTools_ListOfShape tools;
+    tools.Append(tool_found->second.shape);
+    algorithm.SetArguments(arguments);
+    algorithm.SetTools(tools);
+    Handle(CancelIndicator) indicator = new CancelIndicator(cancel, cancel_context);
+    Message_ProgressRange range = indicator->Start();
+    algorithm.Build(range);
+
+    if (cancelled(cancel, cancel_context)) {
+      write_error(out_error, "the cut was cancelled");
+      return FC_OCCT_CANCELLED;
+    }
+    if (!algorithm.IsDone()) {
+      std::ostringstream reported;
+      algorithm.DumpErrors(reported);
+      const std::string detail = reported.str();
+      write_error(out_error, detail.empty()
+                                 ? "the boolean did not complete"
+                                 : "the boolean did not complete: " + detail);
+      return FC_OCCT_KERNEL;
+    }
+
+    const TopoDS_Shape &produced = algorithm.Shape();
+    if (produced.IsNull()) {
+      write_error(out_error, "the boolean produced nothing");
+      return FC_OCCT_KERNEL;
+    }
+    // Exactly one solid. Nothing left is a tool that swallowed the part;
+    // several is a cut that split it, and neither is a result a body could
+    // become without this layer choosing on the caller's behalf.
+    TopTools_IndexedMapOfShape solids;
+    TopExp::MapShapes(produced, TopAbs_SOLID, solids);
+    if (solids.Extent() != 1) {
+      write_error(out_error,
+                  "a cut must leave exactly one solid, and this left " +
+                      std::to_string(solids.Extent()));
+      return FC_OCCT_UNSUPPORTED;
+    }
+    const TopoDS_Shape result_shape = solids(1);
+    BRepCheck_Analyzer analyzer(result_shape);
+    if (!analyzer.IsValid()) {
+      write_error(out_error, "the cut produced a solid Open CASCADE calls invalid");
+      return FC_OCCT_KERNEL;
+    }
+
+    GProp_GProps after;
+    BRepGProp::VolumeProperties(result_shape, after);
+    const double removed = before.Mass() - after.Mass();
+    if (!std::isfinite(removed) || removed <= 0.0) {
+      write_error(out_error,
+                  "the tool removed no material, so this is not a cut");
+      return FC_OCCT_UNSUPPORTED;
+    }
+
+    ShapeRecord record;
+    record.shape = result_shape;
+
+    // What became of every name either input already had. Asked now, while the
+    // algorithm is alive, and for every registered sub-shape rather than a
+    // chosen few: which of them the caller cares about is the caller's
+    // business, and re-running the boolean to answer a later question would be
+    // a second operation with its own answers.
+    TopTools_IndexedMapOfShape result_faces;
+    TopExp::MapShapes(result_shape, TopAbs_FACE, result_faces);
+    TopTools_IndexedMapOfShape result_edges;
+    TopExp::MapShapes(result_shape, TopAbs_EDGE, result_edges);
+    TopTools_IndexedMapOfShape result_vertices;
+    TopExp::MapShapes(result_shape, TopAbs_VERTEX, result_vertices);
+    const auto in_result = [&](const TopoDS_Shape &candidate) {
+      switch (candidate.ShapeType()) {
+      case TopAbs_FACE:
+        return result_faces.FindIndex(candidate) != 0;
+      case TopAbs_EDGE:
+        return result_edges.FindIndex(candidate) != 0;
+      case TopAbs_VERTEX:
+        return result_vertices.FindIndex(candidate) != 0;
+      default:
+        return false;
+      }
+    };
+
+    for (uint64_t input : {target, tool}) {
+      const ShapeRecord &source = session->shapes.find(input)->second;
+      for (size_t i = 0; i < source.sub_shapes.size(); ++i) {
+        const TopoDS_Shape &sub = source.sub_shapes[i];
+        if (sub.IsNull()) {
+          continue;
+        }
+        std::vector<uint64_t> outputs;
+        int32_t kind = FC_OCCT_CARRIED_DELETED;
+        if (!algorithm.IsDeleted(sub)) {
+          const TopTools_ListOfShape &changed = algorithm.Modified(sub);
+          if (!changed.IsEmpty()) {
+            kind = FC_OCCT_CARRIED_MODIFIED;
+            for (TopTools_ListOfShape::Iterator it(changed); it.More();
+                 it.Next()) {
+              if (in_result(it.Value())) {
+                outputs.push_back(record.remember(it.Value()));
+              }
+            }
+            // Everything the algorithm named is outside the solid it produced.
+            // Reporting it as modified would hand out names pointing at
+            // geometry this shape does not have.
+            if (outputs.empty()) {
+              kind = FC_OCCT_CARRIED_DELETED;
+            }
+          } else if (in_result(sub)) {
+            kind = FC_OCCT_CARRIED_KEPT;
+            outputs.push_back(record.remember(sub));
+          }
+        }
+        record.carried.emplace(std::make_pair(input, static_cast<uint64_t>(i)),
+                               std::make_pair(kind, std::move(outputs)));
+      }
+    }
+
+    const uint64_t id = session->next_shape++;
+    session->shapes.emplace(id, std::move(record));
+    *out_shape = id;
+    *out_removed_volume = removed;
+    return FC_OCCT_OK;
+  });
+}
+
+FcOcctStatus fc_occt_sub_shape_count(FcOcctSession *session, uint64_t shape,
+                                     size_t *out_count,
+                                     FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr || out_count == nullptr) {
+      write_error(out_error, "fc_occt_sub_shape_count was given a null argument");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    *out_count = found->second.sub_shapes.size();
+    return FC_OCCT_OK;
+  });
+}
+
 namespace {
 
 FcOcctStatus copy_ids(const std::vector<uint64_t> &ids, uint64_t *out_ids,
@@ -967,6 +1165,37 @@ FcOcctStatus copy_ids(const std::vector<uint64_t> &ids, uint64_t *out_ids,
 }
 
 } // namespace
+
+FcOcctStatus fc_occt_cut_carried(FcOcctSession *session, uint64_t result,
+                                 uint64_t input, uint64_t input_sub,
+                                 int32_t *out_kind, uint64_t *out_ids,
+                                 size_t capacity, size_t *out_count,
+                                 FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr || out_kind == nullptr) {
+      write_error(out_error, "fc_occt_cut_carried was given a null argument");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const auto found = session->shapes.find(result);
+    if (found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(result) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    const auto answer =
+        found->second.carried.find(std::make_pair(input, input_sub));
+    if (answer == found->second.carried.end()) {
+      write_error(out_error, "shape " + std::to_string(result) +
+                                 " has no boolean history for sub-shape " +
+                                 std::to_string(input_sub) + " of shape " +
+                                 std::to_string(input));
+      return FC_OCCT_INVALID_INPUT;
+    }
+    *out_kind = answer->second.first;
+    return copy_ids(answer->second.second, out_ids, capacity, out_count,
+                    out_error);
+  });
+}
 
 FcOcctStatus fc_occt_extrude_side_faces(FcOcctSession *session, uint64_t shape,
                                         size_t segment_index,
