@@ -1652,3 +1652,128 @@ mod tests {
         assert!(mesh.validate().is_err());
     }
 }
+
+/// What a boolean did to one sub-shape of one of its inputs.
+///
+/// Four different facts, and they are kept apart because a naming layer has to
+/// act differently on each. A face that survived untouched keeps its name; a
+/// face that came back altered keeps its name and different geometry; a face
+/// the boolean removed has no counterpart, and saying so is what stops a
+/// reference resolving to whatever is nearest; and a face the kernel answered
+/// for more than once is an ambiguity nobody may resolve by taking the first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum CarriedOutcome {
+    /// The boolean returned this input unchanged, as itself.
+    Kept,
+    /// The input survives as different geometry.
+    Modified,
+    /// The input has no counterpart in the result.
+    Deleted,
+}
+
+impl CarriedOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Kept => "kept",
+            Self::Modified => "modified",
+            Self::Deleted => "deleted",
+        }
+    }
+}
+
+/// The result of a boolean that removes one shape's material from another.
+///
+/// `history` is keyed by [`HistoryInput::SubShape`] of the *inputs*, so a
+/// caller that knew what it called a face of the target or of the tool can ask
+/// what became of it. Nothing here is positional: the kernel never reports "the
+/// third face", and a caller could not read one if it did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CutResult {
+    pub shape: ShapeHandle,
+    pub history: History,
+    /// The outcome the kernel reported for each input sub-shape it was asked
+    /// about, whether or not that outcome produced geometry.
+    ///
+    /// Beside `history` rather than inside it: history says which outputs came
+    /// from which input, and this says what *sort* of answer that was. A face
+    /// reported `Kept` and one reported `Modified` can both have exactly one
+    /// output, and a layer that had to tell them apart by counting would be
+    /// guessing.
+    pub carried: BTreeMap<SubShapeHandle, CarriedOutcome>,
+    /// How much material the boolean actually removed, in cubic millimetres.
+    ///
+    /// Reported rather than inferred. "The result is smaller than the target"
+    /// is the one claim a cut makes that a face count cannot support, and a
+    /// tool that missed the target entirely produces a perfectly valid solid
+    /// which happens to be the target again.
+    pub removed_volume: f64,
+}
+
+impl CutResult {
+    /// Checks the naming a consumer is entitled to assume.
+    ///
+    /// Every output belongs to the result; every input the outcomes speak
+    /// about belongs to one of the two inputs the caller named; and an outcome
+    /// that claims geometry has some, while one that claims none has none.
+    pub fn validate(&self, target: ShapeHandle, tool: ShapeHandle) -> Result<()> {
+        for input in self.history.inputs() {
+            let HistoryInput::SubShape(sub) = input else {
+                return Err(CadError::kernel(
+                    "a boolean's history is about sub-shapes of its inputs, not profile segments",
+                ));
+            };
+            if sub.shape() != target && sub.shape() != tool {
+                return Err(CadError::kernel(format!(
+                    "the cut history names {sub}, which belongs to neither input"
+                )));
+            }
+            for output in self
+                .history
+                .generated(input)
+                .chain(self.history.modified(input))
+            {
+                if output.shape() != self.shape {
+                    return Err(CadError::kernel(format!(
+                        "the cut reported {output} for {sub}, which belongs to another shape \
+                         than {}",
+                        self.shape
+                    )));
+                }
+            }
+        }
+
+        for (sub, outcome) in &self.carried {
+            if sub.shape() != target && sub.shape() != tool {
+                return Err(CadError::kernel(format!(
+                    "the cut reported an outcome for {sub}, which belongs to neither input"
+                )));
+            }
+            let input = HistoryInput::SubShape(*sub);
+            let produced =
+                self.history.modified(input).count() + self.history.generated(input).count();
+            match outcome {
+                CarriedOutcome::Deleted if produced != 0 => {
+                    return Err(CadError::kernel(format!(
+                        "the cut called {sub} deleted and also reported {produced} outputs for it"
+                    )));
+                }
+                CarriedOutcome::Kept | CarriedOutcome::Modified if produced == 0 => {
+                    return Err(CadError::kernel(format!(
+                        "the cut called {sub} {} and reported no geometry for it",
+                        outcome.as_str()
+                    )));
+                }
+                _ => {}
+            }
+        }
+
+        if !self.removed_volume.is_finite() || self.removed_volume <= 0.0 {
+            return Err(CadError::kernel(format!(
+                "the cut removed {} mm³, so it is not a cut",
+                self.removed_volume
+            )));
+        }
+        Ok(())
+    }
+}

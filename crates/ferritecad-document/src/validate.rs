@@ -15,7 +15,7 @@ use ferritecad_types::{ContentHash, ObjectId, Result};
 
 use crate::document::Document;
 use crate::graph::{DependencyRole, evaluation_order};
-use crate::model::{ObjectKind, ObjectPayload};
+use crate::model::{ObjectKind, ObjectPayload, SolidOperation};
 use crate::schema::FORMAT_VERSION;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -132,6 +132,7 @@ pub(crate) fn validate(document: &Document) -> Result<ValidationReport> {
         report.error("imported-source.unreachable", None, error.to_string());
     }
     check_parent_cycles(&objects, &mut report);
+    check_feature_history(&objects, &mut report);
 
     // Ordering subsumes the cycle and dangling-edge checks, and reports which
     // objects are involved rather than merely that something is wrong.
@@ -359,6 +360,80 @@ fn check_semantic_references(
                     report,
                 );
             }
+            // What a feature consumes and which body owns it are two different
+            // facts, and only the first belongs to the feature. Saying both
+            // would be two answers to one question, and the second of them
+            // is what makes the graph impossible to order.
+            if extrude.previous.is_some() && extrude.target_body.is_some() {
+                report.error(
+                    "feature.two-inputs",
+                    Some(object.id),
+                    format!(
+                        "feature {} names both a predecessor and a target body; the body it                          belongs to is the body's own statement",
+                        object.id
+                    ),
+                );
+            }
+            match (extrude.operation, extrude.previous) {
+                (SolidOperation::NewBody, Some(previous)) => report.error(
+                    "feature.unused-predecessor",
+                    Some(object.id),
+                    format!(
+                        "feature {} starts a body and also names {previous} as the result it                          modifies",
+                        object.id
+                    ),
+                ),
+                (SolidOperation::NewBody, None) => {}
+                (_, None) => report.error(
+                    "feature.missing-predecessor",
+                    Some(object.id),
+                    format!(
+                        "feature {} modifies an existing solid but names no earlier feature",
+                        object.id
+                    ),
+                ),
+                (_, Some(previous)) if previous == object.id => report.error(
+                    "feature.self-predecessor",
+                    Some(object.id),
+                    format!("feature {} names itself as the result it modifies", object.id),
+                ),
+                (_, Some(previous)) => {
+                    match by_id.get(&previous) {
+                        None => report.error(
+                            "reference.missing-target",
+                            Some(object.id),
+                            format!(
+                                "feature {} modifies missing feature {previous}",
+                                object.id
+                            ),
+                        ),
+                        Some(found)
+                            if !found.payload.kind().is_some_and(ObjectKind::is_feature) =>
+                        {
+                            report.error(
+                                "reference.wrong-kind",
+                                Some(object.id),
+                                format!(
+                                    "feature {} expects {previous} to be a feature, found {}",
+                                    object.id,
+                                    found.payload.type_name()
+                                ),
+                            );
+                        }
+                        Some(_) => {}
+                    }
+                    if !edges.contains(&(object.id, previous, DependencyRole::Predecessor)) {
+                        report.error(
+                            "reference.missing-edge",
+                            Some(object.id),
+                            format!(
+                                "feature {} modifies {previous} but no predecessor dependency                                  records it",
+                                object.id
+                            ),
+                        );
+                    }
+                }
+            }
         }
         ObjectPayload::Body(body) => {
             if let Some(tip) = body.tip_feature {
@@ -394,6 +469,105 @@ fn check_semantic_references(
             }
         }
         _ => {}
+    }
+}
+
+/// A feature history is a chain, and every body has at most one of them.
+///
+/// Two features that both modify the same earlier result would be two versions
+/// of one body, and nothing in this build says which of them the body is. Two
+/// bodies naming one tip would be one solid shown twice. Both are refused here
+/// rather than at the evaluator, because they are facts about what the document
+/// says and not about what a kernel would do with it.
+fn check_feature_history(objects: &[crate::document::ObjectRecord], report: &mut ValidationReport) {
+    let mut consumers: BTreeMap<ObjectId, Vec<ObjectId>> = BTreeMap::new();
+    let mut owners: BTreeMap<ObjectId, Vec<ObjectId>> = BTreeMap::new();
+    for object in objects {
+        match &object.payload {
+            ObjectPayload::Extrude(extrude) => {
+                if let Some(previous) = extrude.previous {
+                    consumers.entry(previous).or_default().push(object.id);
+                }
+            }
+            ObjectPayload::Body(body) => {
+                if let Some(tip) = body.tip_feature {
+                    owners.entry(tip).or_default().push(object.id);
+                }
+            }
+            _ => {}
+        }
+    }
+    for (feature, mut claimants) in consumers {
+        if claimants.len() > 1 {
+            claimants.sort_unstable();
+            report.error(
+                "feature.forked-history",
+                Some(feature),
+                format!(
+                    "features {} all modify {feature}, and a body has one history rather than                      several",
+                    claimants
+                        .iter()
+                        .map(ObjectId::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+        }
+    }
+    for (feature, mut bodies) in owners {
+        if bodies.len() > 1 {
+            bodies.sort_unstable();
+            report.error(
+                "body.shared-tip",
+                Some(feature),
+                format!(
+                    "bodies {} all expose {feature} as their tip, so one solid would appear as                      several",
+                    bodies
+                        .iter()
+                        .map(ObjectId::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
+        }
+    }
+
+    // Different tips can still own the same history. Stop at an already
+    // visited feature, both to avoid traversing a shared suffix repeatedly and
+    // to leave malformed cycles to the existing graph validator.
+    let predecessors: BTreeMap<_, _> = objects
+        .iter()
+        .filter_map(|object| {
+            if let ObjectPayload::Extrude(extrude) = &object.payload {
+                Some((object.id, extrude.previous))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let mut history_owners = BTreeMap::new();
+    for object in objects {
+        let ObjectPayload::Body(body) = &object.payload else {
+            continue;
+        };
+        let mut current = body.tip_feature;
+        while let Some(feature) = current {
+            if let Some(other) = history_owners.get(&feature) {
+                if *other != object.id {
+                    report.error(
+                        "body.shared-history",
+                        Some(feature),
+                        format!(
+                            "bodies {other} and {} both own feature {feature} through their tips",
+                            object.id,
+                        ),
+                    );
+                }
+                break;
+            }
+            history_owners.insert(feature, object.id);
+            current = predecessors.get(&feature).copied().flatten();
+        }
     }
 }
 

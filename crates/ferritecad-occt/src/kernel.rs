@@ -3,11 +3,11 @@ use std::collections::BTreeMap;
 
 use ferritecad_exchange::Import;
 use ferritecad_kernel::{
-    ArchiveSlot, BrepBlob, ExtrudeExtent, ExtrudeRequest, ExtrudeResult, FaceSurface,
-    GeometryKernel, History, HistoryInput, KernelIdentity, Mesh, MeshEdgeRange, MeshEdges,
-    MeshFaceRange, MeshVertexRange, MeshVertices, OperationContext, ProfileLoop, ProfileSegment,
-    SegmentGeometry, SessionId, ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind,
-    TessellationParams,
+    ArchiveSlot, BrepBlob, CarriedOutcome, CutRequest, CutResult, ExtrudeExtent, ExtrudeRequest,
+    ExtrudeResult, FaceSurface, GeometryKernel, History, HistoryInput, KernelIdentity, Mesh,
+    MeshEdgeRange, MeshEdges, MeshFaceRange, MeshVertexRange, MeshVertices, OperationContext,
+    ProfileLoop, ProfileSegment, SegmentGeometry, SessionId, ShapeHandle, SketchPlane,
+    SubShapeHandle, SubShapeKind, TessellationParams,
 };
 use ferritecad_types::{CadError, ContentHash, ProfileJoint, Result, Transform};
 
@@ -506,6 +506,92 @@ impl GeometryKernel for OcctKernel {
             self.session.release(raw);
         }
         assembled
+    }
+
+    fn cut(
+        &mut self,
+        request: &CutRequest,
+        track: &[SubShapeHandle],
+        context: &OperationContext,
+    ) -> Result<CutResult> {
+        context.check_cancelled()?;
+        let target = self.raw(request.target())?;
+        let tool = self.raw(request.tool())?;
+
+        // Every tracked sub-shape must belong to one of the two inputs. A
+        // handle from a third shape would be answered about by index — the
+        // bridge keys its history by (shape, index) — and would silently
+        // describe somebody else's face.
+        for sub in track {
+            if sub.shape() != request.target() && sub.shape() != request.tool() {
+                return Err(CadError::input(format!(
+                    "{sub} belongs to neither input of this cut"
+                )));
+            }
+            let owner = self.raw(sub.shape())?;
+            if sub.index() >= self.session.sub_shape_count(owner)? as u64 {
+                return Err(CadError::input(format!(
+                    "{sub} was never handed out by this session"
+                )));
+            }
+        }
+
+        context.progress().report(0.0);
+        let (raw, removed_volume) = self.session.cut(target, tool, context.cancel())?;
+        context.progress().report(1.0);
+
+        let shape = ShapeHandle::new(self.session_id, raw);
+        let assembled = (|| -> Result<CutResult> {
+            // A progress callback may cancel at the completion report, by which
+            // point the bridge has already handed over a shape.
+            context.check_cancelled()?;
+
+            let mut history = History::new();
+            let mut carried = BTreeMap::new();
+            for sub in track {
+                let owner = self.raw(sub.shape())?;
+                let (kind, ids) = self.session.cut_carried(raw, owner, sub.index())?;
+                let outcome = match kind {
+                    ffi::CARRIED_KEPT => CarriedOutcome::Kept,
+                    ffi::CARRIED_MODIFIED => CarriedOutcome::Modified,
+                    ffi::CARRIED_DELETED => CarriedOutcome::Deleted,
+                    other => {
+                        return Err(CadError::kernel(format!(
+                            "the bridge described a boolean outcome as {other}, which this build                              has no reading of"
+                        )));
+                    }
+                };
+                // The kind travels with the sub-shape it is about: a face of
+                // the target stays a face of the result, and an edge an edge.
+                // The bridge answers with identifiers into the result's own
+                // table, and nothing here re-decides what sort of geometry one
+                // of them is.
+                for id in ids {
+                    history.record_modified(
+                        HistoryInput::SubShape(*sub),
+                        SubShapeHandle::new(shape, sub.kind(), id),
+                    );
+                }
+                carried.insert(*sub, outcome);
+            }
+
+            let result = CutResult {
+                shape,
+                history,
+                carried,
+                removed_volume,
+            };
+            result.validate(request.target(), request.tool())?;
+            Ok(result)
+        })();
+
+        match assembled {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                self.session.release(raw);
+                Err(error)
+            }
+        }
     }
 
     fn transform(

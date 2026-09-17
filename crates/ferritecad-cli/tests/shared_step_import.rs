@@ -107,6 +107,14 @@ impl GeometryKernel for ObservedKernel {
     fn extrude(&mut self, r: &ExtrudeRequest, c: &OperationContext) -> Result<ExtrudeResult> {
         self.inner.extrude(r, c)
     }
+    fn cut(
+        &mut self,
+        r: &ferritecad_kernel::CutRequest,
+        track: &[ferritecad_kernel::SubShapeHandle],
+        c: &OperationContext,
+    ) -> Result<ferritecad_kernel::CutResult> {
+        self.inner.cut(r, track, c)
+    }
     fn transform(
         &mut self,
         s: ShapeHandle,

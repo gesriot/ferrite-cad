@@ -34,7 +34,7 @@ stdout-логов рядом нет. Диагностика для челове�
 | Поле | Тип и правило |
 | --- | --- |
 | `schema_version` | integer, сейчас ровно `1` |
-| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate`, `create-sketch-extrude`, `create-circle-extrude`, `create-annular-extrude`, `edit-sketch-copy`, `edit-circle`, `edit-annular` или `edit-sketch-constraints-copy` |
+| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate`, `create-sketch-extrude`, `create-circle-extrude`, `create-annular-extrude`, `edit-sketch-copy`, `edit-circle`, `edit-annular`, `edit-sketch-constraints-copy` или `cut-circular-copy` |
 | `ok` | boolean |
 | `result` | объект соответствующей операции, присутствует только при `ok: true` |
 | `error` | объект ошибки, присутствует только при `ok: false` |
@@ -146,6 +146,41 @@ Line-редакторами (`editable:false`), и редактором окру
 цилиндрические поверхности радиусов R и r. Точные ограничения, числовая policy,
 границы аналитического B-Rep и тесселяции и запускаемый рецепт:
 [окружность с отверстием → Extrude → FCAD](annular-sketch-extrude.md).
+
+## Первый Cut в существующем Body (§26A)
+
+`ferritecad cut-circular-copy <source.fcad> --body UUID --expect-version HASH
+--request <request.json> -o <copy.fcad> [--json]` — отдельная opt-in команда с
+тем же envelope. `operation:"cut-circular-copy"`, result с обязательными
+`destination`, `document_id`, `body_id`, `feature_id`, `sketch_id`,
+`tool_curve_id` и `previous_feature_id` после cold-check и publish, exit 0;
+operational error/exit 2; потеря отчёта/exit 7 — публикация могла состояться,
+копия цела, повторять операцию без проверки назначения нельзя. Прежние команды и
+их поля не меняются.
+
+Request v1 — строго четыре поля, `request_version` (единственное написание
+версии этой команды):
+
+```json
+{"request_version":1,"center_mm":[20.0,15.0],"radius_mm":5.0,"depth_mm":10.0}
+```
+
+`center_mm` — ровно две конечные координаты инструмента в mm **на собственной
+базовой XY-плоскости детали**; поля для другой плоскости или для грани здесь
+нет, потому что этот срез ни к чему не привязывается. `radius_mm` — конечный
+строго положительный радиус. `depth_mm` — конечная строго положительная глубина
+вдоль +Z, не больше высоты детали; флага «насквозь» нет, сквозное отверстие
+получается, когда числа так говорят. Инструмент обязан отстоять от каждой стороны
+детали строго больше чем на линейный допуск ядра.
+
+`inspect --json` получает у каждой строки `bodies` аддитивное `cut_edit` с
+`available`/`refusal`/`document_refusal` и `target`, который называет Body,
+плоскость, фичу-предшественника, Sketch профиля, высоту, габариты детали,
+направление и требуемый зазор — или `null` для неподдержанного Body. Прежние
+поля `bodies`, `features` и `sketches` не меняются. Discovery и структурные
+отказы работают в сборке без ядра; применение правки без ядра отказывается.
+Точные ограничения, семантика истории, правила UI/writer и запускаемый рецепт:
+[первый Cut в существующем Body](circular-cut-copy.md).
 
 ## Правка сохранённой кольцевой пары (§25M)
 

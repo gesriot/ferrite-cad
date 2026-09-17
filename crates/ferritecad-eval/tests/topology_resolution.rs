@@ -118,6 +118,7 @@ fn populate(document: &mut Document, height: f64, order: &[usize]) -> Result<Pla
                 reversed: false,
                 operation: SolidOperation::NewBody,
                 target_body: None,
+                previous: None,
             }),
         )?;
         w.add_dependency(Dependency {
@@ -248,6 +249,7 @@ fn changing_the_extrusion_height_keeps_the_names_though_the_handles_change() {
                     reversed: false,
                     operation: SolidOperation::NewBody,
                     target_body: None,
+                    previous: None,
                 }),
             )?;
             Ok(())

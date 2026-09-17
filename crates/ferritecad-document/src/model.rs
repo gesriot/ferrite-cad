@@ -103,6 +103,36 @@ pub const SKETCH_CONSTRAINTS_CAPABILITY: &str = "sketch.constraints.v1";
 /// still a v1 sketch that any build can rewrite.
 pub const SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY: &str = "sketch.constraints.circle.v1";
 
+/// The capability a reference to a face carried through a boolean depends on.
+///
+/// `CarriedCap` and `CarriedSide` are roles a build written before booleans
+/// cannot decode, and a topology reference is decoded to be resolved. Declaring
+/// the capability is what turns that into a read-only document with a stated
+/// reason rather than a failed read of one row.
+pub const TOPOLOGY_CARRIED_FACE_CAPABILITY: &str = "topology.carried-face.v1";
+
+/// The capability a feature that consumes another feature's result depends on.
+///
+/// # Why a new name and a new layout, rather than an optional field
+///
+/// `previous` is `Option<ObjectId>` and serialises away when it is `None`, so a
+/// build written before it existed decodes a feature that has one, ignores the
+/// field, and — the moment it writes that object back — produces a feature that
+/// starts a body of its own out of nowhere. The history would still look
+/// plausible and the solid would be wrong.
+///
+/// So the layout moves with the meaning. A feature holding a predecessor is
+/// stored at payload v2, which is not in
+/// [`ObjectKind::readable_schema_versions`] for any build that predates this
+/// one: that build preserves the object verbatim and opens the document
+/// read-only, which is the refusal that actually protects the data. The
+/// capability is what makes the *reason* legible — in the `capabilities` table,
+/// at open-time negotiation, and to a person reading either.
+///
+/// Declared only by a feature that actually holds one. An extrusion that starts
+/// a body is still a v1 feature any build can rewrite.
+pub const FEATURE_PREDECESSOR_CAPABILITY: &str = "feature.predecessor.v1";
+
 /// The capability an [`ImportedStep`] object depends on.
 ///
 /// Declared separately from [`CORE_CAPABILITY`] so a reader that understands
@@ -188,6 +218,10 @@ impl ObjectKind {
                 SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
                 SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY.to_owned(),
             ],
+            (Self::Extrude, 2) => vec![
+                CORE_CAPABILITY.to_owned(),
+                FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
+            ],
             _ => vec![CORE_CAPABILITY.to_owned()],
         }
     }
@@ -207,6 +241,7 @@ impl ObjectKind {
                 SKETCH_CONSTRAINTS_CAPABILITY,
                 SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
             ],
+            Self::Extrude => &[CORE_CAPABILITY, FEATURE_PREDECESSOR_CAPABILITY],
             _ => &[CORE_CAPABILITY],
         }
     }
@@ -229,6 +264,11 @@ impl ObjectKind {
             // still written as themselves, because what a sketch is stored at
             // is decided by what it holds; see [`Sketch::schema_version`].
             Self::Sketch => 3,
+            // v2 added the feature a feature consumes. v1 extrusions are still
+            // read and still written as themselves, because what a feature is
+            // stored at is decided by what it holds; see
+            // [`Extrude::schema_version`].
+            Self::Extrude => 2,
             _ => 1,
         }
     }
@@ -241,6 +281,7 @@ impl ObjectKind {
         match self {
             Self::ImportedStep => &[3, 2, 1],
             Self::Sketch => &[3, 2, 1],
+            Self::Extrude => &[2, 1],
             _ => &[1],
         }
     }
@@ -883,10 +924,45 @@ pub struct Extrude {
     pub reversed: bool,
     pub operation: SolidOperation,
     /// The body being modified; `None` for [`SolidOperation::NewBody`].
+    ///
+    /// Not what a feature of this build names. An edge from a feature to a body
+    /// closes the loop that body → tip → feature → body makes, and a graph with
+    /// that loop cannot be ordered at all. What a feature names instead is
+    /// [`previous`][Self::previous]; which body owns it is the body's own
+    /// statement. Kept because it is part of a stored layout and a document
+    /// that sets it must still be read back as it was written, not because
+    /// anything here writes it.
     pub target_body: Option<ObjectId>,
+    /// The feature whose result this one modifies.
+    ///
+    /// `None` exactly when [`operation`][Self::operation] is
+    /// [`SolidOperation::NewBody`]: a feature that starts a body consumes no
+    /// earlier result, and one that changes an existing solid must say which.
+    /// It names a **feature**, never a body, which is what keeps the evaluation
+    /// graph acyclic by construction — see
+    /// [`DependencyRole::Predecessor`][crate::DependencyRole::Predecessor].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<ObjectId>,
 }
 
 impl Extrude {
+    /// The layout this feature has to be stored at.
+    ///
+    /// Decided by what it holds, exactly as a sketch's is. An extrusion that
+    /// starts a body is the v1 feature it always was, whatever this build is
+    /// capable of writing; a feature that names a predecessor is v2, because a
+    /// build that has not heard of `previous` would decode it, drop the field
+    /// and write back a feature that starts a second body out of nowhere.
+    pub fn schema_version(&self) -> u32 {
+        if self.previous.is_some() { 2 } else { 1 }
+    }
+
+    /// What a reader must implement to rewrite this feature. See
+    /// [`FEATURE_PREDECESSOR_CAPABILITY`].
+    pub fn required_capabilities(&self) -> Vec<String> {
+        ObjectKind::Extrude.required_capabilities(self.schema_version())
+    }
+
     /// The cache key for this feature's geometric result.
     ///
     /// The caller adds the resolved inputs of `profile` and `target_body`; this
@@ -926,6 +1002,16 @@ impl Extrude {
             None => hasher.str("none"),
         };
 
+        // Which earlier result this one consumes is part of what it is. Two
+        // cuts of one tool against two different solids are two features, and
+        // a key that omitted this would let the cache serve either for the
+        // other.
+        hasher.field("previous");
+        match &self.previous {
+            Some(feature) => hasher.bytes(&feature.to_bytes()),
+            None => hasher.str("none"),
+        };
+
         hasher.finish()
     }
 }
@@ -960,7 +1046,7 @@ impl EntityKind {
 }
 
 /// Which end of an extrusion a cap belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum CapSide {
@@ -1025,6 +1111,23 @@ pub enum SemanticRole {
     ExtrudeCapVertex { side: CapSide, joint: ProfileJoint },
     /// A face introduced by filleting an identified edge.
     FilletFace { source_edge: StableEntityId },
+    /// The cap an earlier feature made, as the feature naming it leaves it.
+    ///
+    /// Its own role rather than [`SemanticRole::ExtrudeCap`] reused under a
+    /// later producer. Both are real and they are different geometry: after a
+    /// pocket, the cut's own `ExtrudeCap` is the pocket floor — the tool's end
+    /// cap, which the boolean kept — while this is the plate's top as the
+    /// finished part has it. One role for both would make a reference to the
+    /// part's top face resolve to the bottom of a hole in it.
+    ///
+    /// A reference carrying this role is answered from the boolean's own
+    /// history: kept, altered, or gone. It is not matched to whatever face now
+    /// lies where the old one was.
+    CarriedCap { side: CapSide },
+    /// The face an earlier feature raised from one profile segment, as the
+    /// feature naming it leaves it. The counterpart of
+    /// [`SemanticRole::CarriedCap`], and there for the same reason.
+    CarriedSide { profile_segment: StableEntityId },
 }
 
 /// How many entities a reference selects, and which.
@@ -1110,6 +1213,17 @@ impl TopologyRef {
                     CapSide::Start => "start",
                     CapSide::End => "end",
                 });
+            }
+            SemanticRole::CarriedCap { side } => {
+                hasher.str("carried_cap").str(match side {
+                    CapSide::Start => "start",
+                    CapSide::End => "end",
+                });
+            }
+            SemanticRole::CarriedSide { profile_segment } => {
+                hasher
+                    .str("carried_side")
+                    .bytes(&profile_segment.to_bytes());
             }
             SemanticRole::ExtrudeSide { profile_segment } => {
                 hasher
@@ -1455,6 +1569,7 @@ impl ObjectPayload {
             Self::ImportedStep(imported) => imported.scene.version(),
             // Same rule, same reason: see [`Sketch::schema_version`].
             Self::Sketch(sketch) => sketch.schema_version(),
+            Self::Extrude(extrude) => extrude.schema_version(),
             known => known
                 .kind()
                 .map(ObjectKind::schema_version)
@@ -1643,18 +1758,31 @@ impl ObjectPayload {
                     }
                     EndCondition::ThroughAll => {}
                 }
-                match (extrude.operation, extrude.target_body) {
-                    (SolidOperation::NewBody, None)
-                    | (
-                        SolidOperation::Add | SolidOperation::Cut | SolidOperation::Intersect,
-                        Some(_),
-                    ) => Ok(()),
-                    (SolidOperation::NewBody, Some(_)) => Err(CadError::input(
-                        "a new-body extrude must not target an existing body",
+                // A feature that changes an existing solid must say which
+                // result it changes, and say it once. `previous` names the
+                // feature whose result it consumes, which is what this build
+                // writes and the only form the evaluation graph can order;
+                // `target_body` names a body, which is the older spelling and
+                // is refused further up because a feature-to-body edge closes
+                // the loop a body's tip edge opens. Naming both would be two
+                // answers to one question.
+                match (
+                    extrude.operation,
+                    extrude.target_body.is_some(),
+                    extrude.previous.is_some(),
+                ) {
+                    (SolidOperation::NewBody, false, false) => Ok(()),
+                    (SolidOperation::NewBody, _, _) => Err(CadError::input(
+                        "a new-body extrude consumes no earlier result and targets no body",
                     )),
-                    (_, None) => Err(CadError::input(
-                        "an additive, cut, or intersect extrude must target a body",
+                    (_, true, true) => Err(CadError::input(
+                        "an additive, cut, or intersect extrude names the result it modifies \
+                         once, not both as a feature and as a body",
                     )),
+                    (_, false, false) => Err(CadError::input(
+                        "an additive, cut, or intersect extrude must name the result it modifies",
+                    )),
+                    (_, _, _) => Ok(()),
                 }
             }
             Self::ImportedStep(imported) => imported.validate(),
@@ -1687,6 +1815,7 @@ mod tests {
             reversed: false,
             operation: SolidOperation::NewBody,
             target_body: None,
+            previous: None,
         }
     }
 

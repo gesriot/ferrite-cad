@@ -16,6 +16,17 @@ pub enum DependencyRole {
     Plane,
     /// The body a feature modifies.
     TargetBody,
+    /// The feature whose result this feature consumes.
+    ///
+    /// A feature that changes an existing solid reads the *result of another
+    /// feature*, and that is what this edge records. It deliberately does not
+    /// name a body: a body's own edge points at its tip feature, so an edge
+    /// from a feature to a body would close the loop tip → feature → body →
+    /// tip, and the evaluation order this module computes would be impossible
+    /// rather than merely awkward. Which body a feature belongs to is not
+    /// stored twice — it is the body that can reach the feature through these
+    /// edges from its tip.
+    Predecessor,
     /// The feature whose result a body exposes as its current tip.
     BodyTip,
     /// A named value an expression reads.
@@ -30,6 +41,7 @@ impl DependencyRole {
             Self::Profile => "profile",
             Self::Plane => "plane",
             Self::TargetBody => "target_body",
+            Self::Predecessor => "predecessor",
             Self::BodyTip => "body_tip",
             Self::Parameter => "parameter",
             Self::TopologyReference => "topology_reference",
@@ -41,6 +53,7 @@ impl DependencyRole {
             "profile" => Ok(Self::Profile),
             "plane" => Ok(Self::Plane),
             "target_body" => Ok(Self::TargetBody),
+            "predecessor" => Ok(Self::Predecessor),
             "body_tip" => Ok(Self::BodyTip),
             "parameter" => Ok(Self::Parameter),
             "topology_reference" => Ok(Self::TopologyReference),

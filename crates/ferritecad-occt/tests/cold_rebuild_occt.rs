@@ -88,6 +88,7 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
                 reversed: false,
                 operation: SolidOperation::NewBody,
                 target_body: None,
+                previous: None,
             }),
         )?;
         w.add_dependency(Dependency {
@@ -239,6 +240,7 @@ fn a_feature_this_slice_cannot_build_fails_without_leaking() {
                     reversed: false,
                     operation: SolidOperation::NewBody,
                     target_body: None,
+                    previous: None,
                 }),
             )?;
             w.add_dependency(Dependency {

@@ -45,7 +45,13 @@ const MAGIC: &[u8; 4] = b"FCNA";
 /// A reader refuses anything higher rather than interpreting a layout it
 /// predates. An older version could be read by a future build if it ever
 /// becomes worth the code; today there is nothing older to read.
-const FORMAT_VERSION: u16 = 1;
+///
+/// v2 appended the list of names the feature removed. A v1 entry is refused
+/// rather than read as a v2 one with none: "this feature never named that" and
+/// "this feature took that away" are different answers to a lost reference, and
+/// an entry that could not say which is not one to guess at. Refusing costs a
+/// rebuild, which is what a cache is for.
+const FORMAT_VERSION: u16 = 2;
 
 /// Bytes before the checksummed archive payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>() + size_of::<u64>() + 32;
@@ -76,6 +82,16 @@ const TAG_SWEEP_EDGE: u16 = 6;
 /// set of names and believing it complete.
 const TAG_START_CAP_VERTEX: u16 = 7;
 const TAG_END_CAP_VERTEX: u16 = 8;
+/// What a boolean left of the feature it consumed. Three more tags, chosen
+/// next in sequence and never reused, for the reason every tag above was.
+///
+/// Unlike those, these arrive with a format version bump, because the entry's
+/// *layout* grew as well: a removed-name list follows the bindings, and a
+/// reader that stopped after the bindings would find trailing bytes it could
+/// not account for. See [`FORMAT_VERSION`].
+const TAG_CARRIED_START_CAP: u16 = 9;
+const TAG_CARRIED_END_CAP: u16 = 10;
+const TAG_CARRIED_SIDE: u16 = 11;
 
 impl ArchivedFeature {
     /// Writes the archive out as bytes.
@@ -141,8 +157,45 @@ impl ArchivedFeature {
                         payload.extend_from_slice(&segment.to_bytes());
                     }
                 }
+                BoundName::CarriedStartCap => {
+                    payload.extend_from_slice(&TAG_CARRIED_START_CAP.to_le_bytes())
+                }
+                BoundName::CarriedEndCap => {
+                    payload.extend_from_slice(&TAG_CARRIED_END_CAP.to_le_bytes())
+                }
+                BoundName::CarriedSide { profile_segment } => {
+                    payload.extend_from_slice(&TAG_CARRIED_SIDE.to_le_bytes());
+                    payload.extend_from_slice(&profile_segment.to_bytes());
+                }
             }
             payload.extend_from_slice(&slot.index().to_le_bytes());
+        }
+
+        // The names this feature removed, after the bindings and in the same
+        // ordered sequence, each without a slot because there is no geometry
+        // for one to point at.
+        let removed: Vec<BoundName> = self.removed().collect();
+        let removed_count = u32::try_from(removed.len())
+            .map_err(|_| malformed("there are too many removed names to archive"))?;
+        payload.extend_from_slice(&removed_count.to_le_bytes());
+        for name in removed {
+            match name {
+                BoundName::CarriedStartCap => {
+                    payload.extend_from_slice(&TAG_CARRIED_START_CAP.to_le_bytes())
+                }
+                BoundName::CarriedEndCap => {
+                    payload.extend_from_slice(&TAG_CARRIED_END_CAP.to_le_bytes())
+                }
+                BoundName::CarriedSide { profile_segment } => {
+                    payload.extend_from_slice(&TAG_CARRIED_SIDE.to_le_bytes());
+                    payload.extend_from_slice(&profile_segment.to_bytes());
+                }
+                other => {
+                    return Err(malformed(format!(
+                        "only a carried name can be removed, and {other:?} is not one"
+                    )));
+                }
+            }
         }
 
         let payload_length = u64::try_from(payload.len())
@@ -248,6 +301,11 @@ impl ArchivedFeature {
                         StableEntityId::from_bytes(reader.array("second profile segment")?)?,
                     ])?,
                 },
+                TAG_CARRIED_START_CAP => BoundName::CarriedStartCap,
+                TAG_CARRIED_END_CAP => BoundName::CarriedEndCap,
+                TAG_CARRIED_SIDE => BoundName::CarriedSide {
+                    profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
+                },
                 unknown => {
                     return Err(malformed(format!(
                         "this archive names something with tag {unknown}, which this build does \
@@ -258,12 +316,32 @@ impl ArchivedFeature {
             bindings.push((name, ArchiveSlot::new(reader.u32("slot")?)));
         }
 
-        reader.finish("last binding")?;
+        let removed_count = reader.u32("removed count")?;
+        let mut removed = Vec::with_capacity(removed_count.min(1024) as usize);
+        for _ in 0..removed_count {
+            let tag = reader.u16("removed tag")?;
+            removed.push(match tag {
+                TAG_CARRIED_START_CAP => BoundName::CarriedStartCap,
+                TAG_CARRIED_END_CAP => BoundName::CarriedEndCap,
+                TAG_CARRIED_SIDE => BoundName::CarriedSide {
+                    profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
+                },
+                unknown => {
+                    return Err(malformed(format!(
+                        "this archive says tag {unknown} was removed, and only a carried name \
+                         can be"
+                    )));
+                }
+            });
+        }
 
-        // `from_parts` is the single gate on what a table may say: no root
-        // slot, no repeated name, no shared slot, no empty table, and a
-        // checksum that matches the payload it arrived with.
-        Self::from_parts(producer, blob, blob_hash, bindings)
+        reader.finish("last removed name")?;
+
+        // `from_parts_with_removed` is the single gate on what a table may say:
+        // no root slot, no repeated name, no shared slot, no empty table, no
+        // name both present and removed, and a checksum that matches the
+        // payload it arrived with.
+        Self::from_parts_with_removed(producer, blob, blob_hash, bindings, removed)
     }
 }
 
@@ -449,8 +527,10 @@ mod tests {
         let (archive, producer, kernel) = archived();
         let bytes = archive.encode().expect("encodes");
 
-        // The first tag sits directly after the binding count.
+        // The first tag sits directly after the binding count, which is
+        // followed by every binding and then the removed-name count.
         let at = bytes.len()
+            - size_of::<u32>()
             - archive
                 .bindings()
                 .map(|(name, _)| match name {
@@ -653,6 +733,9 @@ mod tests {
             ("sweep edge", TAG_SWEEP_EDGE),
             ("start cap vertex", TAG_START_CAP_VERTEX),
             ("end cap vertex", TAG_END_CAP_VERTEX),
+            ("carried start cap", TAG_CARRIED_START_CAP),
+            ("carried end cap", TAG_CARRIED_END_CAP),
+            ("carried side", TAG_CARRIED_SIDE),
         ];
         for (index, (what, tag)) in tags.iter().enumerate() {
             for (other_what, other) in &tags[index + 1..] {
@@ -671,7 +754,19 @@ mod tests {
             ],
             [1, 2, 3, 4, 5, 6]
         );
-        assert_eq!(FORMAT_VERSION, 1, "the layout of an entry is unchanged");
+        assert_eq!(
+            [
+                TAG_START_CAP_VERTEX,
+                TAG_END_CAP_VERTEX,
+                TAG_CARRIED_START_CAP,
+                TAG_CARRIED_END_CAP,
+                TAG_CARRIED_SIDE
+            ],
+            [7, 8, 9, 10, 11]
+        );
+        // v2 appended the removed-name list, which is a layout change and not
+        // only a wider vocabulary; see the note on `FORMAT_VERSION`.
+        assert_eq!(FORMAT_VERSION, 2, "the removed-name list is part of v2");
     }
 
     #[test]

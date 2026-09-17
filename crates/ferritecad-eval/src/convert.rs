@@ -231,6 +231,52 @@ fn annulus_from_circles(
     Profile::new(plane, loop_of(outer)?, vec![loop_of(inner)?])
 }
 
+/// Builds the tool an in-place boolean sweeps, from the same stored feature.
+///
+/// The tool is an ordinary extrusion: the feature's own sketch, swept forward
+/// along its plane's normal for the stored blind depth. That is the whole of
+/// what this slice cuts with, and it is stated here rather than inferred, so a
+/// feature that asks for something else is refused with the reason rather than
+/// approximated into the nearest thing that would build.
+///
+/// A separate function from [`extrude_request`] because the two answer
+/// different questions. That one asks what solid a feature *is*, and refuses a
+/// boolean because a boolean is not a solid on its own; this one asks what a
+/// boolean removes with, which is a solid and is built the same way every
+/// extrusion is.
+pub fn cut_tool_request(feature: &Extrude, profile: Profile) -> Result<ExtrudeRequest> {
+    if feature.operation != SolidOperation::Cut {
+        return Err(CadError::unsupported(format!(
+            "feature operation {:?} is not a cut, and this slice implements no other boolean",
+            feature.operation
+        )));
+    }
+    if feature.reversed {
+        return Err(CadError::unsupported(
+            "this slice cuts along the sketch plane's normal; a reversed cut is not implemented,              and silently cutting the other way would remove material nobody asked for",
+        ));
+    }
+    let extent = match &feature.end_condition {
+        EndCondition::Blind { distance } => ExtrudeExtent::blind(distance.value())?,
+        EndCondition::Symmetric { .. } => {
+            return Err(CadError::unsupported(
+                "a symmetric cut removes material on both sides of the sketch plane, which this                  slice does not implement",
+            ));
+        }
+        EndCondition::ThroughAll => {
+            return Err(CadError::unsupported(
+                "ThroughAll needs to know what else exists; this slice cuts to a stated depth",
+            ));
+        }
+        other => {
+            return Err(CadError::unsupported(format!(
+                "end condition {other:?} is not implemented"
+            )));
+        }
+    };
+    Ok(ExtrudeRequest::new(profile, extent, false))
+}
+
 /// Builds an extrusion request from a stored feature.
 pub fn extrude_request(feature: &Extrude, profile: Profile) -> Result<ExtrudeRequest> {
     if feature.operation != SolidOperation::NewBody {
@@ -420,6 +466,7 @@ mod tests {
             reversed: false,
             operation: SolidOperation::NewBody,
             target_body: None,
+            previous: None,
         }
     }
 

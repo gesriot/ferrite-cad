@@ -29,6 +29,7 @@
 
 mod constraints;
 mod creates;
+mod cuts;
 mod dialogs;
 mod edits;
 mod exports;
@@ -240,6 +241,10 @@ enum AppEvent {
     AnnulusEdited {
         generation: u64,
         result: Result<ferritecad_jobs::EditedAnnulus>,
+    },
+    Cut {
+        generation: u64,
+        result: Result<ferritecad_jobs::AddedCircularCut>,
     },
     Edited {
         generation: u64,
@@ -2347,6 +2352,18 @@ impl ApplicationHandler<AppEvent> for App {
                 self.input.request_redraw();
                 self.request_frame_now(event_loop);
             }
+            AppEvent::Cut { generation, result } => {
+                if let Some(path) = cuts::finish_cut(
+                    &mut self.creates.sketch,
+                    &mut self.edits,
+                    generation,
+                    result,
+                ) {
+                    self.open(path);
+                }
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
+            }
             AppEvent::Edited { generation, result } => {
                 if let Some(path) = self.edits.finish(generation, result) {
                     self.open(path);
@@ -2585,6 +2602,9 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(request) = self.creates.sketch.take_annulus_edit_request() {
                             self.ask_where_to_edit_annulus(request);
+                        }
+                        if let Some(request) = self.creates.sketch.take_cut_request() {
+                            self.ask_where_to_cut(request);
                         }
                         if let Some(content) = self.creates.sketch.take_request() {
                             self.ask_where_to_create(content);
@@ -3071,6 +3091,35 @@ impl App {
             .start_annulus(request, move |request, generation, cancel| {
                 edits::spawn_annulus_edit(request, cancel, move |result| {
                     let _ = proxy.send_event(AppEvent::AnnulusEdited { generation, result });
+                })
+            });
+        self.input.request_redraw();
+    }
+
+    fn ask_where_to_cut(&mut self, mut request: ferritecad_jobs::CircularCutRequest) {
+        if self.edits.running() {
+            return;
+        }
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Some(chosen) = self.dialogs.choose(
+            dialogs::Action::Edit,
+            rfd::FileDialog::new()
+                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
+                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_file_name("cut.fcad")
+                .set_parent(live.window.as_ref()),
+            &mut self.input,
+        ) else {
+            return;
+        };
+        request.destination = chosen;
+        let proxy = self.proxy.clone();
+        self.edits
+            .start_cut(request, move |request, generation, cancel| {
+                edits::spawn_cut(request, cancel, move |result| {
+                    let _ = proxy.send_event(AppEvent::Cut { generation, result });
                 })
             });
         self.input.request_redraw();
@@ -9409,6 +9458,7 @@ mod tests {
                             reversed: false,
                             operation: SolidOperation::NewBody,
                             target_body: None,
+                            previous: None,
                         }),
                     )?;
                     w.add_dependency(Dependency {
@@ -14728,6 +14778,7 @@ mod tests {
                             reversed: false,
                             operation: SolidOperation::NewBody,
                             target_body: None,
+                            previous: None,
                         }),
                     )?;
                     w.add_dependency(Dependency {

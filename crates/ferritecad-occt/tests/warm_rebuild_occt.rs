@@ -87,6 +87,7 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
                 reversed: false,
                 operation: SolidOperation::NewBody,
                 target_body: None,
+                previous: None,
             }),
         )?;
         w.add_dependency(Dependency {

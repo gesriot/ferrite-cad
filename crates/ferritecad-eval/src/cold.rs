@@ -29,14 +29,16 @@ use std::collections::BTreeMap;
 use ferritecad_document::TopologyRef;
 use ferritecad_document::{CacheStore, Document, ObjectPayload, ObjectRecord};
 use ferritecad_kernel::{
-    ExtrudeRequest, GeometryKernel, OperationContext, Profile, ProgressSink, ShapeHandle,
-    SketchPlane, SubShapeHandle,
+    CutRequest, GeometryKernel, OperationContext, Profile, ProgressSink, ShapeHandle, SketchPlane,
+    SubShapeHandle,
 };
-use ferritecad_topology::{TopologyMap, archive_feature, restore_feature};
+use ferritecad_topology::{FeatureNames, TopologyMap, archive_feature, restore_feature};
 use ferritecad_types::{CadError, ObjectId, Result};
 
-use crate::cache::{load_extrude_archive, store_extrude_archive};
-use crate::convert::{extrude_request, plane_from_datum, profile_from_sketch};
+use crate::cache::{
+    cut_archive_key, extrude_archive_key, load_feature_archive, store_feature_archive,
+};
+use crate::convert::{cut_tool_request, extrude_request, plane_from_datum, profile_from_sketch};
 use crate::document_graph::DocumentGraph;
 use crate::presentation::SketchPresentation;
 use crate::solve::SketchSolveReport;
@@ -86,6 +88,13 @@ pub struct RebuildResult {
     solve_reports: BTreeMap<ObjectId, SketchSolveReport>,
     presentations: BTreeMap<ObjectId, SketchPresentation>,
     topology: TopologyMap,
+    /// What each feature's result is addressed by in a cache.
+    ///
+    /// Kept because a boolean is keyed by its inputs' keys rather than by a
+    /// request of its own: a cut's entry has to move when the solid it cuts
+    /// moves, and the only honest name for "that solid" is the key the feature
+    /// that built it was stored under.
+    keys: BTreeMap<ObjectId, ferritecad_types::ContentHash>,
     order: Vec<ObjectId>,
     owned: Vec<ShapeHandle>,
     imports: Vec<ObjectId>,
@@ -313,35 +322,131 @@ fn run<K: GeometryKernel + ?Sized>(
                         ))
                     })?;
 
-                let request = extrude_request(feature, profile)?;
+                match feature.previous {
+                    // A feature that starts a body, exactly as before.
+                    None => {
+                        let request = extrude_request(feature, profile)?;
+                        let key = extrude_archive_key(kernel.identity(), &request, &scoped);
 
-                let restored = match cache.as_deref_mut() {
-                    Some(cache) => restore(kernel, cache, &scoped, *id, &request, state, events)?,
-                    None => false,
-                };
+                        let restored = match cache.as_deref_mut() {
+                            Some(cache) => {
+                                restore(kernel, cache, &scoped, key, *id, state, events)?
+                            }
+                            None => false,
+                        };
 
-                if !restored {
-                    let result = kernel.extrude(&request, &scoped)?;
+                        if !restored {
+                            let result = kernel.extrude(&request, &scoped)?;
 
-                    // Register ownership before checking again: a kernel can
-                    // finish the operation and then invoke a progress callback
-                    // that cancels the rebuild. The resulting shape still
-                    // belongs to us and must participate in error cleanup.
-                    state.owned.push(result.shape);
-                    context.check_cancelled()?;
+                            // Register ownership before checking again: a
+                            // kernel can finish the operation and then invoke a
+                            // progress callback that cancels the rebuild. The
+                            // resulting shape still belongs to us and must
+                            // participate in error cleanup.
+                            state.owned.push(result.shape);
+                            context.check_cancelled()?;
 
-                    // Named while the result is still whole. The correspondence
-                    // between a segment and the face it raised lives across the
-                    // history and the caps, and reassembling it from those
-                    // parts afterwards would be inventing it rather than
-                    // recording it.
-                    state
-                        .topology
-                        .record_extrude(*id, request.profile(), &result)?;
-                    state.shapes.insert(*id, result.shape);
+                            // Named while the result is still whole. The
+                            // correspondence between a segment and the face it
+                            // raised lives across the history and the caps, and
+                            // reassembling it from those parts afterwards would
+                            // be inventing it rather than recording it.
+                            state
+                                .topology
+                                .record_extrude(*id, request.profile(), &result)?;
+                            state.shapes.insert(*id, result.shape);
 
-                    if let Some(cache) = cache.as_deref_mut() {
-                        store(kernel, cache, &scoped, *id, &request, state, events);
+                            if let Some(cache) = cache.as_deref_mut() {
+                                store(kernel, cache, key, *id, state, events);
+                            }
+                        }
+                        state.keys.insert(*id, key);
+                    }
+
+                    // A feature that changes the result of an earlier one. The
+                    // tool it removes with is an extrusion of its own sketch,
+                    // built here and released with everything else: it is the
+                    // shape the boolean consumed, not a body of the document,
+                    // and nothing outside this loop may name it.
+                    Some(previous) => {
+                        let tool_request = cut_tool_request(feature, profile)?;
+                        let target_key = state.keys.get(&previous).copied().ok_or_else(|| {
+                            CadError::input(format!(
+                                "feature {id} modifies {previous}, which produced no result to                                  modify"
+                            ))
+                        })?;
+                        let tool_key =
+                            extrude_archive_key(kernel.identity(), &tool_request, &scoped);
+                        let key =
+                            cut_archive_key(kernel.identity(), &target_key, &tool_key, &scoped);
+
+                        let restored = match cache.as_deref_mut() {
+                            Some(cache) => {
+                                restore(kernel, cache, &scoped, key, *id, state, events)?
+                            }
+                            None => false,
+                        };
+
+                        if !restored {
+                            let tool = kernel.extrude(&tool_request, &scoped)?;
+                            state.owned.push(tool.shape);
+                            context.check_cancelled()?;
+
+                            // The tool's own names, recorded under a producer
+                            // the document does not hold. They live only long
+                            // enough for the boolean to be asked about them;
+                            // see `record_cut`.
+                            let mut tool_names = TopologyMap::new();
+                            let tool_producer = *id;
+                            tool_names.record_extrude(
+                                tool_producer,
+                                tool_request.profile(),
+                                &tool,
+                            )?;
+                            let tool_names = tool_names
+                                .feature(tool_producer)
+                                .cloned()
+                                .expect("just recorded");
+
+                            let previous_names =
+                                state.topology.feature(previous).cloned().ok_or_else(|| {
+                                    CadError::topology(format!(
+                                        "feature {id} modifies {previous}, which named nothing"
+                                    ))
+                                })?;
+                            let target_shape = previous_names.shape().ok_or_else(|| {
+                                CadError::topology(format!(
+                                    "feature {id} modifies {previous}, which built no shape"
+                                ))
+                            })?;
+
+                            // Everything either input is called, so the kernel
+                            // answers about every name the document could ask
+                            // after. Which of those answers matter is decided
+                            // above this call, from the names — never from the
+                            // geometry.
+                            let track = tracked(&previous_names, &tool_names);
+                            let request = CutRequest::new(target_shape, tool.shape)?;
+                            let result = kernel.cut(&request, &track, &scoped)?;
+                            state.owned.push(result.shape);
+                            context.check_cancelled()?;
+
+                            state.topology.record_cut(
+                                *id,
+                                previous,
+                                tool_request.profile(),
+                                tool.shape,
+                                &tool_names,
+                                &previous_names,
+                                &result,
+                            )?;
+                            state.shapes.insert(*id, result.shape);
+
+                            if let Some(cache) = cache.as_deref_mut() {
+                                store(kernel, cache, key, *id, state, events);
+                            }
+                        }
+                        state.keys.insert(*id, key);
                     }
                 }
             }
@@ -456,16 +561,38 @@ impl CacheEvent {
 /// means the caller must extrude, and says why in `events`. An error is a
 /// genuine failure of the rebuild — cancellation, or a kernel that restored a
 /// shape it will not then describe — never a disappointing cache.
+/// Every name either input of a boolean has, so the kernel answers about all
+/// of them.
+///
+/// Gathered from the two feature name tables and from nothing else. A list
+/// built by walking the geometry would be asking the boolean about faces
+/// nobody named, and the answers would have nowhere to go.
+fn tracked(previous: &FeatureNames, tool: &FeatureNames) -> Vec<SubShapeHandle> {
+    let mut track = Vec::new();
+    for names in [previous, tool] {
+        for side in [
+            ferritecad_document::CapSide::Start,
+            ferritecad_document::CapSide::End,
+        ] {
+            track.extend(names.cap(side).into_iter().flatten());
+        }
+        for segment in names.named_segments() {
+            track.extend(names.side(segment));
+        }
+    }
+    track
+}
+
 fn restore<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
     cache: &CacheStore,
     context: &OperationContext,
+    key: ferritecad_types::ContentHash,
     id: ObjectId,
-    request: &ExtrudeRequest,
     state: &mut RebuildResult,
     events: &mut Vec<CacheEvent>,
 ) -> Result<bool> {
-    let archived = match load_extrude_archive(cache, kernel.identity(), request, context, id) {
+    let archived = match load_feature_archive(cache, kernel.identity(), key, id) {
         Ok(Some(archived)) => archived,
         Ok(None) => {
             events.push(CacheEvent::new(id, CacheOutcome::Miss, None));
@@ -522,15 +649,14 @@ fn restore<K: GeometryKernel + ?Sized>(
 fn store<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
     cache: &mut CacheStore,
-    context: &OperationContext,
+    key: ferritecad_types::ContentHash,
     id: ObjectId,
-    request: &ExtrudeRequest,
     state: &RebuildResult,
     events: &mut Vec<CacheEvent>,
 ) {
     let identity = kernel.identity().clone();
     let stored = archive_feature(kernel, &state.topology, id)
-        .and_then(|archived| store_extrude_archive(cache, &identity, request, context, &archived));
+        .and_then(|archived| store_feature_archive(cache, &identity, key, &archived));
 
     if let Err(error) = stored {
         events.push(CacheEvent::new(

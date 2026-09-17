@@ -371,6 +371,81 @@ FcOcctStatus fc_occt_extrude_cap_faces(FcOcctSession *session, uint64_t shape,
                                        size_t capacity, size_t *out_count,
                                        FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
+/*
+ * Removes the material of `tool` from `target`.
+ *
+ * Both are shapes this session holds. Neither is consumed: a caller that wants
+ * them gone releases them, and the intermediate results a feature history is
+ * made of stay addressable until it does.
+ *
+ * The result is exactly one solid or a refusal. A boolean that leaves nothing
+ * behind, that returns something which is not a solid, or that splits the
+ * target into several, is refused rather than reported: there is no single
+ * result for a body to become, and picking one of several would be this layer
+ * deciding what the caller meant. A tool that removes nothing measurable is
+ * refused too — it produces a valid solid which happens to be the target again.
+ * `*out_removed_volume` receives the difference in volume, which is how the
+ * caller can say what was removed without measuring the result itself.
+ *
+ * # History
+ *
+ * Open CASCADE answers what became of an input sub-shape only while the
+ * algorithm object is alive, so every registered sub-shape of both inputs is
+ * asked about here and the answers are stored with the result. Ask for them
+ * afterwards with fc_occt_cut_carried.
+ *
+ * Cancellation: `cancel` is consulted before the boolean and is installed as an
+ * Open CASCADE progress indicator, which BRepAlgoAPI_Cut does poll.
+ *
+ * On success `*out_shape` receives a session-local shape identifier.
+ */
+FcOcctStatus fc_occt_cut(FcOcctSession *session, uint64_t target, uint64_t tool,
+                         FcOcctCancelFn cancel, void *cancel_context,
+                         uint64_t *out_shape, double *out_removed_volume,
+                         FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/* What a cut did to one registered sub-shape of one of its inputs. */
+typedef int32_t FcOcctCarried;
+enum {
+  /* The boolean returned the input unchanged, as itself. */
+  FC_OCCT_CARRIED_KEPT = 0,
+  /* The input survives as different geometry. */
+  FC_OCCT_CARRIED_MODIFIED = 1,
+  /* The input has no counterpart in the result. */
+  FC_OCCT_CARRIED_DELETED = 2
+};
+
+/*
+ * What the cut did to one sub-shape of one of its inputs.
+ *
+ * `result` is the shape fc_occt_cut produced; `input` is the target or the tool
+ * it was given, and `input_sub` indexes that shape's own sub-shape table. A
+ * sub-shape of any other shape is refused rather than answered about.
+ *
+ * `*out_kind` receives one of the FC_OCCT_CARRIED_* values. The identifiers are
+ * sub-shapes of `result`: none for a deleted input, and everything the
+ * algorithm reported otherwise, so a count other than one reaches the caller
+ * instead of being trimmed to fit.
+ *
+ * Call with `capacity` 0 to learn the count, then again with a buffer, exactly
+ * as the extrusion queries do.
+ */
+FcOcctStatus fc_occt_cut_carried(FcOcctSession *session, uint64_t result,
+                                 uint64_t input, uint64_t input_sub,
+                                 int32_t *out_kind, uint64_t *out_ids,
+                                 size_t capacity, size_t *out_count,
+                                 FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/*
+ * How many sub-shapes of `shape` this session has registered.
+ *
+ * The bound for the `input_sub` argument of fc_occt_cut_carried, so a caller
+ * can ask about every name a shape has without knowing how it got them.
+ */
+FcOcctStatus fc_occt_sub_shape_count(FcOcctSession *session, uint64_t shape,
+                                     size_t *out_count,
+                                     FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
 /* What analytic surface a face lies on.
  *
  * Reported so a caller can tell an analytic solid from one that only looks

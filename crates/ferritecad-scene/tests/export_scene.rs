@@ -371,6 +371,7 @@ fn several_bodies(path: &Path, count: usize) -> Vec<ObjectId> {
                         reversed: false,
                         operation: SolidOperation::NewBody,
                         target_body: None,
+                        previous: None,
                     }),
                 )?;
                 w.add_dependency(Dependency {
@@ -1178,6 +1179,17 @@ impl RefusesMesh {
 }
 
 impl GeometryKernel for RefusesMesh {
+    /// Delegated: this double is about something else, and a cut it
+    /// answered differently would be a second kernel.
+    fn cut(
+        &mut self,
+        request: &ferritecad_kernel::CutRequest,
+        track: &[ferritecad_kernel::SubShapeHandle],
+        context: &OperationContext,
+    ) -> Result<ferritecad_kernel::CutResult> {
+        self.inner.cut(request, track, context)
+    }
+
     fn identity(&self) -> &KernelIdentity {
         self.inner.identity()
     }
@@ -1582,6 +1594,17 @@ impl Counting {
 }
 
 impl GeometryKernel for Counting {
+    /// Delegated: this double is about something else, and a cut it
+    /// answered differently would be a second kernel.
+    fn cut(
+        &mut self,
+        request: &ferritecad_kernel::CutRequest,
+        track: &[ferritecad_kernel::SubShapeHandle],
+        context: &OperationContext,
+    ) -> Result<ferritecad_kernel::CutResult> {
+        self.inner.cut(request, track, context)
+    }
+
     fn identity(&self) -> &KernelIdentity {
         self.inner.identity()
     }
@@ -1708,6 +1731,7 @@ fn one_export_solves_once_reads_each_source_once_and_meshes_each_definition_once
                         reversed: false,
                         operation: SolidOperation::NewBody,
                         target_body: None,
+                        previous: None,
                     }),
                 )?;
                 w.add_dependency(Dependency {

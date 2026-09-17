@@ -283,8 +283,76 @@ pub fn edit_sketch_constraints_copy<K: GeometryKernel + ?Sized>(
     )
 }
 
+/// What one published circular cut is, in identities.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CircularCutRequest {
+    pub source: PathBuf,
+    pub expected: DocumentVersion,
+    pub body: ObjectId,
+    pub cut: ferritecad_document::CircularCut,
+    pub destination: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AddedCircularCut {
+    pub destination: PathBuf,
+    pub document_id: ferritecad_types::DocumentId,
+    /// The body that gained the feature. Its identity is the source's.
+    pub body: ObjectId,
+    /// The feature the body's tip now is.
+    pub feature: ObjectId,
+    /// The sketch the tool was drawn on.
+    pub sketch: ObjectId,
+    /// The circle inside it, so a caller can name the bore it made.
+    pub tool_curve: StableEntityId,
+    /// The feature the new one modifies, which was the tip before.
+    pub previous: ObjectId,
+}
+
+/// Adds one circular cut to a saved body, publishing a new copy.
+///
+/// The same snapshot, version guard, read-only source, baseline rebuild,
+/// reference check, SQLite close and atomic no-clobber publication every other
+/// copy operation uses. What differs is only what is written.
+pub fn circular_cut_copy<K: GeometryKernel + ?Sized>(
+    request: &CircularCutRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+) -> Result<AddedCircularCut> {
+    context.check_cancelled()?;
+    edit_object_copy(
+        &request.source,
+        request.expected,
+        &request.destination,
+        kernel,
+        context,
+        |source| {
+            ferritecad_document::prepare_circular_cut(source, request.body, &request.cut)
+                .map(Box::new)
+                .map(CopyWrite::Cut)
+        },
+        |prepared, _| {
+            let CopyWrite::Cut(prepared) = prepared else {
+                return Err(CadError::input("missing prepared cut"));
+            };
+            Ok(AddedCircularCut {
+                destination: request.destination.clone(),
+                document_id: request.expected.document_id,
+                body: request.body,
+                feature: prepared.feature().id,
+                sketch: prepared.sketch().id,
+                tool_curve: prepared.tool_curve(),
+                previous: prepared.previous(),
+            })
+        },
+    )
+}
+
 enum CopyWrite {
     Object(ferritecad_document::ObjectRecord),
+    /// Boxed: this variant is much larger than the others, and an enum sized
+    /// for it would make every copy operation carry the difference.
+    Cut(Box<ferritecad_document::PreparedCircularCut>),
     Coordinates(
         ferritecad_document::ObjectRecord,
         Vec<ferritecad_document::SketchVertex>,
@@ -298,6 +366,9 @@ impl CopyWrite {
         match self {
             Self::Object(o) | Self::Coordinates(o, _) | Self::Circle(o) | Self::Annulus(o) => o,
             Self::Constraints(p) => p.object(),
+            // The body is the one object a cut changes; the two it adds did
+            // not exist to be read.
+            Self::Cut(p) => p.body(),
         }
     }
 
@@ -380,6 +451,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         CopyWrite::Constraints(p) => document.write_sketch_constraints(p)?,
         CopyWrite::Circle(prepared) => document.write_circle_geometry(prepared)?,
         CopyWrite::Annulus(prepared) => document.write_annulus_geometry(prepared)?,
+        CopyWrite::Cut(prepared) => document.write_circular_cut(prepared)?,
         CopyWrite::Object(_) => document.write(write)?,
     }
     // A solve is asked for only when the edited sketch still has something to
@@ -398,11 +470,19 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         },
         _ => None,
     };
+    // Every name the edit *added* has to resolve as well. The baseline
+    // comparison below can only speak about names that already existed, so a
+    // feature that published geometry nothing could point at would pass it.
+    let minted: BTreeSet<StableEntityId> = match &prepared {
+        CopyWrite::Cut(p) => p.references().iter().map(|r| r.id).collect(),
+        _ => BTreeSet::new(),
+    };
+    let required: BTreeSet<StableEntityId> = baseline.union(&minted).copied().collect();
     let (_, solve) = checked_rebuild(
         &document,
         kernel,
         &phase(context, 0.4, 0.9),
-        Some(&baseline),
+        Some(&required),
         constraints,
     )?;
     let completed = complete(&prepared, solve)?;
@@ -934,6 +1014,17 @@ mod tests {
         sketch_fault: bool,
     }
     impl GeometryKernel for Refusing {
+        /// Delegated: this double is about something else, and a cut it
+        /// answered differently would be a second kernel.
+        fn cut(
+            &mut self,
+            request: &ferritecad_kernel::CutRequest,
+            track: &[ferritecad_kernel::SubShapeHandle],
+            context: &OperationContext,
+        ) -> Result<ferritecad_kernel::CutResult> {
+            self.inner.cut(request, track, context)
+        }
+
         fn identity(&self) -> &KernelIdentity {
             self.inner.identity()
         }

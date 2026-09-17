@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ferritecad_document::CapSide;
 use ferritecad_kernel::{
-    ExtrudeResult, HistoryInput, Profile, ShapeHandle, SubShapeHandle, SubShapeKind,
+    CutResult, ExtrudeResult, HistoryInput, Profile, ShapeHandle, SubShapeHandle, SubShapeKind,
 };
 use ferritecad_types::{CadError, ObjectId, ProfileJoint, Result, StableEntityId};
 
@@ -43,6 +43,33 @@ pub struct FeatureNames {
     /// choosing.
     start_cap_vertices: BTreeMap<ProfileJoint, BTreeSet<SubShapeHandle>>,
     end_cap_vertices: BTreeMap<ProfileJoint, BTreeSet<SubShapeHandle>>,
+    /// The caps an earlier feature made, as this feature leaves them.
+    ///
+    /// Kept apart from `start_cap`/`end_cap` rather than merged into them.
+    /// After a pocket both exist and they are different faces: this one is the
+    /// plate's top, and that one is the floor the tool left. A single map would
+    /// make a reference to either resolve to whichever was written last.
+    carried_start_cap: BTreeSet<SubShapeHandle>,
+    carried_end_cap: BTreeSet<SubShapeHandle>,
+    /// The faces an earlier feature raised from each of its profile segments,
+    /// as this feature leaves them. Apart from `sides` for the same reason.
+    carried_sides: BTreeMap<StableEntityId, BTreeSet<SubShapeHandle>>,
+    /// Every carried name the earlier feature had that this one does **not**
+    /// leave behind, so a reference to it is refused rather than answered from
+    /// an empty list that could equally mean "never named".
+    carried_deleted: BTreeSet<CarriedName>,
+}
+
+/// One name an earlier feature had, as a later feature refers back to it.
+///
+/// Flat rather than a nested role: a role that contained a role would have to
+/// be boxed, and the two cases a boolean can carry forward in this slice are
+/// exactly these. Which of them a handle is filed under is decided from the
+/// earlier feature's own names, never from the geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CarriedName {
+    Cap(CapSide),
+    Side(StableEntityId),
 }
 
 impl FeatureNames {
@@ -178,6 +205,73 @@ impl FeatureNames {
     pub fn named_segments(&self) -> impl ExactSizeIterator<Item = StableEntityId> + '_ {
         self.sides.keys().copied()
     }
+
+    /// The faces an earlier feature's cap became, as this feature leaves it.
+    ///
+    /// `None` for a side this build does not understand, exactly as
+    /// [`Self::cap`] is. An empty iterator with the name recorded as deleted is
+    /// a different fact from an empty one with nothing recorded, and
+    /// [`Self::carried_is_deleted`] is how a resolver tells them apart.
+    pub fn carried_cap(
+        &self,
+        side: CapSide,
+    ) -> Option<impl ExactSizeIterator<Item = SubShapeHandle> + '_> {
+        let set = match side {
+            CapSide::Start => &self.carried_start_cap,
+            CapSide::End => &self.carried_end_cap,
+            _ => return None,
+        };
+        Some(set.iter().copied())
+    }
+
+    /// The faces an earlier feature raised from one segment, as this feature
+    /// leaves them.
+    pub fn carried_side(
+        &self,
+        segment: StableEntityId,
+    ) -> impl ExactSizeIterator<Item = SubShapeHandle> + '_ {
+        self.carried_sides
+            .get(&segment)
+            .map(|set| set.iter())
+            .unwrap_or_default()
+            .copied()
+    }
+
+    /// Whether this feature removed a name the earlier feature had.
+    ///
+    /// The one answer that lets a resolver say "the face you mean is gone"
+    /// instead of "this feature named nothing like that". They are different
+    /// facts and a user acts differently on each.
+    pub fn carried_is_deleted(&self, name: CarriedName) -> bool {
+        self.carried_deleted.contains(&name)
+    }
+
+    /// How many faces this feature named, of every kind it names.
+    ///
+    /// One number, computed here, because "how much did this feature produce"
+    /// is a question about the whole of what it named. A caller that added up
+    /// the caps and the sides alone would report a boolean as having produced
+    /// one face and lost the part it cut.
+    pub fn named_face_count(&self) -> usize {
+        let caps = self.start_cap.len() + self.end_cap.len();
+        let sides: usize = self.sides.values().map(BTreeSet::len).sum();
+        let carried_caps = self.carried_start_cap.len() + self.carried_end_cap.len();
+        let carried_sides: usize = self.carried_sides.values().map(BTreeSet::len).sum();
+        caps + sides + carried_caps + carried_sides
+    }
+
+    /// Every carried name this feature has an answer about, deleted or not.
+    pub fn carried_names(&self) -> impl ExactSizeIterator<Item = CarriedName> {
+        let mut names: BTreeSet<CarriedName> = self.carried_deleted.clone();
+        if !self.carried_start_cap.is_empty() {
+            names.insert(CarriedName::Cap(CapSide::Start));
+        }
+        if !self.carried_end_cap.is_empty() {
+            names.insert(CarriedName::Cap(CapSide::End));
+        }
+        names.extend(self.carried_sides.keys().copied().map(CarriedName::Side));
+        names.into_iter()
+    }
 }
 
 /// What an archive gave back, before it is checked and filed.
@@ -195,6 +289,13 @@ pub struct RestoredNames {
     pub sweep_edges: BTreeMap<ProfileJoint, Vec<SubShapeHandle>>,
     pub start_cap_vertices: BTreeMap<ProfileJoint, Vec<SubShapeHandle>>,
     pub end_cap_vertices: BTreeMap<ProfileJoint, Vec<SubShapeHandle>>,
+    /// What an earlier feature's caps became, as this one leaves them.
+    pub carried_start_cap: Vec<SubShapeHandle>,
+    pub carried_end_cap: Vec<SubShapeHandle>,
+    /// The same for the faces it raised from each profile segment.
+    pub carried_sides: BTreeMap<StableEntityId, Vec<SubShapeHandle>>,
+    /// The carried names this feature removed.
+    pub carried_deleted: BTreeSet<CarriedName>,
 }
 
 /// What a whole rebuild produced, addressed by feature and role.
@@ -482,6 +583,41 @@ impl TopologyMap {
                 names.sides.entry(*segment).or_default().insert(*face);
             }
         }
+        for (faces, into) in [
+            (&restored.carried_start_cap, &mut names.carried_start_cap),
+            (&restored.carried_end_cap, &mut names.carried_end_cap),
+        ] {
+            for face in faces {
+                check(*face, shape, producer, "a restored carried cap")?;
+                into.insert(*face);
+            }
+        }
+        for (segment, faces) in &restored.carried_sides {
+            for face in faces {
+                check(*face, shape, producer, "a restored carried side")?;
+                names
+                    .carried_sides
+                    .entry(*segment)
+                    .or_default()
+                    .insert(*face);
+            }
+        }
+        for name in &restored.carried_deleted {
+            // A name cannot be both removed and restored: one of the two
+            // answers would then depend on which map a resolver looked in.
+            let present = match name {
+                CarriedName::Cap(CapSide::Start) => !names.carried_start_cap.is_empty(),
+                CarriedName::Cap(CapSide::End) => !names.carried_end_cap.is_empty(),
+                CarriedName::Cap(_) => false,
+                CarriedName::Side(segment) => names.carried_sides.contains_key(segment),
+            };
+            if present {
+                return Err(CadError::topology(format!(
+                    "the archive of feature {producer} restores {name:?} and also calls it removed"
+                )));
+            }
+            names.carried_deleted.insert(*name);
+        }
         let mut claimed_edges: BTreeMap<SubShapeHandle, (&str, StableEntityId)> = BTreeMap::new();
         for (side, edges, into, what) in [
             (
@@ -588,6 +724,132 @@ impl TopologyMap {
 
 fn check(face: SubShapeHandle, shape: ShapeHandle, producer: ObjectId, what: &str) -> Result<()> {
     check_kind(face, shape, producer, what, SubShapeKind::Face)
+}
+
+/// What one boolean produced, in the vocabulary a document can store.
+///
+/// Three groups of names come out of one cut, and they are three different
+/// things:
+///
+/// * the **tool's** own faces, which are what bounds the new cavity. They are
+///   filed under the roles the tool's extrusion gave them — a side per profile
+///   segment, a cap per end — because that is what they are: the wall of a hole
+///   is the wall the tool swept, and the floor of a pocket is the tool's end
+///   cap that the boolean kept.
+/// * the **earlier feature's** faces, filed as carried names, because a
+///   reference to the part's top face and a reference to the floor of a hole in
+///   it must not be the same reference.
+/// * everything the boolean **removed**, recorded as removed, so a reference to
+///   it is refused rather than quietly answered with nothing.
+///
+/// Every answer comes from `result`, which comes from the kernel's own history.
+/// Nothing here looks at geometry, counts faces or picks a nearest match.
+impl TopologyMap {
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_cut(
+        &mut self,
+        producer: ObjectId,
+        previous: ObjectId,
+        tool_profile: &Profile,
+        tool_shape: ShapeHandle,
+        tool_names: &FeatureNames,
+        previous_names: &FeatureNames,
+        result: &CutResult,
+    ) -> Result<()> {
+        // The kernel's own boundary check, asked again here for the reason the
+        // extrusion's is: this is the last place a contradictory durable
+        // meaning can be refused before it is filed as an apparently valid one.
+        let Some(previous_shape) = previous_names.shape() else {
+            return Err(CadError::topology(format!(
+                "feature {producer} modifies {previous}, which produced no shape"
+            )));
+        };
+        result.validate(previous_shape, tool_shape)?;
+
+        let mut names = FeatureNames {
+            shape: Some(result.shape),
+            ..FeatureNames::default()
+        };
+
+        // What each input name became, asked of the history and of nothing
+        // else. `outputs` is empty exactly when the boolean removed the face.
+        let outputs = |input: SubShapeHandle| -> Vec<SubShapeHandle> {
+            result
+                .history
+                .modified(HistoryInput::SubShape(input))
+                .chain(result.history.generated(HistoryInput::SubShape(input)))
+                .collect()
+        };
+
+        // The tool's contributions, under the roles the tool already had.
+        let tool_loops = || std::iter::once(tool_profile.outer()).chain(tool_profile.inner());
+        for segment in tool_loops().flat_map(|entry| entry.segments()) {
+            for face in tool_names.side(segment.label) {
+                for out in outputs(face) {
+                    check(out, result.shape, producer, "a cut wall")?;
+                    names.sides.entry(segment.label).or_default().insert(out);
+                }
+            }
+        }
+        for side in [CapSide::Start, CapSide::End] {
+            let Some(faces) = tool_names.cap(side) else {
+                continue;
+            };
+            for face in faces {
+                for out in outputs(face) {
+                    check(out, result.shape, producer, "a cut cap")?;
+                    match side {
+                        CapSide::Start => names.start_cap.insert(out),
+                        CapSide::End => names.end_cap.insert(out),
+                        _ => unreachable!("the two sides are matched above"),
+                    };
+                }
+            }
+        }
+
+        // Everything the earlier feature was called, carried forward or
+        // recorded as gone.
+        for side in [CapSide::Start, CapSide::End] {
+            let Some(faces) = previous_names.cap(side) else {
+                continue;
+            };
+            let mut survived = false;
+            for face in faces {
+                for out in outputs(face) {
+                    check(out, result.shape, producer, "a carried cap")?;
+                    survived = true;
+                    match side {
+                        CapSide::Start => names.carried_start_cap.insert(out),
+                        CapSide::End => names.carried_end_cap.insert(out),
+                        _ => unreachable!("the two sides are matched above"),
+                    };
+                }
+            }
+            if !survived {
+                names.carried_deleted.insert(CarriedName::Cap(side));
+            }
+        }
+        for segment in previous_names.named_segments() {
+            let mut survived = false;
+            for face in previous_names.side(segment) {
+                for out in outputs(face) {
+                    check(out, result.shape, producer, "a carried side")?;
+                    survived = true;
+                    names.carried_sides.entry(segment).or_default().insert(out);
+                }
+            }
+            if !survived {
+                names.carried_deleted.insert(CarriedName::Side(segment));
+            }
+        }
+
+        if self.features.insert(producer, names).is_some() {
+            return Err(CadError::topology(format!(
+                "feature {producer} was recorded twice in one rebuild"
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Refuses a name that is the wrong sort of thing or belongs to another shape.

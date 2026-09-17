@@ -4,8 +4,8 @@ use ferritecad_types::{CanonicalHasher, ContentHash, Result, Transform};
 use crate::context::OperationContext;
 use crate::handle::{ShapeHandle, SubShapeHandle};
 use crate::identity::KernelIdentity;
-use crate::request::{ExtrudeRequest, TessellationParams};
-use crate::result::{ArchiveSlot, BrepBlob, ExtrudeResult, Mesh, OperationResult};
+use crate::request::{CutRequest, ExtrudeRequest, TessellationParams};
+use crate::result::{ArchiveSlot, BrepBlob, CutResult, ExtrudeResult, Mesh, OperationResult};
 
 /// The operations FerriteCAD needs from a geometry kernel.
 ///
@@ -41,6 +41,29 @@ pub trait GeometryKernel {
         request: &ExtrudeRequest,
         context: &OperationContext,
     ) -> Result<ExtrudeResult>;
+
+    /// Removes the material of one shape from another.
+    ///
+    /// The result is one solid or a refusal. A boolean that leaves nothing, or
+    /// that splits the target into pieces, is not a feature this contract can
+    /// name: there would be no single result to be the body's new tip, and
+    /// choosing one of several would be the kernel deciding what the user
+    /// meant. A tool that misses the target entirely is a refusal too — it
+    /// produces a perfectly valid solid which happens to be the target again,
+    /// and calling that a cut would put a feature in the history that did
+    /// nothing.
+    ///
+    /// `track` names the sub-shapes of either input the caller wants an
+    /// account of. The kernel answers for exactly those and invents nothing:
+    /// what a face of the target became is a fact the boolean knows, and a
+    /// caller that had to work it out from the result would be matching
+    /// geometry rather than reading history.
+    fn cut(
+        &mut self,
+        request: &CutRequest,
+        track: &[SubShapeHandle],
+        context: &OperationContext,
+    ) -> Result<CutResult>;
 
     /// Places a shape somewhere else.
     fn transform(
@@ -142,6 +165,28 @@ pub fn tessellation_cache_key(
     context.tolerance().feed(&mut hasher);
     hasher.field("shape").hash(shape_key);
     params.feed(&mut hasher);
+    hasher.finish()
+}
+
+/// The cache key for a cut of two already-keyed shapes.
+///
+/// Takes the two inputs' own keys rather than their handles, for the reason
+/// [`tessellation_cache_key`] does: a handle is session-local and would key the
+/// same boolean differently on every run. Both inputs are fed, in their roles,
+/// so cutting A with B and B with A are different keys — they are different
+/// solids.
+pub fn cut_cache_key(
+    kernel: &KernelIdentity,
+    target_key: &ContentHash,
+    tool_key: &ContentHash,
+    context: &OperationContext,
+) -> ContentHash {
+    let mut hasher = CanonicalHasher::new("kernel.cut");
+    hasher.algorithm_version(ALGORITHM_VERSION);
+    kernel.feed(&mut hasher);
+    context.tolerance().feed(&mut hasher);
+    hasher.field("target").hash(target_key);
+    hasher.field("tool").hash(tool_key);
     hasher.finish()
 }
 

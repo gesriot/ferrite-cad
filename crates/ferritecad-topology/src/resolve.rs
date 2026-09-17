@@ -3,7 +3,7 @@ use ferritecad_document::{CapSide, EntityKind, SelectionRule, SemanticRole, Topo
 use ferritecad_kernel::SubShapeHandle;
 use ferritecad_types::{CadError, Result};
 
-use crate::map::TopologyMap;
+use crate::map::{CarriedName, TopologyMap};
 
 /// Resolves a stored reference against what this rebuild produced.
 ///
@@ -211,6 +211,90 @@ pub fn resolve(map: &TopologyMap, reference: &TopologyRef) -> Result<Vec<SubShap
                 vertices.collect(),
                 &format!("the vertex where {joint} reaches the {side:?} cap"),
             )
+        }
+
+        // What the feature this one consumed called a face, as this feature
+        // leaves it. Answered from the boolean's own account: a name it removed
+        // is refused as removed, which is a different thing from a name it
+        // never had.
+        SemanticRole::CarriedCap { side } => {
+            require_kind(reference, EntityKind::Face, "a carried cap")?;
+            match side {
+                CapSide::Start | CapSide::End => {}
+                other => {
+                    return Err(CadError::unsupported(format!(
+                        "topology reference {} names carried cap side {other:?}, which this \
+                         build does not understand",
+                        reference.id
+                    )));
+                }
+            }
+            match reference.selection {
+                SelectionRule::Exact => {}
+                SelectionRule::AllDerivedFrom { .. } => {
+                    return Err(CadError::input(format!(
+                        "topology reference {} names a carried cap but selects everything \
+                         derived from an ancestor; a cap is selected exactly",
+                        reference.id
+                    )));
+                }
+                ref other => return Err(unknown_rule(reference, other)),
+            }
+            let names = map.feature(reference.producer_feature);
+            if names.is_some_and(|names| names.carried_is_deleted(CarriedName::Cap(*side))) {
+                return Err(CadError::topology(format!(
+                    "topology reference {} names the {side:?} cap carried into feature {}, and \
+                     that feature removed it",
+                    reference.id, reference.producer_feature
+                )));
+            }
+            let faces: Vec<SubShapeHandle> = names
+                .and_then(|names| names.carried_cap(*side))
+                .map(Iterator::collect)
+                .unwrap_or_default();
+            exactly_one(reference, faces, &format!("the carried {side:?} cap"))
+        }
+
+        SemanticRole::CarriedSide { profile_segment } => {
+            require_kind(reference, EntityKind::Face, "a carried side")?;
+            let names = map.feature(reference.producer_feature);
+            if names
+                .is_some_and(|names| names.carried_is_deleted(CarriedName::Side(*profile_segment)))
+            {
+                return Err(CadError::topology(format!(
+                    "topology reference {} names the face carried into feature {} from segment \
+                     {profile_segment}, and that feature removed it",
+                    reference.id, reference.producer_feature
+                )));
+            }
+            let faces: Vec<SubShapeHandle> = names
+                .map(|names| names.carried_side(*profile_segment).collect())
+                .unwrap_or_default();
+            match reference.selection {
+                SelectionRule::Exact => exactly_one(
+                    reference,
+                    faces,
+                    &format!("the face carried from segment {profile_segment}"),
+                ),
+                SelectionRule::AllDerivedFrom { ancestor } => {
+                    if ancestor != *profile_segment {
+                        return Err(CadError::input(format!(
+                            "topology reference {} names the face carried from segment \
+                             {profile_segment} but selects everything derived from {ancestor}",
+                            reference.id
+                        )));
+                    }
+                    if faces.is_empty() {
+                        return Err(CadError::topology(format!(
+                            "topology reference {} selects every face carried from segment \
+                             {ancestor}, and this rebuild carried none",
+                            reference.id
+                        )));
+                    }
+                    Ok(faces)
+                }
+                ref other => Err(unknown_rule(reference, other)),
+            }
         }
 
         // A real role, and one this slice cannot answer. The kernel emits no

@@ -37,6 +37,10 @@ pub struct ExtrudeEditSource {
     pub circle_sketches: Vec<crate::CircleChoice>,
     /// Analytic circle-pair edit catalogue, from that same pinned reading.
     pub annulus_sketches: Vec<crate::AnnulusChoice>,
+    /// Which saved bodies a circular cut can be added to, from that same pinned
+    /// reading. Keyed by body rather than by sketch, because a cut is added to
+    /// a body's history and not to a drawing.
+    pub cut_bodies: Vec<crate::CutChoice>,
     pub refusal: Option<String>,
 }
 
@@ -95,6 +99,7 @@ impl ExtrudeEditSource {
             constraint_sketches: crate::constraint_sketch_choices(document, &objects),
             circle_sketches: crate::circle_choices(document, &objects),
             annulus_sketches: crate::annulus_choices(document, &objects),
+            cut_bodies: crate::cut_choices(document, &objects),
             refusal,
         })
     }
@@ -142,6 +147,14 @@ fn blind_literal_distance(object: &ObjectRecord) -> Result<f64> {
             object.payload.type_name()
         )));
     };
+    if extrude.operation != crate::SolidOperation::NewBody
+        || extrude.previous.is_some()
+        || extrude.target_body.is_some()
+    {
+        return Err(CadError::unsupported(
+            "only NewBody extrusion distances can be edited; editing a Cut is not implemented",
+        ));
+    }
     let EndCondition::Blind { distance } = &extrude.end_condition else {
         return Err(CadError::unsupported(
             "only Blind extrusions can be edited; Symmetric and ThroughAll are unsupported",
@@ -206,6 +219,7 @@ mod tests {
             reversed: false,
             operation: SolidOperation::NewBody,
             target_body: None,
+            previous: None,
         })
     }
 
@@ -283,6 +297,7 @@ mod tests {
                         reversed: false,
                         operation: SolidOperation::NewBody,
                         target_body: None,
+                        previous: None,
                     }),
                 )?;
                 w.put_object(
@@ -306,6 +321,7 @@ mod tests {
                         reversed: false,
                         operation: SolidOperation::NewBody,
                         target_body: None,
+                        previous: None,
                     }),
                 )?;
                 w.put_object(
@@ -528,6 +544,7 @@ mod tests {
                         reversed: false,
                         operation: SolidOperation::NewBody,
                         target_body: None,
+                        previous: None,
                     }),
                 )?;
                 for source in ["height * 2", "12", "NaN", "inf"] {
@@ -783,6 +800,7 @@ mod tests {
             constraint_sketches: crate::constraint_sketch_choices(document, &objects),
             circle_sketches: crate::circle_choices(document, &objects),
             annulus_sketches: crate::annulus_choices(document, &objects),
+            cut_bodies: crate::cut_choices(document, &objects),
             version: DocumentVersion {
                 document_id: document.meta().document_id,
                 content: document.content_version()?,

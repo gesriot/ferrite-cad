@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 use ferritecad_types::{CadError, CanonicalHasher, Result, normalize_f64};
 
+use crate::handle::ShapeHandle;
 use crate::profile::Profile;
 
 /// How far an extrusion runs, and which way.
@@ -219,5 +220,48 @@ mod tests {
         let mut hasher = CanonicalHasher::new("test");
         relative.feed(&mut hasher);
         assert_ne!(hasher.finish(), absolute_key);
+    }
+}
+
+/// Remove the material of one shape from another.
+///
+/// Two shapes and nothing else. Which faces come back, and what they are
+/// called, is not part of the request: naming is what [`CutResult`] reports
+/// from the kernel's own history, and a request that could nominate names
+/// would be a caller deciding them in advance.
+///
+/// [`CutResult`]: crate::CutResult
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CutRequest {
+    target: ShapeHandle,
+    tool: ShapeHandle,
+}
+
+impl CutRequest {
+    /// Refuses the one pair no kernel can mean: a shape cut by itself, which
+    /// is empty by definition and would be reported as a boolean that removed
+    /// everything rather than as a request nobody could have intended.
+    pub fn new(target: ShapeHandle, tool: ShapeHandle) -> Result<Self> {
+        if target == tool {
+            return Err(CadError::input(
+                "a cut needs two different shapes; this one names the same shape twice",
+            ));
+        }
+        if target.session() != tool.session() {
+            return Err(CadError::input(
+                "a cut needs two shapes of one kernel session",
+            ));
+        }
+        Ok(Self { target, tool })
+    }
+
+    /// The shape material is removed from.
+    pub fn target(&self) -> ShapeHandle {
+        self.target
+    }
+
+    /// The shape whose material is removed.
+    pub fn tool(&self) -> ShapeHandle {
+        self.tool
     }
 }

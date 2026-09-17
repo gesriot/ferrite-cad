@@ -317,6 +317,7 @@ pub fn write_plate(path: &Path) -> Result<()> {
                 reversed: false,
                 operation: SolidOperation::NewBody,
                 target_body: None,
+                previous: None,
             }),
         )?;
         w.add_dependency(Dependency {

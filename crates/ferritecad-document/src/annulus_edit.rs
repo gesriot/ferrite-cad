@@ -385,6 +385,7 @@ mod tests {
                     reversed: false,
                     operation: SolidOperation::NewBody,
                     target_body: None,
+                    previous: None,
                 }),
             )?;
             w.put_object(

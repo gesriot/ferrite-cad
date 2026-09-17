@@ -98,6 +98,7 @@ fn populate(document: &mut Document, width: f64, depth: f64, height: f64) -> Res
                 reversed: false,
                 operation: SolidOperation::NewBody,
                 target_body: None,
+                previous: None,
             }),
         )?;
         w.add_dependency(Dependency {
@@ -288,6 +289,7 @@ fn a_failed_rebuild_releases_what_it_had_already_made() {
                     reversed: false,
                     operation: SolidOperation::NewBody,
                     target_body: None,
+                    previous: None,
                 }),
             )?;
             w.add_dependency(Dependency {
@@ -528,6 +530,7 @@ fn a_sketch_with_a_circle_is_unsupported_rather_than_approximated() {
                     reversed: false,
                     operation: SolidOperation::NewBody,
                     target_body: None,
+                    previous: None,
                 }),
             )?;
             w.add_dependency(Dependency {
@@ -568,6 +571,7 @@ fn a_symmetric_extrusion_straddles_the_sketch_plane() {
                     reversed: false,
                     operation: SolidOperation::NewBody,
                     target_body: None,
+                    previous: None,
                 }),
             )?;
             Ok(())

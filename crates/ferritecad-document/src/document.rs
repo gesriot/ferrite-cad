@@ -893,6 +893,70 @@ impl Document {
         },false)
     }
 
+    /// Writes one prepared circular cut: two new objects, the body's new tip,
+    /// the edges that record all of it, and the names the new geometry gets.
+    ///
+    /// One transaction, because half of it is not a document: a copy holding
+    /// the feature but not the body's tip is a part with a cut nobody can see,
+    /// and one holding the tip but not the feature does not rebuild at all.
+    ///
+    /// The prepared value is re-derived against this document first, for the
+    /// reason the analytic editors re-derive theirs: a public struct's fields
+    /// do not prove what produced them, and the last place a forgery can be
+    /// refused is here.
+    pub fn write_circular_cut(&mut self, prepared: &crate::PreparedCircularCut) -> Result<()> {
+        let current = self
+            .object(prepared.body().id)?
+            .ok_or_else(|| CadError::input("selected Body disappeared before the cut"))?;
+        // The body is the one object this write changes, and it must be the one
+        // the preparation read.
+        let ObjectPayload::Body(stored) = &current.payload else {
+            return Err(CadError::input("the selected object is not a Body"));
+        };
+        if stored.tip_feature != Some(prepared.previous()) {
+            return Err(CadError::input(
+                "the Body's tip changed after the cut was prepared",
+            ));
+        }
+        for new in [prepared.sketch(), prepared.feature()] {
+            if self.object(new.id)?.is_some() {
+                return Err(CadError::input(
+                    "a cut may not overwrite an object that already exists",
+                ));
+            }
+        }
+        crate::cut_edit::rederive(self, prepared)?;
+
+        let body = prepared.body().clone();
+        let sketch = prepared.sketch().clone();
+        let feature = prepared.feature().clone();
+        let added = prepared.added_dependencies.clone();
+        let removed = prepared.removed_dependencies.clone();
+        let references = prepared.references.clone();
+        self.write(move |writer| {
+            for new in [&sketch, &feature] {
+                writer.put_object(new.id, None, new.ordinal, Some(&new.name), &new.payload)?;
+            }
+            writer.put_object(
+                body.id,
+                body.parent,
+                body.ordinal,
+                body.name.as_deref(),
+                &body.payload,
+            )?;
+            for dependency in removed {
+                writer.remove_dependency(dependency)?;
+            }
+            for dependency in added {
+                writer.add_dependency(dependency)?;
+            }
+            for reference in &references {
+                writer.put_topology_ref(reference)?;
+            }
+            Ok(())
+        })
+    }
+
     fn write_transaction<T>(
         &mut self,
         edit: impl FnOnce(&mut DocumentWriter<'_>) -> Result<T>,
@@ -1881,6 +1945,12 @@ fn required_capabilities_of(role: &SemanticRole) -> Vec<String> {
     if matches!(role, SemanticRole::ExtrudeCapVertex { .. }) {
         names.push(EXTRUDE_CAP_VERTEX_CAPABILITY.to_owned());
     }
+    if matches!(
+        role,
+        SemanticRole::CarriedCap { .. } | SemanticRole::CarriedSide { .. }
+    ) {
+        names.push(crate::TOPOLOGY_CARRIED_FACE_CAPABILITY.to_owned());
+    }
     names
 }
 
@@ -2111,6 +2181,7 @@ mod constraint_write_tests {
                         reversed: false,
                         operation: SolidOperation::NewBody,
                         target_body: None,
+                        previous: None,
                     }),
                 ),
                 (

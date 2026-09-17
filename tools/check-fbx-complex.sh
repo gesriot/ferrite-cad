@@ -229,3 +229,16 @@ if [ -n "${FCAD_ANNULAR_CONSTRAINT_FBX_DIR:-}" ]; then
     }
     echo "FCAD_ANNULAR_CONSTRAINT_UFBX_EXECUTED"
 fi
+
+# §26A adds the two parts its cut publishes to the same reader build: a through
+# hole and a pocket, actually read rather than merely produced.
+if [ -n "${FCAD_CUT_FBX_DIR:-}" ]; then
+    for name in cut-holed-cli cut-pocket-cli; do
+        "$reader" --identity "$FCAD_CUT_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+        count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) failures=0$/\1/p' "$work/$name-reader.txt")"
+        [ -n "$count" ] && [ "$count" -ge 6 ] || {
+            echo "error: pinned reader did not verify cut $name FBX" >&2; exit 1;
+        }
+    done
+    echo "FCAD_CUT_UFBX_EXECUTED"
+fi

@@ -45,9 +45,25 @@ pub enum BoundName {
     StartCapVertex { joint: ProfileJoint },
     /// The same, at the end cap.
     EndCapVertex { joint: ProfileJoint },
+    /// The cap an earlier feature made, as this feature leaves it.
+    CarriedStartCap,
+    /// The same, at the end cap.
+    CarriedEndCap,
+    /// The face an earlier feature raised from one segment, as this feature
+    /// leaves it.
+    CarriedSide { profile_segment: StableEntityId },
 }
 
 impl BoundName {
+    /// The carried cap name for a side this build understands.
+    pub fn carried_cap(side: CapSide) -> Option<Self> {
+        match side {
+            CapSide::Start => Some(Self::CarriedStartCap),
+            CapSide::End => Some(Self::CarriedEndCap),
+            _ => None,
+        }
+    }
+
     /// The cap name for a side this build understands.
     ///
     /// `CapSide` is non-exhaustive; a future side has no name here rather than
@@ -88,7 +104,12 @@ impl BoundName {
     /// cannot be written down as a face and read back as an edge.
     pub fn kind(self) -> SubShapeKind {
         match self {
-            Self::StartCap | Self::EndCap | Self::Side { .. } => SubShapeKind::Face,
+            Self::StartCap
+            | Self::EndCap
+            | Self::Side { .. }
+            | Self::CarriedStartCap
+            | Self::CarriedEndCap
+            | Self::CarriedSide { .. } => SubShapeKind::Face,
             Self::StartCapEdge { .. } | Self::EndCapEdge { .. } | Self::SweepEdge { .. } => {
                 SubShapeKind::Edge
             }
@@ -110,6 +131,13 @@ pub struct ArchivedFeature {
     blob_hash: ContentHash,
     /// Ordered so two archives of the same rebuild compare equal.
     bindings: BTreeMap<BoundName, ArchiveSlot>,
+    /// The names this feature was asked about and answered "gone".
+    ///
+    /// Recorded rather than left out. A name a boolean removed and a name the
+    /// feature never had are different facts about the model, and a restored
+    /// archive that could not tell them apart would make a warm rebuild answer
+    /// a lost reference differently from a cold one.
+    removed: BTreeSet<BoundName>,
 }
 
 impl ArchivedFeature {
@@ -195,7 +223,37 @@ impl ArchivedFeature {
             blob,
             blob_hash,
             bindings: table,
+            removed: BTreeSet::new(),
         })
+    }
+
+    /// The same, with the names this feature removed recorded beside them.
+    pub fn from_parts_with_removed(
+        producer: ObjectId,
+        blob: BrepBlob,
+        blob_hash: ContentHash,
+        bindings: impl IntoIterator<Item = (BoundName, ArchiveSlot)>,
+        removed: impl IntoIterator<Item = BoundName>,
+    ) -> Result<Self> {
+        let mut archived = Self::from_parts(producer, blob, blob_hash, bindings)?;
+        for name in removed {
+            if archived.bindings.contains_key(&name) {
+                return Err(CadError::topology(format!(
+                    "the binding for feature {producer} calls {name:?} both present and removed"
+                )));
+            }
+            archived.removed.insert(name);
+        }
+        Ok(archived)
+    }
+
+    /// The names this feature was asked about and answered "gone".
+    pub fn removed(&self) -> impl ExactSizeIterator<Item = BoundName> + '_ {
+        self.removed.iter().copied()
+    }
+
+    pub(crate) fn removed_set(&self) -> &BTreeSet<BoundName> {
+        &self.removed
     }
 }
 
@@ -266,6 +324,38 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
         }
     }
 
+    // What this feature left of the feature it consumed, and what it removed.
+    // Both are walked through the ordered set the map keeps, so the sequence is
+    // the same on every machine.
+    let mut removed = Vec::new();
+    for carried in names.carried_names() {
+        let (name, faces): (BoundName, Vec<_>) = match carried {
+            crate::CarriedName::Cap(side) => {
+                // A side this build has no name for is not archived at all,
+                // for the reason a future `CapSide` is never folded into one
+                // of the two known ends.
+                let Some(name) = BoundName::carried_cap(side) else {
+                    continue;
+                };
+                (
+                    name,
+                    names.carried_cap(side).into_iter().flatten().collect(),
+                )
+            }
+            crate::CarriedName::Side(profile_segment) => (
+                BoundName::CarriedSide { profile_segment },
+                names.carried_side(profile_segment).collect(),
+            ),
+        };
+        if names.carried_is_deleted(carried) {
+            removed.push(name);
+            continue;
+        }
+        for face in faces {
+            wanted.push((name, face));
+        }
+    }
+
     // The vertices where those same corners reach each cap, walked through the
     // ordered joint set so the sequence is the same on every machine. A corner
     // with no vertex on a side contributes nothing rather than an entry
@@ -330,11 +420,12 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
     }
 
     let blob_hash = blob.content_hash();
-    ArchivedFeature::from_parts(
+    ArchivedFeature::from_parts_with_removed(
         producer,
         blob,
         blob_hash,
         wanted.into_iter().map(|(name, _)| name).zip(slots),
+        removed,
     )
 }
 
@@ -375,6 +466,9 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
         let mut sweep_edges: BTreeMap<ProfileJoint, Vec<_>> = BTreeMap::new();
         let mut start_cap_vertices: BTreeMap<ProfileJoint, Vec<_>> = BTreeMap::new();
         let mut end_cap_vertices: BTreeMap<ProfileJoint, Vec<_>> = BTreeMap::new();
+        let mut carried_start_cap = Vec::new();
+        let mut carried_end_cap = Vec::new();
+        let mut carried_sides: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
         let mut claimed = BTreeMap::new();
 
         for (name, face) in names.into_iter().zip(faces) {
@@ -420,7 +514,34 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 BoundName::EndCapVertex { joint } => {
                     end_cap_vertices.entry(joint).or_default().push(face)
                 }
+                BoundName::CarriedStartCap => carried_start_cap.push(face),
+                BoundName::CarriedEndCap => carried_end_cap.push(face),
+                BoundName::CarriedSide { profile_segment } => {
+                    carried_sides.entry(profile_segment).or_default().push(face)
+                }
             }
+        }
+
+        // What the feature removed, restored as removed. A name that came back
+        // absent because the boolean deleted it and a name nobody ever gave
+        // this feature are answered differently by the resolver, so the archive
+        // has to carry the difference rather than let it be inferred.
+        let mut carried_deleted = BTreeSet::new();
+        for name in archived.removed_set() {
+            carried_deleted.insert(match name {
+                BoundName::CarriedStartCap => crate::CarriedName::Cap(CapSide::Start),
+                BoundName::CarriedEndCap => crate::CarriedName::Cap(CapSide::End),
+                BoundName::CarriedSide { profile_segment } => {
+                    crate::CarriedName::Side(*profile_segment)
+                }
+                other => {
+                    return Err(CadError::topology(format!(
+                        "the archive of feature {} says {other:?} was removed, and only a carried \
+                         name can be",
+                        archived.producer
+                    )));
+                }
+            });
         }
 
         into.record_restored(
@@ -435,6 +556,10 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 sweep_edges,
                 start_cap_vertices,
                 end_cap_vertices,
+                carried_start_cap,
+                carried_end_cap,
+                carried_sides,
+                carried_deleted,
             },
         )
     })();

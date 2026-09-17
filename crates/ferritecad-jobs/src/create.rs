@@ -497,6 +497,7 @@ fn populate_profile(
                 reversed: false,
                 operation: SolidOperation::NewBody,
                 target_body: None,
+                previous: None,
             }),
         )?;
         writer.add_dependency(Dependency {
@@ -624,6 +625,7 @@ fn populate_circle(
                 reversed: false,
                 operation: SolidOperation::NewBody,
                 target_body: None,
+                previous: None,
             }),
         )?;
         writer.add_dependency(Dependency {
@@ -763,6 +765,7 @@ fn populate_annulus(
                 reversed: false,
                 operation: SolidOperation::NewBody,
                 target_body: None,
+                previous: None,
             }),
         )?;
         writer.add_dependency(Dependency {
