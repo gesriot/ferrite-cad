@@ -98,6 +98,6 @@ mod sketch_constraints;
 pub use sketch_constraints::{
     AddLineConstraint, AddSketchConstraint, CircleConstraintKind, CircleRadiusMm,
     ConstraintSketchChoice, LineConstraintKind, LineEndpoint, LineLengthMm, LineRelation,
-    PreparedSketchConstraints, SketchConstraintEdits, SketchCoordinateMm,
+    PreparedSketchConstraints, SketchConstraintEdits, SketchCoordinateMm, constraint_circle_roles,
     constraint_sketch_choices, prepare_sketch_constraints,
 };

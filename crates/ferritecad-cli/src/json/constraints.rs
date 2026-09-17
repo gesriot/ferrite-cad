@@ -150,6 +150,13 @@ struct CircleCurve {
     curve_id: StableEntityId,
     center_mm: [f64; 2],
     radius_mm: f64,
+    /// `"boundary"` or `"bore"` on a profile of two circles, and `null` on one
+    /// of a single circle, which has no second circle to hold a role against.
+    ///
+    /// Reported rather than left to be worked out from the two radii, because
+    /// the roles are what every request, refusal and stored constraint is about
+    /// and a reader that derived them would be a second opinion on them.
+    role: Option<&'static str>,
 }
 #[derive(Serialize)]
 pub(crate) struct Discovery {
@@ -165,9 +172,9 @@ pub(crate) struct Discovery {
 impl Discovery {
     pub(crate) fn new(choice: ConstraintSketchChoice, document_refusal: Option<String>) -> Self {
         // Split by what each curve actually is. A supported profile is all
-        // Lines or one Circle, so exactly one of the two lists is non-empty;
-        // reading the geometry rather than asserting which family it is keeps
-        // this honest if either class ever widens.
+        // Lines, or one or two Circles, so exactly one of the two lists is
+        // non-empty; reading the geometry rather than asserting which family it
+        // is keeps this honest if either class ever widens.
         let curves = choice.stored.as_ref().map(|s| {
             s.curves
                 .iter()
@@ -182,6 +189,8 @@ impl Discovery {
                 .collect::<Vec<_>>()
         });
         let circles = choice.stored.as_ref().map(|s| {
+            // The roles, asked once of the document rather than decided here.
+            let roles = ferritecad_document::constraint_circle_roles(s);
             s.curves
                 .iter()
                 .filter_map(|c| match c.geometry {
@@ -189,6 +198,11 @@ impl Discovery {
                         curve_id: c.id,
                         center_mm: [center.x, center.y],
                         radius_mm: radius,
+                        role: roles.and_then(|(outer, inner)| match c.id {
+                            id if id == outer => Some("boundary"),
+                            id if id == inner => Some("bore"),
+                            _ => None,
+                        }),
                     }),
                     _ => None,
                 })

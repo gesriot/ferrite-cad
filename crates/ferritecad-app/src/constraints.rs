@@ -151,7 +151,7 @@ impl Editor {
             .resizable(false)
             .show(ui.ctx(), |ui| {
                 ui.label(
-                    "Select a stored Line, or the analytic Circle. Solver runs only when saving \
+                    "Select a stored Line or Circle. Solver runs only when saving \
                      the new copy.",
                 );
                 ui.small(format!(
@@ -160,9 +160,6 @@ impl Editor {
                     draft.source.display()
                 ));
                 ui.label("Coordinates below are stored inputs, not the solved drawing.");
-                ui.label(
-                    "Missing Coincident joints are added with constraints; closure remains after removal.",
-                );
                 ui.add_enabled_ui(!running, |ui| {
                     ui.horizontal(|ui| {
                         if ui.button("Cancel constraints draft").clicked() {
@@ -186,6 +183,11 @@ impl Editor {
                     let Some(stored) = &draft.choice.stored else {
                         return;
                     };
+                    if stored.curves.iter().any(|c| matches!(c.geometry, SketchGeometry::Line { .. })) {
+                        ui.label(
+                            "Missing Coincident joints are added with constraints; closure remains after removal.",
+                        );
+                    }
                     egui::ScrollArea::vertical()
                         .id_salt("constraint-lines")
                         .max_height(150.)
@@ -222,15 +224,54 @@ impl Editor {
                             _ => None,
                         })
                         .collect();
+                    // Which circle bounds the part and which is the bore, asked
+                    // of the document rather than worked out here: the roles
+                    // every request and every refusal is about have one source.
+                    let roles = ferritecad_document::constraint_circle_roles(stored);
                     for (id, center, radius) in &circles {
                         ui.selectable_value(
                             &mut draft.selected,
                             Some(*id),
                             format!(
-                                "Circle · {} · centre ({}, {}) mm · radius {} mm",
-                                short(*id), center.x, center.y, radius
+                                "{} · {} · centre ({}, {}) mm · radius {} mm",
+                                role_name(roles, *id), short(*id), center.x, center.y, radius
                             ),
                         );
+                    }
+                    // Concentricity needs two circles to relate, so it is
+                    // offered only where there are two. Both are picked
+                    // explicitly and neither leads, exactly as the Line pair is.
+                    if circles.len() == 2 {
+                        ui.horizontal(|ui| {
+                            ui.label("Circle pair:");
+                            let picked = draft.selected.is_some();
+                            if ui.add_enabled(picked, egui::Button::new("Pair Circle A")).clicked() {
+                                draft.pair_a = draft.selected;
+                            }
+                            if ui.add_enabled(picked, egui::Button::new("Pair Circle B")).clicked() {
+                                draft.pair_b = draft.selected;
+                            }
+                            ui.small(format!(
+                                "Pair: A {} · B {}",
+                                picked_line(draft.pair_a),
+                                picked_line(draft.pair_b)
+                            ));
+                            let both = draft.pair_a.is_some() && draft.pair_b.is_some();
+                            if ui.add_enabled(both, egui::Button::new("Add Concentric")).clicked() {
+                                let mut proposed = draft.edits.clone();
+                                proposed.add.push(AddSketchConstraint::Concentric {
+                                    a: draft.pair_a.expect("Circle A"),
+                                    b: draft.pair_b.expect("Circle B"),
+                                });
+                                match draft.choice.validate_edits(&proposed) {
+                                    Ok(()) => {
+                                        draft.history.change(&mut draft.edits, proposed);
+                                        draft.refusal = None;
+                                    }
+                                    Err(e) => draft.refusal = Some(e.to_string()),
+                                }
+                            }
+                        });
                     }
                     if !circles.is_empty() {
                         ui.horizontal(|ui| {
@@ -563,6 +604,22 @@ impl Editor {
                                         format!("Radius {radius} mm"),
                                         Some(format!("Circle {curve}")),
                                     ),
+                                    // A shared centre is the one Coincident a
+                                    // reader may remove, and it says so; every
+                                    // other Coincident is Line closure and
+                                    // keeps its unremovable row.
+                                    SketchConstraintRule::Coincident { a, b }
+                                        if a.at == ferritecad_document::SketchPointSelector::Center
+                                            && b.at
+                                                == ferritecad_document::SketchPointSelector::Center
+                                            && a.curve != b.curve => (
+                                        "Concentric".to_owned(),
+                                        Some(format!(
+                                            "Circles {} and {}",
+                                            short(a.curve),
+                                            short(b.curve)
+                                        )),
+                                    ),
                                     SketchConstraintRule::Fixed { point, x, y }
                                         if point.at == ferritecad_document::SketchPointSelector::Center => (
                                         format!("Fixed centre ({x}, {y}) mm"),
@@ -762,6 +819,9 @@ fn addition_name(add: &AddSketchConstraint) -> String {
         AddSketchConstraint::Circle { curve, kind } => {
             return format!("{} · Circle {curve}", circle_kind_name(kind));
         }
+        AddSketchConstraint::Concentric { a, b } => {
+            return format!("Concentric · Circles {a} and {b}");
+        }
         AddSketchConstraint::Line(line) => line,
     };
     match line {
@@ -770,6 +830,18 @@ fn addition_name(add: &AddSketchConstraint) -> String {
         AddLineConstraint::Relation { a, b, relation } => {
             format!("{} · Lines {a} and {b}", relation.as_str())
         }
+    }
+}
+
+/// What this circle is called on the profile it belongs to.
+///
+/// A lone circle has no role to hold — there is no second circle for it to be
+/// the boundary or the bore of — so it is called what it is.
+fn role_name(roles: Option<(StableEntityId, StableEntityId)>, id: StableEntityId) -> &'static str {
+    match roles {
+        Some((outer, _)) if outer == id => "Boundary circle",
+        Some((_, inner)) if inner == id => "Bore circle",
+        _ => "Circle",
     }
 }
 
@@ -831,6 +903,9 @@ mod tests {
                         y.get()
                     ),
                 };
+            }
+            AddSketchConstraint::Concentric { a, b } => {
+                return format!(r#"{{"rule":"concentric","a_curve_id":"{a}","b_curve_id":"{b}"}}"#);
             }
             AddSketchConstraint::Line(line) => line,
         };
@@ -2007,6 +2082,239 @@ mod tests {
         (root, path, source)
     }
 
+    /// A real §25L ring and the accepted reading a form may read from.
+    fn annulus_fixture() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
+        let root = tempfile::tempdir().expect("dir");
+        let path = root.path().join("ring.fcad");
+        ferritecad_jobs::create_document_with_kernel(
+            ferritecad_jobs::CreateDocumentRequest::new(
+                &path,
+                ferritecad_jobs::NewDocument::AnnularExtrude(
+                    ferritecad_document::AnnularExtrusion::new([12., -7.], 10., 4., 15.)
+                        .expect("a ring"),
+                ),
+                "test",
+            ),
+            ferritecad_occt::OcctKernel::new,
+            &OperationContext::default(),
+        )
+        .expect("source");
+        let d = Document::open_read_only(&path).expect("doc");
+        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        d.close().expect("close");
+        (root, path, source)
+    }
+
+    /// The annular half of the same form, through real widgets and real clicks.
+    ///
+    /// Both halves matter and the second one is the one review found missing
+    /// last time: a persisted request has to come back as its own removable
+    /// rows, not only be addable into an empty draft.
+    #[test]
+    fn annulus_widgets_name_both_roles_and_build_one_parametric_request() {
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: no OCCT for the accepted scene this form reads");
+            return;
+        }
+        let (_root, path, source) = annulus_fixture();
+        let id = source.constraint_sketches[0].sketch;
+        let stored = source.constraint_sketches[0]
+            .stored
+            .clone()
+            .expect("a supported annular profile");
+        let (boundary, bore) =
+            ferritecad_document::constraint_circle_roles(&stored).expect("two circles in roles");
+        assert_ne!(boundary, bore);
+
+        let mut e = Editor::default();
+        assert!(
+            e.begin(&path, &source, id),
+            "the annular profile is offered"
+        );
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        let out = frame(&ctx, &mut e, vec![]);
+        let drawn: Vec<String> = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        // Each circle is named by its role and by its own UUID, and no Line row
+        // or Line action is offered for either of them.
+        let boundary_row = format!(
+            "Boundary circle · {} · centre (12, -7) mm · radius 10 mm",
+            short(boundary)
+        );
+        let bore_row = format!(
+            "Bore circle · {} · centre (12, -7) mm · radius 4 mm",
+            short(bore)
+        );
+        for row in [&boundary_row, &bore_row] {
+            assert!(drawn.contains(row), "missing {row} in {drawn:?}");
+        }
+        assert!(!drawn.iter().any(|l| l.starts_with("Segment ")));
+        for hidden in ["Add Horizontal", "Add length", "Pin Start", "Pair Line A"] {
+            assert!(!painted(&out, hidden), "{hidden} offered on a ring");
+        }
+
+        // A pair has to be picked before it can be made concentric.
+        click(&ctx, &mut e, "Add Concentric");
+        assert!(e.draft.as_ref().expect("draft").edits.add.is_empty());
+
+        click(&ctx, &mut e, &boundary_row);
+        click(&ctx, &mut e, "Pair Circle A");
+        click(&ctx, &mut e, &bore_row);
+        click(&ctx, &mut e, "Pair Circle B");
+        click(&ctx, &mut e, "Add Concentric");
+        let draft = e.draft.as_ref().expect("draft");
+        assert_eq!(draft.refusal, None);
+        assert_eq!(
+            draft.edits.add,
+            vec![AddSketchConstraint::Concentric {
+                a: boundary,
+                b: bore
+            }]
+        );
+        // One pair, one slot: the same pair the other way round is refused by
+        // the document's own rule rather than by a copy of it here.
+        click(&ctx, &mut e, "Pair Circle A");
+        click(&ctx, &mut e, &boundary_row);
+        click(&ctx, &mut e, "Pair Circle B");
+        click(&ctx, &mut e, "Add Concentric");
+        let draft = e.draft.as_ref().expect("draft");
+        assert_eq!(draft.edits.add.len(), 1, "(B,A) took a second slot");
+        assert!(draft.refusal.is_some());
+
+        // A radius per circle, each against the circle that is selected.
+        click(&ctx, &mut e, &boundary_row);
+        enter_field(&ctx, &mut e, "Radius mm", "6.75", false);
+        click(&ctx, &mut e, "Add radius");
+        click(&ctx, &mut e, &bore_row);
+        enter_field(&ctx, &mut e, "Radius mm", "2.125", false);
+        click(&ctx, &mut e, "Add radius");
+        // And one pin, on whichever circle is selected.
+        click(&ctx, &mut e, &boundary_row);
+        enter_field(&ctx, &mut e, "Fixed X (mm):", "-3.5", false);
+        enter_field(&ctx, &mut e, "Fixed Y (mm):", "4.25", false);
+        click(&ctx, &mut e, "Add Fixed centre");
+        let draft = e.draft.as_ref().expect("draft");
+        assert_eq!(draft.refusal, None);
+        assert_eq!(
+            draft.edits.add,
+            vec![
+                AddSketchConstraint::Concentric {
+                    a: boundary,
+                    b: bore
+                },
+                AddSketchConstraint::Circle {
+                    curve: boundary,
+                    kind: CircleConstraintKind::Radius(
+                        CircleRadiusMm::new(6.75).expect("positive")
+                    ),
+                },
+                AddSketchConstraint::Circle {
+                    curve: bore,
+                    kind: CircleConstraintKind::Radius(
+                        CircleRadiusMm::new(2.125).expect("positive")
+                    ),
+                },
+                AddSketchConstraint::Circle {
+                    curve: boundary,
+                    kind: CircleConstraintKind::FixedCenter {
+                        x: SketchCoordinateMm::new(-3.5).expect("finite"),
+                        y: SketchCoordinateMm::new(4.25).expect("finite"),
+                    },
+                },
+            ]
+        );
+        assert_eq!(draft.history.undo.len(), 4, "one add, one step");
+        click(&ctx, &mut e, "Undo");
+        assert_eq!(e.draft.as_ref().expect("draft").edits.add.len(), 3);
+        assert!(e.take_request().is_none(), "Undo submitted a job");
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(e.draft.as_ref().expect("draft").edits.add.len(), 4);
+        assert!(e.take_request().is_none(), "Redo submitted a job");
+
+        click(&ctx, &mut e, "Save constraints copy…");
+        let request = e.take_request().expect("real widget request");
+        assert_eq!(request.sketch, id);
+        assert_eq!(request.source, path);
+        assert_eq!(request.expected, source.version);
+        assert!(e.take_request().is_none(), "one press, one request");
+
+        // Persist exactly that request, then reopen it: every stored row has to
+        // come back as itself, with its own UUID and its own Remove.
+        let mut document = Document::open(&path).expect("open fixture");
+        let prepared =
+            ferritecad_document::prepare_sketch_constraints(&document, id, &request.edits)
+                .expect("prepare annular constraints");
+        let [concentric, outer_radius, inner_radius, pin] = prepared.added.as_slice() else {
+            panic!("four constraints, got {:?}", prepared.added)
+        };
+        let (concentric, outer_radius, inner_radius, pin) =
+            (concentric.id, outer_radius.id, inner_radius.id, pin.id);
+        document
+            .write_sketch_constraints(&prepared)
+            .expect("persist");
+        let reading = ExtrudeEditSource::read(&document).expect("read persisted");
+        document.close().expect("close");
+
+        let mut e = Editor::default();
+        let ctx = egui::Context::default();
+        assert!(e.begin(&path, &reading, id));
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        let concentric_row = format!("Concentric · {concentric}");
+        let outer_row = format!("Radius 6.75 mm · {outer_radius}");
+        let out = frame(&ctx, &mut e, vec![]);
+        for row in [
+            &concentric_row,
+            &outer_row,
+            &format!("Radius 2.125 mm · {inner_radius}"),
+            &format!("Fixed centre (-3.5, 4.25) mm · {pin}"),
+        ] {
+            assert!(painted(&out, row), "persisted row missing: {row}");
+        }
+        assert!(
+            !painted(&out, "Coincident closure"),
+            "a shared centre was labelled Line closure"
+        );
+
+        // Both a shared centre and a radius come off by their exact UUIDs, and
+        // a replacement radius rides in the same request.
+        click_remove_on_row(&ctx, &mut e, &concentric_row);
+        assert_eq!(history_state(&e).0.remove, vec![concentric]);
+        click_remove_on_row(&ctx, &mut e, &outer_row);
+        assert_eq!(history_state(&e).0.remove, vec![concentric, outer_radius]);
+        click(&ctx, &mut e, &boundary_row);
+        enter_field(&ctx, &mut e, "Radius mm", "8.125", false);
+        click(&ctx, &mut e, "Add radius");
+        let replacement = history_state(&e).0;
+        assert_eq!(replacement.remove, vec![concentric, outer_radius]);
+        assert_eq!(
+            replacement.add,
+            vec![AddSketchConstraint::Circle {
+                curve: boundary,
+                kind: CircleConstraintKind::Radius(CircleRadiusMm::new(8.125).expect("positive")),
+            }]
+        );
+        click(&ctx, &mut e, "Undo");
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(history_state(&e).0, replacement);
+        click(&ctx, &mut e, "Save constraints copy…");
+        assert_eq!(
+            e.take_request().expect("replacement request").edits,
+            replacement
+        );
+    }
+
     /// The circle half of the same form, through real widgets and real clicks.
     #[test]
     fn circle_widgets_add_a_radius_and_a_fixed_centre_as_one_request_each() {
@@ -2343,6 +2651,261 @@ mod tests {
             assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
         }
         assert_eq!(std::fs::read(&path).expect("source"), before);
+    }
+
+    /// Two copies of the same document, published two ways, are one document.
+    ///
+    /// The newly minted constraint UUIDs are the only thing allowed to differ,
+    /// and they are matched off one by one rather than ignored, so a copy with
+    /// a different *number* of constraints still fails.
+    fn same_publication(
+        ui: &Path,
+        peer: &Path,
+        stored_curves: &[ferritecad_document::SketchCurve],
+        constraints: usize,
+    ) {
+        let a = Document::open_read_only(ui).expect("worker copy");
+        let b = Document::open_read_only(peer).expect("CLI copy");
+        assert_eq!(a.meta().document_id, b.meta().document_id);
+        assert_eq!(
+            a.topology_refs().expect("refs"),
+            b.topology_refs().expect("refs")
+        );
+        assert_eq!(
+            a.dependencies().expect("dependencies"),
+            b.dependencies().expect("dependencies")
+        );
+        for mut left in a.objects().expect("objects") {
+            let right = b.object(left.id).expect("read").expect("same object");
+            if let (
+                ferritecad_document::ObjectPayload::Sketch(s),
+                ferritecad_document::ObjectPayload::Sketch(t),
+            ) = (&mut left.payload, &right.payload)
+            {
+                assert_eq!(s.curves, stored_curves, "the saved guess moved");
+                assert_eq!(s.constraints.len(), constraints);
+                assert_eq!(t.constraints.len(), constraints);
+                for (x, y) in s.constraints.iter_mut().zip(&t.constraints) {
+                    if x.id != y.id {
+                        x.id = y.id;
+                    }
+                }
+                assert_eq!(s, t);
+            } else {
+                assert_eq!(left, right);
+            }
+        }
+        a.close().expect("close");
+        b.close().expect("close");
+        for format in ["stl", "fbx"] {
+            let mut exports = Vec::new();
+            for model in [ui, peer] {
+                let output = model.with_extension(format);
+                let result = std::process::Command::new(crate::creates::tests::ferritecad())
+                    .arg(format!("export-{format}"))
+                    .arg(model)
+                    .arg("-o")
+                    .arg(&output)
+                    .arg("--json")
+                    .output()
+                    .expect("export");
+                assert!(result.status.success(), "{result:?}");
+                exports.push(std::fs::read(output).expect("export bytes"));
+            }
+            assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
+        }
+    }
+
+    /// The same request, run once through the app's own worker and once through
+    /// the shipped CLI, publishes the same ring — added into an empty draft and
+    /// again as a removal of rows that were already persisted.
+    #[test]
+    fn native_annular_constraint_worker_and_cli_publish_the_same_ring() {
+        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+            eprintln!("skipped: annular constraint worker needs OCCT and planegcs");
+            return;
+        }
+        let (root, path, source) = annulus_fixture();
+        let before = std::fs::read(&path).expect("source");
+        let choice = &source.constraint_sketches[0];
+        let stored = choice.stored.clone().expect("a ring");
+        let (boundary, bore) =
+            ferritecad_document::constraint_circle_roles(&stored).expect("roles");
+        let boundary_row = format!("Boundary circle · {}", short(boundary));
+        let bore_row = format!("Bore circle · {}", short(bore));
+
+        // One pass of the form, exactly as a person drives it.
+        let mut e = Editor::default();
+        let ctx = egui::Context::default();
+        assert!(e.begin(&path, &source, choice.sketch));
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        click(&ctx, &mut e, &boundary_row);
+        click(&ctx, &mut e, "Pair Circle A");
+        click(&ctx, &mut e, &bore_row);
+        click(&ctx, &mut e, "Pair Circle B");
+        click(&ctx, &mut e, "Add Concentric");
+        click(&ctx, &mut e, &boundary_row);
+        enter_field(&ctx, &mut e, "Radius mm", "6.75", false);
+        click(&ctx, &mut e, "Add radius");
+        click(&ctx, &mut e, &bore_row);
+        enter_field(&ctx, &mut e, "Radius mm", "2.125", false);
+        click(&ctx, &mut e, "Add radius");
+        click(&ctx, &mut e, &boundary_row);
+        enter_field(&ctx, &mut e, "Fixed X (mm):", "-3.5", false);
+        enter_field(&ctx, &mut e, "Fixed Y (mm):", "4.25", false);
+        click(&ctx, &mut e, "Add Fixed centre");
+        click(&ctx, &mut e, "Save constraints copy…");
+
+        let run = |e: &mut Editor,
+                   request: EditSketchConstraintsRequest,
+                   ui: &Path,
+                   peer: &Path,
+                   source_path: &Path,
+                   sketch: ObjectId,
+                   version: &ferritecad_document::DocumentVersion,
+                   dof: Option<usize>| {
+            let additions = request
+                .edits
+                .add
+                .iter()
+                .map(peer_addition)
+                .collect::<Vec<_>>()
+                .join(",");
+            let removals = request
+                .edits
+                .remove
+                .iter()
+                .map(|id| format!("\"{id}\""))
+                .collect::<Vec<_>>()
+                .join(",");
+            let mut request = request;
+            request.destination = ui.to_path_buf();
+            let mut state = crate::edits::Edits::default();
+            let (tx, rx) = std::sync::mpsc::channel();
+            state
+                .start_constraints(request, move |r, g, c| {
+                    crate::edits::spawn_constraint_edit(r, c, move |result| {
+                        tx.send((g, result)).expect("reply")
+                    })
+                })
+                .expect("worker");
+            let (g, result) = rx
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .expect("worker response");
+            assert_eq!(
+                result
+                    .as_ref()
+                    .expect("published")
+                    .solve
+                    .as_ref()
+                    .map(|s| s.degrees_of_freedom()),
+                dof
+            );
+            assert_eq!(
+                finish_edit(e, &mut state, g, result),
+                Some(ui.to_path_buf())
+            );
+            let input = peer.with_extension("json");
+            std::fs::write(
+                &input,
+                format!(r#"{{"request_version":1,"remove":[{removals}],"add":[{additions}]}}"#),
+            )
+            .expect("input");
+            let out = std::process::Command::new(crate::creates::tests::ferritecad())
+                .arg("edit-sketch-constraints-copy")
+                .arg(source_path)
+                .arg("--sketch")
+                .arg(sketch.to_string())
+                .arg("--expect-version")
+                .arg(version.content.to_string())
+                .arg("--request")
+                .arg(input)
+                .arg("-o")
+                .arg(peer)
+                .arg("--json")
+                .output()
+                .expect("peer");
+            assert!(out.status.success(), "{out:?}");
+        };
+
+        let ui = root.path().join("worker.fcad");
+        let peer = root.path().join("peer.fcad");
+        let built = e.take_request().expect("widget request");
+        run(
+            &mut e,
+            built,
+            &ui,
+            &peer,
+            &path,
+            choice.sketch,
+            &source.version,
+            Some(0),
+        );
+        assert!(!e.active());
+        same_publication(&ui, &peer, &stored.curves, 4);
+        assert_eq!(std::fs::read(&path).expect("source"), before);
+
+        // Now the half review found missing last time: the rows are already
+        // persisted, and what is driven is their removal and replacement.
+        let published = Document::open_read_only(&ui).expect("published copy");
+        let reading = ExtrudeEditSource::read(&published).expect("snapshot");
+        published.close().expect("close");
+        let saved = reading.constraint_sketches[0]
+            .stored
+            .clone()
+            .expect("a constrained ring");
+        let concentric = saved
+            .constraints
+            .iter()
+            .find(|c| {
+                matches!(c.rule, SketchConstraintRule::Coincident { a, b }
+                    if a.at == ferritecad_document::SketchPointSelector::Center
+                        && b.at == ferritecad_document::SketchPointSelector::Center)
+            })
+            .expect("the shared centre")
+            .id;
+        let pin = saved
+            .constraints
+            .iter()
+            .find(|c| matches!(c.rule, SketchConstraintRule::Fixed { .. }))
+            .expect("the pin")
+            .id;
+        let mut e = Editor::default();
+        let ctx = egui::Context::default();
+        assert!(e.begin(&ui, &reading, reading.constraint_sketches[0].sketch));
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        click_remove_on_row(&ctx, &mut e, &format!("Concentric · {concentric}"));
+        click_remove_on_row(
+            &ctx,
+            &mut e,
+            &format!("Fixed centre (-3.5, 4.25) mm · {pin}"),
+        );
+        click(&ctx, &mut e, "Save constraints copy…");
+        let loosened = e.take_request().expect("removal request");
+        assert_eq!(loosened.edits.remove, vec![concentric, pin]);
+        assert!(loosened.edits.add.is_empty());
+        let ui2 = root.path().join("worker-freed.fcad");
+        let peer2 = root.path().join("peer-freed.fcad");
+        run(
+            &mut e,
+            loosened,
+            &ui2,
+            &peer2,
+            &ui,
+            reading.constraint_sketches[0].sketch,
+            &reading.version,
+            Some(4),
+        );
+        same_publication(&ui2, &peer2, &stored.curves, 2);
     }
 
     #[test]

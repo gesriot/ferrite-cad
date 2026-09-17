@@ -25,7 +25,8 @@ pub struct EditConstraintsArgs {
     /// Request v1: remove exact constraint UUIDs, then add Line H/V, length in mm,
     /// one Fixed Line endpoint at explicit X/Y mm, equal length, parallel or
     /// perpendicular between two Lines, or — on a Sketch that is one analytic
-    /// Circle — a radius in mm and a Fixed centre at explicit X/Y mm.
+    /// Circle, or two making an annulus — a radius in mm per Circle, a Fixed
+    /// centre at explicit X/Y mm, and a concentricity naming both Circles.
     #[arg(long)]
     request: PathBuf,
     /// New FCAD destination; no overwrite and no --force.
@@ -108,6 +109,17 @@ enum Addition {
         curve_id: StableEntityId,
         radius_mm: f64,
     },
+    /// The two named analytic Circles of an annular profile keep one centre.
+    ///
+    /// Both named in full and neither leading, like the two Line-pair rules: a
+    /// shared centre is a relationship, and a request that named one circle
+    /// would leave the reader to pick the other. It carries no number, because
+    /// "the same place" is not a quantity, and no `at`, because the only point
+    /// a circle could mean here is its centre.
+    Concentric {
+        a_curve_id: StableEntityId,
+        b_curve_id: StableEntityId,
+    },
 }
 impl Addition {
     fn checked(self) -> Result<AddSketchConstraint> {
@@ -135,6 +147,15 @@ impl Addition {
                         x: SketchCoordinateMm::new(x_mm)?,
                         y: SketchCoordinateMm::new(y_mm)?,
                     },
+                });
+            }
+            Self::Concentric {
+                a_curve_id,
+                b_curve_id,
+            } => {
+                return Ok(AddSketchConstraint::Concentric {
+                    a: a_curve_id,
+                    b: b_curve_id,
                 });
             }
             _ => {}
@@ -200,9 +221,9 @@ impl Addition {
             }
             // Both circle forms were answered before this, so reaching here
             // with one would be a bug rather than a request to interpret.
-            Self::Radius { .. } => {
+            Self::Radius { .. } | Self::Concentric { .. } => {
                 return Err(CadError::input(
-                    "a radius belongs to a circle, not to a Line",
+                    "a radius and a shared centre belong to circles, not to a Line",
                 ));
             }
         };

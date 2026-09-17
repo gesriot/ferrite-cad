@@ -34,11 +34,14 @@ ferritecad edit-sketch-constraints-copy <source.fcad> --sketch UUID \
 Одна неконструкционная аналитическая `Circle` в XY Sketch, один forward literal
 Blind `Extrude`/`NewBody` и его `Body`, прежний frame §25K. Две возможности:
 `Radius` и `Fixed` центра. Без Diameter, Tangent, EqualRadius, Arc, смешанных
-профилей, окружностей с отверстиями (§25L/M сохраняют свои контракты), mouse
-drag окружности, live solve, boolean Cut, in-place Save и выражений вместо
-literal radius. Числа проверяются той же `CircleExtrusion` policy, что и
-создание — одна политика, а не копии в UI и CLI, — и применяется она к
-**решённым** центру и радиусу перед публикацией.
+профилей, окружностей с отверстиями, mouse drag окружности, live solve, boolean
+Cut, in-place Save и выражений вместо literal radius. Числа проверяются той же
+`CircleExtrusion` policy, что и создание — одна политика, а не копии в UI и
+CLI, — и применяется она к **решённым** центру и радиусу перед публикацией.
+
+Пару окружностей §25L/M взял следующий срез —
+[§25O](annular-circle-constraints.md) — тем же маршрутом и без изменений здесь:
+solver, C ABI, payload v3 и capability остались как есть.
 
 ## Архитектура solver
 

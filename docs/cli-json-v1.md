@@ -1090,6 +1090,23 @@ links остаются, — поэтому прежние ответы не ме
 отсутствие системы — разные факты, и null говорит второй.
 [Полный контракт, архитектура solver и рецепт](circle-radius-constraints.md).
 
+§25O распространяет этот же request v1 на две окружности кольцевого профиля:
+`radius` на собственном UUID каждой окружности, один `fixed` с `at:"center"`
+на профиль и новая строгая форма пары:
+
+```json
+{"rule":"concentric","a_curve_id":"BOUNDARY_UUID","b_curve_id":"BORE_UUID"}
+```
+
+В discovery каждая запись `constraint_edit.circles` получает `role`:
+`"boundary"`, `"bore"` или `null` у одиночной окружности. Роли читаются из
+сохранённых радиусов. Сохранённая концентричность возвращается прежним
+`kind:"coincident"` с двумя точками `at:"center"`; новое слово применяется
+только к запросу. Удаление — по точному constraint UUID, замена — атомарный
+remove/add. Если решение меняет роли стенки и отверстия или нарушает политику
+кольца, публикации нет. Operation, schema и коды 0/2/7 прежние.
+[Полный контракт и исполняемый рецепт](annular-circle-constraints.md).
+
 §25F сохраняет operation/schema/request v1. В `add` команды
 `edit-sketch-constraints-copy` доступны `{curve_id,rule:"horizontal"}`,
 `{curve_id,rule:"vertical"}` и `{curve_id,rule:"distance",distance_mm:N}`.

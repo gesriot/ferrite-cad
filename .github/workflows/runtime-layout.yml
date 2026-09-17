@@ -421,14 +421,26 @@ jobs:
             macos) export DYLD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR"; export DYLD_FALLBACK_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR" ;;
             linux) export LD_LIBRARY_PATH="$FCAD_OCCT_LIB_DIR" ;;
           esac
-          gate=occt_without_solver_builds_plain_circles_and_refuses_circle_constraints
           cargo build --release --no-default-features -p ferritecad-cli
+          gate=occt_without_solver_builds_plain_circles_and_refuses_circle_constraints
           cargo test --release --no-default-features -p ferritecad-cli \
             --test circle_constraints "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee circle-no-solver.log
           if grep -q 'skipped:' circle-no-solver.log \
              || ! grep -Fq "test $gate ... ok" circle-no-solver.log; then
             echo "::error::mixed OCCT/no-solver gate did not execute"; exit 1
+          fi
+          # The same build, the same target, the hollow part: a ring still
+          # builds and cold-rebuilds without a solver, and constraining it
+          # refuses without publishing. Spelled out rather than looped over a
+          # table, for the reason the circle gate below this one gives.
+          gate=occt_without_solver_builds_plain_annuli_and_refuses_annular_constraints
+          cargo test --release --no-default-features -p ferritecad-cli \
+            --test annular_constraints "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee annular-no-solver.log
+          if grep -q 'skipped:' annular-no-solver.log \
+             || ! grep -Fq "test $gate ... ok" annular-no-solver.log; then
+            echo "::error::mixed OCCT/no-solver annular gate did not execute"; exit 1
           fi
 
       - name: Build the real application and the command line tool against both
@@ -901,6 +913,76 @@ jobs:
           done
           echo "FCAD_CIRCLE_CONSTRAINT_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
 
+      - name: Constrain a saved ring's radii, centre and concentricity through CLI and worker
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          CARGO_BUILD_JOBS: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          artifacts="$RUNNER_TEMP/annular-constraints"
+          mkdir -p "$artifacts"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH"; artifacts="$(cygpath -w "$artifacts")" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          export FCAD_ANNULAR_CONSTRAINT_ARTIFACTS="$artifacts"
+          # Peer process must be this build before the app worker gate.
+          cargo build --release --features planegcs -p ferritecad-cli
+          for gate in annular_constraint_discovery_and_protocol_without_native \
+            native_concentric_radii_and_a_pinned_centre_drive_the_hollow_solid \
+            native_stored_order_does_not_decide_the_roles \
+            native_annular_constraint_refusals_are_atomic
+          do
+            cargo test --release --features planegcs -p ferritecad-cli \
+              --test annular_constraints "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee "$gate.log"
+            if grep -q 'skipped:' "$gate.log" || ! grep -Fq "test $gate ... ok" "$gate.log"; then
+              echo "::error::annular constraint process gate $gate did not execute"; exit 1
+            fi
+          done
+          # The writer's own guard, on payloads only the document crate can
+          # forge, and the vocabulary boundary beside it.
+          cargo test --release -p ferritecad-document --lib constraint_write_tests \
+            -- --nocapture --test-threads=1 2>&1 | tee annular-writer.log
+          for gate in \
+            document::constraint_write_tests::a_forged_plan_may_not_drop_or_rewrite_a_line_closure_link \
+            document::constraint_write_tests::a_shared_centre_is_removable_and_is_the_only_removable_coincident \
+            document::constraint_write_tests::concentricity_needs_exactly_two_circles_to_relate
+          do
+            if ! grep -Fq "test $gate ... ok" annular-writer.log; then
+              echo "::error::writer guard gate $gate did not execute and pass"; exit 1
+            fi
+          done
+          if grep -q 'skipped:' annular-writer.log; then
+            echo "::error::a writer guard gate skipped itself"; exit 1
+          fi
+          # Six degrees of freedom down to none, measured on the real library.
+          gate=a_concentric_pair_loses_its_freedom_step_by_step_and_moves_as_one
+          cargo test --release --features planegcs -p ferritecad-sketch-solver \
+            --test circles "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee annular-solver.log
+          if grep -q 'skipped:' annular-solver.log \
+             || ! grep -Fq "test $gate ... ok" annular-solver.log; then
+            echo "::error::the concentric solver gate did not execute"; exit 1
+          fi
+          for ui_gate in \
+            constraints::tests::annulus_widgets_name_both_roles_and_build_one_parametric_request \
+            constraints::tests::native_annular_constraint_worker_and_cli_publish_the_same_ring
+          do
+            cargo test --release --features planegcs -p ferritecad-app "$ui_gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee annular-constraint-ui.log
+            if grep -q 'skipped:' annular-constraint-ui.log \
+               || ! grep -Fq "test $ui_gate ... ok" annular-constraint-ui.log; then
+              echo "::error::annular constraint UI gate did not execute"; exit 1
+            fi
+          done
+          echo "FCAD_ANNULAR_CONSTRAINT_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
+
       - name: Create, discover, edit and export through the JSON v1 CLI contract
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
@@ -991,6 +1073,7 @@ jobs:
           grep -q '^FCAD_ANNULUS_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_ANNULUS_EDIT_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CIRCLE_CONSTRAINT_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_ANNULAR_CONSTRAINT_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

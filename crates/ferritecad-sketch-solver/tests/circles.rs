@@ -213,6 +213,136 @@ fn two_circles_answer_for_themselves_whichever_order_they_were_added_in() {
 }
 
 #[test]
+fn a_concentric_pair_loses_its_freedom_step_by_step_and_moves_as_one() {
+    if !native() {
+        return;
+    }
+    // The two circles start in different places on purpose. Two that already
+    // shared a centre would move together whatever the solver did with the
+    // Coincident, and would prove nothing about it.
+    let pair = || {
+        let mut sketch = Sketch::new();
+        sketch.add_point(CENTER, 12.0, -7.0);
+        sketch.add_circle(HOLE, CENTER, 10.0);
+        sketch.add_point(SECOND_CENTER, 40.0, 40.0);
+        sketch.add_circle(SECOND, SECOND_CENTER, 4.0);
+        sketch
+    };
+    let concentric = ConstraintId(7);
+    let second_radius = ConstraintId(8);
+    let dofs = |sketch: &Sketch| {
+        solver::diagnose(sketch)
+            .expect("a diagnosable system")
+            .degrees_of_freedom()
+    };
+
+    let free = pair();
+    assert_eq!(dofs(&free), 6, "two centres and two radii");
+
+    let mut shared = pair();
+    shared.add_constraint(
+        concentric,
+        Constraint::Coincident {
+            a: CENTER,
+            b: SECOND_CENTER,
+        },
+    );
+    assert_eq!(dofs(&shared), 4, "one shared centre removes two");
+
+    let mut sized = pair();
+    sized
+        .add_constraint(
+            concentric,
+            Constraint::Coincident {
+                a: CENTER,
+                b: SECOND_CENTER,
+            },
+        )
+        .add_constraint(
+            RADIUS,
+            Constraint::Radius {
+                circle: HOLE,
+                radius: 6.75,
+            },
+        )
+        .add_constraint(
+            second_radius,
+            Constraint::Radius {
+                circle: SECOND,
+                radius: 2.125,
+            },
+        );
+    assert_eq!(dofs(&sized), 2, "two radii remove one each");
+
+    // Pinning one centre is enough, because the other is the same point now.
+    let pinned = |x: f64, y: f64| {
+        let mut sketch = pair();
+        sketch
+            .add_constraint(
+                concentric,
+                Constraint::Coincident {
+                    a: CENTER,
+                    b: SECOND_CENTER,
+                },
+            )
+            .add_constraint(
+                RADIUS,
+                Constraint::Radius {
+                    circle: HOLE,
+                    radius: 6.75,
+                },
+            )
+            .add_constraint(
+                second_radius,
+                Constraint::Radius {
+                    circle: SECOND,
+                    radius: 2.125,
+                },
+            )
+            .add_constraint(
+                PIN,
+                Constraint::Fixed {
+                    point: CENTER,
+                    x,
+                    y,
+                },
+            );
+        sketch
+    };
+    assert_eq!(dofs(&pinned(-3.5, 4.25)), 0, "one pin holds both circles");
+
+    // And the freedom comes back, measured again rather than remembered.
+    assert_eq!(dofs(&sized), 2);
+    assert_eq!(dofs(&shared), 4);
+    assert_eq!(dofs(&free), 6);
+
+    // Moving the pin moves BOTH circles, which is the whole of what
+    // concentricity buys: only one centre is named by any constraint.
+    for (x, y) in [(-3.5, 4.25), (100.0, -50.0)] {
+        let outcome = solver::solve(&pinned(x, y)).expect("a solvable pair");
+        let solution = outcome.solution().expect("solved");
+        assert_eq!(solution.degrees_of_freedom(), 0);
+        assert!(solution.worst_residual() <= solver::RESIDUAL_LIMIT);
+        for point in [CENTER, SECOND_CENTER] {
+            let at = solution.position(point).expect("a solved centre");
+            assert!(
+                (at.x - x).abs() <= 1e-9 && (at.y - y).abs() <= 1e-9,
+                "{point:?} stayed at {at:?} instead of ({x}, {y})"
+            );
+        }
+        for (circle, radius) in [(HOLE, 6.75), (SECOND, 2.125)] {
+            let solved = solution.circle(circle).expect("a solved circle");
+            assert!(
+                (solved.radius - radius).abs() <= 1e-9,
+                "{circle:?} came back {}",
+                solved.radius
+            );
+        }
+    }
+    assert_eq!(solver::native_live_sessions(), 0, "a session leaked");
+}
+
+#[test]
 fn two_different_radii_on_one_circle_conflict_and_two_equal_ones_are_redundant() {
     if !native() {
         return;

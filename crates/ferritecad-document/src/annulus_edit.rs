@@ -104,28 +104,25 @@ pub(crate) fn supported(
     object: &ObjectRecord,
 ) -> Result<SavedAnnulus> {
     let (sketch, height) = frame(document, objects, object)?;
-    // Circle constraints are not part of this slice, so a constrained pair is
-    // refused rather than edited around.
+    // Circle constraints are not part of *this* editor, so a constrained pair
+    // is refused rather than edited around. The constraint editor manages that
+    // case through the same reading below; see [`saved_pair`].
     if !sketch.constraints.is_empty() || sketch.curves.len() != 2 {
         return Err(unsupported(
             "annulus edit requires exactly two unconstrained Circles",
         ));
     }
-    let first = analytic_circle(&sketch.curves[0])?;
-    let second = analytic_circle(&sketch.curves[1])?;
-    // Two rows that answer to one UUID would make the request ambiguous, and
-    // no honest reading could say which curve an edit meant.
-    if first.0 == second.0 {
-        return Err(unsupported(
-            "annulus edit requires two distinct Circle UUIDs",
-        ));
-    }
-    let (outer, inner) = roles(first, second);
-    if !AnnularExtrusion::concentric(outer.1, inner.1) {
-        return Err(unsupported(
-            "annulus edit requires the two Circles to share a centre",
-        ));
-    }
+    saved_pair(sketch, height)
+}
+
+/// The saved annular profile a sketch holds, judged by the one numeric policy.
+///
+/// Shared with the constraint editor, which manages the same two circles and
+/// must read the same roles out of them. Only the reading is shared: whether a
+/// Sketch may carry constraints is each editor's own question, asked before
+/// this one.
+pub(crate) fn saved_pair(sketch: &crate::Sketch, height: f64) -> Result<SavedAnnulus> {
+    let (outer, inner) = pair_in_roles(sketch)?;
     // What is already stored has to be inside the policy an edit is judged by,
     // or the first accepted edit would silently narrow the document.
     AnnularExtrusion::new([outer.1.x, outer.1.y], outer.2, inner.2, height)
@@ -141,13 +138,40 @@ pub(crate) fn supported(
     })
 }
 
+/// The two analytic circles of an annular profile, each in the role it holds.
+///
+/// The one place a stored pair is read, so the annulus editor, the constraint
+/// editor, the catalogue and the writer's re-derivation cannot disagree about
+/// which circle is which.
+pub(crate) fn pair_in_roles(sketch: &crate::Sketch) -> Result<(ReadCircle, ReadCircle)> {
+    let [first, second] = sketch.curves.as_slice() else {
+        return Err(unsupported("an annular profile is exactly two Circles"));
+    };
+    let first = analytic_circle(first)?;
+    let second = analytic_circle(second)?;
+    // Two rows that answer to one UUID would make the request ambiguous, and
+    // no honest reading could say which curve an edit meant.
+    if first.0 == second.0 {
+        return Err(unsupported(
+            "annulus edit requires two distinct Circle UUIDs",
+        ));
+    }
+    let (outer, inner) = roles(first, second);
+    if !AnnularExtrusion::concentric(outer.1, inner.1) {
+        return Err(unsupported(
+            "annulus edit requires the two Circles to share a centre",
+        ));
+    }
+    Ok((outer, inner))
+}
+
 /// Which of two read circles bounds the region, by radius alone.
 ///
 /// The one place the roles are decided, so the catalogue, the request check and
 /// the writer's re-derivation cannot disagree about them. Equal radii are left
 /// to the numeric policy, which refuses a hole that is not inside its boundary.
-type ReadCircle = (StableEntityId, Point2, f64);
-fn roles(first: ReadCircle, second: ReadCircle) -> (ReadCircle, ReadCircle) {
+pub(crate) type ReadCircle = (StableEntityId, Point2, f64);
+pub(crate) fn roles(first: ReadCircle, second: ReadCircle) -> (ReadCircle, ReadCircle) {
     if first.2 >= second.2 {
         (first, second)
     } else {
