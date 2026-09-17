@@ -833,24 +833,38 @@ impl Document {
         let version = sketch.schema_version();
         // What this write may not do is lose a relationship it did not remove.
         // The rule is stated as the thing it protects — every Coincident
-        // closure link the stored sketch already holds is still here — rather
-        // than as "there is at least one constraint", which was the same rule
-        // for a Line profile and the wrong one for a circle: a circle has no
-        // joints, so removing its last dimension legitimately leaves none.
+        // closure link the stored sketch already holds is still here, under its
+        // own identity and saying the same thing — rather than as "there is at
+        // least one constraint", which was the same rule for a Line profile and
+        // the wrong one for a circle: a circle has no joints, so removing its
+        // last dimension legitimately leaves none.
+        //
+        // A Coincident between two circle *centres* is not closure. It is a
+        // concentricity the user asked for, it is shown as one, and it is
+        // removable as one. Telling the two apart is a question about what the
+        // Coincident says, not about which profile it is on, so it is asked of
+        // the rule: a link between two Line endpoints is protected here exactly
+        // as it always was, and no Coincident becomes removable because some
+        // other one is.
         let ObjectPayload::Sketch(stored) = &current.payload else {
             return Err(CadError::input("the selected object is not a Sketch"));
         };
-        let kept: std::collections::BTreeSet<_> = sketch
+        let closure = |c: &&crate::SketchConstraint| {
+            matches!(c.rule, crate::SketchConstraintRule::Coincident { a, b }
+                if !(a.at == crate::SketchPointSelector::Center
+                     && b.at == crate::SketchPointSelector::Center))
+        };
+        let kept: std::collections::BTreeMap<_, _> = sketch
             .constraints
             .iter()
-            .filter(|c| matches!(c.rule, crate::SketchConstraintRule::Coincident { .. }))
-            .map(|c| c.id)
+            .filter(closure)
+            .map(|c| (c.id, c.rule))
             .collect();
         if let Some(lost) = stored
             .constraints
             .iter()
-            .filter(|c| matches!(c.rule, crate::SketchConstraintRule::Coincident { .. }))
-            .find(|c| !kept.contains(&c.id))
+            .filter(closure)
+            .find(|c| kept.get(&c.id) != Some(&c.rule))
         {
             return Err(CadError::input(format!(
                 "constraint editing retains persisted closure, and this would drop {}",
@@ -2040,4 +2054,320 @@ fn rebuild_capabilities(tx: &Transaction<'_>) -> Result<()> {
         .map_err(|e| CadError::io("recording required capability", e))?;
     }
     Ok(())
+}
+
+/// The narrow write's own guard, exercised on payloads only this crate can
+/// forge.
+///
+/// [`PreparedSketchConstraints`] keeps its object private, so nothing outside
+/// this crate can hand the writer a payload that disagrees with the request it
+/// came from. Inside it, that is exactly what has to be tried: the guard is the
+/// last thing between a mutated plan and a document, and the question it
+/// answers — which Coincident links a constraint edit may not drop — got a new
+/// case with the annular profile.
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod constraint_write_tests {
+    use super::*;
+    use crate::{
+        Body, DatumPlane, Dependency, DependencyRole, EndCondition, Expression, Extrude, Point2,
+        Sketch, SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef,
+        SketchPointSelector, SolidOperation, prepare_sketch_constraints,
+    };
+    use ferritecad_types::{ObjectId, StableEntityId, Transform};
+
+    /// One XY plane, one Sketch of the given curves, one Blind extrusion and
+    /// its Body: the frame every constraint edit requires.
+    fn fixture(curves: Vec<SketchCurve>) -> (tempfile::TempDir, Document, ObjectId) {
+        let root = tempfile::tempdir().expect("dir");
+        let mut d = Document::create(root.path().join("source.fcad")).expect("document");
+        let [plane, sketch, extrude, body] = std::array::from_fn(|_| ObjectId::new());
+        d.write(|w| {
+            for (id, ordinal, payload) in [
+                (
+                    plane,
+                    0,
+                    ObjectPayload::DatumPlane(DatumPlane {
+                        placement: Transform::IDENTITY,
+                    }),
+                ),
+                (
+                    sketch,
+                    1,
+                    ObjectPayload::Sketch(Sketch {
+                        plane,
+                        curves: curves.clone(),
+                        constraints: Vec::new(),
+                    }),
+                ),
+                (
+                    extrude,
+                    2,
+                    ObjectPayload::Extrude(Extrude {
+                        profile: sketch,
+                        end_condition: EndCondition::Blind {
+                            distance: Expression::constant(15.)?,
+                        },
+                        reversed: false,
+                        operation: SolidOperation::NewBody,
+                        target_body: None,
+                    }),
+                ),
+                (
+                    body,
+                    3,
+                    ObjectPayload::Body(Body {
+                        tip_feature: Some(extrude),
+                    }),
+                ),
+            ] {
+                w.put_object(id, None, ordinal, Some("Profile"), &payload)?;
+            }
+            for (dependent, dependency, role) in [
+                (sketch, plane, DependencyRole::Plane),
+                (extrude, sketch, DependencyRole::Profile),
+                (body, extrude, DependencyRole::BodyTip),
+            ] {
+                w.add_dependency(Dependency {
+                    dependent,
+                    dependency,
+                    role,
+                })?;
+            }
+            Ok(())
+        })
+        .expect("fixture");
+        (root, d, sketch)
+    }
+
+    fn square() -> Vec<SketchCurve> {
+        let points = [[-20., -10.], [40., -8.], [42., 30.], [-20., 30.]];
+        points
+            .iter()
+            .enumerate()
+            .map(|(i, p)| SketchCurve {
+                id: StableEntityId::new(),
+                construction: false,
+                geometry: SketchGeometry::Line {
+                    start: Point2::new(p[0], p[1]).expect("p"),
+                    end: Point2::new(points[(i + 1) % 4][0], points[(i + 1) % 4][1]).expect("p"),
+                },
+            })
+            .collect()
+    }
+    fn ring() -> Vec<SketchCurve> {
+        [10., 4.]
+            .into_iter()
+            .map(|radius| SketchCurve {
+                id: StableEntityId::new(),
+                construction: false,
+                geometry: SketchGeometry::Circle {
+                    center: Point2::new(12., -7.).expect("centre"),
+                    radius,
+                },
+            })
+            .collect()
+    }
+    fn sketch_of(record: &ObjectRecord) -> &Sketch {
+        match &record.payload {
+            ObjectPayload::Sketch(sketch) => sketch,
+            _ => panic!("a Sketch"),
+        }
+    }
+    fn sketch_mut(record: &mut ObjectRecord) -> &mut Sketch {
+        match &mut record.payload {
+            ObjectPayload::Sketch(sketch) => sketch,
+            _ => panic!("a Sketch"),
+        }
+    }
+
+    #[test]
+    fn a_forged_plan_may_not_drop_or_rewrite_a_line_closure_link() {
+        let curves = square();
+        let (_root, mut d, id) = fixture(curves.clone());
+        let plan = prepare_sketch_constraints(
+            &d,
+            id,
+            &crate::SketchConstraintEdits {
+                remove: Vec::new(),
+                add: vec![crate::AddSketchConstraint::Line(
+                    crate::AddLineConstraint::Line {
+                        curve: curves[0].id,
+                        kind: crate::LineConstraintKind::Horizontal,
+                    },
+                )],
+            },
+        )
+        .expect("plan");
+        d.write_sketch_constraints(&plan).expect("write");
+        let stored = sketch_of(&d.object(id).expect("row").expect("present")).clone();
+        let closure = stored
+            .constraints
+            .iter()
+            .find(|c| matches!(c.rule, SketchConstraintRule::Coincident { .. }))
+            .copied()
+            .expect("the closure the edit added");
+
+        // Prepare an honest second edit, then forge its payload three ways.
+        let honest = prepare_sketch_constraints(
+            &d,
+            id,
+            &crate::SketchConstraintEdits {
+                remove: Vec::new(),
+                add: vec![crate::AddSketchConstraint::Line(
+                    crate::AddLineConstraint::Line {
+                        curve: curves[1].id,
+                        kind: crate::LineConstraintKind::Vertical,
+                    },
+                )],
+            },
+        )
+        .expect("plan");
+
+        // 1. The link is simply gone.
+        let mut forged = honest.clone();
+        sketch_mut(&mut forged.object)
+            .constraints
+            .retain(|c| c.id != closure.id);
+        assert!(
+            d.write_sketch_constraints(&forged).is_err(),
+            "a dropped closure was written"
+        );
+
+        // 2. The link keeps its UUID but is rewritten as a concentricity,
+        //    which is the removable kind. Identity alone would let this pass.
+        let mut disguised = honest.clone();
+        for c in &mut sketch_mut(&mut disguised.object).constraints {
+            if c.id == closure.id {
+                c.rule = SketchConstraintRule::Coincident {
+                    a: SketchPointRef::new(curves[0].id, SketchPointSelector::Center),
+                    b: SketchPointRef::new(curves[1].id, SketchPointSelector::Center),
+                };
+            }
+        }
+        assert!(
+            d.write_sketch_constraints(&disguised).is_err(),
+            "a closure link was relabelled into a removable one"
+        );
+
+        // 3. The link keeps its UUID and joins two other endpoints.
+        let mut moved = honest.clone();
+        for c in &mut sketch_mut(&mut moved.object).constraints {
+            if c.id == closure.id {
+                c.rule = SketchConstraintRule::Coincident {
+                    a: SketchPointRef::new(curves[0].id, SketchPointSelector::Start),
+                    b: SketchPointRef::new(curves[2].id, SketchPointSelector::End),
+                };
+            }
+        }
+        assert!(
+            d.write_sketch_constraints(&moved).is_err(),
+            "a closure link was moved to two other endpoints"
+        );
+
+        // The honest plan still writes, and nothing above changed the document.
+        assert_eq!(
+            sketch_of(&d.object(id).expect("row").expect("present")).constraints,
+            stored.constraints
+        );
+        d.write_sketch_constraints(&honest)
+            .expect("the honest plan");
+    }
+
+    #[test]
+    fn concentricity_needs_exactly_two_circles_to_relate() {
+        let ask = |curves: Vec<SketchCurve>, a: usize, b: usize| {
+            let (_root, d, id) = fixture(curves.clone());
+            let edits = crate::SketchConstraintEdits {
+                remove: Vec::new(),
+                add: vec![crate::AddSketchConstraint::Concentric {
+                    a: curves[a].id,
+                    b: curves[b].id,
+                }],
+            };
+            prepare_sketch_constraints(&d, id, &edits)
+                .err()
+                .map(|e| e.to_string())
+        };
+        // A profile of Lines has no circle to make concentric with anything.
+        let lines = square();
+        assert!(
+            ask(lines.clone(), 0, 1).is_some_and(|e| e.contains("Line profile")),
+            "a Line profile accepted a concentricity"
+        );
+        // One circle has no second circle, so there is no pair to relate. The
+        // fixture holds one curve, so both halves of the request name it.
+        let one = vec![ring()[0].clone()];
+        assert!(
+            ask(one, 0, 0).is_some(),
+            "a lone circle accepted a concentricity"
+        );
+        // And a pair named twice is not a pair.
+        let curves = ring();
+        assert!(
+            ask(curves, 1, 1).is_some_and(|e| e.contains("names one twice")),
+            "one circle was accepted as both sides"
+        );
+    }
+
+    #[test]
+    fn a_shared_centre_is_removable_and_is_the_only_removable_coincident() {
+        let curves = ring();
+        let (_root, mut d, id) = fixture(curves.clone());
+        let plan = prepare_sketch_constraints(
+            &d,
+            id,
+            &crate::SketchConstraintEdits {
+                remove: Vec::new(),
+                add: vec![crate::AddSketchConstraint::Concentric {
+                    a: curves[0].id,
+                    b: curves[1].id,
+                }],
+            },
+        )
+        .expect("plan");
+        // A concentricity is one constraint, and it is the existing Coincident
+        // of two points — no invented rim point, no second centre.
+        let [added] = plan.added.as_slice() else {
+            panic!("one added constraint, got {:?}", plan.added)
+        };
+        let SketchConstraintRule::Coincident { a, b } = added.rule else {
+            panic!("a shared centre is a Coincident of two points")
+        };
+        assert_eq!(a.at, SketchPointSelector::Center);
+        assert_eq!(b.at, SketchPointSelector::Center);
+        assert_eq!((a.curve, b.curve), (curves[0].id, curves[1].id));
+        // The saved roles travel with the plan, read from the saved radii.
+        assert_eq!(plan.circle_roles(), Some((curves[0].id, curves[1].id)));
+        d.write_sketch_constraints(&plan).expect("write");
+
+        // The stored sketch declares the vocabulary it now speaks, and nothing
+        // wider: the existing circle capability already covers a centre.
+        let stored = sketch_of(&d.object(id).expect("row").expect("present")).clone();
+        assert_eq!(stored.schema_version(), 3);
+        assert_eq!(
+            stored.required_capabilities(),
+            vec![
+                crate::CORE_CAPABILITY.to_owned(),
+                crate::SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
+                crate::SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY.to_owned(),
+            ]
+        );
+
+        // And it comes off again by its own UUID.
+        let removal = prepare_sketch_constraints(
+            &d,
+            id,
+            &crate::SketchConstraintEdits {
+                remove: vec![added.id],
+                add: Vec::new(),
+            },
+        )
+        .expect("removal");
+        d.write_sketch_constraints(&removal).expect("write");
+        let bare = sketch_of(&d.object(id).expect("row").expect("present")).clone();
+        assert!(bare.constraints.is_empty());
+        assert_eq!(bare.schema_version(), 1, "nothing left to declare");
+        assert_eq!(bare.curves, curves, "the geometry is the saved guess");
+    }
 }

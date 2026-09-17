@@ -761,7 +761,17 @@ fn annulus_discovery_and_protocol_without_kernel() {
     assert!(sketch["vertices"].is_null(), "no invented polygon");
     assert_eq!(sketch["circle_edit"]["available"], false);
     assert!(sketch["circle_edit"]["circle"].is_null());
-    assert_eq!(sketch["constraint_edit"]["available"], false);
+    // The constraint editor now manages this profile too (§25O), and says so
+    // about the same two circles this editor names. What it must not do is
+    // take this editor's answer away: an unconstrained ring still edits here.
+    assert_eq!(sketch["constraint_edit"]["available"], true);
+    assert_eq!(
+        sketch["constraint_edit"]["circles"]
+            .as_array()
+            .expect("circles")
+            .len(),
+        2
+    );
     assert_eq!(f.catalog["edit_extrude"]["available"], true);
     assert_eq!(f.catalog["features"][0]["distance_mm"], 15.0);
 

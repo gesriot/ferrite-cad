@@ -389,9 +389,11 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     // constraints existed must never start doing.
     let constraints = match &prepared {
         CopyWrite::Constraints(p) => match &p.object().payload {
-            ObjectPayload::Sketch(sketch) if !sketch.constraints.is_empty() => {
-                Some((selected.id, p.height_mm))
-            }
+            ObjectPayload::Sketch(sketch) if !sketch.constraints.is_empty() => Some(SolveCheck {
+                sketch: selected.id,
+                height_mm: p.height_mm,
+                roles: p.circle_roles(),
+            }),
             _ => None,
         },
         _ => None,
@@ -439,12 +441,25 @@ fn require_version(document: &Document, expected: DocumentVersion) -> Result<()>
     Ok(())
 }
 
+/// What the solved drawing of one changed sketch has to be.
+///
+/// The saved roles travel with it because they are a fact about the document
+/// before the solve, and the one question the solved geometry cannot answer
+/// about itself: a pair that swapped sizes is a perfectly good annulus, and
+/// only the saved roles say it is not the one that was being edited.
+#[derive(Debug, Clone, Copy)]
+struct SolveCheck {
+    sketch: ObjectId,
+    height_mm: f64,
+    roles: Option<(StableEntityId, StableEntityId)>,
+}
+
 fn checked_rebuild<K: GeometryKernel + ?Sized>(
     document: &Document,
     kernel: &mut K,
     context: &OperationContext,
     baseline: Option<&BTreeSet<StableEntityId>>,
-    constraints: Option<(ObjectId, f64)>,
+    constraints: Option<SolveCheck>,
 ) -> Result<(
     BTreeSet<StableEntityId>,
     Option<ferritecad_eval::SketchSolveReport>,
@@ -469,7 +484,12 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
                 _ => {}
             }
         }
-        let solve = if let Some((id, height)) = constraints {
+        let solve = if let Some(SolveCheck {
+            sketch: id,
+            height_mm: height,
+            roles,
+        }) = constraints
+        {
             let report = built.solve_report(id).ok_or_else(|| {
                 CadError::constraint("changed constrained Sketch produced no solve report")
             })?;
@@ -492,7 +512,7 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
                         ends.push([end.x, end.y]);
                     }
                     ferritecad_document::SketchGeometry::Circle { center, radius } => {
-                        circles.push(([center.x, center.y], radius));
+                        circles.push((curve.id(), [center.x, center.y], radius));
                     }
                     _ => {
                         return Err(CadError::unsupported(
@@ -520,8 +540,52 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
                     }
                 }
                 ferritecad_document::PolygonExtrusion::new(starts, height)?;
+            } else if let Some((outer_id, inner_id)) = roles {
+                // Two circles, and which is which was decided from the saved
+                // radii before the solve. Each is found by its own UUID: taking
+                // them in list order, or re-deciding the roles from the solved
+                // radii, would accept a pair that had swapped sizes as though
+                // it had always been the other way round.
+                let solved = |wanted| {
+                    circles
+                        .iter()
+                        .find(|(id, ..)| *id == wanted)
+                        .map(|(_, center, radius)| (*center, *radius))
+                        .ok_or_else(|| {
+                            CadError::constraint(format!(
+                                "the solved drawing has no circle {wanted}, which this edit named"
+                            ))
+                        })
+                };
+                if circles.len() != 2 {
+                    return Err(CadError::unsupported(
+                        "an annular profile is exactly two analytic Circles",
+                    ));
+                }
+                let (outer_center, outer_radius) = solved(outer_id)?;
+                let (inner_center, inner_radius) = solved(inner_id)?;
+                // Concentricity is checked on the solved centres, because it is
+                // what the part needs and not every accepted request states it.
+                if !ferritecad_document::AnnularExtrusion::concentric(
+                    ferritecad_document::Point2::new(outer_center[0], outer_center[1])?,
+                    ferritecad_document::Point2::new(inner_center[0], inner_center[1])?,
+                ) {
+                    return Err(CadError::constraint(
+                        "the solved circles are about different centres, and an off-centre hole \
+                         needs more than this slice builds",
+                    ));
+                }
+                // The saved roles are passed in that order, so a solve that put
+                // the bore outside its boundary is refused by the one numeric
+                // policy rather than by a second opinion here.
+                ferritecad_document::AnnularExtrusion::new(
+                    outer_center,
+                    outer_radius,
+                    inner_radius,
+                    height,
+                )?;
             } else {
-                let [(center, radius)] = circles.as_slice() else {
+                let [(_, center, radius)] = circles.as_slice() else {
                     return Err(CadError::unsupported(
                         "constraint edit supports one analytic Circle per profile",
                     ));

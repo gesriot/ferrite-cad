@@ -176,6 +176,16 @@ pub enum AddSketchConstraint {
         curve: StableEntityId,
         kind: CircleConstraintKind,
     },
+    /// These two circles of the same profile keep one centre.
+    ///
+    /// Two named circles rather than one leading circle and an implied other:
+    /// concentricity is a relationship, it has no side that owns it, and a
+    /// request that named one circle would be deciding on the reader's behalf
+    /// which second circle it meant.
+    Concentric {
+        a: StableEntityId,
+        b: StableEntityId,
+    },
 }
 
 impl From<AddLineConstraint> for AddSketchConstraint {
@@ -194,6 +204,9 @@ impl From<AddLineConstraint> for AddSketchConstraint {
 enum Family {
     Lines,
     Circle,
+    /// Two analytic circles, one inside the other: the annular profile of
+    /// [§25L][crate::AnnularExtrusion], now with dimensions of its own.
+    Annulus,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -272,6 +285,13 @@ fn supported_family(
                 CadError::unsupported(format!("saved circle is outside edit policy: {e}"))
             })?;
         }
+        Family::Annulus => {
+            // The same reading, the same roles and the same numeric policy the
+            // annulus editor applies to a saved pair — asked here through the
+            // one function that owns them, so a document the two editors both
+            // see cannot be two different drawings.
+            crate::annulus_edit::saved_pair(sketch, height)?;
+        }
     }
     managed(sketch, family)?;
     Ok((family, height))
@@ -292,8 +312,18 @@ fn classify(sketch: &Sketch) -> Result<Family> {
     {
         return Ok(Family::Circle);
     }
+    // Two of them are the annular profile. Which is the boundary and which is
+    // the bore is not decided here: that is read from the radii, once, where
+    // the annulus editor already reads it.
+    if let [a, b] = sketch.curves.as_slice()
+        && matches!(a.geometry, SketchGeometry::Circle { .. })
+        && matches!(b.geometry, SketchGeometry::Circle { .. })
+    {
+        return Ok(Family::Annulus);
+    }
     Err(CadError::unsupported(
-        "constraint edit supports a profile of Lines or one analytic Circle",
+        "constraint edit supports a profile of Lines, one analytic Circle, or two making an \
+         annulus",
     ))
 }
 
@@ -394,6 +424,12 @@ enum Slot {
     /// dimensions of different geometry, and sharing a slot would make a
     /// document's refusal message name a Line where a circle stands.
     Radius(StableEntityId),
+    /// The one shared centre of an unordered pair of circles.
+    ///
+    /// Sorted, so naming the boundary first and naming the bore first occupy
+    /// the same slot: they are one relationship asked twice, and a profile that
+    /// stored both would be saying the same thing to the solver twice.
+    Concentric(StableEntityId, StableEntityId),
 }
 fn line_slot(curve: StableEntityId, kind: LineConstraintKind) -> Slot {
     match kind {
@@ -413,6 +449,30 @@ fn relation_slot(a: StableEntityId, b: StableEntityId) -> Slot {
     let (a, b) = sorted(a, b);
     Slot::Relation(a, b)
 }
+fn concentric_slot(a: StableEntityId, b: StableEntityId) -> Slot {
+    let (a, b) = sorted(a, b);
+    Slot::Concentric(a, b)
+}
+/// The centre of a circle, as a point of the sketch.
+fn center(curve: StableEntityId) -> SketchPointRef {
+    SketchPointRef::new(curve, SketchPointSelector::Center)
+}
+/// The two distinct circles a stored `Coincident` makes concentric, when that
+/// is what it says.
+///
+/// A `Coincident` is concentricity only when **both** of its points are centres
+/// and they belong to different curves. Every other `Coincident` — in
+/// particular the closure link between two Line endpoints — is not this, is not
+/// read as this, and stays exactly as protected as it was.
+fn concentric_of(rule: SketchConstraintRule) -> Option<(StableEntityId, StableEntityId)> {
+    let SketchConstraintRule::Coincident { a, b } = rule else {
+        return None;
+    };
+    (a.at == SketchPointSelector::Center
+        && b.at == SketchPointSelector::Center
+        && a.curve != b.curve)
+        .then_some((a.curve, b.curve))
+}
 /// The slot a stored circle rule occupies, and the circle it names.
 ///
 /// A pinned centre takes the profile-wide [`Slot::Pin`], the same slot a pinned
@@ -426,6 +486,20 @@ fn circle_slot_of(rule: SketchConstraintRule) -> Option<(Slot, StableEntityId)> 
         }
         _ => None,
     }
+}
+
+/// The slot a stored rule occupies on an annular profile, and every circle it
+/// names.
+///
+/// The single-circle vocabulary plus concentricity, which only a pair can hold.
+/// Written as its own reading rather than as [`circle_slot_of`] widened: that
+/// one answers for a profile with no second circle to name, and a `Coincident`
+/// there could only ever be a link this editor does not manage.
+fn annulus_slot_of(rule: SketchConstraintRule) -> Option<(Slot, [StableEntityId; 2])> {
+    if let Some((a, b)) = concentric_of(rule) {
+        return Some((concentric_slot(a, b), [a, b]));
+    }
+    circle_slot_of(rule).map(|(slot, curve)| (slot, [curve, curve]))
 }
 
 /// The slot a stored rule occupies and every Line it names, or `None` when the
@@ -451,6 +525,14 @@ fn requested(add: &AddSketchConstraint) -> Result<(Slot, [StableEntityId; 2])> {
                 },
                 [curve, curve],
             ));
+        }
+        AddSketchConstraint::Concentric { a, b } => {
+            if a == b {
+                return Err(CadError::input(
+                    "concentricity relates two different Circles; this addition names one twice",
+                ));
+            }
+            return Ok((concentric_slot(a, b), [a, b]));
         }
         AddSketchConstraint::Line(line) => line,
     };
@@ -488,13 +570,17 @@ fn occupied(slot: Slot) -> &'static str {
         }
         Slot::Orientation(_) => "a Line may hold only one H/V; remove its current constraint first",
         Slot::Radius(_) => "a circle may hold only one radius; remove its current constraint first",
+        Slot::Concentric(..) => {
+            "these two circles already share a centre; remove that constraint in the same request"
+        }
     }
 }
 
 /// Preserve only this declared family of stored relationships; never simplify others.
 fn managed(sketch: &Sketch, family: Family) -> Result<()> {
-    if family == Family::Circle {
-        return managed_circle(sketch);
+    match family {
+        Family::Circle | Family::Annulus => return managed_circles(sketch, family),
+        Family::Lines => {}
     }
     let curve_ids: BTreeSet<_> = sketch.curves.iter().map(|c| c.id).collect();
     let expected: BTreeSet<_> = closures(sketch).into_iter().collect();
@@ -539,33 +625,57 @@ fn managed(sketch: &Sketch, family: Family) -> Result<()> {
     Ok(())
 }
 
-/// The circle family's own version of the same rule.
+/// The circle families' own version of the same rule.
 ///
 /// A circle has no joints, so there is no closure to require and no Coincident
-/// to preserve: what a managed circle profile may hold is one radius and one
-/// pinned centre, both about the one curve, and nothing else.
-fn managed_circle(sketch: &Sketch) -> Result<()> {
-    let curve = sketch.curves[0].id;
+/// to preserve for that reason: what a managed circle profile may hold is one
+/// radius per circle and one pinned centre, and — when there are two circles —
+/// one concentricity between them. A `Coincident` here is therefore either that
+/// concentricity or nothing this editor manages; the Line closure it protects
+/// elsewhere cannot occur on a profile with no Line in it.
+fn managed_circles(sketch: &Sketch, family: Family) -> Result<()> {
+    let curves: BTreeSet<_> = sketch.curves.iter().map(|c| c.id).collect();
     let mut seen_ids = BTreeSet::new();
     let mut slots = BTreeSet::new();
     for c in &sketch.constraints {
         if !seen_ids.insert(c.id) {
             return Err(CadError::unsupported("duplicate constraint UUID"));
         }
-        let Some((slot, named)) = circle_slot_of(c.rule) else {
-            return Err(CadError::unsupported(
-                "constraint edit supports only one positive radius and one fixed centre on an \
-                 analytic Circle",
-            ));
+        let Some((slot, named)) = family_slot_of(family, c.rule) else {
+            return Err(CadError::unsupported(match family {
+                Family::Annulus => {
+                    "constraint edit supports only a positive radius per Circle, one fixed centre \
+                     and one concentricity on an annular profile"
+                }
+                _ => {
+                    "constraint edit supports only one positive radius and one fixed centre on an \
+                     analytic Circle"
+                }
+            }));
         };
-        if named != curve || !slots.insert(slot) {
+        if !named.iter().all(|id| curves.contains(id)) || !slots.insert(slot) {
             return Err(CadError::unsupported(match slot {
                 Slot::Pin => "constraint edit supports at most one fixed centre per circle",
+                Slot::Concentric(..) => {
+                    "constraint edit supports at most one concentricity per pair of Circles"
+                }
                 _ => "constraint edit refuses more than one radius on a circle",
             }));
         }
     }
     Ok(())
+}
+
+/// Which stored rules a family manages, decided once for every caller.
+fn family_slot_of(
+    family: Family,
+    rule: SketchConstraintRule,
+) -> Option<(Slot, [StableEntityId; 2])> {
+    match family {
+        Family::Lines => slot_of(rule),
+        Family::Circle => circle_slot_of(rule).map(|(slot, curve)| (slot, [curve, curve])),
+        Family::Annulus => annulus_slot_of(rule),
+    }
 }
 
 /// Validate the atomic remove-then-add request without minting IDs or solving.
@@ -595,13 +705,9 @@ fn retained(
                     "constraint {id} does not belong to the selected Sketch"
                 ))
             })?;
-        let removable = match family {
-            Family::Lines => slot_of(c.rule).is_some(),
-            Family::Circle => circle_slot_of(c.rule).is_some(),
-        };
-        if !removable {
+        if family_slot_of(family, c.rule).is_none() {
             return Err(CadError::input(
-                "only H/V, Line length, equal length, Parallel/Perpendicular, the Fixed endpoint, a circle radius or a fixed centre may be removed; closure links are retained",
+                "only H/V, Line length, equal length, Parallel/Perpendicular, the Fixed endpoint, a circle radius, a fixed centre or a concentricity may be removed; Line closure links are retained",
             ));
         }
     }
@@ -613,10 +719,7 @@ fn retained(
         .collect();
     let mut lines: BTreeSet<_> = kept
         .iter()
-        .filter_map(|c| match family {
-            Family::Lines => slot_of(c.rule).map(|(slot, _)| slot),
-            Family::Circle => circle_slot_of(c.rule).map(|(slot, _)| slot),
-        })
+        .filter_map(|c| family_slot_of(family, c.rule).map(|(slot, _)| slot))
         .collect();
     for add in &edits.add {
         let (slot, curves) = requested(add)?;
@@ -627,12 +730,22 @@ fn retained(
         let fits = matches!(
             (family, add),
             (Family::Lines, AddSketchConstraint::Line(_))
-                | (Family::Circle, AddSketchConstraint::Circle { .. })
+                | (
+                    Family::Circle | Family::Annulus,
+                    AddSketchConstraint::Circle { .. }
+                )
+                | (Family::Annulus, AddSketchConstraint::Concentric { .. })
         );
         if !fits {
             return Err(CadError::input(match family {
                 Family::Lines => "this Sketch is a Line profile and takes no circle constraint",
-                Family::Circle => "this Sketch is one analytic Circle and takes no Line constraint",
+                Family::Circle => {
+                    "this Sketch is one analytic Circle: it takes no Line constraint, and one \
+                     circle has nothing to be concentric with"
+                }
+                Family::Annulus => {
+                    "this Sketch is two analytic Circles and takes no Line constraint"
+                }
             }));
         }
         for curve in curves {
@@ -666,11 +779,38 @@ pub struct PreparedSketchConstraints {
     pub added: Vec<SketchConstraint>,
     pub removed: Vec<StableEntityId>,
     pub height_mm: f64,
+    roles: Option<(StableEntityId, StableEntityId)>,
 }
 impl PreparedSketchConstraints {
     pub fn object(&self) -> &ObjectRecord {
         &self.object
     }
+
+    /// The boundary and the bore of the **saved** profile, in that order, or
+    /// `None` for a profile that is not an annulus.
+    ///
+    /// Read from the saved radii before anything is solved, and carried here so
+    /// the rebuild can check the solved drawing still holds the same two roles
+    /// under the same two UUIDs. Re-reading it from the solved answer instead
+    /// would legalise a swap: two circles that exchanged sizes would look like
+    /// a perfectly good annulus whose roles had simply always been the other
+    /// way round.
+    pub fn circle_roles(&self) -> Option<(StableEntityId, StableEntityId)> {
+        self.roles
+    }
+}
+
+/// Which of a managed profile's circles bounds the part and which is the bore,
+/// or `None` when the profile is not two circles.
+///
+/// The catalogue's answer for a reader — `inspect`, and the form in the app —
+/// so neither has to decide roles for itself. It is the same reading the editor
+/// uses, asked of the same stored sketch.
+pub fn constraint_circle_roles(sketch: &Sketch) -> Option<(StableEntityId, StableEntityId)> {
+    (classify(sketch).ok()? == Family::Annulus)
+        .then(|| crate::annulus_edit::pair_in_roles(sketch).ok())
+        .flatten()
+        .map(|(outer, inner)| (outer.0, inner.0))
 }
 
 pub fn prepare_sketch_constraints(
@@ -711,6 +851,22 @@ pub fn prepare_sketch_constraints(
     }
     for add in &edits.add {
         let line = match *add {
+            AddSketchConstraint::Concentric { a, b } => {
+                // The existing Coincident of two points, which is what "one
+                // shared centre" already means: a circle's centre is a point of
+                // the sketch, so there is nothing else to say and no second way
+                // to compute a centre.
+                let c = SketchConstraint {
+                    id: StableEntityId::new(),
+                    rule: SketchConstraintRule::Coincident {
+                        a: center(a),
+                        b: center(b),
+                    },
+                };
+                kept.push(c);
+                added.push(c);
+                continue;
+            }
             AddSketchConstraint::Circle { curve, kind } => {
                 let rule = match kind {
                     CircleConstraintKind::Radius(radius) => SketchConstraintRule::Radius {
@@ -771,10 +927,17 @@ pub fn prepare_sketch_constraints(
         added.push(c);
     }
     sketch.constraints = kept;
+    // The saved roles, read before this edit is written and from the saved
+    // radii alone.
+    let roles = (family == Family::Annulus)
+        .then(|| crate::annulus_edit::pair_in_roles(sketch))
+        .transpose()?
+        .map(|(outer, inner)| (outer.0, inner.0));
     Ok(PreparedSketchConstraints {
         object,
         added,
         removed: edits.remove.clone(),
         height_mm,
+        roles,
     })
 }
