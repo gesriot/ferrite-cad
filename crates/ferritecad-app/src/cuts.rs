@@ -295,6 +295,13 @@ impl Editor {
                         existing.feature, existing.center_mm[0], existing.center_mm[1], existing.radius_mm,
                         existing.depth_mm, ferritecad_document::WALL_CLEARANCE_MM));
                 }
+                if let Subject::Edit(choice) = &draft.subject
+                    && let Some(other) = choice.saved.as_ref().and_then(|s| s.neighboring_tool.as_ref())
+                {
+                    ui.small(format!("Other cut {}: ({}, {}) r{}, depth {} mm. Keep the disks separate by more than {} mm.",
+                        other.feature, other.center_mm[0], other.center_mm[1], other.radius_mm,
+                        other.depth_mm, ferritecad_document::WALL_CLEARANCE_MM));
+                }
                 match &shown.editing {
                     None => {
                         ui.label(
@@ -494,7 +501,7 @@ impl Subject {
                     plane: saved.plane,
                     extents_mm: saved.extents_mm,
                     height_mm: saved.height_mm,
-                    modifies: saved.base_feature,
+                    modifies: saved.previous_feature,
                     editing: Some(Editing {
                         feature: saved.feature,
                         tool_sketch: saved.tool_sketch,
@@ -1192,17 +1199,63 @@ mod tests {
     /// the shipped CLI, publishes the same edited part.
     #[test]
     fn native_cut_edit_worker_and_cli_publish_the_same_part() {
+        edit_worker_and_cli(None);
+    }
+
+    #[test]
+    fn native_either_sequential_cut_widgets_worker_and_cli_keep_draft_and_identity() {
+        for index in 0..2 {
+            edit_worker_and_cli(Some(index));
+        }
+    }
+
+    fn edit_worker_and_cli(index: Option<usize>) {
         if !ferritecad_occt::is_available() {
             assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
             eprintln!("skipped: the cut edit worker needs OCCT");
             return;
         }
-        let (root, path, source) = pocket(4.);
+        let (root, mut path, mut source) = pocket(4.1234567890123);
+        if index.is_some() {
+            let mut d = Document::open(&path).expect("fixture");
+            let body = source
+                .cut_features
+                .iter()
+                .find_map(|c| c.saved.as_ref())
+                .expect("first")
+                .body;
+            let cut = ferritecad_document::prepare_circular_cut(
+                &d,
+                body,
+                &CircularCut {
+                    center_mm: [45.1234567890123, 25.2345678901234],
+                    radius_mm: 6.1234567890123,
+                    depth_mm: 7.1234567890123,
+                },
+            )
+            .expect("second");
+            d.write_circular_cut(&cut).expect("write");
+            d.close().expect("close");
+            let d = Document::open_read_only(&path).expect("read");
+            source = ExtrudeEditSource::read(&d).expect("snapshot");
+            d.close().expect("close");
+            // A separate source name makes it clear this is the saved two-cut file.
+            let two = root.path().join("two.fcad");
+            std::fs::rename(&path, &two).expect("fixture rename");
+            path = two;
+        }
         let before = std::fs::read(&path).expect("source");
         let saved = source
             .cut_features
             .iter()
-            .find(|c| c.refusal.is_none())
+            .filter(|c| c.refusal.is_none())
+            .find(|c| {
+                index.is_none_or(|i| {
+                    c.saved
+                        .as_ref()
+                        .is_some_and(|s| (s.feature == s.tip_feature) == (i == 1))
+                })
+            })
             .expect("one editable cut")
             .saved
             .clone()
@@ -1214,14 +1267,116 @@ mod tests {
         for _ in 0..3 {
             frame(&ctx, &mut e, false);
         }
-        fill(&ctx, &mut e, "30", "20", "7.5", "6");
+        let initial = e.draft.as_ref().expect("draft").typed.clone();
+        if index.is_some() {
+            assert_eq!(
+                source
+                    .cut_features
+                    .iter()
+                    .filter(|c| c.saved.is_some())
+                    .count(),
+                2
+            );
+            let other = saved.neighboring_tool.as_ref().expect("other");
+            fill(
+                &ctx,
+                &mut e,
+                &other.center_mm[0].to_string(),
+                &other.center_mm[1].to_string(),
+                "5",
+                "3",
+            );
+            click(&ctx, &mut e, "Apply cut");
+            assert!(
+                e.draft
+                    .as_ref()
+                    .expect("draft")
+                    .refusal
+                    .as_ref()
+                    .expect("visible refusal")
+                    .contains("separate")
+            );
+            assert!(e.draft.as_ref().expect("draft").history.undo.is_empty());
+        }
+        let (x, y, r, d) = if index == Some(1) {
+            ("44", "27", "5.5", "5.25")
+        } else {
+            ("22", "17", "4.5", "3.25")
+        };
+        fill(&ctx, &mut e, x, y, r, d);
         click(&ctx, &mut e, "Apply cut");
+        assert_eq!(e.draft.as_ref().expect("draft").history.undo.len(), 1);
+        let confirmed = e.draft.as_ref().expect("draft").typed.clone();
+        click(&ctx, &mut e, "Undo");
+        assert_eq!(
+            e.draft.as_ref().expect("draft").typed,
+            initial,
+            "exact first Undo"
+        );
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(e.draft.as_ref().expect("draft").typed, confirmed);
+        // The native Save dialog consumes this request, then Cancel returns
+        // without starting a worker. Discard exactly that request here.
+        click(&ctx, &mut e, "Save cut copy…");
+        e.take_edit_request().expect("cancelled Save request");
+        assert_eq!(e.draft.as_ref().expect("draft").typed, confirmed);
+        assert!(e.draft.as_ref().expect("draft").applied.is_some());
         click(&ctx, &mut e, "Save cut copy…");
         let mut request = e.take_edit_request().expect("widget request");
 
         let ui = root.path().join("worker.fcad");
         request.destination = ui.clone();
         let edit = request.edit;
+        if index.is_some() {
+            let mut stale = request.clone();
+            stale.expected.content = ferritecad_types::ContentHash::of_bytes(b"stale version");
+            let mut failed = crate::edits::Edits::default();
+            let (tx, rx) = std::sync::mpsc::channel();
+            failed
+                .start_cut_edit(stale, move |r, g, c| {
+                    crate::edits::spawn_cut_edit(r, c, move |result| {
+                        tx.send((g, result)).expect("reply")
+                    })
+                })
+                .expect("failed worker");
+            let (g, result) = rx
+                .recv_timeout(std::time::Duration::from_secs(120))
+                .expect("reply");
+            assert!(
+                result
+                    .as_ref()
+                    .expect_err("stale refusal")
+                    .to_string()
+                    .contains("source has changed")
+            );
+            let mut holder = crate::sketch::Editor::default();
+            holder.cuts = e;
+            assert!(
+                finish_cut_edit(
+                    &mut holder,
+                    &mut failed,
+                    g + 1,
+                    Err(CadError::input("stale reply"))
+                )
+                .is_none()
+            );
+            assert!(holder.cuts.active());
+            assert!(finish_cut_edit(&mut holder, &mut failed, g, result).is_none());
+            assert_eq!(holder.cuts.draft.as_ref().expect("draft").typed, confirmed);
+            assert_eq!(
+                holder
+                    .cuts
+                    .draft
+                    .as_ref()
+                    .expect("draft")
+                    .history
+                    .undo
+                    .len(),
+                1
+            );
+            e = std::mem::take(&mut holder.cuts);
+            assert!(!ui.exists());
+        }
         let mut state = crate::edits::Edits::default();
         let (tx, rx) = std::sync::mpsc::channel();
         state
@@ -1241,7 +1396,7 @@ mod tests {
         );
         assert_eq!(published.tool_curve, saved.tool_curve);
         assert_eq!(published.body, saved.body);
-        assert_eq!(published.previous, saved.base_feature);
+        assert_eq!(published.previous, saved.previous_feature);
         assert!(published.leaves_a_floor);
 
         // The draft survives a publication whose Open is then refused, through
@@ -1308,7 +1463,7 @@ mod tests {
         let b = Document::open_read_only(&peer).expect("CLI copy");
         assert_eq!(a.meta().document_id, b.meta().document_id);
         let (mine, theirs) = (a.objects().expect("objects"), b.objects().expect("objects"));
-        assert_eq!(mine.len(), 6);
+        assert_eq!(mine.len(), if index.is_some() { 8 } else { 6 });
         assert_eq!(mine, theirs, "an edited object differs between the two");
         // And the names: an edit that kept a floor adds none, so both copies
         // hold exactly the same references under exactly the same identities.

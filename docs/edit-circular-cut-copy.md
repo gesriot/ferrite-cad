@@ -1,5 +1,8 @@
 # §26B — правка параметров сохранённого circular Cut
 
+§26D расширяет прежнюю границу: [правка любого из двух Cut](edit-sequential-cuts.md).
+Описанные ниже отказы двухзвенной правке относятся к исходному срезу.
+
 [Локальные доказательства и ограничения](edit-circular-cut-copy-verification.md).
 [Срез, который этот Cut создаёт](circular-cut-copy.md).
 [Решение об истории Body](decisions/0004-feature-predecessor.md).

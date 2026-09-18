@@ -125,3 +125,17 @@ strictly more than `Tolerance::DEFAULT_LINEAR`, in addition to the existing
 wall/depth policy. The eight-object result is neither an Add-cut target nor a
 §26B edit target. Wider histories and editing either of their cuts remain future
 work; the six-object editor contract is unchanged.
+
+## §26D: editing either saved link
+
+The exact six/eight-object history is validated as a whole. Base, selected Cut,
+its immediate predecessor, Body tip and the neighboring tool are separate facts
+read through links. The copy changes only the selected tool and depth; the DAG
+rebuilds its dependents without moving the tip or any UUID.
+
+[The topology policy](../edit-sequential-cuts.md) was recorded before code:
+through-to-pocket at the first link adds its historical own floor and the final
+producer's OriginCap(first, End); at the second it adds only its own floor.
+Pocket-to-through refuses in preparation and names every protected floor UUID.
+Existing producer/origin meanings, archive v3 and predecessor-qualified keys
+remain unchanged. No new ownership model, feature-to-Body edge or copier exists.

@@ -981,8 +981,8 @@ impl Document {
     }
 
     /// Writes one prepared parameter edit of a saved circular cut: the tool
-    /// circle's new geometry, the cut's new depth, and the one name a cut that
-    /// stops inside the part gains over one that runs through it.
+    /// circle's new geometry, the cut's new depth, and the historical/final
+    /// floor names gained when a through hole becomes a pocket.
     ///
     /// One transaction, because half of it is not a document: a copy holding
     /// the new tool but the old depth describes a part nobody asked for, and
@@ -1042,7 +1042,11 @@ impl Document {
         self.write_transaction(move |writer| {
             // Check inside the transaction: the generic reference writer is
             // an upsert, while this operation may only add a fresh floor name.
+            let mut new_ids = std::collections::BTreeSet::new();
             for reference in &added {
+                if !new_ids.insert(reference.id) {
+                    return Err(CadError::input(format!("duplicate new floor reference {}", reference.id)));
+                }
                 let occupied: bool = writer.tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM topology_refs WHERE id=?1)",
                     params![reference.id.to_bytes().as_slice()],
@@ -1076,7 +1080,7 @@ impl Document {
             }
             // Keep the ordinary edit timestamp, without rebuilding capability
             // rows or reclaiming unrelated data. Both payload contracts are
-            // unchanged and the new floor uses an existing core role.
+            // unchanged; core and (for two cuts) origin roles are already required.
             writer.tx.execute(
                 &format!("UPDATE meta SET modified_at = {NOW_UTC} WHERE id = 1"),
                 [],

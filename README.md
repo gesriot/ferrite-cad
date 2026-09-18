@@ -31,11 +31,10 @@ through **Cut circle into Body…** or `cut-circular-copy`. Both save a new copy
 with the original features and a real Cut in the body's history. The tool starts
 on the base XY plane; a shallow pocket opens on that side.
 [Supported source, spacing/depth rules and agent recipe](docs/sequential-circular-cuts.md).
-While the document has one Cut, its saved centre, radius and depth can be changed through **Edit cut …**
+Either saved Cut can have its centre, radius and depth changed through **Edit cut …**
 or `edit-circular-cut`, preserving the feature and tool identities in a new copy.
 A through hole can become a pocket; cutting away a named pocket floor is refused.
-Editing either Cut after adding the second, and adding a third, are not yet supported.
-[Editing contract and recipe](docs/edit-circular-cut-copy.md).
+Editing the first rebuilds the second while preserving history and face origins. A third Cut is not supported. See [sequential cut editing](docs/edit-sequential-cuts.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

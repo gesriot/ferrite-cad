@@ -935,7 +935,7 @@ fn cut_edit_discovery_and_protocol_without_native() {
         assert_eq!(sketch["annulus_edit"]["available"], json!(false));
         assert_eq!(sketch["constraint_edit"]["available"], json!(false));
     }
-    // Adding a second cut is available; editing still has its six-object frame.
+    // Adding a second cut is available; both history links then become editable.
     assert_eq!(f.catalog["bodies"][0]["cut_edit"]["available"], json!(true));
 
     // Every refusal, with everything else about the call correct.

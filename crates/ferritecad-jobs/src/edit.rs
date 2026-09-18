@@ -363,7 +363,7 @@ pub struct EditCircularCutRequest {
 pub struct EditedCircularCut {
     pub destination: PathBuf,
     pub document_id: ferritecad_types::DocumentId,
-    /// The body the cut still tips; unchanged by this edit.
+    /// The body whose history contains the cut; unchanged by this edit.
     pub body: ObjectId,
     /// The edited feature, under the identity it already had.
     pub feature: ObjectId,
@@ -382,8 +382,9 @@ pub struct EditedCircularCut {
 /// The same snapshot, version guard, read-only source, baseline rebuild,
 /// reference check, SQLite close and atomic no-clobber publication every other
 /// copy operation uses. What differs is only what is written: two payloads that
-/// already existed, and at most one name a cut gains by stopping inside the
-/// part instead of running through it.
+/// already existed, and the floor names gained by stopping inside the part:
+/// its own historical name, plus a final origin name when editing the first
+/// of two cuts.
 pub fn edit_circular_cut_copy<K: GeometryKernel + ?Sized>(
     request: &EditCircularCutRequest,
     kernel: &mut K,

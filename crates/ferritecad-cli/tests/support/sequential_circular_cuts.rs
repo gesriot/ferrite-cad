@@ -416,7 +416,9 @@ fn native_four_pairs_keep_every_surface_origin_cold_and_cached() {
                     .as_array()
                     .expect("features")
                     .iter()
-                    .all(|f| f["circular_cut_edit"]["available"] == false)
+                    .filter(|f| f["circular_cut_edit"]["available"] == true)
+                    .count()
+                    == 2
             );
             let stl = copy.with_extension("stl");
             check_two_mesh(&mesh(&copy, &stl), tools);
@@ -852,3 +854,6 @@ fn native_second_cut_cancellation_and_late_version_guard_are_atomic() {
     assert!(!destination.exists());
     assert_eq!(entries(root.path()), files, "scratch cleaned");
 }
+
+#[path = "edit_sequential_cuts.rs"]
+mod edits;

@@ -179,6 +179,17 @@ jobs:
           cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee sequential-writer.log
           if grep -q 'skipped:' sequential-writer.log || ! grep -Fq "test $gate ... ok" sequential-writer.log; then exit 1; fi
 
+      - name: Discover and protect both sequential cut edits without a kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          gate=sequential::edits::discovery_and_protected_floors_need_no_kernel
+          cargo test -p ferritecad-cli --test circular_cut "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee edit-sequential-discovery.log
+          if grep -q 'skipped:' edit-sequential-discovery.log || ! grep -Fq "test $gate ... ok" edit-sequential-discovery.log; then exit 1; fi
+          gate=cut_edit::tests::sequential_edit_floor_policy_and_writer_forgery_are_checked_before_writing
+          cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee edit-sequential-writer.log
+          if grep -q 'skipped:' edit-sequential-writer.log || ! grep -Fq "test $gate ... ok" edit-sequential-writer.log; then exit 1; fi
+
       - name: Verify memory guard cleanup without a viewer
         if: runner.os == 'macOS'
         run: python3 tools/test-viewer-memory-guard.py

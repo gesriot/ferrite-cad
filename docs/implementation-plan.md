@@ -3391,3 +3391,30 @@ cancellation, SQLite close и atomic publication переиспользован�
 автора сохранён отдельно; повтор ревью отложен из-за блокировки Mac.
 Удалённые checks будут проверены на head PR и merge SHA после публикации.
 Следующий срез не начат.
+
+
+**§26D — реализована правка любого из двух последовательных circular Cut.**
+
+Один общий document-каталог проверяет точную шести-/восьмиобъектную историю
+по UUID/связям и различает base, selected, immediate predecessor, tip и соседний
+инструмент. Оба Edit cut и прежняя CLI `edit-circular-cut` используют один
+copy worker. Правка первого пересчитывает второй; UUID, Body tip, deps и
+previous chain сохраняются. Порог дисков/стенок общий: gap > 1e-7 mm.
+
+[Политика refs](edit-sequential-cuts.md) записана до кода. Through→pocket
+первого добавляет собственный исторический floor и OriginCap(first, End)
+на final producer; второго — только собственный floor. Pocket→through
+отказывает при подготовке со всеми защищаемыми UUID. Старые refs сохраняют
+producer/origin; archive v3 и predecessor-qualified cache keys не менялись.
+Writer заново выводит подготовку и отказывает занятым/повторным новым UUID
+в транзакции, не пересоздавая optional capability rows/rowid.
+
+[Контракт и извлекаемый рецепт](edit-sequential-cuts.md),
+[фактические результаты, команды и ограничения](edit-sequential-cuts-verification.md).
+Независимое ревью не выявило блокирующих дефектов реализации. Повторены
+основная native-матрица, mixed OCCT/no-solver и настоящий stub; учёт основной
+матрицы уточнён: 540 исполненных tests, два stub-only пропуска и один прежний
+ignored benchmark. Оконный smoke по-прежнему отложен: Mac заблокирован,
+viewer на ревью не запускался. Удалённые проверки будут проверены на точном
+head PR и merge SHA после публикации; CI базы их не заменяет.
+Третий Cut и произвольные истории не входят.

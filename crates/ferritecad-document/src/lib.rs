@@ -65,8 +65,9 @@ pub use circle_edit::{
 };
 pub use cut_edit::{
     CircularCut, CircularCutEdit, CutChoice, CutParameterChoice, NewObject, PreparedCircularCut,
-    PreparedCutParameters, SavedCircularCut, SavedCutTarget, WALL_CLEARANCE_MM, cut_choices,
-    cut_parameter_choices, cut_plane_placement, prepare_circular_cut, prepare_cut_parameters,
+    PreparedCutParameters, SavedCircularCut, SavedCutTarget, SavedCutTool, WALL_CLEARANCE_MM,
+    cut_choices, cut_parameter_choices, cut_plane_placement, prepare_circular_cut,
+    prepare_cut_parameters,
 };
 pub use polygon::{AnnularExtrusion, CircleExtrusion, PolygonExtrusion};
 pub use sketch_edit::{SketchChoice, SketchVertex, replace_sketch_coordinates, sketch_choices};
