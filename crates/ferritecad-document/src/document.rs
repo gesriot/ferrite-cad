@@ -957,6 +957,111 @@ impl Document {
         })
     }
 
+    /// Writes one prepared parameter edit of a saved circular cut: the tool
+    /// circle's new geometry, the cut's new depth, and the one name a cut that
+    /// stops inside the part gains over one that runs through it.
+    ///
+    /// One transaction, because half of it is not a document: a copy holding
+    /// the new tool but the old depth describes a part nobody asked for, and
+    /// one holding a floor's name but not the depth that makes a floor does
+    /// not rebuild at all.
+    ///
+    /// Two narrow `UPDATE`s rather than `put_object`, for the reason the
+    /// analytic sketch editors give: replacing an object also clears its source
+    /// claims and reissues its ownership, which a centre, a radius and a depth
+    /// have no business doing. What each row is allowed to change is stated
+    /// here and checked before the transaction opens: the payload and its hash,
+    /// and nothing else — not the kind, not the schema version, not the
+    /// capabilities the payload declares.
+    pub fn write_cut_parameters(&mut self, prepared: &crate::PreparedCutParameters) -> Result<()> {
+        // The rows the preparation read must still be the rows that are here.
+        for (record, what) in [
+            (prepared.tool_sketch(), "tool Sketch"),
+            (prepared.feature(), "Cut"),
+        ] {
+            let current = self.object(record.id)?.ok_or_else(|| {
+                CadError::input(format!("selected {what} disappeared before the cut edit"))
+            })?;
+            if current.storage_bytes() != record.storage_bytes()
+                || current.parent != record.parent
+                || current.ordinal != record.ordinal
+                || current.name != record.name
+            {
+                return Err(CadError::input(format!(
+                    "{what} changed after the cut edit was prepared"
+                )));
+            }
+        }
+        crate::cut_edit::rederive_parameters(self, prepared)?;
+
+        // New numbers, not a new kind of object and not a new contract. A
+        // payload that declared something else would need capability rows this
+        // write does not add, so it is refused rather than written.
+        let mut writes = Vec::new();
+        for (record, what) in [
+            (prepared.tool_sketch(), "tool Sketch"),
+            (prepared.feature(), "Cut"),
+        ] {
+            let stored = Envelope::from_bytes(record.storage_bytes())?;
+            if record.payload.type_name() != stored.type_name
+                || record.payload.schema_version() != stored.schema_version
+                || record.payload.required_capabilities() != stored.required_capabilities
+            {
+                return Err(CadError::input(format!(
+                    "a cut edit may change only the numbers of the saved {what}"
+                )));
+            }
+            let bytes = record.payload.to_storage_bytes()?;
+            let hash = ContentHash::of_bytes(&bytes);
+            writes.push((record.id, bytes, hash));
+        }
+        let added = prepared.added_references().to_vec();
+        self.write_transaction(move |writer| {
+            // Check inside the transaction: the generic reference writer is
+            // an upsert, while this operation may only add a fresh floor name.
+            for reference in &added {
+                let occupied: bool = writer.tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM topology_refs WHERE id=?1)",
+                    params![reference.id.to_bytes().as_slice()],
+                    |row| row.get(0),
+                ).map_err(|e| CadError::io("checking the new floor reference", e))?;
+                if occupied {
+                    return Err(CadError::input(format!(
+                        "new floor reference {} already exists; a cut edit may not replace a saved name",
+                        reference.id
+                    )));
+                }
+            }
+            for (id, bytes, hash) in &writes {
+                let changed = writer
+                    .tx
+                    .execute(
+                        "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
+                        params![bytes, hash.as_bytes().as_slice(), id.to_bytes().as_slice()],
+                    )
+                    .map_err(|e| CadError::io("writing edited cut parameters", e))?;
+                if changed != 1 {
+                    return Err(CadError::input(
+                        "a selected object disappeared before the cut edit",
+                    ));
+                }
+            }
+            // Only ever an addition: a cut that stops inside the part gains a
+            // floor. Losing one is refused long before here.
+            for reference in &added {
+                writer.put_topology_ref(reference)?;
+            }
+            // Keep the ordinary edit timestamp, without rebuilding capability
+            // rows or reclaiming unrelated data. Both payload contracts are
+            // unchanged and the new floor uses an existing core role.
+            writer.tx.execute(
+                &format!("UPDATE meta SET modified_at = {NOW_UTC} WHERE id = 1"),
+                [],
+            ).map_err(|e| CadError::io("stamping cut parameter edit", e))?;
+            Ok(())
+        }, false)
+    }
+
     fn write_transaction<T>(
         &mut self,
         edit: impl FnOnce(&mut DocumentWriter<'_>) -> Result<T>,

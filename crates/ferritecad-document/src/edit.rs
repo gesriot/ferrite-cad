@@ -41,6 +41,11 @@ pub struct ExtrudeEditSource {
     /// reading. Keyed by body rather than by sketch, because a cut is added to
     /// a body's history and not to a drawing.
     pub cut_bodies: Vec<crate::CutChoice>,
+    /// Which saved features are circular cuts whose tool and depth can be
+    /// edited, from that same pinned reading. Keyed by feature: this catalogue
+    /// answers about one cut already in a body's history, which is a different
+    /// question from whether another cut can be added to it.
+    pub cut_features: Vec<crate::CutParameterChoice>,
     pub refusal: Option<String>,
 }
 
@@ -100,6 +105,7 @@ impl ExtrudeEditSource {
             circle_sketches: crate::circle_choices(document, &objects),
             annulus_sketches: crate::annulus_choices(document, &objects),
             cut_bodies: crate::cut_choices(document, &objects),
+            cut_features: crate::cut_parameter_choices(document, &objects),
             refusal,
         })
     }
@@ -801,6 +807,7 @@ mod tests {
             circle_sketches: crate::circle_choices(document, &objects),
             annulus_sketches: crate::annulus_choices(document, &objects),
             cut_bodies: crate::cut_choices(document, &objects),
+            cut_features: crate::cut_parameter_choices(document, &objects),
             version: DocumentVersion {
                 document_id: document.meta().document_id,
                 content: document.content_version()?,
