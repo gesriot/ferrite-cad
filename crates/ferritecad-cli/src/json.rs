@@ -241,6 +241,7 @@ struct SavedCutTarget {
     tip_feature_id: ObjectId,
     base_feature_id: ObjectId,
     existing_cut: Option<ExistingCut>,
+    tools: Vec<ExistingCut>,
     disk_clearance_mm: f64,
     profile_sketch_id: ObjectId,
     height_mm: f64,
@@ -263,6 +264,19 @@ struct ExistingCut {
     depth_mm: f64,
 }
 
+impl From<&ferritecad_document::SavedCutTool> for ExistingCut {
+    fn from(t: &ferritecad_document::SavedCutTool) -> Self {
+        Self {
+            feature_id: t.feature,
+            tool_sketch_id: t.tool_sketch,
+            tool_curve_id: t.tool_curve,
+            center_mm: t.center_mm,
+            radius_mm: t.radius_mm,
+            depth_mm: t.depth_mm,
+        }
+    }
+}
+
 impl CutDiscovery {
     fn new(choice: ferritecad_document::CutChoice, document_refusal: Option<String>) -> Self {
         Self {
@@ -274,6 +288,7 @@ impl CutDiscovery {
                 plane_id: t.plane,
                 tip_feature_id: t.tip_feature,
                 base_feature_id: t.base_feature,
+                tools: t.tools.iter().map(ExistingCut::from).collect(),
                 existing_cut: t.existing_cut.map(|c| ExistingCut {
                     feature_id: c.feature,
                     tool_sketch_id: c.tool_sketch,
@@ -373,6 +388,7 @@ struct SavedCircularCut {
     tip_feature_id: ObjectId,
     protected_floor_reference_ids: Vec<StableEntityId>,
     neighboring_tool: Option<ExistingCut>,
+    tools: Vec<ExistingCut>,
     disk_clearance_mm: f64,
     /// The part's own profile; unchanged by an edit of its numbers.
     profile_sketch_id: ObjectId,
@@ -418,6 +434,7 @@ impl CutParameterDiscovery {
                 plane_id: c.plane,
                 previous_feature_id: c.previous_feature,
                 base_feature_id: c.base_feature,
+                tools: c.tools.iter().map(ExistingCut::from).collect(),
                 tip_feature_id: c.tip_feature,
                 protected_floor_reference_ids: c.protected_floor_references.clone(),
                 neighboring_tool: c.neighboring_tool.as_ref().map(|t| ExistingCut {

@@ -184,6 +184,16 @@ impl OcctKernel {
         self.session.face_surface(raw, face.index())
     }
 
+    /// Analytic cylinder axis (origin in mm, unit direction) of this exact face.
+    /// A measurement of an already resolved handle, never an identity search.
+    pub fn cylinder_axis(&mut self, face: SubShapeHandle) -> Result<([f64; 3], [f64; 3])> {
+        if face.kind() != SubShapeKind::Face {
+            return Err(CadError::input("only a cylindrical face has this axis"));
+        }
+        let raw = self.raw(face.shape())?;
+        self.session.cylinder_axis(raw, face.index())
+    }
+
     /// Wraps a kernel payload in FerriteCAD's framing.
     fn frame(&self, magic: &[u8; 4], payload: Vec<u8>) -> Result<BrepBlob> {
         let payload_length = u64::try_from(payload.len())

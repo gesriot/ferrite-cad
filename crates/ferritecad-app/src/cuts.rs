@@ -214,43 +214,48 @@ impl Editor {
         let (Some(path), Some(source)) = (path, source) else {
             return;
         };
-        for choice in &source.cut_bodies {
-            let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
-            let response = ui.add_enabled(
-                can_begin && refusal.is_none(),
-                egui::Button::new(format!(
-                    "Cut circle into {} — {}…",
-                    choice.name.as_deref().unwrap_or("Unnamed body"),
-                    choice.body
-                )),
-            );
-            if response.clicked() {
-                self.begin(path, source, choice.body);
-            }
-            if let Some(reason) = refusal {
-                response.on_hover_text(reason);
-            }
-        }
-        // And one per cut already in a history, with the reason on the features
-        // whose numbers this slice cannot change — which includes the
-        // extrusion that started the body, whose distance `edit-extrude` owns.
-        for choice in &source.cut_features {
-            let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
-            let response = ui.add_enabled(
-                can_begin && refusal.is_none(),
-                egui::Button::new(format!(
-                    "Edit cut {} — {}…",
-                    choice.name.as_deref().unwrap_or("Unnamed cut"),
-                    choice.feature
-                )),
-            );
-            if response.clicked() {
-                self.begin_edit(path, source, choice.feature);
-            }
-            if let Some(reason) = refusal {
-                response.on_hover_text(reason);
-            }
-        }
+        egui::ScrollArea::vertical()
+            .id_salt("cut-choices")
+            .max_height(190.)
+            .show(ui, |ui| {
+                for choice in &source.cut_bodies {
+                    let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
+                    let response = ui.add_enabled(
+                        can_begin && refusal.is_none(),
+                        egui::Button::new(format!(
+                            "Cut circle into {} — {}…",
+                            choice.name.as_deref().unwrap_or("Unnamed body"),
+                            choice.body
+                        )),
+                    );
+                    if response.clicked() {
+                        self.begin(path, source, choice.body);
+                    }
+                    if let Some(reason) = refusal {
+                        response.on_hover_text(reason);
+                    }
+                }
+                // And one per cut already in a history, with the reason on the features
+                // whose numbers this slice cannot change — which includes the
+                // extrusion that started the body, whose distance `edit-extrude` owns.
+                for choice in &source.cut_features {
+                    let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
+                    let response = ui.add_enabled(
+                        can_begin && refusal.is_none(),
+                        egui::Button::new(format!(
+                            "Edit cut {} — {}…",
+                            choice.name.as_deref().unwrap_or("Unnamed cut"),
+                            choice.feature
+                        )),
+                    );
+                    if response.clicked() {
+                        self.begin_edit(path, source, choice.feature);
+                    }
+                    if let Some(reason) = refusal {
+                        response.on_hover_text(reason);
+                    }
+                }
+            });
     }
 
     pub(crate) fn draw(&mut self, ui: &mut egui::Ui, running: bool) {
@@ -288,19 +293,32 @@ impl Editor {
                     shown.height_mm,
                     shown.modifies,
                 ));
-                if let Subject::Add(choice) = &draft.subject
-                    && let Some(existing) = choice.target.as_ref().and_then(|t| t.existing_cut.as_ref())
-                {
-                    ui.small(format!("Existing cut {}: ({}, {}) r{}, depth {} mm. The two disks must be separate by more than {} mm.",
-                        existing.feature, existing.center_mm[0], existing.center_mm[1], existing.radius_mm,
-                        existing.depth_mm, ferritecad_document::WALL_CLEARANCE_MM));
+                let tools = match &draft.subject {
+                    Subject::Add(c) => c.target.as_ref().map(|t| t.tools.as_slice()),
+                    Subject::Edit(c) => c.saved.as_ref().map(|s| s.tools.as_slice()),
                 }
-                if let Subject::Edit(choice) = &draft.subject
-                    && let Some(other) = choice.saved.as_ref().and_then(|s| s.neighboring_tool.as_ref())
-                {
-                    ui.small(format!("Other cut {}: ({}, {}) r{}, depth {} mm. Keep the disks separate by more than {} mm.",
-                        other.feature, other.center_mm[0], other.center_mm[1], other.radius_mm,
-                        other.depth_mm, ferritecad_document::WALL_CLEARANCE_MM));
+                .unwrap_or_default();
+                if !tools.is_empty() {
+                    ui.small(format!(
+                        "{} saved tools; disk clearance > {} mm",
+                        tools.len(),
+                        ferritecad_document::WALL_CLEARANCE_MM
+                    ));
+                    egui::ScrollArea::vertical()
+                        .id_salt("cut-tools")
+                        .max_height(90.)
+                        .show(ui, |ui| {
+                            for tool in tools {
+                                ui.small(format!(
+                                    "Cut {}: ({}, {}) r{}, depth {} mm",
+                                    tool.feature,
+                                    tool.center_mm[0],
+                                    tool.center_mm[1],
+                                    tool.radius_mm,
+                                    tool.depth_mm
+                                ));
+                            }
+                        });
                 }
                 match &shown.editing {
                     None => {
@@ -393,7 +411,12 @@ impl Editor {
                         }
                     }
                     if let Some(refusal) = &draft.refusal {
-                        ui.colored_label(ui.visuals().error_fg_color, refusal);
+                        egui::ScrollArea::vertical()
+                            .id_salt("cut-refusal")
+                            .max_height(72.)
+                            .show(ui, |ui| {
+                                ui.colored_label(ui.visuals().error_fg_color, refusal);
+                            });
                     }
                     let confirmed = draft
                         .applied
@@ -1199,17 +1222,73 @@ mod tests {
     /// the shipped CLI, publishes the same edited part.
     #[test]
     fn native_cut_edit_worker_and_cli_publish_the_same_part() {
-        edit_worker_and_cli(None);
+        edit_worker_and_cli(None, 1);
     }
 
     #[test]
     fn native_either_sequential_cut_widgets_worker_and_cli_keep_draft_and_identity() {
         for index in 0..2 {
-            edit_worker_and_cli(Some(index));
+            edit_worker_and_cli(Some(index), 2);
         }
     }
 
-    fn edit_worker_and_cli(index: Option<usize>) {
+    #[test]
+    fn native_history_widgets_worker_cli_preserve_draft() {
+        for index in 0..3 {
+            edit_worker_and_cli(Some(index), 3);
+        }
+        if !ferritecad_occt::is_available() {
+            return;
+        }
+        let (_root, path, source) = plate();
+        let body = source.cut_bodies[0].body;
+        let mut d = Document::open(&path).expect("doc");
+        for i in 0..16 {
+            let p = ferritecad_document::prepare_circular_cut(
+                &d,
+                body,
+                &CircularCut {
+                    center_mm: [6. + (i % 4) as f64 * 14., 5. + (i / 4) as f64 * 9.],
+                    radius_mm: 1.,
+                    depth_mm: 10.,
+                },
+            )
+            .expect("tool");
+            d.write_circular_cut(&p).expect("link");
+        }
+        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        let saved = source
+            .cut_features
+            .iter()
+            .filter_map(|c| c.saved.as_ref())
+            .find(|s| s.feature == s.tip_feature)
+            .expect("tip");
+        let mut e = Editor::default();
+        let ctx = egui::Context::default();
+        assert!(e.begin_edit(&path, &source, saved.feature));
+        for _ in 0..3 {
+            frame(&ctx, &mut e, false);
+        }
+        fill(&ctx, &mut e, "48", "32", "1.25", "8");
+        click(&ctx, &mut e, "Apply cut");
+        let out = frame(&ctx, &mut e, false);
+        for label in ["Apply cut", "Undo", "Redo", "Save cut copy"] {
+            let shape=out.shapes.iter().find(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text().starts_with(label))).expect("control");
+            let egui::Shape::Text(text) = &shape.shape else {
+                unreachable!()
+            };
+            let rect = text.visual_bounding_rect();
+            assert!(
+                shape.clip_rect.contains_rect(rect) && rect.bottom() < 768.,
+                "control clipped: {label}"
+            );
+        }
+        click(&ctx, &mut e, "Save cut copy…");
+        e.take_edit_request().expect("visible save");
+        assert!(e.active());
+    }
+
+    fn edit_worker_and_cli(index: Option<usize>, count: usize) {
         if !ferritecad_occt::is_available() {
             assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
             eprintln!("skipped: the cut edit worker needs OCCT");
@@ -1235,6 +1314,19 @@ mod tests {
             )
             .expect("second");
             d.write_circular_cut(&cut).expect("write");
+            if count == 3 {
+                let cut = ferritecad_document::prepare_circular_cut(
+                    &d,
+                    body,
+                    &CircularCut {
+                        center_mm: [8.1234567890123, 31.2345678901234],
+                        radius_mm: 2.1234567890123,
+                        depth_mm: 5.1234567890123,
+                    },
+                )
+                .expect("third");
+                d.write_circular_cut(&cut).expect("third write");
+            }
             d.close().expect("close");
             let d = Document::open_read_only(&path).expect("read");
             source = ExtrudeEditSource::read(&d).expect("snapshot");
@@ -1245,21 +1337,21 @@ mod tests {
             path = two;
         }
         let before = std::fs::read(&path).expect("source");
+        let last = source
+            .cut_features
+            .iter()
+            .filter_map(|c| c.saved.as_ref())
+            .find(|s| s.feature == s.tip_feature)
+            .expect("tip");
+        let selected = last.tools[index.unwrap_or(0)].feature;
         let saved = source
             .cut_features
             .iter()
-            .filter(|c| c.refusal.is_none())
-            .find(|c| {
-                index.is_none_or(|i| {
-                    c.saved
-                        .as_ref()
-                        .is_some_and(|s| (s.feature == s.tip_feature) == (i == 1))
-                })
-            })
-            .expect("one editable cut")
+            .find(|c| c.feature == selected)
+            .expect("selected")
             .saved
             .clone()
-            .expect("the saved cut");
+            .expect("saved");
 
         let mut e = Editor::default();
         let ctx = egui::Context::default();
@@ -1275,9 +1367,14 @@ mod tests {
                     .iter()
                     .filter(|c| c.saved.is_some())
                     .count(),
-                2
+                count
             );
-            let other = saved.neighboring_tool.as_ref().expect("other");
+            let other = saved
+                .tools
+                .iter()
+                .rev()
+                .find(|t| t.feature != saved.feature)
+                .expect("other");
             fill(
                 &ctx,
                 &mut e,
@@ -1298,7 +1395,9 @@ mod tests {
             );
             assert!(e.draft.as_ref().expect("draft").history.undo.is_empty());
         }
-        let (x, y, r, d) = if index == Some(1) {
+        let (x, y, r, d) = if index == Some(2) {
+            ("9", "32", "2.25", "3.5")
+        } else if index == Some(1) {
             ("44", "27", "5.5", "5.25")
         } else {
             ("22", "17", "4.5", "3.25")
@@ -1463,7 +1562,7 @@ mod tests {
         let b = Document::open_read_only(&peer).expect("CLI copy");
         assert_eq!(a.meta().document_id, b.meta().document_id);
         let (mine, theirs) = (a.objects().expect("objects"), b.objects().expect("objects"));
-        assert_eq!(mine.len(), if index.is_some() { 8 } else { 6 });
+        assert_eq!(mine.len(), 4 + count * 2);
         assert_eq!(mine, theirs, "an edited object differs between the two");
         // And the names: an edit that kept a floor adds none, so both copies
         // hold exactly the same references under exactly the same identities.

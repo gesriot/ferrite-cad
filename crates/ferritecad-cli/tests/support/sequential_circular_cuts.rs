@@ -87,6 +87,10 @@ fn tip(d: &Document) -> (ObjectId, ObjectId) {
 /// Read the triangles of the *resolved handle*. Their position/normal is an
 /// assertion about the name, never a way of finding or assigning that name.
 fn measure(path: &Path, tools: [CircularCut; 2], cache: Option<[CacheOutcome; 3]>) -> f64 {
+    measure_history(path, &tools, cache.as_ref().map(|v| v.as_slice()))
+}
+
+fn measure_history(path: &Path, tools: &[CircularCut], cache: Option<&[CacheOutcome]>) -> f64 {
     let d = Document::open_read_only(path).expect("reopen");
     assert!(d.validate().expect("validate").is_ok());
     let (body, last) = tip(&d);
@@ -100,12 +104,22 @@ fn measure(path: &Path, tools: [CircularCut; 2], cache: Option<[CacheOutcome; 3]
         .find(|o| matches!(&o.payload, ObjectPayload::Extrude(e) if e.previous.is_none()))
         .expect("base")
         .id;
-    let ObjectPayload::Extrude(last_payload) =
-        &objects.iter().find(|o| o.id == last).expect("last").payload
-    else {
-        panic!("feature")
-    };
-    let first = last_payload.previous.expect("first");
+    let mut chain = Vec::new();
+    let mut cursor = last;
+    while cursor != base {
+        chain.push(cursor);
+        let ObjectPayload::Extrude(e) = &objects
+            .iter()
+            .find(|o| o.id == cursor)
+            .expect("linked feature")
+            .payload
+        else {
+            panic!("Cut")
+        };
+        cursor = e.previous.expect("predecessor");
+    }
+    chain.reverse();
+    assert_eq!(chain.len(), tools.len());
     let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
     let context = OperationContext::default();
     let built = if let Some(expected) = cache {
@@ -123,11 +137,10 @@ fn measure(path: &Path, tools: [CircularCut; 2], cache: Option<[CacheOutcome; 3]
                 .iter()
                 .map(|e| (e.feature, e.outcome))
                 .collect::<Vec<_>>(),
-            vec![
-                (base, expected[0]),
-                (first, expected[1]),
-                (last, expected[2])
-            ],
+            std::iter::once(base)
+                .chain(chain.iter().copied())
+                .zip(expected.iter().copied())
+                .collect::<Vec<_>>(),
             "dependent chain must invalidate exactly"
         );
         built
@@ -138,22 +151,62 @@ fn measure(path: &Path, tools: [CircularCut; 2], cache: Option<[CacheOutcome; 3]
     assert_eq!(
         built.shape(last),
         Some(final_shape),
-        "Body must expose the second Cut"
+        "Body must expose the final Cut"
     );
     let (count, volume) = kernel.shape_stats(final_shape).expect("stats");
     let floors = tools.iter().filter(|t| t.depth_mm < SIZE[2]).count();
-    assert_eq!(count, 8 + floors as u64);
+    assert_eq!(count, 6 + tools.len() as u64 + floors as u64);
     let exact = SIZE.iter().product::<f64>()
         - tools
             .iter()
             .map(|t| PI * t.radius_mm.powi(2) * t.depth_mm)
             .sum::<f64>();
     assert!((volume - exact).abs() < 1e-6, "{volume} != {exact}");
+    for (index, feature) in std::iter::once(base)
+        .chain(chain.iter().copied())
+        .enumerate()
+    {
+        let (faces, volume) = kernel
+            .shape_stats(built.shape(feature).expect("historical shape"))
+            .expect("stats");
+        let prior = &tools[..index];
+        let exact = SIZE.iter().product::<f64>()
+            - prior
+                .iter()
+                .map(|t| PI * t.radius_mm.powi(2) * t.depth_mm)
+                .sum::<f64>();
+        assert!((volume - exact).abs() < 1e-6, "historical volume {index}");
+        assert_eq!(
+            faces,
+            (6 + index + prior.iter().filter(|t| t.depth_mm < SIZE[2]).count()) as u64
+        );
+    }
+    let mut meshes = BTreeMap::new();
+    for feature in std::iter::once(base).chain(chain.iter().copied()) {
+        meshes.insert(
+            feature,
+            kernel
+                .tessellate(
+                    built.shape(feature).expect("shape"),
+                    &TessellationParams::default(),
+                    &context,
+                )
+                .expect("mesh"),
+        );
+    }
     let mut named_final = std::collections::BTreeSet::new();
+    let mut named_producers = BTreeMap::<_, std::collections::BTreeSet<_>>::new();
     for reference in d.topology_refs().expect("refs") {
         let resolved = built.resolve(&reference).expect("resolve");
         assert_eq!(resolved.len(), 1);
         let face = resolved[0];
+        assert!(
+            named_producers
+                .entry(reference.producer_feature)
+                .or_default()
+                .insert(face),
+            "duplicate name in historical producer"
+        );
         if reference.producer_feature == last {
             assert!(named_final.insert(face), "two meanings share a face");
         }
@@ -180,9 +233,7 @@ fn measure(path: &Path, tools: [CircularCut; 2], cache: Option<[CacheOutcome; 3]
             } => (origin_feature, None, Some(profile_segment)),
             _ => panic!("unexpected role"),
         };
-        let mesh = kernel
-            .tessellate(face.shape(), &TessellationParams::default(), &context)
-            .expect("mesh");
+        let mesh = &meshes[&reference.producer_feature];
         let range = mesh
             .faces
             .iter()
@@ -245,12 +296,10 @@ fn measure(path: &Path, tools: [CircularCut; 2], cache: Option<[CacheOutcome; 3]
                 assert!(normals.iter().all(|n| n[axis] * sign > 0.99));
             }
         } else {
-            let tool = if origin == first {
-                tools[0]
-            } else {
-                assert_eq!(origin, last);
-                tools[1]
-            };
+            let tool = tools[chain
+                .iter()
+                .position(|id| *id == origin)
+                .expect("exact origin UUID")];
             if cap.is_some() {
                 assert_eq!(cap, Some(CapSide::End));
                 assert_eq!(
@@ -274,6 +323,18 @@ fn measure(path: &Path, tools: [CircularCut; 2], cache: Option<[CacheOutcome; 3]
                     panic!("cavity wall must be analytic cylinder")
                 };
                 assert!((radius - tool.radius_mm).abs() < 1e-8);
+                let (origin, axis) = kernel
+                    .cylinder_axis(face)
+                    .expect("analytic axis of UUID handle");
+                assert!(
+                    (origin[0] - tool.center_mm[0]).abs() < 1e-8
+                        && (origin[1] - tool.center_mm[1]).abs() < 1e-8
+                );
+                assert!(
+                    axis[0].abs() < 1e-10
+                        && axis[1].abs() < 1e-10
+                        && (axis[2].abs() - 1.).abs() < 1e-10
+                );
                 assert!(vertices.iter().all(|p| {
                     ((p[0] - tool.center_mm[0]).hypot(p[1] - tool.center_mm[1]) - tool.radius_mm)
                         .abs()
@@ -312,6 +373,19 @@ fn measure(path: &Path, tools: [CircularCut; 2], cache: Option<[CacheOutcome; 3]
         count as usize,
         "every final surface has a distinct meaning"
     );
+    for (producer, names) in named_producers {
+        if producer == base {
+            continue;
+        } // The source fixture may name only a subset of its base faces.
+        let (count, _) = kernel
+            .shape_stats(built.shape(producer).expect("producer"))
+            .expect("stats");
+        assert_eq!(
+            names.len(),
+            count as usize,
+            "each historical producer names every surface"
+        );
+    }
     built.release_all(&mut kernel);
     d.close().expect("close");
     assert_eq!(kernel.live_shape_count(), 0);
@@ -410,7 +484,7 @@ fn native_four_pairs_keep_every_surface_origin_cold_and_cached() {
                 assert!((measure(&copy, tools, Some(mode)) - volume).abs() < 1e-8);
             }
             let catalog = inspect(&copy);
-            assert_eq!(catalog["bodies"][0]["cut_edit"]["available"], false);
+            assert_eq!(catalog["bodies"][0]["cut_edit"]["available"], true);
             assert!(
                 catalog["features"]
                     .as_array()
@@ -643,7 +717,7 @@ fn native_sequential_refusals_publish_nothing() {
     assert!(stale.to_string().contains("changed"), "{stale}");
     let copy = root.path().join("two.fcad");
     ask(&source, &copy, TOOLS[1], 0);
-    let refusal = ask(
+    let third = ask(
         &copy,
         &root.path().join("three.fcad"),
         CircularCut {
@@ -651,9 +725,9 @@ fn native_sequential_refusals_publish_nothing() {
             radius_mm: 2.,
             depth_mm: 3.,
         },
-        2,
+        0,
     );
-    assert_eq!(refusal["error"]["kind"], "unsupported");
+    assert_eq!(third["ok"], true);
     assert_eq!(std::fs::read(&source).expect("bytes"), before);
 }
 
@@ -671,6 +745,10 @@ fn occt_without_solver_builds_two_unconstrained_cuts() {
 }
 
 fn check_two_mesh(m: &Mesh, tools: [CircularCut; 2]) {
+    check_history_mesh(m, &tools)
+}
+
+fn check_history_mesh(m: &Mesh, tools: &[CircularCut]) {
     // Closed and wound one way.
     let quantise = |v: [f64; 3]| {
         let q = |x: f64| (x * 1e4).round() as i64;
@@ -699,7 +777,7 @@ fn check_two_mesh(m: &Mesh, tools: [CircularCut; 2]) {
             center_mm: center,
             radius_mm: radius,
             depth_mm: depth,
-        } = tool;
+        } = *tool;
         // The bore wall exists, at the radius asked for and about the centre asked
         // for. A facet of the pocket's floor also has its corners on that circle —
         // the floor is a disc whose rim is the bore — so the wall is the part of it
@@ -857,3 +935,6 @@ fn native_second_cut_cancellation_and_late_version_guard_are_atomic() {
 
 #[path = "edit_sequential_cuts.rs"]
 mod edits;
+
+#[path = "circular_cut_history.rs"]
+mod history;

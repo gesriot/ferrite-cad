@@ -139,3 +139,13 @@ producer's OriginCap(first, End); at the second it adds only its own floor.
 Pocket-to-through refuses in preparation and names every protected floor UUID.
 Existing producer/origin meanings, archive v3 and predecessor-qualified keys
 remain unchanged. No new ownership model, feature-to-Body edge or copier exists.
+
+## §26E: bounded linear catalogue
+
+The same predecessor graph now admits 0–16 circular Cuts in this editor.
+One validated history serves add/edit discovery from one snapshot. It checks
+all stored tools and every pair, every object and the complete dependency set.
+At 16 only editing is offered; longer general documents receive an explicit
+editor refusal. Through-to-pocket at i names its floor once at every producer
+from i through tip. Origin identity, historical scopes, archive v3 and cache
+keys retain their meanings. [Policy recorded before code](../circular-cut-history.md).

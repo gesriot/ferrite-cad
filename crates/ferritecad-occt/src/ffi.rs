@@ -258,6 +258,14 @@ unsafe extern "C" {
         out_radius: *mut f64,
         out_error: *mut RawError,
     ) -> i32;
+    fn fc_occt_cylinder_axis(
+        session: *mut RawSession,
+        shape: u64,
+        face: u64,
+        out_origin: *mut f64,
+        out_direction: *mut f64,
+        out_error: *mut RawError,
+    ) -> i32;
     fn fc_occt_encode_shape(
         session: *mut RawSession,
         shape: u64,
@@ -805,6 +813,25 @@ impl Session {
             SURFACE_CYLINDER => FaceSurface::Cylinder { radius },
             _ => FaceSurface::Other,
         })
+    }
+
+    pub(crate) fn cylinder_axis(&mut self, shape: u64, face: u64) -> Result<([f64; 3], [f64; 3])> {
+        let mut origin = [0.; 3];
+        let mut direction = [0.; 3];
+        let mut error = RawError::empty();
+        // SAFETY: both output arrays hold exactly three doubles for this call.
+        let status = unsafe {
+            fc_occt_cylinder_axis(
+                self.raw,
+                shape,
+                face,
+                origin.as_mut_ptr(),
+                direction.as_mut_ptr(),
+                &mut error,
+            )
+        };
+        interpret(status, &error, "reading a named cylinder's analytic axis")?;
+        Ok((origin, direction))
     }
 
     /// Serialises a shape, using the bridge's two-call length protocol.
@@ -1613,9 +1640,16 @@ mod tests {
             session.face_surface(shape, side[0]).expect("surface"),
             FaceSurface::Cylinder { radius: 10.0 }
         );
+        let (origin, axis) = session
+            .cylinder_axis(shape, side[0])
+            .expect("analytic cylinder axis");
+        assert_eq!(origin, [12., -7., 0.]);
+        assert_eq!([axis[0].abs(), axis[1].abs(), axis[2].abs()], [0., 0., 1.]);
+        assert!(session.cylinder_axis(shape, u64::MAX).is_err());
         for which in [0, 1] {
             let cap = session.cap_faces(shape, which).expect("cap");
             assert_eq!(cap.len(), 1);
+            assert!(session.cylinder_axis(shape, cap[0]).is_err());
             assert_eq!(
                 session.face_surface(shape, cap[0]).expect("surface"),
                 FaceSurface::Plane
@@ -1631,6 +1665,7 @@ mod tests {
         assert!(session.side_faces(shape, 1).is_err());
 
         session.release(shape);
+        assert!(session.cylinder_axis(shape, side[0]).is_err());
         assert_eq!(session.live_shape_count(), 0);
     }
 

@@ -153,7 +153,7 @@ Line-редакторами (`editable:false`), и редактором окру
 границы аналитического B-Rep и тесселяции и запускаемый рецепт:
 [окружность с отверстием → Extrude → FCAD](annular-sketch-extrude.md).
 
-## Правка сохранённого circular Cut (§26B/D)
+## Правка сохранённого circular Cut (§26B/D/E)
 
 `edit-circular-cut source.fcad --feature UUID --expect-version HASH
 --request request.json -o copy.fcad --json` использует прежний envelope v1,
@@ -174,17 +174,17 @@ boolean `leaves_a_floor`. UUID существующих объектов сох�
 сам CLI открывает ядро перед job, поэтому stub может отказать раньше проверки
 версии или назначения внутри job.
 
-Поддержаны один Cut и любой из двух последовательных Cut. `previous_feature_id`
+Поддержана правка любого Cut линейной истории до 16 Cut. `previous_feature_id`
 в result и discovery всегда непосредственный predecessor выбранной фичи.
 В saved аддитивны `base_feature_id`, `tip_feature_id`, `disk_clearance_mm`,
 `protected_floor_reference_ids` и nullable `neighboring_tool` (те же поля,
 что у `existing_cut` ниже). Неизвестные поля следует игнорировать.
-Через→карман добавляет собственный floor ref; для первого из двух также
-OriginCap(first, End) на конечном producer. Карман→через отказывает со всеми
-защищаемыми UUID. [Контракт §26D](edit-sequential-cuts.md).
+Через→карман добавляет собственный floor ref и OriginCap(selected, End)
+на каждом последующем producer. Карман→через отказывает со всеми
+защищаемыми UUID. [Контракт §26E](circular-cut-history.md).
 [Полный контракт, все поля discovery и запускаемый рецепт](edit-circular-cut-copy.md).
 
-## Первый и второй Cut в существующем Body (§26A/C)
+## До 16 Cut в существующем Body (§26A/C/E)
 
 `ferritecad cut-circular-copy <source.fcad> --body UUID --expect-version HASH
 --request <request.json> -o <copy.fcad> [--json]` — отдельная opt-in команда с
@@ -223,8 +223,15 @@ NewBody, тогда как прежнее `tip_feature_id` — непосред�
 это объект с `feature_id`, `tool_sketch_id`, `tool_curve_id`, `center_mm`,
 `radius_mm`, `depth_mm`. `disk_clearance_mm` равно 1e-7 mm; фактический зазор
 между дисками должен быть строго больше. Request, result и exit codes прежние.
-После второго Cut `cut_edit.available` false: третье добавление не поддержано.
-Оба Cut доступны через `features[].circular_cut_edit` (§26D).
+После 16-го Cut `cut_edit.available` false; все 16 доступны через
+`features[].circular_cut_edit`. Более длинная история открывается по общим
+правилам, но этот редактор возвращает явный отказ без усечения каталога.
+В §26E `target.tools` и `saved.tools` — массив всех инструментов в порядке
+Feature.previous от первого Cut до tip, с теми же полями, что `existing_cut`.
+Для N>1 `existing_cut:null`; для N≠2 `neighboring_tool:null`. Старые значения
+на прежних документах сохраняются. Массив edit включает выбранный инструмент.
+Конфликт с любым другим диском называет его feature UUID.
+[Точный контракт §26E и исполняемый рецепт](circular-cut-history.md).
 Точные ограничения, семантика истории, правила UI/writer и запускаемый рецепт:
 [первый Cut](circular-cut-copy.md), [второй Cut и новые поля discovery](sequential-circular-cuts.md).
 

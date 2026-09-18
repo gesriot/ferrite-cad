@@ -3418,3 +3418,25 @@ ignored benchmark. Оконный smoke по-прежнему отложен: Ma
 viewer на ревью не запускался. Удалённые проверки будут проверены на точном
 head PR и merge SHA после публикации; CI базы их не заменяет.
 Третий Cut и произвольные истории не входят.
+
+**§26E — bounded circular Cut history (implemented and independently reviewed).**
+
+One reader and one disk policy support addition and editing of every link in
+0–16 separate circular Cuts above the same unconstrained XY plate. Discovery
+adds history-ordered tools, UI bounds choices/details, writer re-derives inside
+its transaction and rejects cross-namespace/new-set UUID collisions. Each
+through→pocket adds one own and every descendant origin floor reference.
+No new schema, feature, copier or archive version. An additive diagnostic bridge
+query measures the analytic cylinder axis of an already resolved face handle. Wider history,
+constraints, intersecting disks and in-place Save remain outside this slice.
+[Contract and executable recipe](circular-cut-history.md),
+[verification](circular-cut-history-verification.md). Native, stub, mixed,
+worker/widget, mutation and independent export checks are recorded separately.
+The implementer's guarded attempt exceeded 1536 MiB. Independent review found
+and fixed a self-sustaining RedrawRequested loop; separate widget/timer requests
+remain intact. A fresh guarded native GUI run completed add/edit/refusal,
+Undo/Redo, Save Cancel and async Open, with byte-equal CLI STL/FBX. The 16-link
+list and final edit controls were also exercised. Peak footprint 206.22 MiB,
+388 s, exit 0, swap 0. The earlier memory spike's cause is not proved by this
+fix; the original failed run remains recorded. Exact-head remote CI is checked
+separately after publication. Next slice not started.
