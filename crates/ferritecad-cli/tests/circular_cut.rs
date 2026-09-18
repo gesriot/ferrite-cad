@@ -695,10 +695,7 @@ fn only_the_cut_was_added(source: &Path, copy: &Path, body: ferritecad_types::Ob
                         }
                         assert!(
                             row.contains(&selected)
-                                && matches!(
-                                    columns[i].as_str(),
-                                    "payload" | "payload_hash" | "schema_version"
-                                ),
+                                && matches!(columns[i].as_str(), "payload" | "payload_hash"),
                             "objects.{} changed to {:?}",
                             columns[i],
                             found[i]
@@ -1076,7 +1073,7 @@ fn native_a_through_hole_and_a_pocket_are_what_the_numbers_say() {
             "a document with a cut is not one the profile editors accept: {:?}",
             after["sketches"]
         );
-        assert_eq!(after["bodies"][0]["cut_edit"]["available"], false);
+        assert_eq!(after["bodies"][0]["cut_edit"]["available"], true);
     }
 }
 
@@ -1334,3 +1331,6 @@ fn native_the_cut_is_keyed_by_what_it_cut() {
         "the cut was served from an entry that did not depend on what it cut: {taller}"
     );
 }
+
+#[path = "support/sequential_circular_cuts.rs"]
+mod sequential;

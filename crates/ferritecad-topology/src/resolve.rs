@@ -297,6 +297,48 @@ pub fn resolve(map: &TopologyMap, reference: &TopologyRef) -> Result<Vec<SubShap
             }
         }
 
+        SemanticRole::OriginCap {
+            origin_feature,
+            side,
+        } => {
+            require_kind(reference, EntityKind::Face, "an origin cap")?;
+            if !matches!(side, CapSide::Start | CapSide::End) {
+                return Err(CadError::unsupported("unknown origin cap side"));
+            }
+            if reference.selection != SelectionRule::Exact {
+                return Err(CadError::input("an origin cap is selected exactly"));
+            }
+            let faces = origin_faces(map, reference, *origin_feature, CarriedName::Cap(*side))?;
+            exactly_one(reference, faces, "the cap of the named origin feature")
+        }
+        SemanticRole::OriginSide {
+            origin_feature,
+            profile_segment,
+        } => {
+            require_kind(reference, EntityKind::Face, "an origin side")?;
+            let faces = origin_faces(
+                map,
+                reference,
+                *origin_feature,
+                CarriedName::Side(*profile_segment),
+            )?;
+            match reference.selection {
+                SelectionRule::Exact => {
+                    exactly_one(reference, faces, "the side of the named origin feature")
+                }
+                SelectionRule::AllDerivedFrom { ancestor } if ancestor == *profile_segment => {
+                    if faces.is_empty() {
+                        Err(CadError::topology("no faces carried from this origin"))
+                    } else {
+                        Ok(faces)
+                    }
+                }
+                _ => Err(CadError::input(
+                    "origin side selection must name its own segment",
+                )),
+            }
+        }
+
         // A real role, and one this slice cannot answer. The kernel emits no
         // shape for a sketch on its own, so there is no edge handle to hand
         // back; inventing one would be a name with nothing behind it.
@@ -355,6 +397,24 @@ fn unknown_rule(reference: &TopologyRef, rule: &SelectionRule) -> CadError {
         "topology reference {} uses selection rule {rule:?}, which this build cannot apply",
         reference.id
     ))
+}
+
+fn origin_faces(
+    map: &TopologyMap,
+    reference: &TopologyRef,
+    origin: ferritecad_types::ObjectId,
+    name: CarriedName,
+) -> Result<Vec<SubShapeHandle>> {
+    let names = map.feature(reference.producer_feature);
+    if names.is_some_and(|n| n.origin_is_deleted(origin, name)) {
+        return Err(CadError::topology(format!(
+            "topology reference {} names an origin face removed by feature {}",
+            reference.id, reference.producer_feature
+        )));
+    }
+    Ok(names
+        .map(|n| n.origin_faces(origin, name).collect())
+        .unwrap_or_default())
 }
 
 #[cfg(test)]

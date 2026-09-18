@@ -92,7 +92,8 @@ pub use model::{
     Point2, SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY, SKETCH_CONSTRAINTS_CAPABILITY,
     STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch, SketchConstraint,
     SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef, SketchPointSelector,
-    SketchSegmentRef, SolidOperation, TOPOLOGY_CARRIED_FACE_CAPABILITY, TopologyRef,
+    SketchSegmentRef, SolidOperation, TOPOLOGY_CARRIED_FACE_CAPABILITY,
+    TOPOLOGY_ORIGIN_FACE_CAPABILITY, TopologyRef,
 };
 pub use schema::{
     CACHE_EXTENSION, DOCUMENT_EXTENSION, FORMAT_VERSION, MINIMUM_READER_VERSION,

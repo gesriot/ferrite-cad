@@ -43,21 +43,11 @@ pub struct FeatureNames {
     /// choosing.
     start_cap_vertices: BTreeMap<ProfileJoint, BTreeSet<SubShapeHandle>>,
     end_cap_vertices: BTreeMap<ProfileJoint, BTreeSet<SubShapeHandle>>,
-    /// The caps an earlier feature made, as this feature leaves them.
-    ///
-    /// Kept apart from `start_cap`/`end_cap` rather than merged into them.
-    /// After a pocket both exist and they are different faces: this one is the
-    /// plate's top, and that one is the floor the tool left. A single map would
-    /// make a reference to either resolve to whichever was written last.
-    carried_start_cap: BTreeSet<SubShapeHandle>,
-    carried_end_cap: BTreeSet<SubShapeHandle>,
-    /// The faces an earlier feature raised from each of its profile segments,
-    /// as this feature leaves them. Apart from `sides` for the same reason.
-    carried_sides: BTreeMap<StableEntityId, BTreeSet<SubShapeHandle>>,
-    /// Every carried name the earlier feature had that this one does **not**
-    /// leave behind, so a reference to it is refused rather than answered from
-    /// an empty list that could equally mean "never named".
-    carried_deleted: BTreeSet<CarriedName>,
+    /// Immediate predecessor, for the unchanged legacy CarriedCap/Side roles.
+    previous: Option<ObjectId>,
+    /// Original producer and role, never reassigned by an intervening boolean.
+    carried: BTreeMap<(ObjectId, CarriedName), BTreeSet<SubShapeHandle>>,
+    carried_deleted: BTreeSet<(ObjectId, CarriedName)>,
 }
 
 /// One name an earlier feature had, as a later feature refers back to it.
@@ -212,65 +202,69 @@ impl FeatureNames {
     /// [`Self::cap`] is. An empty iterator with the name recorded as deleted is
     /// a different fact from an empty one with nothing recorded, and
     /// [`Self::carried_is_deleted`] is how a resolver tells them apart.
-    pub fn carried_cap(
-        &self,
-        side: CapSide,
-    ) -> Option<impl ExactSizeIterator<Item = SubShapeHandle> + '_> {
-        let set = match side {
-            CapSide::Start => &self.carried_start_cap,
-            CapSide::End => &self.carried_end_cap,
-            _ => return None,
-        };
-        Some(set.iter().copied())
+    pub fn carried_cap(&self, side: CapSide) -> Option<impl Iterator<Item = SubShapeHandle> + '_> {
+        match side {
+            CapSide::Start | CapSide::End => Some(
+                self.previous
+                    .into_iter()
+                    .flat_map(move |origin| self.origin_faces(origin, CarriedName::Cap(side))),
+            ),
+            _ => None,
+        }
     }
 
-    /// The faces an earlier feature raised from one segment, as this feature
-    /// leaves them.
     pub fn carried_side(
         &self,
         segment: StableEntityId,
+    ) -> impl Iterator<Item = SubShapeHandle> + '_ {
+        self.previous
+            .into_iter()
+            .flat_map(move |origin| self.origin_faces(origin, CarriedName::Side(segment)))
+    }
+
+    pub fn previous(&self) -> Option<ObjectId> {
+        self.previous
+    }
+
+    pub fn origin_faces(
+        &self,
+        origin: ObjectId,
+        name: CarriedName,
     ) -> impl ExactSizeIterator<Item = SubShapeHandle> + '_ {
-        self.carried_sides
-            .get(&segment)
-            .map(|set| set.iter())
+        self.carried
+            .get(&(origin, name))
+            .map(|s| s.iter())
             .unwrap_or_default()
             .copied()
     }
 
-    /// Whether this feature removed a name the earlier feature had.
-    ///
-    /// The one answer that lets a resolver say "the face you mean is gone"
-    /// instead of "this feature named nothing like that". They are different
-    /// facts and a user acts differently on each.
+    pub fn origin_is_deleted(&self, origin: ObjectId, name: CarriedName) -> bool {
+        self.carried_deleted.contains(&(origin, name))
+    }
+
     pub fn carried_is_deleted(&self, name: CarriedName) -> bool {
-        self.carried_deleted.contains(&name)
+        self.previous
+            .is_some_and(|origin| self.origin_is_deleted(origin, name))
     }
 
-    /// How many faces this feature named, of every kind it names.
-    ///
-    /// One number, computed here, because "how much did this feature produce"
-    /// is a question about the whole of what it named. A caller that added up
-    /// the caps and the sides alone would report a boolean as having produced
-    /// one face and lost the part it cut.
     pub fn named_face_count(&self) -> usize {
-        let caps = self.start_cap.len() + self.end_cap.len();
-        let sides: usize = self.sides.values().map(BTreeSet::len).sum();
-        let carried_caps = self.carried_start_cap.len() + self.carried_end_cap.len();
-        let carried_sides: usize = self.carried_sides.values().map(BTreeSet::len).sum();
-        caps + sides + carried_caps + carried_sides
+        self.start_cap.len()
+            + self.end_cap.len()
+            + self.sides.values().map(BTreeSet::len).sum::<usize>()
+            + self.carried.values().map(BTreeSet::len).sum::<usize>()
     }
 
-    /// Every carried name this feature has an answer about, deleted or not.
-    pub fn carried_names(&self) -> impl ExactSizeIterator<Item = CarriedName> {
-        let mut names: BTreeSet<CarriedName> = self.carried_deleted.clone();
-        if !self.carried_start_cap.is_empty() {
-            names.insert(CarriedName::Cap(CapSide::Start));
-        }
-        if !self.carried_end_cap.is_empty() {
-            names.insert(CarriedName::Cap(CapSide::End));
-        }
-        names.extend(self.carried_sides.keys().copied().map(CarriedName::Side));
+    /// Every qualified name, including deleted ancestors, in deterministic order.
+    pub fn origins(&self) -> impl ExactSizeIterator<Item = (ObjectId, CarriedName)> {
+        let mut names = self.carried_deleted.clone();
+        names.extend(self.carried.keys().copied());
         names.into_iter()
+    }
+
+    pub fn carried_names(&self) -> impl Iterator<Item = CarriedName> {
+        let previous = self.previous;
+        self.origins()
+            .filter_map(move |(origin, name)| (Some(origin) == previous).then_some(name))
     }
 }
 
@@ -289,13 +283,9 @@ pub struct RestoredNames {
     pub sweep_edges: BTreeMap<ProfileJoint, Vec<SubShapeHandle>>,
     pub start_cap_vertices: BTreeMap<ProfileJoint, Vec<SubShapeHandle>>,
     pub end_cap_vertices: BTreeMap<ProfileJoint, Vec<SubShapeHandle>>,
-    /// What an earlier feature's caps became, as this one leaves them.
-    pub carried_start_cap: Vec<SubShapeHandle>,
-    pub carried_end_cap: Vec<SubShapeHandle>,
-    /// The same for the faces it raised from each profile segment.
-    pub carried_sides: BTreeMap<StableEntityId, Vec<SubShapeHandle>>,
-    /// The carried names this feature removed.
-    pub carried_deleted: BTreeSet<CarriedName>,
+    pub previous: Option<ObjectId>,
+    pub carried: BTreeMap<(ObjectId, CarriedName), Vec<SubShapeHandle>>,
+    pub carried_deleted: BTreeSet<(ObjectId, CarriedName)>,
 }
 
 /// What a whole rebuild produced, addressed by feature and role.
@@ -583,38 +573,27 @@ impl TopologyMap {
                 names.sides.entry(*segment).or_default().insert(*face);
             }
         }
-        for (faces, into) in [
-            (&restored.carried_start_cap, &mut names.carried_start_cap),
-            (&restored.carried_end_cap, &mut names.carried_end_cap),
-        ] {
-            for face in faces {
-                check(*face, shape, producer, "a restored carried cap")?;
-                into.insert(*face);
+        names.previous = restored.previous;
+        for (name, faces) in &restored.carried {
+            if name.0 == producer || restored.previous.is_none() {
+                return Err(CadError::topology(
+                    "a carried face requires an earlier producer",
+                ));
             }
-        }
-        for (segment, faces) in &restored.carried_sides {
             for face in faces {
-                check(*face, shape, producer, "a restored carried side")?;
-                names
-                    .carried_sides
-                    .entry(*segment)
-                    .or_default()
-                    .insert(*face);
+                check(*face, shape, producer, "a restored origin face")?;
+                names.carried.entry(*name).or_default().insert(*face);
             }
         }
         for name in &restored.carried_deleted {
-            // A name cannot be both removed and restored: one of the two
-            // answers would then depend on which map a resolver looked in.
-            let present = match name {
-                CarriedName::Cap(CapSide::Start) => !names.carried_start_cap.is_empty(),
-                CarriedName::Cap(CapSide::End) => !names.carried_end_cap.is_empty(),
-                CarriedName::Cap(_) => false,
-                CarriedName::Side(segment) => names.carried_sides.contains_key(segment),
-            };
-            if present {
-                return Err(CadError::topology(format!(
-                    "the archive of feature {producer} restores {name:?} and also calls it removed"
-                )));
+            if names
+                .carried
+                .get(name)
+                .is_some_and(|faces| !faces.is_empty())
+            {
+                return Err(CadError::topology(
+                    "an origin face is both restored and removed",
+                ));
             }
             names.carried_deleted.insert(*name);
         }
@@ -807,39 +786,43 @@ impl TopologyMap {
             }
         }
 
-        // Everything the earlier feature was called, carried forward or
-        // recorded as gone.
+        names.previous = Some(previous);
+        let mut inputs: BTreeMap<(ObjectId, CarriedName), Vec<SubShapeHandle>> = BTreeMap::new();
         for side in [CapSide::Start, CapSide::End] {
-            let Some(faces) = previous_names.cap(side) else {
-                continue;
-            };
-            let mut survived = false;
-            for face in faces {
-                for out in outputs(face) {
-                    check(out, result.shape, producer, "a carried cap")?;
-                    survived = true;
-                    match side {
-                        CapSide::Start => names.carried_start_cap.insert(out),
-                        CapSide::End => names.carried_end_cap.insert(out),
-                        _ => unreachable!("the two sides are matched above"),
-                    };
-                }
-            }
-            if !survived {
-                names.carried_deleted.insert(CarriedName::Cap(side));
-            }
+            inputs.insert(
+                (previous, CarriedName::Cap(side)),
+                previous_names.cap(side).into_iter().flatten().collect(),
+            );
         }
         for segment in previous_names.named_segments() {
-            let mut survived = false;
-            for face in previous_names.side(segment) {
+            inputs.insert(
+                (previous, CarriedName::Side(segment)),
+                previous_names.side(segment).collect(),
+            );
+        }
+        for (origin, name) in previous_names.origins() {
+            inputs.insert(
+                (origin, name),
+                previous_names.origin_faces(origin, name).collect(),
+            );
+        }
+        for (name, faces) in inputs {
+            let mut carried = BTreeSet::new();
+            for face in faces {
+                if !result.carried.contains_key(&face) {
+                    return Err(CadError::topology(
+                        "boolean history omitted a named input face",
+                    ));
+                }
                 for out in outputs(face) {
-                    check(out, result.shape, producer, "a carried side")?;
-                    survived = true;
-                    names.carried_sides.entry(segment).or_default().insert(out);
+                    check(out, result.shape, producer, "a carried origin face")?;
+                    carried.insert(out);
                 }
             }
-            if !survived {
-                names.carried_deleted.insert(CarriedName::Side(segment));
+            if carried.is_empty() {
+                names.carried_deleted.insert(name);
+            } else {
+                names.carried.insert(name, carried);
             }
         }
 

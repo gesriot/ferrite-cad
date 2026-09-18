@@ -239,6 +239,9 @@ struct SavedCutTarget {
     plane_id: ObjectId,
     /// The feature the cut would modify, which is the body's tip today.
     tip_feature_id: ObjectId,
+    base_feature_id: ObjectId,
+    existing_cut: Option<ExistingCut>,
+    disk_clearance_mm: f64,
     profile_sketch_id: ObjectId,
     height_mm: f64,
     /// `[[min_x, min_y], [max_x, max_y]]` of the rectangular part, in mm, so a
@@ -248,6 +251,16 @@ struct SavedCutTarget {
     direction: &'static str,
     /// How far the tool must stay from the part's outer wall.
     wall_clearance_mm: f64,
+}
+
+#[derive(Serialize)]
+struct ExistingCut {
+    feature_id: ObjectId,
+    tool_sketch_id: ObjectId,
+    tool_curve_id: StableEntityId,
+    center_mm: [f64; 2],
+    radius_mm: f64,
+    depth_mm: f64,
 }
 
 impl CutDiscovery {
@@ -260,6 +273,16 @@ impl CutDiscovery {
                 body_id: t.body,
                 plane_id: t.plane,
                 tip_feature_id: t.tip_feature,
+                base_feature_id: t.base_feature,
+                existing_cut: t.existing_cut.map(|c| ExistingCut {
+                    feature_id: c.feature,
+                    tool_sketch_id: c.tool_sketch,
+                    tool_curve_id: c.tool_curve,
+                    center_mm: c.center_mm,
+                    radius_mm: c.radius_mm,
+                    depth_mm: c.depth_mm,
+                }),
+                disk_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
                 profile_sketch_id: t.profile,
                 height_mm: t.height_mm,
                 extents_mm: t.extents_mm,

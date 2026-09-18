@@ -935,11 +935,8 @@ fn cut_edit_discovery_and_protocol_without_native() {
         assert_eq!(sketch["annulus_edit"]["available"], json!(false));
         assert_eq!(sketch["constraint_edit"]["available"], json!(false));
     }
-    // And no second cut is offered, which is a different slice.
-    assert_eq!(
-        f.catalog["bodies"][0]["cut_edit"]["available"],
-        json!(false)
-    );
+    // Adding a second cut is available; editing still has its six-object frame.
+    assert_eq!(f.catalog["bodies"][0]["cut_edit"]["available"], json!(true));
 
     // Every refusal, with everything else about the call correct.
     let never = f.root.path().join("never.fcad");

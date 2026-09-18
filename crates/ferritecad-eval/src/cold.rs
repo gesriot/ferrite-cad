@@ -377,8 +377,13 @@ fn run<K: GeometryKernel + ?Sized>(
                         })?;
                         let tool_key =
                             extrude_archive_key(kernel.identity(), &tool_request, &scoped);
-                        let key =
-                            cut_archive_key(kernel.identity(), &target_key, &tool_key, &scoped);
+                        let key = cut_archive_key(
+                            kernel.identity(),
+                            previous,
+                            &target_key,
+                            &tool_key,
+                            &scoped,
+                        );
 
                         let restored = match cache.as_deref_mut() {
                             Some(cache) => {
@@ -578,6 +583,9 @@ fn tracked(previous: &FeatureNames, tool: &FeatureNames) -> Vec<SubShapeHandle> 
         }
         for segment in names.named_segments() {
             track.extend(names.side(segment));
+        }
+        for (origin, name) in names.origins() {
+            track.extend(names.origin_faces(origin, name));
         }
     }
     track
