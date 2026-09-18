@@ -244,9 +244,10 @@ if [ -n "${FCAD_CUT_FBX_DIR:-}" ]; then
 fi
 
 # §26B adds the copies its cut-parameter edit publishes to the same reader
-# build: a moved tool and a hole shortened into a pocket.
+# build: each independently edited parameter, the combined edit, and a hole
+# shortened into a pocket. Every produced artifact is actually read.
 if [ -n "${FCAD_CUT_EDIT_FBX_DIR:-}" ]; then
-    for name in cut-edit-all-cli cut-edit-shortened-cli; do
+    for name in cut-edit-centre-cli cut-edit-radius-cli cut-edit-depth-cli cut-edit-all-cli cut-edit-shortened-cli; do
         "$reader" --identity "$FCAD_CUT_EDIT_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
         count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) failures=0$/\1/p' "$work/$name-reader.txt")"
         [ -n "$count" ] && [ "$count" -ge 6 ] || {

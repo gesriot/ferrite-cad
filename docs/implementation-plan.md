@@ -3357,7 +3357,8 @@ diff.
 
 Независимое ревью §26B исправило первый Undo, потерю необязательных capability
 rows/rowid, коллизию новой ссылки на дно, discovery вне сохранённой Cut policy
-и Unix-only API в общем CLI test. Native document/jobs, CLI и headless app,
+и Unix-only API в общем CLI test. Аудит CI добавил три пропущенных FBX
+в reader loop: все пять новых артефактов действительно читаются. Native document/jobs, CLI и headless app,
 настоящий stub, mixed OCCT/no-solver, исполняемый рецепт и pinned ufbx проверены
 отдельно; подробности в протоколе. GUI smoke ревью отложен из-за блокировки Mac.
 
