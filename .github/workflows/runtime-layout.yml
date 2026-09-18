@@ -47,6 +47,10 @@ on:
       - 'tools/stage-runtime-layout.sh'
       - 'tools/check-staged-layout.sh'
       - 'tools/check-runtime-probe-opt-in.sh'
+      # Changes to the executed FBX campaign and its pinned reader are inputs
+      # to this measurement, even when no product source changes.
+      - 'tools/check-fbx-complex.sh'
+      - 'tools/unity-fbx-smoke/scripts/**'
       - 'tools/macos-bundle.sh'
       - 'tools/macos-bundle-plist.py'
       - 'tools/build-planegcs.sh'
