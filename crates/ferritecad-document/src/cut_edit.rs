@@ -22,7 +22,7 @@
 //!
 //! The other accepted source is the exact six-object first-cut frame checked
 //! by `saved_cut`. It may receive one separate disk; its eight-object result
-//! accepts neither a third cut nor parameter editing of either saved cut.
+//! accepts parameter editing of either saved cut, but never a third cut.
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId, Tolerance, Transform};
 use std::collections::BTreeSet;
 
@@ -140,8 +140,10 @@ pub(crate) fn supported(
         return Err(unsupported("the body's tip is not an extrusion"));
     };
     if feature.operation == SolidOperation::Cut {
-        // Reuse the exact six-object catalog, including saved numeric policy
-        // and reference meanings. The editor's accepted frame stays unchanged.
+        // Addition stops at one existing Cut; editing uses the same history check.
+        if objects.len() != 6 {
+            return Err(unsupported("a third circular Cut is outside this slice"));
+        }
         let saved = saved_cut(document, objects, extrude)?;
         let profile = objects
             .iter()
@@ -284,16 +286,21 @@ impl CutChoice {
 fn validate_target(target: &SavedCutTarget, cut: &CircularCut) -> Result<CircleExtrusion> {
     let tool = validate(target.height_mm, target.extents_mm, cut)?;
     if let Some(saved) = &target.existing_cut {
-        let distance =
-            (cut.center_mm[0] - saved.center_mm[0]).hypot(cut.center_mm[1] - saved.center_mm[1]);
-        let gap = distance - cut.radius_mm - saved.radius_mm;
-        if gap <= WALL_CLEARANCE_MM {
-            return Err(CadError::input(format!(
-                "the two circular disks must be separate by more than {WALL_CLEARANCE_MM} mm; gap is {gap} mm"
-            )));
-        }
+        validate_disks(cut, saved.center_mm, saved.radius_mm)?;
     }
     Ok(tool)
+}
+
+/// Shared by add, discovery and parameter edits of either history link.
+fn validate_disks(cut: &CircularCut, center: [f64; 2], radius: f64) -> Result<()> {
+    let gap =
+        (cut.center_mm[0] - center[0]).hypot(cut.center_mm[1] - center[1]) - cut.radius_mm - radius;
+    if gap <= WALL_CLEARANCE_MM {
+        return Err(CadError::input(format!(
+            "the two circular disks must be separate by more than {WALL_CLEARANCE_MM} mm; gap is {gap} mm"
+        )));
+    }
+    Ok(())
 }
 
 /// The one numeric rule, applied to a request against the saved part.
@@ -457,6 +464,63 @@ fn cut_references(
     references
 }
 
+/// One naming contract for creation and discovery of either history link.
+fn history_references(
+    feature_id: ObjectId,
+    tool_curve: StableEntityId,
+    profile_segments: &[StableEntityId],
+    leaves_a_floor: bool,
+    base_feature: ObjectId,
+    previous: Option<&SavedCircularCut>,
+) -> Vec<TopologyRef> {
+    let mut references = cut_references(feature_id, tool_curve, profile_segments, leaves_a_floor);
+
+    if let Some(saved) = previous {
+        for reference in &mut references {
+            reference.output_role = match reference.output_role {
+                SemanticRole::CarriedCap { side } => SemanticRole::OriginCap {
+                    origin_feature: base_feature,
+                    side,
+                },
+                SemanticRole::CarriedSide { profile_segment } => SemanticRole::OriginSide {
+                    origin_feature: base_feature,
+                    profile_segment,
+                },
+                ref own => own.clone(),
+            };
+        }
+        references.push(TopologyRef {
+            id: StableEntityId::new(),
+            owner: feature_id,
+            producer_feature: feature_id,
+            expected_kind: EntityKind::Face,
+            output_role: SemanticRole::OriginSide {
+                origin_feature: saved.feature,
+                profile_segment: saved.tool_curve,
+            },
+            selection: SelectionRule::AllDerivedFrom {
+                ancestor: saved.tool_curve,
+            },
+            fallback_signature: None,
+        });
+        if saved.depth_mm < saved.height_mm {
+            references.push(TopologyRef {
+                id: StableEntityId::new(),
+                owner: feature_id,
+                producer_feature: feature_id,
+                expected_kind: EntityKind::Face,
+                output_role: SemanticRole::OriginCap {
+                    origin_feature: saved.feature,
+                    side: CapSide::End,
+                },
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            });
+        }
+    }
+    references
+}
+
 /// Prepares one circular cut against the saved document.
 ///
 /// Mints nothing until every check has passed, so a refused request leaves no
@@ -555,56 +619,14 @@ pub fn prepare_circular_cut(
         role: DependencyRole::BodyTip,
     }];
 
-    let mut references = cut_references(
+    let references = history_references(
         feature_id,
         tool_curve,
         &target.profile_segments,
         cut.depth_mm < target.height_mm,
+        target.base_feature,
+        target.existing_cut.as_ref(),
     );
-
-    if let Some(saved) = &target.existing_cut {
-        for reference in &mut references {
-            reference.output_role = match reference.output_role {
-                SemanticRole::CarriedCap { side } => SemanticRole::OriginCap {
-                    origin_feature: target.base_feature,
-                    side,
-                },
-                SemanticRole::CarriedSide { profile_segment } => SemanticRole::OriginSide {
-                    origin_feature: target.base_feature,
-                    profile_segment,
-                },
-                ref own => own.clone(),
-            };
-        }
-        references.push(TopologyRef {
-            id: StableEntityId::new(),
-            owner: feature_id,
-            producer_feature: feature_id,
-            expected_kind: EntityKind::Face,
-            output_role: SemanticRole::OriginSide {
-                origin_feature: saved.feature,
-                profile_segment: saved.tool_curve,
-            },
-            selection: SelectionRule::AllDerivedFrom {
-                ancestor: saved.tool_curve,
-            },
-            fallback_signature: None,
-        });
-        if saved.depth_mm < saved.height_mm {
-            references.push(TopologyRef {
-                id: StableEntityId::new(),
-                owner: feature_id,
-                producer_feature: feature_id,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::OriginCap {
-                    origin_feature: saved.feature,
-                    side: CapSide::End,
-                },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            });
-        }
-    }
 
     Ok(PreparedCircularCut {
         body: moved,
@@ -748,12 +770,20 @@ pub fn cut_plane_placement(document: &Document, plane: ObjectId) -> Result<Trans
 pub struct SavedCircularCut {
     /// The Cut feature whose numbers may change. Its identity is kept.
     pub feature: ObjectId,
-    /// The body the cut is the tip of.
+    /// The body whose history contains the cut.
     pub body: ObjectId,
     /// The datum both sketches are drawn on.
     pub plane: ObjectId,
-    /// The feature the cut modifies; unchanged by this edit.
+    /// The original NewBody extrusion, used for plate dimensions.
     pub base_feature: ObjectId,
+    /// The selected Cut's immediate predecessor, unchanged by this edit.
+    pub previous_feature: ObjectId,
+    /// The final feature exposed by the Body, unchanged by this edit.
+    pub tip_feature: ObjectId,
+    /// The other tool in a two-cut history, used by the shared disk policy.
+    pub neighboring_tool: Option<SavedCutTool>,
+    /// All saved floor names that would disappear, including the final origin.
+    pub protected_floor_references: Vec<StableEntityId>,
     /// The part's own profile; unchanged by this edit.
     pub profile_sketch: ObjectId,
     /// The sketch holding the tool circle, whose payload this edit rewrites.
@@ -776,6 +806,17 @@ pub struct SavedCircularCut {
     pub floor_reference: Option<StableEntityId>,
 }
 
+/// The adjacent tool's saved identity and numbers, without recursive ownership.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedCutTool {
+    pub feature: ObjectId,
+    pub tool_sketch: ObjectId,
+    pub tool_curve: StableEntityId,
+    pub center_mm: [f64; 2],
+    pub radius_mm: f64,
+    pub depth_mm: f64,
+}
+
 impl SavedCircularCut {
     /// Whether a cut of this depth leaves a floor. One rule, asked of the
     /// saved height rather than recomputed by each caller from two numbers.
@@ -784,7 +825,7 @@ impl SavedCircularCut {
     }
     /// Whether the depth may be raised to the part's height, cutting through.
     pub fn through_allowed(&self) -> bool {
-        self.floor_reference.is_none()
+        self.protected_floor_references.is_empty()
     }
 }
 
@@ -820,7 +861,7 @@ enum Transition {
     /// The cut keeps the floor it had, or keeps having none.
     Kept,
     /// A cut that ran through the part now stops inside it, so it gains a
-    /// floor and one new name for it. Nothing saved is lost.
+    /// floor, named in its historical and any dependent final output.
     FloorAppears,
 }
 
@@ -891,148 +932,107 @@ fn blind_literal(extrude: &Extrude, what: &str) -> Result<f64> {
     Ok(distance.value())
 }
 
-/// The saved cut one feature is, or why this slice cannot edit its numbers.
-///
-/// The class is exactly what [`prepare_circular_cut`] produces from the class
-/// it accepts, and nothing wider: six objects, six dependency edges with those
-/// exact roles, and a set of names on the cut that matches the one this module
-/// would mint for the numbers the document stores. That last check is what
-/// makes "this really is a cut this build made" a fact rather than a hope, and
-/// it is what finds the floor reference the transition policy below turns on.
+/// Select by UUID only after validating the entire bounded history.
 pub(crate) fn saved_cut(
     document: &Document,
     objects: &[ObjectRecord],
     object: &ObjectRecord,
 ) -> Result<SavedCircularCut> {
-    let ObjectPayload::Extrude(cut) = &object.payload else {
-        return Err(unsupported("selected object is not a feature"));
-    };
-    if cut.operation != SolidOperation::Cut {
+    if !matches!(&object.payload, ObjectPayload::Extrude(e) if e.operation == SolidOperation::Cut) {
         return Err(unsupported(
-            "this edit changes a Cut's tool and depth; the distance of the extrusion that starts \
-             a body is edited by edit-extrude",
+            "this edit changes a Cut's tool and depth; use edit-extrude for NewBody",
         ));
     }
-    if cut.target_body.is_some() || cut.reversed {
-        return Err(unsupported(
-            "this slice edits a forward Cut that names the feature it modifies",
-        ));
-    }
-    let base_id = cut
-        .previous
-        .ok_or_else(|| unsupported("a Cut with no predecessor modifies nothing"))?;
-    require_rewritable(object, "Cut")?;
-    let depth_mm = blind_literal(cut, "cut")?;
+    saved_history(document, objects)?
+        .into_iter()
+        .find(|c| c.feature == object.id)
+        .ok_or_else(|| unsupported("selected Cut is not in the Body's supported history"))
+}
 
-    // The shape of the whole document, before any single object is trusted:
-    // a plate with one cut in it is six objects, and a document with more in
-    // it is not this class however its rows happen to be ordered.
-    if objects.len() != 6 || objects.iter().any(|o| o.parent.is_some()) {
+/// Exactly a plate plus one or two cuts. All identities and the complete edge
+/// set are derived from links, never names, ordinals or database iteration order.
+fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Result<Vec<SavedCircularCut>> {
+    if !matches!(objects.len(), 6 | 8) || objects.iter().any(|o| o.parent.is_some()) {
         return Err(unsupported(
-            "editing a saved cut requires exactly one XY plane, the part's Sketch and Extrude, \
-             its Body, the tool Sketch and the Cut",
+            "editing a saved cut requires an exact six-object or eight-object XY plate history",
         ));
     }
-    let base = objects
-        .iter()
-        .find(|o| o.id == base_id)
-        .ok_or_else(|| unsupported("the feature this Cut modifies is missing"))?;
-    if !matches!(&base.payload, ObjectPayload::Extrude(e)
-        if e.operation == SolidOperation::NewBody && e.previous.is_none()
-            && e.target_body.is_none() && !e.reversed)
-    {
-        return Err(unsupported(
-            "this slice edits a Cut over the forward extrusion that started the body",
-        ));
-    }
-    let bodies: Vec<&ObjectRecord> = objects
+    let get = |id| {
+        objects
+            .iter()
+            .find(|o| o.id == id)
+            .ok_or_else(|| unsupported("a linked history object is missing"))
+    };
+    let bodies: Vec<_> = objects
         .iter()
         .filter(|o| matches!(o.payload, ObjectPayload::Body(_)))
         .collect();
     let [body] = bodies.as_slice() else {
         return Err(unsupported("editing a saved cut requires exactly one Body"));
     };
-    if !matches!(&body.payload, ObjectPayload::Body(b) if b.tip_feature == Some(object.id)) {
+    let ObjectPayload::Body(b) = &body.payload else {
+        unreachable!()
+    };
+    let tip = b
+        .tip_feature
+        .ok_or_else(|| unsupported("Body has no tip"))?;
+    let count = (objects.len() - 4) / 2;
+    let mut cursor = tip;
+    let mut chain = Vec::new();
+    let mut seen = BTreeSet::new();
+    for _ in 0..count {
+        if !seen.insert(cursor) {
+            return Err(unsupported("cyclic Cut history"));
+        }
+        let record = get(cursor)?;
+        let ObjectPayload::Extrude(cut) = &record.payload else {
+            return Err(unsupported("a Cut history link is not an extrusion"));
+        };
+        if cut.operation != SolidOperation::Cut || cut.target_body.is_some() || cut.reversed {
+            return Err(unsupported(
+                "this slice edits forward Cut links with feature predecessors",
+            ));
+        }
+        require_rewritable(record, "Cut")?;
+        blind_literal(cut, "cut")?;
+        chain.push(record);
+        cursor = cut
+            .previous
+            .ok_or_else(|| unsupported("a Cut with no predecessor modifies nothing"))?;
+    }
+    chain.reverse();
+    let base = get(cursor)?;
+    let ObjectPayload::Extrude(base_feature) = &base.payload else {
+        return Err(unsupported("the history base is not an extrusion"));
+    };
+    if base_feature.operation != SolidOperation::NewBody
+        || base_feature.previous.is_some()
+        || base_feature.target_body.is_some()
+        || base_feature.reversed
+    {
         return Err(unsupported(
-            "this slice edits the Cut a body tips at, not one buried in its history",
+            "the history must start with a forward NewBody extrusion",
         ));
     }
-
-    // The part, read through the same rules the cut that made it was accepted
-    // under: a literal Blind NewBody with no parameter behind it, drawn as an
-    // unconstrained axis-aligned rectangle on the untransformed XY datum.
-    let ObjectPayload::Extrude(base_feature) = &base.payload else {
-        unreachable!("checked above")
-    };
     let height_mm = crate::editable_extrude(document, base)?;
-    let profile = objects
-        .iter()
-        .find(|o| o.id == base_feature.profile)
-        .ok_or_else(|| unsupported("the part's profile is missing"))?;
-    let ObjectPayload::Sketch(part_sketch) = &profile.payload else {
+    let profile = get(base_feature.profile)?;
+    let ObjectPayload::Sketch(part) = &profile.payload else {
         return Err(unsupported("the part's profile is not a Sketch"));
     };
-    if !part_sketch.constraints.is_empty() {
-        return Err(unsupported(
-            "this slice edits a cut in an unconstrained part; a constrained profile has a solver \
-             between its numbers and its geometry, and that is a later slice",
-        ));
+    if !part.constraints.is_empty() {
+        return Err(unsupported("this slice edits an unconstrained part"));
     }
-    let plane = objects
-        .iter()
-        .find(|o| o.id == part_sketch.plane)
-        .ok_or_else(|| unsupported("the part's datum plane is missing"))?;
+    let plane = get(part.plane)?;
     if !matches!(&plane.payload, ObjectPayload::DatumPlane(p) if p.placement == Transform::IDENTITY)
     {
         return Err(unsupported(
             "editing a saved cut requires the untransformed XY plane",
         ));
     }
-    let extents_mm = rectangle(part_sketch, height_mm)?;
-
-    // The tool: one unconstrained circle on that same datum, and no second
-    // curve to have to choose between.
-    let tool = objects
-        .iter()
-        .find(|o| o.id == cut.profile)
-        .ok_or_else(|| unsupported("the Cut's tool Sketch is missing"))?;
-    let ObjectPayload::Sketch(tool_sketch) = &tool.payload else {
-        return Err(unsupported("the Cut's profile is not a Sketch"));
-    };
-    require_rewritable(tool, "tool Sketch")?;
-    if tool_sketch.plane != plane.id {
-        return Err(unsupported(
-            "this slice edits a tool drawn on the part's own base plane",
-        ));
-    }
-    if !tool_sketch.constraints.is_empty() {
-        return Err(unsupported("this slice edits an unconstrained tool"));
-    }
-    let [tool_curve] = tool_sketch.curves.as_slice() else {
-        return Err(unsupported("the Cut's tool Sketch draws one circle"));
-    };
-    if tool_curve.construction {
-        return Err(unsupported("construction geometry cuts nothing"));
-    }
-    let SketchGeometry::Circle { center, radius } = tool_curve.geometry else {
-        return Err(unsupported("this slice edits a circular tool"));
-    };
-    // Discovery states the supported source class as well as the next edit.
-    // A valid replacement does not make an out-of-policy stored tool valid.
-    validate(
-        height_mm,
-        extents_mm,
-        &CircularCut {
-            center_mm: [center.x, center.y],
-            radius_mm: radius,
-            depth_mm,
-        },
-    )?;
-
-    // Six edges, with exactly these roles. A document carrying one more — a
-    // parameter behind a distance, an ordering nobody asked for — is not this
-    // class, and counting them is how that is noticed.
-    let expected = BTreeSet::from([
+    let extents_mm = rectangle(part, height_mm)?;
+    let segments: Vec<_> = part.curves.iter().map(|c| c.id).collect();
+    let refs = document.topology_refs()?;
+    let mut expected = BTreeSet::from([
         Dependency {
             dependent: profile.id,
             dependency: plane.id,
@@ -1044,26 +1044,131 @@ pub(crate) fn saved_cut(
             role: DependencyRole::Profile,
         },
         Dependency {
-            dependent: tool.id,
-            dependency: plane.id,
-            role: DependencyRole::Plane,
-        },
-        Dependency {
-            dependent: object.id,
-            dependency: tool.id,
-            role: DependencyRole::Profile,
-        },
-        Dependency {
-            dependent: object.id,
-            dependency: base.id,
-            role: DependencyRole::Predecessor,
-        },
-        Dependency {
             dependent: body.id,
-            dependency: object.id,
+            dependency: tip,
             role: DependencyRole::BodyTip,
         },
     ]);
+    let mut covered = BTreeSet::from([body.id, base.id, profile.id, plane.id]);
+    let mut saved: Vec<SavedCircularCut> = Vec::new();
+    for record in chain {
+        let ObjectPayload::Extrude(cut) = &record.payload else {
+            unreachable!()
+        };
+        let tool = get(cut.profile)?;
+        let ObjectPayload::Sketch(sketch) = &tool.payload else {
+            return Err(unsupported("the Cut's profile is not a Sketch"));
+        };
+        require_rewritable(tool, "tool Sketch")?;
+        if sketch.plane != plane.id || !sketch.constraints.is_empty() {
+            return Err(unsupported(
+                "this slice edits an unconstrained tool on the part's base datum",
+            ));
+        }
+        let [curve] = sketch.curves.as_slice() else {
+            return Err(unsupported("the Cut's tool Sketch draws one circle"));
+        };
+        if curve.construction {
+            return Err(unsupported("construction geometry cuts nothing"));
+        }
+        let SketchGeometry::Circle { center, radius } = curve.geometry else {
+            return Err(unsupported("this slice edits a circular tool"));
+        };
+        let depth_mm = blind_literal(cut, "cut")?;
+        let numbers = CircularCut {
+            center_mm: [center.x, center.y],
+            radius_mm: radius,
+            depth_mm,
+        };
+        validate(height_mm, extents_mm, &numbers)?;
+        if let Some(previous) = saved.last() {
+            validate_disks(&numbers, previous.center_mm, previous.radius_mm)?;
+        }
+        let previous = cut.previous.expect("checked history link");
+        expected.extend([
+            Dependency {
+                dependent: tool.id,
+                dependency: plane.id,
+                role: DependencyRole::Plane,
+            },
+            Dependency {
+                dependent: record.id,
+                dependency: tool.id,
+                role: DependencyRole::Profile,
+            },
+            Dependency {
+                dependent: record.id,
+                dependency: previous,
+                role: DependencyRole::Predecessor,
+            },
+        ]);
+        covered.extend([record.id, tool.id]);
+        let stored: Vec<_> = refs.iter().filter(|r| r.owner == record.id).collect();
+        let wanted = history_references(
+            record.id,
+            curve.id,
+            &segments,
+            depth_mm < height_mm,
+            base.id,
+            saved.last(),
+        );
+        let mut remaining = stored.clone();
+        for want in wanted {
+            let position = remaining.iter().position(|r| same_meaning(r, &want)).ok_or_else(||
+                unsupported("the saved Cut does not name the faces this build gives a cut of its numbers"))?;
+            remaining.remove(position);
+        }
+        if !remaining.is_empty() {
+            return Err(unsupported(
+                "the saved Cut names more faces than a cut of its numbers gives",
+            ));
+        }
+        let floor_reference = stored
+            .iter()
+            .find(|r| r.output_role == SemanticRole::ExtrudeCap { side: CapSide::End })
+            .map(|r| r.id);
+        // Protect every saved reference to this floor, including references
+        // owned elsewhere and the final output's explicit origin name.
+        let protected_floor_references = refs
+            .iter()
+            .filter(|r| match r.output_role {
+                SemanticRole::ExtrudeCap { side: CapSide::End } => r.producer_feature == record.id,
+                SemanticRole::OriginCap {
+                    origin_feature,
+                    side: CapSide::End,
+                } => origin_feature == record.id,
+                SemanticRole::CarriedCap { side: CapSide::End } => {
+                    record.id != tip && r.producer_feature == tip
+                }
+                _ => false,
+            })
+            .map(|r| r.id)
+            .collect();
+        saved.push(SavedCircularCut {
+            feature: record.id,
+            body: body.id,
+            plane: plane.id,
+            base_feature: base.id,
+            previous_feature: previous,
+            tip_feature: tip,
+            neighboring_tool: None,
+            protected_floor_references,
+            profile_sketch: profile.id,
+            tool_sketch: tool.id,
+            tool_curve: curve.id,
+            center_mm: numbers.center_mm,
+            radius_mm: radius,
+            depth_mm,
+            height_mm,
+            extents_mm,
+            floor_reference,
+        });
+    }
+    if covered != objects.iter().map(|o| o.id).collect() || covered.len() != objects.len() {
+        return Err(unsupported(
+            "history must use exactly the plate and distinct Cut/tool objects",
+        ));
+    }
     if document
         .dependencies()?
         .into_iter()
@@ -1071,63 +1176,24 @@ pub(crate) fn saved_cut(
         != expected
     {
         return Err(unsupported(
-            "editing a saved cut requires exactly the plane, profile, predecessor and body-tip \
-             edges a cut leaves behind",
+            "editing a saved cut requires exactly the plane, profile, predecessor and body-tip edges",
         ));
     }
-
-    // Every name this cut gave, against the ones this module mints for the
-    // numbers the document stores. Matched by meaning, because the identities
-    // are the document's and the order rows come back in is the database's.
-    let stored: Vec<TopologyRef> = document
-        .topology_refs()?
-        .into_iter()
-        .filter(|r| r.owner == object.id)
-        .collect();
-    let segments: Vec<StableEntityId> = part_sketch.curves.iter().map(|c| c.id).collect();
-    let wanted = cut_references(object.id, tool_curve.id, &segments, depth_mm < height_mm);
-    let mut remaining: Vec<&TopologyRef> = stored.iter().collect();
-    for want in &wanted {
-        let position = remaining
-            .iter()
-            .position(|r| same_meaning(r, want))
-            .ok_or_else(|| {
-                unsupported(
-                    "the saved Cut does not name the faces this build gives a cut of its numbers",
-                )
-            })?;
-        remaining.remove(position);
+    if saved.len() == 2 {
+        for i in 0..2 {
+            let other = &saved[1 - i];
+            let tool = SavedCutTool {
+                feature: other.feature,
+                tool_sketch: other.tool_sketch,
+                tool_curve: other.tool_curve,
+                center_mm: other.center_mm,
+                radius_mm: other.radius_mm,
+                depth_mm: other.depth_mm,
+            };
+            saved[i].neighboring_tool = Some(tool);
+        }
     }
-    if !remaining.is_empty() {
-        return Err(unsupported(
-            "the saved Cut names more faces than a cut of its numbers gives",
-        ));
-    }
-    let floor_reference = stored
-        .iter()
-        .find(|r| {
-            matches!(
-                r.output_role,
-                SemanticRole::ExtrudeCap { side: CapSide::End }
-            )
-        })
-        .map(|r| r.id);
-
-    Ok(SavedCircularCut {
-        feature: object.id,
-        body: body.id,
-        plane: plane.id,
-        base_feature: base.id,
-        profile_sketch: profile.id,
-        tool_sketch: tool.id,
-        tool_curve: tool_curve.id,
-        center_mm: [center.x, center.y],
-        radius_mm: radius,
-        depth_mm,
-        height_mm,
-        extents_mm,
-        floor_reference,
-    })
+    Ok(saved)
 }
 
 /// Two references that name the same thing. Identity is deliberately absent:
@@ -1147,7 +1213,7 @@ fn same_meaning(a: &TopologyRef, b: &TopologyRef) -> bool {
 ///
 /// * a cut that keeps its floor, or keeps having none, changes no name;
 /// * a cut that ran through the part and now stops inside it **gains** a floor.
-///   Nothing saved is lost, one name is added, and the shared copy job already
+///   Nothing saved is lost; historical/final names are added, and the copy job
 ///   requires every name an operation adds to resolve — so this is supported
 ///   rather than refused for symmetry;
 /// * a cut that had a floor and would now run through the part **loses** it.
@@ -1171,12 +1237,29 @@ fn transition(saved: &SavedCircularCut, edit: &CircularCutEdit) -> Result<Transi
             depth_mm: edit.depth_mm,
         },
     )?;
+    if let Some(other) = &saved.neighboring_tool {
+        validate_disks(
+            &CircularCut {
+                center_mm: edit.center_mm,
+                radius_mm: edit.radius_mm,
+                depth_mm: edit.depth_mm,
+            },
+            other.center_mm,
+            other.radius_mm,
+        )?;
+    }
+    let protected = saved
+        .protected_floor_references
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
     match (saved.floor_reference, saved.floor_at(edit.depth_mm)) {
         (Some(_), true) | (None, false) => Ok(Transition::Kept),
         (None, true) => Ok(Transition::FloorAppears),
-        (Some(floor), false) => Err(unsupported(format!(
+        (Some(_), false) => Err(unsupported(format!(
             "a depth of {} mm would cut this pocket through a part {} mm tall, and the saved \
-             reference {floor} names the pocket floor that would stop existing; this slice does \
+             references [{protected}] name the pocket floor that would stop existing; this slice does \
              not delete saved references or move them to another face",
             edit.depth_mm, saved.height_mm
         ))),
@@ -1189,7 +1272,7 @@ fn transition(saved: &SavedCircularCut, edit: &CircularCutEdit) -> Result<Transi
 pub struct PreparedCutParameters {
     pub(crate) tool_sketch: ObjectRecord,
     pub(crate) feature: ObjectRecord,
-    /// The floor's name, when the edit turns a hole back into a pocket. Empty
+    /// The floor's historical/final names when a hole becomes a pocket. Empty
     /// otherwise; this operation never removes one.
     pub(crate) added_references: Vec<TopologyRef>,
     pub(crate) saved: SavedCircularCut,
@@ -1210,7 +1293,7 @@ impl PreparedCutParameters {
         self.saved.body
     }
     pub fn previous(&self) -> ObjectId {
-        self.saved.base_feature
+        self.saved.previous_feature
     }
     pub fn tool_curve(&self) -> StableEntityId {
         self.saved.tool_curve
@@ -1263,7 +1346,7 @@ pub fn prepare_cut_parameters(
         distance: Expression::constant(edit.depth_mm)?,
     };
 
-    let added_references = match moved {
+    let mut added_references = match moved {
         Transition::Kept => Vec::new(),
         Transition::FloorAppears => vec![TopologyRef {
             id: StableEntityId::new(),
@@ -1275,6 +1358,21 @@ pub fn prepare_cut_parameters(
             fallback_signature: None,
         }],
     };
+
+    if moved == Transition::FloorAppears && saved.feature != saved.tip_feature {
+        added_references.push(TopologyRef {
+            id: StableEntityId::new(),
+            owner: saved.tip_feature,
+            producer_feature: saved.tip_feature,
+            expected_kind: EntityKind::Face,
+            output_role: SemanticRole::OriginCap {
+                origin_feature: saved.feature,
+                side: CapSide::End,
+            },
+            selection: SelectionRule::Exact,
+            fallback_signature: None,
+        });
+    }
 
     Ok(PreparedCutParameters {
         tool_sketch: tool,
@@ -2370,8 +2468,132 @@ mod tests {
         assert!(
             cut_parameter_choices(&d, &d.objects().expect("objects"))
                 .iter()
-                .all(|c| c.saved.is_none())
+                .filter(|c| c.saved.is_some())
+                .count()
+                == 2
         );
         assert!(prepare_circular_cut(&d, saved.body, &second).is_err());
+    }
+    #[test]
+    fn sequential_edit_floor_policy_and_writer_forgery_are_checked_before_writing() {
+        for first_depth in [4., 10.] {
+            for second_depth in [7., 10.] {
+                let (_root, mut d, first) = cut_plate(first_depth);
+                let body = only(&d).body;
+                let p = prepare_circular_cut(
+                    &d,
+                    body,
+                    &CircularCut {
+                        center_mm: [45., 25.],
+                        radius_mm: 6.,
+                        depth_mm: second_depth,
+                    },
+                )
+                .expect("second");
+                let second = p.feature().id;
+                d.write_circular_cut(&p).expect("second write");
+                let history = saved_history(&d, &d.objects().expect("objects")).expect("history");
+                assert_eq!(history.len(), 2);
+                assert_eq!(history[0].feature, first);
+                assert_eq!(history[1].feature, second);
+                for saved in history {
+                    let edit = CircularCutEdit {
+                        tool_curve: saved.tool_curve,
+                        center_mm: saved.center_mm,
+                        radius_mm: saved.radius_mm,
+                        depth_mm: 3.,
+                    };
+                    assert_eq!(
+                        saved.previous_feature,
+                        if saved.feature == first {
+                            saved.base_feature
+                        } else {
+                            first
+                        }
+                    );
+                    assert_eq!(saved.tip_feature, second);
+                    let before = d.content_version().expect("version");
+                    let honest = prepare_cut_parameters(&d, saved.feature, &edit).expect("edit");
+                    let count = if saved.depth_mm == 10. {
+                        if saved.feature == first { 2 } else { 1 }
+                    } else {
+                        0
+                    };
+                    assert_eq!(honest.added_references.len(), count);
+                    if count == 2 {
+                        let mut duplicate = honest.clone();
+                        duplicate.added_references[1].id = duplicate.added_references[0].id;
+                        assert!(
+                            d.write_cut_parameters(&duplicate)
+                                .expect_err("duplicate IDs")
+                                .to_string()
+                                .contains("duplicate")
+                        );
+                        let mut wrong_origin = honest.clone();
+                        wrong_origin.added_references[1].output_role = SemanticRole::OriginCap {
+                            origin_feature: saved.base_feature,
+                            side: CapSide::End,
+                        };
+                        assert!(d.write_cut_parameters(&wrong_origin).is_err());
+                        let mut missing = honest.clone();
+                        missing.added_references.pop();
+                        assert!(d.write_cut_parameters(&missing).is_err());
+                    }
+                    if count > 0 {
+                        let mut collision = honest.clone();
+                        collision.added_references[0].id = d.topology_refs().expect("refs")[0].id;
+                        assert!(
+                            d.write_cut_parameters(&collision)
+                                .expect_err("occupied ID")
+                                .to_string()
+                                .contains("already exists")
+                        );
+                    }
+                    let mut forged = honest.clone();
+                    forged.saved.previous_feature = ObjectId::new();
+                    assert!(d.write_cut_parameters(&forged).is_err());
+                    let mut forged = honest.clone();
+                    if let ObjectPayload::Sketch(s) = &mut forged.tool_sketch.payload {
+                        let other = saved.neighboring_tool.as_ref().expect("other");
+                        s.curves[0].geometry = SketchGeometry::Circle {
+                            center: Point2::new(other.center_mm[0], other.center_mm[1])
+                                .expect("point"),
+                            radius: saved.radius_mm,
+                        };
+                    }
+                    assert!(d.write_cut_parameters(&forged).is_err());
+                    assert_eq!(d.content_version().expect("unchanged"), before);
+                    d.write_cut_parameters(&honest).expect("honest write");
+                    let saved = saved_cut(
+                        &d,
+                        &d.objects().expect("objects"),
+                        &d.object(saved.feature).expect("object").expect("feature"),
+                    )
+                    .expect("rediscovery");
+                    assert_eq!(
+                        saved.protected_floor_references.len(),
+                        if saved.feature == first { 2 } else { 1 }
+                    );
+                    let error = prepare_cut_parameters(
+                        &d,
+                        saved.feature,
+                        &CircularCutEdit {
+                            depth_mm: 10.,
+                            ..edit
+                        },
+                    )
+                    .expect_err("protected floor");
+                    for id in &saved.protected_floor_references {
+                        assert!(error.to_string().contains(&id.to_string()), "{error}");
+                    }
+                    assert!(
+                        prepare_cut_parameters(&d, saved.feature, &edit)
+                            .expect("repeat")
+                            .added_references
+                            .is_empty()
+                    );
+                }
+            }
+        }
     }
 }

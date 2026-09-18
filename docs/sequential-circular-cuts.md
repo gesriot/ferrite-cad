@@ -1,5 +1,8 @@
 # §26C — второй circular Cut в том же Body
 
+§26D расширяет прежнюю границу: [правка любого из двух Cut](edit-sequential-cuts.md).
+Описанные ниже отказы двухзвенной правке относятся к исходному срезу.
+
 [ADR 4](decisions/0004-feature-predecessor.md),
 [протокол проверки](sequential-circular-cuts-verification.md).
 

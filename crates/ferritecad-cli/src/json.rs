@@ -369,6 +369,11 @@ struct SavedCircularCut {
     plane_id: ObjectId,
     /// The feature this cut modifies; unchanged by an edit of its numbers.
     previous_feature_id: ObjectId,
+    base_feature_id: ObjectId,
+    tip_feature_id: ObjectId,
+    protected_floor_reference_ids: Vec<StableEntityId>,
+    neighboring_tool: Option<ExistingCut>,
+    disk_clearance_mm: f64,
     /// The part's own profile; unchanged by an edit of its numbers.
     profile_sketch_id: ObjectId,
     /// The sketch holding the tool circle, whose numbers an edit rewrites.
@@ -411,7 +416,19 @@ impl CutParameterDiscovery {
                 feature_id: c.feature,
                 body_id: c.body,
                 plane_id: c.plane,
-                previous_feature_id: c.base_feature,
+                previous_feature_id: c.previous_feature,
+                base_feature_id: c.base_feature,
+                tip_feature_id: c.tip_feature,
+                protected_floor_reference_ids: c.protected_floor_references.clone(),
+                neighboring_tool: c.neighboring_tool.as_ref().map(|t| ExistingCut {
+                    feature_id: t.feature,
+                    tool_sketch_id: t.tool_sketch,
+                    tool_curve_id: t.tool_curve,
+                    center_mm: t.center_mm,
+                    radius_mm: t.radius_mm,
+                    depth_mm: t.depth_mm,
+                }),
+                disk_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
                 profile_sketch_id: c.profile_sketch,
                 tool_sketch_id: c.tool_sketch,
                 tool_curve_id: c.tool_curve,

@@ -268,3 +268,15 @@ if [ -n "${FCAD_SEQUENTIAL_CUT_FBX_DIR:-}" ]; then
     done
     echo "FCAD_SEQUENTIAL_CUT_UFBX_EXECUTED"
 fi
+
+# §26D adds four small edited two-cut meshes to the existing reader campaign.
+if [ -n "${FCAD_EDIT_SEQUENTIAL_FBX_DIR:-}" ]; then
+    for name in edit-0-12 edit-1-12 edit-0-7 edit-1-7; do
+        "$reader" --identity "$FCAD_EDIT_SEQUENTIAL_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0$' "$work/$name-reader.txt"; then
+            echo "error: sequential edit FBX was not independently read: $name" >&2
+            exit 1
+        fi
+    done
+    echo "FCAD_EDIT_SEQUENTIAL_UFBX_EXECUTED"
+fi

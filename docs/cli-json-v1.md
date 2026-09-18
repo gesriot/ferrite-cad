@@ -153,7 +153,7 @@ Line-редакторами (`editable:false`), и редактором окру
 границы аналитического B-Rep и тесселяции и запускаемый рецепт:
 [окружность с отверстием → Extrude → FCAD](annular-sketch-extrude.md).
 
-## Правка сохранённого circular Cut (§26B)
+## Правка сохранённого circular Cut (§26B/D)
 
 `edit-circular-cut source.fcad --feature UUID --expect-version HASH
 --request request.json -o copy.fcad --json` использует прежний envelope v1,
@@ -174,8 +174,14 @@ boolean `leaves_a_floor`. UUID существующих объектов сох�
 сам CLI открывает ядро перед job, поэтому stub может отказать раньше проверки
 версии или назначения внутри job.
 
-Отверстие можно укоротить в карман с одной новой ссылкой на дно. Карман нельзя
-прорезать насквозь: отказ называет UUID защищаемой ссылки, файл не публикуется.
+Поддержаны один Cut и любой из двух последовательных Cut. `previous_feature_id`
+в result и discovery всегда непосредственный predecessor выбранной фичи.
+В saved аддитивны `base_feature_id`, `tip_feature_id`, `disk_clearance_mm`,
+`protected_floor_reference_ids` и nullable `neighboring_tool` (те же поля,
+что у `existing_cut` ниже). Неизвестные поля следует игнорировать.
+Через→карман добавляет собственный floor ref; для первого из двух также
+OriginCap(first, End) на конечном producer. Карман→через отказывает со всеми
+защищаемыми UUID. [Контракт §26D](edit-sequential-cuts.md).
 [Полный контракт, все поля discovery и запускаемый рецепт](edit-circular-cut-copy.md).
 
 ## Первый и второй Cut в существующем Body (§26A/C)
@@ -217,8 +223,8 @@ NewBody, тогда как прежнее `tip_feature_id` — непосред�
 это объект с `feature_id`, `tool_sketch_id`, `tool_curve_id`, `center_mm`,
 `radius_mm`, `depth_mm`. `disk_clearance_mm` равно 1e-7 mm; фактический зазор
 между дисками должен быть строго больше. Request, result и exit codes прежние.
-После второго Cut `cut_edit.available` и `features[].circular_cut_edit.available`
-равны false: третье добавление и правка двухзвенной истории не поддержаны.
+После второго Cut `cut_edit.available` false: третье добавление не поддержано.
+Оба Cut доступны через `features[].circular_cut_edit` (§26D).
 Точные ограничения, семантика истории, правила UI/writer и запускаемый рецепт:
 [первый Cut](circular-cut-copy.md), [второй Cut и новые поля discovery](sequential-circular-cuts.md).
 
