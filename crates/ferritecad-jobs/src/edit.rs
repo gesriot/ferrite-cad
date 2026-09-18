@@ -348,11 +348,84 @@ pub fn circular_cut_copy<K: GeometryKernel + ?Sized>(
     )
 }
 
+/// What one published parameter edit of a saved cut is, in identities.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditCircularCutRequest {
+    pub source: PathBuf,
+    pub expected: DocumentVersion,
+    /// The saved Cut feature whose tool and depth change. Its identity is kept.
+    pub cut: ObjectId,
+    pub edit: ferritecad_document::CircularCutEdit,
+    pub destination: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditedCircularCut {
+    pub destination: PathBuf,
+    pub document_id: ferritecad_types::DocumentId,
+    /// The body the cut still tips; unchanged by this edit.
+    pub body: ObjectId,
+    /// The edited feature, under the identity it already had.
+    pub feature: ObjectId,
+    /// The sketch the tool is drawn on, under the identity it already had.
+    pub sketch: ObjectId,
+    /// The circle inside it, which keeps its identity across the edit.
+    pub tool_curve: StableEntityId,
+    /// The feature the cut modifies; unchanged by this edit.
+    pub previous: ObjectId,
+    /// Whether the published cut stops inside the part.
+    pub leaves_a_floor: bool,
+}
+
+/// Changes the tool and depth of one saved circular cut, publishing a new copy.
+///
+/// The same snapshot, version guard, read-only source, baseline rebuild,
+/// reference check, SQLite close and atomic no-clobber publication every other
+/// copy operation uses. What differs is only what is written: two payloads that
+/// already existed, and at most one name a cut gains by stopping inside the
+/// part instead of running through it.
+pub fn edit_circular_cut_copy<K: GeometryKernel + ?Sized>(
+    request: &EditCircularCutRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+) -> Result<EditedCircularCut> {
+    context.check_cancelled()?;
+    edit_object_copy(
+        &request.source,
+        request.expected,
+        &request.destination,
+        kernel,
+        context,
+        |source| {
+            ferritecad_document::prepare_cut_parameters(source, request.cut, &request.edit)
+                .map(Box::new)
+                .map(CopyWrite::CutParameters)
+        },
+        |prepared, _| {
+            let CopyWrite::CutParameters(prepared) = prepared else {
+                return Err(CadError::input("missing prepared cut edit"));
+            };
+            Ok(EditedCircularCut {
+                destination: request.destination.clone(),
+                document_id: request.expected.document_id,
+                body: prepared.body(),
+                feature: prepared.feature().id,
+                sketch: prepared.tool_sketch().id,
+                tool_curve: prepared.tool_curve(),
+                previous: prepared.previous(),
+                leaves_a_floor: prepared.leaves_a_floor(),
+            })
+        },
+    )
+}
+
 enum CopyWrite {
     Object(ferritecad_document::ObjectRecord),
     /// Boxed: this variant is much larger than the others, and an enum sized
     /// for it would make every copy operation carry the difference.
     Cut(Box<ferritecad_document::PreparedCircularCut>),
+    /// Boxed for the same reason as the one above it.
+    CutParameters(Box<ferritecad_document::PreparedCutParameters>),
     Coordinates(
         ferritecad_document::ObjectRecord,
         Vec<ferritecad_document::SketchVertex>,
@@ -369,6 +442,10 @@ impl CopyWrite {
             // The body is the one object a cut changes; the two it adds did
             // not exist to be read.
             Self::Cut(p) => p.body(),
+            // Two objects change here, and this is the one a generic write
+            // would name. Nothing but that generic write uses it, and this
+            // variant does not take it.
+            Self::CutParameters(p) => p.feature(),
         }
     }
 
@@ -452,6 +529,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         CopyWrite::Circle(prepared) => document.write_circle_geometry(prepared)?,
         CopyWrite::Annulus(prepared) => document.write_annulus_geometry(prepared)?,
         CopyWrite::Cut(prepared) => document.write_circular_cut(prepared)?,
+        CopyWrite::CutParameters(prepared) => document.write_cut_parameters(prepared)?,
         CopyWrite::Object(_) => document.write(write)?,
     }
     // A solve is asked for only when the edited sketch still has something to
@@ -475,6 +553,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     // feature that published geometry nothing could point at would pass it.
     let minted: BTreeSet<StableEntityId> = match &prepared {
         CopyWrite::Cut(p) => p.references().iter().map(|r| r.id).collect(),
+        CopyWrite::CutParameters(p) => p.added_references().iter().map(|r| r.id).collect(),
         _ => BTreeSet::new(),
     };
     let required: BTreeSet<StableEntityId> = baseline.union(&minted).copied().collect();

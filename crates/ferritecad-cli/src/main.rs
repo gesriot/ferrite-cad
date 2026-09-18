@@ -12,6 +12,7 @@ mod cut;
 mod edit_annular;
 mod edit_circle;
 mod edit_constraints;
+mod edit_cut;
 mod edit_sketch;
 mod export;
 mod export_fbx;
@@ -122,6 +123,9 @@ enum Command {
     /// Cut a circular tool into a saved Body to a stated depth, publishing a new
     /// FCAD copy. The body keeps its identity and the cut becomes its tip.
     CutCircularCopy(cut::CutArgs),
+    /// Change a saved circular Cut's tool centre, radius and depth in a new
+    /// identity-preserving FCAD copy. The history and every UUID are kept.
+    EditCircularCut(edit_cut::EditCutArgs),
     /// Show a document's metadata, objects, graph and references.
     Inspect(InspectArgs),
     /// Check stored consistency without writes, migration or a geometry kernel.
@@ -353,6 +357,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::EditCircle(args) => edit_circle::run(args),
         Command::EditAnnular(args) => edit_annular::run(args),
         Command::CutCircularCopy(args) => cut::run(args),
+        Command::EditCircularCut(args) => edit_cut::run(args),
         Command::EditSketchConstraintsCopy(args) => edit_constraints::run(args),
         Command::CreateSketchExtrude(args) => sketch::run(args),
         Command::CreateCircleExtrude(args) => circle::run(args),

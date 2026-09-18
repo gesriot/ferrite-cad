@@ -197,6 +197,23 @@ impl Edits {
     ) -> Option<PathBuf> {
         self.finish_path(generation, result.map(|r| r.destination))
     }
+    pub(crate) fn start_cut_edit(
+        &mut self,
+        request: ferritecad_jobs::EditCircularCutRequest,
+        spawn: impl FnOnce(ferritecad_jobs::EditCircularCutRequest, u64, CancelToken) -> JoinHandle<()>,
+    ) -> Option<u64> {
+        let destination = request.destination.clone();
+        self.start_at(&destination, |generation, cancel| {
+            spawn(request, generation, cancel)
+        })
+    }
+    pub(crate) fn finish_cut_edit(
+        &mut self,
+        generation: u64,
+        result: Result<ferritecad_jobs::EditedCircularCut>,
+    ) -> Option<PathBuf> {
+        self.finish_path(generation, result.map(|r| r.destination))
+    }
     pub(crate) fn start_constraints(
         &mut self,
         request: ferritecad_jobs::EditSketchConstraintsRequest,
@@ -357,6 +374,20 @@ pub(crate) fn spawn_cut(
         move |context| {
             let mut kernel = ferritecad_occt::OcctKernel::new()?;
             ferritecad_jobs::circular_cut_copy(&request, &mut kernel, context)
+        },
+        deliver,
+    )
+}
+pub(crate) fn spawn_cut_edit(
+    request: ferritecad_jobs::EditCircularCutRequest,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ferritecad_jobs::EditedCircularCut>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn_job(
+        cancel,
+        move |context| {
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            ferritecad_jobs::edit_circular_cut_copy(&request, &mut kernel, context)
         },
         deliver,
     )

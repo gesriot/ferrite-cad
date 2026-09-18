@@ -163,6 +163,11 @@ impl Editor {
     pub(crate) fn take_cut_request(&mut self) -> Option<ferritecad_jobs::CircularCutRequest> {
         self.cuts.take_request()
     }
+    pub(crate) fn take_cut_edit_request(
+        &mut self,
+    ) -> Option<ferritecad_jobs::EditCircularCutRequest> {
+        self.cuts.take_edit_request()
+    }
     /// Begin editing one saved pair of concentric circles of the accepted scene.
     ///
     /// The path and the version come from the reading that was accepted, so a

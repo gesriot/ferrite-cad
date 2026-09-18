@@ -1,4 +1,4 @@
-# CLI JSON v1: десять opt-in команд
+# CLI JSON v1: opt-in контракт
 
 §24D задаёт opt-in контракт inspect и edit-extrude. §24D-1 добавляет третью
 существующую команду, `create`, через тот же конверт v1. §24F добавляет Body
@@ -7,6 +7,12 @@ discovery и `export-stl --json`; §24G добавляет `export-fbx --json`,
 без изменения `schema_version`:
 
 ```text
+ferritecad edit-circular-cut <source.fcad> --feature <uuid> --expect-version <token> --request <cut.json> -o <new.fcad> --json
+ferritecad cut-circular-copy <source.fcad> --body <uuid> --expect-version <token> --request <cut.json> -o <new.fcad> --json
+ferritecad edit-circle <source.fcad> --sketch <uuid> --expect-version <token> --request <circle.json> -o <new.fcad> --json
+ferritecad edit-annular <source.fcad> --sketch <uuid> --expect-version <token> --request <annulus.json> -o <new.fcad> --json
+ferritecad create-circle-extrude <request.json> -o <new.fcad> --json
+ferritecad create-annular-extrude <request.json> -o <new.fcad> --json
 ferritecad edit-sketch-constraints-copy <source.fcad> --sketch <uuid> --expect-version <token> --request <constraints.json> -o <new.fcad> --json
 ferritecad edit-sketch-copy <source.fcad> --sketch <uuid> --expect-version <token> --request <coordinates.json> -o <new.fcad> --json
 ferritecad validate <source.fcad> --json
@@ -21,8 +27,8 @@ ferritecad export-stl <source.fcad> -o <out.stl> --json [--solid <name-or-id>] [
 
 Обычный текстовый режим сохраняется. Общие document/jobs операции остаются
 владельцами чтения, создания, допустимости правки и публикации.
-Нет JSON остальных команд, stdin/batch, RPC, DSL, сервера, новых геометрических
-операций, правки формул/Parameter или in-place Save. Возможности остальных
+Нет JSON остальных команд, stdin/batch, RPC, DSL, сервера,
+правки формул/Parameter или in-place Save. Возможности остальных
 команд описаны в [карте CLI](cli-capabilities.md).
 
 ## Конверт и совместимость
@@ -34,7 +40,7 @@ stdout-логов рядом нет. Диагностика для челове�
 | Поле | Тип и правило |
 | --- | --- |
 | `schema_version` | integer, сейчас ровно `1` |
-| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate`, `create-sketch-extrude`, `create-circle-extrude`, `create-annular-extrude`, `edit-sketch-copy`, `edit-circle`, `edit-annular`, `edit-sketch-constraints-copy` или `cut-circular-copy` |
+| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate`, `create-sketch-extrude`, `create-circle-extrude`, `create-annular-extrude`, `edit-sketch-copy`, `edit-circle`, `edit-annular`, `edit-sketch-constraints-copy`, `cut-circular-copy` или `edit-circular-cut` |
 | `ok` | boolean |
 | `result` | объект соответствующей операции, присутствует только при `ok: true` |
 | `error` | объект ошибки, присутствует только при `ok: false` |
@@ -146,6 +152,31 @@ Line-редакторами (`editable:false`), и редактором окру
 цилиндрические поверхности радиусов R и r. Точные ограничения, числовая policy,
 границы аналитического B-Rep и тесселяции и запускаемый рецепт:
 [окружность с отверстием → Extrude → FCAD](annular-sketch-extrude.md).
+
+## Правка сохранённого circular Cut (§26B)
+
+`edit-circular-cut source.fcad --feature UUID --expect-version HASH
+--request request.json -o copy.fcad --json` использует прежний envelope v1,
+`operation:"edit-circular-cut"` и коды 0/2/7. Request строго содержит
+`request_version:1`, `tool_curve_id`, `center_mm:[x,y]`, `radius_mm`, `depth_mm`.
+После публикации result обязательно содержит `destination`, `document_id`,
+`body_id`, `feature_id`, `sketch_id`, `tool_curve_id`, `previous_feature_id` и
+boolean `leaves_a_floor`. UUID существующих объектов сохраняются; exit 7 не
+отменяет состоявшуюся публикацию.
+
+В `inspect --json` каждая строка `features` имеет required `circular_cut_edit`:
+`available`, nullable `refusal`/`document_refusal` и nullable `saved`. В saved
+указаны выбранные UUID, сохранённые числа, высота/габариты детали, направление,
+зазор, `leaves_a_floor`, nullable `floor_reference_id` и `through_allowed`.
+Прежний `editable` остаётся ответом про `edit-extrude`, поэтому у Cut он false.
+Неподдержанный или выходящий за числовую policy сохранённый Cut имеет
+`available:false`, причину и `saved:null`. Discovery не требует ядра;
+сам CLI открывает ядро перед job, поэтому stub может отказать раньше проверки
+версии или назначения внутри job.
+
+Отверстие можно укоротить в карман с одной новой ссылкой на дно. Карман нельзя
+прорезать насквозь: отказ называет UUID защищаемой ссылки, файл не публикуется.
+[Полный контракт, все поля discovery и запускаемый рецепт](edit-circular-cut-copy.md).
 
 ## Первый Cut в существующем Body (§26A)
 

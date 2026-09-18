@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use ferritecad_document::{Document, ExtrudeEditSource};
-use ferritecad_types::{CadError, ContentHash, DocumentId, ObjectId, Result};
+use ferritecad_types::{CadError, ContentHash, DocumentId, ObjectId, Result, StableEntityId};
 use serde::Serialize;
 
 pub(crate) mod constraints;
@@ -34,6 +34,7 @@ pub enum Operation {
     EditAnnular,
     EditSketchConstraintsCopy,
     CutCircularCopy,
+    EditCircularCut,
     Create,
     CreateSketchExtrude,
     CreateCircleExtrude,
@@ -316,6 +317,94 @@ struct Feature {
     editable: bool,
     /// Feature-local refusal. None does not override document_refusal.
     refusal: Option<String>,
+    /// Whether this feature is a saved circular cut whose tool and depth can be
+    /// changed, and what it is today. Its own answer beside `editable`, which
+    /// keeps meaning exactly what it always did about `edit-extrude` — and
+    /// which still refuses a Cut.
+    circular_cut_edit: CutParameterDiscovery,
+}
+
+/// What `edit-circular-cut` would accept about one feature, from the same
+/// reading.
+#[derive(Serialize)]
+struct CutParameterDiscovery {
+    available: bool,
+    refusal: Option<String>,
+    document_refusal: Option<String>,
+    saved: Option<SavedCircularCut>,
+}
+
+/// The cut as stored, and what an edit of it is measured against.
+///
+/// Every identity it names is one the copy keeps. The plane and the direction
+/// are repeated here rather than assumed for the reason the Cut catalogue
+/// beside it repeats them.
+#[derive(Serialize)]
+struct SavedCircularCut {
+    feature_id: ObjectId,
+    body_id: ObjectId,
+    plane_id: ObjectId,
+    /// The feature this cut modifies; unchanged by an edit of its numbers.
+    previous_feature_id: ObjectId,
+    /// The part's own profile; unchanged by an edit of its numbers.
+    profile_sketch_id: ObjectId,
+    /// The sketch holding the tool circle, whose numbers an edit rewrites.
+    tool_sketch_id: ObjectId,
+    /// The circle inside it. A request must name exactly this identity.
+    tool_curve_id: StableEntityId,
+    center_mm: [f64; 2],
+    radius_mm: f64,
+    depth_mm: f64,
+    height_mm: f64,
+    /// `[[min_x, min_y], [max_x, max_y]]` of the rectangular part, in mm.
+    extents_mm: [[f64; 2]; 2],
+    /// The one direction a cut runs here, said out loud.
+    direction: &'static str,
+    /// How far the tool must stay from the part's outer wall.
+    wall_clearance_mm: f64,
+    /// Whether the saved cut stops inside the part.
+    leaves_a_floor: bool,
+    /// The saved name of that floor, when there is one.
+    floor_reference_id: Option<StableEntityId>,
+    /// Whether the depth may be raised to the part's height.
+    ///
+    /// False for a cut that has a floor: the face its saved reference names
+    /// would stop existing, and this slice refuses rather than dropping a saved
+    /// name or resolving it to the part's far side. A cut that already runs
+    /// through the part may be shortened, because that only adds a name.
+    through_allowed: bool,
+}
+
+impl CutParameterDiscovery {
+    fn new(
+        choice: ferritecad_document::CutParameterChoice,
+        document_refusal: Option<String>,
+    ) -> Self {
+        Self {
+            available: choice.refusal.is_none() && document_refusal.is_none(),
+            refusal: choice.refusal,
+            document_refusal,
+            saved: choice.saved.map(|c| SavedCircularCut {
+                feature_id: c.feature,
+                body_id: c.body,
+                plane_id: c.plane,
+                previous_feature_id: c.base_feature,
+                profile_sketch_id: c.profile_sketch,
+                tool_sketch_id: c.tool_sketch,
+                tool_curve_id: c.tool_curve,
+                center_mm: c.center_mm,
+                radius_mm: c.radius_mm,
+                depth_mm: c.depth_mm,
+                height_mm: c.height_mm,
+                extents_mm: c.extents_mm,
+                direction: "+z along the plane normal",
+                wall_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
+                leaves_a_floor: c.depth_mm < c.height_mm,
+                floor_reference_id: c.floor_reference,
+                through_allowed: c.through_allowed(),
+            }),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -424,6 +513,11 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         .collect();
     let mut cut_choices: std::collections::BTreeMap<_, _> =
         source.cut_bodies.into_iter().map(|c| (c.body, c)).collect();
+    let mut cut_parameter_choices: std::collections::BTreeMap<_, _> = source
+        .cut_features
+        .into_iter()
+        .map(|c| (c.feature, c))
+        .collect();
     let result = Inspection {
         document_id: source.version.document_id,
         content_version: source.version.content,
@@ -478,6 +572,12 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
             .features
             .into_iter()
             .map(|feature| Feature {
+                circular_cut_edit: CutParameterDiscovery::new(
+                    cut_parameter_choices
+                        .remove(&feature.feature)
+                        .expect("same snapshot feature catalogue"),
+                    source.refusal.clone(),
+                ),
                 feature_id: feature.feature,
                 name: feature.name,
                 distance_mm: feature.distance_mm,
