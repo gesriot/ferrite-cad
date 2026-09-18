@@ -73,7 +73,7 @@ fn edit_command(source: &Path, dest: &Path, saved: &SavedCircularCut, cut: Circu
     c
 }
 
-fn edit(
+pub(super) fn edit(
     source: &Path,
     dest: &Path,
     saved: &SavedCircularCut,
@@ -89,7 +89,7 @@ fn edit(
     )
 }
 
-fn only_numbers(source: &Path, copy: &Path, saved: &SavedCircularCut, added: usize) {
+pub(super) fn only_numbers(source: &Path, copy: &Path, saved: &SavedCircularCut, added: usize) {
     let a = tables(source);
     let b = tables(copy);
     assert_eq!(a.keys().collect::<Vec<_>>(), b.keys().collect::<Vec<_>>());
@@ -397,28 +397,44 @@ fn discovery_and_protected_floors_need_no_kernel() {
 
 #[test]
 fn native_edit_refusals_and_late_guards_are_atomic() {
+    history_refusals(2);
+}
+
+pub(super) fn history_refusals(count: usize) {
     if !native() {
         return;
     }
     use ferritecad_kernel::{CancelToken, ProgressSink};
-    for index in 0..2 {
+    for index in if count == 2 {
+        vec![0, 1]
+    } else {
+        vec![0, count / 2, count - 1]
+    } {
+        let tools = if count == 2 {
+            TOOLS.to_vec()
+        } else {
+            super::history::tools(count)
+                .into_iter()
+                .map(|t| CircularCut { depth_mm: 4., ..t })
+                .collect()
+        };
         let root = tempfile::tempdir().expect("root");
-        let source = two(root.path(), TOOLS);
-        let saved = selected(&source, index);
+        let source = super::history::fixture(root.path(), &tools);
+        let saved = super::history::ordered(&source)[index].clone();
         let never = root.path().join("never.fcad");
         let original = std::fs::read(&source).expect("source");
         for cut in [
             CircularCut {
                 depth_mm: 12.,
-                ..TOOLS[index]
+                ..tools[index]
             },
             CircularCut {
-                center_mm: TOOLS[1 - index].center_mm,
-                ..TOOLS[index]
+                center_mm: tools[(index + count - 1) % count].center_mm,
+                ..tools[index]
             },
             CircularCut {
-                center_mm: [2., 2.],
-                ..TOOLS[index]
+                center_mm: [0., 0.],
+                ..tools[index]
             },
         ] {
             let error = edit(&source, &never, &saved, cut, 2);
@@ -429,15 +445,15 @@ fn native_edit_refusals_and_late_guards_are_atomic() {
             }
             assert!(!never.exists());
         }
-        for gap in [0., 0.5e-7, -1., -8.] {
-            let other = TOOLS[1 - index];
+        for gap in [0., 0.5e-7, -1., if count == 2 { -8. } else { -2. }] {
+            let other = tools[(index + count - 1) % count];
             let side = if index == 0 { -1. } else { 1. };
             let cut = CircularCut {
                 center_mm: [
                     other.center_mm[0] + side * (other.radius_mm + saved.radius_mm + gap),
                     other.center_mm[1],
                 ],
-                ..TOOLS[index]
+                ..tools[index]
             };
             assert!(
                 edit(&source, &never, &saved, cut, 2)
@@ -447,7 +463,7 @@ fn native_edit_refusals_and_late_guards_are_atomic() {
             assert!(!never.exists());
         }
         let delivered = root.path().join("lost-report.fcad");
-        let mut changed = TOOLS;
+        let mut changed = tools.clone();
         changed[index].depth_mm = 3.;
         assert_eq!(
             edit_command(&source, &delivered, &saved, changed[index])
@@ -458,26 +474,26 @@ fn native_edit_refusals_and_late_guards_are_atomic() {
                 .code(),
             Some(7)
         );
-        measure(&delivered, changed, None);
+        measure_history(&delivered, &changed, None);
         assert_eq!(std::fs::read(&source).expect("source"), original);
         let mut wrong = saved.clone();
         wrong.tool_curve = ferritecad_types::StableEntityId::new();
-        edit(&source, &never, &wrong, TOOLS[index], 2);
+        edit(&source, &never, &wrong, tools[index], 2);
         wrong = saved.clone();
         wrong.feature = ObjectId::new();
-        edit(&source, &never, &wrong, TOOLS[index], 2);
-        edit(&source, &source, &saved, TOOLS[index], 2);
+        edit(&source, &never, &wrong, tools[index], 2);
+        edit(&source, &source, &saved, tools[index], 2);
         let alias = root.path().join("alias.fcad");
         std::fs::hard_link(&source, &alias).expect("alias");
-        edit(&source, &alias, &saved, TOOLS[index], 2);
+        edit(&source, &alias, &saved, tools[index], 2);
         #[cfg(unix)]
         {
             let link = root.path().join("link.fcad");
             std::os::unix::fs::symlink(&source, &link).expect("link");
-            edit(&source, &link, &saved, TOOLS[index], 2);
+            edit(&source, &link, &saved, tools[index], 2);
         }
         std::fs::write(&never, b"occupied").expect("occupied");
-        edit(&source, &never, &saved, TOOLS[index], 2);
+        edit(&source, &never, &saved, tools[index], 2);
         assert_eq!(std::fs::read(&never).expect("bytes"), b"occupied");
         std::fs::remove_file(&never).expect("remove owned fixture");
         let d = Document::open_read_only(&source).expect("doc");
@@ -550,7 +566,7 @@ fn native_edit_refusals_and_late_guards_are_atomic() {
         assert_eq!(entries(root.path()), files);
         assert!(!never.exists());
         // A stale CLI request is a separate early-guard assertion.
-        let command = edit_command(&source, &never, &saved, TOOLS[index]);
+        let command = edit_command(&source, &never, &saved, tools[index]);
         let mut args = command
             .get_args()
             .map(|s| s.to_os_string())

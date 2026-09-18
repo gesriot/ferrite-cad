@@ -190,6 +190,28 @@ jobs:
           cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee edit-sequential-writer.log
           if grep -q 'skipped:' edit-sequential-writer.log || ! grep -Fq "test $gate ... ok" edit-sequential-writer.log; then exit 1; fi
 
+      - name: Discover bounded Cut histories without native geometry
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: '1'
+          CMAKE_BUILD_PARALLEL_LEVEL: '1'
+        run: |
+          set -euo pipefail
+          gate=sequential::history::bounded_catalog_all_links_and_distant_conflicts_without_kernel
+          cargo test -p ferritecad-cli --test circular_cut "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee history-discovery.log
+          if grep -q 'skipped:' history-discovery.log || ! grep -Fq "test $gate ... ok" history-discovery.log; then exit 1; fi
+          gate=cut_edit::tests::bounded_history_writer_checks_every_floor_and_longer_documents_still_open
+          cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee history-writer.log
+          if grep -q 'skipped:' history-writer.log || ! grep -Fq "test $gate ... ok" history-writer.log; then exit 1; fi
+
+      - name: An idle redraw must not schedule another frame
+        shell: bash
+        run: |
+          set -euo pipefail
+          gate=tests::completing_a_redraw_does_not_schedule_itself_again
+          cargo test -p ferritecad-app --bin ferritecad-viewer "$gate" -- --exact --nocapture 2>&1 | tee idle-redraw.log
+          if grep -q 'skipped:' idle-redraw.log || ! grep -Fq "test $gate ... ok" idle-redraw.log; then exit 1; fi
+
       - name: Verify memory guard cleanup without a viewer
         if: runner.os == 'macOS'
         run: python3 tools/test-viewer-memory-guard.py

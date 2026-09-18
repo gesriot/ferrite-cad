@@ -470,6 +470,13 @@ FcOcctStatus fc_occt_face_surface(FcOcctSession *session, uint64_t shape,
                                   double *out_radius,
                                   FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
+/* Analytic axis of the exact named cylindrical face; arrays have length 3.
+ * Diagnostic only: never searches for a face or assigns a topology name. */
+FcOcctStatus fc_occt_cylinder_axis(FcOcctSession *session, uint64_t shape,
+                                  uint64_t face, double *out_origin,
+                                  double *out_direction,
+                                  FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
 /*
  * Face count and volume of a shape.
  *

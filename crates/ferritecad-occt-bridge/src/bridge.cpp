@@ -1451,6 +1451,34 @@ FcOcctStatus fc_occt_face_surface(FcOcctSession *session, uint64_t shape,
   });
 }
 
+FcOcctStatus fc_occt_cylinder_axis(FcOcctSession *session, uint64_t shape,
+                                  uint64_t face, double *out_origin,
+                                  double *out_direction,
+                                  FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (out_origin == nullptr || out_direction == nullptr) {
+      write_error(out_error, "cylinder axis needs two length-3 output arrays");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    int32_t kind = FC_OCCT_SURFACE_OTHER;
+    double radius = 0.0;
+    const auto status = fc_occt_face_surface(session, shape, face, &kind, &radius, out_error);
+    if (status != FC_OCCT_OK) return status;
+    if (kind != FC_OCCT_SURFACE_CYLINDER) {
+      write_error(out_error, "the named face is not cylindrical");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const auto &sub = session->shapes.at(shape).sub_shapes[face];
+    const BRepAdaptor_Surface adaptor(TopoDS::Face(sub));
+    const auto axis = adaptor.Cylinder().Axis();
+    for (int i = 0; i < 3; ++i) {
+      out_origin[i] = axis.Location().Coord(i + 1);
+      out_direction[i] = axis.Direction().Coord(i + 1);
+    }
+    return FC_OCCT_OK;
+  });
+}
+
 FcOcctStatus fc_occt_encode_shape(FcOcctSession *session, uint64_t shape,
                                   uint8_t *out_bytes, size_t capacity,
                                   size_t *out_length,

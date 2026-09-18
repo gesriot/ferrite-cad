@@ -925,7 +925,6 @@ impl Document {
                 ));
             }
         }
-        crate::cut_edit::rederive(self, prepared)?;
 
         let body = prepared.body().clone();
         let sketch = prepared.sketch().clone();
@@ -935,25 +934,13 @@ impl Document {
         let references = prepared.references.clone();
         let body_bytes = body.payload.to_storage_bytes()?;
         let body_hash = ContentHash::of_bytes(&body_bytes);
-        self.write_transaction(move |writer| {
-            // Every minted reference is an INSERT-only identity in this job.
-            // Check in the same transaction that performs the writes.
-            let mut ids = BTreeSet::new();
-            for reference in &references {
-                let occupied: bool = writer.tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM topology_refs WHERE id=?1)",
-                    params![reference.id.to_bytes().as_slice()], |row| row.get(0),
-                ).map_err(|e| CadError::io("checking new cut references", e))?;
-                if occupied || !ids.insert(reference.id) {
-                    return Err(CadError::input("new cut reference UUID already exists"));
-                }
-            }
+        let tool_curve = prepared.tool_curve();
+        self.write_checked_transaction(|document| crate::cut_edit::rederive(document, prepared), move |writer| {
+            require_fresh_cut_ids(writer.tx, std::iter::once(sketch.id.to_bytes())
+                .chain(std::iter::once(feature.id.to_bytes()))
+                .chain(std::iter::once(tool_curve.to_bytes()))
+                .chain(references.iter().map(|r| r.id.to_bytes())))?;
             for new in [&sketch, &feature] {
-                let occupied: bool = writer.tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM objects WHERE id=?1)",
-                    params![new.id.to_bytes().as_slice()], |row| row.get(0),
-                ).map_err(|e| CadError::io("checking new cut objects", e))?;
-                if occupied { return Err(CadError::input("new cut object UUID already exists")); }
                 writer.put_object(new.id, None, new.ordinal, Some(&new.name), &new.payload)?;
             }
             writer.tx.execute(
@@ -1015,7 +1002,6 @@ impl Document {
                 )));
             }
         }
-        crate::cut_edit::rederive_parameters(self, prepared)?;
 
         // New numbers, not a new kind of object and not a new contract. A
         // payload that declared something else would need capability rows this
@@ -1039,58 +1025,56 @@ impl Document {
             writes.push((record.id, bytes, hash));
         }
         let added = prepared.added_references().to_vec();
-        self.write_transaction(move |writer| {
-            // Check inside the transaction: the generic reference writer is
-            // an upsert, while this operation may only add a fresh floor name.
-            let mut new_ids = std::collections::BTreeSet::new();
-            for reference in &added {
-                if !new_ids.insert(reference.id) {
-                    return Err(CadError::input(format!("duplicate new floor reference {}", reference.id)));
+        self.write_checked_transaction(
+            |document| crate::cut_edit::rederive_parameters(document, prepared),
+            move |writer| {
+                require_fresh_cut_ids(writer.tx, added.iter().map(|r| r.id.to_bytes()))?;
+                for (id, bytes, hash) in &writes {
+                    let changed = writer
+                        .tx
+                        .execute(
+                            "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
+                            params![bytes, hash.as_bytes().as_slice(), id.to_bytes().as_slice()],
+                        )
+                        .map_err(|e| CadError::io("writing edited cut parameters", e))?;
+                    if changed != 1 {
+                        return Err(CadError::input(
+                            "a selected object disappeared before the cut edit",
+                        ));
+                    }
                 }
-                let occupied: bool = writer.tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM topology_refs WHERE id=?1)",
-                    params![reference.id.to_bytes().as_slice()],
-                    |row| row.get(0),
-                ).map_err(|e| CadError::io("checking the new floor reference", e))?;
-                if occupied {
-                    return Err(CadError::input(format!(
-                        "new floor reference {} already exists; a cut edit may not replace a saved name",
-                        reference.id
-                    )));
+                // Only ever an addition: a cut that stops inside the part gains a
+                // floor. Losing one is refused long before here.
+                for reference in &added {
+                    writer.put_topology_ref(reference)?;
                 }
-            }
-            for (id, bytes, hash) in &writes {
-                let changed = writer
+                // Keep the ordinary edit timestamp, without rebuilding capability
+                // rows or reclaiming unrelated data. Both payload contracts are
+                // unchanged; core and (for two cuts) origin roles are already required.
+                writer
                     .tx
                     .execute(
-                        "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
-                        params![bytes, hash.as_bytes().as_slice(), id.to_bytes().as_slice()],
+                        &format!("UPDATE meta SET modified_at = {NOW_UTC} WHERE id = 1"),
+                        [],
                     )
-                    .map_err(|e| CadError::io("writing edited cut parameters", e))?;
-                if changed != 1 {
-                    return Err(CadError::input(
-                        "a selected object disappeared before the cut edit",
-                    ));
-                }
-            }
-            // Only ever an addition: a cut that stops inside the part gains a
-            // floor. Losing one is refused long before here.
-            for reference in &added {
-                writer.put_topology_ref(reference)?;
-            }
-            // Keep the ordinary edit timestamp, without rebuilding capability
-            // rows or reclaiming unrelated data. Both payload contracts are
-            // unchanged; core and (for two cuts) origin roles are already required.
-            writer.tx.execute(
-                &format!("UPDATE meta SET modified_at = {NOW_UTC} WHERE id = 1"),
-                [],
-            ).map_err(|e| CadError::io("stamping cut parameter edit", e))?;
-            Ok(())
-        }, false)
+                    .map_err(|e| CadError::io("stamping cut parameter edit", e))?;
+                Ok(())
+            },
+            false,
+        )
     }
 
     fn write_transaction<T>(
         &mut self,
+        edit: impl FnOnce(&mut DocumentWriter<'_>) -> Result<T>,
+        stamp: bool,
+    ) -> Result<T> {
+        self.write_checked_transaction(|_| Ok(()), edit, stamp)
+    }
+
+    fn write_checked_transaction<T>(
+        &mut self,
+        check: impl FnOnce(&Self) -> Result<()>,
         edit: impl FnOnce(&mut DocumentWriter<'_>) -> Result<T>,
         stamp: bool,
     ) -> Result<T> {
@@ -1108,9 +1092,11 @@ impl Document {
 
         let tx = self
             .conn
-            .transaction()
+            .unchecked_transaction()
             .map_err(|e| CadError::io("starting document edit", e))?;
 
+        // Re-derive against the same SQLite snapshot the write will consume.
+        check(self)?;
         let outcome = {
             let mut writer = DocumentWriter { tx: &tx };
             edit(&mut writer)
@@ -1487,6 +1473,50 @@ impl Document {
             .close()
             .map_err(|(_, e)| CadError::io("closing document", e))
     }
+}
+
+/// A cut introduces globally fresh UUIDs, including embedded sketch entities.
+/// This guard runs in the writing transaction before any INSERT or UPDATE.
+fn require_fresh_cut_ids(tx: &Transaction<'_>, ids: impl Iterator<Item = [u8; 16]>) -> Result<()> {
+    let mut occupied = BTreeSet::new();
+    let mut statement = tx
+        .prepare("SELECT id FROM objects UNION ALL SELECT id FROM topology_refs")
+        .map_err(|e| CadError::io("reading occupied cut UUIDs", e))?;
+    for row in statement
+        .query_map([], |r| r.get::<_, Vec<u8>>(0))
+        .map_err(|e| CadError::io("reading cut UUIDs", e))?
+    {
+        occupied.insert(row.map_err(|e| CadError::io("reading cut UUID", e))?);
+    }
+    let mut statement = tx
+        .prepare("SELECT payload FROM objects")
+        .map_err(|e| CadError::io("reading curve UUIDs", e))?;
+    for row in statement
+        .query_map([], |r| r.get::<_, Vec<u8>>(0))
+        .map_err(|e| CadError::io("reading sketches", e))?
+    {
+        let bytes = row.map_err(|e| CadError::io("reading sketch", e))?;
+        if let ObjectPayload::Sketch(sketch) = ObjectPayload::from_storage_bytes(&bytes)? {
+            occupied.extend(sketch.curves.iter().map(|c| c.id.to_bytes().to_vec()));
+            occupied.extend(sketch.constraints.iter().map(|c| c.id.to_bytes().to_vec()));
+        }
+    }
+    let mut fresh = BTreeSet::new();
+    for id in ids {
+        if !fresh.insert(id) {
+            return Err(CadError::input(format!(
+                "duplicate new cut UUID {}",
+                StableEntityId::from_bytes(id)?
+            )));
+        }
+        if occupied.contains(id.as_slice()) {
+            return Err(CadError::input(format!(
+                "new cut UUID {} already exists",
+                StableEntityId::from_bytes(id)?
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Reads and verifies one immutable source row.

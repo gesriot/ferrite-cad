@@ -43,6 +43,10 @@ impl OcctKernel {
         match self.0 {}
     }
 
+    pub fn cylinder_axis(&mut self, _face: SubShapeHandle) -> Result<([f64; 3], [f64; 3])> {
+        match self.0 {}
+    }
+
     pub fn import_step(&mut self, _step: &[u8]) -> Result<ferritecad_exchange::Import> {
         match self.0 {}
     }

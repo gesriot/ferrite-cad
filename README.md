@@ -26,15 +26,17 @@ A hollow circular part uses **Profile: Circle with hole** or
 Its shared centre and both radii can be changed through **Edit annulus …** or
 `edit-annular`, preserving both circle identities and the height in a new copy.
 [Editing contract and recipe](docs/edit-annular-copy.md).
-A saved, unconstrained rectangular plate can receive up to two separate circular holes or pockets
+A saved, unconstrained rectangular plate can receive up to 16 separate circular holes or pockets
 through **Cut circle into Body…** or `cut-circular-copy`. Both save a new copy
 with the original features and a real Cut in the body's history. The tool starts
 on the base XY plane; a shallow pocket opens on that side.
-[Supported source, spacing/depth rules and agent recipe](docs/sequential-circular-cuts.md).
-Either saved Cut can have its centre, radius and depth changed through **Edit cut …**
+[Supported source, spacing/depth rules and agent recipe](docs/circular-cut-history.md).
+Any saved Cut can have its centre, radius and depth changed through **Edit cut …**
 or `edit-circular-cut`, preserving the feature and tool identities in a new copy.
 A through hole can become a pocket; cutting away a named pocket floor is refused.
-Editing the first rebuilds the second while preserving history and face origins. A third Cut is not supported. See [sequential cut editing](docs/edit-sequential-cuts.md).
+Editing a Cut rebuilds its descendants while preserving history and face origins.
+At 16 Cuts, addition is unavailable and every Cut remains editable.
+See [bounded history contract and recipe](docs/circular-cut-history.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

@@ -414,6 +414,7 @@ jobs:
           FERRITECAD_REQUIRE_OCCT: '1'
           FERRITECAD_REQUIRE_PLANEGCS: '0'
           CARGO_BUILD_JOBS: '1'
+          CMAKE_BUILD_PARALLEL_LEVEL: '1'
           OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
           FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
         run: |
@@ -479,6 +480,11 @@ jobs:
           cargo test --release --no-default-features -p ferritecad-cli --test circular_cut "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee edit-sequential-no-solver.log
           if grep -q 'skipped:' edit-sequential-no-solver.log || ! grep -Fq "test $gate ... ok" edit-sequential-no-solver.log; then exit 1; fi
+
+          gate=sequential::history::occt_without_solver_builds_and_edits_history
+          cargo test --release --no-default-features -p ferritecad-cli --test circular_cut "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee history-no-solver.log
+          if grep -q 'skipped:' history-no-solver.log || ! grep -Fq "test $gate ... ok" history-no-solver.log; then exit 1; fi
 
       - name: Build the real application and the command line tool against both
         id: build
@@ -1271,6 +1277,49 @@ jobs:
           if grep -q 'skipped:' edit-sequential-ui.log || ! grep -Fq "test $gate ... ok" edit-sequential-ui.log; then exit 1; fi
           echo "FCAD_EDIT_SEQUENTIAL_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
 
+      - name: Add and edit bounded circular Cut histories
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          CARGO_BUILD_JOBS: '1'
+          CMAKE_BUILD_PARALLEL_LEVEL: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          artifacts="$RUNNER_TEMP/circular-cut-history"
+          mkdir -p "$artifacts"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH"; artifacts="$(cygpath -w "$artifacts")" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          export FCAD_CUT_HISTORY_ARTIFACTS="$artifacts"
+          cargo build --release --features planegcs -p ferritecad-cli
+          for gate in sequential::history::bounded_catalog_all_links_and_distant_conflicts_without_kernel \
+            sequential::history::native_history_origins_floors_sql_and_old_sidecars \
+            sequential::history::native_adds_sixteen_and_refuses_seventeenth \
+            sequential::history::native_history_late_guards_aliases_and_exit_seven
+          do
+            cargo test --release --features planegcs -p ferritecad-cli --test circular_cut "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee history-native.log
+            if grep -q 'skipped:' history-native.log || ! grep -Fq "test $gate ... ok" history-native.log; then exit 1; fi
+          done
+          gate=cut_edit::tests::bounded_history_writer_checks_every_floor_and_longer_documents_still_open
+          FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-document --lib "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee history-writer.log
+          if grep -q 'skipped:' history-writer.log || ! grep -Fq "test $gate ... ok" history-writer.log; then exit 1; fi
+          gate=cuts::tests::native_history_widgets_worker_cli_preserve_draft
+          cargo test --release --features planegcs -p ferritecad-app "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee history-ui.log
+          if grep -q 'skipped:' history-ui.log || ! grep -Fq "test $gate ... ok" history-ui.log; then exit 1; fi
+          gate=ffi::tests::a_circular_profile_builds_an_analytic_cylinder_and_names_no_corner
+          FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-occt --lib "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee history-axis.log
+          if grep -q 'skipped:' history-axis.log || ! grep -Fq "test $gate ... ok" history-axis.log; then exit 1; fi
+          echo "FCAD_CUT_HISTORY_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
+
       - name: Create, discover, edit and export through the JSON v1 CLI contract
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
@@ -1366,6 +1415,7 @@ jobs:
           grep -q '^FCAD_CUT_EDIT_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_SEQUENTIAL_CUT_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_EDIT_SEQUENTIAL_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_CUT_HISTORY_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

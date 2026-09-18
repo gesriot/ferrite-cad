@@ -1,5 +1,9 @@
 # §26C — второй circular Cut в том же Body
 
+§26E расширяет текущую границу до 16 Cut: [контракт и рецепт](circular-cut-history.md).
+Ниже сохранён контракт исходного среза; ограничения длины заменены §26E.
+
+
 §26D расширяет прежнюю границу: [правка любого из двух Cut](edit-sequential-cuts.md).
 Описанные ниже отказы двухзвенной правке относятся к исходному срезу.
 
@@ -212,8 +216,8 @@ for d1 in [12.0,4.0]:
         cat=run(["inspect",one,"--json"])["result"]
         assert result["result"]["previous_feature_id"]==cat["bodies"][0]["cut_edit"]["target"]["tip_feature_id"]
         after=run(["inspect",two,"--json"])["result"]
-        assert not after["bodies"][0]["cut_edit"]["available"]
-        assert all(not f["circular_cut_edit"]["available"] for f in after["features"])
+        assert after["bodies"][0]["cut_edit"]["available"]
+        assert sum(f["circular_cut_edit"]["available"] for f in after["features"]) == 2
         assert run(["validate",two,"--json"])["result"]["valid"]
         run(["rebuild",two,"--cold"])
         volumes.append(measure(two,[t1,t2]))

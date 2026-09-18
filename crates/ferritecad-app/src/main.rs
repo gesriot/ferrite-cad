@@ -1157,6 +1157,16 @@ struct FrameScheduler {
     deadline: Option<Instant>,
 }
 
+/// egui's repaint response to RedrawRequested is satisfied by this frame.
+/// Turning it into another request makes winit redraw forever, including while
+/// idle. Repaints requested by widgets during the frame still arrive separately
+/// through the context callback and must not be discarded.
+fn request_interface_redraw(input: &mut ViewportInput, event: &WindowEvent, repaint: bool) {
+    if repaint && !matches!(event, WindowEvent::RedrawRequested) {
+        input.request_redraw();
+    }
+}
+
 impl FrameScheduler {
     /// Records an immediate frame, returning whether winit must be asked.
     fn request_now(&mut self) -> bool {
@@ -2470,9 +2480,7 @@ impl ApplicationHandler<AppEvent> for App {
         // The interface gets first refusal on every event, and says whether it
         // wanted it. What that answer means is the reducer's business.
         let response = live.egui_state.on_window_event(&live.window, &event);
-        if response.repaint {
-            self.input.request_redraw();
-        }
+        request_interface_redraw(&mut self.input, &event, response.repaint);
 
         match event {
             WindowEvent::CloseRequested => {
@@ -14146,6 +14154,32 @@ mod tests {
             frames.request_now(),
             "starting a frame did not open the slot for the next one"
         );
+    }
+
+    #[test]
+    fn completing_a_redraw_does_not_schedule_itself_again() {
+        let mut input = ViewportInput::new();
+        let mut frames = FrameScheduler::default();
+        input.take_redraw();
+        request_interface_redraw(&mut input, &WindowEvent::Focused(true), true);
+        assert!(input.take_redraw());
+        assert!(frames.request_now());
+        frames.frame_started();
+        // This is egui-winit's actual response for RedrawRequested. It means
+        // draw this event, not request a second event after drawing it.
+        request_interface_redraw(&mut input, &WindowEvent::RedrawRequested, true);
+        assert!(!input.take_redraw(), "idle frame scheduled another frame");
+        assert!(!frames.queued);
+        // A distinct reason arising during rendering must still survive.
+        input.request_redraw();
+        request_interface_redraw(&mut input, &WindowEvent::RedrawRequested, true);
+        assert!(input.take_redraw());
+        assert!(frames.request_now());
+        frames.frame_started();
+        let now = Instant::now();
+        let deadline = now + Duration::from_millis(100);
+        assert_eq!(frames.request_at(deadline, now), Some(deadline));
+        assert!(frames.take_due(deadline));
     }
 
     #[test]

@@ -280,3 +280,15 @@ if [ -n "${FCAD_EDIT_SEQUENTIAL_FBX_DIR:-}" ]; then
     done
     echo "FCAD_EDIT_SEQUENTIAL_UFBX_EXECUTED"
 fi
+
+# §26E adds six small history edits to the same pinned-reader campaign.
+if [ -n "${FCAD_CUT_HISTORY_FBX_DIR:-}" ]; then
+    for name in history-3-0 history-3-1 history-3-2 history-4-0 history-4-2 history-4-3; do
+        "$reader" --identity "$FCAD_CUT_HISTORY_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0$' "$work/$name-reader.txt"; then
+            echo "error: circular history FBX was not independently read: $name" >&2
+            exit 1
+        fi
+    done
+    echo "FCAD_CUT_HISTORY_UFBX_EXECUTED"
+fi
