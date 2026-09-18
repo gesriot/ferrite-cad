@@ -325,6 +325,9 @@ Scratch logs не входят в repository diff. Индекс остаётся
 в `/private/tmp/ferrite-26c-review/original`. Проверены перенос всех уровней
 origin names, legacy carried semantics, archive v3/key, узкий writer и его
 re-derivation, UI history и новые workflow argv. Блокирующих дефектов не найдено.
+В README, общей capability-таблице и JSON-контракте исправлено устаревшее
+описание одного Cut; добавлены поля discovery и явная граница редактирования
+двухзвенной истории. Эти документальные правки не меняют исполняемый код.
 
 Независимо повторены 506 document/topology/eval/jobs, 25 CLI и 6 headless app
 тестов: 537 passed, 0 failures, 0 native skips; один прежний timing benchmark

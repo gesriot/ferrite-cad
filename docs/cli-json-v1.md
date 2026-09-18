@@ -178,7 +178,7 @@ boolean `leaves_a_floor`. UUID существующих объектов сох�
 прорезать насквозь: отказ называет UUID защищаемой ссылки, файл не публикуется.
 [Полный контракт, все поля discovery и запускаемый рецепт](edit-circular-cut-copy.md).
 
-## Первый Cut в существующем Body (§26A)
+## Первый и второй Cut в существующем Body (§26A/C)
 
 `ferritecad cut-circular-copy <source.fcad> --body UUID --expect-version HASH
 --request <request.json> -o <copy.fcad> [--json]` — отдельная opt-in команда с
@@ -210,8 +210,17 @@ Request v1 — строго четыре поля, `request_version` (единс
 направление и требуемый зазор — или `null` для неподдержанного Body. Прежние
 поля `bodies`, `features` и `sketches` не меняются. Discovery и структурные
 отказы работают в сборке без ядра; применение правки без ядра отказывается.
+Для §26C у поддержанного `target` обязательны аддитивные поля
+`base_feature_id`, `disk_clearance_mm` и `existing_cut`. Первое называет исходный
+NewBody, тогда как прежнее `tip_feature_id` — непосредственного предшественника
+нового Cut. `existing_cut` равно `null` у исходной плиты; у плиты с первым Cut
+это объект с `feature_id`, `tool_sketch_id`, `tool_curve_id`, `center_mm`,
+`radius_mm`, `depth_mm`. `disk_clearance_mm` равно 1e-7 mm; фактический зазор
+между дисками должен быть строго больше. Request, result и exit codes прежние.
+После второго Cut `cut_edit.available` и `features[].circular_cut_edit.available`
+равны false: третье добавление и правка двухзвенной истории не поддержаны.
 Точные ограничения, семантика истории, правила UI/writer и запускаемый рецепт:
-[первый Cut в существующем Body](circular-cut-copy.md).
+[первый Cut](circular-cut-copy.md), [второй Cut и новые поля discovery](sequential-circular-cuts.md).
 
 ## Правка сохранённой кольцевой пары (§25M)
 
