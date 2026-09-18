@@ -174,8 +174,27 @@ fn body_discovery_preserves_domains_order_nulls_and_the_pinned_reading() {
             .expect("mandatory")
             .is_null()
     );
+    // Extrude facts are unchanged. Cut eligibility additionally describes the
+    // whole Body history: adding a parented Body legitimately changes its
+    // refusal. Check those facts against the pinned catalogue below instead of
+    // assuming their human-readable reason is independent of the Body set.
+    let extrudes = |value: &Value| {
+        value["features"]
+            .as_array()
+            .expect("features")
+            .iter()
+            .map(|row| {
+                let mut row = row.as_object().expect("feature").clone();
+                let cut = row.remove("circular_cut_edit").expect("cut discovery");
+                assert_eq!(cut["available"], false);
+                assert_eq!(cut["saved"], Value::Null);
+                row
+            })
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
-        reading["features"], initial["features"],
+        extrudes(&reading),
+        extrudes(&initial),
         "Body discovery preserves the Extrude contract"
     );
     assert_ne!(reading["content_version"], initial["content_version"]);
@@ -183,6 +202,22 @@ fn body_discovery_preserves_domains_order_nulls_and_the_pinned_reading() {
     let pinned = Document::open_read_only(&source).expect("pinned reading");
     let common = ExtrudeEditSource::read(&pinned).expect("same snapshot");
     let catalog = stl_bodies(&pinned).expect("same snapshot");
+    for row in reading["features"].as_array().expect("features") {
+        let fact = common
+            .cut_features
+            .iter()
+            .find(|c| row["feature_id"] == c.feature.to_string())
+            .expect("the same feature in the pinned history catalogue");
+        assert!(fact.saved.is_none());
+        assert_eq!(
+            row["circular_cut_edit"]["refusal"],
+            serde_json::json!(fact.refusal)
+        );
+        assert_eq!(
+            row["circular_cut_edit"]["document_refusal"],
+            serde_json::json!(common.refusal)
+        );
+    }
     assert_eq!(
         reading["content_version"],
         common.version.content.to_string()
