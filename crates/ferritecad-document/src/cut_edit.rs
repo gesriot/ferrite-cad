@@ -143,16 +143,19 @@ pub(crate) fn cut_catalog(
         .iter()
         .filter(|o| matches!(o.payload, ObjectPayload::Extrude(_)))
         .map(|o| {
-            let saved = history.as_ref().map_err(Clone::clone).and_then(|h| {
-                h.cuts
-                    .iter()
-                    .find(|c| c.feature == o.id)
-                    .cloned()
-                    .ok_or_else(|| {
-                        "this edit changes a Cut's tool and depth; use edit-extrude for NewBody"
-                            .to_owned()
-                    })
-            });
+            let saved = require_cut_operation(o)
+                .map_err(|e| e.to_string())
+                .and_then(|()| history.as_ref().map_err(Clone::clone))
+                .and_then(|h| {
+                    h.cuts
+                        .iter()
+                        .find(|c| c.feature == o.id)
+                        .cloned()
+                        .ok_or_else(|| {
+                            unsupported("selected Cut is not in the Body's supported history")
+                                .to_string()
+                        })
+                });
             CutParameterChoice {
                 feature: o.id,
                 name: o.name.clone(),
@@ -916,17 +919,22 @@ fn blind_literal(extrude: &Extrude, what: &str) -> Result<f64> {
     Ok(distance.value())
 }
 
+fn require_cut_operation(object: &ObjectRecord) -> Result<()> {
+    if !matches!(&object.payload, ObjectPayload::Extrude(e) if e.operation == SolidOperation::Cut) {
+        return Err(unsupported(
+            "this edit changes a Cut's tool and depth; use edit-extrude for NewBody",
+        ));
+    }
+    Ok(())
+}
+
 /// Select by UUID only after validating the entire bounded history.
 pub(crate) fn saved_cut(
     document: &Document,
     objects: &[ObjectRecord],
     object: &ObjectRecord,
 ) -> Result<SavedCircularCut> {
-    if !matches!(&object.payload, ObjectPayload::Extrude(e) if e.operation == SolidOperation::Cut) {
-        return Err(unsupported(
-            "this edit changes a Cut's tool and depth; use edit-extrude for NewBody",
-        ));
-    }
+    require_cut_operation(object)?;
     saved_history(document, objects)?
         .cuts
         .into_iter()
@@ -2399,6 +2407,41 @@ mod tests {
     }
 
     #[test]
+    fn cut_catalog_keeps_operation_refusals_independent_of_history_shape() {
+        for corners in [rectangle(), [[0., 0.], [60., 2.], [60., 40.], [0., 40.]]] {
+            let (_root, mut d, _) = plate(corners, 10.);
+            for extra_body in [false, true] {
+                if extra_body {
+                    d.write(|w| {
+                        w.put_object(
+                            ObjectId::new(),
+                            None,
+                            4,
+                            Some("Extra Body"),
+                            &ObjectPayload::Body(Body { tip_feature: None }),
+                        )
+                    })
+                    .expect("extra Body");
+                }
+                let objects = d.objects().expect("objects");
+                let choices = cut_parameter_choices(&d, &objects);
+                assert_eq!(choices.len(), 1);
+                let choice = &choices[0];
+                let feature = objects
+                    .iter()
+                    .find(|o| o.id == choice.feature)
+                    .expect("feature");
+                let refusal = saved_cut(&d, &objects, feature)
+                    .expect_err("NewBody")
+                    .to_string();
+                assert!(refusal.contains("use edit-extrude for NewBody"));
+                assert_eq!(choice.refusal.as_deref(), Some(refusal.as_str()));
+                assert!(choice.saved.is_none());
+            }
+        }
+    }
+
+    #[test]
     fn saved_cut_discovery_checks_the_stored_tool_against_cut_policy() {
         for (center, radius, depth) in [
             ([2., 15.], 5., 4.),
@@ -2727,12 +2770,16 @@ mod tests {
         })
         .expect("shared identity fixture");
         let catalog = crate::ExtrudeEditSource::read(&d).expect("catalog");
-        assert!(catalog.cut_features.iter().all(|c| {
-            c.saved.is_none()
-                && c.refusal
-                    .as_ref()
-                    .is_some_and(|r| r.contains("reuses curve UUID"))
-        }));
+        assert_eq!(catalog.cut_features.len(), 17);
+        for c in &catalog.cut_features {
+            assert!(c.saved.is_none());
+            let reason = c.refusal.as_deref().expect("refused");
+            if c.feature == h.target.base_feature {
+                assert!(reason.contains("use edit-extrude for NewBody"));
+            } else {
+                assert!(reason.contains("reuses curve UUID"));
+            }
+        }
         d.write(|w| {
             w.put_object(
                 last_tool.id,
@@ -2813,12 +2860,15 @@ mod tests {
         let d = Document::open_read_only(path).expect("long history opens");
         let catalog = crate::ExtrudeEditSource::read(&d).expect("catalog");
         assert_eq!(catalog.cut_features.len(), 18);
-        assert!(
-            catalog
-                .cut_features
-                .iter()
-                .all(|c| c.saved.is_none() && c.refusal.as_ref().is_some_and(|r| r.contains("16")))
-        );
+        for c in &catalog.cut_features {
+            assert!(c.saved.is_none());
+            let reason = c.refusal.as_deref().expect("refused");
+            if c.feature == h.target.base_feature {
+                assert!(reason.contains("use edit-extrude for NewBody"));
+            } else {
+                assert!(reason.contains("16"));
+            }
+        }
         assert!(catalog.cut_bodies[0].target.is_none());
         drop(root);
     }

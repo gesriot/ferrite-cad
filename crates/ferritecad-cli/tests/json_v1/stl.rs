@@ -174,27 +174,8 @@ fn body_discovery_preserves_domains_order_nulls_and_the_pinned_reading() {
             .expect("mandatory")
             .is_null()
     );
-    // Extrude facts are unchanged. Cut eligibility additionally describes the
-    // whole Body history: adding a parented Body legitimately changes its
-    // refusal. Check those facts against the pinned catalogue below instead of
-    // assuming their human-readable reason is independent of the Body set.
-    let extrudes = |value: &Value| {
-        value["features"]
-            .as_array()
-            .expect("features")
-            .iter()
-            .map(|row| {
-                let mut row = row.as_object().expect("feature").clone();
-                let cut = row.remove("circular_cut_edit").expect("cut discovery");
-                assert_eq!(cut["available"], false);
-                assert_eq!(cut["saved"], Value::Null);
-                row
-            })
-            .collect::<Vec<_>>()
-    };
     assert_eq!(
-        extrudes(&reading),
-        extrudes(&initial),
+        reading["features"], initial["features"],
         "Body discovery preserves the Extrude contract"
     );
     assert_ne!(reading["content_version"], initial["content_version"]);
