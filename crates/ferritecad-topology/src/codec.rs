@@ -51,7 +51,9 @@ const MAGIC: &[u8; 4] = b"FCNA";
 /// "this feature took that away" are different answers to a lost reference, and
 /// an entry that could not say which is not one to guess at. Refusing costs a
 /// rebuild, which is what a cache is for.
-const FORMAT_VERSION: u16 = 2;
+// v3 adds the immediate predecessor and qualified ancestor names. v2
+// cannot supply that provenance, so it is rejected and rebuilt in full.
+const FORMAT_VERSION: u16 = 3;
 
 /// Bytes before the checksummed archive payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>() + size_of::<u64>() + 32;
@@ -92,6 +94,9 @@ const TAG_END_CAP_VERTEX: u16 = 8;
 const TAG_CARRIED_START_CAP: u16 = 9;
 const TAG_CARRIED_END_CAP: u16 = 10;
 const TAG_CARRIED_SIDE: u16 = 11;
+const TAG_ORIGIN_START_CAP: u16 = 12;
+const TAG_ORIGIN_END_CAP: u16 = 13;
+const TAG_ORIGIN_SIDE: u16 = 14;
 
 impl ArchivedFeature {
     /// Writes the archive out as bytes.
@@ -102,6 +107,10 @@ impl ArchivedFeature {
     pub fn encode(&self) -> Result<Vec<u8>> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&self.producer().to_bytes());
+        payload.push(u8::from(self.previous.is_some()));
+        if let Some(previous) = self.previous {
+            payload.extend_from_slice(&previous.to_bytes());
+        }
 
         let kernel = self.blob().kernel();
         put_str(&mut payload, kernel.id())?;
@@ -167,6 +176,26 @@ impl ArchivedFeature {
                     payload.extend_from_slice(&TAG_CARRIED_SIDE.to_le_bytes());
                     payload.extend_from_slice(&profile_segment.to_bytes());
                 }
+                BoundName::OriginCap {
+                    origin_feature,
+                    side,
+                } => {
+                    let tag = match side {
+                        ferritecad_document::CapSide::Start => TAG_ORIGIN_START_CAP,
+                        ferritecad_document::CapSide::End => TAG_ORIGIN_END_CAP,
+                        _ => return Err(malformed("unknown origin cap")),
+                    };
+                    payload.extend_from_slice(&tag.to_le_bytes());
+                    payload.extend_from_slice(&origin_feature.to_bytes());
+                }
+                BoundName::OriginSide {
+                    origin_feature,
+                    profile_segment,
+                } => {
+                    payload.extend_from_slice(&TAG_ORIGIN_SIDE.to_le_bytes());
+                    payload.extend_from_slice(&origin_feature.to_bytes());
+                    payload.extend_from_slice(&profile_segment.to_bytes());
+                }
             }
             payload.extend_from_slice(&slot.index().to_le_bytes());
         }
@@ -188,6 +217,26 @@ impl ArchivedFeature {
                 }
                 BoundName::CarriedSide { profile_segment } => {
                     payload.extend_from_slice(&TAG_CARRIED_SIDE.to_le_bytes());
+                    payload.extend_from_slice(&profile_segment.to_bytes());
+                }
+                BoundName::OriginCap {
+                    origin_feature,
+                    side,
+                } => {
+                    let tag = match side {
+                        ferritecad_document::CapSide::Start => TAG_ORIGIN_START_CAP,
+                        ferritecad_document::CapSide::End => TAG_ORIGIN_END_CAP,
+                        _ => return Err(malformed("unknown origin cap")),
+                    };
+                    payload.extend_from_slice(&tag.to_le_bytes());
+                    payload.extend_from_slice(&origin_feature.to_bytes());
+                }
+                BoundName::OriginSide {
+                    origin_feature,
+                    profile_segment,
+                } => {
+                    payload.extend_from_slice(&TAG_ORIGIN_SIDE.to_le_bytes());
+                    payload.extend_from_slice(&origin_feature.to_bytes());
                     payload.extend_from_slice(&profile_segment.to_bytes());
                 }
                 other => {
@@ -251,6 +300,14 @@ impl ArchivedFeature {
             )));
         }
 
+        let previous = match reader.take(1, "predecessor flag")?[0] {
+            0 => None,
+            1 => Some(ObjectId::from_bytes(reader.array("predecessor")?)?),
+            _ => return Err(malformed("invalid predecessor flag")),
+        };
+        if previous == Some(producer) {
+            return Err(malformed("archive is its own predecessor"));
+        }
         let stored_kernel = KernelIdentity::new(
             reader.string("kernel id")?,
             reader.string("kernel version")?,
@@ -306,6 +363,18 @@ impl ArchivedFeature {
                 TAG_CARRIED_SIDE => BoundName::CarriedSide {
                     profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
                 },
+                TAG_ORIGIN_START_CAP | TAG_ORIGIN_END_CAP => BoundName::OriginCap {
+                    origin_feature: ObjectId::from_bytes(reader.array("origin feature")?)?,
+                    side: if tag == TAG_ORIGIN_START_CAP {
+                        ferritecad_document::CapSide::Start
+                    } else {
+                        ferritecad_document::CapSide::End
+                    },
+                },
+                TAG_ORIGIN_SIDE => BoundName::OriginSide {
+                    origin_feature: ObjectId::from_bytes(reader.array("origin feature")?)?,
+                    profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
+                },
                 unknown => {
                     return Err(malformed(format!(
                         "this archive names something with tag {unknown}, which this build does \
@@ -326,6 +395,18 @@ impl ArchivedFeature {
                 TAG_CARRIED_SIDE => BoundName::CarriedSide {
                     profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
                 },
+                TAG_ORIGIN_START_CAP | TAG_ORIGIN_END_CAP => BoundName::OriginCap {
+                    origin_feature: ObjectId::from_bytes(reader.array("origin feature")?)?,
+                    side: if tag == TAG_ORIGIN_START_CAP {
+                        ferritecad_document::CapSide::Start
+                    } else {
+                        ferritecad_document::CapSide::End
+                    },
+                },
+                TAG_ORIGIN_SIDE => BoundName::OriginSide {
+                    origin_feature: ObjectId::from_bytes(reader.array("origin feature")?)?,
+                    profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
+                },
                 unknown => {
                     return Err(malformed(format!(
                         "this archive says tag {unknown} was removed, and only a carried name \
@@ -341,7 +422,10 @@ impl ArchivedFeature {
         // no root slot, no repeated name, no shared slot, no empty table, no
         // name both present and removed, and a checksum that matches the
         // payload it arrived with.
-        Self::from_parts_with_removed(producer, blob, blob_hash, bindings, removed)
+        let mut archived =
+            Self::from_parts_with_removed(producer, blob, blob_hash, bindings, removed)?;
+        archived.previous = previous;
+        Ok(archived)
     }
 }
 
@@ -736,6 +820,9 @@ mod tests {
             ("carried start cap", TAG_CARRIED_START_CAP),
             ("carried end cap", TAG_CARRIED_END_CAP),
             ("carried side", TAG_CARRIED_SIDE),
+            ("origin start cap", TAG_ORIGIN_START_CAP),
+            ("origin end cap", TAG_ORIGIN_END_CAP),
+            ("origin side", TAG_ORIGIN_SIDE),
         ];
         for (index, (what, tag)) in tags.iter().enumerate() {
             for (other_what, other) in &tags[index + 1..] {
@@ -766,7 +853,7 @@ mod tests {
         );
         // v2 appended the removed-name list, which is a layout change and not
         // only a wider vocabulary; see the note on `FORMAT_VERSION`.
-        assert_eq!(FORMAT_VERSION, 2, "the removed-name list is part of v2");
+        assert_eq!(FORMAT_VERSION, 3, "predecessor provenance requires v3");
     }
 
     #[test]
@@ -812,6 +899,45 @@ mod tests {
         let refusal = ArchivedFeature::decode(&damaged, producer, &kernel)
             .expect_err("a swapped pair is not the pair that was written");
         assert!(refusal.to_string().contains("canonical order"), "{refusal}");
+    }
+
+    #[test]
+    fn unqualified_v2_archives_are_rejected_and_origin_names_round_trip() {
+        let (mut archive, producer, kernel) = archived();
+        let previous = ObjectId::new();
+        let origin = ObjectId::new();
+        archive.previous = Some(previous);
+        let removed = [
+            BoundName::OriginCap {
+                origin_feature: origin,
+                side: ferritecad_document::CapSide::End,
+            },
+            BoundName::OriginSide {
+                origin_feature: origin,
+                profile_segment: StableEntityId::new(),
+            },
+        ];
+        let mut rebuilt = ArchivedFeature::from_parts_with_removed(
+            producer,
+            archive.blob().clone(),
+            archive.blob_hash(),
+            archive.bindings(),
+            removed,
+        )
+        .expect("parts");
+        rebuilt.previous = Some(previous);
+        let bytes = rebuilt.encode().expect("encode");
+        assert_eq!(
+            ArchivedFeature::decode(&bytes, producer, &kernel).expect("restore"),
+            rebuilt
+        );
+        for version in [1u16, 2] {
+            let mut old = bytes.clone();
+            old[4..6].copy_from_slice(&version.to_le_bytes());
+            let err = ArchivedFeature::decode(&old, producer, &kernel)
+                .expect_err("old provenance rejected");
+            assert!(err.to_string().contains("discard the entry and rebuild"));
+        }
     }
 
     fn reseal(bytes: &mut [u8]) {

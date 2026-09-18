@@ -2118,6 +2118,18 @@ fn describe_role(role: &SemanticRole) -> String {
             let [one, other] = joint.segments();
             format!("Sweep edge at the joint of profile segments {one} and {other}")
         }
+        SemanticRole::OriginCap {
+            origin_feature,
+            side,
+        } => {
+            format!("cap {side:?} originating in feature {origin_feature}")
+        }
+        SemanticRole::OriginSide {
+            origin_feature,
+            profile_segment,
+        } => {
+            format!("side from segment {profile_segment} originating in feature {origin_feature}")
+        }
         SemanticRole::SketchSegment { segment } => format!("Sketch segment {segment}"),
         SemanticRole::FilletFace { source_edge } => format!("Fillet of edge {source_edge}"),
         other => format!("{other:?}"),

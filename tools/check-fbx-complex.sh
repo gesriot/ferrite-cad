@@ -256,3 +256,15 @@ if [ -n "${FCAD_CUT_EDIT_FBX_DIR:-}" ]; then
     done
     echo "FCAD_CUT_EDIT_UFBX_EXECUTED"
 fi
+
+# §26C uses the same pinned reader for all four depth combinations.
+if [ -n "${FCAD_SEQUENTIAL_CUT_FBX_DIR:-}" ]; then
+    for name in sequential-12-12 sequential-12-7 sequential-4-12 sequential-4-7; do
+        "$reader" --identity "$FCAD_SEQUENTIAL_CUT_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+        count="$(sed -n 's/^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=\([0-9]*\) failures=0$/\1/p' "$work/$name-reader.txt")"
+        [ -n "$count" ] && [ "$count" -ge 6 ] || {
+            echo "error: pinned reader did not verify sequential cut $name FBX" >&2; exit 1;
+        }
+    done
+    echo "FCAD_SEQUENTIAL_CUT_UFBX_EXECUTED"
+fi

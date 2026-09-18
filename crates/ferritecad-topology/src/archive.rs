@@ -52,6 +52,14 @@ pub enum BoundName {
     /// The face an earlier feature raised from one segment, as this feature
     /// leaves it.
     CarriedSide { profile_segment: StableEntityId },
+    OriginCap {
+        origin_feature: ObjectId,
+        side: CapSide,
+    },
+    OriginSide {
+        origin_feature: ObjectId,
+        profile_segment: StableEntityId,
+    },
 }
 
 impl BoundName {
@@ -109,7 +117,9 @@ impl BoundName {
             | Self::Side { .. }
             | Self::CarriedStartCap
             | Self::CarriedEndCap
-            | Self::CarriedSide { .. } => SubShapeKind::Face,
+            | Self::CarriedSide { .. }
+            | Self::OriginCap { .. }
+            | Self::OriginSide { .. } => SubShapeKind::Face,
             Self::StartCapEdge { .. } | Self::EndCapEdge { .. } | Self::SweepEdge { .. } => {
                 SubShapeKind::Edge
             }
@@ -127,6 +137,7 @@ impl BoundName {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArchivedFeature {
     producer: ObjectId,
+    pub(crate) previous: Option<ObjectId>,
     blob: BrepBlob,
     blob_hash: ContentHash,
     /// Ordered so two archives of the same rebuild compare equal.
@@ -220,6 +231,7 @@ impl ArchivedFeature {
 
         Ok(Self {
             producer,
+            previous: None,
             blob,
             blob_hash,
             bindings: table,
@@ -328,31 +340,26 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
     // Both are walked through the ordered set the map keeps, so the sequence is
     // the same on every machine.
     let mut removed = Vec::new();
-    for carried in names.carried_names() {
-        let (name, faces): (BoundName, Vec<_>) = match carried {
-            crate::CarriedName::Cap(side) => {
-                // A side this build has no name for is not archived at all,
-                // for the reason a future `CapSide` is never folded into one
-                // of the two known ends.
-                let Some(name) = BoundName::carried_cap(side) else {
-                    continue;
-                };
-                (
-                    name,
-                    names.carried_cap(side).into_iter().flatten().collect(),
-                )
+    for (origin, carried) in names.origins() {
+        let name = match (Some(origin) == names.previous(), carried) {
+            (true, crate::CarriedName::Cap(side)) => BoundName::carried_cap(side)
+                .ok_or_else(|| CadError::unsupported("unknown carried cap"))?,
+            (true, crate::CarriedName::Side(profile_segment)) => {
+                BoundName::CarriedSide { profile_segment }
             }
-            crate::CarriedName::Side(profile_segment) => (
-                BoundName::CarriedSide { profile_segment },
-                names.carried_side(profile_segment).collect(),
-            ),
+            (false, crate::CarriedName::Cap(side)) => BoundName::OriginCap {
+                origin_feature: origin,
+                side,
+            },
+            (false, crate::CarriedName::Side(profile_segment)) => BoundName::OriginSide {
+                origin_feature: origin,
+                profile_segment,
+            },
         };
-        if names.carried_is_deleted(carried) {
+        if names.origin_is_deleted(origin, carried) {
             removed.push(name);
-            continue;
-        }
-        for face in faces {
-            wanted.push((name, face));
+        } else {
+            wanted.extend(names.origin_faces(origin, carried).map(|face| (name, face)));
         }
     }
 
@@ -420,13 +427,15 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
     }
 
     let blob_hash = blob.content_hash();
-    ArchivedFeature::from_parts_with_removed(
+    let mut archived = ArchivedFeature::from_parts_with_removed(
         producer,
         blob,
         blob_hash,
         wanted.into_iter().map(|(name, _)| name).zip(slots),
         removed,
-    )
+    )?;
+    archived.previous = names.previous();
+    Ok(archived)
 }
 
 /// Restores a feature's geometry and its names into a fresh map.
@@ -466,9 +475,7 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
         let mut sweep_edges: BTreeMap<ProfileJoint, Vec<_>> = BTreeMap::new();
         let mut start_cap_vertices: BTreeMap<ProfileJoint, Vec<_>> = BTreeMap::new();
         let mut end_cap_vertices: BTreeMap<ProfileJoint, Vec<_>> = BTreeMap::new();
-        let mut carried_start_cap = Vec::new();
-        let mut carried_end_cap = Vec::new();
-        let mut carried_sides: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
+        let mut carried: BTreeMap<(ObjectId, crate::CarriedName), Vec<_>> = BTreeMap::new();
         let mut claimed = BTreeMap::new();
 
         for (name, face) in names.into_iter().zip(faces) {
@@ -514,10 +521,9 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 BoundName::EndCapVertex { joint } => {
                     end_cap_vertices.entry(joint).or_default().push(face)
                 }
-                BoundName::CarriedStartCap => carried_start_cap.push(face),
-                BoundName::CarriedEndCap => carried_end_cap.push(face),
-                BoundName::CarriedSide { profile_segment } => {
-                    carried_sides.entry(profile_segment).or_default().push(face)
+                carried_name => {
+                    let origin = carried_origin(carried_name, archived.previous)?;
+                    carried.entry(origin).or_default().push(face);
                 }
             }
         }
@@ -528,20 +534,7 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
         // has to carry the difference rather than let it be inferred.
         let mut carried_deleted = BTreeSet::new();
         for name in archived.removed_set() {
-            carried_deleted.insert(match name {
-                BoundName::CarriedStartCap => crate::CarriedName::Cap(CapSide::Start),
-                BoundName::CarriedEndCap => crate::CarriedName::Cap(CapSide::End),
-                BoundName::CarriedSide { profile_segment } => {
-                    crate::CarriedName::Side(*profile_segment)
-                }
-                other => {
-                    return Err(CadError::topology(format!(
-                        "the archive of feature {} says {other:?} was removed, and only a carried \
-                         name can be",
-                        archived.producer
-                    )));
-                }
-            });
+            carried_deleted.insert(carried_origin(*name, archived.previous)?);
         }
 
         into.record_restored(
@@ -556,9 +549,8 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 sweep_edges,
                 start_cap_vertices,
                 end_cap_vertices,
-                carried_start_cap,
-                carried_end_cap,
-                carried_sides,
+                previous: archived.previous,
+                carried,
                 carried_deleted,
             },
         )
@@ -568,6 +560,33 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
         kernel.release(shape);
     }
     restored
+}
+
+fn carried_origin(
+    name: BoundName,
+    previous: Option<ObjectId>,
+) -> Result<(ObjectId, crate::CarriedName)> {
+    let legacy = |name| {
+        previous
+            .map(|id| (id, name))
+            .ok_or_else(|| CadError::topology("carried archive name has no predecessor"))
+    };
+    match name {
+        BoundName::CarriedStartCap => legacy(crate::CarriedName::Cap(CapSide::Start)),
+        BoundName::CarriedEndCap => legacy(crate::CarriedName::Cap(CapSide::End)),
+        BoundName::CarriedSide { profile_segment } => {
+            legacy(crate::CarriedName::Side(profile_segment))
+        }
+        BoundName::OriginCap {
+            origin_feature,
+            side,
+        } => Ok((origin_feature, crate::CarriedName::Cap(side))),
+        BoundName::OriginSide {
+            origin_feature,
+            profile_segment,
+        } => Ok((origin_feature, crate::CarriedName::Side(profile_segment))),
+        _ => Err(CadError::topology("only a carried name may be removed")),
+    }
 }
 
 #[cfg(test)]

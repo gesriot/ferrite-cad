@@ -111,6 +111,10 @@ pub const SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY: &str = "sketch.constraints.circl
 /// reason rather than a failed read of one row.
 pub const TOPOLOGY_CARRIED_FACE_CAPABILITY: &str = "topology.carried-face.v1";
 
+/// Explicit original feature identity on a face carried through a history.
+/// Legacy carried roles keep their immediate-predecessor meaning.
+pub const TOPOLOGY_ORIGIN_FACE_CAPABILITY: &str = "topology.origin-face.v1";
+
 /// The capability a feature that consumes another feature's result depends on.
 ///
 /// # Why a new name and a new layout, rather than an optional field
@@ -1128,6 +1132,16 @@ pub enum SemanticRole {
     /// feature naming it leaves it. The counterpart of
     /// [`SemanticRole::CarriedCap`], and there for the same reason.
     CarriedSide { profile_segment: StableEntityId },
+    /// An earlier feature's own cap, carried through every intervening boolean.
+    OriginCap {
+        origin_feature: ObjectId,
+        side: CapSide,
+    },
+    /// An earlier feature's own side, retaining both feature and segment UUID.
+    OriginSide {
+        origin_feature: ObjectId,
+        profile_segment: StableEntityId,
+    },
 }
 
 /// How many entities a reference selects, and which.
@@ -1223,6 +1237,27 @@ impl TopologyRef {
             SemanticRole::CarriedSide { profile_segment } => {
                 hasher
                     .str("carried_side")
+                    .bytes(&profile_segment.to_bytes());
+            }
+            SemanticRole::OriginCap {
+                origin_feature,
+                side,
+            } => {
+                hasher
+                    .str("origin_cap")
+                    .bytes(&origin_feature.to_bytes())
+                    .str(match side {
+                        CapSide::Start => "start",
+                        CapSide::End => "end",
+                    });
+            }
+            SemanticRole::OriginSide {
+                origin_feature,
+                profile_segment,
+            } => {
+                hasher
+                    .str("origin_side")
+                    .bytes(&origin_feature.to_bytes())
                     .bytes(&profile_segment.to_bytes());
             }
             SemanticRole::ExtrudeSide { profile_segment } => {

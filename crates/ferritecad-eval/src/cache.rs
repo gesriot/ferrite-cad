@@ -30,7 +30,7 @@ use ferritecad_kernel::{
     ExtrudeRequest, KernelIdentity, OperationContext, cut_cache_key, extrude_cache_key,
 };
 use ferritecad_topology::{ARCHIVE_CACHE_KIND, ArchivedFeature};
-use ferritecad_types::{ContentHash, ObjectId, Result};
+use ferritecad_types::{CanonicalHasher, ContentHash, ObjectId, Result};
 
 /// Where an extrusion's archive lives in the sidecar.
 pub fn extrude_archive_key(
@@ -50,11 +50,20 @@ pub fn extrude_archive_key(
 /// [`cut_cache_key`] itself.
 pub fn cut_archive_key(
     kernel: &KernelIdentity,
+    previous: ObjectId,
     target_key: &ContentHash,
     tool_key: &ContentHash,
     context: &OperationContext,
 ) -> ContentHash {
-    cut_cache_key(kernel, target_key, tool_key, context)
+    // Geometry alone cannot key names: changing a predecessor UUID without
+    // changing its drawing must not restore bindings to the old producer.
+    let mut hasher = CanonicalHasher::new("eval.cut.named");
+    hasher.algorithm_version(1);
+    hasher.field("previous").bytes(&previous.to_bytes());
+    hasher
+        .field("geometry")
+        .bytes(cut_cache_key(kernel, target_key, tool_key, context).as_bytes());
+    hasher.finish()
 }
 
 /// Writes one feature's geometry and names into the sidecar, under a key the
@@ -134,4 +143,30 @@ pub fn load_extrude_archive(
         return Ok(None);
     };
     ArchivedFeature::decode(&entry.bytes, producer, kernel).map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn named_cut_cache_keys_include_predecessor_identity() {
+        let kernel = KernelIdentity::new("test", "1", "test").expect("identity");
+        let target = ContentHash::of_bytes(b"same plate geometry and curve UUIDs");
+        let tool = ContentHash::of_bytes(b"same tool geometry");
+        let a = ObjectId::new();
+        let b = ObjectId::new();
+        let context = OperationContext::default();
+        let one = cut_archive_key(&kernel, a, &target, &tool, &context);
+        let other = cut_archive_key(&kernel, b, &target, &tool, &context);
+        assert_ne!(
+            one, other,
+            "same geometry must not restore another producer's names"
+        );
+        assert_ne!(
+            cut_archive_key(&kernel, a, &one, &tool, &context),
+            cut_archive_key(&kernel, a, &other, &tool, &context),
+            "the origin change propagates through the dependent chain"
+        );
+    }
 }

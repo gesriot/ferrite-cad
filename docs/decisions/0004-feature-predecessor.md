@@ -91,3 +91,37 @@ that branches, which `feature.forked-history` refuses rather than models;
 nothing about rolling a body back to an earlier feature, which this shape makes
 expressible but which no operation offers; and nothing about attaching a sketch
 to a face, which needs a durable name for the face and is a slice of its own.
+
+## §26C: provenance of faces carried through another boolean
+
+Decision recorded before implementation. A carried face is keyed by the UUID
+of the feature that originally named it and its original cap side or profile
+segment UUID. The topology map carries that pair through **each** OCCT history
+step, including already carried faces and deleted names. Geometry measurements
+are independent assertions, never a matching mechanism.
+
+The second Cut's own wall/floor retain `ExtrudeSide`/`ExtrudeCap`. Its new
+references to earlier faces use `OriginSide`/`OriginCap` with an explicit
+`origin_feature`. Thus the plate's End, the first pocket's End and the second
+pocket's End remain three distinct names. Stored references are never rewritten:
+their producer still addresses the historical output it always addressed.
+New references address the final output and retain the earlier face's origin.
+
+Legacy `CarriedCap`/`CarriedSide` keep their exact meaning: the immediate
+predecessor's **own** cap/side. They are resolved as aliases into the qualified
+map, not as another set of geometry. The map and archive record that predecessor
+explicitly. No feature-to-Body edge or duplicate ownership is introduced.
+
+New roles require `topology.origin-face.v1`; older readers therefore preserve
+the unknown references and refuse writes. Existing feature payload v2 already
+expresses the predecessor chain and needs no reinterpretation or SQL migration.
+Named archive format v3 includes predecessor identity and qualified ancestor
+bindings; v1/v2 entries are explicitly invalidated and rebuilt. A physical face
+is archived once, so provenance aliases cannot conceal two meanings in one slot.
+
+The managed operation accepts only the existing four-object plate or the exact
+six-object §26A/B frame. A second tool must be separated from the saved disk by
+strictly more than `Tolerance::DEFAULT_LINEAR`, in addition to the existing
+wall/depth policy. The eight-object result is neither an Add-cut target nor a
+§26B edit target. Wider histories and editing either of their cuts remain future
+work; the six-object editor contract is unchanged.

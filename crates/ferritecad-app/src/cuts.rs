@@ -67,7 +67,7 @@ impl History {
 /// what an Apply is.
 #[derive(Debug, Clone)]
 enum Subject {
-    Add(CutChoice),
+    Add(Box<CutChoice>),
     /// Boxed: a saved cut carries every identity it keeps, and an enum sized
     /// for it would make the ordinary add draft carry the difference.
     Edit(Box<CutParameterChoice>),
@@ -147,7 +147,7 @@ impl Editor {
         self.open(
             path,
             source,
-            Subject::Add(choice.clone()),
+            Subject::Add(Box::new(choice.clone())),
             Numbers::default(),
         )
     }
@@ -288,6 +288,13 @@ impl Editor {
                     shown.height_mm,
                     shown.modifies,
                 ));
+                if let Subject::Add(choice) = &draft.subject
+                    && let Some(existing) = choice.target.as_ref().and_then(|t| t.existing_cut.as_ref())
+                {
+                    ui.small(format!("Existing cut {}: ({}, {}) r{}, depth {} mm. The two disks must be separate by more than {} mm.",
+                        existing.feature, existing.center_mm[0], existing.center_mm[1], existing.radius_mm,
+                        existing.depth_mm, ferritecad_document::WALL_CLEARANCE_MM));
+                }
                 match &shown.editing {
                     None => {
                         ui.label(
@@ -799,12 +806,29 @@ mod tests {
     /// the shipped CLI, publishes the same part.
     #[test]
     fn native_cut_worker_and_cli_publish_the_same_part() {
+        worker_and_cli(false);
+    }
+
+    #[test]
+    fn native_second_cut_widgets_worker_and_cli_preserve_history() {
+        worker_and_cli(true);
+    }
+
+    fn worker_and_cli(second: bool) {
         if !ferritecad_occt::is_available() {
             assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
             eprintln!("skipped: the cut worker needs OCCT");
             return;
         }
-        let (root, path, source) = plate();
+        let (root, path, source) = if second { pocket(4.) } else { plate() };
+        let original = Document::open_read_only(&path).expect("source");
+        let original_ids: Vec<_> = original
+            .objects()
+            .expect("objects")
+            .iter()
+            .map(|o| o.id)
+            .collect();
+        original.close().expect("close");
         let before = std::fs::read(&path).expect("source");
         let body = source.cut_bodies[0].body;
 
@@ -815,7 +839,27 @@ mod tests {
             frame(&ctx, &mut e, false);
         }
         fill(&ctx, &mut e, "20", "15", "5", "4");
+        if second {
+            click(&ctx, &mut e, "Apply cut");
+            assert!(
+                e.draft
+                    .as_ref()
+                    .expect("draft")
+                    .refusal
+                    .as_ref()
+                    .expect("overlap refused")
+                    .contains("separate")
+            );
+            assert!(e.draft.as_ref().expect("draft").history.undo.is_empty());
+            fill(&ctx, &mut e, "45", "25", "6", "7");
+        }
         click(&ctx, &mut e, "Apply cut");
+        if second {
+            click(&ctx, &mut e, "Undo");
+            assert_eq!(e.draft.as_ref().expect("draft").typed, Numbers::default());
+            click(&ctx, &mut e, "Redo");
+            assert_eq!(e.draft.as_ref().expect("draft").typed.center_x, "45");
+        }
         click(&ctx, &mut e, "Save cut copy…");
         let mut request = e.take_request().expect("widget request");
 
@@ -895,15 +939,11 @@ mod tests {
         assert_eq!(a.meta().document_id, b.meta().document_id);
         let (mine, theirs) = (a.objects().expect("objects"), b.objects().expect("objects"));
         assert_eq!(mine.len(), theirs.len());
-        assert_eq!(mine.len(), 6);
+        assert_eq!(mine.len(), original_ids.len() + 2);
         let minted = |objects: &[ferritecad_document::ObjectRecord]| {
             objects
                 .iter()
-                .filter(|o| {
-                    matches!(&o.payload, ferritecad_document::ObjectPayload::Extrude(e)
-                        if e.previous.is_some())
-                        || o.name.as_deref() == Some("Cut profile")
-                })
+                .filter(|o| !original_ids.contains(&o.id))
                 .map(|o| o.id)
                 .collect::<Vec<_>>()
         };

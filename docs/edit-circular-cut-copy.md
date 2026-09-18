@@ -4,6 +4,10 @@
 [Срез, который этот Cut создаёт](circular-cut-copy.md).
 [Решение об истории Body](decisions/0004-feature-predecessor.md).
 
+[§26C](sequential-circular-cuts.md) добавляет второй Cut отдельным Add-маршрутом.
+Редактор, описанный здесь, сохраняет six-object frame и отказывает обоим Cut
+в восьмиобъектной истории.
+
 Тот же identity-preserving copy-маршрут, что у прежних правок
 ([§25B](edit-sketch-copy.md), [§25K](edit-circle-copy.md),
 [§25M](edit-annular-copy.md), [§25N/O](annular-circle-constraints.md),

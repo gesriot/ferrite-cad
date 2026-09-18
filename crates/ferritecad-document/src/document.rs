@@ -933,28 +933,51 @@ impl Document {
         let added = prepared.added_dependencies.clone();
         let removed = prepared.removed_dependencies.clone();
         let references = prepared.references.clone();
-        self.write(move |writer| {
+        let body_bytes = body.payload.to_storage_bytes()?;
+        let body_hash = ContentHash::of_bytes(&body_bytes);
+        self.write_transaction(move |writer| {
+            // Every minted reference is an INSERT-only identity in this job.
+            // Check in the same transaction that performs the writes.
+            let mut ids = BTreeSet::new();
+            for reference in &references {
+                let occupied: bool = writer.tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM topology_refs WHERE id=?1)",
+                    params![reference.id.to_bytes().as_slice()], |row| row.get(0),
+                ).map_err(|e| CadError::io("checking new cut references", e))?;
+                if occupied || !ids.insert(reference.id) {
+                    return Err(CadError::input("new cut reference UUID already exists"));
+                }
+            }
             for new in [&sketch, &feature] {
+                let occupied: bool = writer.tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM objects WHERE id=?1)",
+                    params![new.id.to_bytes().as_slice()], |row| row.get(0),
+                ).map_err(|e| CadError::io("checking new cut objects", e))?;
+                if occupied { return Err(CadError::input("new cut object UUID already exists")); }
                 writer.put_object(new.id, None, new.ordinal, Some(&new.name), &new.payload)?;
             }
-            writer.put_object(
-                body.id,
-                body.parent,
-                body.ordinal,
-                body.name.as_deref(),
-                &body.payload,
-            )?;
-            for dependency in removed {
-                writer.remove_dependency(dependency)?;
+            writer.tx.execute(
+                "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
+                params![body_bytes, body_hash.as_bytes().as_slice(), body.id.to_bytes().as_slice()],
+            ).map_err(|e| CadError::io("moving Body tip", e))?;
+            for dependency in removed { writer.remove_dependency(dependency)?; }
+            for dependency in added { writer.add_dependency(dependency)?; }
+            for reference in &references { writer.put_topology_ref(reference)?; }
+            // Add only contracts introduced by these new payloads/references.
+            // Keep optional rows, rowids, source claims and unrelated SQL intact.
+            let mut capabilities = BTreeSet::new();
+            for new in [&sketch, &feature] { capabilities.extend(new.payload.required_capabilities()); }
+            for reference in &references { capabilities.extend(required_capabilities_of(&reference.output_role)); }
+            for name in capabilities {
+                writer.tx.execute(
+                    "INSERT INTO capabilities(name,required) VALUES(?1,1) ON CONFLICT(name) DO UPDATE SET required=1 WHERE required<>1",
+                    params![name],
+                ).map_err(|e| CadError::io("recording cut capability", e))?;
             }
-            for dependency in added {
-                writer.add_dependency(dependency)?;
-            }
-            for reference in &references {
-                writer.put_topology_ref(reference)?;
-            }
+            writer.tx.execute(&format!("UPDATE meta SET modified_at = {NOW_UTC} WHERE id = 1"), [])
+                .map_err(|e| CadError::io("stamping circular cut", e))?;
             Ok(())
-        })
+        }, false)
     }
 
     /// Writes one prepared parameter edit of a saved circular cut: the tool
@@ -2041,6 +2064,12 @@ fn read_meta(conn: &Connection) -> Result<DocumentMeta> {
 /// that predates it.
 fn required_capabilities_of(role: &SemanticRole) -> Vec<String> {
     let mut names = vec![CORE_CAPABILITY.to_owned()];
+    if matches!(
+        role,
+        SemanticRole::OriginCap { .. } | SemanticRole::OriginSide { .. }
+    ) {
+        names.push(crate::TOPOLOGY_ORIGIN_FACE_CAPABILITY.to_owned());
+    }
     if matches!(role, SemanticRole::ExtrudeCapEdge { .. }) {
         names.push(EXTRUDE_CAP_EDGE_CAPABILITY.to_owned());
     }

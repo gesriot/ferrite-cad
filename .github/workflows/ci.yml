@@ -168,6 +168,17 @@ jobs:
             if grep -q 'skipped:' "$gate.log" || ! grep -Fq "test $gate ... ok" "$gate.log"; then exit 1; fi
           done
 
+      - name: Discover sequential cuts without native geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          gate=sequential::sequential_discovery_and_refusals_without_native
+          cargo test -p ferritecad-cli --test circular_cut "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee sequential-discovery.log
+          if grep -q 'skipped:' sequential-discovery.log || ! grep -Fq "test $gate ... ok" sequential-discovery.log; then exit 1; fi
+          gate=cut_edit::tests::second_cut_writer_rechecks_policy_and_rejects_reference_collisions
+          cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee sequential-writer.log
+          if grep -q 'skipped:' sequential-writer.log || ! grep -Fq "test $gate ... ok" sequential-writer.log; then exit 1; fi
+
       - name: Verify memory guard cleanup without a viewer
         if: runner.os == 'macOS'
         run: python3 tools/test-viewer-memory-guard.py

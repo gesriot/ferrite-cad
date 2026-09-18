@@ -19,6 +19,10 @@
 //! lets "the tool is inside the part and does not touch its outer wall" be a
 //! measured fact rather than a hopeful one; it is not a claim about arbitrary
 //! solids, and a wider class is refused with its reason.
+//!
+//! The other accepted source is the exact six-object first-cut frame checked
+//! by `saved_cut`. It may receive one separate disk; its eight-object result
+//! accepts neither a third cut nor parameter editing of either saved cut.
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId, Tolerance, Transform};
 use std::collections::BTreeSet;
 
@@ -52,7 +56,11 @@ pub struct SavedCutTarget {
     pub plane: ObjectId,
     /// The feature the cut modifies, which is the body's tip today.
     pub tip_feature: ObjectId,
-    /// The sketch that feature reads, reported so a form can name the part.
+    /// The extrusion that made the rectangular plate, even when the tip is a Cut.
+    pub base_feature: ObjectId,
+    /// The single existing cut, if this operation would add the second.
+    pub existing_cut: Option<SavedCircularCut>,
+    /// The original rectangular profile, reported so a form can name the part.
     pub profile: ObjectId,
     /// Every segment of that profile, in stored order, so the copy can name
     /// what the finished part still has.
@@ -131,6 +139,29 @@ pub(crate) fn supported(
     let ObjectPayload::Extrude(feature) = &extrude.payload else {
         return Err(unsupported("the body's tip is not an extrusion"));
     };
+    if feature.operation == SolidOperation::Cut {
+        // Reuse the exact six-object catalog, including saved numeric policy
+        // and reference meanings. The editor's accepted frame stays unchanged.
+        let saved = saved_cut(document, objects, extrude)?;
+        let profile = objects
+            .iter()
+            .find(|o| o.id == saved.profile_sketch)
+            .ok_or_else(|| unsupported("the base profile is missing"))?;
+        let ObjectPayload::Sketch(sketch) = &profile.payload else {
+            return Err(unsupported("the base profile is not a Sketch"));
+        };
+        return Ok(SavedCutTarget {
+            body: object.id,
+            plane: saved.plane,
+            tip_feature,
+            base_feature: saved.base_feature,
+            profile: saved.profile_sketch,
+            profile_segments: sketch.curves.iter().map(|c| c.id).collect(),
+            height_mm: saved.height_mm,
+            extents_mm: saved.extents_mm,
+            existing_cut: Some(saved),
+        });
+    }
     let sketch_object = objects
         .iter()
         .find(|o| o.id == feature.profile)
@@ -152,6 +183,8 @@ pub(crate) fn supported(
         body: object.id,
         plane: sketch.plane,
         tip_feature,
+        base_feature: tip_feature,
+        existing_cut: None,
         profile: sketch_object.id,
         profile_segments: sketch.curves.iter().map(|c| c.id).collect(),
         height_mm,
@@ -244,8 +277,23 @@ impl CutChoice {
             .target
             .as_ref()
             .ok_or_else(|| unsupported("unsupported cut target"))?;
-        validate(target.height_mm, target.extents_mm, cut).map(|_| ())
+        validate_target(target, cut).map(|_| ())
     }
+}
+
+fn validate_target(target: &SavedCutTarget, cut: &CircularCut) -> Result<CircleExtrusion> {
+    let tool = validate(target.height_mm, target.extents_mm, cut)?;
+    if let Some(saved) = &target.existing_cut {
+        let distance =
+            (cut.center_mm[0] - saved.center_mm[0]).hypot(cut.center_mm[1] - saved.center_mm[1]);
+        let gap = distance - cut.radius_mm - saved.radius_mm;
+        if gap <= WALL_CLEARANCE_MM {
+            return Err(CadError::input(format!(
+                "the two circular disks must be separate by more than {WALL_CLEARANCE_MM} mm; gap is {gap} mm"
+            )));
+        }
+    }
+    Ok(tool)
 }
 
 /// The one numeric rule, applied to a request against the saved part.
@@ -425,7 +473,7 @@ pub fn prepare_circular_cut(
         .cloned()
         .ok_or_else(|| CadError::input("selected Body UUID does not exist"))?;
     let target = supported(document, &objects, &record)?;
-    validate(target.height_mm, target.extents_mm, cut)?;
+    validate_target(&target, cut)?;
 
     let ordinal = objects.iter().map(|o| o.ordinal).max().unwrap_or(0);
     let feature_ordinal = ordinal.checked_add(2).ok_or_else(|| {
@@ -507,12 +555,56 @@ pub fn prepare_circular_cut(
         role: DependencyRole::BodyTip,
     }];
 
-    let references = cut_references(
+    let mut references = cut_references(
         feature_id,
         tool_curve,
         &target.profile_segments,
         cut.depth_mm < target.height_mm,
     );
+
+    if let Some(saved) = &target.existing_cut {
+        for reference in &mut references {
+            reference.output_role = match reference.output_role {
+                SemanticRole::CarriedCap { side } => SemanticRole::OriginCap {
+                    origin_feature: target.base_feature,
+                    side,
+                },
+                SemanticRole::CarriedSide { profile_segment } => SemanticRole::OriginSide {
+                    origin_feature: target.base_feature,
+                    profile_segment,
+                },
+                ref own => own.clone(),
+            };
+        }
+        references.push(TopologyRef {
+            id: StableEntityId::new(),
+            owner: feature_id,
+            producer_feature: feature_id,
+            expected_kind: EntityKind::Face,
+            output_role: SemanticRole::OriginSide {
+                origin_feature: saved.feature,
+                profile_segment: saved.tool_curve,
+            },
+            selection: SelectionRule::AllDerivedFrom {
+                ancestor: saved.tool_curve,
+            },
+            fallback_signature: None,
+        });
+        if saved.depth_mm < saved.height_mm {
+            references.push(TopologyRef {
+                id: StableEntityId::new(),
+                owner: feature_id,
+                producer_feature: feature_id,
+                expected_kind: EntityKind::Face,
+                output_role: SemanticRole::OriginCap {
+                    origin_feature: saved.feature,
+                    side: CapSide::End,
+                },
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            });
+        }
+    }
 
     Ok(PreparedCircularCut {
         body: moved,
@@ -2232,5 +2324,54 @@ mod tests {
             assert!(prepare_cut_parameters(&d, feature, &moved(&saved, 6.)).is_err());
             assert_eq!(d.content_version().expect("version"), before);
         }
+    }
+    #[test]
+    fn second_cut_writer_rechecks_policy_and_rejects_reference_collisions() {
+        let (_root, mut d, first) = cut_plate(4.);
+        let saved = only(&d);
+        let second = CircularCut {
+            center_mm: [45., 25.],
+            radius_mm: 6.,
+            depth_mm: 7.,
+        };
+        let honest = prepare_circular_cut(&d, saved.body, &second).expect("second");
+        let objects = d.objects().expect("objects");
+        let refs = d.topology_refs().expect("refs");
+        let mut forged = honest.clone();
+        forged.references[0].id = refs[0].id;
+        assert!(
+            d.write_circular_cut(&forged)
+                .expect_err("collision")
+                .to_string()
+                .contains("already exists")
+        );
+        let mut forged = honest.clone();
+        forged.references[1].id = forged.references[0].id;
+        assert!(d.write_circular_cut(&forged).is_err());
+        let mut forged = honest.clone();
+        if let ObjectPayload::Sketch(s) = &mut forged.sketch.payload {
+            s.curves[0].geometry = SketchGeometry::Circle {
+                center: Point2::new(20., 15.).expect("point"),
+                radius: 6.,
+            };
+        }
+        assert!(d.write_circular_cut(&forged).is_err());
+        let mut forged = honest.clone();
+        if let SemanticRole::OriginCap { origin_feature, .. } =
+            &mut forged.references[2].output_role
+        {
+            *origin_feature = first;
+        }
+        assert!(d.write_circular_cut(&forged).is_err());
+        assert_eq!(d.objects().expect("objects"), objects);
+        assert_eq!(d.topology_refs().expect("refs"), refs);
+        d.write_circular_cut(&honest).expect("honest second");
+        assert!(d.validate().expect("validator").is_ok());
+        assert!(
+            cut_parameter_choices(&d, &d.objects().expect("objects"))
+                .iter()
+                .all(|c| c.saved.is_none())
+        );
+        assert!(prepare_circular_cut(&d, saved.body, &second).is_err());
     }
 }

@@ -40,6 +40,7 @@ pub const SUPPORTED_CAPABILITIES: &[&str] = &[
     "topology.extrude-sweep-edge.v1",
     "topology.extrude-cap-vertex.v1",
     "topology.carried-face.v1",
+    "topology.origin-face.v1",
 ];
 
 /// `PRAGMA application_id` for a document: the ASCII bytes `FCAD`.
