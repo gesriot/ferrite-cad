@@ -99,8 +99,8 @@ pub struct CircularCut {
 }
 
 /// One validated model per snapshot, shared by add and edit discovery.
-struct CutHistory {
-    target: SavedCutTarget,
+pub(crate) struct CutHistory {
+    pub(crate) target: SavedCutTarget,
     cuts: Vec<SavedCircularCut>,
 }
 
@@ -121,7 +121,11 @@ impl CutHistory {
 pub(crate) fn cut_catalog(
     document: &Document,
     objects: &[ObjectRecord],
-) -> (Vec<CutChoice>, Vec<CutParameterChoice>) {
+) -> (
+    Vec<CutChoice>,
+    Vec<CutParameterChoice>,
+    Vec<crate::SketchChoice>,
+) {
     let history = saved_history(document, objects).map_err(|e| e.to_string());
     let bodies = objects
         .iter()
@@ -164,7 +168,8 @@ pub(crate) fn cut_catalog(
             }
         })
         .collect();
-    (bodies, features)
+    let sketches = crate::sketch_edit::choices_with_history(document, objects, history.as_ref());
+    (bodies, features, sketches)
 }
 
 pub fn cut_choices(document: &Document, objects: &[ObjectRecord]) -> Vec<CutChoice> {
@@ -185,14 +190,14 @@ pub(crate) fn supported(
 /// axis-parallel, meeting end to end and closing — which is what makes the
 /// clearance check below a statement about the part rather than about its
 /// bounding box.
-fn rectangle(sketch: &Sketch, height_mm: f64) -> Result<[[f64; 2]; 2]> {
-    if sketch.curves.len() != 4 {
+pub(crate) fn rectangle(curves: &[SketchCurve], height_mm: f64) -> Result<[[f64; 2]; 2]> {
+    if curves.len() != 4 {
         return Err(unsupported(
             "this slice cuts a rectangular plate, and this profile is not four Lines",
         ));
     }
     let mut corners = Vec::with_capacity(4);
-    for curve in &sketch.curves {
+    for curve in curves {
         if curve.construction {
             return Err(unsupported("construction geometry bounds no face"));
         }
@@ -212,7 +217,7 @@ fn rectangle(sketch: &Sketch, height_mm: f64) -> Result<[[f64; 2]; 2]> {
         corners.push([start.x, start.y]);
     }
     // Closed, end to end, in the order the sketch stores them.
-    for (index, curve) in sketch.curves.iter().enumerate() {
+    for (index, curve) in curves.iter().enumerate() {
         let SketchGeometry::Line { end, .. } = curve.geometry else {
             unreachable!("checked above")
         };
@@ -255,6 +260,29 @@ fn rectangle(sketch: &Sketch, height_mm: f64) -> Result<[[f64; 2]; 2]> {
         ));
     }
     Ok([[min_x, min_y], [max_x, max_y]])
+}
+
+/// Validate a changed plate against every unchanged, absolute tool.
+/// Called by the coordinate editor's shared draft/prepare/writer check.
+pub(crate) fn validate_base(
+    curves: &[SketchCurve],
+    height_mm: f64,
+    tools: &[SavedCutTool],
+) -> Result<()> {
+    let extents = rectangle(curves, height_mm)?;
+    for tool in tools {
+        validate(
+            height_mm,
+            extents,
+            &CircularCut {
+                center_mm: tool.center_mm,
+                radius_mm: tool.radius_mm,
+                depth_mm: tool.depth_mm,
+            },
+        )
+        .map_err(|e| CadError::input(format!("Cut {}: {e}", tool.feature)))?;
+    }
+    Ok(())
 }
 
 impl CutChoice {
@@ -944,7 +972,7 @@ pub(crate) fn saved_cut(
 
 /// Exactly a plate plus zero to sixteen cuts. All identities and the complete edge
 /// set are derived from links, never names, ordinals or database iteration order.
-fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Result<CutHistory> {
+pub(crate) fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Result<CutHistory> {
     if objects.len() < 4
         || objects.len() > 4 + 2 * MAX_CIRCULAR_CUTS
         || objects.iter().any(|o| o.parent.is_some())
@@ -1043,7 +1071,7 @@ fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Result<CutHis
             "editing a saved cut requires the untransformed XY plane",
         ));
     }
-    let extents_mm = rectangle(part, height_mm)?;
+    let extents_mm = rectangle(&part.curves, height_mm)?;
     let segments: Vec<_> = part.curves.iter().map(|c| c.id).collect();
     let refs = document.topology_refs()?;
     let mut expected = BTreeSet::from([

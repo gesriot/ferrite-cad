@@ -292,3 +292,15 @@ if [ -n "${FCAD_CUT_HISTORY_FBX_DIR:-}" ]; then
     done
     echo "FCAD_CUT_HISTORY_UFBX_EXECUTED"
 fi
+
+# §26F reuses this pinned reader for three small base-coordinate edits.
+if [ -n "${FCAD_CUT_BASE_FBX_DIR:-}" ]; then
+    for name in base-0 base-1 base-2; do
+        "$reader" --identity "$FCAD_CUT_BASE_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0$' "$work/$name-reader.txt"; then
+            echo "error: base Sketch FBX was not independently read: $name" >&2
+            exit 1
+        fi
+    done
+    echo "FCAD_CUT_BASE_UFBX_EXECUTED"
+fi

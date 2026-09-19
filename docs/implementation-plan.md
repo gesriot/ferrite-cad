@@ -3440,3 +3440,21 @@ list and final edit controls were also exercised. Peak footprint 206.22 MiB,
 388 s, exit 0, swap 0. The earlier memory spike's cause is not proved by this
 fix; the original failed run remains recorded. Exact-head remote CI is checked
 separately after publication. Next slice not started.
+
+**§26F — base Sketch coordinates in a circular Cut history.**
+
+The existing coordinate request, UI and copy job accept the original rectangle of
+one validated 1–16 Cut history. One pinned CutHistory catalogue carries typed base
+context; all saved disks stay in absolute XY coordinates and are checked against
+new walls. The general four-object frame and other editors remain unchanged.
+Writer re-derives inside the write transaction; every UUID/reference and every
+SQL cell outside selected payload/hash stays intact. Baseline/edited cold rebuild,
+strict names and Keep publication use the existing job. Action-list scrolling
+keeps the 16-Cut base accessible; failed Open restores the coordinate draft through
+the existing retention mechanism. [Contract/recipe](edit-cut-base-sketch.md),
+[verification and limits](edit-cut-base-sketch-verification.md).
+Independent review fixed loss of typed errors/SQLite causes in coordinate preparation
+and added a required kernel-free regression gate. Fresh native GUI repeated the
+16-Cut edit, Undo/Redo, Save Cancel, publication/Open and distant-tool refusal:
+213.095 MiB peak, exit 0, swap 0; SQL and STL/FBX equal the CLI result.
+Next slice not started; remote head/merge evidence is recorded with publication.

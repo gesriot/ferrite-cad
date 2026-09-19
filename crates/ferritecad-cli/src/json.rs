@@ -106,6 +106,7 @@ struct Sketch {
     sketch_id: ObjectId,
     name: Option<String>,
     vertices: Option<Vec<SketchVertex>>,
+    cut_history: Option<SketchCutHistory>,
     constraint_edit: constraints::Discovery,
     /// Whether this Sketch's analytic circle can be moved or resized, and the
     /// circle itself. Its own answer: `editable`/`vertices` keep meaning what
@@ -119,6 +120,14 @@ struct Sketch {
     editable: bool,
     refusal: Option<String>,
     document_refusal: Option<String>,
+}
+/// Additional coordinate policy for the base of a supported nonempty history.
+#[derive(Serialize)]
+struct SketchCutHistory {
+    body_id: ObjectId,
+    base_feature_id: ObjectId,
+    tools: Vec<ExistingCut>,
+    wall_clearance_mm: f64,
 }
 #[derive(Serialize)]
 struct SketchVertex {
@@ -615,6 +624,12 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 editable: source.refusal.is_none() && s.refusal.is_none(),
                 refusal: s.refusal,
                 document_refusal: source.refusal.clone(),
+                cut_history: s.cut_history.map(|h| SketchCutHistory {
+                    body_id: h.body,
+                    base_feature_id: h.base_feature,
+                    tools: h.tools.iter().map(ExistingCut::from).collect(),
+                    wall_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
+                }),
                 vertices: s.vertices.map(|vs| {
                     vs.into_iter()
                         .map(|v| SketchVertex {

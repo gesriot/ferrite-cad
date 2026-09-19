@@ -404,6 +404,21 @@ impl Editor {
         path: Option<&Path>,
         source: Option<&ExtrudeEditSource>,
     ) {
+        if self.active() {
+            return;
+        }
+        egui::ScrollArea::vertical()
+            .id_salt("saved-sketch-actions")
+            .max_height(180.)
+            .show(ui, |ui| self.draw_choice_rows(ui, can_begin, path, source));
+    }
+    fn draw_choice_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        can_begin: bool,
+        path: Option<&Path>,
+        source: Option<&ExtrudeEditSource>,
+    ) {
         if !self.active() {
             self.constraints.choices(ui, can_begin, path, source);
             self.cuts.choices(ui, can_begin, path, source);
@@ -1003,7 +1018,14 @@ impl Editor {
         } else {
             "Click to add vertices, or enter exact coordinates. Last edge closes to vertex 1."
         });
-        if let Some((request, _)) = &self.editing {
+        if let Some((request, choice)) = &self.editing {
+            if let Some(history) = &choice.cut_history {
+                ui.label(format!(
+                    "Base of {} circular Cuts. Tools stay at their saved XY coordinates.",
+                    history.tools.len()
+                ));
+                ui.small("Keep an axis-aligned rectangle with clearance from every tool. Each vertex moves only when you edit it.");
+            }
             ui.small(format!(
                 "Sketch {} · {}",
                 request.sketch,
@@ -1175,8 +1197,10 @@ pub(crate) fn finish_edit(
     generation: u64,
     result: Result<ferritecad_jobs::EditedSketch>,
 ) -> Option<PathBuf> {
-    if edits.accepts(generation) && result.is_ok() {
-        editor.dismiss();
+    if edits.accepts(generation)
+        && let Ok(saved) = &result
+    {
+        editor.draft_published(&saved.destination);
     }
     edits.finish_sketch(generation, result)
 }
@@ -3428,11 +3452,136 @@ mod tests {
         }
         assert_eq!(bytes[0], bytes[1]);
     }
+    fn document_frame(
+        ctx: &egui::Context,
+        e: &mut Editor,
+        path: &Path,
+        source: &ExtrudeEditSource,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(988., 768.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                ferritecad_ui::toolbar(
+                    ui,
+                    ferritecad_ui::Activity {
+                        can_open: true,
+                        can_export: true,
+                        ..Default::default()
+                    },
+                );
+                e.draw_choices(ui, true, Some(path), Some(source));
+                e.draw(ui, true, false);
+                crate::edits::Edits::default().draw(ui, true, source.unavailable_reason());
+            },
+        );
+        out.textures_delta.clear();
+        out
+    }
+    fn open_base_from_full_document_ui(
+        ctx: &egui::Context,
+        e: &mut Editor,
+        path: &Path,
+        source: &ExtrudeEditSource,
+        id: ferritecad_types::ObjectId,
+    ) {
+        let row = source
+            .sketches
+            .iter()
+            .find(|s| s.sketch == id)
+            .expect("base");
+        let label = format!(
+            "Edit Sketch {} — {}…",
+            row.name.as_deref().unwrap_or("Unnamed"),
+            id
+        );
+        let mut at = None;
+        for step in 0..100 {
+            let events = if step == 0 {
+                Vec::new()
+            } else {
+                vec![
+                    egui::Event::PointerMoved(egui::pos2(400., 200.)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        phase: egui::TouchPhase::Move,
+                        delta: egui::vec2(0., -60.),
+                        modifiers: Default::default(),
+                    },
+                ]
+            };
+            let mut out = document_frame(ctx, e, path, source, events);
+            for _ in 0..30 {
+                out = document_frame(ctx, e, path, source, vec![]);
+            }
+            at = out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t)
+                    if t.galley.text() == label
+                        && s.clip_rect.contains_rect(t.visual_bounding_rect()) =>
+                {
+                    Some(t.visual_bounding_rect().center())
+                }
+                _ => None,
+            });
+            if at.is_some() {
+                break;
+            }
+        }
+        let at = at.expect("16-Cut base action must be reachable in full viewport");
+        document_frame(ctx, e, path, source, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            document_frame(
+                ctx,
+                e,
+                path,
+                source,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                }],
+            );
+        }
+        assert!(e.active(), "base action starts coordinate editor");
+        for _ in 0..3 {
+            document_frame(ctx, e, path, source, vec![]);
+        }
+        let out = document_frame(ctx, e, path, source, vec![]);
+        for label in [
+            "Undo draft",
+            "Redo draft",
+            "Cancel draft",
+            "Save edited copy…",
+            "Blind height mm",
+        ] {
+            let at = text_at(&out, label);
+            assert!(
+                at.x >= 0. && at.x < 988. && at.y >= 0. && at.y < 768.,
+                "off-screen {label}"
+            );
+        }
+    }
     #[test]
     fn native_saved_sketch_draft_and_cli_preserve_same_model() {
         saved_sketch_and_cli(false);
     }
     pub(super) fn saved_sketch_and_cli(drag: bool) {
+        saved_sketch_and_cli_history(drag, 0);
+    }
+    #[test]
+    fn native_cut_base_widgets_worker_cli_preserve_draft() {
+        saved_sketch_and_cli_history(false, 4);
+        saved_sketch_and_cli_history(false, 16);
+    }
+    fn saved_sketch_and_cli_history(drag: bool, cuts: usize) {
         use crate::creates::tests::{ferritecad, read_semantics};
         use ferritecad_document::Document;
         use ferritecad_kernel::OperationContext;
@@ -3444,7 +3593,12 @@ mod tests {
         let root = tempfile::tempdir().expect("directory");
         let source = root.path().join("original.fcad");
         let input = root.path().join("L.json");
-        std::fs::write(&input,r#"{"request_version":1,"points_mm":[[0,0],[60,0],[60,20],[20,20],[20,40],[0,40]],"height_mm":10}"#).expect("input");
+        let json = if cuts == 0 {
+            r#"{"request_version":1,"points_mm":[[0,0],[60,0],[60,20],[20,20],[20,40],[0,40]],"height_mm":10}"#
+        } else {
+            r#"{"request_version":1,"points_mm":[[0,0],[60,0],[60,40],[0,40]],"height_mm":10}"#
+        };
+        std::fs::write(&input, json).expect("input");
         let p = std::process::Command::new(ferritecad())
             .arg("create-sketch-extrude")
             .arg(&input)
@@ -3454,6 +3608,32 @@ mod tests {
             .output()
             .expect("create");
         assert!(p.status.success(), "{p:?}");
+        if cuts > 0 {
+            let mut d = Document::open(&source).expect("doc");
+            let body = ExtrudeEditSource::read(&d).expect("catalog").cut_bodies[0].body;
+            for i in 0..cuts {
+                let slot = (i * 7) % 16;
+                let p = ferritecad_document::prepare_circular_cut(
+                    &d,
+                    body,
+                    &ferritecad_document::CircularCut {
+                        center_mm: [
+                            if i + 1 == cuts {
+                                55.
+                            } else {
+                                6. + (slot % 4) as f64 * 14.
+                            },
+                            5. + (slot / 4) as f64 * 9.,
+                        ],
+                        radius_mm: 1. + (i % 3) as f64 * 0.1,
+                        depth_mm: if i % 2 == 0 { 10. } else { 3. + (i % 4) as f64 },
+                    },
+                )
+                .expect("prepare");
+                d.write_circular_cut(&p).expect("cut");
+            }
+            d.close().expect("close");
+        }
         if drag {
             super::drag_tests::attach_source_claim(&source);
         }
@@ -3474,12 +3654,21 @@ mod tests {
             .expect("accepted scene")
         };
         let reading = loaded.edit_source.expect("accepted edit facts");
-        let id = reading.sketches[0].sketch;
+        let id = reading
+            .sketches
+            .iter()
+            .find(|s| s.refusal.is_none())
+            .expect("editable base")
+            .sketch;
         let mut e = Editor::default();
         assert!(!e.begin_edit(&source, &reading, ferritecad_types::ObjectId::new()));
         assert!(!e.active());
-        assert!(e.begin_edit(&source, &reading, id));
         let ctx = egui::Context::default();
+        if cuts == 16 {
+            open_base_from_full_document_ui(&ctx, &mut e, &source, &reading, id);
+        } else {
+            assert!(e.begin_edit(&source, &reading, id));
+        }
         frame(&ctx, &mut e, vec![]);
         frame(&ctx, &mut e, vec![]);
         // Two distinct saved start vertices have the same X; replace each real
@@ -3497,6 +3686,33 @@ mod tests {
         assert_eq!(e.draft.as_ref().expect("draft").points[2][0], "60");
         let out = frame(&ctx, &mut e, vec![]);
         click(&ctx, &mut e, text_at(&out, "Redo draft"));
+        if cuts > 0 {
+            let valid = e.draft.clone().expect("draft");
+            e.draft.as_mut().expect("draft").points[1][0] = "55.5".into();
+            e.draft.as_mut().expect("draft").points[2][0] = "55.5".into();
+            e.record(valid.clone());
+            let far = e
+                .editing
+                .as_ref()
+                .expect("edit")
+                .1
+                .cut_history
+                .as_ref()
+                .expect("history")
+                .tools
+                .last()
+                .expect("far")
+                .feature;
+            let out = frame(&ctx, &mut e, vec![]);
+            assert!(out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains(&far.to_string()))), "offending Cut is visible");
+            assert_eq!(
+                e.draft.as_ref().expect("retained invalid draft").points[1][0],
+                "55.5"
+            );
+            assert!(e.edit_request().is_err());
+            e.undo();
+            assert_eq!(e.draft, Some(valid));
+        }
         let kept = e.draft.clone();
         let out = frame(&ctx, &mut e, vec![]);
         click(&ctx, &mut e, text_at(&out, "Remove"));
@@ -3568,6 +3784,14 @@ mod tests {
             } else {
                 assert_eq!(path, Some(root.path().join("ui.fcad")));
                 assert!(!e.active());
+                if cuts > 0 {
+                    let path = path.expect("published path");
+                    e.draft_load_finished(&path, false);
+                    assert_eq!(e.draft, kept, "failed async Open restores draft");
+                    e.draft_published(&path);
+                    e.draft_load_finished(&path, true);
+                    assert!(!e.active());
+                }
             }
         }
         // IDs and finite numeric coordinates only; process JSON assertions live
@@ -3605,11 +3829,13 @@ mod tests {
             .expect("peer CLI");
         assert!(p.status.success(), "{p:?}");
         let ui = root.path().join("ui.fcad");
-        assert_eq!(
-            read_semantics(&ui),
-            read_semantics(&cli),
-            "same source: all identities and semantic relationships identical"
-        );
+        if cuts == 0 {
+            assert_eq!(
+                read_semantics(&ui),
+                read_semantics(&cli),
+                "same source: all identities and semantic relationships identical"
+            );
+        } // Cut names may repeat; the complete UUID-keyed objects/refs follow.
         let a = Document::open_read_only(&ui).expect("UI");
         let b = Document::open_read_only(&cli).expect("CLI");
         assert_eq!(a.meta(), b.meta());
@@ -3624,6 +3850,25 @@ mod tests {
         );
         if drag {
             super::drag_tests::verify_publications(&source, &ui, &cli);
+        }
+        if cuts > 0 {
+            for format in ["stl", "fbx"] {
+                let mut exports = Vec::new();
+                for model in [&ui, &cli] {
+                    let output = model.with_extension(format);
+                    let p = std::process::Command::new(ferritecad())
+                        .arg(format!("export-{format}"))
+                        .arg(model)
+                        .arg("-o")
+                        .arg(&output)
+                        .arg("--json")
+                        .output()
+                        .expect("export");
+                    assert!(p.status.success(), "{p:?}");
+                    exports.push(std::fs::read(output).expect("bytes"));
+                }
+                assert_eq!(exports[0], exports[1], "worker and fresh CLI {format}");
+            }
         }
         assert_eq!(std::fs::read(&source).expect("source"), bytes);
         assert_eq!(

@@ -6,7 +6,7 @@ use ferritecad_types::{CadError, ObjectId, Result, StableEntityId, Transform};
 
 use crate::{
     Dependency, DependencyRole, Document, ObjectPayload, ObjectRecord, Point2, PolygonExtrusion,
-    SketchGeometry, SolidOperation, editable_extrude,
+    SavedCutTool, SketchCurve, SketchGeometry, SolidOperation, editable_extrude,
 };
 
 /// The start of this persisted curve; its predecessor's end is the same vertex.
@@ -24,30 +24,90 @@ pub struct SketchChoice {
     /// None for an unsupported sketch, never an invented/reordered contour.
     pub vertices: Option<Vec<SketchVertex>>,
     pub height_mm: Option<f64>,
+    /// Present only for the original rectangle of a validated nonempty Cut history.
+    pub cut_history: Option<SketchCutHistory>,
     pub refusal: Option<String>,
 }
 
+/// Coordinate constraints of a validated base, carried with the pinned catalogue.
+/// Tools remain in absolute XY coordinates; changing the plate never moves them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SketchCutHistory {
+    pub body: ObjectId,
+    pub base_feature: ObjectId,
+    /// All tools in predecessor order, including the final Cut.
+    pub tools: Vec<SavedCutTool>,
+}
+
 pub fn sketch_choices(document: &Document, objects: &[ObjectRecord]) -> Vec<SketchChoice> {
+    let history = crate::cut_edit::saved_history(document, objects).map_err(|e| e.to_string());
+    choices_with_history(document, objects, history.as_ref())
+}
+
+pub(crate) fn choices_with_history(
+    document: &Document,
+    objects: &[ObjectRecord],
+    history: std::result::Result<&crate::cut_edit::CutHistory, &String>,
+) -> Vec<SketchChoice> {
     objects
         .iter()
         .filter(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
-        .map(|o| match supported(document, objects, o, false) {
-            Ok((vertices, height)) => SketchChoice {
-                sketch: o.id,
-                name: o.name.clone(),
-                vertices: Some(vertices),
-                height_mm: Some(height),
-                refusal: None,
-            },
-            Err(error) => SketchChoice {
+        .map(|o| {
+            coordinate_choice(document, objects, o, history).unwrap_or_else(|error| SketchChoice {
                 sketch: o.id,
                 name: o.name.clone(),
                 vertices: None,
                 height_mm: None,
+                cut_history: None,
                 refusal: Some(error.to_string()),
-            },
+            })
         })
         .collect()
+}
+
+fn coordinate_choice(
+    document: &Document,
+    objects: &[ObjectRecord],
+    object: &ObjectRecord,
+    history: std::result::Result<&crate::cut_edit::CutHistory, &String>,
+) -> Result<SketchChoice> {
+    // Standalone polygons keep their complete original contract. Permission for
+    // a history comes only from the validated reader, never an object count.
+    let mut choice = SketchChoice {
+        sketch: object.id,
+        name: object.name.clone(),
+        vertices: None,
+        height_mm: None,
+        cut_history: None,
+        refusal: None,
+    };
+    let checked = (|| {
+        if let Ok(history) = history {
+            let target = &history.target;
+            if !target.tools.is_empty() {
+                if object.id != target.profile {
+                    return Err(unsupported(
+                        "coordinate editing of a Cut history requires its original base Sketch",
+                    ));
+                }
+                let ObjectPayload::Sketch(sketch) = &object.payload else {
+                    return Err(unsupported("selected object is not a Sketch"));
+                };
+                let vertices = lines(sketch, target.height_mm, false)?;
+                choice.cut_history = Some(SketchCutHistory {
+                    body: target.body,
+                    base_feature: target.base_feature,
+                    tools: target.tools.clone(),
+                });
+                return Ok((vertices, target.height_mm));
+            }
+        }
+        supported(document, objects, object, false)
+    })();
+    let (vertices, height) = checked?;
+    choice.vertices = Some(vertices);
+    choice.height_mm = Some(height);
+    Ok(choice)
 }
 
 fn unsupported(message: &str) -> CadError {
@@ -201,8 +261,9 @@ pub fn replace_sketch_coordinates(
         .find(|o| o.id == selected)
         .cloned()
         .ok_or_else(|| CadError::input("selected Sketch UUID does not exist"))?;
-    let (original, height) = supported(document, &objects, &object, false)?;
-    let polygon = validate_coordinates(&original, height, vertices)?;
+    let history = crate::cut_edit::saved_history(document, &objects).map_err(|e| e.to_string());
+    let choice = coordinate_choice(document, &objects, &object, history.as_ref())?;
+    let polygon = choice.validate_coordinates(vertices)?;
     let ObjectPayload::Sketch(sketch) = &mut object.payload else {
         unreachable!("checked Sketch")
     };
@@ -225,9 +286,52 @@ impl SketchChoice {
         let height = self
             .height_mm
             .ok_or_else(|| unsupported("missing extrusion height"))?;
-        validate_coordinates(original, height, vertices)
+        let polygon = validate_coordinates(original, height, vertices)?;
+        if let Some(history) = &self.cut_history {
+            let curves = coordinate_curves(vertices, &polygon);
+            crate::cut_edit::validate_base(&curves, height, &history.tools)?;
+        }
+        Ok(polygon)
     }
 }
+fn coordinate_curves(vertices: &[SketchVertex], polygon: &PolygonExtrusion) -> Vec<SketchCurve> {
+    vertices
+        .iter()
+        .enumerate()
+        .map(|(i, v)| SketchCurve {
+            id: v.curve_id,
+            construction: false,
+            geometry: SketchGeometry::Line {
+                start: polygon.points()[i],
+                end: polygon.points()[(i + 1) % vertices.len()],
+            },
+        })
+        .collect()
+}
+
+/// Extract only the request numbers. Writer re-derivation compares the entire
+/// payload, so changed ends, construction, plane or constraints cannot sneak in.
+pub(crate) fn prepared_vertices(object: &ObjectRecord) -> Result<Vec<SketchVertex>> {
+    let ObjectPayload::Sketch(sketch) = &object.payload else {
+        return Err(CadError::input(
+            "coordinate preparation must contain a Sketch",
+        ));
+    };
+    sketch
+        .curves
+        .iter()
+        .map(|c| {
+            let SketchGeometry::Line { start, .. } = c.geometry else {
+                return Err(CadError::input("coordinate preparation must contain Lines"));
+            };
+            Ok(SketchVertex {
+                curve_id: c.id,
+                start_mm: [start.x, start.y],
+            })
+        })
+        .collect()
+}
+
 fn validate_coordinates(
     original: &[SketchVertex],
     height: f64,

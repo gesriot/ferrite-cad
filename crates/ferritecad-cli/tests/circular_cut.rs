@@ -1059,10 +1059,15 @@ fn native_a_through_hole_and_a_pocket_are_what_the_numbers_say() {
         );
         keep(&fbx, &format!("cut-{name}-cli.fbx"));
 
-        // The document no longer fits the four-object editors, and they say so
-        // rather than editing half a history.
+        // §26F admits only the original Line base; analytic and constraint
+        // editors keep their four-object boundary.
         let after = inspect(&copy);
-        assert_eq!(after["sketches"][0]["editable"], false);
+        for sketch in after["sketches"].as_array().expect("sketches") {
+            assert_eq!(
+                sketch["editable"],
+                sketch["sketch_id"] == f.catalog["sketches"][0]["sketch_id"]
+            );
+        }
         assert!(
             after["sketches"]
                 .as_array()
