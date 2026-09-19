@@ -108,7 +108,6 @@ pub fn edit_sketch_copy<K: GeometryKernel + ?Sized>(
                     request.sketch,
                     &request.vertices,
                 )?,
-                request.vertices.clone(),
             ))
         },
         |_, _| Ok(()),
@@ -427,10 +426,7 @@ enum CopyWrite {
     Cut(Box<ferritecad_document::PreparedCircularCut>),
     /// Boxed for the same reason as the one above it.
     CutParameters(Box<ferritecad_document::PreparedCutParameters>),
-    Coordinates(
-        ferritecad_document::ObjectRecord,
-        Vec<ferritecad_document::SketchVertex>,
-    ),
+    Coordinates(ferritecad_document::ObjectRecord),
     Constraints(ferritecad_document::PreparedSketchConstraints),
     Circle(ferritecad_document::ObjectRecord),
     Annulus(ferritecad_document::ObjectRecord),
@@ -438,7 +434,7 @@ enum CopyWrite {
 impl CopyWrite {
     fn object(&self) -> &ferritecad_document::ObjectRecord {
         match self {
-            Self::Object(o) | Self::Coordinates(o, _) | Self::Circle(o) | Self::Annulus(o) => o,
+            Self::Object(o) | Self::Coordinates(o) | Self::Circle(o) | Self::Annulus(o) => o,
             Self::Constraints(p) => p.object(),
             // The body is the one object a cut changes; the two it adds did
             // not exist to be read.
@@ -523,9 +519,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         Ok(())
     };
     match &prepared {
-        CopyWrite::Coordinates(_, vertices) => {
-            document.write_sketch_coordinates(selected.id, vertices)?
-        }
+        CopyWrite::Coordinates(prepared) => document.write_sketch_geometry(prepared)?,
         CopyWrite::Constraints(p) => document.write_sketch_constraints(p)?,
         CopyWrite::Circle(prepared) => document.write_circle_geometry(prepared)?,
         CopyWrite::Annulus(prepared) => document.write_annulus_geometry(prepared)?,

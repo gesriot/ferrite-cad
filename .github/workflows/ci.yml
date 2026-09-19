@@ -204,6 +204,22 @@ jobs:
           cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee history-writer.log
           if grep -q 'skipped:' history-writer.log || ! grep -Fq "test $gate ... ok" history-writer.log; then exit 1; fi
 
+      - name: Discover and guard base Sketch edits without a kernel
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: '1'
+          CMAKE_BUILD_PARALLEL_LEVEL: '1'
+        run: |
+          set -euo pipefail
+          for gate in sequential::base_sketch::base_discovery_and_writer_forgery_without_kernel \
+            sequential::base_sketch::base_refuses_invalid_history_and_rechecks_current_tools_without_kernel \
+            sequential::base_sketch::coordinate_refusals_preserve_their_error_kind_and_cause
+          do
+            cargo test -p ferritecad-cli --test circular_cut "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee base-sketch-discovery.log
+            if grep -q 'skipped:' base-sketch-discovery.log || ! grep -Fq "test $gate ... ok" base-sketch-discovery.log; then exit 1; fi
+          done
+
       - name: An idle redraw must not schedule another frame
         shell: bash
         run: |

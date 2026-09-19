@@ -528,3 +528,10 @@ Inspect JSON v1 обнаруживает Sketch/curve UUID и координат
 недоступно, правка всех 16 доступна. Add/Edit читают единый bounded-каталог
 с `tools` в порядке history; общий валидатор проверяет все диски.
 [Discovery, nullable singular поля и UI/CLI эквивалентность](circular-cut-history.md).
+
+§26F расширяет прежний `edit-sketch-copy`/Edit Sketch на исходный прямоугольник
+допустимой 1–16 Cut history. Высота и инструменты остаются прежними; координаты
+границ можно расширять, сужать и смещать при строгом зазоре всех дисков.
+Discovery даёт typed `cut_history`, polygon draft и writer используют одну
+проверку. [Контракт/рецепт](edit-cut-base-sketch.md). Остальные профильные editors
+по-прежнему требуют отдельный четырёхобъектный документ.

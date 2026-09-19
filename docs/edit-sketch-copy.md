@@ -16,6 +16,12 @@ ferritecad edit-sketch-copy <source.fcad> --sketch <UUID> --expect-version <toke
 
 ## Поддерживаемая модель и identities
 
+Дополнительно [§26F](edit-cut-base-sketch.md) разрешает координаты исходного
+прямоугольного Line Sketch допустимой истории из 1–16 circular Cut. Инструменты
+остаются в абсолютных XY координатах; каждый проверяется у новых стен. Для такой
+базы discovery добавляет `cut_history`; остальные Sketches получают null.
+Ниже прежний самостоятельный polygon-маршрут (ноль Cut) сохранён целиком.
+
 Ровно четыре корневых объекта: untransformed XY DatumPlane, unconstrained Sketch,
 положительный literal Blind Extrude вдоль +Z с NewBody и один Body с этой tip.
 Три связи — Plane, Profile, BodyTip, с соответствующими UUID. Порядок объектов и

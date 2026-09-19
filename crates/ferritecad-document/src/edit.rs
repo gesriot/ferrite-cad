@@ -94,14 +94,14 @@ impl ExtrudeEditSource {
                 })
             })
             .collect();
-        let (cut_bodies, cut_features) = crate::cut_edit::cut_catalog(document, &objects);
+        let (cut_bodies, cut_features, sketches) = crate::cut_edit::cut_catalog(document, &objects);
         Ok(Self {
             version: DocumentVersion {
                 document_id: document.meta().document_id,
                 content: document.content_version()?,
             },
             features,
-            sketches: crate::sketch_choices(document, &objects),
+            sketches,
             constraint_sketches: crate::constraint_sketch_choices(document, &objects),
             circle_sketches: crate::circle_choices(document, &objects),
             annulus_sketches: crate::annulus_choices(document, &objects),

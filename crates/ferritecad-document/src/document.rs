@@ -683,13 +683,37 @@ impl Document {
         vertices: &[crate::SketchVertex],
     ) -> Result<()> {
         let selected = crate::replace_sketch_coordinates(self, sketch, vertices)?;
-        let bytes = selected.payload.to_storage_bytes()?;
+        self.write_sketch_geometry(&selected)
+    }
+
+    /// Re-derive a prepared coordinate payload inside the transaction that writes it.
+    pub fn write_sketch_geometry(&mut self, prepared: &ObjectRecord) -> Result<()> {
+        let bytes = prepared.payload.to_storage_bytes()?;
         let hash = ContentHash::of_bytes(&bytes);
-        self.write_transaction(
+        self.write_checked_transaction(
+            |document| {
+                let current = document.object(prepared.id)?.ok_or_else(|| {
+                    CadError::input("selected Sketch disappeared before coordinate write")
+                })?;
+                if current.storage_bytes() != prepared.storage_bytes()
+                    || current.parent != prepared.parent
+                    || current.ordinal != prepared.ordinal
+                    || current.name != prepared.name
+                {
+                    return Err(CadError::input(
+                        "Sketch changed after coordinate preparation",
+                    ));
+                }
+                let vertices = crate::sketch_edit::prepared_vertices(prepared)?;
+                let checked = crate::replace_sketch_coordinates(document, prepared.id, &vertices)?;
+                if checked.payload != prepared.payload {
+                    return Err(CadError::input(
+                        "coordinate write may change only ordered Line coordinates",
+                    ));
+                }
+                Ok(())
+            },
             |writer| {
-                // Replacing an object via put_object also clears source claims.
-                // Coordinates do not replace the object or its ownership, so
-                // update exactly the two cells this operation promises to edit.
                 let changed = writer
                     .tx
                     .execute(
@@ -697,7 +721,7 @@ impl Document {
                         params![
                             bytes,
                             hash.as_bytes().as_slice(),
-                            selected.id.to_bytes().as_slice()
+                            prepared.id.to_bytes().as_slice()
                         ],
                     )
                     .map_err(|e| CadError::io("writing Sketch coordinates", e))?;

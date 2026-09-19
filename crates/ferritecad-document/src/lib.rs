@@ -70,7 +70,9 @@ pub use cut_edit::{
     prepare_circular_cut, prepare_cut_parameters,
 };
 pub use polygon::{AnnularExtrusion, CircleExtrusion, PolygonExtrusion};
-pub use sketch_edit::{SketchChoice, SketchVertex, replace_sketch_coordinates, sketch_choices};
+pub use sketch_edit::{
+    SketchChoice, SketchCutHistory, SketchVertex, replace_sketch_coordinates, sketch_choices,
+};
 mod envelope;
 mod graph;
 mod model;

@@ -927,10 +927,13 @@ fn cut_edit_discovery_and_protocol_without_native() {
         json!(s.circles.keys().next().expect("a circle").to_string())
     );
 
-    // The Sketch editors keep answering for themselves and keep refusing: a
-    // one-circle tool sketch is not a document the circle editor edits.
+    // §26F admits the original base coordinates. Other profile editors and
+    // the circular tool's coordinate editor keep refusing this history.
     for sketch in f.catalog["sketches"].as_array().expect("sketches") {
-        assert_eq!(sketch["editable"], json!(false));
+        assert_eq!(
+            sketch["editable"],
+            sketch["sketch_id"] == saved["profile_sketch_id"]
+        );
         assert_eq!(sketch["circle_edit"]["available"], json!(false));
         assert_eq!(sketch["annulus_edit"]["available"], json!(false));
         assert_eq!(sketch["constraint_edit"]["available"], json!(false));

@@ -91,6 +91,16 @@ fn measure(path: &Path, tools: [CircularCut; 2], cache: Option<[CacheOutcome; 3]
 }
 
 fn measure_history(path: &Path, tools: &[CircularCut], cache: Option<&[CacheOutcome]>) -> f64 {
+    measure_history_in(path, tools, [[0., 0.], [SIZE[0], SIZE[1]]], cache)
+}
+
+fn measure_history_in(
+    path: &Path,
+    tools: &[CircularCut],
+    bounds: [[f64; 2]; 2],
+    cache: Option<&[CacheOutcome]>,
+) -> f64 {
+    let plate_volume = (bounds[1][0] - bounds[0][0]) * (bounds[1][1] - bounds[0][1]) * SIZE[2];
     let d = Document::open_read_only(path).expect("reopen");
     assert!(d.validate().expect("validate").is_ok());
     let (body, last) = tip(&d);
@@ -156,7 +166,7 @@ fn measure_history(path: &Path, tools: &[CircularCut], cache: Option<&[CacheOutc
     let (count, volume) = kernel.shape_stats(final_shape).expect("stats");
     let floors = tools.iter().filter(|t| t.depth_mm < SIZE[2]).count();
     assert_eq!(count, 6 + tools.len() as u64 + floors as u64);
-    let exact = SIZE.iter().product::<f64>()
+    let exact = plate_volume
         - tools
             .iter()
             .map(|t| PI * t.radius_mm.powi(2) * t.depth_mm)
@@ -170,7 +180,7 @@ fn measure_history(path: &Path, tools: &[CircularCut], cache: Option<&[CacheOutc
             .shape_stats(built.shape(feature).expect("historical shape"))
             .expect("stats");
         let prior = &tools[..index];
-        let exact = SIZE.iter().product::<f64>()
+        let exact = plate_volume
             - prior
                 .iter()
                 .map(|t| PI * t.radius_mm.powi(2) * t.depth_mm)
@@ -292,7 +302,7 @@ fn measure_history(path: &Path, tools: &[CircularCut], cache: Option<&[CacheOutc
                         .all(|p| (p[axis] - coord).abs() < ROUNDING_MM),
                     "outer wall changed meaning"
                 );
-                let sign = if coord == 0. { -1. } else { 1. };
+                let sign = if coord == bounds[0][axis] { -1. } else { 1. };
                 assert!(normals.iter().all(|n| n[axis] * sign > 0.99));
             }
         } else {
@@ -749,6 +759,11 @@ fn check_two_mesh(m: &Mesh, tools: [CircularCut; 2]) {
 }
 
 fn check_history_mesh(m: &Mesh, tools: &[CircularCut]) {
+    check_history_mesh_in(m, tools, [[0., 0.], [SIZE[0], SIZE[1]]]);
+}
+
+fn check_history_mesh_in(m: &Mesh, tools: &[CircularCut], bounds: [[f64; 2]; 2]) {
+    let plate_volume = (bounds[1][0] - bounds[0][0]) * (bounds[1][1] - bounds[0][1]) * SIZE[2];
     // Closed and wound one way.
     let quantise = |v: [f64; 3]| {
         let q = |x: f64| (x * 1e4).round() as i64;
@@ -854,15 +869,17 @@ fn check_history_mesh(m: &Mesh, tools: &[CircularCut]) {
             assert!(open_at_top, "a through hole is open at the far side");
         }
     }
-    for (axis, size) in SIZE.iter().enumerate() {
-        assert!(m.lo[axis].abs() < ROUNDING_MM && (m.hi[axis] - size).abs() < ROUNDING_MM);
+    let expected_lo = [bounds[0][0], bounds[0][1], 0.];
+    let expected_hi = [bounds[1][0], bounds[1][1], SIZE[2]];
+    for (axis, (low, high)) in expected_lo.into_iter().zip(expected_hi).enumerate() {
+        assert!((m.lo[axis] - low).abs() < ROUNDING_MM && (m.hi[axis] - high).abs() < ROUNDING_MM);
     }
-    let exact = SIZE.iter().product::<f64>()
+    let exact = plate_volume
         - tools
             .iter()
             .map(|t| PI * t.radius_mm.powi(2) * t.depth_mm)
             .sum::<f64>();
-    let upper = SIZE.iter().product::<f64>()
+    let upper = plate_volume
         - tools
             .iter()
             .map(|t| PI * (t.radius_mm - LINEAR_MM).powi(2) * t.depth_mm)
@@ -938,3 +955,6 @@ mod edits;
 
 #[path = "circular_cut_history.rs"]
 mod history;
+
+#[path = "edit_cut_base_sketch.rs"]
+mod base_sketch;

@@ -55,6 +55,9 @@ one Apply per step, draft on Cancel/failure/stale completion/failed async Open.
 Verification and executed recipe will be recorded separately; prior CI is
 evidence of the base only, not evidence for this uncommitted diff.
 
+Base rectangle coordinate editing is added by [§26F](edit-cut-base-sketch.md),
+using the same validated catalogue and unchanged Cut policy.
+
 ## Executable agent recipe
 
 Set `FERRITECAD` to the fresh CLI and `FCAD_UFBX_READER` to the pinned

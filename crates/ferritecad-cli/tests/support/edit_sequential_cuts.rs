@@ -404,7 +404,6 @@ pub(super) fn history_refusals(count: usize) {
     if !native() {
         return;
     }
-    use ferritecad_kernel::{CancelToken, ProgressSink};
     for index in if count == 2 {
         vec![0, 1]
     } else {
@@ -514,57 +513,13 @@ pub(super) fn history_refusals(count: usize) {
                 depth_mm: 3.,
             },
         };
-        let files = entries(root.path());
-        for progress in [0.1, 0.4, 0.95] {
-            let cancel = CancelToken::new();
-            let signal = cancel.clone();
-            let reached = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let mark = reached.clone();
-            let context = OperationContext::default()
-                .with_cancel(cancel)
-                .with_progress(ProgressSink::new(move |p| {
-                    if p >= progress {
-                        mark.store(true, std::sync::atomic::Ordering::SeqCst);
-                        signal.cancel();
-                    }
-                }));
-            let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
-            assert_eq!(
-                edit_circular_cut_copy(&request, &mut kernel, &context)
-                    .expect_err("cancel")
-                    .kind(),
-                ferritecad_types::ErrorKind::Cancellation
-            );
-            assert!(reached.load(std::sync::atomic::Ordering::SeqCst));
-            assert_eq!(kernel.live_shape_count(), 0);
-            assert_eq!(entries(root.path()), files);
-            assert_eq!(std::fs::read(&source).expect("bytes"), original);
-        }
-        let path = source.clone();
-        let reached = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mark = reached.clone();
-        let context = OperationContext::default().with_progress(ProgressSink::new(move |p| {
-            if p >= 0.95 && !mark.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                rusqlite::Connection::open(&path)
-                    .expect("SQL")
-                    .execute(
-                        "UPDATE objects SET name='late change' WHERE kind='body'",
-                        [],
-                    )
-                    .expect("change");
-            }
-        }));
-        let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
-        assert!(
-            edit_circular_cut_copy(&request, &mut kernel, &context)
-                .expect_err("late version")
-                .to_string()
-                .contains("source has changed")
+        copy_late_guards(
+            root.path(),
+            &source,
+            &original,
+            &never,
+            |kernel, context| edit_circular_cut_copy(&request, kernel, context).map(|_| ()),
         );
-        assert!(reached.load(std::sync::atomic::Ordering::SeqCst));
-        assert_eq!(kernel.live_shape_count(), 0);
-        assert_eq!(entries(root.path()), files);
-        assert!(!never.exists());
         // A stale CLI request is a separate early-guard assertion.
         let command = edit_command(&source, &never, &saved, tools[index]);
         let mut args = command
@@ -596,4 +551,67 @@ fn occt_without_solver_edits_both_history_links() {
         edit(&source, &copy, &selected(&source, index), changed[index], 0);
         measure(&copy, changed, None);
     }
+}
+
+/// Exercise the actual shared copier at each late phase with the caller's geometry.
+pub(super) fn copy_late_guards(
+    root: &Path,
+    source: &Path,
+    original: &[u8],
+    never: &Path,
+    mut run: impl FnMut(
+        &mut ferritecad_occt::OcctKernel,
+        &OperationContext,
+    ) -> ferritecad_types::Result<()>,
+) {
+    use ferritecad_kernel::{CancelToken, ProgressSink};
+    let files = entries(root);
+    for progress in [0.1, 0.4, 0.95] {
+        let cancel = CancelToken::new();
+        let signal = cancel.clone();
+        let reached = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mark = reached.clone();
+        let context = OperationContext::default()
+            .with_cancel(cancel)
+            .with_progress(ProgressSink::new(move |p| {
+                if p >= progress {
+                    mark.store(true, std::sync::atomic::Ordering::SeqCst);
+                    signal.cancel();
+                }
+            }));
+        let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+        assert_eq!(
+            run(&mut kernel, &context).expect_err("cancel").kind(),
+            ferritecad_types::ErrorKind::Cancellation
+        );
+        assert!(reached.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(kernel.live_shape_count(), 0);
+        assert_eq!(entries(root), files);
+        assert_eq!(std::fs::read(source).expect("bytes"), original);
+    }
+    let path = source.to_path_buf();
+    let reached = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mark = reached.clone();
+    let context = OperationContext::default().with_progress(ProgressSink::new(move |p| {
+        if p >= 0.95 && !mark.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            rusqlite::Connection::open(&path)
+                .expect("SQL")
+                .execute(
+                    "UPDATE objects SET name='late change' WHERE kind='body'",
+                    [],
+                )
+                .expect("change");
+        }
+    }));
+    let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+    assert!(
+        run(&mut kernel, &context)
+            .expect_err("late version")
+            .to_string()
+            .contains("source has changed")
+    );
+    assert!(reached.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(kernel.live_shape_count(), 0);
+    assert_eq!(entries(root), files);
+    assert!(!never.exists());
 }

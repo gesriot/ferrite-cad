@@ -64,7 +64,14 @@ hex-символа. Не вычисляйте токен самостоятел�
 Версия JSON-контракта, версия схемы `.fcad` и версия алгоритма content hash —
 разные понятия. После обновления алгоритма получите токен новым inspect.
 
-## Правка сохранённого Sketch (§25B)
+## Правка сохранённого Sketch (§25B, §26F)
+
+`sketches[].cut_history` — null для самостоятельного/неподдерживаемого Sketch;
+для базы допустимой 1–16 Cut history — объект `{body_id, base_feature_id, tools,
+wall_clearance_mm}`. `tools` имеет прежние поля tool DTO и порядок history;
+координаты абсолютные, глубина/радиус остаются прежними. Контекст задаёт проверку
+новых стен, не новый запрос. [Точный контракт](edit-cut-base-sketch.md).
+
 
 Девятая opt-in команда `edit-sketch-copy`: result `destination:string`,
 `document_id:UUIDv7`, `sketch_id:UUIDv7`, все обязательны. Exit 0/2/7 и прежний

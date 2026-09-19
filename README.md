@@ -111,6 +111,12 @@ What the window can do, what the command line can do, and which library actually
 owns the work — including recipes with expected exit codes — is documented in
 [`docs/cli-capabilities.md`](docs/cli-capabilities.md).
 
+The same `Edit Sketch` / `edit-sketch-copy` can also resize or shift the original
+rectangular base of a supported 1–16 circular Cut history. Hole centres, radii
+and depths stay fixed; every disk must clear the new boundaries.
+[Contract and runnable recipe](docs/edit-cut-base-sketch.md).
+
+
 The opt-in `create --json`, `inspect --json`, `edit-extrude --json`,
 `export-stl --json`, `export-fbx --json`, `import-step --json` and
 `validate --json` commands expose a versioned contract
