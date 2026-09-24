@@ -3386,6 +3386,29 @@ mod tests {
         forged.edit.extent = CutExtent::Blind { depth_mm: 10. };
         d.write_cut_parameters(&forged)
             .expect_err("vocabulary forged");
+
+        // Only the vocabulary forged: a legitimate ThroughAll -> Blind edit
+        // relabelled as request v1, which could never have said it.
+        let legit = prepare_cut_parameters(
+            &d,
+            feature,
+            &CircularCutEdit {
+                extent: CutExtent::Blind { depth_mm: 10. },
+                ..through(&now)
+            },
+        )
+        .expect("v2 may leave ThroughAll");
+        let mut relabelled = legit.clone();
+        relabelled.edit.vocabulary = ExtentVocabulary::BlindOnly;
+        let before = d.content_version().expect("version");
+        d.write_cut_parameters(&relabelled)
+            .expect_err("a v1 label on a ThroughAll edit");
+        assert_eq!(
+            d.content_version().expect("version"),
+            before,
+            "nothing written"
+        );
+        d.write_cut_parameters(&legit).expect("the honest edit");
     }
 
     #[test]

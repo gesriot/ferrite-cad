@@ -354,7 +354,9 @@ for count in (1, 2, 4, 16):
     if any(t[2] == THROUGH for t in tools):
         v1 = catalog(src)
         assert v1["bodies"][0]["cut_edit"]["target"] is None
-        assert "cut_edit_v2" in v1["bodies"][0]["cut_edit"]["refusal"]
+        cuts = [f["circular_cut_edit"] for f in v1["features"] if f["circular_cut_edit_v2"]["saved"]]
+        assert len(cuts) == count and all(c["saved"] is None for c in cuts)
+        assert all("circular_cut_edit_v2" in c["refusal"] for c in cuts)
     measure(src, tools, H0)
     # Height grows: ThroughAll stays through, Blind(12) becomes a pocket.
     grown = root / f"h{count}-grown.fcad"
