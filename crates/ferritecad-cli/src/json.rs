@@ -294,18 +294,22 @@ impl From<&ferritecad_document::SavedCutTool> for ExistingCut {
 }
 
 /// The end of a circular Cut on the wire: request v2, discovery and results.
+///
+/// `ThroughAll {}` rather than a unit variant: serde lets a unit variant of an
+/// internally tagged enum ignore extra fields, so `{"kind":"through_all",
+/// "depth_mm":4}` would be accepted with its depth silently dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Extent {
     Blind { depth_mm: f64 },
-    ThroughAll,
+    ThroughAll {},
 }
 
 impl From<Extent> for ferritecad_document::CutExtent {
     fn from(e: Extent) -> Self {
         match e {
             Extent::Blind { depth_mm } => Self::Blind { depth_mm },
-            Extent::ThroughAll => Self::ThroughAll,
+            Extent::ThroughAll {} => Self::ThroughAll,
         }
     }
 }
@@ -314,7 +318,7 @@ impl From<ferritecad_document::CutExtent> for Extent {
     fn from(e: ferritecad_document::CutExtent) -> Self {
         match e {
             ferritecad_document::CutExtent::Blind { depth_mm } => Self::Blind { depth_mm },
-            ferritecad_document::CutExtent::ThroughAll => Self::ThroughAll,
+            ferritecad_document::CutExtent::ThroughAll => Self::ThroughAll {},
         }
     }
 }
@@ -823,4 +827,34 @@ fn emit_outcome<T: Serialize>(
         return ExitCode::from(EXIT_REPORT_DELIVERY);
     }
     exit
+}
+
+#[cfg(test)]
+mod extent_tests {
+    use super::Extent;
+
+    #[test]
+    fn a_cut_extent_is_strict_in_both_kinds() {
+        for (text, expected) in [
+            (r#"{"kind":"through_all"}"#, Some(Extent::ThroughAll {})),
+            (
+                r#"{"kind":"blind","depth_mm":4.5}"#,
+                Some(Extent::Blind { depth_mm: 4.5 }),
+            ),
+            (r#"{"kind":"through_all","depth_mm":4}"#, None),
+            (r#"{"kind":"blind","depth_mm":4,"x":1}"#, None),
+            (r#"{"kind":"blind"}"#, None),
+            (r#"{"kind":"through"}"#, None),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<Extent>(text).ok(),
+                expected,
+                "{text}"
+            );
+        }
+        assert_eq!(
+            serde_json::to_string(&Extent::ThroughAll {}).expect("json"),
+            r#"{"kind":"through_all"}"#
+        );
+    }
 }
