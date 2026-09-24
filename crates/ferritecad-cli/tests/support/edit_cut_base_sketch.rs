@@ -9,7 +9,7 @@ const EXPANDED: [[f64; 2]; 2] = [[-4., -3.], [86., 56.]];
 
 /// Name all six native base faces as well as all historical carried/origin faces.
 /// The two-Cut case stores the opposite winding, without changing curve identity.
-fn measured_fixture(root: &Path, tools: &[CircularCut]) -> PathBuf {
+pub(super) fn measured_fixture(root: &Path, tools: &[CircularCut]) -> PathBuf {
     let path = history::fixture(root, tools);
     let caps = tables(&path)["capabilities"].clone();
     let mut d = Document::open(&path).expect("doc");

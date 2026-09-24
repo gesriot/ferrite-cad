@@ -101,7 +101,7 @@ pub struct CircularCut {
 /// One validated model per snapshot, shared by add and edit discovery.
 pub(crate) struct CutHistory {
     pub(crate) target: SavedCutTarget,
-    cuts: Vec<SavedCircularCut>,
+    pub(crate) cuts: Vec<SavedCircularCut>,
 }
 
 impl CutHistory {
@@ -118,14 +118,14 @@ impl CutHistory {
     }
 }
 
-pub(crate) fn cut_catalog(
-    document: &Document,
-    objects: &[ObjectRecord],
-) -> (
-    Vec<CutChoice>,
-    Vec<CutParameterChoice>,
-    Vec<crate::SketchChoice>,
-) {
+pub(crate) struct CutCatalog {
+    pub bodies: Vec<CutChoice>,
+    pub features: Vec<CutParameterChoice>,
+    pub sketches: Vec<crate::SketchChoice>,
+    pub height: std::result::Result<Option<crate::BaseHeightContext>, String>,
+}
+
+pub(crate) fn cut_catalog(document: &Document, objects: &[ObjectRecord]) -> CutCatalog {
     let history = saved_history(document, objects).map_err(|e| e.to_string());
     let bodies = objects
         .iter()
@@ -169,11 +169,28 @@ pub(crate) fn cut_catalog(
         })
         .collect();
     let sketches = crate::sketch_edit::choices_with_history(document, objects, history.as_ref());
-    (bodies, features, sketches)
+    let height = crate::height_edit::has_history(document, objects)
+        .map_err(|e| e.to_string())
+        .and_then(|present| {
+            if present {
+                history
+                    .as_ref()
+                    .map(|h| Some(h.height_context()))
+                    .map_err(Clone::clone)
+            } else {
+                Ok(None)
+            }
+        });
+    CutCatalog {
+        bodies,
+        features,
+        sketches,
+        height,
+    }
 }
 
 pub fn cut_choices(document: &Document, objects: &[ObjectRecord]) -> Vec<CutChoice> {
-    cut_catalog(document, objects).0
+    cut_catalog(document, objects).bodies
 }
 
 pub(crate) fn supported(
@@ -320,7 +337,7 @@ fn validate_disks(cut: &CircularCut, other: &SavedCutTool) -> Result<()> {
 }
 
 /// The one numeric rule, applied to a request against the saved part.
-fn validate(
+pub(crate) fn validate(
     height_mm: f64,
     extents_mm: [[f64; 2]; 2],
     cut: &CircularCut,
@@ -889,7 +906,7 @@ pub struct CircularCutEdit {
 /// What an accepted edit does to the saved names, stated before anything is
 /// written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Transition {
+pub(crate) enum Transition {
     /// The cut keeps the floor it had, or keeps having none.
     Kept,
     /// A cut that ran through the part now stops inside it, so it gains a
@@ -901,7 +918,7 @@ pub fn cut_parameter_choices(
     document: &Document,
     objects: &[ObjectRecord],
 ) -> Vec<CutParameterChoice> {
-    cut_catalog(document, objects).1
+    cut_catalog(document, objects).features
 }
 
 impl CutParameterChoice {
@@ -1301,22 +1318,63 @@ fn transition(saved: &SavedCircularCut, edit: &CircularCutEdit) -> Result<Transi
             other,
         )?;
     }
-    let protected = saved
-        .protected_floor_references
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(", ");
-    match (saved.floor_reference, saved.floor_at(edit.depth_mm)) {
-        (Some(_), true) | (None, false) => Ok(Transition::Kept),
-        (None, true) => Ok(Transition::FloorAppears),
-        (Some(_), false) => Err(unsupported(format!(
-            "a depth of {} mm would cut this pocket through a part {} mm tall, and the saved \
-             references [{protected}] name the pocket floor that would stop existing; this slice does \
-             not delete saved references or move them to another face",
-            edit.depth_mm, saved.height_mm
-        ))),
+    floor_transition(
+        saved.feature,
+        &saved.protected_floor_references,
+        edit.depth_mm,
+        saved.height_mm,
+    )
+}
+
+/// Shared by changes to the tool depth and changes to the plate height.
+pub(crate) fn floor_transition(
+    feature: ObjectId,
+    protected: &[StableEntityId],
+    depth_mm: f64,
+    height_mm: f64,
+) -> Result<Transition> {
+    let floor = depth_mm < height_mm;
+    match (protected.is_empty(), floor) {
+        (false, true) | (true, false) => Ok(Transition::Kept),
+        (true, true) => Ok(Transition::FloorAppears),
+        (false, false) => {
+            let protected = protected
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(unsupported(format!(
+                "Cut {feature}: a depth of {depth_mm} mm in a part {height_mm} mm tall would remove the pocket floor; saved references [{protected}] cannot be deleted or moved to another face"
+            )))
+        }
     }
+}
+
+/// One own floor and one origin name at each later producer, in history order.
+pub(crate) fn added_floor_references(
+    feature: ObjectId,
+    tools: &[SavedCutTool],
+) -> Vec<TopologyRef> {
+    tools
+        .iter()
+        .skip_while(|t| t.feature != feature)
+        .map(|t| TopologyRef {
+            id: StableEntityId::new(),
+            owner: t.feature,
+            producer_feature: t.feature,
+            expected_kind: EntityKind::Face,
+            output_role: if t.feature == feature {
+                SemanticRole::ExtrudeCap { side: CapSide::End }
+            } else {
+                SemanticRole::OriginCap {
+                    origin_feature: feature,
+                    side: CapSide::End,
+                }
+            },
+            selection: SelectionRule::Exact,
+            fallback_signature: None,
+        })
+        .collect()
 }
 
 /// Everything one accepted parameter edit rewrites, prepared before anything
@@ -1399,40 +1457,10 @@ pub fn prepare_cut_parameters(
         distance: Expression::constant(edit.depth_mm)?,
     };
 
-    let mut added_references = match moved {
+    let added_references = match moved {
         Transition::Kept => Vec::new(),
-        Transition::FloorAppears => vec![TopologyRef {
-            id: StableEntityId::new(),
-            owner: saved.feature,
-            producer_feature: saved.feature,
-            expected_kind: EntityKind::Face,
-            output_role: SemanticRole::ExtrudeCap { side: CapSide::End },
-            selection: SelectionRule::Exact,
-            fallback_signature: None,
-        }],
+        Transition::FloorAppears => added_floor_references(saved.feature, &saved.tools),
     };
-
-    if moved == Transition::FloorAppears {
-        for descendant in saved
-            .tools
-            .iter()
-            .skip_while(|t| t.feature != saved.feature)
-            .skip(1)
-        {
-            added_references.push(TopologyRef {
-                id: StableEntityId::new(),
-                owner: descendant.feature,
-                producer_feature: descendant.feature,
-                expected_kind: EntityKind::Face,
-                output_role: SemanticRole::OriginCap {
-                    origin_feature: saved.feature,
-                    side: CapSide::End,
-                },
-                selection: SelectionRule::Exact,
-                fallback_signature: None,
-            });
-        }
-    }
 
     Ok(PreparedCutParameters {
         tool_sketch: tool,
@@ -2899,5 +2927,142 @@ mod tests {
         }
         assert!(catalog.cut_bodies[0].target.is_none());
         drop(root);
+    }
+    fn height_fixture(n: usize) -> (tempfile::TempDir, Document, ObjectId) {
+        let (root, mut d, body) = plate([[0., 0.], [80., 0.], [80., 50.], [0., 50.]], 12.);
+        for i in 0..n {
+            let slot = i * 7 % 16;
+            let p = prepare_circular_cut(
+                &d,
+                body,
+                &CircularCut {
+                    center_mm: [10. + (slot % 4) as f64 * 19., 7. + (slot / 4) as f64 * 12.],
+                    radius_mm: 1.5 + (i % 5) as f64 * 0.25,
+                    depth_mm: if i % 2 == 0 { 12. } else { 3. + (i % 7) as f64 },
+                },
+            )
+            .expect("cut");
+            d.write_circular_cut(&p).expect("write cut");
+        }
+        let base = saved_history(&d, &d.objects().expect("objects"))
+            .expect("history")
+            .target
+            .base_feature;
+        (root, d, base)
+    }
+
+    #[test]
+    fn base_height_writer_rederives_payload_and_all_floor_names() {
+        let (_root, mut d, base) = height_fixture(4);
+        let original = d.content_version().expect("version");
+        let p = crate::prepare_extrude_height(&d, base, 14.).expect("height");
+        assert_eq!(
+            p.added_references.len(),
+            6,
+            "all new own and descendant floors"
+        );
+        let old = d.topology_refs().expect("old refs");
+        for mode in 0..13 {
+            let mut forged = p.clone();
+            match mode {
+                0 => {
+                    forged.added_references.pop();
+                }
+                1 => forged.added_references[0].owner = ObjectId::new(),
+                2 => forged.added_references[1].producer_feature = base,
+                3 => {
+                    forged.added_references[1].output_role = SemanticRole::ExtrudeCap {
+                        side: CapSide::Start,
+                    }
+                }
+                4 => forged.added_references[0].id = old[0].id,
+                5 => {
+                    forged.added_references[0].id =
+                        StableEntityId::from_bytes(base.to_bytes()).expect("object bytes")
+                }
+                6 => {
+                    forged.added_references[0].id =
+                        p.history.as_ref().expect("history").tools[0].tool_curve
+                }
+                7 => forged.added_references[1].id = forged.added_references[0].id,
+                8 => forged.history = None,
+                9 => {
+                    if let ObjectPayload::Extrude(e) = &mut forged.feature.payload {
+                        e.reversed = true;
+                    }
+                }
+                10 => forged.feature.name = Some("forged".into()),
+                11 => {
+                    if let ObjectPayload::Extrude(e) = &mut forged.feature.payload {
+                        e.profile = ObjectId::new();
+                    }
+                }
+                12 => {
+                    if let ObjectPayload::Extrude(e) = &mut forged.feature.payload {
+                        e.end_condition = EndCondition::Blind {
+                            distance: Expression::new("14+0", 14.).expect("expression"),
+                        };
+                    }
+                }
+                _ => unreachable!(),
+            }
+            d.write_extrude_height(&forged)
+                .expect_err("forged height must be rederived");
+            assert_eq!(
+                d.content_version().expect("version"),
+                original,
+                "atomic forgery {mode}"
+            );
+        }
+        d.write_extrude_height(&p).expect("valid height");
+        let history =
+            saved_history(&d, &d.objects().expect("objects")).expect("catalogue remains supported");
+        assert!(history.cuts.iter().all(|c| c.floor_reference.is_some()));
+        for r in &old {
+            assert!(d.topology_refs().expect("refs").contains(r));
+        }
+        let error = crate::prepare_extrude_height(&d, base, 12.)
+            .expect_err("protected floor")
+            .to_string();
+        assert!(error.contains(&history.cuts[0].feature.to_string()));
+        for id in &history.cuts[0].protected_floor_references {
+            assert!(error.contains(&id.to_string()));
+        }
+        let same = crate::prepare_extrude_height(&d, base, 15.).expect("pocket to pocket");
+        assert!(same.added_references.is_empty());
+    }
+
+    #[test]
+    fn base_height_refuses_current_history_changes_and_preserves_typed_errors() {
+        use std::error::Error;
+        let (_root, mut d, base) = height_fixture(16);
+        let mut p = crate::prepare_extrude_height(&d, base, 14.).expect("prepare");
+        let tool = p.history.as_ref().expect("history").tools[8].clone();
+        let changed = prepare_cut_parameters(
+            &d,
+            tool.feature,
+            &CircularCutEdit {
+                tool_curve: tool.tool_curve,
+                center_mm: tool.center_mm,
+                radius_mm: tool.radius_mm,
+                depth_mm: 5.,
+            },
+        )
+        .expect("edit far tool");
+        d.write_cut_parameters(&changed).expect("write far tool");
+        let current = d.content_version().expect("version");
+        d.write_extrude_height(&p)
+            .expect_err("stale tools despite unchanged base");
+        // Even a caller replacing the version token cannot substitute old floor facts.
+        p.source_version = current;
+        d.write_extrude_height(&p)
+            .expect_err("current full history rederived");
+        assert_eq!(d.content_version().expect("unchanged"), current);
+        let sql = rusqlite::Connection::open(d.path()).expect("SQL");
+        sql.execute_batch("ALTER TABLE deps RENAME TO unreadable_deps")
+            .expect("damage dependencies");
+        let error = crate::prepare_extrude_height(&d, base, 14.).expect_err("typed read error");
+        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Io);
+        assert!(error.source().is_some(), "SQLite cause survives");
     }
 }

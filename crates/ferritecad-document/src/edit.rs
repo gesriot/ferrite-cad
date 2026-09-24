@@ -20,6 +20,7 @@ pub struct ExtrudeChoice {
     pub feature: ObjectId,
     pub name: Option<String>,
     pub distance_mm: Option<f64>,
+    pub cut_history: Option<crate::BaseHeightContext>,
     pub refusal: Option<String>,
 }
 
@@ -67,6 +68,12 @@ impl ExtrudeEditSource {
         // unreadable dependencies must not cause another query per feature.
         let parameterized = LazyCell::new(load);
         let objects = document.objects()?;
+        let crate::cut_edit::CutCatalog {
+            bodies: cut_bodies,
+            features: cut_features,
+            sketches,
+            height,
+        } = crate::cut_edit::cut_catalog(document, &objects);
         let features = objects
             .iter()
             .filter_map(|object| {
@@ -83,6 +90,8 @@ impl ExtrudeEditSource {
                     feature: object.id,
                     name: object.name.clone(),
                     distance_mm,
+                    cut_history: height.as_ref().ok().and_then(|h| h.as_ref())
+                        .filter(|h| h.base_feature == object.id).cloned(),
                     refusal: blind_literal_distance(object)
                         .map_err(|e| e.to_string())
                         .and_then(|distance| {
@@ -90,11 +99,17 @@ impl ExtrudeEditSource {
                             without_parameter_dependency(distance, set.contains(&object.id))
                                 .map_err(|e| e.to_string())
                         })
+                        .and_then(|_| {
+                            let context = height.as_ref().map_err(Clone::clone)?;
+                            if context.as_ref().is_some_and(|h| h.base_feature != object.id) {
+                                return Err("unsupported: select the original base Extrude of the Cut history".to_owned());
+                            }
+                            Ok(())
+                        })
                         .err(),
                 })
             })
             .collect();
-        let (cut_bodies, cut_features, sketches) = crate::cut_edit::cut_catalog(document, &objects);
         Ok(Self {
             version: DocumentVersion {
                 document_id: document.meta().document_id,
@@ -794,6 +809,7 @@ mod tests {
                 };
                 Some(ExtrudeChoice {
                     feature: object.id,
+                    cut_history: None,
                     name: object.name.clone(),
                     distance_mm,
                     refusal: editable_extrude(document, object)

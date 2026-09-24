@@ -116,6 +116,11 @@ rectangular base of a supported 1–16 circular Cut history. Hole centres, radii
 and depths stay fixed; every disk must clear the new boundaries.
 [Contract and runnable recipe](docs/edit-cut-base-sketch.md).
 
+`Edit extrusion` / `edit-extrude` can change that history's base thickness while
+keeping Cut depths absolute. A thicker plate names every new pocket floor;
+removing a saved floor or exceeding the new thickness is refused with UUIDs.
+[Height policy and executable recipe](docs/edit-cut-base-height.md).
+
 
 The opt-in `create --json`, `inspect --json`, `edit-extrude --json`,
 `export-stl --json`, `export-fbx --json`, `import-step --json` and

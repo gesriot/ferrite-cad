@@ -220,6 +220,25 @@ jobs:
             if grep -q 'skipped:' base-sketch-discovery.log || ! grep -Fq "test $gate ... ok" base-sketch-discovery.log; then exit 1; fi
           done
 
+      - name: Guard base height edits without a kernel
+        shell: bash
+        env:
+          CARGO_BUILD_JOBS: '1'
+          CMAKE_BUILD_PARALLEL_LEVEL: '1'
+        run: |
+          set -euo pipefail
+          gate=sequential::base_height::height_discovery_and_structural_refusals_without_kernel
+          cargo test -p ferritecad-cli --test circular_cut "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee base-height-discovery.log
+          if grep -q 'skipped:' base-height-discovery.log || ! grep -Fq "test $gate ... ok" base-height-discovery.log; then exit 1; fi
+          for gate in cut_edit::tests::base_height_writer_rederives_payload_and_all_floor_names \
+            cut_edit::tests::base_height_refuses_current_history_changes_and_preserves_typed_errors
+          do
+            cargo test -p ferritecad-document --lib "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee base-height-writer.log
+            if grep -q 'skipped:' base-height-writer.log || ! grep -Fq "test $gate ... ok" base-height-writer.log; then exit 1; fi
+          done
+
       - name: An idle redraw must not schedule another frame
         shell: bash
         run: |

@@ -3458,3 +3458,26 @@ and added a required kernel-free regression gate. Fresh native GUI repeated the
 16-Cut edit, Undo/Redo, Save Cancel, publication/Open and distant-tool refusal:
 213.095 MiB peak, exit 0, swap 0; SQL and STL/FBX equal the CLI result.
 Next slice not started; remote head/merge evidence is recorded with publication.
+
+**§26G — safe base height editing in a circular Cut history.**
+
+The existing Edit extrusion / `edit-extrude` changes the original Blind height
+of a validated 1–16 Cut history. One CutHistory catalogue supplies typed height
+context; unsupported/damaged histories cannot use the standalone path. Absolute
+tool depths stay fixed. The shared Cut floor policy adds own/descendant Origin
+names for through→pocket and refuses destruction of saved floors with UUIDs.
+The writer re-derives payload and the complete added-ref set inside its
+transaction, checks current history and cross-domain identity collisions, and
+preserves all SQL outside height payload/hash, new refs and modified_at. The
+existing copy job enforces all old/new refs and keeps its guards/publication.
+The height form retains input on failures and failed async Open through the
+existing worker/current-scene completion path; a bounded feature list keeps
+16-Cut controls reachable. [Policy and executable recipe](edit-cut-base-height.md),
+[verification](edit-cut-base-height-verification.md). Standalone behavior and
+the history limit are unchanged. No next slice or publication is included.
+Independent review found no blocking defect and repeated native, genuine stub,
+mixed OCCT/no-solver and fresh guarded GUI checks. The 16-Cut GUI height edit,
+Save Cancel, publication/Open, protected-floor refusal and subsequent Cut/Sketch
+discovery passed: 201.001 MiB peak, exit 0, swap 0, one guarded viewer. SQL and
+STL/FBX match the CLI after mapping only new reference UUIDs. Remote head/merge
+checks are audited with publication; the original OOM cause remains unproved.

@@ -3676,6 +3676,7 @@ impl App {
         self.creates
             .sketch
             .draft_load_finished(document, committed.is_ok());
+        self.edits.draft_load_finished(document, committed.is_ok());
         committed?;
         exports::leave_document(&mut self.exports, &mut self.input);
         // The picture is current; the name on the window is the same fact.

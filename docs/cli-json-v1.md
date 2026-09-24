@@ -496,6 +496,16 @@ Body и Extrude — разные объекты: `features[].feature_id` адр�
 | `distance_mm` | number или `null`; значение Blind/Symmetric из общего каталога, в том числе сохранённое значение выражения; у ThroughAll `null` |
 | `editable` | boolean, учитывает и локальную допустимость, и общий `copy_access` |
 | `refusal` | string или `null`, только причина отказа этой фичи |
+| `base_height_edit` | объект или `null`; контекст правки исходной высоты поддерживаемой 1–16 Cut истории (§26G) |
+
+`base_height_edit` содержит `body_id`, `profile_sketch_id`, `extents_mm`,
+`tools` (прежний DTO абсолютных инструментов в порядке истории) и
+`protected_floors`: массив `{feature_id, reference_ids}` с собственными и
+descendant floor UUID каждого Cut. Для standalone/неподдерживаемой фичи — null.
+Это аддитивный контекст, не новый request. `editable` и command/response v1
+продолжают отвечать про `edit-extrude`; [политика высоты](edit-cut-base-height.md)
+требует поддерживаемого каталога и разрешимости всех прежних/новых refs после
+публикации. Глубины tools не меняются. Exit 7 не разрешает слепой retry.
 
 | Поле `edit_extrude` | Тип и смысл |
 | --- | --- |

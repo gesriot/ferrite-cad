@@ -18,6 +18,7 @@ pub struct ExtrusionRow {
     pub label: String,
     pub distance_mm: Option<f64>,
     pub refusal: Option<String>,
+    pub context: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,29 +67,37 @@ pub fn edit_extrude_panel(
         ui.group(|ui| {
             ui.strong("Edit extrusion — save a new file");
             ui.label("Choose the existing extrusion to change:");
-            for feature in &form.features {
-                let selected = form.selected == Some(feature.feature);
-                let response = ui.add_enabled(
-                    feature.refusal.is_none(),
-                    egui::Button::selectable(selected, &feature.label),
-                );
-                if response.clicked() {
-                    form.selected = Some(feature.feature);
-                    form.distance = feature
-                        .distance_mm
-                        .map(|v| v.to_string())
-                        .unwrap_or_default();
-                    form.refusal = None;
-                }
-                if let Some(reason) = &feature.refusal {
-                    ui.label(reason);
-                }
-            }
+            egui::ScrollArea::vertical()
+                .id_salt("height-features")
+                .max_height(160.)
+                .show(ui, |ui| {
+                    for feature in &form.features {
+                        let selected = form.selected == Some(feature.feature);
+                        let response = ui.add_enabled(
+                            feature.refusal.is_none(),
+                            egui::Button::selectable(selected, &feature.label),
+                        );
+                        if response.clicked() {
+                            form.selected = Some(feature.feature);
+                            form.distance = feature
+                                .distance_mm
+                                .map(|v| v.to_string())
+                                .unwrap_or_default();
+                            form.refusal = None;
+                        }
+                        if let Some(reason) = &feature.refusal {
+                            ui.label(reason);
+                        }
+                    }
+                });
             if let Some(selected) = form
                 .features
                 .iter()
                 .find(|f| Some(f.feature) == form.selected)
             {
+                if let Some(context) = &selected.context {
+                    ui.label(context);
+                }
                 if let Some(value) = selected.distance_mm {
                     ui.label(format!("Current distance: {value} mm"));
                 }
@@ -104,7 +113,10 @@ pub fn edit_extrude_panel(
             }
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(form.selected.is_some(), egui::Button::new("Save new file…"))
+                    .add_enabled(
+                        form.selected.is_some() && form.refusal.is_none(),
+                        egui::Button::new("Save new file…"),
+                    )
                     .clicked()
                 {
                     choice = EditChoice::Save;

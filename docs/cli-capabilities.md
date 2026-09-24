@@ -6,6 +6,12 @@
 
 Сборки и чертежи в beta не входят. Импортированная STEP-сборка сохраняет структуру и может быть экспортирована в FBX; это не редактор сборок.
 
+§26G: [высота базы circular Cut history](edit-cut-base-height.md) правится
+существующими `Edit extrusion` и `edit-extrude --distance-mm` через общий copy
+job. Глубины tools абсолютны; новые дна получают собственные/descendant refs,
+потеря сохранённого дна и выход глубины за толщину отказываются с UUID. Discovery
+`features[].base_height_edit` содержит typed контекст того же snapshot.
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.
