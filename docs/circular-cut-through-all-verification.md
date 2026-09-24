@@ -4,10 +4,10 @@
 
 This file records what was executed and where. There are three places: the
 cloud sandbox this slice was developed in, GitHub Actions on the pull request,
-and nothing (things that were not run). A result from one place is never
+and the independent macOS review appended below. A result from one place is never
 reported as a result from another. CI on the base branch is not CI on this
-diff. The windowed GUI was **not** run here; it is pending independent review
-(see "GUI scenario" below).
+diff. The windowed GUI was **not** run in the cloud; the independent macOS
+review below records the subsequent real window checks.
 
 ## Base and branch
 
@@ -15,7 +15,7 @@ diff. The windowed GUI was **not** run here; it is pending independent review
 | --- | --- |
 | Base | `main` = `6aef5017cc0ef8d6c0a4cc8ae9c7de765209c021` (merge of PR #50), tree `3f84f22a49b6c0068925d99b66cf7221e365cb5e` |
 | Branch | `claude/blissful-wright-8rfyr2` (assigned push branch of the cloud session; the preferred name `circular-cut-through-all` was not available to push) |
-| Pull request | gesriot/ferrite-cad#51 (draft, not merged) |
+| Pull request | gesriot/ferrite-cad#51 (ready for independent review at cloud handoff) |
 | Commits | `88f9490` implementation, `d10ad56` strict extent parsing, `7050b4b` JSON v1 types kept + `_v2` blocks, `409a31f` CI gate name, then the verification commit that adds this file |
 | Author/committer | `gesriot <gessman1618@gmail.com>` on every commit; no AI co-author or generated-by trailers |
 
@@ -277,3 +277,86 @@ Steps and expected results:
 
 SQL, STL and FBX of GUI copies should match CLI copies produced with the same
 request v2, after mapping only newly minted reference UUIDs (steps 3 and 5).
+
+## Independent macOS review — 2026-09-24
+
+The cloud handoff was fetched as `761eec085a8ac292788a2590e5fd6e518e9c23d3`.
+All five commits have the owner's author and committer identity and no AI
+co-author trailers. The foreign detached worktree was not changed.
+
+Review found a protocol regression in the first implementation: a previously
+required JSON v1 floating-point `depth_mm` became nullable. Commit `7050b4b`
+restored the old shapes and introduced additive `_v2` discovery. The review
+compared Blind-document JSON with an actual §26G executable and ran the old
+reader against a ThroughAll document: read-only discovery, refusal to rebuild
+or publish an edit, and unchanged source bytes. The public recipe's 16-Cut
+refusal assertion was also corrected before this handoff. The corrected recipe
+was extracted from Markdown and passed all 1/2/4/16-Cut cases with pinned ufbx.
+
+The remaining review edit clarifies the height form and README: Blind depths
+stay fixed, whereas ThroughAll follows the plate thickness. No geometry,
+publication, wire or naming policy changed in that edit.
+
+Local validation reused the pinned OCCT/PlaneGCS installation and existing
+targets, with sequential builds. The initial native review ran 515 applicable
+core tests, two explicit solver-absent-only N/A cases and one old ignored timing
+benchmark, 76 selected CLI tests, 10 Cut workers and nine height/edit workers.
+After the compatibility change, CLI/app were rebuilt and affected CLI suites,
+fmt and workspace all-target/all-feature clippy with `-D warnings` passed.
+A true stub was verified by CMake NOTFOUND and zero native imports: 29 wholly
+kernel-free tests passed; an additional discovery gate executed structural
+checks and explicitly skipped its native subsection. The mixed OCCT/no-solver
+ThroughAll exact gate passed separately. These are not interchangeable results.
+On the final review source, a fresh release CLI/app build, the strengthened
+writer test, strict extent parser test, nine edit workers and app clippy passed.
+The official staged macOS bundle passed strict signature and loader checks.
+
+### Real window checks
+
+Only owned viewers and temporary models were used, each launched under the
+1536 MiB watchdog before CUA selected the running app. Native Open/Save dialogs,
+publication and asynchronous Open were observed. After Quit, termination was
+checked through the PID/watchdog, without querying the closed app again.
+
+| Run | Scope and outcome | Peak footprint | Exit / swap |
+| --- | --- | ---: | --- |
+| Initial `d10ad56`, PID 44403 | Apply, Undo/Redo and Save Cancel passed; CUA coordinate access failed after Cancel, so this was an incomplete smoke | 206.798 MiB | 0 / 0 |
+| `7050b4b`, PID 47820 | Blind-through → ThroughAll, publish/Open, height 12 → 14.25, protected-pocket refusal with UUIDs | 199.626 MiB | 0 / 0 |
+| `761eec0` plus review wording, PID 62261 | Published generator fixture; saved ThroughAll → Blind 3.25, exact Undo/Redo, Save Cancel and retry, publish/Open, fourth ThroughAll Cut at (48,30) r2, corrected height context | 215.376 MiB | 0 / 0 |
+
+The successful runs together cover the eight-step scenario above; the first
+partial run is not counted as complete. No watchdog fired or OOM occurred in
+these runs. The historical OOM cause remains unproved.
+
+For the 7050 copies, every SQL cell matched the CLI except `meta.modified_at`;
+STL and FBX were byte-identical. An additional CLI shrink to 8 mm, below the
+original 12 mm base, kept the explicit through hole open and the other pocket.
+For the final ThroughAll → pocket copy, SQL matched after allowing only
+`meta.modified_at` and the single newly allocated floor-reference UUID;
+all pre-existing references were identical. Both final GUI copies (three and
+four Cuts) produced byte-identical STL/FBX to equivalent CLI requests. For the
+fourth-Cut creation, new feature/Sketch/curve identities are allocated separately;
+full raw SQL equality is not claimed for those new objects. Existing tool
+history and the new extent were compared explicitly.
+
+An independent binary STL parser checked the bounding box, consistently closed
+oriented mesh, expected cylindrical walls and open-hole/pocket-floor positions,
+and mesh volume within the documented deflection bound. The eight GUI/peer FBX
+files across the two successful runs passed pinned ufbx, six checks each and
+zero failures. Source bytes were preserved during the parity runs.
+
+### Remote evidence and artifacts
+
+The review downloaded logs for exact cloud head `761eec0`, rather than counting
+workflow declarations: **183/183 required native gates, no required skips, and
+66 ufbx reads with zero failures on each of Linux, macOS and Windows**. Its
+11 check runs and two triggered workflows passed (CI `36050817842`, combined
+runtime `36050812752`). Earlier commit checks are not substituted for this head.
+The new review commit and merge checks are audited separately when published.
+
+Logs, parsed summaries, copied GUI models, parity scripts and the final recipe
+are under `/private/tmp/ferrite-26h-review/`, with a durable review copy under
+`~/.codex/visualizations/2026/09/05/01a0722f-a4b4-7532-b72b-07ef6b78698d/ferrite-26h-review/`.
+`gui-final/parity-final.json` records the exact export hashes and memory result.
+No Windows/Linux windowed smoke, new heavy STEP campaign or OCCT rebuild was
+performed in this macOS review.

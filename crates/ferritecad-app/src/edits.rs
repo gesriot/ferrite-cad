@@ -72,7 +72,7 @@ impl Edits {
                         distance_mm: f.distance_mm,
                         refusal: f.refusal.clone(),
                         context: f.cut_history.as_ref().map(|h| format!(
-                            "Base of {} circular Cuts. Only the plate thickness changes; Cut depths remain absolute. Saved pocket floors must stay inside the plate.", h.tools.len())),
+                            "Base of {} circular Cuts. Blind depths stay fixed; Through all follows the plate thickness. Saved pocket floors must stay inside the plate.", h.tools.len())),
                     })
                     .collect(),
                 selected: None,

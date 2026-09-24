@@ -121,7 +121,8 @@ and depths stay fixed; every disk must clear the new boundaries.
 [Contract and runnable recipe](docs/edit-cut-base-sketch.md).
 
 `Edit extrusion` / `edit-extrude` can change that history's base thickness while
-keeping Cut depths absolute. A thicker plate names every new pocket floor;
+keeping Blind depths fixed and Through all Cuts open. A thicker plate names every
+new Blind pocket floor;
 removing a saved floor or exceeding the new thickness is refused with UUIDs.
 [Height policy and executable recipe](docs/edit-cut-base-height.md).
 

@@ -3501,5 +3501,11 @@ unavailable where it was already nullable, and additive `_v2` blocks carry
 `extent` and `request_versions`.
 [Contract and recipe](circular-cut-through-all.md),
 [verification](circular-cut-through-all-verification.md). The 16-link limit and
-all clearances are unchanged. GUI verification is pending independent review.
+all clearances are unchanged. Independent review restored JSON v1 type
+compatibility, clarified height-form wording, and completed guarded macOS GUI
+checks including Undo/Redo, Save Cancel, publication/Open, base growth, floor
+refusal and adding ThroughAll. GUI/CLI STL and FBX match byte-for-byte; final
+viewer peak 215.376 MiB, exit 0, swap 0. Exact cloud-head CI logs independently
+confirm 183 native gates and 66 ufbx reads per OS; review/merge checks are audited
+with publication. [Full review evidence](circular-cut-through-all-verification.md#independent-macos-review--2026-09-24).
 
