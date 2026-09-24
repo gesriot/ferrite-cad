@@ -1459,7 +1459,7 @@ jobs:
               -- --exact --nocapture --test-threads=1 2>&1 | tee through-all-eval.log
             if grep -q 'skipped:' through-all-eval.log || ! grep -Fq "test $gate ... ok" through-all-eval.log; then exit 1; fi
           done
-          gate=extent_tests::a_cut_extent_is_strict_in_both_kinds
+          gate=json::extent_tests::a_cut_extent_is_strict_in_both_kinds
           cargo test --release --features planegcs -p ferritecad-cli --bin ferritecad "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee through-all-extent.log
           if grep -q 'skipped:' through-all-extent.log || ! grep -Fq "test $gate ... ok" through-all-extent.log; then exit 1; fi
