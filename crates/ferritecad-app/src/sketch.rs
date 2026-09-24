@@ -3626,7 +3626,9 @@ mod tests {
                             5. + (slot / 4) as f64 * 9.,
                         ],
                         radius_mm: 1. + (i % 3) as f64 * 0.1,
-                        depth_mm: if i % 2 == 0 { 10. } else { 3. + (i % 4) as f64 },
+                        extent: ferritecad_document::CutExtent::Blind {
+                            depth_mm: if i % 2 == 0 { 10. } else { 3. + (i % 4) as f64 },
+                        },
                     },
                 )
                 .expect("prepare");

@@ -1261,7 +1261,9 @@ mod tests {
                     &CircularCut {
                         center_mm: [10. + (slot % 4) as f64 * 19., 7. + (slot / 4) as f64 * 12.],
                         radius_mm: 1.5 + (i % 5) as f64 * 0.25,
-                        depth_mm: if i % 2 == 0 { 12. } else { 3. + (i % 7) as f64 },
+                        extent: ferritecad_document::CutExtent::Blind {
+                            depth_mm: if i % 2 == 0 { 12. } else { 3. + (i % 7) as f64 },
+                        },
                     },
                 )
                 .expect("cut");

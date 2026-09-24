@@ -37,6 +37,10 @@ A through hole can become a pocket; cutting away a named pocket floor is refused
 Editing a Cut rebuilds its descendants while preserving history and face origins.
 At 16 Cuts, addition is unavailable and every Cut remains editable.
 See [bounded history contract and recipe](docs/circular-cut-history.md).
+A Cut can also say **Through all** instead of a depth (the `End` choice in the
+Cut editor, or request v2 of `cut-circular-copy`/`edit-circular-cut`); it stays
+through after the base height changes, where a Blind depth stays absolute.
+[Contract, compatibility and recipe](docs/circular-cut-through-all.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

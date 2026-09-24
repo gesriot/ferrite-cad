@@ -239,12 +239,27 @@ fn annulus_from_circles(
 /// feature that asks for something else is refused with the reason rather than
 /// approximated into the nearest thing that would build.
 ///
+/// A ThroughAll tool has no stored length. It runs for exactly the [`Reach`] of
+/// the body it cuts: the forward Blind height of the extrusion that started that
+/// body, read in this rebuild. A boolean cut only removes material, so every
+/// solid along the history lies inside that first prism, which spans `[0, h]`
+/// along the shared datum normal; a tool of that length on that datum reaches
+/// the far side of everything present. It is the same tool, down to the last
+/// bit, as a Blind cut whose depth equals the height, which is the "through"
+/// case every earlier slice already measured: no epsilon is added and no other
+/// plane is guessed at.
+///
 /// A separate function from [`extrude_request`] because the two answer
 /// different questions. That one asks what solid a feature *is*, and refuses a
 /// boolean because a boolean is not a solid on its own; this one asks what a
 /// boolean removes with, which is a solid and is built the same way every
 /// extrusion is.
-pub fn cut_tool_request(feature: &Extrude, profile: Profile) -> Result<ExtrudeRequest> {
+pub fn cut_tool_request(
+    feature: &Extrude,
+    profile: Profile,
+    tool_datum: ObjectId,
+    reach: Option<Reach>,
+) -> Result<ExtrudeRequest> {
     if feature.operation != SolidOperation::Cut {
         return Err(CadError::unsupported(format!(
             "feature operation {:?} is not a cut, and this slice implements no other boolean",
@@ -264,9 +279,20 @@ pub fn cut_tool_request(feature: &Extrude, profile: Profile) -> Result<ExtrudeRe
             ));
         }
         EndCondition::ThroughAll => {
-            return Err(CadError::unsupported(
-                "ThroughAll needs to know what else exists; this slice cuts to a stated depth",
-            ));
+            let reach = reach.ok_or_else(|| {
+                CadError::unsupported(
+                    "a ThroughAll cut needs the body it cuts to start with a forward Blind \
+                     extrusion, whose height says how far everything in it reaches",
+                )
+            })?;
+            if reach.datum != tool_datum {
+                return Err(CadError::unsupported(format!(
+                    "a ThroughAll tool is evaluated on the datum its body started from ({}); this \
+                     one is drawn on {tool_datum}, and this slice measures no other direction",
+                    reach.datum
+                )));
+            }
+            ExtrudeExtent::blind(reach.distance)?
         }
         other => {
             return Err(CadError::unsupported(format!(
@@ -275,6 +301,31 @@ pub fn cut_tool_request(feature: &Extrude, profile: Profile) -> Result<ExtrudeRe
         }
     };
     Ok(ExtrudeRequest::new(profile, extent, false))
+}
+
+/// How far a body reaches ahead of the datum its first extrusion was drawn on.
+///
+/// Recorded for a forward Blind NewBody and inherited unchanged by every Cut
+/// that modifies it, because a cut removes material and cannot reach further.
+/// Absent for anything whose extent this slice does not state (Symmetric,
+/// reversed or ThroughAll roots); a ThroughAll Cut of such a body is refused.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Reach {
+    pub datum: ObjectId,
+    pub distance: f64,
+}
+
+impl Reach {
+    /// The reach of a feature that starts a body, when it has one.
+    pub fn of_new_body(feature: &Extrude, datum: ObjectId) -> Option<Self> {
+        match (&feature.end_condition, feature.reversed, feature.previous) {
+            (EndCondition::Blind { distance }, false, None) => Some(Self {
+                datum,
+                distance: distance.value(),
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// Builds an extrusion request from a stored feature.
@@ -467,6 +518,99 @@ mod tests {
             operation: SolidOperation::NewBody,
             target_body: None,
             previous: None,
+        }
+    }
+
+    fn cut_of(end_condition: EndCondition) -> Extrude {
+        Extrude {
+            operation: SolidOperation::Cut,
+            previous: Some(ObjectId::new()),
+            ..extrude(end_condition)
+        }
+    }
+
+    fn square() -> Profile {
+        profile_from_sketch(
+            &sketch(square_curves()),
+            ObjectId::new(),
+            SketchPlane::world_xy(),
+        )
+        .expect("converts")
+        .profile
+    }
+
+    #[test]
+    fn a_through_all_tool_runs_exactly_the_reach_of_the_body_it_cuts() {
+        let datum = ObjectId::new();
+        let base = extrude(EndCondition::Blind {
+            distance: Expression::constant(14.25).expect("finite"),
+        });
+        let reach = Reach::of_new_body(&base, datum).expect("a forward Blind body has a reach");
+        assert_eq!(
+            reach,
+            Reach {
+                datum,
+                distance: 14.25
+            }
+        );
+        let tool = square();
+        let request = cut_tool_request(
+            &cut_of(EndCondition::ThroughAll),
+            tool.clone(),
+            datum,
+            Some(reach),
+        )
+        .expect("through all");
+        // No epsilon, no other number: exactly the Blind tool of that height.
+        assert_eq!(
+            request.extent(),
+            ExtrudeExtent::blind(14.25).expect("blind")
+        );
+        assert!(!request.reversed());
+        let blind = cut_tool_request(
+            &cut_of(EndCondition::Blind {
+                distance: Expression::constant(14.25).expect("finite"),
+            }),
+            tool,
+            datum,
+            Some(reach),
+        )
+        .expect("blind");
+        assert_eq!(blind, request, "Blind at the height is the same tool");
+    }
+
+    #[test]
+    fn through_all_without_a_stated_reach_or_on_another_datum_is_refused() {
+        let datum = ObjectId::new();
+        let reach = Reach {
+            datum,
+            distance: 12.0,
+        };
+        let err = cut_tool_request(
+            &cut_of(EndCondition::ThroughAll),
+            square(),
+            ObjectId::new(),
+            Some(reach),
+        )
+        .expect_err("another plane");
+        assert_eq!(err.kind(), ErrorKind::Unsupported);
+        let err = cut_tool_request(&cut_of(EndCondition::ThroughAll), square(), datum, None)
+            .expect_err("no reach");
+        assert_eq!(err.kind(), ErrorKind::Unsupported);
+        // Only a forward Blind NewBody states a reach.
+        for base in [
+            extrude(EndCondition::Symmetric {
+                distance: Expression::constant(5.0).expect("finite"),
+            }),
+            extrude(EndCondition::ThroughAll),
+            Extrude {
+                reversed: true,
+                ..extrude(EndCondition::Blind {
+                    distance: Expression::constant(5.0).expect("finite"),
+                })
+            },
+        ] {
+            assert_eq!(Reach::of_new_body(&base, datum), None, "{base:?}");
         }
     }
 

@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 use ferritecad_document::{Document, ExtrudeEditSource};
 use ferritecad_types::{CadError, ContentHash, DocumentId, ObjectId, Result, StableEntityId};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub(crate) mod constraints;
 mod fbx;
@@ -261,8 +261,13 @@ struct SavedCutTarget {
     direction: &'static str,
     /// How far the tool must stay from the part's outer wall.
     wall_clearance_mm: f64,
+    /// Request versions `cut-circular-copy` accepts; v2 can state ThroughAll.
+    request_versions: &'static [u32],
 }
 
+/// One saved tool. `depth_mm` is the stated Blind depth and is `null` for a
+/// ThroughAll Cut, which states none: reporting the computed height there would
+/// present ThroughAll to an older client as a Blind depth it could send back.
 #[derive(Serialize)]
 struct ExistingCut {
     feature_id: ObjectId,
@@ -270,7 +275,8 @@ struct ExistingCut {
     tool_curve_id: StableEntityId,
     center_mm: [f64; 2],
     radius_mm: f64,
-    depth_mm: f64,
+    depth_mm: Option<f64>,
+    extent: Extent,
 }
 
 impl From<&ferritecad_document::SavedCutTool> for ExistingCut {
@@ -281,9 +287,47 @@ impl From<&ferritecad_document::SavedCutTool> for ExistingCut {
             tool_curve_id: t.tool_curve,
             center_mm: t.center_mm,
             radius_mm: t.radius_mm,
-            depth_mm: t.depth_mm,
+            depth_mm: t.extent.blind_depth_mm(),
+            extent: t.extent.into(),
         }
     }
+}
+
+/// The end of a circular Cut on the wire: request v2, discovery and results.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Extent {
+    Blind { depth_mm: f64 },
+    ThroughAll,
+}
+
+impl From<Extent> for ferritecad_document::CutExtent {
+    fn from(e: Extent) -> Self {
+        match e {
+            Extent::Blind { depth_mm } => Self::Blind { depth_mm },
+            Extent::ThroughAll => Self::ThroughAll,
+        }
+    }
+}
+
+impl From<ferritecad_document::CutExtent> for Extent {
+    fn from(e: ferritecad_document::CutExtent) -> Self {
+        match e {
+            ferritecad_document::CutExtent::Blind { depth_mm } => Self::Blind { depth_mm },
+            ferritecad_document::CutExtent::ThroughAll => Self::ThroughAll,
+        }
+    }
+}
+
+/// The version a Cut request declares, read before its shape is.
+pub(crate) fn request_version(bytes: &[u8], what: &str) -> Result<u32> {
+    #[derive(Deserialize)]
+    struct Declared {
+        request_version: u32,
+    }
+    serde_json::from_slice::<Declared>(bytes)
+        .map(|d| d.request_version)
+        .map_err(|e| CadError::input(format!("invalid {what} JSON: {e}")))
 }
 
 impl CutDiscovery {
@@ -304,8 +348,10 @@ impl CutDiscovery {
                     tool_curve_id: c.tool_curve,
                     center_mm: c.center_mm,
                     radius_mm: c.radius_mm,
-                    depth_mm: c.depth_mm,
+                    depth_mm: c.extent.blind_depth_mm(),
+                    extent: c.extent.into(),
                 }),
+                request_versions: &[1, 2],
                 disk_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
                 profile_sketch_id: t.profile,
                 height_mm: t.height_mm,
@@ -441,7 +487,12 @@ struct SavedCircularCut {
     tool_curve_id: StableEntityId,
     center_mm: [f64; 2],
     radius_mm: f64,
-    depth_mm: f64,
+    /// The stated Blind depth; `null` for ThroughAll, which states none.
+    depth_mm: Option<f64>,
+    /// The saved intent, Blind with its depth or ThroughAll.
+    extent: Extent,
+    /// Request versions that can express this Cut without losing its intent.
+    request_versions: &'static [u32],
     height_mm: f64,
     /// `[[min_x, min_y], [max_x, max_y]]` of the rectangular part, in mm.
     extents_mm: [[f64; 2]; 2],
@@ -480,26 +531,21 @@ impl CutParameterDiscovery {
                 tools: c.tools.iter().map(ExistingCut::from).collect(),
                 tip_feature_id: c.tip_feature,
                 protected_floor_reference_ids: c.protected_floor_references.clone(),
-                neighboring_tool: c.neighboring_tool.as_ref().map(|t| ExistingCut {
-                    feature_id: t.feature,
-                    tool_sketch_id: t.tool_sketch,
-                    tool_curve_id: t.tool_curve,
-                    center_mm: t.center_mm,
-                    radius_mm: t.radius_mm,
-                    depth_mm: t.depth_mm,
-                }),
+                neighboring_tool: c.neighboring_tool.as_ref().map(ExistingCut::from),
                 disk_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
                 profile_sketch_id: c.profile_sketch,
                 tool_sketch_id: c.tool_sketch,
                 tool_curve_id: c.tool_curve,
                 center_mm: c.center_mm,
                 radius_mm: c.radius_mm,
-                depth_mm: c.depth_mm,
+                depth_mm: c.extent.blind_depth_mm(),
+                extent: c.extent.into(),
+                request_versions: c.request_versions(),
                 height_mm: c.height_mm,
                 extents_mm: c.extents_mm,
                 direction: "+z along the plane normal",
                 wall_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
-                leaves_a_floor: c.depth_mm < c.height_mm,
+                leaves_a_floor: c.leaves_a_floor(),
                 floor_reference_id: c.floor_reference,
                 through_allowed: c.through_allowed(),
             }),

@@ -53,6 +53,7 @@ pub fn cut_archive_key(
     previous: ObjectId,
     target_key: &ContentHash,
     tool_key: &ContentHash,
+    through_all: bool,
     context: &OperationContext,
 ) -> ContentHash {
     // Geometry alone cannot key names: changing a predecessor UUID without
@@ -60,6 +61,12 @@ pub fn cut_archive_key(
     let mut hasher = CanonicalHasher::new("eval.cut.named");
     hasher.algorithm_version(1);
     hasher.field("previous").bytes(&previous.to_bytes());
+    // Fed only for ThroughAll, so every Blind key is the key it always was.
+    // The tool key already moves with the computed length; this keeps a
+    // ThroughAll archive from ever answering a Blind request of equal numbers.
+    if through_all {
+        hasher.field("through_all").bool(true);
+    }
     hasher
         .field("geometry")
         .bytes(cut_cache_key(kernel, target_key, tool_key, context).as_bytes());
@@ -157,16 +164,21 @@ mod tests {
         let a = ObjectId::new();
         let b = ObjectId::new();
         let context = OperationContext::default();
-        let one = cut_archive_key(&kernel, a, &target, &tool, &context);
-        let other = cut_archive_key(&kernel, b, &target, &tool, &context);
+        let one = cut_archive_key(&kernel, a, &target, &tool, false, &context);
+        let other = cut_archive_key(&kernel, b, &target, &tool, false, &context);
         assert_ne!(
             one, other,
             "same geometry must not restore another producer's names"
         );
         assert_ne!(
-            cut_archive_key(&kernel, a, &one, &tool, &context),
-            cut_archive_key(&kernel, a, &other, &tool, &context),
+            cut_archive_key(&kernel, a, &one, &tool, false, &context),
+            cut_archive_key(&kernel, a, &other, &tool, false, &context),
             "the origin change propagates through the dependent chain"
+        );
+        assert_ne!(
+            cut_archive_key(&kernel, a, &target, &tool, true, &context),
+            one,
+            "a ThroughAll archive never answers a Blind cut of the same tool"
         );
     }
 }

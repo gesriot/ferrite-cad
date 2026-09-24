@@ -242,6 +242,36 @@ Feature.previous от первого Cut до tip, с теми же полями
 Точные ограничения, семантика истории, правила UI/writer и запускаемый рецепт:
 [первый Cut](circular-cut-copy.md), [второй Cut и новые поля discovery](sequential-circular-cuts.md).
 
+## Явный ThroughAll для circular Cut (§26H)
+
+JSON v1 (envelope, `operation`, exit 0/2/7) не меняется. Для `cut-circular-copy`
+и `edit-circular-cut` добавлен **request v2**; request v1 принимается как прежде
+и всегда означает Blind:
+
+```json
+{"request_version":2,"center_mm":[20.0,15.0],"radius_mm":5.0,"extent":{"kind":"through_all"}}
+{"request_version":2,"center_mm":[20.0,15.0],"radius_mm":5.0,"extent":{"kind":"blind","depth_mm":4.0}}
+```
+
+У `edit-circular-cut` в v2, как и в v1, обязателен `tool_curve_id`. Оба варианта
+строгие (`deny_unknown_fields`, ≤65536 байт): `depth_mm` на верхнем уровне v2,
+лишнее поле внутри `extent`, неизвестный `kind` и `request_version` кроме 1/2
+отказываются с exit 2 до ядра. Request v1 правки, направленный на Cut с
+сохранённым ThroughAll, отказывается при подготовке (exit 2, в сообщении UUID
+Cut и `request_version 2`): v1 не может выразить это намерение и не должен
+тихо превратить его в Blind.
+
+Discovery аддитивна. Каждый DTO инструмента (`target.tools`, `existing_cut`,
+`saved.tools`, `neighboring_tool`, `base_height_edit.tools`) и
+`circular_cut_edit.saved` получают `extent`: `{"kind":"blind","depth_mm":d}` или
+`{"kind":"through_all"}`. `depth_mm` у Blind прежний; у ThroughAll — `null`:
+глубина не указывалась, а вычисленная высота выдала бы ThroughAll за Blind.
+Документы прежних сборок ThroughAll не содержат, поэтому их вывод не меняется.
+`saved.request_versions` — `[1,2]` для Blind и `[2]` для ThroughAll;
+`bodies[].cut_edit.target.request_versions` — `[1,2]`. `leaves_a_floor` у
+ThroughAll всегда false при любой высоте. Result обеих команд получает `extent`.
+[Контракт §26H и исполняемый рецепт](circular-cut-through-all.md).
+
 ## Правка сохранённой кольцевой пары (§25M)
 
 `ferritecad edit-annular <source.fcad> --sketch UUID --expect-version HASH

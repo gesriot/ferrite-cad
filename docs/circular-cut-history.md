@@ -58,6 +58,9 @@ evidence of the base only, not evidence for this uncommitted diff.
 Base rectangle coordinate editing is added by [§26F](edit-cut-base-sketch.md),
 using the same validated catalogue and unchanged Cut policy.
 
+[§26H](circular-cut-through-all.md) adds an explicit ThroughAll end to the same
+catalogue and policy; the ThroughAll exclusion above describes §26E only.
+
 [§26G](edit-cut-base-height.md) also edits the original Blind height through
 `edit-extrude`, naming newly appearing floors at every required producer and
 refusing heights that remove a protected floor or leave a tool too deep.

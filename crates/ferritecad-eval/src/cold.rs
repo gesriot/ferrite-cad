@@ -27,7 +27,7 @@
 use std::collections::BTreeMap;
 
 use ferritecad_document::TopologyRef;
-use ferritecad_document::{CacheStore, Document, ObjectPayload, ObjectRecord};
+use ferritecad_document::{CacheStore, Document, EndCondition, ObjectPayload, ObjectRecord};
 use ferritecad_kernel::{
     CutRequest, GeometryKernel, OperationContext, Profile, ProgressSink, ShapeHandle, SketchPlane,
     SubShapeHandle,
@@ -38,7 +38,9 @@ use ferritecad_types::{CadError, ObjectId, Result};
 use crate::cache::{
     cut_archive_key, extrude_archive_key, load_feature_archive, store_feature_archive,
 };
-use crate::convert::{cut_tool_request, extrude_request, plane_from_datum, profile_from_sketch};
+use crate::convert::{
+    Reach, cut_tool_request, extrude_request, plane_from_datum, profile_from_sketch,
+};
 use crate::document_graph::DocumentGraph;
 use crate::presentation::SketchPresentation;
 use crate::solve::SketchSolveReport;
@@ -264,6 +266,13 @@ fn run<K: GeometryKernel + ?Sized>(
         .collect();
 
     let mut planes: BTreeMap<ObjectId, SketchPlane> = BTreeMap::new();
+    // Recorded before any cache lookup, from the stored inputs alone, so a
+    // restored feature says exactly what a rebuilt one would.
+    let mut reaches: BTreeMap<ObjectId, Reach> = BTreeMap::new();
+    let datum_of = |sketch: ObjectId| match objects.get(&sketch).map(|o| &o.payload) {
+        Some(ObjectPayload::Sketch(s)) => Ok(s.plane),
+        _ => Err(CadError::input(format!("{sketch} is not a sketch"))),
+    };
 
     let total = plan.order().len();
     for (position, id) in plan.order().iter().enumerate() {
@@ -326,6 +335,10 @@ fn run<K: GeometryKernel + ?Sized>(
                     // A feature that starts a body, exactly as before.
                     None => {
                         let request = extrude_request(feature, profile)?;
+                        if let Some(reach) = Reach::of_new_body(feature, datum_of(feature.profile)?)
+                        {
+                            reaches.insert(*id, reach);
+                        }
                         let key = extrude_archive_key(kernel.identity(), &request, &scoped);
 
                         let restored = match cache.as_deref_mut() {
@@ -369,7 +382,12 @@ fn run<K: GeometryKernel + ?Sized>(
                     // shape the boolean consumed, not a body of the document,
                     // and nothing outside this loop may name it.
                     Some(previous) => {
-                        let tool_request = cut_tool_request(feature, profile)?;
+                        let reach = reaches.get(&previous).copied();
+                        let tool_request =
+                            cut_tool_request(feature, profile, datum_of(feature.profile)?, reach)?;
+                        if let Some(reach) = reach {
+                            reaches.insert(*id, reach);
+                        }
                         let target_key = state.keys.get(&previous).copied().ok_or_else(|| {
                             CadError::input(format!(
                                 "feature {id} modifies {previous}, which produced no result to                                  modify"
@@ -382,6 +400,7 @@ fn run<K: GeometryKernel + ?Sized>(
                             previous,
                             &target_key,
                             &tool_key,
+                            matches!(feature.end_condition, EndCondition::ThroughAll),
                             &scoped,
                         );
 
