@@ -12,7 +12,9 @@ pub(super) fn tools(n: usize) -> Vec<CircularCut> {
             CircularCut {
                 center_mm: [10. + (slot % 4) as f64 * 19., 7. + (slot / 4) as f64 * 12.],
                 radius_mm: 1.5 + (i % 5) as f64 * 0.25,
-                depth_mm: if i % 2 == 0 { 12. } else { 3. + (i % 7) as f64 },
+                extent: CutExtent::Blind {
+                    depth_mm: if i % 2 == 0 { 12. } else { 3. + (i % 7) as f64 },
+                },
             }
         })
         .collect()
@@ -105,7 +107,7 @@ fn bounded_catalog_all_links_and_distant_conflicts_without_kernel() {
                 n
             );
             let d = Document::open_read_only(&path).expect("doc");
-            if tools[index].depth_mm < 12. {
+            if tools[index].extent.blind_depth_mm().expect("blind") < 12. {
                 let error = ferritecad_document::prepare_cut_parameters(
                     &d,
                     s.feature,
@@ -113,7 +115,8 @@ fn bounded_catalog_all_links_and_distant_conflicts_without_kernel() {
                         tool_curve: s.tool_curve,
                         center_mm: s.center_mm,
                         radius_mm: s.radius_mm,
-                        depth_mm: 12.,
+                        extent: CutExtent::Blind { depth_mm: 12. },
+                        vocabulary: ExtentVocabulary::BlindOrThroughAll,
                     },
                 )
                 .expect_err("all protected floors");
@@ -131,7 +134,8 @@ fn bounded_catalog_all_links_and_distant_conflicts_without_kernel() {
                         tool_curve: s.tool_curve,
                         center_mm: other.center_mm,
                         radius_mm: s.radius_mm,
-                        depth_mm: 2.,
+                        extent: CutExtent::Blind { depth_mm: 2. },
+                        vocabulary: ExtentVocabulary::BlindOrThroughAll,
                     },
                 )
                 .expect_err("distant disk conflict");
@@ -164,10 +168,10 @@ fn native_history_origins_floors_sql_and_old_sidecars() {
             changed[index].center_mm[0] += 0.375;
             changed[index].center_mm[1] -= 0.25;
             changed[index].radius_mm += 0.125;
-            changed[index].depth_mm = 2.75;
+            changed[index].extent = CutExtent::Blind { depth_mm: 2.75 };
             let copy = root.path().join(format!("edit-{n}-{index}.fcad"));
             edit(&source, &copy, &saved[index], changed[index], 0);
-            let adds = if tools[index].depth_mm == 12. {
+            let adds = if tools[index].extent.blind_depth_mm().expect("blind") == 12. {
                 n - index
             } else {
                 0
@@ -198,7 +202,7 @@ fn native_history_origins_floors_sql_and_old_sidecars() {
                 &never,
                 &current[index],
                 CircularCut {
-                    depth_mm: 12.,
+                    extent: CutExtent::Blind { depth_mm: 12. },
                     ..changed[index]
                 },
                 2,
@@ -260,7 +264,12 @@ fn native_adds_sixteen_and_refuses_seventeenth() {
         }
         assert_eq!(
             b["topology_refs"].1.len() - a["topology_refs"].1.len(),
-            6 + index + 1 + tools[..=index].iter().filter(|t| t.depth_mm < 12.).count()
+            6 + index
+                + 1
+                + tools[..=index]
+                    .iter()
+                    .filter(|t| t.extent.blind_depth_mm().expect("blind") < 12.)
+                    .count()
         );
         let role = a["deps"].0.iter().position(|c| c == "role").expect("role");
         for row in &a["deps"].1 {
@@ -280,7 +289,7 @@ fn native_adds_sixteen_and_refuses_seventeenth() {
         CircularCut {
             center_mm: [40., 25.],
             radius_mm: 1.,
-            depth_mm: 2.,
+            extent: CutExtent::Blind { depth_mm: 2. },
         },
         2,
     );
@@ -300,7 +309,7 @@ fn occt_without_solver_builds_and_edits_history() {
     let mut tools = tools(4);
     let source = fixture(root.path(), &tools);
     let saved = ordered(&source);
-    tools[0].depth_mm = 2.5;
+    tools[0].extent = CutExtent::Blind { depth_mm: 2.5 };
     let copy = root.path().join("edited.fcad");
     edit(&source, &copy, &saved[0], tools[0], 0);
     measure_history(&copy, &tools, None);

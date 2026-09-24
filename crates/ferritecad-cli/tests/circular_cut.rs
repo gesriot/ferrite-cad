@@ -8,6 +8,7 @@
 //! exists to keep: the body is the one it always was, and the cut is a feature
 //! in its history rather than a replacement for what was there.
 #![allow(clippy::panic)]
+use ferritecad_document::{CutExtent, ExtentVocabulary};
 use ferritecad_document::{Document, ObjectPayload, SemanticRole, SketchGeometry};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
 use serde_json::{Value, json};

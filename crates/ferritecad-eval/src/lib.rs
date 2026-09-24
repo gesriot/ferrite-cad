@@ -44,7 +44,8 @@ pub use cache::{
 };
 pub use cold::{CacheEvent, CacheOutcome, RebuildResult, rebuild_cached, rebuild_cold};
 pub use convert::{
-    SketchEvaluation, cut_tool_request, extrude_request, plane_from_datum, profile_from_sketch,
+    Reach, SketchEvaluation, cut_tool_request, extrude_request, plane_from_datum,
+    profile_from_sketch,
 };
 pub use dirty::{DependentIndex, dirty_set};
 pub use document_graph::DocumentGraph;

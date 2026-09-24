@@ -294,6 +294,8 @@ pub struct AddedCircularCut {
     pub tool_curve: StableEntityId,
     /// The feature the new one modifies, which was the tip before.
     pub previous: ObjectId,
+    /// The intent the new Cut stores: a stated depth or ThroughAll.
+    pub extent: ferritecad_document::CutExtent,
 }
 
 /// Adds one circular cut to a saved body, publishing a new copy.
@@ -330,6 +332,7 @@ pub fn circular_cut_copy<K: GeometryKernel + ?Sized>(
                 sketch: prepared.sketch().id,
                 tool_curve: prepared.tool_curve(),
                 previous: prepared.previous(),
+                extent: prepared.extent(),
             })
         },
     )
@@ -362,6 +365,8 @@ pub struct EditedCircularCut {
     pub previous: ObjectId,
     /// Whether the published cut stops inside the part.
     pub leaves_a_floor: bool,
+    /// The intent the edited Cut stores: a stated depth or ThroughAll.
+    pub extent: ferritecad_document::CutExtent,
 }
 
 /// Changes the tool and depth of one saved circular cut, publishing a new copy.
@@ -402,6 +407,7 @@ pub fn edit_circular_cut_copy<K: GeometryKernel + ?Sized>(
                 tool_curve: prepared.tool_curve(),
                 previous: prepared.previous(),
                 leaves_a_floor: prepared.leaves_a_floor(),
+                extent: prepared.extent(),
             })
         },
     )

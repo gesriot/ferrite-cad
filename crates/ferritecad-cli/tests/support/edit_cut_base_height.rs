@@ -112,7 +112,7 @@ fn check_added(source: &Path, copy: &Path, height: f64, changed: bool) {
     let h = base.cut_history.as_ref().expect("history");
     let mut added = only_height(source, copy, base.feature, changed);
     for (i, t) in h.tools.iter().enumerate() {
-        if t.leaves_a_floor || t.depth_mm >= height {
+        if t.leaves_a_floor || t.extent.blind_depth_mm().expect("blind") >= height {
             continue;
         }
         for descendant in &h.tools[i..] {
@@ -163,7 +163,7 @@ fn check_added(source: &Path, copy: &Path, height: f64, changed: bool) {
     let now = now.cut_history.expect("history");
     for (old, new) in h.tools.iter().zip(&now.tools) {
         let mut old = old.clone();
-        old.leaves_a_floor = old.depth_mm < height;
+        old.leaves_a_floor = old.extent.blind_depth_mm().expect("blind") < height;
         assert_eq!(&old, new, "absolute tool data/UUIDs unchanged");
     }
     // The advertised catalogue is actionable for the next edit, not just labels.
@@ -188,7 +188,10 @@ fn check_added(source: &Path, copy: &Path, height: f64, changed: bool) {
             tool_curve: t.tool_curve,
             center_mm: t.center_mm,
             radius_mm: t.radius_mm,
-            depth_mm: t.depth_mm,
+            extent: CutExtent::Blind {
+                depth_mm: t.extent.blind_depth_mm().expect("blind"),
+            },
+            vocabulary: ExtentVocabulary::BlindOrThroughAll,
         },
     )
     .expect("next Cut edit");
@@ -375,7 +378,9 @@ fn native_height_transitions_refs_sql_cache_and_mesh() {
         let mut tools = history::tools(n);
         if pockets {
             for (i, t) in tools.iter_mut().enumerate() {
-                t.depth_mm = 3. + (i % 7) as f64;
+                t.extent = CutExtent::Blind {
+                    depth_mm: 3. + (i % 7) as f64,
+                };
             }
         }
         let source = base_sketch::measured_fixture(root.path(), &tools);
@@ -455,9 +460,11 @@ fn native_height_protected_floors_distant_depth_and_late_guards() {
     let root = tempfile::tempdir().expect("root");
     let mut tools = history::tools(16);
     for (i, t) in tools.iter_mut().enumerate() {
-        t.depth_mm = 3. + (i % 7) as f64;
+        t.extent = CutExtent::Blind {
+            depth_mm: 3. + (i % 7) as f64,
+        };
     }
-    tools[9].depth_mm = 12.;
+    tools[9].extent = CutExtent::Blind { depth_mm: 12. };
     let source = history::fixture(root.path(), &tools);
     let original = std::fs::read(&source).expect("source");
     let (reading, base) = choice(&source);

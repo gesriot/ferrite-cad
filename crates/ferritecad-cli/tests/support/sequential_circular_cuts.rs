@@ -11,12 +11,12 @@ const TOOLS: [CircularCut; 2] = [
     CircularCut {
         center_mm: [20., 20.],
         radius_mm: 5.,
-        depth_mm: 4.,
+        extent: CutExtent::Blind { depth_mm: 4. },
     },
     CircularCut {
         center_mm: [55., 30.],
         radius_mm: 7.,
-        depth_mm: 7.,
+        extent: CutExtent::Blind { depth_mm: 7. },
     },
 ];
 
@@ -26,7 +26,7 @@ fn ask(source: &Path, destination: &Path, cut: CircularCut, code: i32) -> Value 
     write(
         &request,
         &json!({"request_version":1,"center_mm":cut.center_mm,
-        "radius_mm":cut.radius_mm,"depth_mm":cut.depth_mm}),
+        "radius_mm":cut.radius_mm,"depth_mm":cut.extent.blind_depth_mm().expect("blind")}),
     );
     reply(
         cli()
@@ -174,12 +174,15 @@ fn measure_history_at(
         "Body must expose the final Cut"
     );
     let (count, volume) = kernel.shape_stats(final_shape).expect("stats");
-    let floors = tools.iter().filter(|t| t.depth_mm < height).count();
+    let floors = tools
+        .iter()
+        .filter(|t| t.extent.reach_mm(height) < height)
+        .count();
     assert_eq!(count, 6 + tools.len() as u64 + floors as u64);
     let exact = plate_volume
         - tools
             .iter()
-            .map(|t| PI * t.radius_mm.powi(2) * t.depth_mm)
+            .map(|t| PI * t.radius_mm.powi(2) * t.extent.reach_mm(height))
             .sum::<f64>();
     assert!((volume - exact).abs() < 1e-6, "{volume} != {exact}");
     for (index, feature) in std::iter::once(base)
@@ -193,12 +196,16 @@ fn measure_history_at(
         let exact = plate_volume
             - prior
                 .iter()
-                .map(|t| PI * t.radius_mm.powi(2) * t.depth_mm)
+                .map(|t| PI * t.radius_mm.powi(2) * t.extent.reach_mm(height))
                 .sum::<f64>();
         assert!((volume - exact).abs() < 1e-6, "historical volume {index}");
         assert_eq!(
             faces,
-            (6 + index + prior.iter().filter(|t| t.depth_mm < height).count()) as u64
+            (6 + index
+                + prior
+                    .iter()
+                    .filter(|t| t.extent.reach_mm(height) < height)
+                    .count()) as u64
         );
     }
     let mut meshes = BTreeMap::new();
@@ -329,7 +336,7 @@ fn measure_history_at(
                 assert!(
                     vertices
                         .iter()
-                        .all(|p| (p[2] - tool.depth_mm).abs() < ROUNDING_MM),
+                        .all(|p| (p[2] - tool.extent.reach_mm(height)).abs() < ROUNDING_MM),
                     "pocket floor became another cap"
                 );
                 assert!(vertices.iter().all(|p| {
@@ -365,8 +372,8 @@ fn measure_history_at(
                         .iter()
                         .map(|p| p[2])
                         .fold(f64::NEG_INFINITY, f64::max)
-                        - tool.depth_mm)
-                        .abs()
+                        - tool.extent.reach_mm(height))
+                    .abs()
                         < ROUNDING_MM
                 );
                 assert!(
@@ -429,8 +436,8 @@ fn native_four_pairs_keep_every_surface_origin_cold_and_cached() {
         for [d1, d2] in [[12., 12.], [12., 7.], [4., 12.], [4., 7.]] {
             let root = tempfile::tempdir().expect("root");
             let mut tools = TOOLS;
-            tools[0].depth_mm = d1;
-            tools[1].depth_mm = d2;
+            tools[0].extent = CutExtent::Blind { depth_mm: d1 };
+            tools[1].extent = CutExtent::Blind { depth_mm: d2 };
             if alternate {
                 tools[0].center_mm = [58., 17.];
                 tools[0].radius_mm = 3.5;
@@ -479,7 +486,10 @@ fn native_four_pairs_keep_every_surface_origin_cold_and_cached() {
                 );
             }
             assert_eq!(b["capabilities"].1.len(), a["capabilities"].1.len() + 1);
-            let named = 8 + tools.iter().filter(|t| t.depth_mm < SIZE[2]).count();
+            let named = 8 + tools
+                .iter()
+                .filter(|t| t.extent.blind_depth_mm().expect("blind") < SIZE[2])
+                .count();
             assert_eq!(
                 b["topology_refs"].1.len(),
                 a["topology_refs"].1.len() + named
@@ -573,12 +583,15 @@ fn native_each_tool_invalidates_only_its_dependent_chain() {
             e.previous.expect("first")
         };
         let mut changed = d.object(id).expect("read").expect("cut");
-        tools[index].depth_mm -= 1.;
+        tools[index].extent = CutExtent::Blind {
+            depth_mm: tools[index].extent.blind_depth_mm().expect("blind") - 1.,
+        };
         let ObjectPayload::Extrude(e) = &mut changed.payload else {
             panic!("cut")
         };
         e.end_condition = EndCondition::Blind {
-            distance: Expression::constant(tools[index].depth_mm).expect("depth"),
+            distance: Expression::constant(tools[index].extent.blind_depth_mm().expect("blind"))
+                .expect("depth"),
         };
         // Fixture-only write; this is explicitly not a public edit API.
         d.write(|w| {
@@ -632,7 +645,7 @@ fn sequential_discovery_and_refusals_without_native() {
             ..TOOLS[1]
         }, // external wall
         CircularCut {
-            depth_mm: 13.,
+            extent: CutExtent::Blind { depth_mm: 13. },
             ..TOOLS[1]
         },
     ] {
@@ -685,7 +698,7 @@ fn native_sequential_refusals_publish_nothing() {
             ..TOOLS[1]
         },
         CircularCut {
-            depth_mm: 13.,
+            extent: CutExtent::Blind { depth_mm: 13. },
             ..TOOLS[1]
         },
     ] {
@@ -743,7 +756,7 @@ fn native_sequential_refusals_publish_nothing() {
         CircularCut {
             center_mm: [40., 15.],
             radius_mm: 2.,
-            depth_mm: 3.,
+            extent: CutExtent::Blind { depth_mm: 3. },
         },
         0,
     );
@@ -805,8 +818,9 @@ fn check_history_mesh_at(m: &Mesh, tools: &[CircularCut], bounds: [[f64; 2]; 2],
         let CircularCut {
             center_mm: center,
             radius_mm: radius,
-            depth_mm: depth,
+            extent,
         } = *tool;
+        let depth = extent.reach_mm(height);
         // The bore wall exists, at the radius asked for and about the centre asked
         // for. A facet of the pocket's floor also has its corners on that circle —
         // the floor is a disc whose rim is the bore — so the wall is the part of it
@@ -891,12 +905,12 @@ fn check_history_mesh_at(m: &Mesh, tools: &[CircularCut], bounds: [[f64; 2]; 2],
     let exact = plate_volume
         - tools
             .iter()
-            .map(|t| PI * t.radius_mm.powi(2) * t.depth_mm)
+            .map(|t| PI * t.radius_mm.powi(2) * t.extent.reach_mm(height))
             .sum::<f64>();
     let upper = plate_volume
         - tools
             .iter()
-            .map(|t| PI * (t.radius_mm - LINEAR_MM).powi(2) * t.depth_mm)
+            .map(|t| PI * (t.radius_mm - LINEAR_MM).powi(2) * t.extent.reach_mm(height))
             .sum::<f64>();
     assert!(
         m.volume >= exact - 1e-3 && m.volume <= upper + 1e-3,
@@ -975,3 +989,6 @@ mod base_sketch;
 
 #[path = "edit_cut_base_height.rs"]
 mod base_height;
+
+#[path = "circular_cut_through_all.rs"]
+mod through_all;

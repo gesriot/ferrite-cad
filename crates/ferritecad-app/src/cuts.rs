@@ -7,7 +7,8 @@
 //! face to pick here and no attachment to choose, because this slice implements
 //! neither, and a control that suggested otherwise would be promising it.
 use ferritecad_document::{
-    CircularCut, CircularCutEdit, CutChoice, CutParameterChoice, DocumentVersion, ExtrudeEditSource,
+    CircularCut, CircularCutEdit, CutChoice, CutExtent, CutParameterChoice, DocumentVersion,
+    ExtentVocabulary, ExtrudeEditSource,
 };
 use ferritecad_jobs::{CircularCutRequest, EditCircularCutRequest};
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId};
@@ -26,6 +27,9 @@ struct Numbers {
     center_y: String,
     radius: String,
     depth: String,
+    /// The explicit end. Part of the same applied state as the numbers, so one
+    /// Apply and one Undo cover it; the depth text is kept while it is unused.
+    through_all: bool,
 }
 
 /// Only applied requests belong to history, never half-typed input.
@@ -84,12 +88,7 @@ impl Subject {
                     .as_ref()
                     .ok_or_else(|| CadError::input("unsupported cut to edit"))?;
                 let cut = numbers(typed)?;
-                choice.validate_edit(&CircularCutEdit {
-                    tool_curve: saved.tool_curve,
-                    center_mm: cut.center_mm,
-                    radius_mm: cut.radius_mm,
-                    depth_mm: cut.depth_mm,
-                })
+                choice.validate_edit(&edit_of(saved.tool_curve, &cut))
             }
         }
     }
@@ -171,7 +170,12 @@ impl Editor {
             center_x: saved.center_mm[0].to_string(),
             center_y: saved.center_mm[1].to_string(),
             radius: saved.radius_mm.to_string(),
-            depth: saved.depth_mm.to_string(),
+            depth: saved
+                .extent
+                .blind_depth_mm()
+                .map(|d| d.to_string())
+                .unwrap_or_default(),
+            through_all: saved.extent == CutExtent::ThroughAll,
         };
         self.open(path, source, Subject::Edit(Box::new(choice.clone())), typed)
     }
@@ -310,12 +314,12 @@ impl Editor {
                         .show(ui, |ui| {
                             for tool in tools {
                                 ui.small(format!(
-                                    "Cut {}: ({}, {}) r{}, depth {} mm",
+                                    "Cut {}: ({}, {}) r{}, {}",
                                     tool.feature,
                                     tool.center_mm[0],
                                     tool.center_mm[1],
                                     tool.radius_mm,
-                                    tool.depth_mm
+                                    describe(tool.extent)
                                 ));
                             }
                         });
@@ -323,8 +327,9 @@ impl Editor {
                 match &shown.editing {
                     None => {
                         ui.label(
-                            "A depth equal to the part's height cuts through it; less leaves a \
-                             pocket opening on the base side.",
+                            "A Blind depth equal to the part's height cuts through it; less \
+                             leaves a pocket opening on the base side. Through all stays \
+                             through whatever height the part is later given.",
                         );
                     }
                     Some(editing) => {
@@ -333,11 +338,11 @@ impl Editor {
                             editing.feature, editing.tool_sketch, editing.tool_curve
                         ));
                         ui.small(format!(
-                            "Saved: circle ({}, {}) r{} cut {} mm deep — {}",
+                            "Saved: circle ({}, {}) r{} {} — {}",
                             editing.center_mm[0],
                             editing.center_mm[1],
                             editing.radius_mm,
-                            editing.depth_mm,
+                            describe(editing.extent),
                             if editing.leaves_a_floor {
                                 "a pocket with a floor"
                             } else {
@@ -345,11 +350,12 @@ impl Editor {
                             },
                         ));
                         ui.label(if editing.through_allowed {
-                            "The depth may run to the part's height, cutting through it."
+                            "The depth may run to the part's height, or the cut may run \
+                             through all of it."
                         } else {
                             "This pocket's saved floor face is named by the document, so the \
-                             depth must stay below the part's height; cutting through would \
-                             destroy that name and is refused."
+                             depth must stay below the part's height; cutting through, by depth \
+                             or with Through all, would destroy that name and is refused."
                         });
                     }
                 }
@@ -384,7 +390,6 @@ impl Editor {
                         ("Centre X (mm):", &mut draft.typed.center_x),
                         ("Centre Y (mm):", &mut draft.typed.center_y),
                         ("Radius (mm):", &mut draft.typed.radius),
-                        ("Depth (mm):", &mut draft.typed.depth),
                     ] {
                         ui.horizontal(|ui| {
                             ui.label(label);
@@ -395,6 +400,27 @@ impl Editor {
                                     .desired_width(110.),
                             );
                         });
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("End:");
+                        ui.radio_value(&mut draft.typed.through_all, false, "Blind depth");
+                        ui.radio_value(&mut draft.typed.through_all, true, "Through all");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Depth (mm):");
+                        ui.add_enabled(
+                            !draft.typed.through_all,
+                            egui::TextEdit::singleline(&mut draft.typed.depth)
+                                .id_salt("Depth (mm):")
+                                .char_limit(32)
+                                .desired_width(110.),
+                        );
+                    });
+                    if draft.typed.through_all {
+                        ui.small(
+                            "Through all has no depth: its length follows the part's current \
+                             height at every rebuild.",
+                        );
                     }
                     if ui.button("Apply cut").clicked() {
                         match draft.subject.validate(&draft.typed) {
@@ -426,8 +452,11 @@ impl Editor {
                     match confirmed {
                         Some(cut) => {
                             ui.small(format!(
-                                "Ready: circle ({}, {}) r{} cut {} mm deep",
-                                cut.center_mm[0], cut.center_mm[1], cut.radius_mm, cut.depth_mm
+                                "Ready: circle ({}, {}) r{} {}",
+                                cut.center_mm[0],
+                                cut.center_mm[1],
+                                cut.radius_mm,
+                                describe(cut.extent)
                             ));
                             if ui.button("Save cut copy…").clicked() {
                                 match &shown.editing {
@@ -448,12 +477,7 @@ impl Editor {
                                             source: draft.source.clone(),
                                             expected: draft.version,
                                             cut: editing.feature,
-                                            edit: CircularCutEdit {
-                                                tool_curve: editing.tool_curve,
-                                                center_mm: cut.center_mm,
-                                                radius_mm: cut.radius_mm,
-                                                depth_mm: cut.depth_mm,
-                                            },
+                                            edit: edit_of(editing.tool_curve, &cut),
                                             destination: PathBuf::new(),
                                         })
                                     }
@@ -461,7 +485,7 @@ impl Editor {
                             }
                         }
                         None => {
-                            ui.small("Apply the four numbers before saving.");
+                            ui.small("Apply the numbers and the end before saving.");
                         }
                     }
                 });
@@ -498,7 +522,7 @@ struct Editing {
     tool_curve: StableEntityId,
     center_mm: [f64; 2],
     radius_mm: f64,
-    depth_mm: f64,
+    extent: CutExtent,
     leaves_a_floor: bool,
     through_allowed: bool,
 }
@@ -531,8 +555,8 @@ impl Subject {
                         tool_curve: saved.tool_curve,
                         center_mm: saved.center_mm,
                         radius_mm: saved.radius_mm,
-                        depth_mm: saved.depth_mm,
-                        leaves_a_floor: saved.depth_mm < saved.height_mm,
+                        extent: saved.extent,
+                        leaves_a_floor: saved.leaves_a_floor(),
                         through_allowed: saved.through_allowed(),
                     }),
                 })
@@ -541,10 +565,30 @@ impl Subject {
     }
 }
 
-/// The four boxes as one request, or the first reason they are not one.
+/// How a form names one Cut's end: a depth, or through all.
+fn describe(extent: CutExtent) -> String {
+    match extent {
+        CutExtent::Blind { depth_mm } => format!("cut {depth_mm} mm deep"),
+        CutExtent::ThroughAll => "cut through all".to_owned(),
+    }
+}
+
+/// The form can say either end, so its edits never refuse a saved ThroughAll.
+fn edit_of(tool_curve: StableEntityId, cut: &CircularCut) -> CircularCutEdit {
+    CircularCutEdit {
+        tool_curve,
+        center_mm: cut.center_mm,
+        radius_mm: cut.radius_mm,
+        extent: cut.extent,
+        vocabulary: ExtentVocabulary::BlindOrThroughAll,
+    }
+}
+
+/// The boxes and the end as one request, or the first reason they are not one.
 ///
 /// Parsed here and judged nowhere else: what a number that parses may be is the
-/// document's rule, asked through `validate_cut`.
+/// document's rule, asked through `validate_cut`. The depth box is not read at
+/// all for Through all, so text left in it can neither refuse nor leak in.
 fn numbers(typed: &Numbers) -> Result<CircularCut> {
     let read = |text: &str, what: &str| -> Result<f64> {
         text.trim()
@@ -557,7 +601,13 @@ fn numbers(typed: &Numbers) -> Result<CircularCut> {
             read(&typed.center_y, "centre Y")?,
         ],
         radius_mm: read(&typed.radius, "tool radius")?,
-        depth_mm: read(&typed.depth, "cut depth")?,
+        extent: if typed.through_all {
+            CutExtent::ThroughAll
+        } else {
+            CutExtent::Blind {
+                depth_mm: read(&typed.depth, "cut depth")?,
+            }
+        },
     })
 }
 
@@ -823,7 +873,7 @@ mod tests {
         assert_eq!(request.expected, source.version);
         assert_eq!(request.cut.center_mm, [20., 15.]);
         assert_eq!(request.cut.radius_mm, 5.);
-        assert_eq!(request.cut.depth_mm, 6.);
+        assert_eq!(request.cut.extent.blind_depth_mm().expect("blind"), 6.);
         assert!(e.take_request().is_none(), "one press, one request");
 
         // Cancelling leaves nothing behind and starts nothing.
@@ -941,7 +991,10 @@ mod tests {
             &input,
             format!(
                 r#"{{"request_version":1,"center_mm":[{},{}],"radius_mm":{},"depth_mm":{}}}"#,
-                cut.center_mm[0], cut.center_mm[1], cut.radius_mm, cut.depth_mm
+                cut.center_mm[0],
+                cut.center_mm[1],
+                cut.radius_mm,
+                cut.extent.blind_depth_mm().expect("blind")
             ),
         )
         .expect("input");
@@ -1039,7 +1092,7 @@ mod tests {
                 cut: CircularCut {
                     center_mm: [20., 15.],
                     radius_mm: 5.,
-                    depth_mm: depth,
+                    extent: CutExtent::Blind { depth_mm: depth },
                 },
                 destination: cut.clone(),
             },
@@ -1145,6 +1198,7 @@ mod tests {
                 center_y: "15".into(),
                 radius: "5".into(),
                 depth: "4".into(),
+                through_all: false,
             },
             "the first Undo restores the saved cut, not an empty creation form"
         );
@@ -1175,7 +1229,7 @@ mod tests {
         assert_eq!(request.edit.tool_curve, saved.tool_curve);
         assert_eq!(request.edit.center_mm, [30., 20.]);
         assert_eq!(request.edit.radius_mm, 8.);
-        assert_eq!(request.edit.depth_mm, 6.);
+        assert_eq!(request.edit.extent.blind_depth_mm().expect("blind"), 6.);
         assert!(e.take_edit_request().is_none(), "one press, one request");
         click(&ctx, &mut e, "Cancel cut draft");
         assert!(!e.active());
@@ -1250,7 +1304,7 @@ mod tests {
                 &CircularCut {
                     center_mm: [6. + (i % 4) as f64 * 14., 5. + (i / 4) as f64 * 9.],
                     radius_mm: 1.,
-                    depth_mm: 10.,
+                    extent: CutExtent::Blind { depth_mm: 10. },
                 },
             )
             .expect("tool");
@@ -1309,7 +1363,9 @@ mod tests {
                 &CircularCut {
                     center_mm: [45.1234567890123, 25.2345678901234],
                     radius_mm: 6.1234567890123,
-                    depth_mm: 7.1234567890123,
+                    extent: CutExtent::Blind {
+                        depth_mm: 7.1234567890123,
+                    },
                 },
             )
             .expect("second");
@@ -1321,7 +1377,9 @@ mod tests {
                     &CircularCut {
                         center_mm: [8.1234567890123, 31.2345678901234],
                         radius_mm: 2.1234567890123,
-                        depth_mm: 5.1234567890123,
+                        extent: CutExtent::Blind {
+                            depth_mm: 5.1234567890123,
+                        },
                     },
                 )
                 .expect("third");
@@ -1535,7 +1593,7 @@ mod tests {
                 edit.center_mm[0],
                 edit.center_mm[1],
                 edit.radius_mm,
-                edit.depth_mm
+                edit.extent.blind_depth_mm().expect("blind")
             ),
         )
         .expect("input");
@@ -1591,5 +1649,393 @@ mod tests {
             assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
         }
         assert_eq!(std::fs::read(&path).expect("source"), before);
+    }
+
+    /// Two references naming the same thing, identity aside.
+    fn same_meaning(
+        a: &ferritecad_document::TopologyRef,
+        b: &ferritecad_document::TopologyRef,
+    ) -> bool {
+        a.owner == b.owner
+            && a.producer_feature == b.producer_feature
+            && a.expected_kind == b.expected_kind
+            && a.output_role == b.output_role
+            && a.selection == b.selection
+            && a.fallback_signature == b.fallback_signature
+    }
+
+    /// A plate 60 × 40 × 10 with a Blind through hole, a pocket and a
+    /// ThroughAll Cut at the tip, at fractional numbers and off-axis order.
+    fn mixed() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
+        let (root, path, source) = plate();
+        let body = source.cut_bodies[0].body;
+        let mut d = Document::open(&path).expect("doc");
+        for (center, radius, extent) in [
+            ([15.25, 12.5], 3.125, CutExtent::Blind { depth_mm: 10. }),
+            ([40.125, 12.375], 4.25, CutExtent::Blind { depth_mm: 4.5 }),
+            ([30.5, 30.25], 2.625, CutExtent::ThroughAll),
+        ] {
+            let p = ferritecad_document::prepare_circular_cut(
+                &d,
+                body,
+                &CircularCut {
+                    center_mm: center,
+                    radius_mm: radius,
+                    extent,
+                },
+            )
+            .expect("cut");
+            d.write_circular_cut(&p).expect("write");
+        }
+        let source = ExtrudeEditSource::read(&d).expect("snapshot");
+        d.close().expect("close");
+        (root, path, source)
+    }
+
+    #[test]
+    fn native_through_all_widgets_worker_and_cli_keep_intent_draft_and_names() {
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: the ThroughAll cut worker needs OCCT");
+            return;
+        }
+        let (root, path, source) = mixed();
+        let before = std::fs::read(&path).expect("source");
+        let tip = source
+            .cut_features
+            .iter()
+            .filter_map(|c| c.saved.as_ref())
+            .find(|s| s.feature == s.tip_feature)
+            .expect("tip")
+            .clone();
+        let [first, _, last] = [0, 1, 2].map(|i| tip.tools[i].feature);
+        let ctx = egui::Context::default();
+
+        // A saved ThroughAll Cut opens as Through all, with no invented depth,
+        // and the disabled depth box cannot be typed into.
+        let mut e = Editor::default();
+        assert!(e.begin_edit(&path, &source, last));
+        for _ in 0..3 {
+            frame(&ctx, &mut e, false);
+        }
+        let draft = e.draft.as_ref().expect("draft");
+        assert!(draft.typed.through_all);
+        assert_eq!(draft.typed.depth, "");
+        let out = frame(&ctx, &mut e, false);
+        assert!(painted(&out, "cut through all — a hole through the part"));
+        assert!(painted(&out, "Through all has no depth"));
+        enter_field(&ctx, &mut e, "Depth (mm):", "7");
+        assert_eq!(e.draft.as_ref().expect("draft").typed.depth, "", "disabled");
+        e.dismiss();
+
+        // Blind through (first link) -> Through all: one Apply over centre,
+        // radius and end; the exact first Undo; Redo; Save Cancel keeps it.
+        assert!(e.begin_edit(&path, &source, first));
+        for _ in 0..3 {
+            frame(&ctx, &mut e, false);
+        }
+        let initial = e.draft.as_ref().expect("draft").typed.clone();
+        assert!(!initial.through_all);
+        enter_field(&ctx, &mut e, "Centre X (mm):", "14.75");
+        enter_field(&ctx, &mut e, "Radius (mm):", "3.375");
+        click(&ctx, &mut e, "Through all");
+        assert!(
+            !painted(&frame(&ctx, &mut e, false), "Save cut copy…"),
+            "choosing an end is not applying it"
+        );
+        click(&ctx, &mut e, "Apply cut");
+        let draft = e.draft.as_ref().expect("draft");
+        assert_eq!(draft.refusal, None);
+        assert_eq!(draft.history.undo.len(), 1, "one Apply, one step");
+        let confirmed = draft.typed.clone();
+        assert!(confirmed.through_all);
+        assert_eq!(confirmed.depth, "10", "the unused depth text is kept");
+        click(&ctx, &mut e, "Undo");
+        assert_eq!(
+            e.draft.as_ref().expect("draft").typed,
+            initial,
+            "exact first Undo"
+        );
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(e.draft.as_ref().expect("draft").typed, confirmed);
+        click(&ctx, &mut e, "Save cut copy…");
+        e.take_edit_request().expect("cancelled Save request");
+        assert_eq!(e.draft.as_ref().expect("draft").typed, confirmed);
+        click(&ctx, &mut e, "Save cut copy…");
+        let request = e.take_edit_request().expect("widget request");
+        assert_eq!(request.edit.extent, CutExtent::ThroughAll);
+        assert_eq!(request.edit.vocabulary, ExtentVocabulary::BlindOrThroughAll);
+        let (ui, peer) = worker_and_peer(
+            &root,
+            &path,
+            &source,
+            request,
+            e,
+            format!(
+                r#"{{"request_version":2,"tool_curve_id":"{}","center_mm":[14.75,12.5],"radius_mm":3.375,"extent":{{"kind":"through_all"}}}}"#,
+                tip.tools[0].tool_curve
+            ),
+            "intent",
+        );
+        // Same tool, same names: nothing added, nothing moved.
+        let source_doc = Document::open_read_only(&path).expect("source");
+        let a = Document::open_read_only(&ui).expect("worker copy");
+        assert_eq!(
+            a.topology_refs().expect("refs"),
+            source_doc.topology_refs().expect("refs")
+        );
+        a.close().expect("close");
+        source_doc.close().expect("close");
+        let _ = peer;
+
+        // ThroughAll (tip) -> Blind pocket: one own floor, through the same
+        // worker and the same request v2 on the CLI.
+        let mut e = Editor::default();
+        assert!(e.begin_edit(&path, &source, last));
+        for _ in 0..3 {
+            frame(&ctx, &mut e, false);
+        }
+        click(&ctx, &mut e, "Blind depth");
+        enter_field(&ctx, &mut e, "Depth (mm):", "3.25");
+        click(&ctx, &mut e, "Apply cut");
+        assert_eq!(e.draft.as_ref().expect("draft").refusal, None);
+        click(&ctx, &mut e, "Save cut copy…");
+        let request = e.take_edit_request().expect("widget request");
+        assert_eq!(request.edit.extent, CutExtent::Blind { depth_mm: 3.25 });
+        let (ui, peer) = worker_and_peer(
+            &root,
+            &path,
+            &source,
+            request,
+            e,
+            format!(
+                r#"{{"request_version":2,"tool_curve_id":"{}","center_mm":[30.5,30.25],"radius_mm":2.625,"extent":{{"kind":"blind","depth_mm":3.25}}}}"#,
+                tip.tools[2].tool_curve
+            ),
+            "pocket",
+        );
+        let source_doc = Document::open_read_only(&path).expect("source");
+        let old = source_doc.topology_refs().expect("refs");
+        for copy in [&ui, &peer] {
+            let d = Document::open_read_only(copy).expect("copy");
+            let refs = d.topology_refs().expect("refs");
+            assert!(old.iter().all(|r| refs.contains(r)), "no saved name moved");
+            let added: Vec<_> = refs.iter().filter(|r| !old.contains(r)).collect();
+            assert_eq!(added.len(), 1, "one own floor for the tip");
+            assert_eq!(added[0].owner, last);
+            assert_eq!(
+                added[0].output_role,
+                ferritecad_document::SemanticRole::ExtrudeCap {
+                    side: ferritecad_document::CapSide::End
+                }
+            );
+            d.close().expect("close");
+        }
+        source_doc.close().expect("close");
+        assert_eq!(std::fs::read(&path).expect("source"), before);
+    }
+
+    /// Publishes one edit through the app's worker (with the failed-Open
+    /// retention) and through the shipped CLI, and proves the two copies are
+    /// one document: every object equal, refs equal by full semantics, and
+    /// STL/FBX byte-identical.
+    fn worker_and_peer(
+        root: &tempfile::TempDir,
+        path: &Path,
+        source: &ExtrudeEditSource,
+        mut request: EditCircularCutRequest,
+        e: Editor,
+        cli_request: String,
+        label: &str,
+    ) -> (PathBuf, PathBuf) {
+        let ui = root.path().join(format!("{label}-worker.fcad"));
+        request.destination = ui.clone();
+        let feature = request.cut;
+        let extent = request.edit.extent;
+        let mut state = crate::edits::Edits::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        state
+            .start_cut_edit(request, move |r, g, c| {
+                crate::edits::spawn_cut_edit(r, c, move |result| {
+                    tx.send((g, result)).expect("reply")
+                })
+            })
+            .expect("worker");
+        let (generation, result) = rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("worker response");
+        let published = result.as_ref().expect("published").clone();
+        assert_eq!(published.feature, feature);
+        assert_eq!(published.extent, extent);
+        assert_eq!(
+            published.leaves_a_floor,
+            matches!(extent, CutExtent::Blind { depth_mm } if depth_mm < 10.)
+        );
+        let typed = e.draft.as_ref().expect("draft").typed.clone();
+        let mut editor = crate::sketch::Editor::default();
+        editor.cuts = e;
+        assert_eq!(
+            finish_cut_edit(&mut editor, &mut state, generation, result),
+            Some(ui.clone())
+        );
+        editor.draft_load_finished(&ui, false);
+        assert_eq!(
+            editor.cuts.draft.as_ref().expect("restored").typed,
+            typed,
+            "a refused Open restores the exact intent"
+        );
+
+        let input = root.path().join(format!("{label}-request.json"));
+        std::fs::write(&input, cli_request).expect("input");
+        let peer = root.path().join(format!("{label}-peer.fcad"));
+        let out = std::process::Command::new(crate::creates::tests::ferritecad())
+            .arg("edit-circular-cut")
+            .arg(path)
+            .arg("--feature")
+            .arg(feature.to_string())
+            .arg("--expect-version")
+            .arg(source.version.content.to_string())
+            .arg("--request")
+            .arg(input)
+            .arg("-o")
+            .arg(&peer)
+            .arg("--json")
+            .output()
+            .expect("peer");
+        assert!(out.status.success(), "{out:?}");
+
+        let a = Document::open_read_only(&ui).expect("worker copy");
+        let b = Document::open_read_only(&peer).expect("CLI copy");
+        assert_eq!(a.objects().expect("objects"), b.objects().expect("objects"));
+        let (mine, theirs) = (
+            a.topology_refs().expect("refs"),
+            b.topology_refs().expect("refs"),
+        );
+        assert_eq!(mine.len(), theirs.len());
+        for r in &mine {
+            assert!(
+                theirs.iter().any(|t| t.id == r.id && t == r)
+                    || theirs.iter().any(|t| same_meaning(t, r)),
+                "{r:?}"
+            );
+        }
+        a.close().expect("close");
+        b.close().expect("close");
+        for format in ["stl", "fbx"] {
+            let mut exports = Vec::new();
+            for model in [&ui, &peer] {
+                let output = model.with_extension(format);
+                let result = std::process::Command::new(crate::creates::tests::ferritecad())
+                    .arg(format!("export-{format}"))
+                    .arg(model)
+                    .arg("-o")
+                    .arg(&output)
+                    .arg("--json")
+                    .output()
+                    .expect("export");
+                assert!(result.status.success(), "{result:?}");
+                exports.push(std::fs::read(output).expect("export bytes"));
+            }
+            assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
+        }
+        (ui, peer)
+    }
+
+    #[test]
+    fn native_through_all_add_widgets_worker_and_cli_publish_one_part() {
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: the ThroughAll add worker needs OCCT");
+            return;
+        }
+        let (root, path, source) = plate();
+        let body = source.cut_bodies[0].body;
+        let ctx = egui::Context::default();
+        let mut e = Editor::default();
+        assert!(e.begin(&path, &source, body));
+        for _ in 0..3 {
+            frame(&ctx, &mut e, false);
+        }
+        fill(&ctx, &mut e, "20.375", "15.125", "5.25", "");
+        click(&ctx, &mut e, "Through all");
+        click(&ctx, &mut e, "Apply cut");
+        assert_eq!(e.draft.as_ref().expect("draft").refusal, None);
+        click(&ctx, &mut e, "Save cut copy…");
+        let mut request = e.take_request().expect("widget request");
+        assert_eq!(request.cut.extent, CutExtent::ThroughAll);
+        let ui = root.path().join("add-worker.fcad");
+        request.destination = ui.clone();
+        let mut state = crate::edits::Edits::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        state
+            .start_cut(request, move |r, g, c| {
+                crate::edits::spawn_cut(r, c, move |result| tx.send((g, result)).expect("reply"))
+            })
+            .expect("worker");
+        let (_, result) = rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("worker response");
+        assert_eq!(result.expect("published").extent, CutExtent::ThroughAll);
+        let input = root.path().join("add.json");
+        std::fs::write(
+            &input,
+            r#"{"request_version":2,"center_mm":[20.375,15.125],"radius_mm":5.25,"extent":{"kind":"through_all"}}"#,
+        )
+        .expect("input");
+        let peer = root.path().join("add-peer.fcad");
+        let out = std::process::Command::new(crate::creates::tests::ferritecad())
+            .arg("cut-circular-copy")
+            .arg(&path)
+            .arg("--body")
+            .arg(body.to_string())
+            .arg("--expect-version")
+            .arg(source.version.content.to_string())
+            .arg("--request")
+            .arg(input)
+            .arg("-o")
+            .arg(&peer)
+            .arg("--json")
+            .output()
+            .expect("peer");
+        assert!(out.status.success(), "{out:?}");
+        for format in ["stl", "fbx"] {
+            let mut exports = Vec::new();
+            for model in [&ui, &peer] {
+                let output = model.with_extension(format);
+                let result = std::process::Command::new(crate::creates::tests::ferritecad())
+                    .arg(format!("export-{format}"))
+                    .arg(model)
+                    .arg("-o")
+                    .arg(&output)
+                    .arg("--json")
+                    .output()
+                    .expect("export");
+                assert!(result.status.success(), "{result:?}");
+                exports.push(std::fs::read(output).expect("export bytes"));
+            }
+            assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
+        }
+        // Both copies store the intent at v3 with the capability, and no floor.
+        for copy in [&ui, &peer] {
+            let d = Document::open_read_only(copy).expect("copy");
+            let cut = d
+                .objects()
+                .expect("objects")
+                .into_iter()
+                .find(|o| matches!(&o.payload, ferritecad_document::ObjectPayload::Extrude(x) if x.previous.is_some()))
+                .expect("the cut");
+            assert_eq!(cut.payload.schema_version(), 3);
+            assert!(
+                !d.topology_refs()
+                    .expect("refs")
+                    .iter()
+                    .any(|r| r.owner == cut.id
+                        && r.output_role
+                            == ferritecad_document::SemanticRole::ExtrudeCap {
+                                side: ferritecad_document::CapSide::End
+                            })
+            );
+            d.close().expect("close");
+        }
     }
 }

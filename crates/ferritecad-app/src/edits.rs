@@ -72,7 +72,7 @@ impl Edits {
                         distance_mm: f.distance_mm,
                         refusal: f.refusal.clone(),
                         context: f.cut_history.as_ref().map(|h| format!(
-                            "Base of {} circular Cuts. Only the plate thickness changes; Cut depths remain absolute. Saved pocket floors must stay inside the plate.", h.tools.len())),
+                            "Base of {} circular Cuts. Blind depths stay fixed; Through all follows the plate thickness. Saved pocket floors must stay inside the plate.", h.tools.len())),
                     })
                     .collect(),
                 selected: None,
@@ -1261,7 +1261,9 @@ mod tests {
                     &CircularCut {
                         center_mm: [10. + (slot % 4) as f64 * 19., 7. + (slot / 4) as f64 * 12.],
                         radius_mm: 1.5 + (i % 5) as f64 * 0.25,
-                        depth_mm: if i % 2 == 0 { 12. } else { 3. + (i % 7) as f64 },
+                        extent: ferritecad_document::CutExtent::Blind {
+                            depth_mm: if i % 2 == 0 { 12. } else { 3. + (i % 7) as f64 },
+                        },
                     },
                 )
                 .expect("cut");

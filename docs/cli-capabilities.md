@@ -12,6 +12,18 @@ job. Глубины tools абсолютны; новые дна получают
 потеря сохранённого дна и выход глубины за толщину отказываются с UUID. Discovery
 `features[].base_height_edit` содержит typed контекст того же snapshot.
 
+§26H: [явный ThroughAll](circular-cut-through-all.md) у circular Cut. UI —
+`End: Blind depth / Through all` в прежних формах `Cut circle into…`/`Edit cut…`;
+CLI — request v2 тех же `cut-circular-copy`/`edit-circular-cut` с
+`extent:{"kind":"through_all"}`. Намерение хранится как `EndCondition::ThroughAll`
+(payload v3, `feature.through-all.v1`); длину evaluator берёт из текущей высоты
+базы, поэтому Cut остаётся сквозным после `edit-extrude`, reopen, cold rebuild и
+cache hit. Blind↔ThroughAll без потери дна сохраняет имена; ThroughAll→карман
+добавляет дно; карман с сохранённым дном→ThroughAll и request v1 на ThroughAll
+отказываются с UUID. Discovery: прежние v1-блоки не меняют типов и для истории
+с ThroughAll честно недоступны; новые `cut_edit_v2`, `circular_cut_edit_v2`,
+`base_height_edit_v2`, `cut_history_v2` несут `extent` и `request_versions`.
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.

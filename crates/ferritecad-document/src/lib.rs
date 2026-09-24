@@ -65,10 +65,10 @@ pub use circle_edit::{
     CircleChoice, CircleEdit, SavedCircle, circle_choices, replace_circle_geometry,
 };
 pub use cut_edit::{
-    CircularCut, CircularCutEdit, CutChoice, CutParameterChoice, MAX_CIRCULAR_CUTS, NewObject,
-    PreparedCircularCut, PreparedCutParameters, SavedCircularCut, SavedCutTarget, SavedCutTool,
-    WALL_CLEARANCE_MM, cut_choices, cut_parameter_choices, cut_plane_placement,
-    prepare_circular_cut, prepare_cut_parameters,
+    CircularCut, CircularCutEdit, CutChoice, CutExtent, CutParameterChoice, ExtentVocabulary,
+    MAX_CIRCULAR_CUTS, NewObject, PreparedCircularCut, PreparedCutParameters, SavedCircularCut,
+    SavedCutTarget, SavedCutTool, WALL_CLEARANCE_MM, cut_choices, cut_parameter_choices,
+    cut_plane_placement, prepare_circular_cut, prepare_cut_parameters,
 };
 pub use polygon::{AnnularExtrusion, CircleExtrusion, PolygonExtrusion};
 pub use sketch_edit::{
@@ -91,12 +91,12 @@ pub use graph::{Dependency, DependencyRole, evaluation_order};
 pub use model::{
     Body, CORE_CAPABILITY, CapSide, DatumPlane, EXTRUDE_CAP_EDGE_CAPABILITY,
     EXTRUDE_CAP_VERTEX_CAPABILITY, EXTRUDE_SWEEP_EDGE_CAPABILITY, EndCondition, EntityKind,
-    Expression, Extrude, FEATURE_PREDECESSOR_CAPABILITY, GeomSignature, IMPORTED_STEP_CAPABILITY,
-    ImportedDefinitionRef, ImportedStep, ImporterIdentity, ObjectKind, ObjectPayload, Parameter,
-    Point2, SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY, SKETCH_CONSTRAINTS_CAPABILITY,
-    STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch, SketchConstraint,
-    SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef, SketchPointSelector,
-    SketchSegmentRef, SolidOperation, TOPOLOGY_CARRIED_FACE_CAPABILITY,
+    Expression, Extrude, FEATURE_PREDECESSOR_CAPABILITY, FEATURE_THROUGH_ALL_CAPABILITY,
+    GeomSignature, IMPORTED_STEP_CAPABILITY, ImportedDefinitionRef, ImportedStep, ImporterIdentity,
+    ObjectKind, ObjectPayload, Parameter, Point2, SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
+    SKETCH_CONSTRAINTS_CAPABILITY, STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch,
+    SketchConstraint, SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef,
+    SketchPointSelector, SketchSegmentRef, SolidOperation, TOPOLOGY_CARRIED_FACE_CAPABILITY,
     TOPOLOGY_ORIGIN_FACE_CAPABILITY, TopologyRef,
 };
 pub use schema::{

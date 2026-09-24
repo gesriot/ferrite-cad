@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 //! CLI presentation and request decoding; the copy edit belongs to jobs.
 use clap::Args;
-use ferritecad_document::{CircularCutEdit, Document, DocumentVersion};
+use ferritecad_document::{
+    CircularCutEdit, CutExtent, Document, DocumentVersion, ExtentVocabulary,
+};
 use ferritecad_jobs::{EditCircularCutRequest, EditedCircularCut, edit_circular_cut_copy};
 use ferritecad_kernel::OperationContext;
 use ferritecad_types::{CadError, ContentHash, DocumentId, ObjectId, Result, StableEntityId};
@@ -19,7 +21,9 @@ pub struct EditCutArgs {
     #[arg(long)]
     expect_version: ContentHash,
     /// Request v1: the saved tool curve UUID, a new centre and radius in mm on
-    /// the part's own base XY plane, and a new finite depth in mm along +Z.
+    /// the part's own base XY plane, and a new finite Blind depth in mm along
+    /// +Z. Request v2 replaces the depth with an explicit `extent`. A v1
+    /// request is refused for a Cut saved as ThroughAll.
     #[arg(long)]
     request: PathBuf,
     /// New destination, never overwritten. No --force.
@@ -43,11 +47,58 @@ pub struct EditCutArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Input {
-    request_version: u32,
+    /// Read by `request_version` before this shape is chosen.
+    #[serde(rename = "request_version")]
+    _request_version: u32,
     tool_curve_id: StableEntityId,
     center_mm: [f64; 2],
     radius_mm: f64,
     depth_mm: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InputV2 {
+    #[serde(rename = "request_version")]
+    _request_version: u32,
+    tool_curve_id: StableEntityId,
+    center_mm: [f64; 2],
+    radius_mm: f64,
+    extent: crate::json::Extent,
+}
+
+/// Decodes request v1 or v2. What v1 could not say travels with the edit, so
+/// preparation refuses to read it as "make this ThroughAll Cut Blind".
+fn decode(bytes: &[u8]) -> Result<CircularCutEdit> {
+    match crate::json::request_version(bytes, "cut edit request")? {
+        1 => {
+            let input: Input = serde_json::from_slice(bytes)
+                .map_err(|e| CadError::input(format!("invalid cut edit request JSON: {e}")))?;
+            Ok(CircularCutEdit {
+                tool_curve: input.tool_curve_id,
+                center_mm: input.center_mm,
+                radius_mm: input.radius_mm,
+                extent: CutExtent::Blind {
+                    depth_mm: input.depth_mm,
+                },
+                vocabulary: ExtentVocabulary::BlindOnly,
+            })
+        }
+        2 => {
+            let input: InputV2 = serde_json::from_slice(bytes)
+                .map_err(|e| CadError::input(format!("invalid cut edit request JSON: {e}")))?;
+            Ok(CircularCutEdit {
+                tool_curve: input.tool_curve_id,
+                center_mm: input.center_mm,
+                radius_mm: input.radius_mm,
+                extent: input.extent.into(),
+                vocabulary: ExtentVocabulary::BlindOrThroughAll,
+            })
+        }
+        _ => Err(CadError::unsupported(
+            "unsupported cut edit request_version; expected 1 or 2",
+        )),
+    }
 }
 
 fn result(args: &EditCutArgs) -> Result<EditedCircularCut> {
@@ -63,13 +114,7 @@ fn result(args: &EditCutArgs) -> Result<EditedCircularCut> {
     if bytes.len() > 65536 {
         return Err(CadError::input("cut edit request exceeds 65536 bytes"));
     }
-    let input: Input = serde_json::from_slice(&bytes)
-        .map_err(|e| CadError::input(format!("invalid cut edit request JSON: {e}")))?;
-    if input.request_version != 1 {
-        return Err(CadError::unsupported(
-            "unsupported cut edit request_version; expected 1",
-        ));
-    }
+    let edit = decode(&bytes)?;
     // Identity only. The job compares the expected content against the exact
     // snapshot copied, and once more against the source path before publish.
     let document = Document::open_read_only(&args.source)?;
@@ -82,12 +127,7 @@ fn result(args: &EditCutArgs) -> Result<EditedCircularCut> {
         source: args.source.clone(),
         expected,
         cut: args.feature,
-        edit: CircularCutEdit {
-            tool_curve: input.tool_curve_id,
-            center_mm: input.center_mm,
-            radius_mm: input.radius_mm,
-            depth_mm: input.depth_mm,
-        },
+        edit,
         destination: args.output.clone(),
     };
     let mut kernel = ferritecad_occt::OcctKernel::new()?;
@@ -109,6 +149,7 @@ struct Published {
     tool_curve_id: StableEntityId,
     previous_feature_id: ObjectId,
     leaves_a_floor: bool,
+    extent: crate::json::Extent,
 }
 
 pub fn run(args: EditCutArgs) -> Result<ExitCode> {
@@ -125,6 +166,7 @@ pub fn run(args: EditCutArgs) -> Result<ExitCode> {
                 tool_curve_id: r.tool_curve,
                 previous_feature_id: r.previous,
                 leaves_a_floor: r.leaves_a_floor,
+                extent: r.extent.into(),
             }),
         ))
     } else {

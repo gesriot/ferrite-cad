@@ -316,3 +316,15 @@ if [ -n "${FCAD_CUT_HEIGHT_FBX_DIR:-}" ]; then
     done
     echo "FCAD_CUT_HEIGHT_UFBX_EXECUTED"
 fi
+
+# §26H reads two small height edits of mixed ThroughAll/Blind histories.
+if [ -n "${FCAD_CUT_THROUGH_ALL_FBX_DIR:-}" ]; then
+    for name in through-0 through-1; do
+        "$reader" --identity "$FCAD_CUT_THROUGH_ALL_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0$' "$work/$name-reader.txt"; then
+            echo "error: ThroughAll Cut FBX was not independently read: $name" >&2
+            exit 1
+        fi
+    done
+    echo "FCAD_CUT_THROUGH_ALL_UFBX_EXECUTED"
+fi

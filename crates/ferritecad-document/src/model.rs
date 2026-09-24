@@ -137,6 +137,22 @@ pub const TOPOLOGY_ORIGIN_FACE_CAPABILITY: &str = "topology.origin-face.v1";
 /// a body is still a v1 feature any build can rewrite.
 pub const FEATURE_PREDECESSOR_CAPABILITY: &str = "feature.predecessor.v1";
 
+/// The capability a Cut that runs through everything its body holds depends on.
+///
+/// `EndCondition::ThroughAll` has been a word in the v1 layout since the first
+/// extrusion, but no build before this one gave it a meaning for a Cut: those
+/// builds decode it and then refuse to rebuild, or would rewrite the history
+/// around it as if the number they could not find were missing. So the layout
+/// moves with the meaning, exactly as it did for `previous`: a Cut holding
+/// ThroughAll is stored at payload v3, which a build predating this one does
+/// not list in [`ObjectKind::readable_schema_versions`]. That build keeps the
+/// object verbatim and opens the document read-only; this capability is what
+/// makes the reason legible.
+///
+/// Declared only by a feature that actually holds it. A Blind Cut is still a
+/// v2 feature and a NewBody extrusion is still v1.
+pub const FEATURE_THROUGH_ALL_CAPABILITY: &str = "feature.through-all.v1";
+
 /// The capability an [`ImportedStep`] object depends on.
 ///
 /// Declared separately from [`CORE_CAPABILITY`] so a reader that understands
@@ -226,6 +242,11 @@ impl ObjectKind {
                 CORE_CAPABILITY.to_owned(),
                 FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
             ],
+            (Self::Extrude, 3) => vec![
+                CORE_CAPABILITY.to_owned(),
+                FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
+                FEATURE_THROUGH_ALL_CAPABILITY.to_owned(),
+            ],
             _ => vec![CORE_CAPABILITY.to_owned()],
         }
     }
@@ -245,7 +266,11 @@ impl ObjectKind {
                 SKETCH_CONSTRAINTS_CAPABILITY,
                 SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
             ],
-            Self::Extrude => &[CORE_CAPABILITY, FEATURE_PREDECESSOR_CAPABILITY],
+            Self::Extrude => &[
+                CORE_CAPABILITY,
+                FEATURE_PREDECESSOR_CAPABILITY,
+                FEATURE_THROUGH_ALL_CAPABILITY,
+            ],
             _ => &[CORE_CAPABILITY],
         }
     }
@@ -268,11 +293,11 @@ impl ObjectKind {
             // still written as themselves, because what a sketch is stored at
             // is decided by what it holds; see [`Sketch::schema_version`].
             Self::Sketch => 3,
-            // v2 added the feature a feature consumes. v1 extrusions are still
-            // read and still written as themselves, because what a feature is
-            // stored at is decided by what it holds; see
-            // [`Extrude::schema_version`].
-            Self::Extrude => 2,
+            // v2 added the feature a feature consumes; v3 gave a Cut the
+            // ThroughAll intent. v1 and v2 extrusions are still read and still
+            // written as themselves, because what a feature is stored at is
+            // decided by what it holds; see [`Extrude::schema_version`].
+            Self::Extrude => 3,
             _ => 1,
         }
     }
@@ -285,7 +310,7 @@ impl ObjectKind {
         match self {
             Self::ImportedStep => &[3, 2, 1],
             Self::Sketch => &[3, 2, 1],
-            Self::Extrude => &[2, 1],
+            Self::Extrude => &[3, 2, 1],
             _ => &[1],
         }
     }
@@ -957,8 +982,15 @@ impl Extrude {
     /// capable of writing; a feature that names a predecessor is v2, because a
     /// build that has not heard of `previous` would decode it, drop the field
     /// and write back a feature that starts a second body out of nowhere.
+    ///
+    /// A Cut that runs through everything is v3 for the same reason: a build
+    /// that reads v2 knows `previous` but not what ThroughAll means for a Cut.
     pub fn schema_version(&self) -> u32 {
-        if self.previous.is_some() { 2 } else { 1 }
+        match (&self.previous, &self.end_condition) {
+            (Some(_), EndCondition::ThroughAll) => 3,
+            (Some(_), _) => 2,
+            (None, _) => 1,
+        }
     }
 
     /// What a reader must implement to rewrite this feature. See

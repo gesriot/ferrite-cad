@@ -107,19 +107,16 @@ impl BaseHeightContext {
                 .ok_or_else(|| CadError::input("height context has no floor facts for a Cut"))?;
             // Losing a saved floor is reported with its protected UUIDs even if
             // the new wall would also leave that tool deeper than the plate.
-            floor_transition(
-                tool.feature,
-                &protected.references,
-                tool.depth_mm,
-                height_mm,
-            )?;
+            // ThroughAll has no floor at any height and is never "too deep";
+            // Blind depths stay absolute and keep both checks.
+            floor_transition(tool.feature, &protected.references, tool.extent, height_mm)?;
             crate::cut_edit::validate(
                 height_mm,
                 self.extents_mm,
                 &crate::CircularCut {
                     center_mm: tool.center_mm,
                     radius_mm: tool.radius_mm,
-                    depth_mm: tool.depth_mm,
+                    extent: tool.extent,
                 },
             )
             .map_err(|e| match e {
@@ -136,7 +133,7 @@ impl BaseHeightContext {
     fn added_references(&self, height_mm: f64) -> Vec<TopologyRef> {
         self.tools
             .iter()
-            .filter(|t| !t.leaves_a_floor && t.depth_mm < height_mm)
+            .filter(|t| !t.leaves_a_floor && t.extent.leaves_a_floor(height_mm))
             .flat_map(|t| added_floor_references(t.feature, &self.tools))
             .collect()
     }

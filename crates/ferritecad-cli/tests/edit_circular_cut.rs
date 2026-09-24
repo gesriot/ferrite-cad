@@ -9,7 +9,7 @@
 //! back: the geometry from the kernel, the solid from the exported bytes, the
 //! identities and the SQL from the file.
 #![allow(clippy::panic)]
-use ferritecad_document::{Document, ObjectPayload, SemanticRole, SketchGeometry};
+use ferritecad_document::{CutExtent, Document, ObjectPayload, SemanticRole, SketchGeometry};
 use ferritecad_kernel::{GeometryKernel, OperationContext};
 use serde_json::{Value, json};
 use std::{
@@ -368,7 +368,7 @@ fn write_cut_document(path: &Path, depth: f64) {
         &CircularCut {
             center_mm: CENTER,
             radius_mm: RADIUS,
-            depth_mm: depth,
+            extent: CutExtent::Blind { depth_mm: depth },
         },
     )
     .expect("the cut this build would make");

@@ -3481,3 +3481,31 @@ Save Cancel, publication/Open, protected-floor refusal and subsequent Cut/Sketch
 discovery passed: 201.001 MiB peak, exit 0, swap 0, one guarded viewer. SQL and
 STL/FBX match the CLI after mapping only new reference UUIDs. Remote head/merge
 checks are audited with publication; the original OOM cause remains unproved.
+
+**§26H — explicit ThroughAll for circular Cuts.**
+
+The existing Cut editor and `cut-circular-copy`/`edit-circular-cut` state an
+explicit end: Blind with a literal depth or ThroughAll. ThroughAll is stored as
+`EndCondition::ThroughAll` in an Extrude payload v3 declaring
+`feature.through-all.v1`, so builds up to §26G keep it verbatim and open the
+document read-only. The evaluator derives the tool length from the current base
+extrusion's forward Blind height on the same datum, so the Cut stays through
+after height edits, reopen, cold rebuilds and cache hits; the named Cut key
+feeds the intent and the tool key carries the computed length. One typed
+`CutExtent` serves catalogue, policy, writer re-derivation, UI and CLI.
+Blind-through ↔ ThroughAll keeps names, ThroughAll → pocket adds own/descendant
+floors, and protected pocket → ThroughAll or a request v1 aimed at ThroughAll
+refuses at preparation. Request v2 is added beside the unchanged v1. Discovery
+keeps every v1 block and type; a v1 block that cannot describe ThroughAll is
+unavailable where it was already nullable, and additive `_v2` blocks carry
+`extent` and `request_versions`.
+[Contract and recipe](circular-cut-through-all.md),
+[verification](circular-cut-through-all-verification.md). The 16-link limit and
+all clearances are unchanged. Independent review restored JSON v1 type
+compatibility, clarified height-form wording, and completed guarded macOS GUI
+checks including Undo/Redo, Save Cancel, publication/Open, base growth, floor
+refusal and adding ThroughAll. GUI/CLI STL and FBX match byte-for-byte; final
+viewer peak 215.376 MiB, exit 0, swap 0. Exact cloud-head CI logs independently
+confirm 183 native gates and 66 ufbx reads per OS; review/merge checks are audited
+with publication. [Full review evidence](circular-cut-through-all-verification.md#independent-macos-review--2026-09-24).
+

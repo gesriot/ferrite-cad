@@ -496,6 +496,12 @@ jobs:
             -- --exact --nocapture --test-threads=1 2>&1 | tee base-height-no-solver.log
           if grep -q 'skipped:' base-height-no-solver.log || ! grep -Fq "test $gate ... ok" base-height-no-solver.log; then exit 1; fi
 
+          # §26H: ThroughAll is computed from the base extrusion, not solved.
+          gate=sequential::through_all::occt_without_solver_keeps_through_all_through
+          FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release --no-default-features -p ferritecad-cli --test circular_cut "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee through-all-no-solver.log
+          if grep -q 'skipped:' through-all-no-solver.log || ! grep -Fq "test $gate ... ok" through-all-no-solver.log; then exit 1; fi
+
       - name: Build the real application and the command line tool against both
         id: build
         env:
@@ -1407,6 +1413,65 @@ jobs:
           if grep -q 'skipped:' base-height-ui.log || ! grep -Fq "test $gate ... ok" base-height-ui.log; then exit 1; fi
           echo "FCAD_CUT_HEIGHT_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
 
+      - name: Keep explicit ThroughAll Cuts through height, reopen and cache
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          CARGO_BUILD_JOBS: '1'
+          CMAKE_BUILD_PARALLEL_LEVEL: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          artifacts="$RUNNER_TEMP/cut-through-all"
+          mkdir -p "$artifacts"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH"; artifacts="$(cygpath -w "$artifacts")" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          export FCAD_CUT_THROUGH_ALL_ARTIFACTS="$artifacts"
+          cargo build --release --features planegcs -p ferritecad-cli
+          for gate in sequential::through_all::through_all_discovery_and_requests_without_kernel \
+            sequential::through_all::an_old_v1_consumer_reads_blind_unchanged_and_through_all_as_unavailable \
+            sequential::through_all::native_through_all_survives_height_reopen_cold_and_cache \
+            sequential::through_all::native_through_all_transitions_refs_sql_and_refusals \
+            sequential::through_all::native_new_consumer_routes_add_edit_height_and_sketch_through_v2
+          do
+            cargo test --release --features planegcs -p ferritecad-cli --test circular_cut "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee through-all-native.log
+            if grep -q 'skipped:' through-all-native.log || ! grep -Fq "test $gate ... ok" through-all-native.log; then exit 1; fi
+          done
+          for gate in cut_edit::tests::through_all_is_stored_as_intent_at_payload_v3_and_never_as_a_depth \
+            cut_edit::tests::mode_transitions_keep_add_or_refuse_names_before_anything_is_minted \
+            cut_edit::tests::the_writer_refuses_a_forged_end_or_a_forged_vocabulary \
+            cut_edit::tests::height_keeps_through_all_through_and_blind_depths_absolute
+          do
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-document --lib "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee through-all-writer.log
+            if grep -q 'skipped:' through-all-writer.log || ! grep -Fq "test $gate ... ok" through-all-writer.log; then exit 1; fi
+          done
+          for gate in convert::tests::a_through_all_tool_runs_exactly_the_reach_of_the_body_it_cuts \
+            convert::tests::through_all_without_a_stated_reach_or_on_another_datum_is_refused
+          do
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-eval --lib "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee through-all-eval.log
+            if grep -q 'skipped:' through-all-eval.log || ! grep -Fq "test $gate ... ok" through-all-eval.log; then exit 1; fi
+          done
+          gate=json::extent_tests::a_cut_extent_is_strict_in_both_kinds
+          cargo test --release --features planegcs -p ferritecad-cli --bin ferritecad "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee through-all-extent.log
+          if grep -q 'skipped:' through-all-extent.log || ! grep -Fq "test $gate ... ok" through-all-extent.log; then exit 1; fi
+          for gate in cuts::tests::native_through_all_widgets_worker_and_cli_keep_intent_draft_and_names \
+            cuts::tests::native_through_all_add_widgets_worker_and_cli_publish_one_part
+          do
+            cargo test --release --features planegcs -p ferritecad-app "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee through-all-ui.log
+            if grep -q 'skipped:' through-all-ui.log || ! grep -Fq "test $gate ... ok" through-all-ui.log; then exit 1; fi
+          done
+          echo "FCAD_CUT_THROUGH_ALL_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
+
       - name: Create, discover, edit and export through the JSON v1 CLI contract
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
@@ -1505,6 +1570,7 @@ jobs:
           grep -q '^FCAD_CUT_HISTORY_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CUT_BASE_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CUT_HEIGHT_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_CUT_THROUGH_ALL_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

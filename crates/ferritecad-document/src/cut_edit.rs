@@ -95,7 +95,71 @@ pub struct CutChoice {
 pub struct CircularCut {
     pub center_mm: [f64; 2],
     pub radius_mm: f64,
-    pub depth_mm: f64,
+    pub extent: CutExtent,
+}
+
+/// How far one circular Cut runs, as the person said it.
+///
+/// A stated Blind depth and a request to run through everything are different
+/// intents, and only one of them is a number. The length a ThroughAll tool
+/// actually has is computed by the evaluator from the current base at every
+/// rebuild and is never stored; [`reach_mm`][Self::reach_mm] is that length in
+/// this narrow class, for policy checks that must not confuse the two.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CutExtent {
+    /// A literal depth in mm along +Z from the base XY datum.
+    Blind { depth_mm: f64 },
+    /// Through everything the body holds, at whatever height it has.
+    ThroughAll,
+}
+
+impl CutExtent {
+    /// The stated depth, which a ThroughAll Cut does not have.
+    pub fn blind_depth_mm(self) -> Option<f64> {
+        match self {
+            Self::Blind { depth_mm } => Some(depth_mm),
+            Self::ThroughAll => None,
+        }
+    }
+
+    /// How far the tool reaches into a plate `height_mm` tall.
+    pub fn reach_mm(self, height_mm: f64) -> f64 {
+        match self {
+            Self::Blind { depth_mm } => depth_mm,
+            Self::ThroughAll => height_mm,
+        }
+    }
+
+    /// The one floor rule: only a Blind Cut shallower than the plate has one.
+    /// ThroughAll never has a floor, at any height.
+    pub fn leaves_a_floor(self, height_mm: f64) -> bool {
+        match self {
+            Self::Blind { depth_mm } => depth_mm < height_mm,
+            Self::ThroughAll => false,
+        }
+    }
+
+    /// The stored end condition. Never a depth standing in for ThroughAll.
+    fn end_condition(self) -> Result<EndCondition> {
+        Ok(match self {
+            Self::Blind { depth_mm } => EndCondition::Blind {
+                distance: Expression::constant(depth_mm)?,
+            },
+            Self::ThroughAll => EndCondition::ThroughAll,
+        })
+    }
+}
+
+/// What a request was able to say about the end of a Cut.
+///
+/// Request v1 has only a Blind depth. Taken to mean "make this Blind" it would
+/// silently turn a saved ThroughAll Cut into a Blind one, destroying an intent
+/// the client could not even see, so such a request is refused for a
+/// ThroughAll Cut instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtentVocabulary {
+    BlindOnly,
+    BlindOrThroughAll,
 }
 
 /// One validated model per snapshot, shared by add and edit discovery.
@@ -294,7 +358,7 @@ pub(crate) fn validate_base(
             &CircularCut {
                 center_mm: tool.center_mm,
                 radius_mm: tool.radius_mm,
-                depth_mm: tool.depth_mm,
+                extent: tool.extent,
             },
         )
         .map_err(|e| CadError::input(format!("Cut {}: {e}", tool.feature)))?;
@@ -345,12 +409,13 @@ pub(crate) fn validate(
     // The tool is a cylinder, judged by the policy every cylinder in this
     // build is judged by: finite centre, positive radius, positive height and
     // the published bound on all of them.
-    let tool = CircleExtrusion::new(cut.center_mm, cut.radius_mm, cut.depth_mm)?;
-    if cut.depth_mm > height_mm {
+    let tool = CircleExtrusion::new(cut.center_mm, cut.radius_mm, cut.extent.reach_mm(height_mm))?;
+    if let CutExtent::Blind { depth_mm } = cut.extent
+        && depth_mm > height_mm
+    {
         return Err(CadError::input(format!(
-            "a cut of {} mm into a part {} mm tall would run past it; this slice cuts to a depth \
-             the part has",
-            cut.depth_mm, height_mm
+            "a cut of {depth_mm} mm into a part {height_mm} mm tall would run past it; this slice \
+             cuts to a depth the part has"
         )));
     }
     let [[min_x, min_y], [max_x, max_y]] = extents_mm;
@@ -426,7 +491,11 @@ impl PreparedCircularCut {
     /// Whether this cut leaves a floor, which a cut all the way through does
     /// not. Reported rather than recomputed by a caller from the two numbers.
     pub fn leaves_a_floor(&self) -> bool {
-        self.cut.depth_mm < self.height_mm
+        self.cut.extent.leaves_a_floor(self.height_mm)
+    }
+    /// The intent the new Cut stores.
+    pub fn extent(&self) -> CutExtent {
+        self.cut.extent
     }
 }
 
@@ -608,9 +677,7 @@ pub fn prepare_circular_cut(
         name: "Cut".to_owned(),
         payload: ObjectPayload::Extrude(Extrude {
             profile: sketch_id,
-            end_condition: EndCondition::Blind {
-                distance: Expression::constant(cut.depth_mm)?,
-            },
+            end_condition: cut.extent.end_condition()?,
             reversed: false,
             operation: SolidOperation::Cut,
             // Not the body. See the module note: a feature names the result it
@@ -658,7 +725,7 @@ pub fn prepare_circular_cut(
         feature_id,
         tool_curve,
         &target.profile_segments,
-        cut.depth_mm < target.height_mm,
+        cut.extent.leaves_a_floor(target.height_mm),
         target.base_feature,
         &target.tools,
     );
@@ -697,13 +764,10 @@ pub(crate) fn rederive(document: &Document, prepared: &PreparedCircularCut) -> R
     let ObjectPayload::Extrude(extrude) = &prepared.feature.payload else {
         return Err(CadError::input("a prepared cut carries an Extrude"));
     };
-    let EndCondition::Blind { distance } = &extrude.end_condition else {
-        return Err(CadError::input("a prepared cut runs to a blind depth"));
-    };
     let stated = CircularCut {
         center_mm: [center.x, center.y],
         radius_mm: radius,
-        depth_mm: distance.value(),
+        extent: saved_extent(extrude, "prepared cut")?,
     };
 
     // Everything the document would produce for exactly those numbers. The
@@ -829,7 +893,8 @@ pub struct SavedCircularCut {
     pub tool_curve: StableEntityId,
     pub center_mm: [f64; 2],
     pub radius_mm: f64,
-    pub depth_mm: f64,
+    /// The saved intent: a stated depth, or through everything.
+    pub extent: CutExtent,
     /// How tall the part is, which is what a depth is measured against.
     pub height_mm: f64,
     /// The rectangle the part is, as `[[min_x, min_y], [max_x, max_y]]`.
@@ -851,26 +916,38 @@ pub struct SavedCutTool {
     pub tool_curve: StableEntityId,
     pub center_mm: [f64; 2],
     pub radius_mm: f64,
-    pub depth_mm: f64,
+    pub extent: CutExtent,
     pub leaves_a_floor: bool,
 }
 
 impl SavedCircularCut {
-    fn tool(&self) -> SavedCutTool {
+    /// This Cut as one entry of its history's tool list.
+    pub fn tool(&self) -> SavedCutTool {
         SavedCutTool {
             feature: self.feature,
             tool_sketch: self.tool_sketch,
             tool_curve: self.tool_curve,
             center_mm: self.center_mm,
             radius_mm: self.radius_mm,
-            depth_mm: self.depth_mm,
-            leaves_a_floor: self.depth_mm < self.height_mm,
+            extent: self.extent,
+            leaves_a_floor: self.extent.leaves_a_floor(self.height_mm),
         }
     }
-    /// Whether a cut of this depth leaves a floor. One rule, asked of the
+    /// Whether a cut of this extent leaves a floor. One rule, asked of the
     /// saved height rather than recomputed by each caller from two numbers.
-    fn floor_at(&self, depth_mm: f64) -> bool {
-        depth_mm < self.height_mm
+    fn floor_at(&self, extent: CutExtent) -> bool {
+        extent.leaves_a_floor(self.height_mm)
+    }
+    /// Whether the saved Cut stops inside the part.
+    pub fn leaves_a_floor(&self) -> bool {
+        self.floor_at(self.extent)
+    }
+    /// Request versions that can express this Cut without losing its intent.
+    pub fn request_versions(&self) -> &'static [u32] {
+        match self.extent {
+            CutExtent::Blind { .. } => &[1, 2],
+            CutExtent::ThroughAll => &[2],
+        }
     }
     /// Whether the depth may be raised to the part's height, cutting through.
     pub fn through_allowed(&self) -> bool {
@@ -900,7 +977,9 @@ pub struct CircularCutEdit {
     pub tool_curve: StableEntityId,
     pub center_mm: [f64; 2],
     pub radius_mm: f64,
-    pub depth_mm: f64,
+    pub extent: CutExtent,
+    /// What the request could have said; see [`ExtentVocabulary`].
+    pub vocabulary: ExtentVocabulary,
 }
 
 /// What an accepted edit does to the saved names, stated before anything is
@@ -962,6 +1041,15 @@ fn blind_literal(extrude: &Extrude, what: &str) -> Result<f64> {
         )));
     }
     Ok(distance.value())
+}
+
+/// The saved intent of one Cut: a literal Blind depth or ThroughAll. Anything
+/// else, including a formula, is refused rather than read as a number.
+fn saved_extent(extrude: &Extrude, what: &str) -> Result<CutExtent> {
+    match &extrude.end_condition {
+        EndCondition::ThroughAll => Ok(CutExtent::ThroughAll),
+        _ => blind_literal(extrude, what).map(|depth_mm| CutExtent::Blind { depth_mm }),
+    }
 }
 
 fn require_cut_operation(object: &ObjectRecord) -> Result<()> {
@@ -1132,11 +1220,11 @@ pub(crate) fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Re
         let SketchGeometry::Circle { center, radius } = curve.geometry else {
             return Err(unsupported("this slice edits a circular tool"));
         };
-        let depth_mm = blind_literal(cut, "cut")?;
+        let extent = saved_extent(cut, "cut")?;
         let numbers = CircularCut {
             center_mm: [center.x, center.y],
             radius_mm: radius,
-            depth_mm,
+            extent,
         };
         validate(height_mm, extents_mm, &numbers)?;
         for previous in &saved {
@@ -1166,7 +1254,7 @@ pub(crate) fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Re
             record.id,
             curve.id,
             &segments,
-            depth_mm < height_mm,
+            extent.leaves_a_floor(height_mm),
             base.id,
             &saved.iter().map(SavedCircularCut::tool).collect::<Vec<_>>(),
         );
@@ -1217,7 +1305,7 @@ pub(crate) fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Re
             tool_curve: curve.id,
             center_mm: numbers.center_mm,
             radius_mm: radius,
-            depth_mm,
+            extent,
             height_mm,
             extents_mm,
             floor_reference,
@@ -1299,29 +1387,26 @@ fn transition(saved: &SavedCircularCut, edit: &CircularCutEdit) -> Result<Transi
             "the request names a curve this Cut does not draw",
         ));
     }
-    validate(
-        saved.height_mm,
-        saved.extents_mm,
-        &CircularCut {
-            center_mm: edit.center_mm,
-            radius_mm: edit.radius_mm,
-            depth_mm: edit.depth_mm,
-        },
-    )?;
+    if edit.vocabulary == ExtentVocabulary::BlindOnly && saved.extent == CutExtent::ThroughAll {
+        return Err(unsupported(format!(
+            "Cut {} is saved as ThroughAll; request v1 can state only a Blind depth and would \
+             discard that intent; use request_version 2 with an explicit extent",
+            saved.feature
+        )));
+    }
+    let cut = CircularCut {
+        center_mm: edit.center_mm,
+        radius_mm: edit.radius_mm,
+        extent: edit.extent,
+    };
+    validate(saved.height_mm, saved.extents_mm, &cut)?;
     for other in saved.tools.iter().filter(|t| t.feature != saved.feature) {
-        validate_disks(
-            &CircularCut {
-                center_mm: edit.center_mm,
-                radius_mm: edit.radius_mm,
-                depth_mm: edit.depth_mm,
-            },
-            other,
-        )?;
+        validate_disks(&cut, other)?;
     }
     floor_transition(
         saved.feature,
         &saved.protected_floor_references,
-        edit.depth_mm,
+        edit.extent,
         saved.height_mm,
     )
 }
@@ -1330,10 +1415,10 @@ fn transition(saved: &SavedCircularCut, edit: &CircularCutEdit) -> Result<Transi
 pub(crate) fn floor_transition(
     feature: ObjectId,
     protected: &[StableEntityId],
-    depth_mm: f64,
+    extent: CutExtent,
     height_mm: f64,
 ) -> Result<Transition> {
-    let floor = depth_mm < height_mm;
+    let floor = extent.leaves_a_floor(height_mm);
     match (protected.is_empty(), floor) {
         (false, true) | (true, false) => Ok(Transition::Kept),
         (true, true) => Ok(Transition::FloorAppears),
@@ -1343,8 +1428,14 @@ pub(crate) fn floor_transition(
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(", ");
+            let reason = match extent {
+                CutExtent::Blind { depth_mm } => {
+                    format!("a depth of {depth_mm} mm in a part {height_mm} mm tall")
+                }
+                CutExtent::ThroughAll => "ThroughAll".to_owned(),
+            };
             Err(unsupported(format!(
-                "Cut {feature}: a depth of {depth_mm} mm in a part {height_mm} mm tall would remove the pocket floor; saved references [{protected}] cannot be deleted or moved to another face"
+                "Cut {feature}: {reason} would remove the pocket floor; saved references [{protected}] cannot be deleted or moved to another face"
             )))
         }
     }
@@ -1411,7 +1502,11 @@ impl PreparedCutParameters {
     }
     /// Whether the edited cut leaves a floor.
     pub fn leaves_a_floor(&self) -> bool {
-        self.saved.floor_at(self.edit.depth_mm)
+        self.saved.floor_at(self.edit.extent)
+    }
+    /// The intent the edited Cut stores.
+    pub fn extent(&self) -> CutExtent {
+        self.edit.extent
     }
 }
 
@@ -1451,11 +1546,11 @@ pub fn prepare_cut_parameters(
     let ObjectPayload::Extrude(extrude) = &mut cut.payload else {
         unreachable!("checked by saved_cut")
     };
-    // Exactly the depth. The profile, the operation, the predecessor and the
+    // Exactly the end. The profile, the operation, the predecessor and the
     // absence of a target body are the history, and this edit is not about it.
-    extrude.end_condition = EndCondition::Blind {
-        distance: Expression::constant(edit.depth_mm)?,
-    };
+    // The payload layout follows from what it now holds (v2 Blind, v3
+    // ThroughAll); the writer re-derives and records that, nothing else.
+    extrude.end_condition = edit.extent.end_condition()?;
 
     let added_references = match moved {
         Transition::Kept => Vec::new(),
@@ -1496,14 +1591,14 @@ pub(crate) fn rederive_parameters(
     let ObjectPayload::Extrude(extrude) = &prepared.feature.payload else {
         return Err(CadError::input("a prepared cut edit carries an Extrude"));
     };
-    let EndCondition::Blind { distance } = &extrude.end_condition else {
-        return Err(CadError::input("a prepared cut edit runs to a blind depth"));
-    };
     let stated = CircularCutEdit {
         tool_curve: curve.id,
         center_mm: [center.x, center.y],
         radius_mm: radius,
-        depth_mm: distance.value(),
+        extent: saved_extent(extrude, "prepared cut edit")?,
+        // Not in any payload: what the request could say is re-checked against
+        // the current saved Cut exactly as preparation checked it.
+        vocabulary: prepared.edit.vocabulary,
     };
 
     let mut checked = prepare_cut_parameters(document, prepared.feature.id, &stated)?;
@@ -1625,7 +1720,7 @@ mod tests {
         CircularCut {
             center_mm: [20., 15.],
             radius_mm: 5.,
-            depth_mm: depth,
+            extent: CutExtent::Blind { depth_mm: depth },
         }
     }
 
@@ -1697,8 +1792,8 @@ mod tests {
             vec![crate::CORE_CAPABILITY.to_owned()]
         );
         // A build that predates this one reads no v2 extrusion, which is the
-        // refusal that protects the data.
-        assert_eq!(ObjectKind::Extrude.readable_schema_versions(), &[2, 1]);
+        // refusal that protects the data; v3 is the ThroughAll Cut layout.
+        assert_eq!(ObjectKind::Extrude.readable_schema_versions(), &[3, 2, 1]);
     }
 
     #[test]
@@ -2069,7 +2164,7 @@ mod tests {
                 .validate_cut(&CircularCut {
                     center_mm: center,
                     radius_mm: 5.,
-                    depth_mm: 4.,
+                    extent: CutExtent::Blind { depth_mm: 4. },
                 })
                 .expect_err("a tool reaching the wall");
             assert_eq!(error.kind(), ErrorKind::Input, "{center:?}");
@@ -2079,7 +2174,7 @@ mod tests {
             .validate_cut(&CircularCut {
                 center_mm: [5.0 + 1e-3, 15.0],
                 radius_mm: 5.,
-                depth_mm: 4.,
+                extent: CutExtent::Blind { depth_mm: 4. },
             })
             .expect("clear of the wall");
         // Through is the deepest a cut goes here, and it is allowed.
@@ -2106,7 +2201,8 @@ mod tests {
             tool_curve: saved.tool_curve,
             center_mm: [30., 20.],
             radius_mm: 7.5,
-            depth_mm: depth,
+            extent: CutExtent::Blind { depth_mm: depth },
+            vocabulary: ExtentVocabulary::BlindOrThroughAll,
         }
     }
     fn only(d: &Document) -> SavedCircularCut {
@@ -2124,7 +2220,7 @@ mod tests {
         assert_eq!(saved.feature, feature);
         assert_eq!(saved.center_mm, [20., 15.]);
         assert_eq!(saved.radius_mm, 5.);
-        assert_eq!(saved.depth_mm, 4.);
+        assert_eq!(saved.extent.blind_depth_mm().expect("blind"), 4.);
         assert_eq!(saved.height_mm, 10.);
         assert_eq!(saved.extents_mm, [[0., 0.], [60., 40.]]);
         assert!(saved.floor_reference.is_some(), "a pocket has a floor");
@@ -2230,7 +2326,7 @@ mod tests {
         assert_eq!(after.floor_reference, saved.floor_reference);
         assert_eq!(after.center_mm, [30., 20.]);
         assert_eq!(after.radius_mm, 7.5);
-        assert_eq!(after.depth_mm, 6.);
+        assert_eq!(after.extent.blind_depth_mm().expect("blind"), 6.);
         assert!(d.validate().expect("validated").is_ok());
 
         // Only two payloads moved, and only their payload cells.
@@ -2390,7 +2486,8 @@ mod tests {
                         tool_curve: saved.tool_curve,
                         center_mm: center,
                         radius_mm: radius,
-                        depth_mm: 4.,
+                        extent: CutExtent::Blind { depth_mm: 4. },
+                        vocabulary: ExtentVocabulary::BlindOrThroughAll,
                     }
                 )
                 .is_err(),
@@ -2553,7 +2650,7 @@ mod tests {
         let second = CircularCut {
             center_mm: [45., 25.],
             radius_mm: 6.,
-            depth_mm: 7.,
+            extent: CutExtent::Blind { depth_mm: 7. },
         };
         let honest = prepare_circular_cut(&d, saved.body, &second).expect("second");
         let objects = d.objects().expect("objects");
@@ -2609,7 +2706,9 @@ mod tests {
                     &CircularCut {
                         center_mm: [45., 25.],
                         radius_mm: 6.,
-                        depth_mm: second_depth,
+                        extent: CutExtent::Blind {
+                            depth_mm: second_depth,
+                        },
                     },
                 )
                 .expect("second");
@@ -2626,7 +2725,8 @@ mod tests {
                         tool_curve: saved.tool_curve,
                         center_mm: saved.center_mm,
                         radius_mm: saved.radius_mm,
-                        depth_mm: 3.,
+                        extent: CutExtent::Blind { depth_mm: 3. },
+                        vocabulary: ExtentVocabulary::BlindOrThroughAll,
                     };
                     assert_eq!(
                         saved.previous_feature,
@@ -2639,7 +2739,7 @@ mod tests {
                     assert_eq!(saved.tip_feature, second);
                     let before = d.content_version().expect("version");
                     let honest = prepare_cut_parameters(&d, saved.feature, &edit).expect("edit");
-                    let count = if saved.depth_mm == 10. {
+                    let count = if saved.extent.blind_depth_mm().expect("blind") == 10. {
                         if saved.feature == first { 2 } else { 1 }
                     } else {
                         0
@@ -2703,7 +2803,8 @@ mod tests {
                         &d,
                         saved.feature,
                         &CircularCutEdit {
-                            depth_mm: 10.,
+                            extent: CutExtent::Blind { depth_mm: 10. },
+                            vocabulary: ExtentVocabulary::BlindOrThroughAll,
                             ..edit
                         },
                     )
@@ -2730,7 +2831,7 @@ mod tests {
             let cut = CircularCut {
                 center_mm: [10. + (i % 4) as f64 * 20., 10. + (i / 4) as f64 * 20.],
                 radius_mm: 2.,
-                depth_mm: 10.,
+                extent: CutExtent::Blind { depth_mm: 10. },
             };
             let p = prepare_circular_cut(&d, body, &cut).expect("link");
             ids.push(p.feature.id);
@@ -2754,7 +2855,8 @@ mod tests {
                 tool_curve: saved.tool_curve,
                 center_mm: saved.center_mm,
                 radius_mm: saved.radius_mm,
-                depth_mm: 3.,
+                extent: CutExtent::Blind { depth_mm: 3. },
+                vocabulary: ExtentVocabulary::BlindOrThroughAll,
             };
             let p = prepare_cut_parameters(&d, saved.feature, &edit).expect("floor");
             assert_eq!(p.added_references.len(), 16 - index);
@@ -2938,7 +3040,9 @@ mod tests {
                 &CircularCut {
                     center_mm: [10. + (slot % 4) as f64 * 19., 7. + (slot / 4) as f64 * 12.],
                     radius_mm: 1.5 + (i % 5) as f64 * 0.25,
-                    depth_mm: if i % 2 == 0 { 12. } else { 3. + (i % 7) as f64 },
+                    extent: CutExtent::Blind {
+                        depth_mm: if i % 2 == 0 { 12. } else { 3. + (i % 7) as f64 },
+                    },
                 },
             )
             .expect("cut");
@@ -3045,7 +3149,8 @@ mod tests {
                 tool_curve: tool.tool_curve,
                 center_mm: tool.center_mm,
                 radius_mm: tool.radius_mm,
-                depth_mm: 5.,
+                extent: CutExtent::Blind { depth_mm: 5. },
+                vocabulary: ExtentVocabulary::BlindOrThroughAll,
             },
         )
         .expect("edit far tool");
@@ -3064,5 +3169,311 @@ mod tests {
         let error = crate::prepare_extrude_height(&d, base, 14.).expect_err("typed read error");
         assert_eq!(error.kind(), ferritecad_types::ErrorKind::Io);
         assert!(error.source().is_some(), "SQLite cause survives");
+    }
+
+    fn through(saved: &SavedCircularCut) -> CircularCutEdit {
+        CircularCutEdit {
+            tool_curve: saved.tool_curve,
+            center_mm: saved.center_mm,
+            radius_mm: saved.radius_mm,
+            extent: CutExtent::ThroughAll,
+            vocabulary: ExtentVocabulary::BlindOrThroughAll,
+        }
+    }
+
+    fn capability_rows(d: &Document) -> Vec<(i64, String)> {
+        let conn = rusqlite::Connection::open(d.path()).expect("sqlite");
+        let mut statement = conn
+            .prepare("SELECT rowid,name FROM capabilities ORDER BY rowid")
+            .expect("rows");
+        statement
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("query")
+            .collect::<std::result::Result<_, _>>()
+            .expect("rows")
+    }
+
+    #[test]
+    fn through_all_is_stored_as_intent_at_payload_v3_and_never_as_a_depth() {
+        let (_root, mut d, body) = plate(rectangle(), 10.);
+        let prepared = prepare_circular_cut(
+            &d,
+            body,
+            &CircularCut {
+                extent: CutExtent::ThroughAll,
+                ..cut(4.)
+            },
+        )
+        .expect("a ThroughAll cut");
+        let ObjectPayload::Extrude(feature) = &prepared.feature().payload else {
+            panic!("a cut is an extrusion")
+        };
+        assert_eq!(feature.end_condition, EndCondition::ThroughAll);
+        assert!(!prepared.leaves_a_floor());
+        assert!(
+            !prepared
+                .references()
+                .iter()
+                .any(|r| r.output_role == SemanticRole::ExtrudeCap { side: CapSide::End }),
+            "ThroughAll names no floor"
+        );
+        assert_eq!(prepared.feature().payload.schema_version(), 3);
+        assert_eq!(
+            prepared.feature().payload.required_capabilities(),
+            vec![
+                crate::CORE_CAPABILITY.to_owned(),
+                crate::FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
+                crate::FEATURE_THROUGH_ALL_CAPABILITY.to_owned(),
+            ]
+        );
+        d.write_circular_cut(&prepared).expect("write");
+        assert!(d.validate().expect("validate").is_ok());
+        assert!(
+            capability_rows(&d)
+                .iter()
+                .any(|(_, n)| n == crate::FEATURE_THROUGH_ALL_CAPABILITY),
+            "the document declares what a reader needs"
+        );
+        let saved = only(&d);
+        assert_eq!(saved.extent, CutExtent::ThroughAll);
+        assert_eq!(saved.extent.blind_depth_mm(), None);
+        assert!(saved.floor_reference.is_none() && saved.through_allowed());
+        assert_eq!(saved.request_versions(), &[2]);
+
+        // The envelope contract is checked both ways: a v2 header over a
+        // ThroughAll payload tells an older build it may rewrite it.
+        let objects = d.objects().expect("objects");
+        let stored = objects
+            .iter()
+            .find(|o| o.id == prepared.feature().id)
+            .expect("stored cut");
+        let lying = crate::Envelope::encode(
+            "feature.extrude".to_owned(),
+            2,
+            vec![
+                crate::CORE_CAPABILITY.to_owned(),
+                crate::FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
+            ],
+            match &stored.payload {
+                ObjectPayload::Extrude(e) => e,
+                _ => panic!("extrusion"),
+            },
+        )
+        .expect("encode")
+        .to_bytes()
+        .expect("bytes");
+        assert!(ObjectPayload::from_storage_bytes(&lying).is_err());
+    }
+
+    #[test]
+    fn mode_transitions_keep_add_or_refuse_names_before_anything_is_minted() {
+        // Blind through -> ThroughAll -> Blind through: no name changes.
+        let (_root, mut d, feature) = cut_plate(10.);
+        let saved = only(&d);
+        assert!(saved.through_allowed() && saved.floor_reference.is_none());
+        let rows = capability_rows(&d);
+        let refs = d.topology_refs().expect("refs");
+        let p = prepare_cut_parameters(&d, feature, &through(&saved)).expect("intent");
+        assert!(p.added_references().is_empty(), "same tool, same names");
+        assert_eq!(p.feature().payload.schema_version(), 3);
+        d.write_cut_parameters(&p).expect("write");
+        assert_eq!(d.topology_refs().expect("refs"), refs);
+        let after = capability_rows(&d);
+        assert_eq!(&after[..rows.len()], rows.as_slice(), "rowids kept");
+        assert_eq!(
+            after[rows.len()..]
+                .iter()
+                .map(|(_, n)| n.as_str())
+                .collect::<Vec<_>>(),
+            vec![crate::FEATURE_THROUGH_ALL_CAPABILITY],
+            "exactly one new index row"
+        );
+        let objects = d.objects().expect("objects");
+        let row = objects.iter().find(|o| o.id == feature).expect("cut");
+        assert_eq!(
+            crate::Envelope::from_bytes(row.storage_bytes())
+                .expect("header")
+                .schema_version,
+            3
+        );
+        assert!(d.validate().expect("validate").is_ok());
+
+        // Request v1 cannot say ThroughAll and must not erase it.
+        let through_saved = only(&d);
+        let v1 = CircularCutEdit {
+            vocabulary: ExtentVocabulary::BlindOnly,
+            ..moved(&through_saved, 10.)
+        };
+        let refused = prepare_cut_parameters(&d, feature, &v1).expect_err("v1 on ThroughAll");
+        assert!(
+            refused.to_string().contains(&feature.to_string()),
+            "{refused}"
+        );
+        assert!(
+            refused.to_string().contains("request_version 2"),
+            "{refused}"
+        );
+
+        // ThroughAll -> Blind through keeps every name and returns to v2.
+        let back = prepare_cut_parameters(
+            &d,
+            feature,
+            &CircularCutEdit {
+                extent: CutExtent::Blind { depth_mm: 10. },
+                ..through(&through_saved)
+            },
+        )
+        .expect("back");
+        assert!(back.added_references().is_empty());
+        assert_eq!(back.feature().payload.schema_version(), 2);
+
+        // ThroughAll -> pocket adds its own floor and nothing else.
+        let pocket =
+            prepare_cut_parameters(&d, feature, &moved(&through_saved, 4.)).expect("pocket");
+        assert_eq!(
+            pocket
+                .added_references()
+                .iter()
+                .map(|r| r.output_role.clone())
+                .collect::<Vec<_>>(),
+            vec![SemanticRole::ExtrudeCap { side: CapSide::End }]
+        );
+        d.write_cut_parameters(&pocket).expect("pocket write");
+        assert!(d.validate().expect("validate").is_ok());
+
+        // A pocket with saved floor names refuses ThroughAll at preparation,
+        // with the Cut and every protected UUID.
+        let with_floor = only(&d);
+        assert!(!with_floor.through_allowed());
+        let refused = prepare_cut_parameters(&d, feature, &through(&with_floor))
+            .expect_err("protected floor");
+        let message = refused.to_string();
+        assert!(message.contains(&feature.to_string()), "{message}");
+        assert!(message.contains("ThroughAll"), "{message}");
+        for id in &with_floor.protected_floor_references {
+            assert!(message.contains(&id.to_string()), "{message}");
+        }
+    }
+
+    #[test]
+    fn the_writer_refuses_a_forged_end_or_a_forged_vocabulary() {
+        let (_root, mut d, feature) = cut_plate(10.);
+        let saved = only(&d);
+        let honest = prepare_cut_parameters(&d, feature, &through(&saved)).expect("intent");
+
+        // The payload says Blind, the edit says ThroughAll.
+        let mut forged = honest.clone();
+        if let ObjectPayload::Extrude(e) = &mut forged.feature.payload {
+            e.end_condition = EndCondition::Blind {
+                distance: Expression::constant(10.).expect("literal"),
+            };
+        }
+        d.write_cut_parameters(&forged).expect_err("end forged");
+
+        // A ThroughAll payload with a v1 vocabulary the saved Cut rejects.
+        d.write_cut_parameters(&honest).expect("honest");
+        let now = only(&d);
+        let mut forged = prepare_cut_parameters(
+            &d,
+            feature,
+            &CircularCutEdit {
+                center_mm: [21., 15.],
+                ..through(&now)
+            },
+        )
+        .expect("still ThroughAll");
+        forged.edit.vocabulary = ExtentVocabulary::BlindOnly;
+        forged.edit.extent = CutExtent::Blind { depth_mm: 10. };
+        d.write_cut_parameters(&forged)
+            .expect_err("vocabulary forged");
+
+        // Only the vocabulary forged: a legitimate ThroughAll -> Blind edit
+        // relabelled as request v1, which could never have said it.
+        let legit = prepare_cut_parameters(
+            &d,
+            feature,
+            &CircularCutEdit {
+                extent: CutExtent::Blind { depth_mm: 10. },
+                ..through(&now)
+            },
+        )
+        .expect("v2 may leave ThroughAll");
+        let mut relabelled = legit.clone();
+        relabelled.edit.vocabulary = ExtentVocabulary::BlindOnly;
+        let before = d.content_version().expect("version");
+        d.write_cut_parameters(&relabelled)
+            .expect_err("a v1 label on a ThroughAll edit");
+        assert_eq!(
+            d.content_version().expect("version"),
+            before,
+            "nothing written"
+        );
+        d.write_cut_parameters(&legit).expect("the honest edit");
+    }
+
+    #[test]
+    fn height_keeps_through_all_through_and_blind_depths_absolute() {
+        let (_root, mut d, body) = plate([[0., 0.], [80., 0.], [80., 50.], [0., 50.]], 12.);
+        for (center, extent) in [
+            ([10.125, 7.625], CutExtent::ThroughAll),
+            ([29.125, 7.625], CutExtent::Blind { depth_mm: 12. }),
+            ([48.125, 7.625], CutExtent::Blind { depth_mm: 4.5 }),
+        ] {
+            let p = prepare_circular_cut(
+                &d,
+                body,
+                &CircularCut {
+                    center_mm: center,
+                    radius_mm: 1.75,
+                    extent,
+                },
+            )
+            .expect("cut");
+            d.write_circular_cut(&p).expect("write");
+        }
+        let history = saved_history(&d, &d.objects().expect("objects")).expect("history");
+        let [through_all, blind_through, pocket] = [0, 1, 2].map(|i| history.cuts[i].feature);
+        let base = history.target.base_feature;
+
+        // Growing: only the Blind through hole gains a floor, at its own
+        // producer and at the one later producer.
+        let grown = crate::prepare_extrude_height(&d, base, 14.25).expect("grow");
+        let owners: Vec<_> = grown
+            .added_references()
+            .iter()
+            .map(|r| (r.owner, r.output_role.clone()))
+            .collect();
+        assert_eq!(
+            owners,
+            vec![
+                (
+                    blind_through,
+                    SemanticRole::ExtrudeCap { side: CapSide::End }
+                ),
+                (
+                    pocket,
+                    SemanticRole::OriginCap {
+                        origin_feature: blind_through,
+                        side: CapSide::End
+                    }
+                ),
+            ]
+        );
+        assert!(owners.iter().all(|(o, _)| *o != through_all));
+        d.write_extrude_height(&grown).expect("grown");
+        let after = saved_history(&d, &d.objects().expect("objects")).expect("history");
+        assert_eq!(after.cuts[0].extent, CutExtent::ThroughAll);
+        assert!(!after.cuts[0].leaves_a_floor(), "ThroughAll stays through");
+        assert!(after.cuts[1].leaves_a_floor(), "Blind 12 is now a pocket");
+
+        // Shrinking below the pocket depth refuses the whole publication, with
+        // the far Cut named; ThroughAll never refuses a height.
+        let refused = crate::prepare_extrude_height(&d, base, 4.).expect_err("too shallow");
+        assert!(
+            refused.to_string().contains(&pocket.to_string())
+                || refused.to_string().contains(&blind_through.to_string()),
+            "{refused}"
+        );
+        crate::prepare_extrude_height(&d, base, 13.).expect("a smaller valid height");
     }
 }

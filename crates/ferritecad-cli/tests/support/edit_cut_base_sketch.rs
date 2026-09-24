@@ -717,7 +717,10 @@ fn base_refuses_invalid_history_and_rechecks_current_tools_without_kernel() {
             tool_curve: far.tool_curve,
             center_mm: [76., far.center_mm[1]],
             radius_mm: far.radius_mm,
-            depth_mm: far.depth_mm,
+            extent: CutExtent::Blind {
+                depth_mm: far.extent.blind_depth_mm().expect("blind"),
+            },
+            vocabulary: ExtentVocabulary::BlindOrThroughAll,
         },
     )
     .expect("move tool within original plate");

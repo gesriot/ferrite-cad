@@ -56,7 +56,7 @@ fn edit_command(source: &Path, dest: &Path, saved: &SavedCircularCut, cut: Circu
     write(
         &request,
         &json!({"request_version":1,"tool_curve_id":saved.tool_curve,
-        "center_mm":cut.center_mm,"radius_mm":cut.radius_mm,"depth_mm":cut.depth_mm}),
+        "center_mm":cut.center_mm,"radius_mm":cut.radius_mm,"depth_mm":cut.extent.blind_depth_mm().expect("blind")}),
     );
     let mut c = cli();
     c.arg(EDIT)
@@ -163,8 +163,8 @@ fn native_either_cut_edits_all_numbers_in_all_four_pairs() {
     for [d1, d2] in [[12., 12.], [12., 7.], [4., 12.], [4., 7.]] {
         let root = tempfile::tempdir().expect("root");
         let mut tools = TOOLS;
-        tools[0].depth_mm = d1;
-        tools[1].depth_mm = d2;
+        tools[0].extent = CutExtent::Blind { depth_mm: d1 };
+        tools[1].extent = CutExtent::Blind { depth_mm: d2 };
         let source = two(root.path(), tools);
         let original = std::fs::read(&source).expect("bytes");
         measure(&source, tools, Some([Miss; 3]));
@@ -181,7 +181,9 @@ fn native_either_cut_edits_all_numbers_in_all_four_pairs() {
                     changed[index].radius_mm += 0.625;
                 }
                 if mode == 2 || mode == 3 {
-                    changed[index].depth_mm = if index == 0 { 3.25 } else { 5.5 };
+                    changed[index].extent = CutExtent::Blind {
+                        depth_mm: if index == 0 { 3.25 } else { 5.5 },
+                    };
                 }
                 let copy = root.path().join(format!("edit-{index}-{mode}.fcad"));
                 let result = edit(&source, &copy, &saved, changed[index], 0);
@@ -190,7 +192,9 @@ fn native_either_cut_edits_all_numbers_in_all_four_pairs() {
                     json!(saved.previous_feature)
                 );
                 assert_eq!(result["result"]["feature_id"], json!(saved.feature));
-                let adds = if tools[index].depth_mm == 12. && changed[index].depth_mm < 12. {
+                let adds = if tools[index].extent.blind_depth_mm().expect("blind") == 12.
+                    && changed[index].extent.blind_depth_mm().expect("blind") < 12.
+                {
                     if index == 0 { 2 } else { 1 }
                 } else {
                     0
@@ -284,7 +288,8 @@ fn discovery_and_protected_floors_need_no_kernel() {
                 tool_curve: s.tool_curve,
                 center_mm: s.center_mm,
                 radius_mm: s.radius_mm,
-                depth_mm: 12.,
+                extent: CutExtent::Blind { depth_mm: 12. },
+                vocabulary: ExtentVocabulary::BlindOrThroughAll,
             },
         )
         .expect_err("protected floor before kernel");
@@ -385,7 +390,8 @@ fn discovery_and_protected_floors_need_no_kernel() {
                         tool_curve: saved.tool_curve,
                         center_mm: saved.center_mm,
                         radius_mm: saved.radius_mm,
-                        depth_mm: 3.
+                        extent: CutExtent::Blind { depth_mm: 3. },
+                        vocabulary: ExtentVocabulary::BlindOrThroughAll,
                     }
                 )
                 .is_err()
@@ -414,7 +420,10 @@ pub(super) fn history_refusals(count: usize) {
         } else {
             super::history::tools(count)
                 .into_iter()
-                .map(|t| CircularCut { depth_mm: 4., ..t })
+                .map(|t| CircularCut {
+                    extent: CutExtent::Blind { depth_mm: 4. },
+                    ..t
+                })
                 .collect()
         };
         let root = tempfile::tempdir().expect("root");
@@ -424,7 +433,7 @@ pub(super) fn history_refusals(count: usize) {
         let original = std::fs::read(&source).expect("source");
         for cut in [
             CircularCut {
-                depth_mm: 12.,
+                extent: CutExtent::Blind { depth_mm: 12. },
                 ..tools[index]
             },
             CircularCut {
@@ -437,7 +446,7 @@ pub(super) fn history_refusals(count: usize) {
             },
         ] {
             let error = edit(&source, &never, &saved, cut, 2);
-            if cut.depth_mm == 12. {
+            if cut.extent.blind_depth_mm().expect("blind") == 12. {
                 for id in &saved.protected_floor_references {
                     assert!(error.to_string().contains(&id.to_string()));
                 }
@@ -463,7 +472,7 @@ pub(super) fn history_refusals(count: usize) {
         }
         let delivered = root.path().join("lost-report.fcad");
         let mut changed = tools.clone();
-        changed[index].depth_mm = 3.;
+        changed[index].extent = CutExtent::Blind { depth_mm: 3. };
         assert_eq!(
             edit_command(&source, &delivered, &saved, changed[index])
                 .stdout(pipe::closed_pipe())
@@ -510,7 +519,8 @@ pub(super) fn history_refusals(count: usize) {
                 tool_curve: saved.tool_curve,
                 center_mm: saved.center_mm,
                 radius_mm: saved.radius_mm,
-                depth_mm: 3.,
+                extent: CutExtent::Blind { depth_mm: 3. },
+                vocabulary: ExtentVocabulary::BlindOrThroughAll,
             },
         };
         copy_late_guards(
@@ -546,7 +556,7 @@ fn occt_without_solver_edits_both_history_links() {
     let source = two(root.path(), TOOLS);
     for index in 0..2 {
         let mut changed = TOOLS;
-        changed[index].depth_mm = 3.;
+        changed[index].extent = CutExtent::Blind { depth_mm: 3. };
         let copy = root.path().join(format!("mixed-{index}.fcad"));
         edit(&source, &copy, &selected(&source, index), changed[index], 0);
         measure(&copy, changed, None);

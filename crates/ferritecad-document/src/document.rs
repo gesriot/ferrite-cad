@@ -1005,8 +1005,11 @@ impl Document {
     /// claims and reissues its ownership, which a centre, a radius and a depth
     /// have no business doing. What each row is allowed to change is stated
     /// here and checked before the transaction opens: the payload and its hash,
-    /// and nothing else — not the kind, not the schema version, not the
-    /// capabilities the payload declares.
+    /// and nothing else — not the kind, and for the tool Sketch not the schema
+    /// version or capabilities either. The one exception is the Cut's own end:
+    /// Blind is payload v2 and ThroughAll is v3 with `feature.through-all.v1`,
+    /// so a change of intent moves that row's `schema_version` column and, when
+    /// the document did not yet declare it, adds that one capability row.
     pub fn write_cut_parameters(&mut self, prepared: &crate::PreparedCutParameters) -> Result<()> {
         // The rows the preparation read must still be the rows that are here.
         for (record, what) in [
@@ -1031,34 +1034,51 @@ impl Document {
         // payload that declared something else would need capability rows this
         // write does not add, so it is refused rather than written.
         let mut writes = Vec::new();
+        let mut declared = Vec::new();
         for (record, what) in [
             (prepared.tool_sketch(), "tool Sketch"),
             (prepared.feature(), "Cut"),
         ] {
             let stored = Envelope::from_bytes(record.storage_bytes())?;
-            if record.payload.type_name() != stored.type_name
-                || record.payload.schema_version() != stored.schema_version
-                || record.payload.required_capabilities() != stored.required_capabilities
-            {
+            let version = record.payload.schema_version();
+            let same_contract = version == stored.schema_version
+                && record.payload.required_capabilities() == stored.required_capabilities;
+            // Only a Cut, only between its two layouts, and only because its end
+            // changed: the payload decides its own layout and the writer's
+            // re-derivation has already proved the payload is the edit's.
+            let end_changed = matches!(
+                &record.payload,
+                ObjectPayload::Extrude(e) if e.previous.is_some()
+            ) && [2, 3].contains(&version)
+                && [2, 3].contains(&stored.schema_version);
+            if record.payload.type_name() != stored.type_name || !(same_contract || end_changed) {
                 return Err(CadError::input(format!(
                     "a cut edit may change only the numbers of the saved {what}"
                 )));
             }
+            if !same_contract {
+                declared.extend(record.payload.required_capabilities());
+            }
             let bytes = record.payload.to_storage_bytes()?;
             let hash = ContentHash::of_bytes(&bytes);
-            writes.push((record.id, bytes, hash));
+            writes.push((record.id, version, bytes, hash));
         }
         let added = prepared.added_references().to_vec();
         self.write_checked_transaction(
             |document| crate::cut_edit::rederive_parameters(document, prepared),
             move |writer| {
                 require_fresh_cut_ids(writer.tx, added.iter().map(|r| r.id.to_bytes()))?;
-                for (id, bytes, hash) in &writes {
+                for (id, version, bytes, hash) in &writes {
                     let changed = writer
                         .tx
                         .execute(
-                            "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
-                            params![bytes, hash.as_bytes().as_slice(), id.to_bytes().as_slice()],
+                            "UPDATE objects SET schema_version=?1,payload=?2,payload_hash=?3 WHERE id=?4",
+                            params![
+                                version,
+                                bytes,
+                                hash.as_bytes().as_slice(),
+                                id.to_bytes().as_slice()
+                            ],
                         )
                         .map_err(|e| CadError::io("writing edited cut parameters", e))?;
                     if changed != 1 {
@@ -1071,6 +1091,21 @@ impl Document {
                 // floor. Losing one is refused long before here.
                 for reference in &added {
                     writer.put_topology_ref(reference)?;
+                }
+                // Upserted one by one, as the constraint writer does: an existing
+                // row keeps its rowid, and a ThroughAll -> Blind edit leaves the
+                // index row that access never reads in place of the envelopes.
+                for name in &declared {
+                    if name == crate::CORE_CAPABILITY {
+                        continue;
+                    }
+                    writer
+                        .tx
+                        .execute(
+                            "INSERT INTO capabilities(name,required) VALUES(?1,1) ON CONFLICT(name) DO UPDATE SET required=1 WHERE required<>1",
+                            params![name],
+                        )
+                        .map_err(|e| CadError::io("recording cut end capability", e))?;
                 }
                 // Keep the ordinary edit timestamp, without rebuilding capability
                 // rows or reclaiming unrelated data. Both payload contracts are
