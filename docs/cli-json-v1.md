@@ -261,15 +261,23 @@ JSON v1 (envelope, `operation`, exit 0/2/7) не меняется. Для `cut-c
 Cut и `request_version 2`): v1 не может выразить это намерение и не должен
 тихо превратить его в Blind.
 
-Discovery аддитивна. Каждый DTO инструмента (`target.tools`, `existing_cut`,
-`saved.tools`, `neighboring_tool`, `base_height_edit.tools`) и
-`circular_cut_edit.saved` получают `extent`: `{"kind":"blind","depth_mm":d}` или
-`{"kind":"through_all"}`. `depth_mm` у Blind прежний; у ThroughAll — `null`:
-глубина не указывалась, а вычисленная высота выдала бы ThroughAll за Blind.
-Документы прежних сборок ThroughAll не содержат, поэтому их вывод не меняется.
-`saved.request_versions` — `[1,2]` для Blind и `[2]` для ThroughAll;
-`bodies[].cut_edit.target.request_versions` — `[1,2]`. `leaves_a_floor` у
-ThroughAll всегда false при любой высоте. Result обеих команд получает `extent`.
+Прежние блоки discovery не меняют ни полей, ни типов: `depth_mm` остаётся
+обязательным числом. Блоки `bodies[].cut_edit`, `features[].circular_cut_edit`,
+`features[].base_height_edit` и `sketches[].cut_history` не могут описать
+историю, где есть ThroughAll Cut (у него нет Blind-глубины), и сообщают это так,
+как им уже было позволено: `cut_edit.target`/`circular_cut_edit.saved` — `null`
+при `available:false` и `refusal`, называющем блок `_v2`; `base_height_edit` и
+`cut_history` — `null`. Вычисленная высота никогда не выдаётся за Blind-глубину.
+На документах без ThroughAll прежние блоки побайтно совпадают с выводом §26G.
+
+Аддитивные блоки `bodies[].cut_edit_v2`, `features[].circular_cut_edit_v2`,
+`features[].base_height_edit_v2` и `sketches[].cut_history_v2` присутствуют
+всегда и повторяют форму прежних, но у каждого инструмента (`tools`,
+`existing_cut`, `neighboring_tool`) и у `saved` вместо `depth_mm` стоит `extent`:
+`{"kind":"blind","depth_mm":d}` или `{"kind":"through_all"}`; `target`/`saved`
+получают `request_versions` (`[1,2]` для добавления и Blind, `[2]` для
+ThroughAll). `leaves_a_floor` у ThroughAll всегда false. Result обеих команд
+получает аддитивное `extent`.
 [Контракт §26H и исполняемый рецепт](circular-cut-through-all.md).
 
 ## Правка сохранённой кольцевой пары (§25M)

@@ -132,21 +132,30 @@ ThroughAll Cut is refused during preparation: v1 can only state a Blind depth,
 and applying it would silently destroy the intent (`CircularCutEdit.vocabulary
 = BlindOnly`). Adding with v1 creates Blind as before.
 
-Discovery is additive. Every tool DTO (`tools`, `existing_cut`,
-`neighboring_tool`, `base_height_edit.tools`) and `circular_cut_edit.saved`
-gain `extent` (`{"kind":"blind","depth_mm":d}` or `{"kind":"through_all"}`);
-`circular_cut_edit.saved` and `bodies[].cut_edit.target` gain
-`request_versions`. For a Blind tool `depth_mm` keeps its type and value. For a
-ThroughAll tool `depth_mm` is `null`: no Blind depth was stated, and reporting
-the computed height there would present ThroughAll as Blind to an old client.
-No document an earlier build can produce contains a ThroughAll Cut, so every
-existing document yields the same fields and values as before; a v1 client that
-meets a new document fails on `null` or is refused on submit rather than
-round-tripping a height as a Blind depth. `saved.request_versions` is `[1, 2]`
-for Blind and `[2]` for ThroughAll; the add target reports `[1, 2]`. Responses
-of both commands gain `extent`; existing fields and exits 0/2/7 are unchanged.
-The CLI constructs the kernel before the job, as before: a stub CLI refuses on
-the kernel after request parsing and before any document-domain check.
+Discovery keeps every JSON v1 block **exactly** as it was and adds explicitly
+versioned blocks beside them. The v1 blocks — `bodies[].cut_edit`,
+`features[].circular_cut_edit`, `features[].base_height_edit` and
+`sketches[].cut_history` — spell a tool's end as the required number
+`depth_mm`, and that type is their contract. A ThroughAll Cut has no Blind
+depth, so a v1 block that would have to list one cannot describe the history:
+it reports that in the way it was already allowed to. `cut_edit.target` and
+`circular_cut_edit.saved` become `null` with `available:false` and a `refusal`
+naming the `_v2` block; `base_height_edit` and `cut_history` (already nullable
+objects without a reason slot) become `null`. The computed height is never
+reported as a Blind depth, and no v1 field changes type. On a document without
+ThroughAll every v1 block is byte-for-byte what §26G printed.
+
+The additive blocks `bodies[].cut_edit_v2`, `features[].circular_cut_edit_v2`,
+`features[].base_height_edit_v2` and `sketches[].cut_history_v2` have the same
+shape as their v1 counterparts except that each tool (`tools`, `existing_cut`,
+`neighboring_tool`) and `saved` carry `extent`
+(`{"kind":"blind","depth_mm":d}` or `{"kind":"through_all"}`) in place of
+`depth_mm`, and `target`/`saved` carry `request_versions` (`[1,2]` for add and
+for a Blind Cut, `[2]` for a ThroughAll Cut). They are present for every
+document. Responses of both commands gain `extent`; existing fields and exits
+0/2/7 are unchanged. The CLI constructs the kernel before the job, as before:
+a stub CLI refuses on the kernel after request parsing and before any
+document-domain check.
 
 ### UI
 
@@ -213,8 +222,8 @@ def add(source, dest, center, radius, extent, code=0):
 
 def saved_cuts(path):
     c = catalog(path)
-    tip = [f["circular_cut_edit"]["saved"] for f in c["features"]
-           if f["circular_cut_edit"]["saved"]]
+    tip = [f["circular_cut_edit_v2"]["saved"] for f in c["features"]
+           if f["circular_cut_edit_v2"]["saved"]]
     return c, tip[0]["tools"] if tip else [], {s["feature_id"]: s for s in tip}
 
 def edit(source, dest, feature, center, radius, extent, code=0, version=2):
@@ -231,7 +240,7 @@ def edit(source, dest, feature, center, radius, extent, code=0, version=2):
 
 def height(source, dest, h, code=0):
     c = catalog(source)
-    base = [f for f in c["features"] if f["base_height_edit"] is not None][0]
+    base = [f for f in c["features"] if f["base_height_edit_v2"] is not None][0]
     return run(["edit-extrude", source, "--feature", base["feature_id"],
                 "--expect-version", c["content_version"], "--distance-mm", h,
                 "-o", dest, "--json"], code)
@@ -340,8 +349,12 @@ for count in (1, 2, 4, 16):
         tools.append((center, radius, extent)); src = dest
     c, ordered, saved = saved_cuts(src)
     assert [t["extent"] for t in ordered] == [t[2] for t in tools]
-    for t in ordered:
-        assert (t["depth_mm"] is None) == (t["extent"]["kind"] == "through_all")
+    assert "depth_mm" not in ordered[0]
+    # A v1 reader of the same catalogue is told, not misled.
+    if any(t[2] == THROUGH for t in tools):
+        v1 = catalog(src)
+        assert v1["bodies"][0]["cut_edit"]["target"] is None
+        assert "cut_edit_v2" in v1["bodies"][0]["cut_edit"]["refusal"]
     measure(src, tools, H0)
     # Height grows: ThroughAll stays through, Blind(12) becomes a pocket.
     grown = root / f"h{count}-grown.fcad"

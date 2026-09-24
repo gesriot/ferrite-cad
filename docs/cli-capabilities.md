@@ -20,8 +20,9 @@ CLI — request v2 тех же `cut-circular-copy`/`edit-circular-cut` с
 базы, поэтому Cut остаётся сквозным после `edit-extrude`, reopen, cold rebuild и
 cache hit. Blind↔ThroughAll без потери дна сохраняет имена; ThroughAll→карман
 добавляет дно; карман с сохранённым дном→ThroughAll и request v1 на ThroughAll
-отказываются с UUID. Discovery: `extent`, `depth_mm:null` у ThroughAll,
-`request_versions`.
+отказываются с UUID. Discovery: прежние v1-блоки не меняют типов и для истории
+с ThroughAll честно недоступны; новые `cut_edit_v2`, `circular_cut_edit_v2`,
+`base_height_edit_v2`, `cut_history_v2` несут `extent` и `request_versions`.
 
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`

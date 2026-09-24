@@ -3495,8 +3495,10 @@ feeds the intent and the tool key carries the computed length. One typed
 `CutExtent` serves catalogue, policy, writer re-derivation, UI and CLI.
 Blind-through ↔ ThroughAll keeps names, ThroughAll → pocket adds own/descendant
 floors, and protected pocket → ThroughAll or a request v1 aimed at ThroughAll
-refuses at preparation. Request v2 is added beside the unchanged v1; discovery
-gains `extent`, `request_versions` and `depth_mm:null` for ThroughAll only.
+refuses at preparation. Request v2 is added beside the unchanged v1. Discovery
+keeps every v1 block and type; a v1 block that cannot describe ThroughAll is
+unavailable where it was already nullable, and additive `_v2` blocks carry
+`extent` and `request_versions`.
 [Contract and recipe](circular-cut-through-all.md),
 [verification](circular-cut-through-all-verification.md). The 16-link limit and
 all clearances are unchanged. GUI verification is pending independent review.

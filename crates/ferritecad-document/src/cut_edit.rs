@@ -921,7 +921,8 @@ pub struct SavedCutTool {
 }
 
 impl SavedCircularCut {
-    fn tool(&self) -> SavedCutTool {
+    /// This Cut as one entry of its history's tool list.
+    pub fn tool(&self) -> SavedCutTool {
         SavedCutTool {
             feature: self.feature,
             tool_sketch: self.tool_sketch,

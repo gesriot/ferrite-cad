@@ -106,7 +106,9 @@ struct Sketch {
     sketch_id: ObjectId,
     name: Option<String>,
     vertices: Option<Vec<SketchVertex>>,
-    cut_history: Option<SketchCutHistory>,
+    /// v1: `null` also when the history holds a ThroughAll Cut; see `cut_history_v2`.
+    cut_history: Option<SketchCutHistory<BlindDepth>>,
+    cut_history_v2: Option<SketchCutHistory<ExplicitEnd>>,
     constraint_edit: constraints::Discovery,
     /// Whether this Sketch's analytic circle can be moved or resized, and the
     /// circle itself. Its own answer: `editable`/`vertices` keep meaning what
@@ -123,11 +125,22 @@ struct Sketch {
 }
 /// Additional coordinate policy for the base of a supported nonempty history.
 #[derive(Serialize)]
-struct SketchCutHistory {
+struct SketchCutHistory<E> {
     body_id: ObjectId,
     base_feature_id: ObjectId,
-    tools: Vec<ExistingCut>,
+    tools: Vec<ExistingCut<E>>,
     wall_clearance_mm: f64,
+}
+impl<E: EndForm> SketchCutHistory<E> {
+    /// `None` when this form cannot describe every tool; see [`EndForm`].
+    fn of(h: &ferritecad_document::SketchCutHistory) -> Option<Self> {
+        Some(Self {
+            body_id: h.body,
+            base_feature_id: h.base_feature,
+            tools: ExistingCut::all(&h.tools)?,
+            wall_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
+        })
+    }
 }
 #[derive(Serialize)]
 struct SketchVertex {
@@ -225,16 +238,18 @@ struct Body {
     /// Whether a circular cut can be added to this body, and what the operation
     /// would be cutting into. Its own answer beside the sketch editors, which
     /// keep saying exactly what they always said about their own classes.
-    cut_edit: CutDiscovery,
+    cut_edit: CutDiscovery<BlindDepth>,
+    /// The same answer in the form that can describe ThroughAll (§26H).
+    cut_edit_v2: CutDiscovery<ExplicitEnd>,
 }
 
 /// What `cut-circular-copy` would accept about one Body, from the same reading.
 #[derive(Serialize)]
-struct CutDiscovery {
+struct CutDiscovery<E> {
     available: bool,
     refusal: Option<String>,
     document_refusal: Option<String>,
-    target: Option<SavedCutTarget>,
+    target: Option<SavedCutTarget<E>>,
 }
 
 /// The part a cut would go into, as stored.
@@ -243,14 +258,14 @@ struct CutDiscovery {
 /// caller that said "on the base plane, along +Z" without asking would be
 /// promising the only thing this slice does as if it were a choice.
 #[derive(Serialize)]
-struct SavedCutTarget {
+struct SavedCutTarget<E> {
     body_id: ObjectId,
     plane_id: ObjectId,
     /// The feature the cut would modify, which is the body's tip today.
     tip_feature_id: ObjectId,
     base_feature_id: ObjectId,
-    existing_cut: Option<ExistingCut>,
-    tools: Vec<ExistingCut>,
+    existing_cut: Option<ExistingCut<E>>,
+    tools: Vec<ExistingCut<E>>,
     disk_clearance_mm: f64,
     profile_sketch_id: ObjectId,
     height_mm: f64,
@@ -261,39 +276,95 @@ struct SavedCutTarget {
     direction: &'static str,
     /// How far the tool must stay from the part's outer wall.
     wall_clearance_mm: f64,
-    /// Request versions `cut-circular-copy` accepts; v2 can state ThroughAll.
-    request_versions: &'static [u32],
+    /// `_v2` only: request versions `cut-circular-copy` accepts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_versions: Option<&'static [u32]>,
 }
 
-/// One saved tool. `depth_mm` is the stated Blind depth and is `null` for a
-/// ThroughAll Cut, which states none: reporting the computed height there would
-/// present ThroughAll to an older client as a Blind depth it could send back.
+/// How one discovery form spells the end of a saved tool.
+///
+/// JSON v1 discovery has always spelt it as a required `depth_mm` number, and
+/// that type is part of its contract. A ThroughAll Cut has no such number, so
+/// the v1 form cannot describe a history that holds one: rather than change
+/// the field's type or report the computed height as a Blind depth, every v1
+/// block that would need it reports itself unavailable in the way it was
+/// already allowed to (a `null` object, and a reason where the block has a
+/// `refusal`). The additive `_v2` blocks carry the explicit end.
+trait EndForm: Serialize + Sized {
+    fn of(extent: ferritecad_document::CutExtent) -> Option<Self>;
+    /// Request versions a `_v2` block advertises; v1 blocks advertise none.
+    fn request_versions(versions: &'static [u32]) -> Option<&'static [u32]>;
+}
+
+/// The v1 spelling: a Blind depth, exactly as before §26H.
 #[derive(Serialize)]
-struct ExistingCut {
+struct BlindDepth {
+    depth_mm: f64,
+}
+
+impl EndForm for BlindDepth {
+    fn of(extent: ferritecad_document::CutExtent) -> Option<Self> {
+        extent.blind_depth_mm().map(|depth_mm| Self { depth_mm })
+    }
+    fn request_versions(_: &'static [u32]) -> Option<&'static [u32]> {
+        None
+    }
+}
+
+/// The `_v2` spelling: the explicit end, Blind with its depth or ThroughAll.
+#[derive(Serialize)]
+struct ExplicitEnd {
+    extent: Extent,
+}
+
+impl EndForm for ExplicitEnd {
+    fn of(extent: ferritecad_document::CutExtent) -> Option<Self> {
+        Some(Self {
+            extent: extent.into(),
+        })
+    }
+    fn request_versions(versions: &'static [u32]) -> Option<&'static [u32]> {
+        Some(versions)
+    }
+}
+
+/// Why a v1 discovery block is unavailable although the operation exists.
+fn v1_cannot_describe(block: &str) -> String {
+    format!(
+        "this Cut history holds a ThroughAll Cut, which the v1 form of this discovery cannot \
+         describe; read {block}_v2"
+    )
+}
+
+/// One saved tool.
+#[derive(Serialize)]
+struct ExistingCut<E> {
     feature_id: ObjectId,
     tool_sketch_id: ObjectId,
     tool_curve_id: StableEntityId,
     center_mm: [f64; 2],
     radius_mm: f64,
-    depth_mm: Option<f64>,
-    extent: Extent,
+    #[serde(flatten)]
+    end: E,
 }
 
-impl From<&ferritecad_document::SavedCutTool> for ExistingCut {
-    fn from(t: &ferritecad_document::SavedCutTool) -> Self {
-        Self {
+impl<E: EndForm> ExistingCut<E> {
+    fn of(t: &ferritecad_document::SavedCutTool) -> Option<Self> {
+        Some(Self {
             feature_id: t.feature,
             tool_sketch_id: t.tool_sketch,
             tool_curve_id: t.tool_curve,
             center_mm: t.center_mm,
             radius_mm: t.radius_mm,
-            depth_mm: t.extent.blind_depth_mm(),
-            extent: t.extent.into(),
-        }
+            end: E::of(t.extent)?,
+        })
+    }
+    fn all(tools: &[ferritecad_document::SavedCutTool]) -> Option<Vec<Self>> {
+        tools.iter().map(Self::of).collect()
     }
 }
 
-/// The end of a circular Cut on the wire: request v2, discovery and results.
+/// The end of a circular Cut on the wire: request v2, `_v2` discovery and results.
 ///
 /// `ThroughAll {}` rather than a unit variant: serde lets a unit variant of an
 /// internally tagged enum ignore extra fields, so `{"kind":"through_all",
@@ -334,35 +405,42 @@ pub(crate) fn request_version(bytes: &[u8], what: &str) -> Result<u32> {
         .map_err(|e| CadError::input(format!("invalid {what} JSON: {e}")))
 }
 
-impl CutDiscovery {
-    fn new(choice: ferritecad_document::CutChoice, document_refusal: Option<String>) -> Self {
-        Self {
-            available: choice.refusal.is_none() && document_refusal.is_none(),
-            refusal: choice.refusal,
-            document_refusal,
-            target: choice.target.map(|t| SavedCutTarget {
+impl<E: EndForm> CutDiscovery<E> {
+    fn new(
+        choice: &ferritecad_document::CutChoice,
+        document_refusal: Option<String>,
+        block: &str,
+    ) -> Self {
+        let described = choice.target.as_ref().map(|t| {
+            Some(SavedCutTarget {
                 body_id: t.body,
                 plane_id: t.plane,
                 tip_feature_id: t.tip_feature,
                 base_feature_id: t.base_feature,
-                tools: t.tools.iter().map(ExistingCut::from).collect(),
-                existing_cut: t.existing_cut.map(|c| ExistingCut {
-                    feature_id: c.feature,
-                    tool_sketch_id: c.tool_sketch,
-                    tool_curve_id: c.tool_curve,
-                    center_mm: c.center_mm,
-                    radius_mm: c.radius_mm,
-                    depth_mm: c.extent.blind_depth_mm(),
-                    extent: c.extent.into(),
-                }),
-                request_versions: &[1, 2],
+                tools: ExistingCut::all(&t.tools)?,
+                existing_cut: match &t.existing_cut {
+                    Some(c) => Some(ExistingCut::of(&c.tool())?),
+                    None => None,
+                },
+                request_versions: E::request_versions(&[1, 2]),
                 disk_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
                 profile_sketch_id: t.profile,
                 height_mm: t.height_mm,
                 extents_mm: t.extents_mm,
                 direction: "+z along the plane normal",
                 wall_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
-            }),
+            })
+        });
+        let (target, refusal) = match described {
+            Some(None) => (None, Some(v1_cannot_describe(block))),
+            Some(Some(t)) => (Some(t), choice.refusal.clone()),
+            None => (None, choice.refusal.clone()),
+        };
+        Self {
+            available: refusal.is_none() && document_refusal.is_none(),
+            refusal,
+            document_refusal,
+            target,
         }
     }
 }
@@ -418,17 +496,21 @@ struct Feature {
     /// changed, and what it is today. Its own answer beside `editable`, which
     /// keeps meaning exactly what it always did about `edit-extrude` — and
     /// which still refuses a Cut.
-    circular_cut_edit: CutParameterDiscovery,
-    base_height_edit: Option<BaseHeightDiscovery>,
+    circular_cut_edit: CutParameterDiscovery<BlindDepth>,
+    /// The same answer in the form that can describe ThroughAll (§26H).
+    circular_cut_edit_v2: CutParameterDiscovery<ExplicitEnd>,
+    /// v1: `null` also when the history holds a ThroughAll Cut; see `_v2`.
+    base_height_edit: Option<BaseHeightDiscovery<BlindDepth>>,
+    base_height_edit_v2: Option<BaseHeightDiscovery<ExplicitEnd>>,
 }
 
 /// Absolute tools and protected historical/descendant floor UUIDs for base height edits.
 #[derive(Serialize)]
-struct BaseHeightDiscovery {
+struct BaseHeightDiscovery<E> {
     body_id: ObjectId,
     profile_sketch_id: ObjectId,
     extents_mm: [[f64; 2]; 2],
-    tools: Vec<ExistingCut>,
+    tools: Vec<ExistingCut<E>>,
     protected_floors: Vec<ProtectedFloor>,
 }
 #[derive(Serialize)]
@@ -436,33 +518,34 @@ struct ProtectedFloor {
     feature_id: ObjectId,
     reference_ids: Vec<ferritecad_types::StableEntityId>,
 }
-impl From<ferritecad_document::BaseHeightContext> for BaseHeightDiscovery {
-    fn from(h: ferritecad_document::BaseHeightContext) -> Self {
-        Self {
+impl<E: EndForm> BaseHeightDiscovery<E> {
+    /// `None` when this form cannot describe every tool; see [`EndForm`].
+    fn of(h: &ferritecad_document::BaseHeightContext) -> Option<Self> {
+        Some(Self {
             body_id: h.body,
             profile_sketch_id: h.profile,
             extents_mm: h.extents_mm,
-            tools: h.tools.iter().map(ExistingCut::from).collect(),
+            tools: ExistingCut::all(&h.tools)?,
             protected_floors: h
                 .protected_floors
-                .into_iter()
+                .iter()
                 .map(|p| ProtectedFloor {
                     feature_id: p.feature,
-                    reference_ids: p.references,
+                    reference_ids: p.references.clone(),
                 })
                 .collect(),
-        }
+        })
     }
 }
 
 /// What `edit-circular-cut` would accept about one feature, from the same
 /// reading.
 #[derive(Serialize)]
-struct CutParameterDiscovery {
+struct CutParameterDiscovery<E> {
     available: bool,
     refusal: Option<String>,
     document_refusal: Option<String>,
-    saved: Option<SavedCircularCut>,
+    saved: Option<SavedCircularCut<E>>,
 }
 
 /// The cut as stored, and what an edit of it is measured against.
@@ -471,7 +554,7 @@ struct CutParameterDiscovery {
 /// are repeated here rather than assumed for the reason the Cut catalogue
 /// beside it repeats them.
 #[derive(Serialize)]
-struct SavedCircularCut {
+struct SavedCircularCut<E> {
     feature_id: ObjectId,
     body_id: ObjectId,
     plane_id: ObjectId,
@@ -480,8 +563,8 @@ struct SavedCircularCut {
     base_feature_id: ObjectId,
     tip_feature_id: ObjectId,
     protected_floor_reference_ids: Vec<StableEntityId>,
-    neighboring_tool: Option<ExistingCut>,
-    tools: Vec<ExistingCut>,
+    neighboring_tool: Option<ExistingCut<E>>,
+    tools: Vec<ExistingCut<E>>,
     disk_clearance_mm: f64,
     /// The part's own profile; unchanged by an edit of its numbers.
     profile_sketch_id: ObjectId,
@@ -491,12 +574,12 @@ struct SavedCircularCut {
     tool_curve_id: StableEntityId,
     center_mm: [f64; 2],
     radius_mm: f64,
-    /// The stated Blind depth; `null` for ThroughAll, which states none.
-    depth_mm: Option<f64>,
-    /// The saved intent, Blind with its depth or ThroughAll.
-    extent: Extent,
-    /// Request versions that can express this Cut without losing its intent.
-    request_versions: &'static [u32],
+    /// v1: `depth_mm`; `_v2`: `extent`.
+    #[serde(flatten)]
+    end: E,
+    /// `_v2` only: request versions that express this Cut without loss.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_versions: Option<&'static [u32]>,
     height_mm: f64,
     /// `[[min_x, min_y], [max_x, max_y]]` of the rectangular part, in mm.
     extents_mm: [[f64; 2]; 2],
@@ -517,34 +600,34 @@ struct SavedCircularCut {
     through_allowed: bool,
 }
 
-impl CutParameterDiscovery {
+impl<E: EndForm> CutParameterDiscovery<E> {
     fn new(
-        choice: ferritecad_document::CutParameterChoice,
+        choice: &ferritecad_document::CutParameterChoice,
         document_refusal: Option<String>,
+        block: &str,
     ) -> Self {
-        Self {
-            available: choice.refusal.is_none() && document_refusal.is_none(),
-            refusal: choice.refusal,
-            document_refusal,
-            saved: choice.saved.map(|c| SavedCircularCut {
+        let described = choice.saved.as_ref().map(|c| {
+            Some(SavedCircularCut {
                 feature_id: c.feature,
                 body_id: c.body,
                 plane_id: c.plane,
                 previous_feature_id: c.previous_feature,
                 base_feature_id: c.base_feature,
-                tools: c.tools.iter().map(ExistingCut::from).collect(),
+                tools: ExistingCut::all(&c.tools)?,
                 tip_feature_id: c.tip_feature,
                 protected_floor_reference_ids: c.protected_floor_references.clone(),
-                neighboring_tool: c.neighboring_tool.as_ref().map(ExistingCut::from),
+                neighboring_tool: match &c.neighboring_tool {
+                    Some(t) => Some(ExistingCut::of(t)?),
+                    None => None,
+                },
                 disk_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
                 profile_sketch_id: c.profile_sketch,
                 tool_sketch_id: c.tool_sketch,
                 tool_curve_id: c.tool_curve,
                 center_mm: c.center_mm,
                 radius_mm: c.radius_mm,
-                depth_mm: c.extent.blind_depth_mm(),
-                extent: c.extent.into(),
-                request_versions: c.request_versions(),
+                end: E::of(c.extent)?,
+                request_versions: E::request_versions(c.request_versions()),
                 height_mm: c.height_mm,
                 extents_mm: c.extents_mm,
                 direction: "+z along the plane normal",
@@ -552,7 +635,18 @@ impl CutParameterDiscovery {
                 leaves_a_floor: c.leaves_a_floor(),
                 floor_reference_id: c.floor_reference,
                 through_allowed: c.through_allowed(),
-            }),
+            })
+        });
+        let (saved, refusal) = match described {
+            Some(None) => (None, Some(v1_cannot_describe(block))),
+            Some(Some(s)) => (Some(s), choice.refusal.clone()),
+            None => (None, choice.refusal.clone()),
+        };
+        Self {
+            available: refusal.is_none() && document_refusal.is_none(),
+            refusal,
+            document_refusal,
+            saved,
         }
     }
 }
@@ -708,12 +802,8 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 editable: source.refusal.is_none() && s.refusal.is_none(),
                 refusal: s.refusal,
                 document_refusal: source.refusal.clone(),
-                cut_history: s.cut_history.map(|h| SketchCutHistory {
-                    body_id: h.body,
-                    base_feature_id: h.base_feature,
-                    tools: h.tools.iter().map(ExistingCut::from).collect(),
-                    wall_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
-                }),
+                cut_history: s.cut_history.as_ref().and_then(SketchCutHistory::of),
+                cut_history_v2: s.cut_history.as_ref().and_then(SketchCutHistory::of),
                 vertices: s.vertices.map(|vs| {
                     vs.into_iter()
                         .map(|v| SketchVertex {
@@ -727,19 +817,35 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         features: source
             .features
             .into_iter()
-            .map(|feature| Feature {
-                circular_cut_edit: CutParameterDiscovery::new(
-                    cut_parameter_choices
-                        .remove(&feature.feature)
-                        .expect("same snapshot feature catalogue"),
-                    source.refusal.clone(),
-                ),
-                base_height_edit: feature.cut_history.map(BaseHeightDiscovery::from),
-                feature_id: feature.feature,
-                name: feature.name,
-                distance_mm: feature.distance_mm,
-                editable: source.refusal.is_none() && feature.refusal.is_none(),
-                refusal: feature.refusal,
+            .map(|feature| {
+                let choice = cut_parameter_choices
+                    .remove(&feature.feature)
+                    .expect("same snapshot feature catalogue");
+                Feature {
+                    circular_cut_edit: CutParameterDiscovery::new(
+                        &choice,
+                        source.refusal.clone(),
+                        "circular_cut_edit",
+                    ),
+                    circular_cut_edit_v2: CutParameterDiscovery::new(
+                        &choice,
+                        source.refusal.clone(),
+                        "circular_cut_edit",
+                    ),
+                    base_height_edit: feature
+                        .cut_history
+                        .as_ref()
+                        .and_then(BaseHeightDiscovery::of),
+                    base_height_edit_v2: feature
+                        .cut_history
+                        .as_ref()
+                        .and_then(BaseHeightDiscovery::of),
+                    feature_id: feature.feature,
+                    name: feature.name,
+                    distance_mm: feature.distance_mm,
+                    editable: source.refusal.is_none() && feature.refusal.is_none(),
+                    refusal: feature.refusal,
+                }
             })
             .collect(),
         bodies: {
@@ -747,15 +853,16 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
             // classify the objects again for this JSON view.
             ferritecad_jobs::stl_bodies(&document)?
                 .into_iter()
-                .map(|body| Body {
-                    body_id: body.id,
-                    name: body.name,
-                    cut_edit: CutDiscovery::new(
-                        cut_choices
-                            .remove(&body.id)
-                            .expect("same snapshot Body catalogue"),
-                        source.refusal.clone(),
-                    ),
+                .map(|body| {
+                    let choice = cut_choices
+                        .remove(&body.id)
+                        .expect("same snapshot Body catalogue");
+                    Body {
+                        body_id: body.id,
+                        name: body.name,
+                        cut_edit: CutDiscovery::new(&choice, source.refusal.clone(), "cut_edit"),
+                        cut_edit_v2: CutDiscovery::new(&choice, source.refusal.clone(), "cut_edit"),
+                    }
                 })
                 .collect()
         },
