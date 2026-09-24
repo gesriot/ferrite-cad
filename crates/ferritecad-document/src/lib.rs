@@ -55,6 +55,7 @@ mod circle_edit;
 mod cut_edit;
 mod document;
 mod edit;
+mod height_edit;
 mod polygon;
 mod sketch_edit;
 pub use annulus_edit::{
@@ -110,4 +111,9 @@ pub use sketch_constraints::{
     ConstraintSketchChoice, LineConstraintKind, LineEndpoint, LineLengthMm, LineRelation,
     PreparedSketchConstraints, SketchConstraintEdits, SketchCoordinateMm, constraint_circle_roles,
     constraint_sketch_choices, prepare_sketch_constraints,
+};
+
+pub use height_edit::{
+    BaseHeightContext, PreparedExtrudeHeight, ProtectedCutFloor, prepare_extrude_height,
+    validate_extrude_distance,
 };

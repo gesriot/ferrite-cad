@@ -4,9 +4,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use ferritecad_document::{
-    Access, Document, DocumentVersion, EndCondition, Expression, ObjectPayload, editable_extrude,
-};
+use ferritecad_document::{Access, Document, DocumentVersion, ObjectPayload};
 use ferritecad_eval::rebuild_cold;
 use ferritecad_kernel::{GeometryKernel, OperationContext, ProgressSink};
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId};
@@ -38,10 +36,7 @@ pub fn edit_extrude_copy<K: GeometryKernel + ?Sized>(
     context: &OperationContext,
 ) -> Result<EditedDocument> {
     context.check_cancelled()?;
-    let replacement = Expression::constant(request.distance_mm)?;
-    if request.distance_mm <= 0.0 {
-        return Err(CadError::input("extrude distance must be positive"));
-    }
+    ferritecad_document::validate_extrude_distance(request.distance_mm)?;
     edit_object_copy(
         &request.source,
         request.expected,
@@ -49,20 +44,13 @@ pub fn edit_extrude_copy<K: GeometryKernel + ?Sized>(
         kernel,
         context,
         |source| {
-            let mut selected = source.object(request.feature)?.ok_or_else(|| {
-                CadError::input(format!(
-                    "feature {} does not exist in this document",
-                    request.feature
-                ))
-            })?;
-            editable_extrude(source, &selected)?;
-            let ObjectPayload::Extrude(extrude) = &mut selected.payload else {
-                unreachable!("checked above")
-            };
-            extrude.end_condition = EndCondition::Blind {
-                distance: replacement,
-            };
-            Ok(CopyWrite::Object(selected))
+            Ok(CopyWrite::Height(Box::new(
+                ferritecad_document::prepare_extrude_height(
+                    source,
+                    request.feature,
+                    request.distance_mm,
+                )?,
+            )))
         },
         |_, _| Ok(()),
     )?;
@@ -420,7 +408,7 @@ pub fn edit_circular_cut_copy<K: GeometryKernel + ?Sized>(
 }
 
 enum CopyWrite {
-    Object(ferritecad_document::ObjectRecord),
+    Height(Box<ferritecad_document::PreparedExtrudeHeight>),
     /// Boxed: this variant is much larger than the others, and an enum sized
     /// for it would make every copy operation carry the difference.
     Cut(Box<ferritecad_document::PreparedCircularCut>),
@@ -434,7 +422,8 @@ enum CopyWrite {
 impl CopyWrite {
     fn object(&self) -> &ferritecad_document::ObjectRecord {
         match self {
-            Self::Object(o) | Self::Coordinates(o) | Self::Circle(o) | Self::Annulus(o) => o,
+            Self::Coordinates(o) | Self::Circle(o) | Self::Annulus(o) => o,
+            Self::Height(p) => p.feature(),
             Self::Constraints(p) => p.object(),
             // The body is the one object a cut changes; the two it adds did
             // not exist to be read.
@@ -451,11 +440,11 @@ impl CopyWrite {
     ///
     /// True for every edit to a profile: moving a vertex, a constraint or a
     /// circle may not cost the document a name it had. An extrusion distance
-    /// edit is the one that predates the rule and keeps its weaker promise,
+    /// edit without a Cut history predates the rule and keeps its weaker promise,
     /// so it is named here rather than everything else being exempted by
     /// default.
     fn requires_resolved_references(&self) -> bool {
-        !matches!(self, Self::Object(_))
+        !matches!(self, Self::Height(p) if p.history().is_none())
     }
 }
 
@@ -508,16 +497,6 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     }
     context.progress().report(0.4);
     context.check_cancelled()?;
-    let write = |writer: &mut ferritecad_document::DocumentWriter<'_>| {
-        writer.put_object(
-            selected.id,
-            selected.parent,
-            selected.ordinal,
-            selected.name.as_deref(),
-            &selected.payload,
-        )?;
-        Ok(())
-    };
     match &prepared {
         CopyWrite::Coordinates(prepared) => document.write_sketch_geometry(prepared)?,
         CopyWrite::Constraints(p) => document.write_sketch_constraints(p)?,
@@ -525,7 +504,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         CopyWrite::Annulus(prepared) => document.write_annulus_geometry(prepared)?,
         CopyWrite::Cut(prepared) => document.write_circular_cut(prepared)?,
         CopyWrite::CutParameters(prepared) => document.write_cut_parameters(prepared)?,
-        CopyWrite::Object(_) => document.write(write)?,
+        CopyWrite::Height(p) => document.write_extrude_height(p)?,
     }
     // A solve is asked for only when the edited sketch still has something to
     // solve. Taking the last constraint off a circle leaves a drawing with no
@@ -547,6 +526,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     // comparison below can only speak about names that already existed, so a
     // feature that published geometry nothing could point at would pass it.
     let minted: BTreeSet<StableEntityId> = match &prepared {
+        CopyWrite::Height(p) => p.added_references().iter().map(|r| r.id).collect(),
         CopyWrite::Cut(p) => p.references().iter().map(|r| r.id).collect(),
         CopyWrite::CutParameters(p) => p.added_references().iter().map(|r| r.id).collect(),
         _ => BTreeSet::new(),
@@ -781,7 +761,9 @@ pub fn read_extrude_source(path: &Path) -> Result<ferritecad_document::ExtrudeEd
 mod tests {
     use super::*;
     use crate::{CreateDocumentRequest, NewDocument, PlateSize, create_document};
-    use ferritecad_document::{Dependency, DependencyRole, ExtrudeEditSource, ObjectRecord};
+    use ferritecad_document::{
+        Dependency, DependencyRole, EndCondition, Expression, ExtrudeEditSource, ObjectRecord,
+    };
     use ferritecad_kernel::{mock::MockKernel, *};
 
     fn fixture() -> (tempfile::TempDir, EditExtrudeRequest) {

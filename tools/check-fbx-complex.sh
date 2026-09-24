@@ -304,3 +304,15 @@ if [ -n "${FCAD_CUT_BASE_FBX_DIR:-}" ]; then
     done
     echo "FCAD_CUT_BASE_UFBX_EXECUTED"
 fi
+
+# §26G shares the pinned reader for mixed and all-pocket base height edits.
+if [ -n "${FCAD_CUT_HEIGHT_FBX_DIR:-}" ]; then
+    for name in height-0 height-1 height-2; do
+        "$reader" --identity "$FCAD_CUT_HEIGHT_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0$' "$work/$name-reader.txt"; then
+            echo "error: base height FBX was not independently read: $name" >&2
+            exit 1
+        fi
+    done
+    echo "FCAD_CUT_HEIGHT_UFBX_EXECUTED"
+fi

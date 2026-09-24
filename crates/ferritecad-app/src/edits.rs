@@ -27,6 +27,8 @@ struct Running {
 #[derive(Debug, Default)]
 pub(crate) struct Edits {
     form: Option<Form>,
+    retained_form: Option<Form>,
+    published_form: Option<(PathBuf, Form)>,
     running: Option<Running>,
     issued: u64,
     pub(crate) status: String,
@@ -69,6 +71,8 @@ impl Edits {
                         ),
                         distance_mm: f.distance_mm,
                         refusal: f.refusal.clone(),
+                        context: f.cut_history.as_ref().map(|h| format!(
+                            "Base of {} circular Cuts. Only the plate thickness changes; Cut depths remain absolute. Saved pocket floors must stay inside the plate.", h.tools.len())),
                     })
                     .collect(),
                 selected: None,
@@ -85,6 +89,9 @@ impl Edits {
         can_begin: bool,
         unavailable: Option<&str>,
     ) -> EditChoice {
+        if let Some(form) = &mut self.form {
+            Self::validate_form(form);
+        }
         ferritecad_ui::edit_extrude_panel(
             ui,
             can_begin,
@@ -100,29 +107,59 @@ impl Edits {
 
     pub(crate) fn cancel(&mut self) {
         self.form = None;
+        self.retained_form = None;
+        self.published_form = None;
         if let Some(running) = &self.running {
             running.cancel.cancel();
         }
     }
 
-    /// Parsing only. Domain validation and stale-source checks are the job's.
+    fn validate_form(form: &mut Form) -> Option<f64> {
+        let feature = form.shown.selected?;
+        let result = (|| {
+            let distance_mm = form
+                .shown
+                .distance
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| CadError::input("Enter a distance in mm."))?;
+            let selected = form
+                .reading
+                .features
+                .iter()
+                .find(|f| f.feature == feature)
+                .ok_or_else(|| {
+                    CadError::input("selected extrusion is not in the accepted catalogue")
+                })?;
+            if selected.refusal.is_some() {
+                return Err(CadError::unsupported("selected extrusion is unavailable"));
+            }
+            selected.validate_distance(distance_mm)?;
+            Ok(distance_mm)
+        })();
+        form.shown.refusal = result.as_ref().err().map(ToString::to_string);
+        result.ok()
+    }
+
     pub(crate) fn request(&mut self, destination: PathBuf) -> Option<EditExtrudeRequest> {
         let form = self.form.as_mut()?;
-        let feature = form.shown.selected?;
-        let distance_mm = match form.shown.distance.trim().parse() {
-            Ok(value) => value,
-            Err(_) => {
-                form.shown.refusal = Some("Enter a distance in mm.".to_owned());
-                return None;
-            }
-        };
+        let distance_mm = Self::validate_form(form)?;
         Some(EditExtrudeRequest {
             source: form.source.clone(),
             expected: form.reading.version,
-            feature,
+            feature: form.shown.selected?,
             distance_mm,
             destination,
         })
+    }
+
+    /// Called by the same current-load commit path as the other edit drafts.
+    pub(crate) fn draft_load_finished(&mut self, path: &Path, accepted: bool) {
+        if accepted {
+            self.published_form = None;
+        } else if self.published_form.as_ref().is_some_and(|(p, _)| p == path) {
+            self.form = self.published_form.take().map(|(_, f)| f);
+        }
     }
 
     pub(crate) fn start(
@@ -253,7 +290,7 @@ impl Edits {
             cancel,
             worker,
         });
-        self.form = None;
+        self.retained_form = self.form.take();
         Some(generation)
     }
 
@@ -281,8 +318,12 @@ impl Edits {
         }
         let running = self.running.take().expect("matching running edit");
         let _ = running.worker.join();
+        if result.is_err() {
+            self.form = self.retained_form.take();
+        }
         match result {
             Ok(saved) => {
+                self.published_form = self.retained_form.take().map(|form| (saved.clone(), form));
                 self.status = format!("Saved edited model: {}", saved.display());
                 if !running.cancel.is_cancelled() {
                     return Some(saved);
@@ -1128,5 +1169,354 @@ mod tests {
         ));
         assert!(edits.running.is_none());
         assert_eq!(std::fs::read_dir(root.path()).expect("files").count(), 1);
+    }
+    fn height_frame(
+        ctx: &egui::Context,
+        edits: &mut Edits,
+        path: &Path,
+        reading: &ExtrudeEditSource,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(988., 768.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                ferritecad_ui::toolbar(
+                    ui,
+                    ferritecad_ui::Activity {
+                        can_open: false,
+                        can_export: false,
+                        ..Default::default()
+                    },
+                );
+                crate::sketch::Editor::default().draw_choices(ui, false, Some(path), Some(reading));
+                edits.draw(ui, false, None);
+            },
+        );
+        out.textures_delta.clear();
+        out
+    }
+    fn height_click(
+        ctx: &egui::Context,
+        edits: &mut Edits,
+        path: &Path,
+        reading: &ExtrudeEditSource,
+        label: &str,
+    ) {
+        let out = height_frame(ctx, edits, path, reading, vec![]);
+        let at = out
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t)
+                    if t.galley.text() == label
+                        && s.clip_rect.contains_rect(t.visual_bounding_rect()) =>
+                {
+                    Some(t.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+            .expect("visible height control in full viewport");
+        for pressed in [true, false] {
+            height_frame(
+                ctx,
+                edits,
+                path,
+                reading,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+        }
+    }
+
+    #[test]
+    fn native_cut_base_height_form_worker_cli_preserve_draft_and_new_names() {
+        if !native() {
+            return;
+        }
+        use ferritecad_document::{CircularCut, prepare_circular_cut};
+        for n in [4, 16] {
+            let root = tempfile::tempdir().expect("root");
+            let (source, feature) = make(root.path(), ["80", "50", "12"]);
+            let mut d = Document::open(&source).expect("doc");
+            let body = ExtrudeEditSource::read(&d).expect("catalogue").cut_bodies[0].body;
+            for i in 0..n {
+                let slot = i * 7 % 16;
+                let p = prepare_circular_cut(
+                    &d,
+                    body,
+                    &CircularCut {
+                        center_mm: [10. + (slot % 4) as f64 * 19., 7. + (slot / 4) as f64 * 12.],
+                        radius_mm: 1.5 + (i % 5) as f64 * 0.25,
+                        depth_mm: if i % 2 == 0 { 12. } else { 3. + (i % 7) as f64 },
+                    },
+                )
+                .expect("cut");
+                d.write_circular_cut(&p).expect("write");
+            }
+            d.close().expect("close");
+            let original = std::fs::read(&source).expect("bytes");
+            let reading = opened(&source).edit_source.expect("accepted catalogue");
+            let mut e = Edits::default();
+            assert!(e.begin(&source, &reading));
+            let ctx = egui::Context::default();
+            for _ in 0..3 {
+                height_frame(&ctx, &mut e, &source, &reading, vec![]);
+            }
+            let label = e
+                .form
+                .as_ref()
+                .expect("form")
+                .shown
+                .features
+                .iter()
+                .find(|f| f.feature == feature)
+                .expect("base")
+                .label
+                .clone();
+            height_click(&ctx, &mut e, &source, &reading, &label);
+            assert_eq!(e.form.as_ref().expect("selected").shown.distance, "12");
+            height_click(&ctx, &mut e, &source, &reading, "12");
+            height_frame(
+                &ctx,
+                &mut e,
+                &source,
+                &reading,
+                vec![
+                    egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            command: true,
+                            ..Default::default()
+                        },
+                    },
+                    egui::Event::Text("14.25".into()),
+                ],
+            );
+            assert_eq!(
+                e.form.as_ref().expect("edited text").shown.distance,
+                "14.25"
+            );
+            let ui = root.path().join("ui.fcad");
+            // Save Cancel does not submit a job or consume the form.
+            height_click(&ctx, &mut e, &source, &reading, "Save new file…");
+            assert!(!e.running());
+            assert!(!ui.exists());
+            let saved = e
+                .form
+                .as_ref()
+                .expect("Save Cancel keeps form")
+                .shown
+                .distance
+                .clone();
+            e.form.as_mut().expect("form").shown.distance = "10".into();
+            assert!(e.request(ui.clone()).is_none());
+            let first = reading
+                .features
+                .iter()
+                .find(|f| f.feature == feature)
+                .expect("base")
+                .cut_history
+                .as_ref()
+                .expect("context")
+                .tools[0]
+                .feature;
+            assert!(
+                e.form
+                    .as_ref()
+                    .expect("invalid draft")
+                    .shown
+                    .refusal
+                    .as_ref()
+                    .expect("refusal")
+                    .contains(&first.to_string())
+            );
+            e.form.as_mut().expect("form").shown.distance = saved.clone();
+            let occupied = root.path().join("occupied.fcad");
+            std::fs::write(&occupied, b"keep").expect("occupied");
+            let request = e.request(occupied.clone()).expect("valid request");
+            let (tx, rx) = mpsc::channel();
+            let g = e
+                .start(request, move |r, g, c| {
+                    spawn_edit(r, c, move |v| tx.send((g, v)).expect("reply"))
+                })
+                .expect("start");
+            assert!(
+                e.finish(g + 1, Err(CadError::input("stale reply")))
+                    .is_none()
+            );
+            assert!(e.running());
+            let (g, result) = rx.recv().expect("worker result");
+            assert!(result.is_err());
+            assert!(e.finish(g, result).is_none());
+            assert_eq!(
+                e.form
+                    .as_ref()
+                    .expect("worker refusal keeps draft")
+                    .shown
+                    .distance,
+                saved
+            );
+            assert_eq!(std::fs::read(occupied).expect("kept"), b"keep");
+            let request = e.request(ui.clone()).expect("request");
+            let (tx, rx) = mpsc::channel();
+            let g = e
+                .start(request, move |r, g, c| {
+                    spawn_edit(r, c, move |v| tx.send((g, v)).expect("reply"))
+                })
+                .expect("start");
+            assert!(
+                e.finish(
+                    g + 1,
+                    Ok(EditedDocument {
+                        destination: ui.clone(),
+                        document_id: reading.version.document_id,
+                        feature
+                    })
+                )
+                .is_none()
+            );
+            let (g, result) = rx.recv().expect("result");
+            let path = e.finish(g, result).expect("published");
+            assert_eq!(path, ui);
+            assert!(!e.busy());
+            e.draft_load_finished(&root.path().join("unrelated.fcad"), false);
+            assert!(e.form.is_none());
+            e.draft_load_finished(&ui, false);
+            assert_eq!(
+                e.form
+                    .as_ref()
+                    .expect("failed Open restores draft")
+                    .shown
+                    .distance,
+                saved
+            );
+            // The actual accepted scene uses the new copy and its complete catalogue.
+            let accepted = opened(&ui).edit_source.expect("new scene catalogue");
+            let current = accepted
+                .features
+                .iter()
+                .find(|f| f.feature == feature)
+                .expect("base");
+            assert_eq!(current.distance_mm, Some(14.25));
+            assert_eq!(
+                current.cut_history.as_ref().expect("context").tools.len(),
+                n
+            );
+            assert_eq!(
+                accepted
+                    .cut_features
+                    .iter()
+                    .filter(|f| f.saved.is_some())
+                    .count(),
+                n
+            );
+            assert!(accepted.sketches.iter().any(|s| s.refusal.is_none()));
+            e.cancel();
+            e.draft_load_finished(&ui, true);
+            let peer = root.path().join("cli.fcad");
+            run(&[
+                "edit-extrude".as_ref(),
+                source.as_os_str(),
+                "--feature".as_ref(),
+                feature.to_string().as_ref(),
+                "--expect-version".as_ref(),
+                reading.version.content.to_string().as_ref(),
+                "--distance-mm".as_ref(),
+                "14.25".as_ref(),
+                "-o".as_ref(),
+                peer.as_os_str(),
+            ]);
+            let source_refs = Document::open_read_only(&source)
+                .expect("doc")
+                .topology_refs()
+                .expect("refs");
+            let a = Document::open_read_only(&ui)
+                .expect("doc")
+                .topology_refs()
+                .expect("refs");
+            let b = Document::open_read_only(&peer)
+                .expect("doc")
+                .topology_refs()
+                .expect("refs");
+            let mut mapping = std::collections::BTreeMap::new();
+            for r in &a {
+                if source_refs.iter().any(|old| old.id == r.id) {
+                    assert!(b.contains(r));
+                    continue;
+                }
+                let corresponding: Vec<_> = b
+                    .iter()
+                    .filter(|q| {
+                        if source_refs.iter().any(|old| old.id == q.id) {
+                            return false;
+                        }
+                        let mut q = (*q).clone();
+                        q.id = r.id;
+                        q == *r
+                    })
+                    .collect();
+                assert_eq!(
+                    corresponding.len(),
+                    1,
+                    "new UUID maps by full producer/origin meaning"
+                );
+                mapping.insert(
+                    corresponding[0].id.to_bytes().to_vec(),
+                    r.id.to_bytes().to_vec(),
+                );
+            }
+            assert_eq!(a.len(), b.len());
+            assert!(!mapping.is_empty());
+            let left = tables(&ui);
+            let mut right = tables(&peer);
+            for (name, rows) in &mut right {
+                if name == "topology_refs" {
+                    for row in rows.iter_mut() {
+                        if let rusqlite::types::Value::Blob(id) = &mut row[0]
+                            && let Some(target) = mapping.get(id)
+                        {
+                            *id = target.clone();
+                        }
+                    }
+                    rows.sort_by_key(|row| format!("{row:?}"));
+                }
+            }
+            assert_eq!(
+                left, right,
+                "all SQL cells, only modified_at and genuinely new ref UUIDs mapped"
+            );
+            for format in ["stl", "fbx"] {
+                let mut bytes = Vec::new();
+                for path in [&ui, &peer] {
+                    let out = path.with_extension(format);
+                    run(&[
+                        format!("export-{format}").as_ref(),
+                        path.as_os_str(),
+                        "-o".as_ref(),
+                        out.as_os_str(),
+                    ]);
+                    bytes.push(std::fs::read(out).expect("export"));
+                }
+                assert_eq!(bytes[0], bytes[1], "worker/CLI {format}");
+            }
+            assert_eq!(std::fs::read(&source).expect("source"), original);
+        }
     }
 }

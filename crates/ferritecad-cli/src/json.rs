@@ -369,6 +369,40 @@ struct Feature {
     /// keeps meaning exactly what it always did about `edit-extrude` — and
     /// which still refuses a Cut.
     circular_cut_edit: CutParameterDiscovery,
+    base_height_edit: Option<BaseHeightDiscovery>,
+}
+
+/// Absolute tools and protected historical/descendant floor UUIDs for base height edits.
+#[derive(Serialize)]
+struct BaseHeightDiscovery {
+    body_id: ObjectId,
+    profile_sketch_id: ObjectId,
+    extents_mm: [[f64; 2]; 2],
+    tools: Vec<ExistingCut>,
+    protected_floors: Vec<ProtectedFloor>,
+}
+#[derive(Serialize)]
+struct ProtectedFloor {
+    feature_id: ObjectId,
+    reference_ids: Vec<ferritecad_types::StableEntityId>,
+}
+impl From<ferritecad_document::BaseHeightContext> for BaseHeightDiscovery {
+    fn from(h: ferritecad_document::BaseHeightContext) -> Self {
+        Self {
+            body_id: h.body,
+            profile_sketch_id: h.profile,
+            extents_mm: h.extents_mm,
+            tools: h.tools.iter().map(ExistingCut::from).collect(),
+            protected_floors: h
+                .protected_floors
+                .into_iter()
+                .map(|p| ProtectedFloor {
+                    feature_id: p.feature,
+                    reference_ids: p.references,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// What `edit-circular-cut` would accept about one feature, from the same
@@ -650,6 +684,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                         .expect("same snapshot feature catalogue"),
                     source.refusal.clone(),
                 ),
+                base_height_edit: feature.cut_history.map(BaseHeightDiscovery::from),
                 feature_id: feature.feature,
                 name: feature.name,
                 distance_mm: feature.distance_mm,

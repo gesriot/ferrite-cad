@@ -1,5 +1,10 @@
 # §24C: изменение существующего Blind Extrude в новой копии
 
+Дополнение [§26G](edit-cut-base-height.md): в поддерживаемой 1–16 Cut истории
+тот же маршрут меняет высоту базы с проверкой всех абсолютных глубин, добавлением
+необходимых floor/Origin refs и защитой сохранённых дён. SQL writer истории
+сохраняет capability rows/rowids; standalone-контракт ниже остаётся прежним.
+
 ## Контракт
 
 `ferritecad edit-extrude <source.fcad> --feature <ObjectId> --distance-mm <n> -o <new.fcad>`

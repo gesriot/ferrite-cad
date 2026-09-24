@@ -100,7 +100,17 @@ fn measure_history_in(
     bounds: [[f64; 2]; 2],
     cache: Option<&[CacheOutcome]>,
 ) -> f64 {
-    let plate_volume = (bounds[1][0] - bounds[0][0]) * (bounds[1][1] - bounds[0][1]) * SIZE[2];
+    measure_history_at(path, tools, bounds, SIZE[2], cache)
+}
+
+fn measure_history_at(
+    path: &Path,
+    tools: &[CircularCut],
+    bounds: [[f64; 2]; 2],
+    height: f64,
+    cache: Option<&[CacheOutcome]>,
+) -> f64 {
+    let plate_volume = (bounds[1][0] - bounds[0][0]) * (bounds[1][1] - bounds[0][1]) * height;
     let d = Document::open_read_only(path).expect("reopen");
     assert!(d.validate().expect("validate").is_ok());
     let (body, last) = tip(&d);
@@ -164,7 +174,7 @@ fn measure_history_in(
         "Body must expose the final Cut"
     );
     let (count, volume) = kernel.shape_stats(final_shape).expect("stats");
-    let floors = tools.iter().filter(|t| t.depth_mm < SIZE[2]).count();
+    let floors = tools.iter().filter(|t| t.depth_mm < height).count();
     assert_eq!(count, 6 + tools.len() as u64 + floors as u64);
     let exact = plate_volume
         - tools
@@ -188,7 +198,7 @@ fn measure_history_in(
         assert!((volume - exact).abs() < 1e-6, "historical volume {index}");
         assert_eq!(
             faces,
-            (6 + index + prior.iter().filter(|t| t.depth_mm < SIZE[2]).count()) as u64
+            (6 + index + prior.iter().filter(|t| t.depth_mm < height).count()) as u64
         );
     }
     let mut meshes = BTreeMap::new();
@@ -271,7 +281,7 @@ fn measure_history_in(
                 FaceSurface::Plane
             );
             if let Some(side) = cap {
-                let z = if side == CapSide::Start { 0. } else { SIZE[2] };
+                let z = if side == CapSide::Start { 0. } else { height };
                 assert!(
                     vertices.iter().all(|p| (p[2] - z).abs() < ROUNDING_MM),
                     "outer cap changed meaning"
@@ -763,7 +773,11 @@ fn check_history_mesh(m: &Mesh, tools: &[CircularCut]) {
 }
 
 fn check_history_mesh_in(m: &Mesh, tools: &[CircularCut], bounds: [[f64; 2]; 2]) {
-    let plate_volume = (bounds[1][0] - bounds[0][0]) * (bounds[1][1] - bounds[0][1]) * SIZE[2];
+    check_history_mesh_at(m, tools, bounds, SIZE[2]);
+}
+
+fn check_history_mesh_at(m: &Mesh, tools: &[CircularCut], bounds: [[f64; 2]; 2], height: f64) {
+    let plate_volume = (bounds[1][0] - bounds[0][0]) * (bounds[1][1] - bounds[0][1]) * height;
     // Closed and wound one way.
     let quantise = |v: [f64; 3]| {
         let q = |x: f64| (x * 1e4).round() as i64;
@@ -861,8 +875,8 @@ fn check_history_mesh_in(m: &Mesh, tools: &[CircularCut], bounds: [[f64; 2]; 2])
             a >= -1e-9 && b >= -1e-9 && 1. - a - b >= -1e-9
         };
         let floored = m.faces.iter().any(|t| covers(t, depth));
-        let open_at_top = !m.faces.iter().any(|t| covers(t, SIZE[2]));
-        if depth < SIZE[2] {
+        let open_at_top = !m.faces.iter().any(|t| covers(t, height));
+        if depth < height {
             assert!(floored, "a pocket has a floor at its depth");
             assert!(!open_at_top, "a pocket leaves the far side closed");
         } else {
@@ -870,7 +884,7 @@ fn check_history_mesh_in(m: &Mesh, tools: &[CircularCut], bounds: [[f64; 2]; 2])
         }
     }
     let expected_lo = [bounds[0][0], bounds[0][1], 0.];
-    let expected_hi = [bounds[1][0], bounds[1][1], SIZE[2]];
+    let expected_hi = [bounds[1][0], bounds[1][1], height];
     for (axis, (low, high)) in expected_lo.into_iter().zip(expected_hi).enumerate() {
         assert!((m.lo[axis] - low).abs() < ROUNDING_MM && (m.hi[axis] - high).abs() < ROUNDING_MM);
     }
@@ -958,3 +972,6 @@ mod history;
 
 #[path = "edit_cut_base_sketch.rs"]
 mod base_sketch;
+
+#[path = "edit_cut_base_height.rs"]
+mod base_height;

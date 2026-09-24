@@ -1088,6 +1088,62 @@ impl Document {
         )
     }
 
+    /// Re-derive the height and the complete set of new names in this transaction.
+    pub fn write_extrude_height(&mut self, prepared: &crate::PreparedExtrudeHeight) -> Result<()> {
+        let record = prepared.feature();
+        let bytes = record.payload.to_storage_bytes()?;
+        let hash = ContentHash::of_bytes(&bytes);
+        let history = prepared.history().is_some();
+        self.write_checked_transaction(
+            |document| crate::height_edit::rederive(document, prepared),
+            |writer| {
+                require_fresh_cut_ids(
+                    writer.tx,
+                    prepared.added_references().iter().map(|r| r.id.to_bytes()),
+                )?;
+                if history {
+                    let changed = writer
+                        .tx
+                        .execute(
+                            "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
+                            params![
+                                bytes,
+                                hash.as_bytes().as_slice(),
+                                record.id.to_bytes().as_slice()
+                            ],
+                        )
+                        .map_err(|e| CadError::io("writing base extrusion height", e))?;
+                    if changed != 1 {
+                        return Err(CadError::input(
+                            "base extrusion disappeared before height write",
+                        ));
+                    }
+                    for reference in prepared.added_references() {
+                        writer.put_topology_ref(reference)?;
+                    }
+                    writer
+                        .tx
+                        .execute(
+                            &format!("UPDATE meta SET modified_at = {NOW_UTC} WHERE id = 1"),
+                            [],
+                        )
+                        .map_err(|e| CadError::io("stamping height edit", e))?;
+                } else {
+                    // Preserve the legacy standalone writer and capability policy.
+                    writer.put_object(
+                        record.id,
+                        record.parent,
+                        record.ordinal,
+                        record.name.as_deref(),
+                        &record.payload,
+                    )?;
+                }
+                Ok(())
+            },
+            !history,
+        )
+    }
+
     fn write_transaction<T>(
         &mut self,
         edit: impl FnOnce(&mut DocumentWriter<'_>) -> Result<T>,
