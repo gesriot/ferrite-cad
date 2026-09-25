@@ -37,6 +37,7 @@ pub const SUPPORTED_CAPABILITIES: &[&str] = &[
     "sketch.constraints.circle.v1",
     "feature.predecessor.v1",
     "feature.through-all.v1",
+    "feature.revolve.v1",
     "topology.extrude-cap-edge.v1",
     "topology.extrude-sweep-edge.v1",
     "topology.extrude-cap-vertex.v1",

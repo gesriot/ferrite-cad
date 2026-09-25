@@ -100,6 +100,37 @@ pub struct OperationResult {
     pub history: History,
 }
 
+/// The result of a revolution.
+///
+/// One face per profile segment, reported through `history` as generated from
+/// that segment, and nothing else: a full turn has no caps, and its seams are
+/// the parameterisation of the faces rather than anything the profile drew.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RevolveResult {
+    pub shape: ShapeHandle,
+    pub history: History,
+}
+
+impl RevolveResult {
+    /// Every named output is a face of this result.
+    pub fn validate(&self) -> Result<()> {
+        for input in self.history.inputs() {
+            for output in self
+                .history
+                .generated(input)
+                .chain(self.history.modified(input))
+            {
+                if output.shape() != self.shape || output.kind() != SubShapeKind::Face {
+                    return Err(CadError::kernel(format!(
+                        "a revolution named {output}, which is not a face of its own result"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The result of an extrusion.
 ///
 /// The caps are reported separately because they correspond to no input: they

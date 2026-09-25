@@ -72,6 +72,9 @@
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
+#include <BRepSweep_Revol.hxx>
+#include <gp_Ax1.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_History.hxx>
 #include <GC_MakeArcOfCircle.hxx>
@@ -133,6 +136,12 @@ struct ShapeRecord {
   /// the queries refuse rather than answer with an empty list, which a naming
   /// layer would read as "this feature produced nothing".
   bool decoded = false;
+  /// True for the result of fc_occt_revolve. Its faces are answered only by
+  /// fc_occt_revolve_faces, and every extrusion query refuses it: a turned
+  /// face is not a swept one, and a full turn has no caps to report.
+  bool revolved = false;
+  /// The one face of revolution each profile segment raised, in segment order.
+  std::vector<std::vector<uint64_t>> revolve_faces;
   /// Face identifiers raised from each profile segment, in segment order.
   std::vector<std::vector<uint64_t>> side_faces;
   std::vector<uint64_t> start_cap;
@@ -954,6 +963,228 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
   });
 }
 
+FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
+                             const FcOcctSegment *segments,
+                             size_t segment_count, const double *axis_origin,
+                             const double *axis_direction, int32_t full_turn,
+                             FcOcctCancelFn cancel, void *cancel_context,
+                             uint64_t *out_shape,
+                             FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr || plane == nullptr || segments == nullptr ||
+        axis_origin == nullptr || axis_direction == nullptr ||
+        out_shape == nullptr) {
+      write_error(out_error, "fc_occt_revolve was given a null argument");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    if (full_turn != 1) {
+      write_error(out_error, "only a full turn is supported; full_turn must be 1, got " +
+                                 std::to_string(full_turn));
+      return FC_OCCT_UNSUPPORTED;
+    }
+    if (segment_count < 3) {
+      write_error(out_error, "a revolved polygon needs at least three Lines, got " +
+                                 std::to_string(segment_count));
+      return FC_OCCT_INVALID_INPUT;
+    }
+    for (size_t i = 0; i < segment_count; ++i) {
+      const FcOcctSegment &segment = segments[i];
+      if (segment.kind != FC_OCCT_SEGMENT_LINE) {
+        write_error(out_error, "segment " + std::to_string(i) +
+                                   " is not a Line; a revolution accepts only Lines");
+        return FC_OCCT_UNSUPPORTED;
+      }
+      if (!std::isfinite(segment.start_x) || !std::isfinite(segment.start_y) ||
+          !std::isfinite(segment.end_x) || !std::isfinite(segment.end_y)) {
+        write_error(out_error, "segment " + std::to_string(i) +
+                                   " has a non-finite end point");
+        return FC_OCCT_INVALID_INPUT;
+      }
+      const FcOcctSegment &next = segments[(i + 1) % segment_count];
+      if (segment.end_x != next.start_x || segment.end_y != next.start_y) {
+        write_error(out_error, "segment " + std::to_string(i) +
+                                   " does not end where the next one starts");
+        return FC_OCCT_INVALID_INPUT;
+      }
+    }
+    if (!finite3(plane->origin) || !finite3(plane->x_axis) ||
+        !finite3(plane->normal) || !finite3(axis_origin) ||
+        !finite3(axis_direction)) {
+      write_error(out_error, "the revolution request contains a non-finite number");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    if (std::abs(dot3(plane->x_axis, plane->normal)) > 1.0e-9) {
+      write_error(out_error, "the plane's X axis is not perpendicular to its normal");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const double axis_length = std::sqrt(dot3(axis_direction, axis_direction));
+    const double normal_length = std::sqrt(dot3(plane->normal, plane->normal));
+    if (!(axis_length > 0.0) || !(normal_length > 0.0)) {
+      write_error(out_error, "the axis direction or the plane normal has no length");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    if (std::abs(dot3(axis_direction, plane->normal)) >
+        1.0e-9 * axis_length * normal_length) {
+      write_error(out_error, "the axis does not lie in the profile's plane");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const double offset[3] = {axis_origin[0] - plane->origin[0],
+                              axis_origin[1] - plane->origin[1],
+                              axis_origin[2] - plane->origin[2]};
+    const double scale = 1.0 + std::sqrt(dot3(offset, offset));
+    if (std::abs(dot3(offset, plane->normal)) / normal_length > 1.0e-9 * scale) {
+      write_error(out_error, "the axis origin is not on the profile's plane");
+      return FC_OCCT_INVALID_INPUT;
+    }
+
+    if (cancelled(cancel, cancel_context)) {
+      return FC_OCCT_CANCELLED;
+    }
+
+    const gp_Pnt origin(plane->origin[0], plane->origin[1], plane->origin[2]);
+    const gp_Dir normal(plane->normal[0], plane->normal[1], plane->normal[2]);
+    const gp_Dir x_axis(plane->x_axis[0], plane->x_axis[1], plane->x_axis[2]);
+    const gp_Ax3 frame(origin, normal, x_axis);
+    const gp_Pln sketch_plane(frame);
+    const gp_Pnt axis_point(axis_origin[0], axis_origin[1], axis_origin[2]);
+    const gp_Dir axis_dir(axis_direction[0], axis_direction[1], axis_direction[2]);
+    // In the plane and perpendicular to the axis: the signed distance of a
+    // profile point from the axis is its component along this direction.
+    const gp_Dir radial = normal.Crossed(axis_dir);
+
+    const auto to_model = [&](double x, double y) {
+      return origin.Translated(gp_Vec(frame.XDirection()) * x +
+                               gp_Vec(frame.YDirection()) * y);
+    };
+
+    // Corner vertices shared by adjacent edges, exactly as the extrusion
+    // builds them, so the wire welds nothing and every edge keeps the
+    // identity its history is asked about.
+    std::vector<TopoDS_Vertex> corners;
+    corners.reserve(segment_count);
+    int side = 0;
+    for (size_t i = 0; i < segment_count; ++i) {
+      const gp_Pnt point = to_model(segments[i].start_x, segments[i].start_y);
+      const double distance = gp_Vec(axis_point, point).Dot(gp_Vec(radial));
+      if (std::abs(distance) <= Precision::Confusion()) {
+        write_error(out_error, "vertex " + std::to_string(i) +
+                                   " lies on the axis of revolution");
+        return FC_OCCT_INVALID_INPUT;
+      }
+      const int here = distance > 0.0 ? 1 : -1;
+      if (side != 0 && here != side) {
+        write_error(out_error, "the profile crosses the axis of revolution");
+        return FC_OCCT_INVALID_INPUT;
+      }
+      side = here;
+      corners.push_back(BRepBuilderAPI_MakeVertex(point));
+    }
+    std::vector<TopoDS_Edge> edges;
+    edges.reserve(segment_count);
+    BRepBuilderAPI_MakeWire wire;
+    for (size_t i = 0; i < segment_count; ++i) {
+      BRepBuilderAPI_MakeEdge edge(corners[i], corners[(i + 1) % segment_count]);
+      if (!edge.IsDone()) {
+        write_error(out_error, "segment " + std::to_string(i) + " describes no edge");
+        return FC_OCCT_INVALID_INPUT;
+      }
+      edges.push_back(edge.Edge());
+      wire.Add(edges.back());
+    }
+    if (!wire.IsDone()) {
+      write_error(out_error, "the segments do not form a closed wire");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    BRepBuilderAPI_MakeFace face_builder(sketch_plane, wire.Wire());
+    if (!face_builder.IsDone() ||
+        BRepCheck_Analyzer(face_builder.Face()).IsValid() != Standard_True) {
+      write_error(out_error, "the profile does not bound a valid face on its plane");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const TopoDS_Face face = face_builder.Face();
+
+    if (cancelled(cancel, cancel_context)) {
+      return FC_OCCT_CANCELLED;
+    }
+
+    // Exactly one full turn: the angle is the contract's, not a caller's
+    // number that happens to be 2π.
+    // std::acos(-1) rather than M_PI, which MSVC defines only on request.
+    const double one_full_turn = 2.0 * std::acos(-1.0);
+    BRepPrimAPI_MakeRevol revol(face, gp_Ax1(axis_point, axis_dir), one_full_turn);
+    Handle(CancelIndicator) indicator = new CancelIndicator(cancel, cancel_context);
+    revol.Build(indicator->Start());
+    if (cancelled(cancel, cancel_context)) {
+      return FC_OCCT_CANCELLED;
+    }
+    if (!revol.IsDone()) {
+      write_error(out_error, "the revolution did not produce a shape");
+      return FC_OCCT_KERNEL;
+    }
+
+    ShapeRecord record;
+    record.shape = revol.Shape();
+    record.revolved = true;
+    size_t solids = 0;
+    for (TopExp_Explorer it(record.shape, TopAbs_SOLID); it.More(); it.Next()) {
+      ++solids;
+    }
+    if (solids != 1 || BRepCheck_Analyzer(record.shape).IsValid() != Standard_True) {
+      write_error(out_error, "the revolution is not one valid solid");
+      return FC_OCCT_KERNEL;
+    }
+    GProp_GProps properties;
+    BRepGProp::VolumeProperties(record.shape, properties);
+    if (!(properties.Mass() > 0.0)) {
+      write_error(out_error, "the revolution encloses no positive volume");
+      return FC_OCCT_KERNEL;
+    }
+
+    // The one face each Line raised, read from the sweep's own history.
+    //
+    // BRepSweep_Revol::Shape(edge) is what the revolution made of that edge.
+    // BRepPrimAPI_MakeRevol::Generated is deliberately not used: measured on
+    // OCCT 8.0.1 for a full turn, it reports the annular face a radial Line
+    // raises as "deleted" (and so reports nothing) although that very face is
+    // in the finished solid, while for a partial angle it reports it. Every
+    // answer is checked rather than trusted: a null or non-face result, a face
+    // outside the finished solid, a face claimed by two Lines, or a face of the
+    // solid no Line raised refuses the whole result.
+    TopTools_IndexedMapOfShape solid_faces;
+    TopExp::MapShapes(record.shape, TopAbs_FACE, solid_faces);
+    TopTools_IndexedMapOfShape claimed;
+    BRepSweep_Revol sweep = revol.Revol();
+    record.revolve_faces.resize(segment_count);
+    for (size_t i = 0; i < segment_count; ++i) {
+      const TopoDS_Shape candidate = sweep.Shape(edges[i]);
+      if (candidate.IsNull() || candidate.ShapeType() != TopAbs_FACE ||
+          !solid_faces.Contains(candidate)) {
+        write_error(out_error, "the revolution made nothing of segment " +
+                                   std::to_string(i) +
+                                   " that is a face of the finished solid");
+        return FC_OCCT_KERNEL;
+      }
+      if (claimed.Contains(candidate)) {
+        write_error(out_error, "the revolution made one face of two segments");
+        return FC_OCCT_KERNEL;
+      }
+      claimed.Add(candidate);
+      record.revolve_faces[i].push_back(record.remember(candidate));
+    }
+    if (claimed.Extent() != solid_faces.Extent()) {
+      write_error(out_error, "the solid has " + std::to_string(solid_faces.Extent()) +
+                                 " faces but its segments raised " +
+                                 std::to_string(claimed.Extent()));
+      return FC_OCCT_KERNEL;
+    }
+
+    const uint64_t id = session->next_shape++;
+    session->shapes.emplace(id, std::move(record));
+    *out_shape = id;
+    return FC_OCCT_OK;
+  });
+}
+
 FcOcctStatus fc_occt_cut(FcOcctSession *session, uint64_t target, uint64_t tool,
                          FcOcctCancelFn cancel, void *cancel_context,
                          uint64_t *out_shape, double *out_removed_volume,
@@ -1197,6 +1428,37 @@ FcOcctStatus fc_occt_cut_carried(FcOcctSession *session, uint64_t result,
   });
 }
 
+FcOcctStatus fc_occt_revolve_faces(FcOcctSession *session, uint64_t shape,
+                                   size_t segment_index, uint64_t *out_ids,
+                                   size_t capacity, size_t *out_count,
+                                   FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr) {
+      write_error(out_error, "no session");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    if (found->second.decoded || !found->second.revolved) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " is not a fresh revolution, so it has no revolution "
+                                 "history to report");
+      return FC_OCCT_UNSUPPORTED;
+    }
+    if (segment_index >= found->second.revolve_faces.size()) {
+      write_error(out_error, "segment " + std::to_string(segment_index) +
+                                 " is outside the profile");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    return copy_ids(found->second.revolve_faces[segment_index], out_ids,
+                    capacity, out_count, out_error);
+  });
+}
+
 FcOcctStatus fc_occt_extrude_side_faces(FcOcctSession *session, uint64_t shape,
                                         size_t segment_index,
                                         uint64_t *out_ids, size_t capacity,
@@ -1212,6 +1474,13 @@ FcOcctStatus fc_occt_extrude_side_faces(FcOcctSession *session, uint64_t shape,
       write_error(out_error, "shape " + std::to_string(shape) +
                                  " was released or never existed");
       return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    if (found->second.revolved) {
+      write_error(out_error,
+                  "shape " + std::to_string(shape) +
+                      " is a revolution, which has faces of revolution and no "
+                      "extrusion sides, caps or sweep edges");
+      return FC_OCCT_UNSUPPORTED;
     }
     if (found->second.decoded) {
       write_error(out_error,
@@ -1245,6 +1514,13 @@ FcOcctStatus fc_occt_extrude_cap_edges(FcOcctSession *session, uint64_t shape,
       write_error(out_error, "shape " + std::to_string(shape) +
                                  " was released or never existed");
       return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    if (found->second.revolved) {
+      write_error(out_error,
+                  "shape " + std::to_string(shape) +
+                      " is a revolution, which has faces of revolution and no "
+                      "extrusion sides, caps or sweep edges");
+      return FC_OCCT_UNSUPPORTED;
     }
     if (found->second.decoded) {
       write_error(out_error,
@@ -1284,6 +1560,13 @@ FcOcctStatus fc_occt_extrude_sweep_edges(FcOcctSession *session, uint64_t shape,
                                  " was released or never existed");
       return FC_OCCT_UNKNOWN_HANDLE;
     }
+    if (found->second.revolved) {
+      write_error(out_error,
+                  "shape " + std::to_string(shape) +
+                      " is a revolution, which has faces of revolution and no "
+                      "extrusion sides, caps or sweep edges");
+      return FC_OCCT_UNSUPPORTED;
+    }
     if (found->second.decoded) {
       write_error(out_error,
                   "shape " + std::to_string(shape) +
@@ -1317,6 +1600,13 @@ FcOcctStatus fc_occt_extrude_cap_vertices(FcOcctSession *session, uint64_t shape
       write_error(out_error, "shape " + std::to_string(shape) +
                                  " was released or never existed");
       return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    if (found->second.revolved) {
+      write_error(out_error,
+                  "shape " + std::to_string(shape) +
+                      " is a revolution, which has faces of revolution and no "
+                      "extrusion sides, caps or sweep edges");
+      return FC_OCCT_UNSUPPORTED;
     }
     if (found->second.decoded) {
       write_error(out_error,
@@ -1356,6 +1646,13 @@ FcOcctStatus fc_occt_extrude_cap_faces(FcOcctSession *session, uint64_t shape,
       write_error(out_error, "shape " + std::to_string(shape) +
                                  " was released or never existed");
       return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    if (found->second.revolved) {
+      write_error(out_error,
+                  "shape " + std::to_string(shape) +
+                      " is a revolution, which has faces of revolution and no "
+                      "extrusion sides, caps or sweep edges");
+      return FC_OCCT_UNSUPPORTED;
     }
     if (found->second.decoded) {
       write_error(out_error,
@@ -1443,6 +1740,9 @@ FcOcctStatus fc_occt_face_surface(FcOcctSession *session, uint64_t shape,
       *out_kind = FC_OCCT_SURFACE_CYLINDER;
       *out_radius = adaptor.Cylinder().Radius();
       break;
+    case GeomAbs_Cone:
+      *out_kind = FC_OCCT_SURFACE_CONE;
+      break;
     default:
       *out_kind = FC_OCCT_SURFACE_OTHER;
       break;
@@ -1471,6 +1771,39 @@ FcOcctStatus fc_occt_cylinder_axis(FcOcctSession *session, uint64_t shape,
     const auto &sub = session->shapes.at(shape).sub_shapes[face];
     const BRepAdaptor_Surface adaptor(TopoDS::Face(sub));
     const auto axis = adaptor.Cylinder().Axis();
+    for (int i = 0; i < 3; ++i) {
+      out_origin[i] = axis.Location().Coord(i + 1);
+      out_direction[i] = axis.Direction().Coord(i + 1);
+    }
+    return FC_OCCT_OK;
+  });
+}
+
+FcOcctStatus fc_occt_surface_axis(FcOcctSession *session, uint64_t shape,
+                                  uint64_t face, double *out_origin,
+                                  double *out_direction,
+                                  FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (out_origin == nullptr || out_direction == nullptr) {
+      write_error(out_error, "surface axis needs two length-3 output arrays");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    int32_t kind = FC_OCCT_SURFACE_OTHER;
+    double radius = 0.0;
+    const auto status =
+        fc_occt_face_surface(session, shape, face, &kind, &radius, out_error);
+    if (status != FC_OCCT_OK) return status;
+    const auto &sub = session->shapes.at(shape).sub_shapes[face];
+    const BRepAdaptor_Surface adaptor(TopoDS::Face(sub));
+    gp_Ax1 axis;
+    if (kind == FC_OCCT_SURFACE_CYLINDER) {
+      axis = adaptor.Cylinder().Axis();
+    } else if (kind == FC_OCCT_SURFACE_CONE) {
+      axis = adaptor.Cone().Axis();
+    } else {
+      write_error(out_error, "the named face is neither cylindrical nor conical");
+      return FC_OCCT_INVALID_INPUT;
+    }
     for (int i = 0; i < 3; ++i) {
       out_origin[i] = axis.Location().Coord(i + 1);
       out_direction[i] = axis.Direction().Coord(i + 1);

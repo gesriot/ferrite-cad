@@ -58,6 +58,7 @@ mod document;
 mod edit;
 mod height_edit;
 mod polygon;
+mod revolve;
 mod sketch_edit;
 pub use annulus_edit::{
     AnnulusChoice, AnnulusEdit, SavedAnnulus, annulus_choices, replace_annulus_geometry,
@@ -72,7 +73,8 @@ pub use cut_edit::{
     SavedCutTarget, SavedCutTool, WALL_CLEARANCE_MM, cut_choices, cut_parameter_choices,
     cut_plane_placement, prepare_circular_cut, prepare_cut_parameters,
 };
-pub use polygon::{AnnularExtrusion, CircleExtrusion, PolygonExtrusion};
+pub use polygon::{AnnularExtrusion, CircleExtrusion, FullTurnRevolution, PolygonExtrusion};
+pub use revolve::{RevolveChoice, RevolveSegment, revolve_choices};
 pub use sketch_edit::{
     SketchChoice, SketchCutHistory, SketchVertex, replace_sketch_coordinates, sketch_choices,
 };
@@ -93,9 +95,10 @@ pub use graph::{Dependency, DependencyRole, evaluation_order};
 pub use model::{
     Body, CORE_CAPABILITY, CapSide, DatumPlane, EXTRUDE_CAP_EDGE_CAPABILITY,
     EXTRUDE_CAP_VERTEX_CAPABILITY, EXTRUDE_SWEEP_EDGE_CAPABILITY, EndCondition, EntityKind,
-    Expression, Extrude, FEATURE_PREDECESSOR_CAPABILITY, FEATURE_THROUGH_ALL_CAPABILITY,
-    GeomSignature, IMPORTED_STEP_CAPABILITY, ImportedDefinitionRef, ImportedStep, ImporterIdentity,
-    ObjectKind, ObjectPayload, Parameter, Point2, SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
+    Expression, Extrude, FEATURE_PREDECESSOR_CAPABILITY, FEATURE_REVOLVE_CAPABILITY,
+    FEATURE_THROUGH_ALL_CAPABILITY, GeomSignature, IMPORTED_STEP_CAPABILITY, ImportedDefinitionRef,
+    ImportedStep, ImporterIdentity, ObjectKind, ObjectPayload, Parameter, Point2, Revolve,
+    RevolveAxis, RevolveExtent, SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
     SKETCH_CONSTRAINTS_CAPABILITY, STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch,
     SketchConstraint, SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef,
     SketchPointSelector, SketchSegmentRef, SolidOperation, TOPOLOGY_CARRIED_FACE_CAPABILITY,

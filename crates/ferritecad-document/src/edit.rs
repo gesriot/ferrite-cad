@@ -47,6 +47,9 @@ pub struct ExtrudeEditSource {
     /// answers about one cut already in a body's history, which is a different
     /// question from whether another cut can be added to it.
     pub cut_features: Vec<crate::CutParameterChoice>,
+    /// Every saved Revolve, from that same pinned reading (§27A). Reported,
+    /// not editable: no editor of this build rewrites one.
+    pub revolves: Vec<crate::RevolveChoice>,
     pub refusal: Option<String>,
 }
 
@@ -122,6 +125,7 @@ impl ExtrudeEditSource {
             annulus_sketches: crate::annulus_choices(document, &objects),
             cut_bodies,
             cut_features,
+            revolves: crate::revolve_choices(document, &objects),
             refusal,
         })
     }
@@ -825,6 +829,7 @@ mod tests {
             annulus_sketches: crate::annulus_choices(document, &objects),
             cut_bodies: crate::cut_choices(document, &objects),
             cut_features: crate::cut_parameter_choices(document, &objects),
+            revolves: crate::revolve_choices(document, &objects),
             version: DocumentVersion {
                 document_id: document.meta().document_id,
                 content: document.content_version()?,

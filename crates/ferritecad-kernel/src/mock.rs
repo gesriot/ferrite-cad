@@ -245,6 +245,21 @@ impl GeometryKernel for MockKernel {
         &self.identity
     }
 
+    /// The mock draws every curve as its chord, and a revolution is curved
+    /// everywhere. Refused explicitly rather than approximated by a prism,
+    /// which would be a solid of the wrong shape under the right name.
+    fn revolve(
+        &mut self,
+        _request: &crate::request::RevolveRequest,
+        context: &OperationContext,
+    ) -> Result<crate::result::RevolveResult> {
+        context.check_cancelled()?;
+        Err(CadError::unsupported(
+            "the mock kernel represents every solid as a straight prism and cannot turn a \
+             profile about an axis; refusing rather than returning a prism under a Revolve's name",
+        ))
+    }
+
     fn extrude(
         &mut self,
         request: &ExtrudeRequest,

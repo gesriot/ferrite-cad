@@ -8,8 +8,8 @@ use std::convert::Infallible;
 
 use ferritecad_kernel::{
     ArchiveSlot, BrepBlob, CutRequest, CutResult, ExtrudeRequest, ExtrudeResult, FaceSurface,
-    GeometryKernel, KernelIdentity, Mesh, OperationContext, OperationResult, ShapeHandle,
-    SubShapeHandle, TessellationParams,
+    GeometryKernel, KernelIdentity, Mesh, OperationContext, OperationResult, RevolveRequest,
+    RevolveResult, ShapeHandle, SubShapeHandle, TessellationParams,
 };
 use ferritecad_types::{CadError, Result, Transform};
 
@@ -73,10 +73,22 @@ impl OcctKernel {
     pub fn is_valid(&mut self, _shape: ShapeHandle) -> Result<bool> {
         match self.0 {}
     }
+
+    pub fn surface_axis(&mut self, _face: SubShapeHandle) -> Result<([f64; 3], [f64; 3])> {
+        match self.0 {}
+    }
 }
 
 impl GeometryKernel for OcctKernel {
     fn identity(&self) -> &KernelIdentity {
+        match self.0 {}
+    }
+
+    fn revolve(
+        &mut self,
+        _request: &RevolveRequest,
+        _context: &OperationContext,
+    ) -> Result<RevolveResult> {
         match self.0 {}
     }
 

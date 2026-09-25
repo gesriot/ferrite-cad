@@ -93,6 +93,73 @@ impl ExtrudeRequest {
     }
 }
 
+/// The axis a revolution turns about, named in the profile plane's own terms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RevolveAxis {
+    /// The plane's local Y axis through its origin. In the profile, X is then
+    /// the distance from the axis and Y the position along it.
+    PlaneY,
+}
+
+/// How far a revolution turns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RevolveTurn {
+    /// Exactly one full turn, 2π. A full turn closes on itself: it has no
+    /// start or end face.
+    Full,
+}
+
+/// Turn a planar profile about an axis in its plane.
+///
+/// The axis and the angle are stated here, by name, so no adapter supplies
+/// them as constants of its own. What profiles are acceptable is the caller's
+/// policy; an adapter re-checks what it must to build a valid solid and refuses
+/// anything else rather than repairing it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RevolveRequest {
+    profile: Profile,
+    axis: RevolveAxis,
+    turn: RevolveTurn,
+}
+
+impl RevolveRequest {
+    pub fn new(profile: Profile, axis: RevolveAxis, turn: RevolveTurn) -> Self {
+        Self {
+            profile,
+            axis,
+            turn,
+        }
+    }
+
+    pub fn profile(&self) -> &Profile {
+        &self.profile
+    }
+
+    pub fn axis(&self) -> RevolveAxis {
+        self.axis
+    }
+
+    pub fn turn(&self) -> RevolveTurn {
+        self.turn
+    }
+
+    /// Feeds the request into a cache key: the profile (plane, labels and
+    /// geometry), the axis and the angle. The caller adds the kernel identity
+    /// and the tolerance.
+    pub fn feed(&self, hasher: &mut CanonicalHasher) {
+        hasher.field("revolve");
+        self.profile.feed(hasher);
+        hasher.field("axis").str(match self.axis {
+            RevolveAxis::PlaneY => "plane_y",
+        });
+        hasher.field("turn").str(match self.turn {
+            RevolveTurn::Full => "full",
+        });
+    }
+}
+
 /// How finely to approximate curved geometry with triangles.
 ///
 /// Part of every mesh cache key. Two tessellations of one solid at different

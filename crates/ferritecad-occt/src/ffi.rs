@@ -38,6 +38,7 @@ pub(crate) const SEGMENT_CIRCLE: i32 = 2;
 /// Must match the `FC_OCCT_SURFACE_*` constants in `ferritecad_occt.h`.
 const SURFACE_PLANE: i32 = 1;
 const SURFACE_CYLINDER: i32 = 2;
+const SURFACE_CONE: i32 = 3;
 
 /// Must match the `FC_OCCT_CARRIED_*` constants in `ferritecad_occt.h`.
 pub(crate) const CARRIED_KEPT: i32 = 0;
@@ -167,6 +168,37 @@ unsafe extern "C" {
         cancel: Option<CancelFn>,
         cancel_context: *mut c_void,
         out_shape: *mut u64,
+        out_error: *mut RawError,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn fc_occt_revolve(
+        session: *mut RawSession,
+        plane: *const Plane,
+        segments: *const Segment,
+        segment_count: usize,
+        axis_origin: *const f64,
+        axis_direction: *const f64,
+        full_turn: i32,
+        cancel: Option<CancelFn>,
+        cancel_context: *mut c_void,
+        out_shape: *mut u64,
+        out_error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_revolve_faces(
+        session: *mut RawSession,
+        shape: u64,
+        segment_index: usize,
+        out_ids: *mut u64,
+        capacity: usize,
+        out_count: *mut usize,
+        out_error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_surface_axis(
+        session: *mut RawSession,
+        shape: u64,
+        face: u64,
+        out_origin: *mut f64,
+        out_direction: *mut f64,
         out_error: *mut RawError,
     ) -> i32;
     fn fc_occt_cut(
@@ -615,6 +647,79 @@ impl Session {
         Ok(shape)
     }
 
+    /// Turns one closed Line loop exactly one full turn about an axis.
+    ///
+    /// The angle is stated to the bridge as `full_turn = 1`, never as a
+    /// number of radians the bridge would have to trust.
+    pub(crate) fn revolve_full_turn(
+        &mut self,
+        plane: &Plane,
+        segments: &[Segment],
+        axis_origin: [f64; 3],
+        axis_direction: [f64; 3],
+        cancel: &CancelToken,
+    ) -> Result<u64> {
+        if segments.len() < 3 {
+            return Err(CadError::input(
+                "a revolved polygon needs at least three Lines",
+            ));
+        }
+        let mut shape = 0u64;
+        let mut error = RawError::empty();
+        let context = cancel as *const CancelToken as *mut c_void;
+        // SAFETY: the slice and both three-element arrays live across the
+        // call, the out-parameters are valid, the token is borrowed for
+        // exactly its duration, and the bridge is noexcept.
+        let status = unsafe {
+            fc_occt_revolve(
+                self.raw,
+                plane,
+                segments.as_ptr(),
+                segments.len(),
+                axis_origin.as_ptr(),
+                axis_direction.as_ptr(),
+                1,
+                Some(cancel_trampoline),
+                context,
+                &mut shape,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "revolving a profile")?;
+        Ok(shape)
+    }
+
+    /// The face of revolution one profile segment raised.
+    pub(crate) fn revolve_faces(&mut self, shape: u64, segment_index: usize) -> Result<Vec<u64>> {
+        self.collect_ids(
+            "reading the face a profile segment raised by revolution",
+            |s, ids, cap, count, err| {
+                // SAFETY: pointers are valid for the call; see `collect_ids`.
+                unsafe { fc_occt_revolve_faces(s, shape, segment_index, ids, cap, count, err) }
+            },
+        )
+    }
+
+    /// The analytic axis of one named cylindrical or conical face.
+    pub(crate) fn surface_axis(&mut self, shape: u64, face: u64) -> Result<([f64; 3], [f64; 3])> {
+        let mut origin = [0.; 3];
+        let mut direction = [0.; 3];
+        let mut error = RawError::empty();
+        // SAFETY: both output arrays hold exactly three doubles for this call.
+        let status = unsafe {
+            fc_occt_surface_axis(
+                self.raw,
+                shape,
+                face,
+                origin.as_mut_ptr(),
+                direction.as_mut_ptr(),
+                &mut error,
+            )
+        };
+        interpret(status, &error, "reading a named surface's analytic axis")?;
+        Ok((origin, direction))
+    }
+
     /// Removes the material of `tool` from `target`.
     ///
     /// Returns the new shape and how much material went, so the caller can say
@@ -811,6 +916,7 @@ impl Session {
         Ok(match kind {
             SURFACE_PLANE => FaceSurface::Plane,
             SURFACE_CYLINDER => FaceSurface::Cylinder { radius },
+            SURFACE_CONE => FaceSurface::Cone,
             _ => FaceSurface::Other,
         })
     }
@@ -1540,6 +1646,7 @@ mod tests {
             ("FC_OCCT_SEGMENT_CIRCLE", SEGMENT_CIRCLE),
             ("FC_OCCT_SURFACE_PLANE", SURFACE_PLANE),
             ("FC_OCCT_SURFACE_CYLINDER", SURFACE_CYLINDER),
+            ("FC_OCCT_SURFACE_CONE", SURFACE_CONE),
             ("FC_OCCT_CARRIED_KEPT", CARRIED_KEPT),
             ("FC_OCCT_CARRIED_MODIFIED", CARRIED_MODIFIED),
             ("FC_OCCT_CARRIED_DELETED", CARRIED_DELETED),
@@ -1588,6 +1695,35 @@ mod tests {
             assert!(
                 found.is_some(),
                 "fc_occt_extrude declares {parameter} after position {at}"
+            );
+            at += found.expect("checked just above") + parameter.len();
+        }
+        // The same for the revolution's own entry point: a new signature, and
+        // the full-turn flag in its own place rather than in an angle slot.
+        let declared = header
+            .split_once("FcOcctStatus fc_occt_revolve(FcOcctSession *session")
+            .expect("the header declares fc_occt_revolve")
+            .1
+            .split_once(';')
+            .expect("the declaration ends")
+            .0;
+        let mut at = 0;
+        for parameter in [
+            "const FcOcctPlane *plane",
+            "const FcOcctSegment *segments",
+            "size_t segment_count",
+            "const double *axis_origin",
+            "const double *axis_direction",
+            "int32_t full_turn",
+            "FcOcctCancelFn cancel",
+            "void *cancel_context",
+            "uint64_t *out_shape",
+            "FcOcctError *out_error",
+        ] {
+            let found = declared[at..].find(parameter);
+            assert!(
+                found.is_some(),
+                "fc_occt_revolve declares {parameter} after position {at}"
             );
             at += found.expect("checked just above") + parameter.len();
         }

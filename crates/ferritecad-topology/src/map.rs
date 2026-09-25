@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ferritecad_document::CapSide;
 use ferritecad_kernel::{
-    CutResult, ExtrudeResult, HistoryInput, Profile, ShapeHandle, SubShapeHandle, SubShapeKind,
+    CutResult, ExtrudeResult, HistoryInput, Profile, RevolveResult, ShapeHandle, SubShapeHandle,
+    SubShapeKind,
 };
 use ferritecad_types::{CadError, ObjectId, ProfileJoint, Result, StableEntityId};
 
@@ -43,6 +44,12 @@ pub struct FeatureNames {
     /// choosing.
     start_cap_vertices: BTreeMap<ProfileJoint, BTreeSet<SubShapeHandle>>,
     end_cap_vertices: BTreeMap<ProfileJoint, BTreeSet<SubShapeHandle>>,
+    /// The face of revolution each profile Line raised, for a Revolve.
+    ///
+    /// Apart from `sides` on purpose: a turned face and a swept face are
+    /// different meanings, so an extrusion-side reference can never resolve to
+    /// a face of revolution, nor the other way round.
+    revolved: BTreeMap<StableEntityId, BTreeSet<SubShapeHandle>>,
     /// Immediate predecessor, for the unchanged legacy CarriedCap/Side roles.
     previous: Option<ObjectId>,
     /// Original producer and role, never reassigned by an intervening boolean.
@@ -196,6 +203,23 @@ impl FeatureNames {
         self.sides.keys().copied()
     }
 
+    /// The faces of revolution one profile Line raised; empty for a Line this
+    /// feature did not turn, including every extrusion's Lines.
+    pub fn revolved_face(
+        &self,
+        profile_segment: StableEntityId,
+    ) -> impl Iterator<Item = SubShapeHandle> + '_ {
+        self.revolved
+            .get(&profile_segment)
+            .into_iter()
+            .flat_map(|faces| faces.iter().copied())
+    }
+
+    /// Every profile Line this feature turned into a face.
+    pub fn named_revolved_segments(&self) -> impl ExactSizeIterator<Item = StableEntityId> + '_ {
+        self.revolved.keys().copied()
+    }
+
     /// The faces an earlier feature's cap became, as this feature leaves it.
     ///
     /// `None` for a side this build does not understand, exactly as
@@ -285,6 +309,8 @@ pub struct RestoredNames {
     pub end_cap_vertices: BTreeMap<ProfileJoint, Vec<SubShapeHandle>>,
     pub previous: Option<ObjectId>,
     pub carried: BTreeMap<(ObjectId, CarriedName), Vec<SubShapeHandle>>,
+    /// Faces of revolution by the Line that raised them.
+    pub revolved: BTreeMap<StableEntityId, Vec<SubShapeHandle>>,
     pub carried_deleted: BTreeSet<(ObjectId, CarriedName)>,
 }
 
@@ -541,6 +567,75 @@ impl TopologyMap {
         Ok(())
     }
 
+    /// Records what a revolution produced: one face of revolution per Line.
+    ///
+    /// Every face must be a face of this revolution's own shape, filed under a
+    /// Line of the turned profile, and every Line must have raised one. A
+    /// revolution has no caps, cap edges, sweep edges or corner vertices, and
+    /// nothing is filed under those names.
+    pub fn record_revolve(
+        &mut self,
+        producer: ObjectId,
+        profile: &Profile,
+        result: &RevolveResult,
+    ) -> Result<()> {
+        result.validate()?;
+        if !profile.inner().is_empty() {
+            return Err(CadError::topology(format!(
+                "feature {producer} turned a profile with holes, which this build does not name"
+            )));
+        }
+        let lines: BTreeSet<StableEntityId> = profile
+            .outer()
+            .segments()
+            .iter()
+            .map(|segment| segment.label)
+            .collect();
+        for input in result.history.inputs() {
+            let HistoryInput::Segment(label) = input else {
+                return Err(CadError::topology(format!(
+                    "feature {producer} reported revolution history for {input:?}, which is not a \
+                     profile Line"
+                )));
+            };
+            if !lines.contains(&label) {
+                return Err(CadError::topology(format!(
+                    "feature {producer} reported a face for segment {label}, which is not in the \
+                     turned profile"
+                )));
+            }
+        }
+        let mut names = FeatureNames {
+            shape: Some(result.shape),
+            ..FeatureNames::default()
+        };
+        let mut claimed: BTreeMap<SubShapeHandle, StableEntityId> = BTreeMap::new();
+        for label in &lines {
+            let faces: Vec<_> = result
+                .history
+                .generated(HistoryInput::Segment(*label))
+                .collect();
+            if faces.is_empty() {
+                return Err(CadError::topology(format!(
+                    "feature {producer} raised no face from Line {label}"
+                )));
+            }
+            for face in faces {
+                check(face, result.shape, producer, "a face of revolution")?;
+                if let Some(other) = claimed.insert(face, *label)
+                    && other != *label
+                {
+                    return Err(CadError::topology(format!(
+                        "feature {producer} reported one face for Lines {other} and {label}"
+                    )));
+                }
+                names.revolved.entry(*label).or_default().insert(face);
+            }
+        }
+        self.features.insert(producer, names);
+        Ok(())
+    }
+
     /// Records names restored from an archive rather than from an operation.
     ///
     /// The same checks as a fresh record: every sub-shape must have the right
@@ -571,6 +666,31 @@ impl TopologyMap {
             for face in faces {
                 check(*face, shape, producer, "a restored extrusion side")?;
                 names.sides.entry(*segment).or_default().insert(*face);
+            }
+        }
+        if !restored.revolved.is_empty()
+            && (!restored.sides.is_empty()
+                || !restored.start_cap.is_empty()
+                || !restored.end_cap.is_empty()
+                || restored.previous.is_some())
+        {
+            return Err(CadError::topology(format!(
+                "feature {producer} restored faces of revolution beside extrusion names; one \
+                 feature is one or the other"
+            )));
+        }
+        let mut turned: BTreeMap<SubShapeHandle, StableEntityId> = BTreeMap::new();
+        for (segment, faces) in &restored.revolved {
+            for face in faces {
+                check(*face, shape, producer, "a restored face of revolution")?;
+                if let Some(other) = turned.insert(*face, *segment)
+                    && other != *segment
+                {
+                    return Err(CadError::topology(format!(
+                        "feature {producer} restored one face for Lines {other} and {segment}"
+                    )));
+                }
+                names.revolved.entry(*segment).or_default().insert(*face);
             }
         }
         names.previous = restored.previous;

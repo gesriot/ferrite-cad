@@ -6,8 +6,9 @@ use ferritecad_kernel::{
     ArchiveSlot, BrepBlob, CarriedOutcome, CutRequest, CutResult, ExtrudeExtent, ExtrudeRequest,
     ExtrudeResult, FaceSurface, GeometryKernel, History, HistoryInput, KernelIdentity, Mesh,
     MeshEdgeRange, MeshEdges, MeshFaceRange, MeshVertexRange, MeshVertices, OperationContext,
-    ProfileLoop, ProfileSegment, SegmentGeometry, SessionId, ShapeHandle, SketchPlane,
-    SubShapeHandle, SubShapeKind, TessellationParams,
+    ProfileLoop, ProfileSegment, RevolveAxis, RevolveRequest, RevolveResult, RevolveTurn,
+    SegmentGeometry, SessionId, ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind,
+    TessellationParams,
 };
 use ferritecad_types::{CadError, ContentHash, ProfileJoint, Result, Transform};
 
@@ -194,6 +195,17 @@ impl OcctKernel {
         self.session.cylinder_axis(raw, face.index())
     }
 
+    /// Analytic axis (origin in mm, unit direction) of one named cylindrical
+    /// or conical face. A measurement of an already resolved handle, never an
+    /// identity search.
+    pub fn surface_axis(&mut self, face: SubShapeHandle) -> Result<([f64; 3], [f64; 3])> {
+        if face.kind() != SubShapeKind::Face {
+            return Err(CadError::input("only a face of revolution has an axis"));
+        }
+        let raw = self.raw(face.shape())?;
+        self.session.surface_axis(raw, face.index())
+    }
+
     /// Wraps a kernel payload in FerriteCAD's framing.
     fn frame(&self, magic: &[u8; 4], payload: Vec<u8>) -> Result<BrepBlob> {
         let payload_length = u64::try_from(payload.len())
@@ -290,6 +302,84 @@ impl OcctKernel {
 impl GeometryKernel for OcctKernel {
     fn identity(&self) -> &KernelIdentity {
         &self.identity
+    }
+
+    fn revolve(
+        &mut self,
+        request: &RevolveRequest,
+        context: &OperationContext,
+    ) -> Result<RevolveResult> {
+        context.check_cancelled()?;
+        let profile = request.profile();
+        if !profile.inner().is_empty() || profile.outer().is_closed_curve() {
+            return Err(CadError::unsupported(
+                "a revolution is built from one closed loop of Lines",
+            ));
+        }
+        let plane = profile.plane();
+        // The axis is the request's, stated in the plane's own terms and
+        // placed in model space here, where the plane is.
+        let (axis_origin, axis_direction) = match request.axis() {
+            RevolveAxis::PlaneY => {
+                let origin = plane.origin();
+                let y = plane.y_axis();
+                ([origin.x, origin.y, origin.z], [y.x, y.y, y.z])
+            }
+            other => {
+                return Err(CadError::unsupported(format!(
+                    "revolution axis {other:?} is not implemented"
+                )));
+            }
+        };
+        match request.turn() {
+            RevolveTurn::Full => {}
+            other => {
+                return Err(CadError::unsupported(format!(
+                    "revolution angle {other:?} is not implemented"
+                )));
+            }
+        }
+        let drawn = profile.outer().segments();
+        let mut segments = Vec::with_capacity(drawn.len());
+        for segment in drawn {
+            if !matches!(segment.geometry, SegmentGeometry::Line { .. }) {
+                return Err(CadError::unsupported(
+                    "a revolution is built from Lines only",
+                ));
+            }
+            segments.push(segment_of(&segment.geometry));
+        }
+
+        context.progress().report(0.0);
+        let raw = self.session.revolve_full_turn(
+            &plane_of(plane),
+            &segments,
+            axis_origin,
+            axis_direction,
+            context.cancel(),
+        )?;
+        context.progress().report(1.0);
+        let shape = ShapeHandle::new(self.session_id, raw);
+        let assembled = (|| -> Result<RevolveResult> {
+            // The completion report may cancel; the shape is ours to release.
+            context.check_cancelled()?;
+            let mut history = History::new();
+            for (index, segment) in drawn.iter().enumerate() {
+                for face in self.session.revolve_faces(raw, index)? {
+                    history.record_generated(
+                        HistoryInput::Segment(segment.label),
+                        self.face(shape, face),
+                    );
+                }
+            }
+            let result = RevolveResult { shape, history };
+            result.validate()?;
+            Ok(result)
+        })();
+        if assembled.is_err() {
+            self.release(shape);
+        }
+        assembled
     }
 
     fn extrude(

@@ -270,6 +270,54 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
                              FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*
+ * Turns one closed polygon of Lines about an axis in its plane (§27A).
+ *
+ * A new entry point with its own arguments; nothing of fc_occt_extrude is
+ * reinterpreted. `segments` is one loop of `segment_count` (at least three)
+ * FC_OCCT_SEGMENT_LINE segments meeting end to end in order; any other kind,
+ * a second loop or a non-finite number refuses the call.
+ *
+ * The axis is stated in model space by `axis_origin` and `axis_direction`
+ * (length 3 each). It must lie in the plane: the origin on it and the
+ * direction perpendicular to its normal, both within 1e-9 relative. Every
+ * vertex must lie strictly on one side of the axis, farther from it than Open
+ * CASCADE's linear confusion, so the profile neither touches nor crosses it;
+ * which profiles are acceptable is otherwise the caller's policy.
+ *
+ * `full_turn` states the angle and must be 1: exactly one full turn, 2π. Any
+ * other value is refused as unsupported rather than read as an angle.
+ *
+ * The result is checked before it is registered: one valid solid of positive
+ * volume, and the sweep's own history (BRepSweep_Revol::Shape of each input
+ * edge) naming exactly one face of that solid for every segment, no face for
+ * two segments, and no face of the solid left unnamed. MakeRevol::Generated is
+ * not used: measured on OCCT 8.0.1, for a full turn it reports the annular
+ * face of a radial Line as deleted although the face is in the solid. A full
+ * turn has no start or end face; nothing is reported as a cap.
+ *
+ * Cancellation is consulted before the profile is built and before and after
+ * the revolution, and is installed as a progress indicator for the algorithm.
+ */
+FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
+                             const FcOcctSegment *segments,
+                             size_t segment_count, const double *axis_origin,
+                             const double *axis_direction, int32_t full_turn,
+                             FcOcctCancelFn cancel, void *cancel_context,
+                             uint64_t *out_shape,
+                             FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/*
+ * The face of revolution one profile segment raised, by that segment's index
+ * in the `segments` array fc_occt_revolve was given. Two-call count/buffer
+ * protocol, as for the extrusion queries. Refused for a shape that is not a
+ * fresh revolution, including one decoded from a cache blob.
+ */
+FcOcctStatus fc_occt_revolve_faces(FcOcctSession *session, uint64_t shape,
+                                   size_t segment_index, uint64_t *out_ids,
+                                   size_t capacity, size_t *out_count,
+                                   FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/*
  * The faces the sweep raised from one profile segment.
  *
  * `segment_index` indexes the `segments` array fc_occt_extrude was given, so on
@@ -462,12 +510,21 @@ typedef int32_t FcOcctSurfaceKind;
 enum {
   FC_OCCT_SURFACE_OTHER = 0,
   FC_OCCT_SURFACE_PLANE = 1,
-  FC_OCCT_SURFACE_CYLINDER = 2
+  FC_OCCT_SURFACE_CYLINDER = 2,
+  FC_OCCT_SURFACE_CONE = 3
 };
 
 FcOcctStatus fc_occt_face_surface(FcOcctSession *session, uint64_t shape,
                                   uint64_t face, int32_t *out_kind,
                                   double *out_radius,
+                                  FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/* Analytic axis of the exact named cylindrical or conical face; arrays have
+ * length 3. Diagnostic only, like fc_occt_cylinder_axis: never searches for a
+ * face or assigns a topology name. */
+FcOcctStatus fc_occt_surface_axis(FcOcctSession *session, uint64_t shape,
+                                  uint64_t face, double *out_origin,
+                                  double *out_direction,
                                   FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /* Analytic axis of the exact named cylindrical face; arrays have length 3.

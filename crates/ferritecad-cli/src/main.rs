@@ -20,6 +20,7 @@ mod import;
 mod json;
 mod rebuild;
 mod render;
+mod revolve;
 mod sketch;
 mod topology;
 
@@ -103,6 +104,9 @@ enum Command {
     Create(CreateArgs),
     /// Create an XY Line polygon with a positive Blind extrusion from JSON request v1.
     CreateSketchExtrude(sketch::SketchArgs),
+    /// Turn an XY Line polygon one full turn about the sketch Y axis (x is the
+    /// radius, every x > 0) from JSON request v1.
+    CreateSketchRevolve(revolve::RevolveArgs),
     /// Create one analytic XY circle with a positive Blind extrusion from JSON request v1.
     CreateCircleExtrude(circle::CircleArgs),
     /// Create two concentric analytic XY circles - a hollow part - with a positive
@@ -360,6 +364,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::EditCircularCut(args) => edit_cut::run(args),
         Command::EditSketchConstraintsCopy(args) => edit_constraints::run(args),
         Command::CreateSketchExtrude(args) => sketch::run(args),
+        Command::CreateSketchRevolve(args) => revolve::run(args),
         Command::CreateCircleExtrude(args) => circle::run(args),
         Command::CreateAnnularExtrude(args) => annulus::run(args),
         Command::Create(args) if args.json => Ok(json::emit(

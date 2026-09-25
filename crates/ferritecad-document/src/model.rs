@@ -153,6 +153,13 @@ pub const FEATURE_PREDECESSOR_CAPABILITY: &str = "feature.predecessor.v1";
 /// v2 feature and a NewBody extrusion is still v1.
 pub const FEATURE_THROUGH_ALL_CAPABILITY: &str = "feature.through-all.v1";
 
+/// The capability a full-turn [`Revolve`] and every name it raises depend on.
+///
+/// Its own capability rather than a wider Extrude one: a build that knows
+/// Extrude does not know what turning a profile about an axis means, and must
+/// keep such a document verbatim and read-only instead of rewriting it.
+pub const FEATURE_REVOLVE_CAPABILITY: &str = "feature.revolve.v1";
+
 /// The capability an [`ImportedStep`] object depends on.
 ///
 /// Declared separately from [`CORE_CAPABILITY`] so a reader that understands
@@ -188,6 +195,8 @@ pub enum ObjectKind {
     Body,
     Extrude,
     ImportedStep,
+    /// A profile turned about an axis (§27A: full turn, NewBody only).
+    Revolve,
 }
 
 impl ObjectKind {
@@ -200,6 +209,7 @@ impl ObjectKind {
             Self::Body => "body",
             Self::Extrude => "feature.extrude",
             Self::ImportedStep => "exchange.step.imported",
+            Self::Revolve => "feature.revolve",
         }
     }
 
@@ -213,6 +223,7 @@ impl ObjectKind {
             "body" => Some(Self::Body),
             "feature.extrude" => Some(Self::Extrude),
             "exchange.step.imported" => Some(Self::ImportedStep),
+            "feature.revolve" => Some(Self::Revolve),
             _ => None,
         }
     }
@@ -229,6 +240,10 @@ impl ObjectKind {
     pub fn required_capabilities(self, schema_version: u32) -> Vec<String> {
         match (self, schema_version) {
             (Self::ImportedStep, _) => vec![IMPORTED_STEP_CAPABILITY.to_owned()],
+            (Self::Revolve, _) => vec![
+                CORE_CAPABILITY.to_owned(),
+                FEATURE_REVOLVE_CAPABILITY.to_owned(),
+            ],
             (Self::Sketch, 2) => vec![
                 CORE_CAPABILITY.to_owned(),
                 SKETCH_CONSTRAINTS_CAPABILITY.to_owned(),
@@ -261,6 +276,7 @@ impl ObjectKind {
     pub fn known_capabilities(self) -> &'static [&'static str] {
         match self {
             Self::ImportedStep => &[IMPORTED_STEP_CAPABILITY],
+            Self::Revolve => &[CORE_CAPABILITY, FEATURE_REVOLVE_CAPABILITY],
             Self::Sketch => &[
                 CORE_CAPABILITY,
                 SKETCH_CONSTRAINTS_CAPABILITY,
@@ -317,7 +333,7 @@ impl ObjectKind {
 
     /// Whether an object of this kind participates in the rebuild as a feature.
     pub fn is_feature(self) -> bool {
-        matches!(self, Self::Extrude)
+        matches!(self, Self::Extrude | Self::Revolve)
     }
 }
 
@@ -942,6 +958,65 @@ pub enum SolidOperation {
     Intersect,
 }
 
+/// The axis a [`Revolve`] turns its profile about.
+///
+/// Named, not computed: the sketch's own local Y axis through its origin. On
+/// the canvas X is then the radial distance and Y the axial coordinate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum RevolveAxis {
+    SketchY,
+}
+
+/// How far a [`Revolve`] turns. §27A: exactly one full turn, 2π.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum RevolveExtent {
+    FullTurn,
+}
+
+/// Turns a sketch profile about an axis in its own plane.
+///
+/// The intent, stored whole: which profile, about which axis, how far. Never a
+/// mesh, never an equivalent chain of extrusions. §27A writes and evaluates
+/// exactly one class — a full turn about the sketch's Y axis starting a body —
+/// and refuses every other combination rather than approximating it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Revolve {
+    /// The sketch supplying the profile.
+    pub profile: ObjectId,
+    pub axis: RevolveAxis,
+    pub extent: RevolveExtent,
+    pub operation: SolidOperation,
+}
+
+impl Revolve {
+    /// The cache key for this feature's own contribution; the caller adds the
+    /// resolved profile and the kernel identity.
+    pub fn cache_key(&self, tolerance: ferritecad_types::Tolerance) -> ContentHash {
+        let mut hasher = CanonicalHasher::new("feature.revolve");
+        hasher.algorithm_version(ObjectKind::Revolve.schema_version());
+        tolerance.feed(&mut hasher);
+        hasher.field("profile").bytes(&self.profile.to_bytes());
+        hasher.field("axis").str(match self.axis {
+            RevolveAxis::SketchY => "sketch_y",
+        });
+        hasher.field("extent").str(match self.extent {
+            RevolveExtent::FullTurn => "full_turn",
+        });
+        hasher.field("operation").str(match self.operation {
+            SolidOperation::NewBody => "new_body",
+            SolidOperation::Add => "add",
+            SolidOperation::Cut => "cut",
+            SolidOperation::Intersect => "intersect",
+        });
+        hasher.finish()
+    }
+}
+
 /// Sweeps a sketch profile along the plane normal.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Extrude {
@@ -1174,6 +1249,13 @@ pub enum SemanticRole {
         origin_feature: ObjectId,
         profile_segment: StableEntityId,
     },
+    /// The face of revolution a [`Revolve`] raised from one profile Line.
+    ///
+    /// Its own role, not [`SemanticRole::ExtrudeSide`]: a turned face and a
+    /// swept face are different meanings, and neither may resolve against the
+    /// other's feature. A full turn has no caps; the annular end faces are the
+    /// rotations of the radial Lines and are named by those Lines.
+    RevolveFace { profile_segment: StableEntityId },
 }
 
 /// How many entities a reference selects, and which.
@@ -1295,6 +1377,11 @@ impl TopologyRef {
             SemanticRole::ExtrudeSide { profile_segment } => {
                 hasher
                     .str("extrude_side")
+                    .bytes(&profile_segment.to_bytes());
+            }
+            SemanticRole::RevolveFace { profile_segment } => {
+                hasher
+                    .str("revolve_face")
                     .bytes(&profile_segment.to_bytes());
             }
             SemanticRole::ExtrudeCapEdge {
@@ -1602,6 +1689,8 @@ pub enum ObjectPayload {
     Sketch(Sketch),
     Body(Body),
     Extrude(Extrude),
+    /// A profile turned about an axis.
+    Revolve(Revolve),
     /// A STEP file and the scene one reading of it produced.
     ImportedStep(ImportedStep),
     /// An object of a type this build does not implement, preserved verbatim.
@@ -1618,6 +1707,7 @@ impl ObjectPayload {
             Self::Sketch(_) => ObjectKind::Sketch.as_str(),
             Self::Body(_) => ObjectKind::Body.as_str(),
             Self::Extrude(_) => ObjectKind::Extrude.as_str(),
+            Self::Revolve(_) => ObjectKind::Revolve.as_str(),
             Self::ImportedStep(_) => ObjectKind::ImportedStep.as_str(),
             Self::Unknown(unknown) => &unknown.type_name,
         }
@@ -1673,6 +1763,7 @@ impl ObjectPayload {
             Self::Sketch(v) => Envelope::encode(name, version, capabilities, v)?,
             Self::Body(v) => Envelope::encode(name, version, capabilities, v)?,
             Self::Extrude(v) => Envelope::encode(name, version, capabilities, v)?,
+            Self::Revolve(v) => Envelope::encode(name, version, capabilities, v)?,
             // Written back at the layout it was read at. A version 1 scene
             // has no keys and a version 2 scene has no placement identities,
             // and inventing either while writing would turn a document that
@@ -1739,6 +1830,7 @@ impl ObjectPayload {
             ObjectKind::Sketch => Self::Sketch(envelope.decode()?),
             ObjectKind::Body => Self::Body(envelope.decode()?),
             ObjectKind::Extrude => Self::Extrude(envelope.decode()?),
+            ObjectKind::Revolve => Self::Revolve(envelope.decode()?),
             ObjectKind::ImportedStep => Self::ImportedStep(match envelope.schema_version {
                 1 => {
                     let stored: StoredImport<LegacyScene> = envelope.decode()?;
@@ -1852,6 +1944,15 @@ impl ObjectPayload {
                     (_, _, _) => Ok(()),
                 }
             }
+            // The layout records any axis, extent and operation a later build
+            // may write; this build stores and rebuilds only the §27A class,
+            // and refuses to write anything else under its name.
+            Self::Revolve(revolve) => match (revolve.axis, revolve.extent, revolve.operation) {
+                (RevolveAxis::SketchY, RevolveExtent::FullTurn, SolidOperation::NewBody) => Ok(()),
+                _ => Err(CadError::unsupported(
+                    "this build writes only a full-turn NewBody Revolve about the sketch Y axis",
+                )),
+            },
             Self::ImportedStep(imported) => imported.validate(),
             Self::Unknown(_) => Ok(()),
         }

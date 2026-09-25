@@ -60,6 +60,8 @@ pub enum BoundName {
         origin_feature: ObjectId,
         profile_segment: StableEntityId,
     },
+    /// The face of revolution one profile Line raised.
+    RevolvedFace { profile_segment: StableEntityId },
 }
 
 impl BoundName {
@@ -119,7 +121,8 @@ impl BoundName {
             | Self::CarriedEndCap
             | Self::CarriedSide { .. }
             | Self::OriginCap { .. }
-            | Self::OriginSide { .. } => SubShapeKind::Face,
+            | Self::OriginSide { .. }
+            | Self::RevolvedFace { .. } => SubShapeKind::Face,
             Self::StartCapEdge { .. } | Self::EndCapEdge { .. } | Self::SweepEdge { .. } => {
                 SubShapeKind::Edge
             }
@@ -315,6 +318,19 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
             ));
         }
     }
+    // Faces of revolution, by the Line that raised them, through the same
+    // ordered map: the sequence is the same on every machine and says nothing
+    // about the order Open CASCADE traversed the faces in.
+    for segment in names.named_revolved_segments() {
+        for face in names.revolved_face(segment) {
+            wanted.push((
+                BoundName::RevolvedFace {
+                    profile_segment: segment,
+                },
+                face,
+            ));
+        }
+    }
     // The cap edges, gathered through the same ordered map for the same
     // reason. A segment with no such edge contributes nothing rather than an
     // entry pointing nowhere.
@@ -476,6 +492,7 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
         let mut start_cap_vertices: BTreeMap<ProfileJoint, Vec<_>> = BTreeMap::new();
         let mut end_cap_vertices: BTreeMap<ProfileJoint, Vec<_>> = BTreeMap::new();
         let mut carried: BTreeMap<(ObjectId, crate::CarriedName), Vec<_>> = BTreeMap::new();
+        let mut revolved: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
         let mut claimed = BTreeMap::new();
 
         for (name, face) in names.into_iter().zip(faces) {
@@ -521,6 +538,9 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 BoundName::EndCapVertex { joint } => {
                     end_cap_vertices.entry(joint).or_default().push(face)
                 }
+                BoundName::RevolvedFace { profile_segment } => {
+                    revolved.entry(profile_segment).or_default().push(face)
+                }
                 carried_name => {
                     let origin = carried_origin(carried_name, archived.previous)?;
                     carried.entry(origin).or_default().push(face);
@@ -552,6 +572,7 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 previous: archived.previous,
                 carried,
                 carried_deleted,
+                revolved,
             },
         )
     })();
