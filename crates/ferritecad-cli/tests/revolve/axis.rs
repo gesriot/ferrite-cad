@@ -952,6 +952,37 @@ fn solid_revolution_discovery_payload_and_writer_without_kernel() {
         "{error}"
     );
     doc.close().expect("close");
+
+    if !ferritecad_occt::is_available() {
+        // Without a kernel a solid part is discovered above, but neither
+        // created nor edited: nothing is published and the source is kept.
+        let input = d.path().join("solid-request.json");
+        request(&input, &CYLINDER);
+        let output = d.path().join("stub-new.fcad");
+        let names = entries(d.path());
+        let v = reply(create(&input, &output).output().expect("stub create"), 2);
+        assert_eq!(v["error"]["kind"], "unsupported", "{v}");
+        assert_eq!(entries(d.path()), names);
+        let before = std::fs::read(&source).expect("source");
+        let s = saved(&source);
+        let edit_request = d.path().join("stub-edit.json");
+        write_edit(
+            &edit_request,
+            &s.ids,
+            &[[0., 1.], [8., 1.], [8., 11.], [0., 11.]],
+        );
+        let names = entries(d.path());
+        let out = d.path().join("stub-edit.fcad");
+        let v = edit_reply(
+            edit(&source, &s.sketch, &s.version, &edit_request, &out)
+                .output()
+                .expect("stub edit"),
+            2,
+        );
+        assert_eq!(v["error"]["kind"], "unsupported", "{v}");
+        assert_eq!(entries(d.path()), names);
+        assert_eq!(std::fs::read(&source).expect("source"), before);
+    }
 }
 
 fn c_sketch(c: &Value) -> ObjectId {
