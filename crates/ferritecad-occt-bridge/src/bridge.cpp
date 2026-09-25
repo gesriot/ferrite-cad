@@ -2660,6 +2660,17 @@ FcOcctStatus fc_occt_tessellate(
         const gp_Vec edge1(nodes[a - 1], nodes[b - 1]);
         const gp_Vec edge2(nodes[a - 1], nodes[c - 1]);
         const gp_Vec cross = edge1.Crossed(edge2);
+        // §27C: where a solid closes on an axis — the apex of a cone — Open
+        // CASCADE meshes the degenerate edge as several nodes at one point,
+        // and the triangles fanning into it have two corners there. Such a
+        // triangle covers no surface and has no direction: STL cannot write
+        // it, and nothing can light it. It is dropped wherever it occurs, so
+        // a shape rebuilt cold and the same shape restored from an archive
+        // (which does not know it was revolved) tessellate identically. A
+        // mesh that never had one — every earlier model — is unchanged.
+        if (cross.SquareMagnitude() == 0.0) {
+          continue;
+        }
         if (cross.SquareMagnitude() > 1.0e-24) {
           accumulated[a - 1] += cross;
           accumulated[b - 1] += cross;

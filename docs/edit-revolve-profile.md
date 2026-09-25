@@ -142,7 +142,8 @@ edited. Publication goes through the existing worker and Open path.
 * adding, removing or reordering Lines;
 * constraints and Circle/Arc profiles;
 * editing the axis or the angle, and partial turns;
-* touching the axis;
+* touching the axis (§27C later accepts one whole Line on it, as a
+  separate solid class; see [axis-closed-revolve.md](axis-closed-revolve.md));
 * Boolean/Cut on the Revolve, and face attachment;
 * in-place Save and live preview.
 

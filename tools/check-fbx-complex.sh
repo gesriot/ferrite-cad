@@ -360,3 +360,13 @@ if [ -n "${FCAD_REVOLVE_EDIT_FBX_DIR:-}" ]; then
     done
     echo "FCAD_REVOLVE_EDIT_UFBX_EXECUTED"
 fi
+if [ -n "${FCAD_REVOLVE_AXIS_FBX_DIR:-}" ]; then
+    for name in revolve-axis-0 revolve-axis-1; do
+        "$reader" --identity "$FCAD_REVOLVE_AXIS_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0$' "$work/$name-reader.txt"; then
+            echo "error: solid Revolve FBX was not independently read: $name" >&2
+            exit 1
+        fi
+    done
+    echo "FCAD_REVOLVE_AXIS_UFBX_EXECUTED"
+fi

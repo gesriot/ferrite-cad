@@ -23,6 +23,12 @@ Sketch, Revolve `sketch_y`/`full_turn`/NewBody, Body). Правила числа
 сохраняются. Какой feature питает профиль, discovery сообщает в
 `sketches[].profile_feature`.
 
+[§27C](axis-closed-revolve.md) тем же маршрутом правит и сплошной Revolve,
+профиль которого лежит на оси ровно одной целой Line (X = 0 точно). Эта Line
+остаётся на оси той же самой; переход между сплошной деталью и деталью с
+отверстием отказывается атомарно (exit 2). `profile_feature.kind` для такого
+профиля — `full_turn_revolve_axis_closed` с `axis_curve_id`.
+
 Дополнительно [§26F](edit-cut-base-sketch.md) разрешает координаты исходного
 прямоугольного Line Sketch допустимой истории из 1–16 circular Cut. Инструменты
 остаются в абсолютных XY координатах; каждый проверяется у новых стен. Для такой

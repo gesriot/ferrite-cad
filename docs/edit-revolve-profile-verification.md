@@ -364,7 +364,8 @@ and the log; do not query the application's accessibility state.
    * The next lines say X is the radius, and "Edit exact coordinates. Curve
      IDs, order, closure and the saved full turn about Y are retained."
    * The canvas shows the orange axis at X = 0 labelled
-     "axis (Y) · radius X > 0 →".
+     "axis (Y) · radius X > 0 →" (since §27C: "axis (Y) at X = 0 · radius
+     X →", with a line saying this is a part with a bore).
    * "Revolve: one full turn (360°) about the sketch Y axis, through X = 0."
      replaces the height field.
    * There is no Feature switch; Remove and adding points are disabled.
@@ -372,7 +373,8 @@ and the log; do not query the application's accessibility state.
    (8, 12.5), (3, 12.5) in the numeric fields. `Save edited copy…` is
    enabled.
 3. **Refuse the axis.** Set vertex 1 X to 0.
-   * A red refusal says "not strictly on the positive radial side", and the
+   * A red refusal says "not strictly on the positive radial side" (since
+     §27C: the profile "touches the axis alone"), and the
      Save button disappears.
    * **Undo draft** restores 3; **Redo draft** brings back 0; **Undo draft**
      again.

@@ -1065,6 +1065,25 @@ impl Editor {
             "Click to add vertices, or enter exact coordinates. Last edge closes to vertex 1."
         });
         if let Some((request, choice)) = &self.editing {
+            // §27C: the saved class of a Revolve is fixed. A solid part names
+            // the one Line that lies on the axis; it stays there.
+            if let Some(SketchProfileUse::FullTurnRevolve { axis_segment, .. }) = choice.profile_use
+            {
+                ui.label(match axis_segment {
+                    Some(line) => {
+                        let at = request
+                            .vertices
+                            .iter()
+                            .position(|v| v.curve_id == line)
+                            .map_or(0, |i| i + 1);
+                        format!(
+                            "Solid part: edge {at} (Line {line}) stays on the axis at X = 0; \
+                             every other point stays at X > 0."
+                        )
+                    }
+                    None => "Part with a bore: every point stays at X > 0.".to_owned(),
+                });
+            }
             if let Some(history) = &choice.cut_history {
                 ui.label(format!(
                     "Base of {} circular Cuts. Tools stay at their saved XY coordinates.",

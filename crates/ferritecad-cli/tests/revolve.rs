@@ -20,6 +20,9 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
 };
+/// §27C: solid parts closed on the axis along one Line.
+#[path = "revolve/axis.rs"]
+mod axis;
 /// §27B: editing the saved profile of these documents.
 #[path = "revolve/edit.rs"]
 mod edit;

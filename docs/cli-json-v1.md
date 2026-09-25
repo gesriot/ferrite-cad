@@ -358,6 +358,23 @@ Envelope общий: `operation:"create-sketch-revolve"`, result
 только читаемость профиля, а разрешение правки — `editable` строки Sketch.
 [Контракт §27B и исполняемый рецепт](edit-revolve-profile.md).
 
+### Сплошной Revolve на оси (§27C)
+
+Профиль, лежащий на оси одной целой Line, получает третий `kind`; прежний
+`full_turn_revolve` по-прежнему означает только профиль строго вне оси, со
+своим `axis_clearance_mm`:
+
+```json
+"profile_feature": {"kind": "full_turn_revolve_axis_closed", "feature_id": "…",
+                    "body_id": "…", "axis": "sketch_y", "extent": "full_turn",
+                    "axis_curve_id": "…", "off_axis_clearance_mm": 1e-6}
+```
+
+Клиент, знающий только прежние `kind`, на новом останавливается. `revolves[]`
+аддитивно получает `closure` (`"radial_clear"` или `"axis_closed"`) и
+`axis_curve_id` (null или UUID Line на оси).
+[Контракт §27C и исполняемый рецепт](axis-closed-revolve.md).
+
 ## Правка сохранённой кольцевой пары (§25M)
 
 `ferritecad edit-annular <source.fcad> --sketch UUID --expect-version HASH
