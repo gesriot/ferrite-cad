@@ -593,19 +593,28 @@ mod tests {
     #[test]
     fn a_full_turn_refuses_the_axis_and_whatever_the_polygon_refuses() {
         let clear = FullTurnRevolution::AXIS_CLEARANCE_MM;
-        for p in [
-            vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
-            vec![[-2., 0.], [10., 0.], [10., 15.], [-2., 15.]],
-            vec![[clear, 0.], [10., 0.], [10., 15.]],
-            vec![[-4., 0.], [-10., 0.], [-10., 15.], [-4., 15.]],
+        // §27C: a whole Line on the axis is a solid part now; a single touch
+        // is still refused, and so is every crossing and near miss.
+        for (p, message) in [
+            (
+                vec![[0., 0.], [10., 0.], [10., 15.], [4., 15.]],
+                "touches the axis alone",
+            ),
+            (
+                vec![[-2., 0.], [10., 0.], [10., 15.], [-2., 15.]],
+                "not on the positive radial side",
+            ),
+            (
+                vec![[clear, 0.], [10., 0.], [10., 15.]],
+                "not strictly on the positive radial side",
+            ),
+            (
+                vec![[-4., 0.], [-10., 0.], [-10., 15.], [-4., 15.]],
+                "not on the positive radial side",
+            ),
         ] {
             let error = FullTurnRevolution::new(p.clone()).expect_err("axis");
-            assert!(
-                error
-                    .to_string()
-                    .contains("not strictly on the positive radial side"),
-                "{p:?}: {error}"
-            );
+            assert!(error.to_string().contains(message), "{p:?}: {error}");
         }
         assert!(FullTurnRevolution::new(vec![[clear * 2., 0.], [10., 0.], [10., 15.]]).is_ok());
         for p in [
@@ -625,5 +634,121 @@ mod tests {
             })
             .collect();
         assert!(FullTurnRevolution::new(many).is_err());
+    }
+
+    /// §27C: solid parts closed on the axis, their Pappus volumes written out
+    /// from cylinder and cone formulas, in either winding, at any Y and with
+    /// the axis Line anywhere in the saved order.
+    #[test]
+    fn an_axis_closed_profile_is_one_named_line_on_the_axis() {
+        use std::f64::consts::PI;
+        let cylinder = |r: f64, h: f64| PI * r * r * h;
+        let cone = |r: f64, h: f64| PI * r * r * h / 3.;
+        for (points, volume) in [
+            (
+                vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
+                cylinder(10., 15.),
+            ),
+            (vec![[0., 0.], [10., 0.], [0., 15.]], cone(10., 15.)),
+            (
+                vec![
+                    [0., 0.],
+                    [10., 0.],
+                    [10., 5.],
+                    [6., 5.],
+                    [6., 15.],
+                    [0., 15.],
+                ],
+                cylinder(10., 5.) + cylinder(6., 10.),
+            ),
+            (
+                vec![[0., -1.25], [3.5, -1.25], [3.5, 7.75], [0., 7.75]],
+                cylinder(3.5, 9.),
+            ),
+        ] {
+            let n = points.len();
+            for rotation in 0..n {
+                for reversed in [false, true] {
+                    let mut p: Vec<[f64; 2]> = (0..n).map(|i| points[(i + rotation) % n]).collect();
+                    if reversed {
+                        p.reverse();
+                    }
+                    let turn = FullTurnRevolution::new(p.clone()).expect("a solid part");
+                    let axis = turn.axis_line().expect("closed on the axis");
+                    assert_eq!(
+                        turn.closure(),
+                        RevolutionClosure::AxisClosed { axis_line: axis }
+                    );
+                    assert_eq!(p[axis][0], 0.);
+                    assert_eq!(p[(axis + 1) % n][0], 0.);
+                    assert!(
+                        (turn.volume_mm3() - volume).abs() < 1e-9 * volume,
+                        "{p:?}: {} != {volume}",
+                        turn.volume_mm3()
+                    );
+                }
+            }
+        }
+        // −0 is 0, stored as +0: never a different profile.
+        let turn = FullTurnRevolution::new(vec![[-0., 0.], [10., 0.], [10., 15.], [-0., 15.]])
+            .expect("-0 is on the axis");
+        assert_eq!(turn.axis_line(), Some(3));
+        assert!(turn.points().iter().all(|p| !p.x.is_sign_negative()));
+        // A part with a bore stays the class it was.
+        let bore = FullTurnRevolution::new(vec![[4., 0.], [10., 0.], [10., 15.], [4., 15.]])
+            .expect("a bore");
+        assert_eq!(bore.closure(), RevolutionClosure::RadialClear);
+    }
+
+    #[test]
+    fn an_axis_closed_profile_refuses_every_other_way_of_meeting_the_axis() {
+        let clear = FullTurnRevolution::AXIS_CLEARANCE_MM;
+        for (why, p, message) in [
+            (
+                "isolated touch",
+                vec![[4., 0.], [10., 0.], [10., 15.], [0., 7.]],
+                "touches the axis alone",
+            ),
+            (
+                "two separate touches",
+                vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.], [5., 7.5]],
+                "are not the ends of one Line",
+            ),
+            (
+                "two axis Lines",
+                vec![
+                    [0., 0.],
+                    [0., 5.],
+                    [5., 7.5],
+                    [0., 10.],
+                    [0., 15.],
+                    [10., 7.5],
+                ],
+                "vertices lie on the axis",
+            ),
+            (
+                "crossing",
+                vec![[0., 0.], [10., 0.], [10., 15.], [-1., 15.]],
+                "not on the positive radial side",
+            ),
+            (
+                "near the axis, not on it",
+                vec![[0., 0.], [10., 0.], [10., 15.], [clear / 2., 15.]],
+                "not strictly on the positive radial side",
+            ),
+            (
+                "an axis end nudged off",
+                vec![[1e-9, 0.], [10., 0.], [10., 15.], [0., 15.]],
+                "not strictly on the positive radial side",
+            ),
+        ] {
+            let error = FullTurnRevolution::new(p.clone()).expect_err(why);
+            assert!(error.to_string().contains(message), "{why}: {error}");
+        }
+        // A collapsed axis Line is a repeated vertex, refused by the shared
+        // polygon rules before the axis is considered.
+        assert!(FullTurnRevolution::new(vec![[0., 0.], [10., 0.], [10., 15.], [0., 0.]]).is_err());
+        // A Line along the axis that doubles back on itself is degenerate.
+        assert!(FullTurnRevolution::new(vec![[0., 0.], [0., 5.], [0., 15.], [10., 7.]]).is_err());
     }
 }

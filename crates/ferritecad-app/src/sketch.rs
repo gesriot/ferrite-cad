@@ -2541,9 +2541,10 @@ mod tests {
         assert_eq!(e.draft.as_ref().expect("draft").feature, Feature::Revolve);
         // Onto the axis: the document refuses, no request, and Undo restores.
         replace_field(&ctx, e, "4.000", "0");
+        // One vertex alone on the axis is not a Line on it (§27C).
         let refused = e.content().expect_err("a vertex on the axis");
         assert!(
-            refused.to_string().contains("positive radial side"),
+            refused.to_string().contains("touches the axis alone"),
             "{refused}"
         );
         let out = frame(&ctx, e, vec![]);

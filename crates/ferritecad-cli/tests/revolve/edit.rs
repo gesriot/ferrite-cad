@@ -713,9 +713,11 @@ fn revolve_profile_discovery_protocol_and_writer_without_kernel() {
     // Preparation refuses what the policy refuses, by name.
     for (why, points, message) in [
         (
+            // §27C: a whole Line on the axis would make this bored part
+            // solid, which an edit may not do.
             "axis contact",
             vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
-            "positive radial side",
+            "cannot change between hollow and solid",
         ),
         (
             "axis crossing",
@@ -856,9 +858,11 @@ fn native_revolve_profile_edit_refusals_preserve_every_file() {
     };
     for (why, points, message) in [
         (
+            // §27C: a whole Line on the axis would make this bored part
+            // solid, which an edit may not do.
             "axis contact",
             vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
-            "positive radial side",
+            "cannot change between hollow and solid",
         ),
         (
             "axis crossing",

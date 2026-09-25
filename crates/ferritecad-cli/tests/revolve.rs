@@ -142,9 +142,10 @@ fn revolve_request_refusals_and_usage_preserve_files() {
             "an angle as a number",
         ),
         (
-            json!({"request_version":1,"points_mm":[[0,0],[10,0],[10,15],[0,15]],"axis":"sketch_y","angle":"full_turn"}),
+            // §27C accepts a whole Line on the axis; one vertex alone is not.
+            json!({"request_version":1,"points_mm":[[0,0],[10,0],[10,15],[4,15]],"axis":"sketch_y","angle":"full_turn"}),
             "input",
-            "a solid shaft on the axis",
+            "a single touch of the axis",
         ),
         (
             json!({"request_version":1,"points_mm":[[-1,0],[10,0],[10,15],[-1,15]],"axis":"sketch_y","angle":"full_turn"}),
@@ -323,6 +324,7 @@ fn write_revolve_document(path: &Path, points: &[[f64; 2]]) -> (ObjectId, Vec<St
                 axis: RevolveAxis::SketchY,
                 extent: RevolveExtent::FullTurn,
                 operation: SolidOperation::NewBody,
+                axis_segment: None,
             }),
         )?;
         w.put_object(
