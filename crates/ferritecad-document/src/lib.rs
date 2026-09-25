@@ -76,7 +76,8 @@ pub use cut_edit::{
 pub use polygon::{AnnularExtrusion, CircleExtrusion, FullTurnRevolution, PolygonExtrusion};
 pub use revolve::{RevolveChoice, RevolveSegment, revolve_choices};
 pub use sketch_edit::{
-    SketchChoice, SketchCutHistory, SketchVertex, replace_sketch_coordinates, sketch_choices,
+    SketchChoice, SketchCutHistory, SketchProfileUse, SketchVertex, replace_sketch_coordinates,
+    sketch_choices,
 };
 mod envelope;
 mod graph;

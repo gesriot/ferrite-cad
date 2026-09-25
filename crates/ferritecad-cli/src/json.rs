@@ -106,7 +106,9 @@ pub struct Inspection {
     revolves: Vec<RevolveDiscovery>,
 }
 
-/// One saved Revolve, as the pinned reading found it. Nothing edits it yet.
+/// One saved Revolve, as the pinned reading found it. Its profile's
+/// coordinates are edited through `edit-sketch-copy` (§27B); whether that is
+/// allowed is the Sketch row's `editable`, not `profile.available`.
 #[derive(Serialize)]
 struct RevolveDiscovery {
     feature_id: ObjectId,
@@ -202,6 +204,49 @@ struct Sketch {
     editable: bool,
     refusal: Option<String>,
     document_refusal: Option<String>,
+    /// §27B, additive: which saved feature turns `vertices` into a solid, and
+    /// so which policy `edit-sketch-copy` applies. Null exactly when
+    /// `vertices` is.
+    profile_feature: Option<ProfileFeature>,
+}
+
+/// The feature a coordinate-editable profile feeds, stated by kind.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ProfileFeature {
+    BlindExtrude {
+        feature_id: ObjectId,
+        height_mm: f64,
+    },
+    FullTurnRevolve {
+        feature_id: ObjectId,
+        body_id: ObjectId,
+        axis: &'static str,
+        extent: &'static str,
+        axis_clearance_mm: f64,
+    },
+}
+
+impl ProfileFeature {
+    fn of(profile_use: ferritecad_document::SketchProfileUse) -> Self {
+        match profile_use {
+            ferritecad_document::SketchProfileUse::BlindExtrude { feature, height_mm } => {
+                Self::BlindExtrude {
+                    feature_id: feature,
+                    height_mm,
+                }
+            }
+            ferritecad_document::SketchProfileUse::FullTurnRevolve { feature, body } => {
+                Self::FullTurnRevolve {
+                    feature_id: feature,
+                    body_id: body,
+                    axis: "sketch_y",
+                    extent: "full_turn",
+                    axis_clearance_mm: ferritecad_document::FullTurnRevolution::AXIS_CLEARANCE_MM,
+                }
+            }
+        }
+    }
 }
 /// Additional coordinate policy for the base of a supported nonempty history.
 #[derive(Serialize)]
@@ -1004,6 +1049,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 cut_history: s.cut_history.as_ref().and_then(SketchCutHistory::of),
                 cut_history_v2: s.cut_history.as_ref().and_then(SketchCutHistory::of),
                 cut_history_v3: s.cut_history.as_ref().and_then(SketchCutHistory::of),
+                profile_feature: s.profile_use.map(ProfileFeature::of),
                 vertices: s.vertices.map(|vs| {
                     vs.into_iter()
                         .map(|v| SketchVertex {

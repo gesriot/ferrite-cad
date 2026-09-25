@@ -3,7 +3,7 @@
 //! No kernel, filesystem, IDs, or document mutation occurs while editing it.
 use ferritecad_document::{
     AnnulusChoice, AnnulusEdit, CircleChoice, CircleEdit, ExtrudeEditSource, SketchChoice,
-    SketchVertex,
+    SketchProfileUse, SketchVertex,
 };
 use ferritecad_jobs::{
     AnnularExtrusion, CircleExtrusion, EditAnnulusRequest, EditCircleRequest, EditSketchRequest,
@@ -385,8 +385,16 @@ impl Editor {
         else {
             return false;
         };
-        let (Some(vertices), Some(height)) = (&choice.vertices, choice.height_mm) else {
+        let (Some(vertices), Some(profile_use)) = (&choice.vertices, choice.profile_use) else {
             return false;
+        };
+        // The saved feature decides what the draft shows. A Revolve has no
+        // height to show, so none is invented; the editor offers no switch.
+        let (height, feature) = match profile_use {
+            SketchProfileUse::BlindExtrude { height_mm, .. } => {
+                (height_mm.to_string(), Feature::Extrude)
+            }
+            SketchProfileUse::FullTurnRevolve { .. } => (String::new(), Feature::Revolve),
         };
         self.dismiss();
         self.draft = Some(State {
@@ -395,8 +403,8 @@ impl Editor {
                 .map(|v| v.start_mm.map(|n| n.to_string()))
                 .collect(),
             closed: true,
-            height: height.to_string(),
-            feature: Feature::Extrude,
+            height,
+            feature,
         });
         self.canvas
             .fit(&vertices.iter().map(|v| v.start_mm).collect::<Vec<_>>());
@@ -1032,11 +1040,10 @@ impl Editor {
                 return;
             }
         }
-        let revolve = self.editing.is_none()
-            && self
-                .draft
-                .as_ref()
-                .is_some_and(|d| d.feature == Feature::Revolve);
+        let revolve = self
+            .draft
+            .as_ref()
+            .is_some_and(|d| d.feature == Feature::Revolve);
         ui.label(if revolve {
             "XY · mm · Line polygon · Revolve 360° about the sketch Y axis · NewBody"
         } else {
@@ -1048,7 +1055,10 @@ impl Editor {
                  profile may not touch or cross the axis.",
             );
         }
-        ui.label(if self.editing.is_some() {
+        ui.label(if self.editing.is_some() && revolve {
+            "Edit exact coordinates. Curve IDs, order, closure and the saved full turn about Y \
+             are retained."
+        } else if self.editing.is_some() {
             "Edit exact coordinates. Curve IDs, order, closure and height are retained."
         } else {
             "Click to add vertices, or enter exact coordinates. Last edge closes to vertex 1."
@@ -1176,7 +1186,7 @@ impl Editor {
                     ui.selectable_value(&mut draft.feature, Feature::Revolve, "Revolve 360°");
                 });
             }
-            if draft.feature == Feature::Extrude || self.editing.is_some() {
+            if draft.feature == Feature::Extrude {
                 ui.horizontal(|ui| {
                     ui.label("Blind height mm");
                     ui.add_enabled(

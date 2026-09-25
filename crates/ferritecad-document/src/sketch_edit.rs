@@ -5,8 +5,9 @@ use std::collections::BTreeSet;
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId, Transform};
 
 use crate::{
-    Dependency, DependencyRole, Document, ObjectPayload, ObjectRecord, Point2, PolygonExtrusion,
-    SavedCutTool, SketchCurve, SketchGeometry, SolidOperation, editable_extrude,
+    Dependency, DependencyRole, Document, FullTurnRevolution, ObjectPayload, ObjectRecord, Point2,
+    PolygonExtrusion, RevolveAxis, RevolveExtent, SavedCutTool, SketchCurve, SketchGeometry,
+    SolidOperation, editable_extrude,
 };
 
 /// The start of this persisted curve; its predecessor's end is the same vertex.
@@ -16,6 +17,33 @@ pub struct SketchVertex {
     pub start_mm: [f64; 2],
 }
 
+/// Which saved feature turns an editable Line profile into a solid, and so
+/// which numeric policy a coordinate edit must satisfy.
+///
+/// Stated, never inferred: a Revolve is not an Extrude of some height, and an
+/// Extrude has no axis. Each variant carries only what its own policy needs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SketchProfileUse {
+    /// One forward Blind Extrude/NewBody of this literal height (§25B), or the
+    /// base of a validated circular Cut history (§26F/§26I).
+    BlindExtrude { feature: ObjectId, height_mm: f64 },
+    /// One full turn about the sketch Y axis, NewBody (§27A); edited by §27B.
+    FullTurnRevolve { feature: ObjectId, body: ObjectId },
+}
+
+impl SketchProfileUse {
+    /// The profile policy of this use, applied to candidate starts. The same
+    /// value creation uses, so an edit can never publish what creation refuses.
+    fn check(&self, points: Vec<[f64; 2]>) -> Result<Vec<Point2>> {
+        Ok(match *self {
+            Self::BlindExtrude { height_mm, .. } => {
+                PolygonExtrusion::new(points, height_mm)?.points().to_vec()
+            }
+            Self::FullTurnRevolve { .. } => FullTurnRevolution::new(points)?.points().to_vec(),
+        })
+    }
+}
+
 /// A row in objects() order. Refusal is local; copy_access still takes priority.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SketchChoice {
@@ -23,7 +51,8 @@ pub struct SketchChoice {
     pub name: Option<String>,
     /// None for an unsupported sketch, never an invented/reordered contour.
     pub vertices: Option<Vec<SketchVertex>>,
-    pub height_mm: Option<f64>,
+    /// Present exactly when `vertices` is: the feature the profile feeds.
+    pub profile_use: Option<SketchProfileUse>,
     /// Present only for the original base of a validated nonempty Cut history.
     pub cut_history: Option<SketchCutHistory>,
     pub refusal: Option<String>,
@@ -59,7 +88,7 @@ pub(crate) fn choices_with_history(
                 sketch: o.id,
                 name: o.name.clone(),
                 vertices: None,
-                height_mm: None,
+                profile_use: None,
                 cut_history: None,
                 refusal: Some(error.to_string()),
             })
@@ -79,11 +108,21 @@ fn coordinate_choice(
         sketch: object.id,
         name: object.name.clone(),
         vertices: None,
-        height_mm: None,
+        profile_use: None,
         cut_history: None,
         refusal: None,
     };
     let checked = (|| {
+        // §27B: a Sketch that a Revolve turns is judged by the Revolve frame
+        // alone. The document says which feature uses the profile; the
+        // Extrude frame is never tried as a fallback, nor the other way round.
+        if objects
+            .iter()
+            .any(|o| matches!(&o.payload, ObjectPayload::Revolve(r) if r.profile == object.id))
+        {
+            let (sketch, profile_use) = revolve_frame(document, objects, object)?;
+            return Ok((lines(sketch, &profile_use, false)?, profile_use));
+        }
         if let Ok(history) = history {
             let target = &history.target;
             if !target.tools.is_empty() {
@@ -95,21 +134,30 @@ fn coordinate_choice(
                 let ObjectPayload::Sketch(sketch) = &object.payload else {
                     return Err(unsupported("selected object is not a Sketch"));
                 };
-                let vertices = lines(sketch, target.height_mm, false)?;
+                let profile_use = SketchProfileUse::BlindExtrude {
+                    feature: target.base_feature,
+                    height_mm: target.height_mm,
+                };
+                let vertices = lines(sketch, &profile_use, false)?;
                 choice.cut_history = Some(SketchCutHistory {
                     body: target.body,
                     base_feature: target.base_feature,
                     tools: target.tools.clone(),
                     boundary: target.boundary.clone(),
                 });
-                return Ok((vertices, target.height_mm));
+                return Ok((vertices, profile_use));
             }
         }
-        supported(document, objects, object, false)
+        let (sketch, height, feature) = extrude_frame(document, objects, object)?;
+        let profile_use = SketchProfileUse::BlindExtrude {
+            feature,
+            height_mm: height,
+        };
+        Ok((lines(sketch, &profile_use, false)?, profile_use))
     })();
-    let (vertices, height) = checked?;
+    let (vertices, profile_use) = checked?;
     choice.vertices = Some(vertices);
-    choice.height_mm = Some(height);
+    choice.profile_use = Some(profile_use);
     Ok(choice)
 }
 
@@ -123,8 +171,12 @@ pub(crate) fn supported(
     object: &ObjectRecord,
     allow_constraints: bool,
 ) -> Result<(Vec<SketchVertex>, f64)> {
-    let (sketch, height) = frame(document, objects, object)?;
-    Ok((lines(sketch, height, allow_constraints)?, height))
+    let (sketch, height, feature) = extrude_frame(document, objects, object)?;
+    let profile_use = SketchProfileUse::BlindExtrude {
+        feature,
+        height_mm: height,
+    };
+    Ok((lines(sketch, &profile_use, allow_constraints)?, height))
 }
 
 /// The structure every copy edit of a saved profile requires, and the height
@@ -139,6 +191,16 @@ pub(crate) fn frame<'a>(
     objects: &'a [ObjectRecord],
     object: &'a ObjectRecord,
 ) -> Result<(&'a crate::Sketch, f64)> {
+    let (sketch, height, _) = extrude_frame(document, objects, object)?;
+    Ok((sketch, height))
+}
+
+/// [`frame`], also naming the extrusion it found.
+fn extrude_frame<'a>(
+    document: &Document,
+    objects: &'a [ObjectRecord],
+    object: &'a ObjectRecord,
+) -> Result<(&'a crate::Sketch, f64, ObjectId)> {
     // Refuse unknown fields/noncanonical envelopes in the one payload we will
     // rewrite, rather than silently discard bytes this reader did not retain.
     require_lossless_payload(object)?;
@@ -197,12 +259,104 @@ pub(crate) fn frame<'a>(
             "sketch edit requires only plane, profile and body-tip dependencies",
         ));
     }
-    Ok((sketch, height))
+    Ok((sketch, height, extrude.id))
+}
+
+/// The §27A document around a Sketch that a Revolve turns: the only class a
+/// Revolve profile edit accepts (§27B).
+///
+/// The same shape as the Extrude frame — four root objects, the untransformed
+/// XY plane, one feature, its Body and exactly three dependencies — with the
+/// Revolve's own intent checked instead of a height. Kept beside [`frame`]
+/// rather than folded into it, because the circle, annulus and constraint
+/// editors that call `frame` are Extrude-only and must stay so.
+fn revolve_frame<'a>(
+    document: &Document,
+    objects: &'a [ObjectRecord],
+    object: &'a ObjectRecord,
+) -> Result<(&'a crate::Sketch, SketchProfileUse)> {
+    require_lossless_payload(object)?;
+    if objects.len() != 4 || objects.iter().any(|o| o.parent.is_some()) {
+        return Err(unsupported(
+            "Revolve profile edit requires exactly one XY plane, Sketch, Revolve and Body",
+        ));
+    }
+    let ObjectPayload::Sketch(sketch) = &object.payload else {
+        return Err(unsupported("selected object is not a Sketch"));
+    };
+    let plane = objects
+        .iter()
+        .find(|o| o.id == sketch.plane)
+        .ok_or_else(|| unsupported("missing sketch plane"))?;
+    if !matches!(&plane.payload, ObjectPayload::DatumPlane(p) if p.placement == Transform::IDENTITY)
+    {
+        return Err(unsupported(
+            "Revolve profile edit requires the untransformed XY plane",
+        ));
+    }
+    let mut revolves = objects.iter().filter_map(|o| match &o.payload {
+        ObjectPayload::Revolve(r) if r.profile == object.id => Some((o, r)),
+        _ => None,
+    });
+    let (Some((feature, revolve)), None) = (revolves.next(), revolves.next()) else {
+        return Err(unsupported(
+            "Revolve profile edit requires exactly one Revolve of this Sketch",
+        ));
+    };
+    // Named one by one rather than compared with a default: an axis, angle or
+    // operation a later build adds is refused here, never edited as if it
+    // were the full turn about Y this slice measured.
+    if !matches!(revolve.axis, RevolveAxis::SketchY)
+        || !matches!(revolve.extent, RevolveExtent::FullTurn)
+        || revolve.operation != SolidOperation::NewBody
+    {
+        return Err(unsupported(
+            "Revolve profile edit requires a full turn about the sketch Y axis, NewBody",
+        ));
+    }
+    let body = objects
+        .iter()
+        .find(|o| matches!(&o.payload, ObjectPayload::Body(b) if b.tip_feature == Some(feature.id)))
+        .ok_or_else(|| unsupported("Revolve profile edit requires the Revolve's single Body"))?;
+    let expected = BTreeSet::from([
+        Dependency {
+            dependent: object.id,
+            dependency: plane.id,
+            role: DependencyRole::Plane,
+        },
+        Dependency {
+            dependent: feature.id,
+            dependency: object.id,
+            role: DependencyRole::Profile,
+        },
+        Dependency {
+            dependent: body.id,
+            dependency: feature.id,
+            role: DependencyRole::BodyTip,
+        },
+    ]);
+    if document
+        .dependencies()?
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        != expected
+    {
+        return Err(unsupported(
+            "Revolve profile edit requires only plane, profile and body-tip dependencies",
+        ));
+    }
+    Ok((
+        sketch,
+        SketchProfileUse::FullTurnRevolve {
+            feature: feature.id,
+            body: body.id,
+        },
+    ))
 }
 
 fn lines(
     sketch: &crate::Sketch,
-    height: f64,
+    profile_use: &SketchProfileUse,
     allow_constraints: bool,
 ) -> Result<Vec<SketchVertex>> {
     if (!allow_constraints && !sketch.constraints.is_empty())
@@ -238,7 +392,8 @@ fn lines(
             ));
         }
     }
-    PolygonExtrusion::new(vertices.iter().map(|v| v.start_mm).collect(), height)
+    profile_use
+        .check(vertices.iter().map(|v| v.start_mm).collect())
         .map_err(|e| unsupported(&format!("saved polygon is outside edit policy: {e}")))?;
     Ok(vertices)
 }
@@ -266,14 +421,14 @@ pub fn replace_sketch_coordinates(
         .ok_or_else(|| CadError::input("selected Sketch UUID does not exist"))?;
     let history = crate::cut_edit::saved_history(document, &objects).map_err(|e| e.to_string());
     let choice = coordinate_choice(document, &objects, &object, history.as_ref())?;
-    let polygon = choice.validate_coordinates(vertices)?;
+    let points = choice.validate_coordinates(vertices)?;
     let ObjectPayload::Sketch(sketch) = &mut object.payload else {
         unreachable!("checked Sketch")
     };
     for (i, curve) in sketch.curves.iter_mut().enumerate() {
         curve.geometry = SketchGeometry::Line {
-            start: polygon.points()[i],
-            end: polygon.points()[(i + 1) % vertices.len()],
+            start: points[i],
+            end: points[(i + 1) % vertices.len()],
         };
     }
     Ok(object)
@@ -281,23 +436,28 @@ pub fn replace_sketch_coordinates(
 
 impl SketchChoice {
     /// The same draft check used before copying. No SQLite or kernel work.
-    pub fn validate_coordinates(&self, vertices: &[SketchVertex]) -> Result<PolygonExtrusion> {
+    /// Returns the checked starts, in saved order, under the policy of the
+    /// feature this profile feeds.
+    pub fn validate_coordinates(&self, vertices: &[SketchVertex]) -> Result<Vec<Point2>> {
         let original = self
             .vertices
             .as_deref()
             .ok_or_else(|| unsupported("unsupported Sketch choice"))?;
-        let height = self
-            .height_mm
-            .ok_or_else(|| unsupported("missing extrusion height"))?;
-        let polygon = validate_coordinates(original, height, vertices)?;
+        let profile_use = self
+            .profile_use
+            .ok_or_else(|| unsupported("missing profile feature"))?;
+        let points = validate_coordinates(original, &profile_use, vertices)?;
         if let Some(history) = &self.cut_history {
-            let curves = coordinate_curves(vertices, &polygon);
-            crate::cut_edit::validate_base(&curves, height, &history.tools)?;
+            let SketchProfileUse::BlindExtrude { height_mm, .. } = profile_use else {
+                return Err(unsupported("a Cut history base is always an extrusion"));
+            };
+            let curves = coordinate_curves(vertices, &points);
+            crate::cut_edit::validate_base(&curves, height_mm, &history.tools)?;
         }
-        Ok(polygon)
+        Ok(points)
     }
 }
-fn coordinate_curves(vertices: &[SketchVertex], polygon: &PolygonExtrusion) -> Vec<SketchCurve> {
+fn coordinate_curves(vertices: &[SketchVertex], points: &[Point2]) -> Vec<SketchCurve> {
     vertices
         .iter()
         .enumerate()
@@ -305,8 +465,8 @@ fn coordinate_curves(vertices: &[SketchVertex], polygon: &PolygonExtrusion) -> V
             id: v.curve_id,
             construction: false,
             geometry: SketchGeometry::Line {
-                start: polygon.points()[i],
-                end: polygon.points()[(i + 1) % vertices.len()],
+                start: points[i],
+                end: points[(i + 1) % vertices.len()],
             },
         })
         .collect()
@@ -337,9 +497,9 @@ pub(crate) fn prepared_vertices(object: &ObjectRecord) -> Result<Vec<SketchVerte
 
 fn validate_coordinates(
     original: &[SketchVertex],
-    height: f64,
+    profile_use: &SketchProfileUse,
     vertices: &[SketchVertex],
-) -> Result<PolygonExtrusion> {
+) -> Result<Vec<Point2>> {
     if vertices.len() != original.len()
         || vertices
             .iter()
@@ -350,7 +510,7 @@ fn validate_coordinates(
             "request must contain every saved curve UUID exactly once in saved order",
         ));
     }
-    let polygon = PolygonExtrusion::new(vertices.iter().map(|v| v.start_mm).collect(), height)?;
+    let points = profile_use.check(vertices.iter().map(|v| v.start_mm).collect())?;
     let old: Vec<_> = original
         .iter()
         .map(|v| Point2 {
@@ -358,10 +518,10 @@ fn validate_coordinates(
             y: v.start_mm[1],
         })
         .collect();
-    if winding(&old) != winding(polygon.points()) {
+    if winding(&old) != winding(&points) {
         return Err(CadError::input("sketch edit cannot change winding"));
     }
-    Ok(polygon)
+    Ok(points)
 }
 
 fn winding(points: &[Point2]) -> bool {
