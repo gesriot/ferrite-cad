@@ -669,13 +669,13 @@ fn native_solid_revolution_refusals_are_atomic() {
     write_edit(&request_path, &s.ids, &CYLINDER);
     let taken = d.path().join("taken.fcad");
     std::fs::write(&taken, b"keep").expect("taken");
-    let mut destinations = vec![("occupied", taken.clone()), ("the source", source.clone())];
-    #[cfg(unix)]
-    {
-        let hard = d.path().join("hard.fcad");
-        std::fs::hard_link(&source, &hard).expect("hard link");
-        destinations.push(("hard link to the source", hard));
-    }
+    let hard = d.path().join("hard.fcad");
+    std::fs::hard_link(&source, &hard).expect("hard link");
+    let destinations = [
+        ("occupied", taken.clone()),
+        ("the source", source.clone()),
+        ("hard link to the source", hard),
+    ];
     for (why, destination) in destinations {
         let names = entries(d.path());
         let bytes = std::fs::read(&source).expect("source");
