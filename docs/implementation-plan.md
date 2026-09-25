@@ -3570,3 +3570,20 @@ sketch's local Y axis through the datum origin.
 
 [Contract and recipe](full-turn-revolve.md),
 [verification](full-turn-revolve-verification.md).
+
+Independent review completed native, genuine stub, mixed OCCT/no-solver and
+watchdog-guarded macOS GUI checks for §27A. Actual GUI covered numeric profile
+entry, axis refusal, Undo/Redo, feature switching, Save Cancel, publication,
+Open and both exports. Same-document GUI/CLI STL and FBX are byte-identical;
+independent creations differ only in their expected FBX Body identity fields.
+Viewer exit 0, peak 206.7355 MiB, swap 0. CI logs independently confirm 208
+required test names and 70 ufbx reads per OS. Review corrected two documentation
+claims; no product-code correction was needed. Details are in the verification.
+
+**§27B — pending: edit the saved full-turn Revolve profile in a new copy.**
+Extend the existing coordinate-edit route to the bounded §27A document class,
+keeping curve/object/reference UUIDs and the Revolve intent. Use the shared
+job from UI and CLI, validate the positive-radius profile again inside the
+writer transaction, cold-rebuild and resolve every saved name before atomic
+publication. Axis/angle changes, adding/removing vertices, constraints,
+booleans and in-place Save remain separate work. Implementation has not begun.

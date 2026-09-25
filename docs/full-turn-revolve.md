@@ -80,7 +80,8 @@ build it.
 ### Topology outputs
 
 * **Faces only.** Each profile Line raises exactly one face of revolution,
-  read from `BRepPrimAPI_MakeRevol`'s own history (`Generated(edge)`):
+  read from the sweep run by `BRepPrimAPI_MakeRevol`
+  (`revol.Revol().Shape(edge)`; see the measured reason below):
   - a Line parallel to the axis gives a cylinder;
   - a Line perpendicular to it gives an annular plane;
   - any other Line gives a cone.
@@ -232,7 +233,9 @@ JSON
 5. **Cancel the save.** `Create in new file…` → **Cancel** in the Save
    dialog. Nothing is written and the draft stays.
 6. **Publish.** `Create in new file…` → `stepped-gui.fcad`. It opens with one
-   Body.
+   Body. Choose the private test directory with the system panel's Go to
+   Folder action and enter only the basename in Save As; an absolute path
+   entered as a filename can become a colon-containing filename on macOS.
 7. **Check the old editors.** The extrusion editor, the Cut form and
    `Edit Sketch …` are unavailable for it. Each gives the refusal
    `inspect --json` reports, for example "sketch edit requires one forward
@@ -240,9 +243,14 @@ JSON
 8. **Compare with the CLI fixture:**
    * `"$FERRITECAD" export-stl stepped-gui.fcad -o stepped-gui.stl` gives
      the same bytes as `stepped-cli.stl`;
-   * `export-fbx` gives a file of the same length as `stepped-cli.fbx`;
+   * `export-fbx` gives the same geometry as `stepped-cli.fbx`. The two new
+     documents have different Body UUIDs: map only that UUID in DefinitionKey,
+     DefinitionId and OccurrenceId, then compare the complete bytes. Equal
+     lengths alone do not demonstrate equal geometry;
    * the `revolves[0].profile.segments` coordinates are equal in the two
-     `inspect --json` outputs.
+     `inspect --json` outputs;
+   * export the saved GUI document through both GUI and CLI: these two STL/FBX
+     pairs must be byte-identical without any identity mapping.
 
 The cloud check of the same behaviour is the test
 `sketch::tests::native_revolve_draft_worker_and_cli_publish_equivalent_models`,

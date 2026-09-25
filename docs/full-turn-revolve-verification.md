@@ -168,9 +168,10 @@ so none of them was regenerated.
 
 * **`sketch::tests::revolve_draft_widgets_name_the_axis_and_refuse_it`.** The
   real widgets choose Revolve 360°, and the canvas shows the axis text. A
-  vertex on the axis is refused with the domain message. Undo/Redo of the
-  feature choice follows from `feature` being part of the undoable `State`,
-  but no test checks it; the window scenario does.
+  vertex on the axis is refused with the domain message. The shared widget
+  helper explicitly clicks Undo/Redo and asserts the feature changes back to
+  Extrude and then to Revolve; it also undoes the invalid coordinate. These
+  are headless widget assertions, separate from the window scenario.
 * **`sketch::tests::native_revolve_draft_worker_and_cli_publish_equivalent_models`.**
   - Save Cancel writes nothing, and a taken path is refused.
   - The shared worker publishes the draft.
@@ -272,3 +273,115 @@ all 15 CI gate names run exactly, `fail=0`.
 * Locally, the solver-backed suites run only in CI.
 * The CI evidence for the exact head is recorded in the PR once its runs
   complete.
+
+## Independent review — macOS, 2026-09-25
+
+Reviewed implementation head `ccbd5804c6e4107d25f4da633046cd08a51731d7`
+against `9d1a5f5cbd27f5b5fa722516181c29db8dc02138`. No product-code
+correction was needed. Review corrected the contract's obsolete
+`Generated(edge)` description and the verification record's claim that the
+headless helper did not assert Undo/Redo. The helper does assert both feature
+changes and undo of the invalid coordinate.
+
+### Local checks
+
+Fresh release CLI/viewer, pinned OCCT 8.0.1 and PlaneGCS, existing target,
+single-job builds. The bridge was rebuilt; unchanged upstream OCCT/PlaneGCS
+sources were not rebuilt. Native results:
+
+* kernel, OCCT, document, topology, evaluator and jobs: 772 harness passes,
+  **770 executed**, two explicitly inapplicable no-solver cases, one existing
+  ignored timing benchmark;
+* CLI binary plus Revolve/create/sketch/Cut/edit/JSON/topology/validation suites:
+  **101 executed**, no skips;
+* sketch and creation app workers/widgets: **32 + 17 executed**, no skips;
+* fmt, workspace release clippy with all targets/features and `-D warnings`:
+  pass.
+
+Genuine stub: `OpenCASCADE_DIR-NOTFOUND`, fresh CLI imports no libTK or
+PlaneGCS; Revolve suite has three executed kernel-free tests and three
+explicit native skips. Mixed OCCT/no-solver: the exact
+`occt_without_solver_revolves_a_profile` gate executed and passed, linked to
+OCCT but not PlaneGCS. The full native CLI/viewer were rebuilt afterwards.
+No third large target was introduced.
+
+The recipe was extracted from this Markdown and run with the freshly staged
+CLI and pinned ufbx, reporting `FCAD_27A_RECIPE_OK 12`. The staged bundle
+passed strict deep code-signature verification, CLI startup and viewer
+`--solver-info` without DYLD environment settings.
+
+The bundled reader from PR #52 opened the Revolve document read-only; validate,
+cold rebuild and STL export refused with exit 2. No output was published and
+the source hash stayed unchanged. On one old sample document, old and new
+`inspect --json` results are identical except the additive empty `revolves`
+array. An initial review command mistakenly supplied a value after boolean
+`create --sample`; that usage refusal was corrected, not counted as a pass.
+
+### Actual macOS window, one owned process
+
+Fresh staged viewer PID 46163 ran under `tools/watch-viewer-memory.py` with a
+1536 MiB cap. Native CUA drove these observed transitions:
+
+1. Start empty; open the sketch editor; choose Revolve 360°. The Y axis and
+   radius rule appeared, and the height field disappeared.
+2. Enter and close all six stepped-profile vertices numerically.
+3. Set the first radius to zero: visible refusal, no create action. Undo,
+   Redo and Undo restored/refused/restored the same profile.
+4. Switch to Extrude, Undo to Revolve, Redo to Extrude, Undo to Revolve;
+   coordinates stayed intact and the height/axis presentation followed the mode.
+5. Open the real Save panel and Cancel: no publication, draft retained.
+6. Publish; async Open accepted the model. Reopen the saved model through the
+   system Open panel; inspect the step and central hole in isometric view.
+   Extrude, Cut and the earlier profile editors remained unavailable.
+7. Export STL and FBX through the actual GUI controls and Save panels.
+8. Quit normally. PID disappearance and watchdog exit were checked without
+   calling CUA on the closed app, avoiding the known automatic relaunch.
+
+One harness deviation: entering an absolute path directly in Save As caused
+macOS to replace slashes with colons and save this test document in the
+checkout. Only that newly created private file was moved to the review's
+`gui/` directory, then explicitly reopened through Go to Folder. No tracked
+fixture or user model was touched, and no such file remains in the checkout.
+This was a test-driver path-entry mistake, not an application refusal.
+
+Peak physical footprint **206.7355 MiB**, pressure normal throughout, swap
+**0 → 0**, viewer exit **0**, guard not triggered. This run does not establish
+the cause of the earlier OOM reports.
+
+### Independent export comparison
+
+The two separately created documents preserve their own new UUIDs. Their
+profile coordinates match, all six stored RevolveFace names resolve, and:
+
+* GUI-created versus CLI-created: STL bytes identical; FBX bytes identical
+  after mapping only the Body UUID in its three identity fields
+  (DefinitionKey, DefinitionId, OccurrenceId). No geometry is normalized.
+* GUI exports versus CLI exports of the **same** saved GUI document: both
+  STL and FBX byte-identical without normalization.
+* An independent binary STL parser found **988 triangles, 49,484 bytes**, a
+  closed consistently oriented mesh and positive volume **2354.975391 mm³**
+  versus analytical **750π = 2356.194490 mm³**. Radial/axial bounds agree with
+  the stepped profile; the difference is tessellation, not B-Rep volume.
+* An independent parser of this writer's ASCII FBX subset, undoing the
+  documented coordinate/unit map, measured the same triangle count and volume.
+  Both FBX files were also read by pinned ufbx 0.23.0 strict: **6/0 each**.
+
+### CI evidence and remaining limits
+
+The exact implementation head has **11/11 check runs, 2/2 workflows success**:
+[CI](https://github.com/gesriot/ferrite-cad/actions/runs/36105534343) and
+[combined runtime](https://github.com/gesriot/ferrite-cad/actions/runs/36105528614).
+Downloaded logs independently confirm **208 distinct required test names**
+(247 executions including existing repeats), no skipped required gates and
+**70 pinned ufbx reads / zero failures on each OS**. All 15 newly required
+Revolve names are included. PlaneGCS pin passed on `fc9b0b7`; none of its
+path-filtered inputs changed afterwards. This is not described as a third
+workflow on the final implementation SHA.
+
+The documentation-only review commit has its own CI, separate from that
+native implementation evidence. Linux/Windows GUI, Unity, the large STEP/FBX
+campaign and standalone GPU/pixel suites were not rerun locally. The large
+FBX campaign is covered by the downloaded runtime CI logs. Upstream pin inputs
+and dependency inventories were unchanged. Local evidence is under
+`/private/tmp/ferrite-27a-review/`, with a retained copy in the task's artifact
+directory (excluding the staged runtime).
