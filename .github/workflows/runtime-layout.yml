@@ -1552,7 +1552,7 @@ jobs:
             native_revolve_refuses_the_axis_other_kinds_and_cancellation \
             native_a_revolution_survives_the_named_archive_face_by_face
           do
-            cargo test --release -p ferritecad-occt --test revolve_occt "$gate" \
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-occt --test revolve_occt "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-occt.log
             if grep -q 'skipped:' revolve-occt.log || ! grep -Fq "test $gate ... ok" revolve-occt.log; then exit 1; fi
           done
@@ -1569,14 +1569,14 @@ jobs:
           for gate in kernel::tests::a_revolution_keys_apart_from_an_extrusion_and_by_its_profile \
             kernel::tests::the_mock_refuses_a_revolution_instead_of_inventing_one
           do
-            cargo test --release -p ferritecad-kernel --lib "$gate" \
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-kernel --lib "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-kernel.log
             if grep -q 'skipped:' revolve-kernel.log || ! grep -Fq "test $gate ... ok" revolve-kernel.log; then exit 1; fi
           done
           for gate in polygon::tests::a_full_turn_is_pappus_in_either_winding_and_any_axial_shift \
             polygon::tests::a_full_turn_refuses_the_axis_and_whatever_the_polygon_refuses
           do
-            cargo test --release -p ferritecad-document --lib "$gate" \
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-document --lib "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-domain.log
             if grep -q 'skipped:' revolve-domain.log || ! grep -Fq "test $gate ... ok" revolve-domain.log; then exit 1; fi
           done
