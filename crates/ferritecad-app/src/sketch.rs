@@ -1051,8 +1051,9 @@ impl Editor {
         });
         if revolve {
             ui.label(
-                "X is the radius and Y runs along the axis. Every point needs X > 0: the \
-                 profile may not touch or cross the axis.",
+                "X is the radius and Y runs along the axis, which is X = 0. Keep every point \
+                 at X > 0 for a part with a hole, or put exactly one whole edge on X = 0 for a \
+                 solid part. The profile may not cross the axis or touch it at a single point.",
             );
         }
         ui.label(if self.editing.is_some() && revolve {
@@ -1679,7 +1680,7 @@ impl Canvas {
                     rect.bottom() - 4.,
                 ),
                 egui::Align2::LEFT_BOTTOM,
-                "axis (Y) · radius X > 0 →",
+                "axis (Y) at X = 0 · radius X →",
                 egui::FontId::proportional(12.),
                 colour,
             );
@@ -2525,7 +2526,7 @@ mod tests {
         let out = frame(&ctx, e, vec![]);
         assert!(
             out.shapes.iter().any(|c| matches!(&c.shape,
-                egui::Shape::Text(t) if t.galley.text() == "axis (Y) · radius X > 0 →")),
+                egui::Shape::Text(t) if t.galley.text() == "axis (Y) at X = 0 · radius X →")),
             "the axis is named on the canvas"
         );
         assert!(
@@ -2971,7 +2972,7 @@ mod tests {
             })
             .collect();
         for wanted in [
-            "axis (Y) · radius X > 0 →",
+            "axis (Y) at X = 0 · radius X →",
             "Revolve: one full turn (360°) about the sketch Y axis, through X = 0.",
             "XY · mm · Line polygon · Revolve 360° about the sketch Y axis · NewBody",
         ] {

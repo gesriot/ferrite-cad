@@ -73,8 +73,10 @@ pub use cut_edit::{
     SavedCutTarget, SavedCutTool, WALL_CLEARANCE_MM, cut_choices, cut_parameter_choices,
     cut_plane_placement, prepare_circular_cut, prepare_cut_parameters,
 };
-pub use polygon::{AnnularExtrusion, CircleExtrusion, FullTurnRevolution, PolygonExtrusion};
-pub use revolve::{RevolveChoice, RevolveSegment, revolve_choices};
+pub use polygon::{
+    AnnularExtrusion, CircleExtrusion, FullTurnRevolution, PolygonExtrusion, RevolutionClosure,
+};
+pub use revolve::{RevolveChoice, RevolveSegment, revolve_choices, stated_revolution};
 pub use sketch_edit::{
     SketchChoice, SketchCutHistory, SketchProfileUse, SketchVertex, replace_sketch_coordinates,
     sketch_choices,
@@ -96,14 +98,14 @@ pub use graph::{Dependency, DependencyRole, evaluation_order};
 pub use model::{
     Body, CORE_CAPABILITY, CapSide, DatumPlane, EXTRUDE_CAP_EDGE_CAPABILITY,
     EXTRUDE_CAP_VERTEX_CAPABILITY, EXTRUDE_SWEEP_EDGE_CAPABILITY, EndCondition, EntityKind,
-    Expression, Extrude, FEATURE_PREDECESSOR_CAPABILITY, FEATURE_REVOLVE_CAPABILITY,
-    FEATURE_THROUGH_ALL_CAPABILITY, GeomSignature, IMPORTED_STEP_CAPABILITY, ImportedDefinitionRef,
-    ImportedStep, ImporterIdentity, ObjectKind, ObjectPayload, Parameter, Point2, Revolve,
-    RevolveAxis, RevolveExtent, SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY,
-    SKETCH_CONSTRAINTS_CAPABILITY, STEP_SOURCE_FORMAT, SelectionRule, SemanticRole, Sketch,
-    SketchConstraint, SketchConstraintRule, SketchCurve, SketchGeometry, SketchPointRef,
-    SketchPointSelector, SketchSegmentRef, SolidOperation, TOPOLOGY_CARRIED_FACE_CAPABILITY,
-    TOPOLOGY_ORIGIN_FACE_CAPABILITY, TopologyRef,
+    Expression, Extrude, FEATURE_PREDECESSOR_CAPABILITY, FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY,
+    FEATURE_REVOLVE_CAPABILITY, FEATURE_THROUGH_ALL_CAPABILITY, GeomSignature,
+    IMPORTED_STEP_CAPABILITY, ImportedDefinitionRef, ImportedStep, ImporterIdentity, ObjectKind,
+    ObjectPayload, Parameter, Point2, Revolve, RevolveAxis, RevolveExtent,
+    SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY, SKETCH_CONSTRAINTS_CAPABILITY, STEP_SOURCE_FORMAT,
+    SelectionRule, SemanticRole, Sketch, SketchConstraint, SketchConstraintRule, SketchCurve,
+    SketchGeometry, SketchPointRef, SketchPointSelector, SketchSegmentRef, SolidOperation,
+    TOPOLOGY_CARRIED_FACE_CAPABILITY, TOPOLOGY_ORIGIN_FACE_CAPABILITY, TopologyRef,
 };
 pub use schema::{
     CACHE_EXTENSION, DOCUMENT_EXTENSION, FORMAT_VERSION, MINIMUM_READER_VERSION,

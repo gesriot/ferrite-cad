@@ -502,9 +502,12 @@ fn run<K: GeometryKernel + ?Sized>(
                     let result = kernel.revolve(&request, &scoped)?;
                     state.owned.push(result.shape);
                     context.check_cancelled()?;
-                    state
-                        .topology
-                        .record_revolve(*id, request.profile(), &result)?;
+                    state.topology.record_revolve(
+                        *id,
+                        request.profile(),
+                        request.axis_segment(),
+                        &result,
+                    )?;
                     state.shapes.insert(*id, result.shape);
                     if let Some(cache) = cache.as_deref_mut() {
                         store(kernel, cache, key, *id, state, events);
