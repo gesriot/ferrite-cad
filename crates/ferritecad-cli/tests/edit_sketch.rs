@@ -315,7 +315,22 @@ fn native_edit_sketch_process_identity_geometry_and_delivery() {
     let after = inspect(&out);
     assert_ne!(after["content_version"], f.catalog["content_version"]);
     assert_eq!(after["features"], f.catalog["features"]);
-    assert_eq!(after["bodies"], f.catalog["bodies"]);
+    // §26I: `cut_edit_v3` states the part's real outline, which this edit
+    // changed; every other Body block says what it said before.
+    let without_v3 = |bodies: &Value| {
+        let mut bodies = bodies.clone();
+        for body in bodies.as_array_mut().expect("bodies") {
+            body.as_object_mut().expect("body").remove("cut_edit_v3");
+        }
+        bodies
+    };
+    assert_eq!(
+        without_v3(&after["bodies"]),
+        without_v3(&f.catalog["bodies"])
+    );
+    let target = &after["bodies"][0]["cut_edit_v3"]["target"];
+    assert_eq!(target["bounds_mm"], json!([[0., 0.], [80., 40.]]));
+    assert_eq!(target["boundary"]["area_mm2"], json!(2000.));
     assert_eq!(
         after["sketches"][0]["vertices"][1]["start_mm"],
         json!([80., 0.])

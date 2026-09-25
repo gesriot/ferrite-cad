@@ -14,21 +14,24 @@
 //! Exactly the frame every copy edit of a saved profile already demands, and
 //! nothing wider: one untransformed XY datum, one Sketch on it, one forward
 //! literal Blind `Extrude`/`NewBody`, its `Body`, and those three dependencies.
-//! On top of that the Sketch must be an unconstrained closed polygon of four
-//! Lines forming an **axis-aligned rectangle**. That last narrowing is what
-//! lets "the tool is inside the part and does not touch its outer wall" be a
-//! measured fact rather than a hopeful one; it is not a claim about arbitrary
-//! solids, and a wider class is refused with its reason.
+//! On top of that the Sketch must be an unconstrained, simple, closed polygon
+//! of 3..256 Lines (§26I; §26D–H required an axis-aligned rectangle). The
+//! part's outer wall is exactly those Lines, read once into a
+//! [`CutBoundary`], which is what lets "the tool is inside the part and does
+//! not touch its outer wall" be a measured fact rather than a hopeful one; it
+//! is not a claim about arbitrary solids, and a wider class is refused with
+//! its reason.
 //!
 //! A single bounded reader validates the complete plate and 0–16 separate Cut
 //! links. The same catalogue serves addition, editing and discovery.
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId, Tolerance, Transform};
 use std::collections::BTreeSet;
 
+use crate::cut_boundary::CutBoundary;
 use crate::{
     Body, CapSide, CircleExtrusion, DatumPlane, Dependency, DependencyRole, Document, EndCondition,
-    EntityKind, Expression, Extrude, ObjectPayload, ObjectRecord, Point2, PolygonExtrusion,
-    SelectionRule, SemanticRole, Sketch, SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
+    EntityKind, Expression, Extrude, ObjectPayload, ObjectRecord, Point2, SelectionRule,
+    SemanticRole, Sketch, SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
 };
 
 fn unsupported(message: impl Into<String>) -> CadError {
@@ -57,21 +60,21 @@ pub struct SavedCutTarget {
     pub plane: ObjectId,
     /// The feature the cut modifies, which is the body's tip today.
     pub tip_feature: ObjectId,
-    /// The extrusion that made the rectangular plate, even when the tip is a Cut.
+    /// The extrusion that made the base part, even when the tip is a Cut.
     pub base_feature: ObjectId,
     /// All tools, ordered by predecessor links from first Cut to tip.
     pub tools: Vec<SavedCutTool>,
     /// The single existing cut for N=1; null for N=0 or N>1.
     pub existing_cut: Option<SavedCircularCut>,
-    /// The original rectangular profile, reported so a form can name the part.
+    /// The original base profile, reported so a form can name the part.
     pub profile: ObjectId,
     /// Every segment of that profile, in stored order, so the copy can name
     /// what the finished part still has.
     pub profile_segments: Vec<StableEntityId>,
     /// How tall the part is; the depth of a cut is measured against it.
     pub height_mm: f64,
-    /// The rectangle the part is, as `[[min_x, min_y], [max_x, max_y]]`.
-    pub extents_mm: [[f64; 2]; 2],
+    /// The part's real outer wall, with its saved Line identities.
+    pub boundary: CutBoundary,
 }
 
 /// A row in objects() order. Refusal is local; copy_access still takes priority.
@@ -265,96 +268,19 @@ pub(crate) fn supported(
     saved_history(document, objects)?.add_target(object.id)
 }
 
-/// The axis-aligned rectangle a profile is, or why it is not one.
-///
-/// Read from the stored lines and from nothing else. Four segments, each
-/// axis-parallel, meeting end to end and closing — which is what makes the
-/// clearance check below a statement about the part rather than about its
-/// bounding box.
-pub(crate) fn rectangle(curves: &[SketchCurve], height_mm: f64) -> Result<[[f64; 2]; 2]> {
-    if curves.len() != 4 {
-        return Err(unsupported(
-            "this slice cuts a rectangular plate, and this profile is not four Lines",
-        ));
-    }
-    let mut corners = Vec::with_capacity(4);
-    for curve in curves {
-        if curve.construction {
-            return Err(unsupported("construction geometry bounds no face"));
-        }
-        let SketchGeometry::Line { start, end } = curve.geometry else {
-            return Err(unsupported(
-                "this slice cuts a rectangular plate drawn with Lines",
-            ));
-        };
-        let axis_aligned = (start.x - end.x).abs() <= WALL_CLEARANCE_MM
-            || (start.y - end.y).abs() <= WALL_CLEARANCE_MM;
-        if !axis_aligned {
-            return Err(unsupported(
-                "this slice cuts an axis-aligned rectangular plate, and one of these Lines runs \
-                 at an angle",
-            ));
-        }
-        corners.push([start.x, start.y]);
-    }
-    // Closed, end to end, in the order the sketch stores them.
-    for (index, curve) in curves.iter().enumerate() {
-        let SketchGeometry::Line { end, .. } = curve.geometry else {
-            unreachable!("checked above")
-        };
-        let next = corners[(index + 1) % corners.len()];
-        if (end.x - next[0]).abs() > WALL_CLEARANCE_MM
-            || (end.y - next[1]).abs() > WALL_CLEARANCE_MM
-        {
-            return Err(unsupported(
-                "this slice cuts a closed rectangular plate, and these Lines do not meet",
-            ));
-        }
-    }
-    // The one numeric policy the creation route applies, asked of the saved
-    // numbers so a part outside it is refused rather than silently narrowed.
-    PolygonExtrusion::new(corners.clone(), height_mm)
-        .map_err(|e| unsupported(format!("the saved part is outside cut policy: {e}")))?;
-
-    let min_x = corners.iter().map(|c| c[0]).fold(f64::INFINITY, f64::min);
-    let max_x = corners
-        .iter()
-        .map(|c| c[0])
-        .fold(f64::NEG_INFINITY, f64::max);
-    let min_y = corners.iter().map(|c| c[1]).fold(f64::INFINITY, f64::min);
-    let max_y = corners
-        .iter()
-        .map(|c| c[1])
-        .fold(f64::NEG_INFINITY, f64::max);
-    // Four corners of a rectangle are exactly two distinct x and two distinct
-    // y values. Anything else is a four-sided figure that is not one.
-    let distinct = |values: [f64; 4], low: f64, high: f64| {
-        values
-            .iter()
-            .all(|v| (v - low).abs() <= WALL_CLEARANCE_MM || (v - high).abs() <= WALL_CLEARANCE_MM)
-    };
-    let xs = [corners[0][0], corners[1][0], corners[2][0], corners[3][0]];
-    let ys = [corners[0][1], corners[1][1], corners[2][1], corners[3][1]];
-    if !distinct(xs, min_x, max_x) || !distinct(ys, min_y, max_y) {
-        return Err(unsupported(
-            "this slice cuts a rectangular plate, and these four corners make some other shape",
-        ));
-    }
-    Ok([[min_x, min_y], [max_x, max_y]])
-}
-
-/// Validate a changed plate against every unchanged, absolute tool.
-/// Called by the coordinate editor's shared draft/prepare/writer check.
+/// Validate a changed base against every unchanged, absolute tool — near the
+/// change or not. Called by the coordinate editor's shared
+/// draft/prepare/writer check.
 pub(crate) fn validate_base(
     curves: &[SketchCurve],
     height_mm: f64,
     tools: &[SavedCutTool],
 ) -> Result<()> {
-    let extents = rectangle(curves, height_mm)?;
+    let boundary = CutBoundary::read(curves, height_mm)?;
     for tool in tools {
         validate(
             height_mm,
-            extents,
+            &boundary,
             &CircularCut {
                 center_mm: tool.center_mm,
                 radius_mm: tool.radius_mm,
@@ -378,7 +304,7 @@ impl CutChoice {
 }
 
 fn validate_target(target: &SavedCutTarget, cut: &CircularCut) -> Result<CircleExtrusion> {
-    let tool = validate(target.height_mm, target.extents_mm, cut)?;
+    let tool = validate(target.height_mm, &target.boundary, cut)?;
     for saved in &target.tools {
         validate_disks(cut, saved)?;
     }
@@ -403,7 +329,7 @@ fn validate_disks(cut: &CircularCut, other: &SavedCutTool) -> Result<()> {
 /// The one numeric rule, applied to a request against the saved part.
 pub(crate) fn validate(
     height_mm: f64,
-    extents_mm: [[f64; 2]; 2],
+    boundary: &CutBoundary,
     cut: &CircularCut,
 ) -> Result<CircleExtrusion> {
     // The tool is a cylinder, judged by the policy every cylinder in this
@@ -418,22 +344,25 @@ pub(crate) fn validate(
              cuts to a depth the part has"
         )));
     }
-    let [[min_x, min_y], [max_x, max_y]] = extents_mm;
-    let clearances = [
-        (cut.center_mm[0] - cut.radius_mm) - min_x,
-        max_x - (cut.center_mm[0] + cut.radius_mm),
-        (cut.center_mm[1] - cut.radius_mm) - min_y,
-        max_y - (cut.center_mm[1] + cut.radius_mm),
-    ];
-    // Strictly inside, by more than the kernel's own idea of one point. A tool
-    // that reaches the outer wall turns the cut into an open slot or a sliver,
-    // and which of the two depends on rounding. Refused rather than nudged:
-    // moving the number would publish a part the user did not ask for.
-    if clearances.iter().any(|gap| *gap <= WALL_CLEARANCE_MM) {
+    // Strictly inside the real wall, by more than the kernel's own idea of one
+    // point: the centre inside the polygon and every finite segment, vertices
+    // included, farther than radius + clearance. A tool that reaches the wall
+    // turns the cut into an open slot or a sliver, and which of the two depends
+    // on rounding. Refused rather than nudged: moving the number would publish
+    // a part the user did not ask for. Never a bounding-box test.
+    let placement = boundary.disk_clearance(cut.center_mm, cut.radius_mm);
+    if !placement.center_inside {
+        return Err(CadError::input(format!(
+            "the tool must stay inside the part by more than {WALL_CLEARANCE_MM} mm, and its \
+             centre ({}, {}) mm is outside the part",
+            cut.center_mm[0], cut.center_mm[1]
+        )));
+    }
+    if placement.clearance_mm <= WALL_CLEARANCE_MM {
         return Err(CadError::input(format!(
             "the tool must stay inside the part by more than {WALL_CLEARANCE_MM} mm, and the \
-             closest approach here is {} mm",
-            clearances.iter().copied().fold(f64::INFINITY, f64::min)
+             closest approach here is {} mm, to side {}",
+            placement.clearance_mm, placement.nearest
         )));
     }
     Ok(tool)
@@ -873,7 +802,7 @@ pub struct SavedCircularCut {
     pub body: ObjectId,
     /// The datum both sketches are drawn on.
     pub plane: ObjectId,
-    /// The original NewBody extrusion, used for plate dimensions.
+    /// The original NewBody extrusion, used for the part's height.
     pub base_feature: ObjectId,
     /// The selected Cut's immediate predecessor, unchanged by this edit.
     pub previous_feature: ObjectId,
@@ -897,8 +826,8 @@ pub struct SavedCircularCut {
     pub extent: CutExtent,
     /// How tall the part is, which is what a depth is measured against.
     pub height_mm: f64,
-    /// The rectangle the part is, as `[[min_x, min_y], [max_x, max_y]]`.
-    pub extents_mm: [[f64; 2]; 2],
+    /// The part's real outer wall, with its saved Line identities.
+    pub boundary: CutBoundary,
     /// The saved reference naming this cut's floor, when it has one.
     ///
     /// `None` for a cut that already runs through the part. Its presence is
@@ -1176,7 +1105,7 @@ pub(crate) fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Re
             "editing a saved cut requires the untransformed XY plane",
         ));
     }
-    let extents_mm = rectangle(&part.curves, height_mm)?;
+    let boundary = CutBoundary::read(&part.curves, height_mm)?;
     let segments: Vec<_> = part.curves.iter().map(|c| c.id).collect();
     let refs = document.topology_refs()?;
     let mut expected = BTreeSet::from([
@@ -1226,7 +1155,7 @@ pub(crate) fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Re
             radius_mm: radius,
             extent,
         };
-        validate(height_mm, extents_mm, &numbers)?;
+        validate(height_mm, &boundary, &numbers)?;
         for previous in &saved {
             validate_disks(&numbers, &previous.tool())?;
         }
@@ -1307,7 +1236,7 @@ pub(crate) fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Re
             radius_mm: radius,
             extent,
             height_mm,
-            extents_mm,
+            boundary: boundary.clone(),
             floor_reference,
         });
     }
@@ -1341,7 +1270,7 @@ pub(crate) fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Re
         profile: profile.id,
         profile_segments: segments,
         height_mm,
-        extents_mm,
+        boundary,
         existing_cut: if saved.len() == 1 {
             saved.first().cloned()
         } else {
@@ -1399,7 +1328,7 @@ fn transition(saved: &SavedCircularCut, edit: &CircularCutEdit) -> Result<Transi
         radius_mm: edit.radius_mm,
         extent: edit.extent,
     };
-    validate(saved.height_mm, saved.extents_mm, &cut)?;
+    validate(saved.height_mm, &saved.boundary, &cut)?;
     for other in saved.tools.iter().filter(|t| t.feature != saved.feature) {
         validate_disks(&cut, other)?;
     }
@@ -2112,11 +2041,14 @@ mod tests {
 
     #[test]
     fn the_supported_class_is_stated_and_anything_wider_says_why() {
-        // A part that is not an axis-aligned rectangle.
+        // §26I: a sloped simple polygon is inside the class.
         let (_root, d, body) = plate([[0., 0.], [60., 5.], [60., 40.], [0., 40.]], 10.);
-        let error = prepare_circular_cut(&d, body, &cut(4.)).expect_err("not a rectangle");
+        prepare_circular_cut(&d, body, &cut(4.)).expect("a sloped quadrilateral");
+        // Four closed Lines that cross are not a part.
+        let (_root, d, body) = plate([[0., 0.], [60., 40.], [60., 0.], [0., 40.]], 10.);
+        let error = prepare_circular_cut(&d, body, &cut(4.)).expect_err("a bow tie");
         assert_eq!(error.kind(), ErrorKind::Unsupported);
-        assert!(error.to_string().contains("at an angle"), "{error}");
+        assert!(error.to_string().contains("outside cut policy"), "{error}");
 
         // A part with constraints on its profile.
         let (_root, mut d, body) = plate(rectangle(), 10.);
@@ -2222,7 +2154,8 @@ mod tests {
         assert_eq!(saved.radius_mm, 5.);
         assert_eq!(saved.extent.blind_depth_mm().expect("blind"), 4.);
         assert_eq!(saved.height_mm, 10.);
-        assert_eq!(saved.extents_mm, [[0., 0.], [60., 40.]]);
+        assert_eq!(saved.boundary.rectangle_mm(), Some([[0., 0.], [60., 40.]]));
+        assert_eq!(saved.boundary.bounds_mm(), [[0., 0.], [60., 40.]]);
         assert!(saved.floor_reference.is_some(), "a pocket has a floor");
         assert!(!saved.through_allowed());
 

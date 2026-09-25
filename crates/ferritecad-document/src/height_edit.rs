@@ -3,8 +3,8 @@
 
 use crate::cut_edit::{CutHistory, added_floor_references, floor_transition};
 use crate::{
-    DependencyRole, Document, EndCondition, Expression, ExtrudeChoice, ObjectPayload, ObjectRecord,
-    PolygonExtrusion, SavedCutTool, SemanticRole, SolidOperation, TopologyRef,
+    CutBoundary, DependencyRole, Document, EndCondition, Expression, ExtrudeChoice, ObjectPayload,
+    ObjectRecord, SavedCutTool, SemanticRole, SolidOperation, TopologyRef,
 };
 use ferritecad_types::{CadError, ContentHash, ObjectId, Result, StableEntityId};
 
@@ -20,7 +20,8 @@ pub struct BaseHeightContext {
     pub body: ObjectId,
     pub base_feature: ObjectId,
     pub profile: ObjectId,
-    pub extents_mm: [[f64; 2]; 2],
+    /// The part's real outer wall; a height edit never changes it.
+    pub boundary: CutBoundary,
     pub tools: Vec<SavedCutTool>,
     pub protected_floors: Vec<ProtectedCutFloor>,
 }
@@ -31,7 +32,7 @@ impl CutHistory {
             body: self.target.body,
             base_feature: self.target.base_feature,
             profile: self.target.profile,
-            extents_mm: self.target.extents_mm,
+            boundary: self.target.boundary.clone(),
             tools: self.target.tools.clone(),
             protected_floors: self
                 .cuts
@@ -97,8 +98,7 @@ impl BaseHeightContext {
     /// No I/O, no geometry kernel, and no minted IDs during draft validation.
     pub fn validate_height(&self, height_mm: f64) -> Result<()> {
         validate_extrude_distance(height_mm)?;
-        let [[x0, y0], [x1, y1]] = self.extents_mm;
-        PolygonExtrusion::new(vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]], height_mm)?;
+        self.boundary.polygon(height_mm)?;
         for tool in &self.tools {
             let protected = self
                 .protected_floors
@@ -112,7 +112,7 @@ impl BaseHeightContext {
             floor_transition(tool.feature, &protected.references, tool.extent, height_mm)?;
             crate::cut_edit::validate(
                 height_mm,
-                self.extents_mm,
+                &self.boundary,
                 &crate::CircularCut {
                     center_mm: tool.center_mm,
                     radius_mm: tool.radius_mm,

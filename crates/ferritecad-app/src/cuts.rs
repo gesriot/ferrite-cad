@@ -289,14 +289,15 @@ impl Editor {
                     draft.source.display()
                 ));
                 ui.small(format!(
-                    "Part {} × {} mm from ({}, {}), {} mm tall; the cut modifies feature {}",
-                    shown.extents_mm[1][0] - shown.extents_mm[0][0],
-                    shown.extents_mm[1][1] - shown.extents_mm[0][1],
-                    shown.extents_mm[0][0],
-                    shown.extents_mm[0][1],
+                    "Part {}, {} mm tall; the cut modifies feature {}",
+                    part_outline(&shown.boundary),
                     shown.height_mm,
                     shown.modifies,
                 ));
+                ui.small(
+                    "The tool must stay inside the part's real outline — the Lines themselves, \
+                     not the box around them.",
+                );
                 let tools = match &draft.subject {
                     Subject::Add(c) => c.target.as_ref().map(|t| t.tools.as_slice()),
                     Subject::Edit(c) => c.saved.as_ref().map(|s| s.tools.as_slice()),
@@ -499,6 +500,21 @@ impl Editor {
     }
 }
 
+/// The part as the catalogue read it. A rectangle is named by its size; any
+/// other outline by its Lines and area, with the box around it named as
+/// bounds and never as the part.
+pub(crate) fn part_outline(boundary: &ferritecad_document::CutBoundary) -> String {
+    if let Some([[x0, y0], [x1, y1]]) = boundary.rectangle_mm() {
+        return format!("{} × {} mm from ({x0}, {y0})", x1 - x0, y1 - y0);
+    }
+    let [[x0, y0], [x1, y1]] = boundary.bounds_mm();
+    format!(
+        "outline of {} Lines, {} mm², within bounds ({x0}, {y0})–({x1}, {y1})",
+        boundary.segments().len(),
+        boundary.area_mm2()
+    )
+}
+
 /// What the open form says about the part, whichever operation it is for.
 ///
 /// Read out of the catalogue the accepted reading produced, never assumed and
@@ -507,7 +523,7 @@ impl Editor {
 struct Shown {
     body: ObjectId,
     plane: ObjectId,
-    extents_mm: [[f64; 2]; 2],
+    boundary: ferritecad_document::CutBoundary,
     height_mm: f64,
     /// The feature whose result the operation changes.
     modifies: ObjectId,
@@ -535,7 +551,7 @@ impl Subject {
                 Some(Shown {
                     body: target.body,
                     plane: target.plane,
-                    extents_mm: target.extents_mm,
+                    boundary: target.boundary.clone(),
                     height_mm: target.height_mm,
                     modifies: target.tip_feature,
                     editing: None,
@@ -546,7 +562,7 @@ impl Subject {
                 Some(Shown {
                     body: saved.body,
                     plane: saved.plane,
-                    extents_mm: saved.extents_mm,
+                    boundary: saved.boundary.clone(),
                     height_mm: saved.height_mm,
                     modifies: saved.previous_feature,
                     editing: Some(Editing {
@@ -754,17 +770,18 @@ mod tests {
 
     /// A real plate, made by the shipped creation route.
     fn plate() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
+        part(vec![[0., 0.], [60., 0.], [60., 40.], [0., 40.]])
+    }
+
+    /// A real straight Line-polygon part, made by the shipped creation route.
+    fn part(points: Vec<[f64; 2]>) -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         let root = tempfile::tempdir().expect("dir");
         let path = root.path().join("plate.fcad");
         ferritecad_jobs::create_document_with_kernel(
             ferritecad_jobs::CreateDocumentRequest::new(
                 &path,
                 ferritecad_jobs::NewDocument::SketchExtrude(
-                    ferritecad_document::PolygonExtrusion::new(
-                        vec![[0., 0.], [60., 0.], [60., 40.], [0., 40.]],
-                        10.,
-                    )
-                    .expect("a plate"),
+                    ferritecad_document::PolygonExtrusion::new(points, 10.).expect("a part"),
                 ),
                 "test",
             ),
@@ -2037,5 +2054,175 @@ mod tests {
             );
             d.close().expect("close");
         }
+    }
+
+    /// §26I: the L profile through the form, the app's worker and the CLI.
+    /// The form reads the same boundary as the document and refuses the notch
+    /// and the reflex vertex by the document's rule; worker and CLI publish
+    /// the same part, byte for byte, with the same stored history.
+    #[test]
+    fn native_polygon_widgets_worker_and_cli_publish_one_part() {
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: the polygon cut worker needs OCCT");
+            return;
+        }
+        let (root, path, source) = part(vec![
+            [0., 0.],
+            [60., 0.],
+            [60., 20.],
+            [20., 20.],
+            [20., 40.],
+            [0., 40.],
+        ]);
+        let body = source.cut_bodies[0].body;
+        let target = source.cut_bodies[0].target.as_ref().expect("an L");
+        assert_eq!(target.boundary.rectangle_mm(), None);
+        let ctx = egui::Context::default();
+        let mut e = Editor::default();
+        assert!(e.begin(&path, &source, body));
+        for _ in 0..3 {
+            frame(&ctx, &mut e, false);
+        }
+        let out = frame(&ctx, &mut e, false);
+        assert!(
+            painted(&out, "outline of 6 Lines, 1600 mm²"),
+            "the real part"
+        );
+        assert!(
+            !painted(&out, "60 × 40 mm"),
+            "never the bounding box as the part"
+        );
+        for (x, y, r, why) in [
+            ("40", "30", "3", "the notch"),
+            ("17", "17", "4.3", "the reflex vertex"),
+            ("40", "17", "4", "the concave edge"),
+        ] {
+            fill(&ctx, &mut e, x, y, r, "4");
+            click(&ctx, &mut e, "Apply cut");
+            let draft = e.draft.as_ref().expect("draft");
+            assert!(draft.applied.is_none(), "{why} was accepted");
+            assert!(
+                draft
+                    .refusal
+                    .as_deref()
+                    .is_some_and(|r| r.contains("stay inside the part")),
+                "{why}: {:?}",
+                draft.refusal
+            );
+            assert!(draft.history.undo.is_empty());
+        }
+        fill(&ctx, &mut e, "10.125", "18.625", "2.25", "");
+        click(&ctx, &mut e, "Through all");
+        click(&ctx, &mut e, "Apply cut");
+        assert_eq!(e.draft.as_ref().expect("draft").refusal, None);
+        fill(&ctx, &mut e, "45", "10", "5", "");
+        click(&ctx, &mut e, "Apply cut");
+        assert_eq!(e.draft.as_ref().expect("draft").history.undo.len(), 2);
+        click(&ctx, &mut e, "Undo");
+        assert_eq!(e.draft.as_ref().expect("draft").typed.center_x, "10.125");
+        assert!(e.take_request().is_none(), "Undo submitted a job");
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(e.draft.as_ref().expect("draft").typed.center_x, "45");
+        click(&ctx, &mut e, "Undo");
+        click(&ctx, &mut e, "Save cut copy…");
+        let mut request = e.take_request().expect("widget request");
+        assert_eq!(request.cut.center_mm, [10.125, 18.625]);
+        assert_eq!(request.cut.extent, CutExtent::ThroughAll);
+        let ui = root.path().join("polygon-worker.fcad");
+        request.destination = ui.clone();
+        let mut state = crate::edits::Edits::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        state
+            .start_cut(request, move |r, g, c| {
+                crate::edits::spawn_cut(r, c, move |result| tx.send((g, result)).expect("reply"))
+            })
+            .expect("worker");
+        let (_, result) = rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("worker response");
+        assert_eq!(result.expect("published").extent, CutExtent::ThroughAll);
+        let input = root.path().join("polygon.json");
+        std::fs::write(
+            &input,
+            r#"{"request_version":2,"center_mm":[10.125,18.625],"radius_mm":2.25,"extent":{"kind":"through_all"}}"#,
+        )
+        .expect("input");
+        let peer = root.path().join("polygon-peer.fcad");
+        let out = std::process::Command::new(crate::creates::tests::ferritecad())
+            .arg("cut-circular-copy")
+            .arg(&path)
+            .arg("--body")
+            .arg(body.to_string())
+            .arg("--expect-version")
+            .arg(source.version.content.to_string())
+            .arg("--request")
+            .arg(input)
+            .arg("-o")
+            .arg(&peer)
+            .arg("--json")
+            .output()
+            .expect("peer");
+        assert!(out.status.success(), "{out:?}");
+        for format in ["stl", "fbx"] {
+            let mut exports = Vec::new();
+            for model in [&ui, &peer] {
+                let output = model.with_extension(format);
+                let result = std::process::Command::new(crate::creates::tests::ferritecad())
+                    .arg(format!("export-{format}"))
+                    .arg(model)
+                    .arg("-o")
+                    .arg(&output)
+                    .arg("--json")
+                    .output()
+                    .expect("export");
+                assert!(result.status.success(), "{result:?}");
+                exports.push(std::fs::read(output).expect("export bytes"));
+            }
+            assert_eq!(exports[0], exports[1], "worker/CLI {format} bytes");
+        }
+        // The same stored history, once the identities minted by each copy
+        // are set aside: every table's shape, every kept row, and the new
+        // objects' and names' meaning.
+        let stored = |p: &PathBuf| {
+            let d = Document::open_read_only(p).expect("copy");
+            let objects: Vec<_> = d
+                .objects()
+                .expect("objects")
+                .into_iter()
+                .map(|o| {
+                    let meaning = match &o.payload {
+                        ferritecad_document::ObjectPayload::Sketch(s) => format!(
+                            "{:?}",
+                            s.curves
+                                .iter()
+                                .map(|c| c.geometry.clone())
+                                .collect::<Vec<_>>()
+                        ),
+                        ferritecad_document::ObjectPayload::Extrude(x) => {
+                            format!("{:?} {:?} {}", x.end_condition, x.operation, x.reversed)
+                        }
+                        other => format!("{:?}", other.kind()),
+                    };
+                    (
+                        o.name.clone(),
+                        o.ordinal,
+                        o.payload.schema_version(),
+                        meaning,
+                    )
+                })
+                .collect();
+            let mut roles: Vec<_> = d
+                .topology_refs()
+                .expect("refs")
+                .into_iter()
+                .map(|r| format!("{:?}", std::mem::discriminant(&r.output_role)))
+                .collect();
+            roles.sort();
+            let deps = d.dependencies().expect("deps").len();
+            d.close().expect("close");
+            (objects, roles, deps)
+        };
+        assert_eq!(stored(&ui), stored(&peer));
     }
 }

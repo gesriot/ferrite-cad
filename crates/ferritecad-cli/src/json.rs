@@ -107,8 +107,11 @@ struct Sketch {
     name: Option<String>,
     vertices: Option<Vec<SketchVertex>>,
     /// v1: `null` also when the history holds a ThroughAll Cut; see `cut_history_v2`.
-    cut_history: Option<SketchCutHistory<BlindDepth>>,
-    cut_history_v2: Option<SketchCutHistory<ExplicitEnd>>,
+    /// v1 and `_v2`: `null` unless the part is an axis-aligned rectangle; see `_v3`.
+    cut_history: Option<SketchCutHistory<BlindDepth, RectangleOnly>>,
+    cut_history_v2: Option<SketchCutHistory<ExplicitEnd, RectangleOnly>>,
+    /// Any supported polygon, with its real boundary (§26I).
+    cut_history_v3: Option<SketchCutHistory<ExplicitEnd, PolygonBoundary>>,
     constraint_edit: constraints::Discovery,
     /// Whether this Sketch's analytic circle can be moved or resized, and the
     /// circle itself. Its own answer: `editable`/`vertices` keep meaning what
@@ -125,16 +128,20 @@ struct Sketch {
 }
 /// Additional coordinate policy for the base of a supported nonempty history.
 #[derive(Serialize)]
-struct SketchCutHistory<E> {
+struct SketchCutHistory<E, P> {
     body_id: ObjectId,
     base_feature_id: ObjectId,
     tools: Vec<ExistingCut<E>>,
     wall_clearance_mm: f64,
+    #[serde(flatten)]
+    profile: P,
 }
-impl<E: EndForm> SketchCutHistory<E> {
-    /// `None` when this form cannot describe every tool; see [`EndForm`].
+impl<E: EndForm, P: ProfileForm> SketchCutHistory<E, P> {
+    /// `None` when this form cannot describe every tool or the part; see
+    /// [`EndForm`] and [`ProfileForm`].
     fn of(h: &ferritecad_document::SketchCutHistory) -> Option<Self> {
         Some(Self {
+            profile: P::of(&h.boundary)?,
             body_id: h.body,
             base_feature_id: h.base_feature,
             tools: ExistingCut::all(&h.tools)?,
@@ -241,15 +248,17 @@ struct Body {
     cut_edit: CutDiscovery<BlindDepth>,
     /// The same answer in the form that can describe ThroughAll (§26H).
     cut_edit_v2: CutDiscovery<ExplicitEnd>,
+    /// The same answer for any supported polygon, with its real boundary (§26I).
+    cut_edit_v3: CutDiscovery<ExplicitEnd, PolygonBoundary>,
 }
 
 /// What `cut-circular-copy` would accept about one Body, from the same reading.
 #[derive(Serialize)]
-struct CutDiscovery<E> {
+struct CutDiscovery<E, P = RectangleExtents> {
     available: bool,
     refusal: Option<String>,
     document_refusal: Option<String>,
-    target: Option<SavedCutTarget<E>>,
+    target: Option<SavedCutTarget<E, P>>,
 }
 
 /// The part a cut would go into, as stored.
@@ -258,7 +267,7 @@ struct CutDiscovery<E> {
 /// caller that said "on the base plane, along +Z" without asking would be
 /// promising the only thing this slice does as if it were a choice.
 #[derive(Serialize)]
-struct SavedCutTarget<E> {
+struct SavedCutTarget<E, P> {
     body_id: ObjectId,
     plane_id: ObjectId,
     /// The feature the cut would modify, which is the body's tip today.
@@ -269,14 +278,15 @@ struct SavedCutTarget<E> {
     disk_clearance_mm: f64,
     profile_sketch_id: ObjectId,
     height_mm: f64,
-    /// `[[min_x, min_y], [max_x, max_y]]` of the rectangular part, in mm, so a
-    /// form can offer a centre inside it without guessing.
-    extents_mm: [[f64; 2]; 2],
+    /// v1/`_v2`: `extents_mm`, `[[min_x, min_y], [max_x, max_y]]` of the
+    /// rectangular part. `_v3`: `bounds_mm` and the real `boundary`.
+    #[serde(flatten)]
+    profile: P,
     /// The one direction a cut runs here, said out loud.
     direction: &'static str,
     /// How far the tool must stay from the part's outer wall.
     wall_clearance_mm: f64,
-    /// `_v2` only: request versions `cut-circular-copy` accepts.
+    /// `_v2`/`_v3` only: request versions `cut-circular-copy` accepts.
     #[serde(skip_serializing_if = "Option::is_none")]
     request_versions: Option<&'static [u32]>,
 }
@@ -333,6 +343,100 @@ fn v1_cannot_describe(block: &str) -> String {
     format!(
         "this Cut history holds a ThroughAll Cut, which the v1 form of this discovery cannot \
          describe; read {block}_v2"
+    )
+}
+
+/// How one discovery form states the part's outer wall.
+///
+/// v1 and `_v2` have always stated it as `extents_mm`, the corners of an
+/// axis-aligned rectangle, and a consumer of those blocks may take that as the
+/// part. The bounding box of any other polygon would be a rectangle the part
+/// is not, so those blocks report themselves unavailable for it in the ways
+/// they already could, and the additive `_v3` blocks carry the real boundary.
+trait ProfileForm: Serialize + Sized {
+    fn of(boundary: &ferritecad_document::CutBoundary) -> Option<Self>;
+}
+
+/// v1/`_v2`: the extents of a part that is an axis-aligned rectangle.
+#[derive(Serialize)]
+struct RectangleExtents {
+    extents_mm: [[f64; 2]; 2],
+}
+
+impl ProfileForm for RectangleExtents {
+    fn of(boundary: &ferritecad_document::CutBoundary) -> Option<Self> {
+        boundary
+            .rectangle_mm()
+            .map(|extents_mm| Self { extents_mm })
+    }
+}
+
+/// v1/`_v2` blocks that never stated the part: present only for a rectangle.
+#[derive(Serialize)]
+struct RectangleOnly {}
+
+impl ProfileForm for RectangleOnly {
+    fn of(boundary: &ferritecad_document::CutBoundary) -> Option<Self> {
+        boundary.rectangle_mm().map(|_| Self {})
+    }
+}
+
+/// `_v3`: the real outer wall, and its bounding box named as bounds only.
+#[derive(Serialize)]
+struct PolygonBoundary {
+    /// `[[min_x, min_y], [max_x, max_y]]`. A range, never proof of containment.
+    bounds_mm: [[f64; 2]; 2],
+    boundary: Boundary,
+}
+
+#[derive(Serialize)]
+struct Boundary {
+    kind: &'static str,
+    orientation: &'static str,
+    area_mm2: f64,
+    /// Every saved Line in stored order; the part is inside them.
+    segments: Vec<BoundarySegment>,
+}
+
+#[derive(Serialize)]
+struct BoundarySegment {
+    curve_id: StableEntityId,
+    start_mm: [f64; 2],
+    end_mm: [f64; 2],
+}
+
+impl ProfileForm for PolygonBoundary {
+    fn of(boundary: &ferritecad_document::CutBoundary) -> Option<Self> {
+        Some(Self {
+            bounds_mm: boundary.bounds_mm(),
+            boundary: Boundary {
+                kind: "line_polygon",
+                orientation: match boundary.orientation() {
+                    ferritecad_document::BoundaryOrientation::CounterClockwise => {
+                        "counter_clockwise"
+                    }
+                    ferritecad_document::BoundaryOrientation::Clockwise => "clockwise",
+                },
+                area_mm2: boundary.area_mm2(),
+                segments: boundary
+                    .segments()
+                    .iter()
+                    .map(|s| BoundarySegment {
+                        curve_id: s.curve_id,
+                        start_mm: s.start_mm,
+                        end_mm: s.end_mm,
+                    })
+                    .collect(),
+            },
+        })
+    }
+}
+
+/// Why a v1/`_v2` discovery block is unavailable for a non-rectangular part.
+fn cannot_describe_polygon(block: &str) -> String {
+    format!(
+        "this Cut history's part is not an axis-aligned rectangle, and this form of the \
+         discovery can state only a rectangle; read {block}_v3"
     )
 }
 
@@ -405,35 +509,37 @@ pub(crate) fn request_version(bytes: &[u8], what: &str) -> Result<u32> {
         .map_err(|e| CadError::input(format!("invalid {what} JSON: {e}")))
 }
 
-impl<E: EndForm> CutDiscovery<E> {
+impl<E: EndForm, P: ProfileForm> CutDiscovery<E, P> {
     fn new(
         choice: &ferritecad_document::CutChoice,
         document_refusal: Option<String>,
         block: &str,
     ) -> Self {
         let described = choice.target.as_ref().map(|t| {
-            Some(SavedCutTarget {
+            let profile = P::of(&t.boundary).ok_or_else(|| cannot_describe_polygon(block))?;
+            let tools = || v1_cannot_describe(block);
+            Ok(SavedCutTarget {
                 body_id: t.body,
                 plane_id: t.plane,
                 tip_feature_id: t.tip_feature,
                 base_feature_id: t.base_feature,
-                tools: ExistingCut::all(&t.tools)?,
+                tools: ExistingCut::all(&t.tools).ok_or_else(tools)?,
                 existing_cut: match &t.existing_cut {
-                    Some(c) => Some(ExistingCut::of(&c.tool())?),
+                    Some(c) => Some(ExistingCut::of(&c.tool()).ok_or_else(tools)?),
                     None => None,
                 },
                 request_versions: E::request_versions(&[1, 2]),
                 disk_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
                 profile_sketch_id: t.profile,
                 height_mm: t.height_mm,
-                extents_mm: t.extents_mm,
+                profile,
                 direction: "+z along the plane normal",
                 wall_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
             })
         });
         let (target, refusal) = match described {
-            Some(None) => (None, Some(v1_cannot_describe(block))),
-            Some(Some(t)) => (Some(t), choice.refusal.clone()),
+            Some(Err(reason)) => (None, Some(reason)),
+            Some(Ok(t)) => (Some(t), choice.refusal.clone()),
             None => (None, choice.refusal.clone()),
         };
         Self {
@@ -499,17 +605,23 @@ struct Feature {
     circular_cut_edit: CutParameterDiscovery<BlindDepth>,
     /// The same answer in the form that can describe ThroughAll (§26H).
     circular_cut_edit_v2: CutParameterDiscovery<ExplicitEnd>,
+    /// The same answer for any supported polygon, with its real boundary (§26I).
+    circular_cut_edit_v3: CutParameterDiscovery<ExplicitEnd, PolygonBoundary>,
     /// v1: `null` also when the history holds a ThroughAll Cut; see `_v2`.
+    /// v1 and `_v2`: `null` unless the part is an axis-aligned rectangle; see `_v3`.
     base_height_edit: Option<BaseHeightDiscovery<BlindDepth>>,
     base_height_edit_v2: Option<BaseHeightDiscovery<ExplicitEnd>>,
+    base_height_edit_v3: Option<BaseHeightDiscovery<ExplicitEnd, PolygonBoundary>>,
 }
 
 /// Absolute tools and protected historical/descendant floor UUIDs for base height edits.
 #[derive(Serialize)]
-struct BaseHeightDiscovery<E> {
+struct BaseHeightDiscovery<E, P = RectangleExtents> {
     body_id: ObjectId,
     profile_sketch_id: ObjectId,
-    extents_mm: [[f64; 2]; 2],
+    /// v1/`_v2`: `extents_mm`; `_v3`: `bounds_mm` and `boundary`.
+    #[serde(flatten)]
+    profile: P,
     tools: Vec<ExistingCut<E>>,
     protected_floors: Vec<ProtectedFloor>,
 }
@@ -518,13 +630,14 @@ struct ProtectedFloor {
     feature_id: ObjectId,
     reference_ids: Vec<ferritecad_types::StableEntityId>,
 }
-impl<E: EndForm> BaseHeightDiscovery<E> {
-    /// `None` when this form cannot describe every tool; see [`EndForm`].
+impl<E: EndForm, P: ProfileForm> BaseHeightDiscovery<E, P> {
+    /// `None` when this form cannot describe every tool or the part; see
+    /// [`EndForm`] and [`ProfileForm`].
     fn of(h: &ferritecad_document::BaseHeightContext) -> Option<Self> {
         Some(Self {
             body_id: h.body,
             profile_sketch_id: h.profile,
-            extents_mm: h.extents_mm,
+            profile: P::of(&h.boundary)?,
             tools: ExistingCut::all(&h.tools)?,
             protected_floors: h
                 .protected_floors
@@ -541,11 +654,11 @@ impl<E: EndForm> BaseHeightDiscovery<E> {
 /// What `edit-circular-cut` would accept about one feature, from the same
 /// reading.
 #[derive(Serialize)]
-struct CutParameterDiscovery<E> {
+struct CutParameterDiscovery<E, P = RectangleExtents> {
     available: bool,
     refusal: Option<String>,
     document_refusal: Option<String>,
-    saved: Option<SavedCircularCut<E>>,
+    saved: Option<SavedCircularCut<E, P>>,
 }
 
 /// The cut as stored, and what an edit of it is measured against.
@@ -554,7 +667,7 @@ struct CutParameterDiscovery<E> {
 /// are repeated here rather than assumed for the reason the Cut catalogue
 /// beside it repeats them.
 #[derive(Serialize)]
-struct SavedCircularCut<E> {
+struct SavedCircularCut<E, P> {
     feature_id: ObjectId,
     body_id: ObjectId,
     plane_id: ObjectId,
@@ -581,8 +694,10 @@ struct SavedCircularCut<E> {
     #[serde(skip_serializing_if = "Option::is_none")]
     request_versions: Option<&'static [u32]>,
     height_mm: f64,
-    /// `[[min_x, min_y], [max_x, max_y]]` of the rectangular part, in mm.
-    extents_mm: [[f64; 2]; 2],
+    /// v1/`_v2`: `extents_mm`, `[[min_x, min_y], [max_x, max_y]]` of the
+    /// rectangular part. `_v3`: `bounds_mm` and the real `boundary`.
+    #[serde(flatten)]
+    profile: P,
     /// The one direction a cut runs here, said out loud.
     direction: &'static str,
     /// How far the tool must stay from the part's outer wall.
@@ -600,24 +715,26 @@ struct SavedCircularCut<E> {
     through_allowed: bool,
 }
 
-impl<E: EndForm> CutParameterDiscovery<E> {
+impl<E: EndForm, P: ProfileForm> CutParameterDiscovery<E, P> {
     fn new(
         choice: &ferritecad_document::CutParameterChoice,
         document_refusal: Option<String>,
         block: &str,
     ) -> Self {
         let described = choice.saved.as_ref().map(|c| {
-            Some(SavedCircularCut {
+            let profile = P::of(&c.boundary).ok_or_else(|| cannot_describe_polygon(block))?;
+            let tools = || v1_cannot_describe(block);
+            Ok(SavedCircularCut {
                 feature_id: c.feature,
                 body_id: c.body,
                 plane_id: c.plane,
                 previous_feature_id: c.previous_feature,
                 base_feature_id: c.base_feature,
-                tools: ExistingCut::all(&c.tools)?,
+                tools: ExistingCut::all(&c.tools).ok_or_else(tools)?,
                 tip_feature_id: c.tip_feature,
                 protected_floor_reference_ids: c.protected_floor_references.clone(),
                 neighboring_tool: match &c.neighboring_tool {
-                    Some(t) => Some(ExistingCut::of(t)?),
+                    Some(t) => Some(ExistingCut::of(t).ok_or_else(tools)?),
                     None => None,
                 },
                 disk_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
@@ -626,10 +743,10 @@ impl<E: EndForm> CutParameterDiscovery<E> {
                 tool_curve_id: c.tool_curve,
                 center_mm: c.center_mm,
                 radius_mm: c.radius_mm,
-                end: E::of(c.extent)?,
+                end: E::of(c.extent).ok_or_else(tools)?,
                 request_versions: E::request_versions(c.request_versions()),
                 height_mm: c.height_mm,
-                extents_mm: c.extents_mm,
+                profile,
                 direction: "+z along the plane normal",
                 wall_clearance_mm: ferritecad_document::WALL_CLEARANCE_MM,
                 leaves_a_floor: c.leaves_a_floor(),
@@ -638,8 +755,8 @@ impl<E: EndForm> CutParameterDiscovery<E> {
             })
         });
         let (saved, refusal) = match described {
-            Some(None) => (None, Some(v1_cannot_describe(block))),
-            Some(Some(s)) => (Some(s), choice.refusal.clone()),
+            Some(Err(reason)) => (None, Some(reason)),
+            Some(Ok(s)) => (Some(s), choice.refusal.clone()),
             None => (None, choice.refusal.clone()),
         };
         Self {
@@ -804,6 +921,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 document_refusal: source.refusal.clone(),
                 cut_history: s.cut_history.as_ref().and_then(SketchCutHistory::of),
                 cut_history_v2: s.cut_history.as_ref().and_then(SketchCutHistory::of),
+                cut_history_v3: s.cut_history.as_ref().and_then(SketchCutHistory::of),
                 vertices: s.vertices.map(|vs| {
                     vs.into_iter()
                         .map(|v| SketchVertex {
@@ -832,11 +950,20 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                         source.refusal.clone(),
                         "circular_cut_edit",
                     ),
+                    circular_cut_edit_v3: CutParameterDiscovery::new(
+                        &choice,
+                        source.refusal.clone(),
+                        "circular_cut_edit",
+                    ),
                     base_height_edit: feature
                         .cut_history
                         .as_ref()
                         .and_then(BaseHeightDiscovery::of),
                     base_height_edit_v2: feature
+                        .cut_history
+                        .as_ref()
+                        .and_then(BaseHeightDiscovery::of),
+                    base_height_edit_v3: feature
                         .cut_history
                         .as_ref()
                         .and_then(BaseHeightDiscovery::of),
@@ -862,6 +989,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                         name: body.name,
                         cut_edit: CutDiscovery::new(&choice, source.refusal.clone(), "cut_edit"),
                         cut_edit_v2: CutDiscovery::new(&choice, source.refusal.clone(), "cut_edit"),
+                        cut_edit_v3: CutDiscovery::new(&choice, source.refusal.clone(), "cut_edit"),
                     }
                 })
                 .collect()

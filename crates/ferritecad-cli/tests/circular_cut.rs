@@ -171,6 +171,15 @@ impl Fixture {
 
 /// The four objects a plate is, written without a kernel.
 fn write_plate_document(path: &Path, width: f64, depth: f64, height: f64) {
+    write_polygon_document(
+        path,
+        &[[0.0, 0.0], [width, 0.0], [width, depth], [0.0, depth]],
+        height,
+    );
+}
+
+/// The four objects a straight Line-polygon part is, written without a kernel.
+fn write_polygon_document(path: &Path, corners: &[[f64; 2]], height: f64) {
     use ferritecad_document::{
         Body, CapSide, DatumPlane, Dependency, DependencyRole, EndCondition, EntityKind,
         Expression, Extrude, Point2, SelectionRule, Sketch, SketchCurve, SolidOperation,
@@ -179,8 +188,8 @@ fn write_plate_document(path: &Path, width: f64, depth: f64, height: f64) {
     use ferritecad_types::{ObjectId, StableEntityId, Transform};
     let mut d = Document::create(path).expect("document");
     let [plane, sketch, extrude, body] = std::array::from_fn(|_| ObjectId::new());
-    let corners = [[0.0, 0.0], [width, 0.0], [width, depth], [0.0, depth]];
-    let segments: Vec<StableEntityId> = (0..4).map(|_| StableEntityId::new()).collect();
+    let n = corners.len();
+    let segments: Vec<StableEntityId> = (0..n).map(|_| StableEntityId::new()).collect();
     d.write(|w| {
         w.put_object(
             plane,
@@ -200,7 +209,7 @@ fn write_plate_document(path: &Path, width: f64, depth: f64, height: f64) {
                     construction: false,
                     geometry: SketchGeometry::Line {
                         start: Point2::new(corners[i][0], corners[i][1])?,
-                        end: Point2::new(corners[(i + 1) % 4][0], corners[(i + 1) % 4][1])?,
+                        end: Point2::new(corners[(i + 1) % n][0], corners[(i + 1) % n][1])?,
                     },
                 })
             })

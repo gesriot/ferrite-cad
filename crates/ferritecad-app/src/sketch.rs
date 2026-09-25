@@ -1024,7 +1024,7 @@ impl Editor {
                     "Base of {} circular Cuts. Tools stay at their saved XY coordinates.",
                     history.tools.len()
                 ));
-                ui.small("Keep an axis-aligned rectangle with clearance from every tool. Each vertex moves only when you edit it.");
+                ui.small("Keep a simple outline, in the same winding, with clearance from every tool. Each vertex moves only when you edit it.");
             }
             ui.small(format!(
                 "Sketch {} · {}",
