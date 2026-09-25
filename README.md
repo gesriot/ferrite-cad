@@ -41,6 +41,10 @@ A Cut can also say **Through all** instead of a depth (the `End` choice in the
 Cut editor, or request v2 of `cut-circular-copy`/`edit-circular-cut`); it stays
 through after the base height changes, where a Blind depth stays absolute.
 [Contract, compatibility and recipe](docs/circular-cut-through-all.md).
+The part under those Cuts may be any simple, unconstrained Line polygon of
+3–256 sides, concave L-shapes and sloped walls included: a tool must clear the
+real outline, not its bounding box, and editing the base checks every tool.
+[Polygon contract and recipe](docs/polygon-cut-history.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

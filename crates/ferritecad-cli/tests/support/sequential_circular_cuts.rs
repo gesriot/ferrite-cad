@@ -110,7 +110,67 @@ fn measure_history_at(
     height: f64,
     cache: Option<&[CacheOutcome]>,
 ) -> f64 {
-    let plate_volume = (bounds[1][0] - bounds[0][0]) * (bounds[1][1] - bounds[0][1]) * height;
+    measure_part_at(path, tools, &rectangle(bounds), height, cache)
+}
+
+/// The corners of an axis-aligned rectangle, counter-clockwise.
+fn rectangle(bounds: [[f64; 2]; 2]) -> Vec<[f64; 2]> {
+    let [[x0, y0], [x1, y1]] = bounds;
+    vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+}
+
+/// The area a closed polygon encloses, whatever its winding.
+fn polygon_area(points: &[[f64; 2]]) -> f64 {
+    let o = points[0];
+    ((1..points.len() - 1)
+        .map(|i| {
+            let (a, b) = (points[i], points[i + 1]);
+            (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+        })
+        .sum::<f64>()
+        / 2.)
+        .abs()
+}
+
+/// Even-odd point-in-polygon, written here rather than borrowed from the
+/// product so a defect there cannot also hide here.
+fn in_polygon(points: &[[f64; 2]], p: [f64; 2]) -> bool {
+    let mut inside = false;
+    for i in 0..points.len() {
+        let (a, b) = (points[i], points[(i + 1) % points.len()]);
+        if (a[1] > p[1]) != (b[1] > p[1])
+            && p[0] < a[0] + (p[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1])
+        {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+/// The unit normal of the wall under `start`–`end` that points out of the part.
+fn outward(points: &[[f64; 2]], start: [f64; 2], end: [f64; 2]) -> [f64; 2] {
+    let (dx, dy) = (end[0] - start[0], end[1] - start[1]);
+    let length = dx.hypot(dy);
+    let n = [dy / length, -dx / length];
+    let mid = [(start[0] + end[0]) / 2., (start[1] + end[1]) / 2.];
+    if in_polygon(points, [mid[0] + 1e-3 * n[0], mid[1] + 1e-3 * n[1]]) {
+        [-n[0], -n[1]]
+    } else {
+        n
+    }
+}
+
+/// Everything the kernel says about a straight prism over `points` with these
+/// tools, and every saved name resolved to exactly the face it means.
+fn measure_part_at(
+    path: &Path,
+    tools: &[CircularCut],
+    points: &[[f64; 2]],
+    height: f64,
+    cache: Option<&[CacheOutcome]>,
+) -> f64 {
+    let plate_volume = polygon_area(points) * height;
+    let walls = points.len() as u64;
     let d = Document::open_read_only(path).expect("reopen");
     assert!(d.validate().expect("validate").is_ok());
     let (body, last) = tip(&d);
@@ -178,7 +238,7 @@ fn measure_history_at(
         .iter()
         .filter(|t| t.extent.reach_mm(height) < height)
         .count();
-    assert_eq!(count, 6 + tools.len() as u64 + floors as u64);
+    assert_eq!(count, walls + 2 + tools.len() as u64 + floors as u64);
     let exact = plate_volume
         - tools
             .iter()
@@ -201,11 +261,12 @@ fn measure_history_at(
         assert!((volume - exact).abs() < 1e-6, "historical volume {index}");
         assert_eq!(
             faces,
-            (6 + index
-                + prior
-                    .iter()
-                    .filter(|t| t.extent.reach_mm(height) < height)
-                    .count()) as u64
+            walls
+                + (2 + index
+                    + prior
+                        .iter()
+                        .filter(|t| t.extent.reach_mm(height) < height)
+                        .count()) as u64
         );
     }
     let mut meshes = BTreeMap::new();
@@ -311,16 +372,33 @@ fn measure_history_at(
                 let SketchGeometry::Line { start, end } = line else {
                     panic!("line")
                 };
-                let axis = if start.x == end.x { 0 } else { 1 };
-                let coord = if axis == 0 { start.x } else { start.y };
+                let (a, b) = ([start.x, start.y], [end.x, end.y]);
                 assert!(
-                    vertices
-                        .iter()
-                        .all(|p| (p[axis] - coord).abs() < ROUNDING_MM),
+                    points.contains(&a) && points.contains(&b),
+                    "the saved Line is a side of the expected part"
+                );
+                // On the finite wall under the saved Line — not only its
+                // supporting plane — and facing out of the part.
+                let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                let length = dx.hypot(dy);
+                assert!(
+                    vertices.iter().all(|p| {
+                        let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length;
+                        let off = ((p[0] - a[0]) * dy - (p[1] - a[1]) * dx) / length;
+                        off.abs() < ROUNDING_MM
+                            && t > -ROUNDING_MM
+                            && t < length + ROUNDING_MM
+                            && p[2] > -ROUNDING_MM
+                            && p[2] < height + ROUNDING_MM
+                    }),
                     "outer wall changed meaning"
                 );
-                let sign = if coord == bounds[0][axis] { -1. } else { 1. };
-                assert!(normals.iter().all(|n| n[axis] * sign > 0.99));
+                let n = outward(points, a, b);
+                assert!(
+                    normals
+                        .iter()
+                        .all(|m| m[0] * n[0] + m[1] * n[1] > 0.99 && m[2].abs() < 0.01)
+                );
             }
         } else {
             let tool = tools[chain
@@ -790,7 +868,41 @@ fn check_history_mesh_in(m: &Mesh, tools: &[CircularCut], bounds: [[f64; 2]; 2])
 }
 
 fn check_history_mesh_at(m: &Mesh, tools: &[CircularCut], bounds: [[f64; 2]; 2], height: f64) {
-    let plate_volume = (bounds[1][0] - bounds[0][0]) * (bounds[1][1] - bounds[0][1]) * height;
+    check_part_mesh_at(m, tools, &rectangle(bounds), height);
+}
+
+/// The exported mesh of a straight prism over `points` with these tools, read
+/// independently of the kernel: closed and oriented, every bore where it was
+/// asked for, caps only over the part, and a volume inside what tessellation
+/// of that part can give.
+fn check_part_mesh_at(m: &Mesh, tools: &[CircularCut], points: &[[f64; 2]], height: f64) {
+    let plate_volume = polygon_area(points) * height;
+    let bounds = {
+        let mut b = [[f64::INFINITY; 2], [f64::NEG_INFINITY; 2]];
+        for p in points {
+            for axis in 0..2 {
+                b[0][axis] = b[0][axis].min(p[axis]);
+                b[1][axis] = b[1][axis].max(p[axis]);
+            }
+        }
+        b
+    };
+    // A cap facet lies over the part, never over a notch its bounding box
+    // would include: its centroid is inside the real outline.
+    for t in &m.faces {
+        let flat = t.iter().all(|v| (v[2] - t[0][2]).abs() < ROUNDING_MM);
+        let at_cap = t[0][2].abs() < ROUNDING_MM || (t[0][2] - height).abs() < ROUNDING_MM;
+        if flat && at_cap {
+            let c = [
+                (t[0][0] + t[1][0] + t[2][0]) / 3.,
+                (t[0][1] + t[1][1] + t[2][1]) / 3.,
+            ];
+            assert!(
+                in_polygon(points, c),
+                "a cap facet outside the part at {c:?}"
+            );
+        }
+    }
     // Closed and wound one way.
     let quantise = |v: [f64; 3]| {
         let q = |x: f64| (x * 1e4).round() as i64;
@@ -992,3 +1104,6 @@ mod base_height;
 
 #[path = "circular_cut_through_all.rs"]
 mod through_all;
+
+#[path = "polygon_cut_history.rs"]
+mod polygon;

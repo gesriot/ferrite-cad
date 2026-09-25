@@ -52,6 +52,7 @@
 mod annulus_edit;
 mod cache;
 mod circle_edit;
+mod cut_boundary;
 mod cut_edit;
 mod document;
 mod edit;
@@ -64,6 +65,7 @@ pub use annulus_edit::{
 pub use circle_edit::{
     CircleChoice, CircleEdit, SavedCircle, circle_choices, replace_circle_geometry,
 };
+pub use cut_boundary::{BoundaryOrientation, BoundarySegment, CutBoundary, DiskClearance};
 pub use cut_edit::{
     CircularCut, CircularCutEdit, CutChoice, CutExtent, CutParameterChoice, ExtentVocabulary,
     MAX_CIRCULAR_CUTS, NewObject, PreparedCircularCut, PreparedCutParameters, SavedCircularCut,

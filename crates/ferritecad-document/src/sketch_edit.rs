@@ -24,7 +24,7 @@ pub struct SketchChoice {
     /// None for an unsupported sketch, never an invented/reordered contour.
     pub vertices: Option<Vec<SketchVertex>>,
     pub height_mm: Option<f64>,
-    /// Present only for the original rectangle of a validated nonempty Cut history.
+    /// Present only for the original base of a validated nonempty Cut history.
     pub cut_history: Option<SketchCutHistory>,
     pub refusal: Option<String>,
 }
@@ -37,6 +37,8 @@ pub struct SketchCutHistory {
     pub base_feature: ObjectId,
     /// All tools in predecessor order, including the final Cut.
     pub tools: Vec<SavedCutTool>,
+    /// The saved outer wall this Sketch draws today.
+    pub boundary: crate::CutBoundary,
 }
 
 pub fn sketch_choices(document: &Document, objects: &[ObjectRecord]) -> Vec<SketchChoice> {
@@ -98,6 +100,7 @@ fn coordinate_choice(
                     body: target.body,
                     base_feature: target.base_feature,
                     tools: target.tools.clone(),
+                    boundary: target.boundary.clone(),
                 });
                 return Ok((vertices, target.height_mm));
             }

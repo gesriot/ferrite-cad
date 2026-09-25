@@ -364,10 +364,18 @@ fn native_base_bounds_refs_sql_cache_and_mesh() {
             check_history_mesh_in(&mesh(&dest, &dest.with_extension("stl")), &tools, bounds);
             let (_, edited) = choice(&dest);
             assert_eq!(edited.vertices, Some(vertices(&base, bounds)));
+            let context = |c: &ferritecad_document::SketchChoice| {
+                let h = c.cut_history.as_ref().expect("context");
+                (h.body, h.base_feature, h.tools.clone())
+            };
             assert_eq!(
-                edited.cut_history, base.cut_history,
+                context(&edited),
+                context(&base),
                 "absolute tools did not move"
             );
+            // The boundary is the edited Lines, under their saved UUIDs.
+            let boundary = &edited.cut_history.as_ref().expect("context").boundary;
+            assert_eq!(boundary.rectangle_mm(), Some(bounds));
             assert_eq!(std::fs::read(&path).expect("bytes"), before);
             if n == 4 {
                 let fbx = dest.with_extension("fbx");
@@ -447,7 +455,12 @@ fn native_base_refuses_one_bad_aspect_and_distant_walls() {
             }
             1 => v.swap(0, 1),
             2 => v[1].curve_id = StableEntityId::new(),
-            3 => v[1].start_mm[1] += 1.,
+            // §26I accepts a sloped base; crossing edges are still no part.
+            3 => {
+                let [a, b] = [v[1].start_mm, v[2].start_mm];
+                v[1].start_mm = b;
+                v[2].start_mm = a;
+            }
             4 => v[1].start_mm = v[0].start_mm,
             5 => {
                 v[1].start_mm[0] = 1e7;

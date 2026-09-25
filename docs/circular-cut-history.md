@@ -9,7 +9,8 @@ against the complete object and dependency sets. Names, rowids and ordinals
 never identify a link. Every payload must round-trip losslessly. The supported
 editor boundary is 0–16 forward Blind circular Cuts of one unconstrained,
 axis-aligned XY rectangular NewBody plate; 16 can be edited but cannot be
-extended. Longer documents remain readable under the general document rules
+extended ([§26I](polygon-cut-history.md) widens the plate to any simple
+unconstrained Line polygon). Longer documents remain readable under the general document rules
 and receive an explicit editor refusal, never a truncated catalogue.
 
 Every disk is checked against every other disk using the existing strict
