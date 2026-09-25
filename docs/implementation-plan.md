@@ -3509,3 +3509,22 @@ viewer peak 215.376 MiB, exit 0, swap 0. Exact cloud-head CI logs independently
 confirm 183 native gates and 66 ufbx reads per OS; review/merge checks are audited
 with publication. [Full review evidence](circular-cut-through-all-verification.md#independent-macos-review--2026-09-24).
 
+**§26I — circular Cut history on a simple Line polygon.**
+
+The same bounded history (1–16 separated circular Cuts, Blind or ThroughAll)
+now accepts any unconstrained, simple, closed XY polygon of 3–256 Lines as its
+base, in either winding: sloped walls and concave vertices included. The
+rectangle reader is replaced by one `CutBoundary` in `ferritecad-document`,
+read once per snapshot with each Line's saved UUID and validated by the shared
+`PolygonExtrusion` policy. Containment is a single rule — centre inside the
+polygon and every finite segment (vertices included) farther than radius +
+`WALL_CLEARANCE_MM` — used by add, edit of any Cut, base height, base
+coordinates, history reading and every writer's in-transaction re-derivation.
+The bounding box is reported only as `bounds_mm`. Side names were already per
+saved Line UUID; nothing new is stored and no schema, cache key or FFI
+changes. JSON keeps every rectangle block byte-identical; for any other
+polygon the v1/`_v2` blocks report themselves unavailable and additive `_v3`
+blocks carry `bounds_mm` and a typed `boundary`. The UI and the recipe read
+that same boundary. [Contract and recipe](polygon-cut-history.md),
+[verification](polygon-cut-history-verification.md).
+

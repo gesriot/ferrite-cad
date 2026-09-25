@@ -3,7 +3,9 @@
 `Edit Sketch <name> — <UUID>…` and `edit-sketch-copy` accept the original
 unconstrained, four-Line axis-aligned XY rectangle of the single Body whose
 complete 1–16 Cut history satisfies [§26E](circular-cut-history.md). Zero Cuts
-uses the unchanged standalone 3–256 Line polygon contract. No new command,
+uses the unchanged standalone 3–256 Line polygon contract. Since
+[§26I](polygon-cut-history.md) the base may be any simple 3–256 Line polygon,
+and the tool check is against its real Lines. No new command,
 feature, boolean, schema, capability, reference or history limit is introduced.
 
 The request is still v1: every saved `curve_id` exactly once in stored order,

@@ -280,6 +280,35 @@ ThroughAll). `leaves_a_floor` у ThroughAll всегда false. Result обеи�
 получает аддитивное `extent`.
 [Контракт §26H и исполняемый рецепт](circular-cut-through-all.md).
 
+## Cut в простом Line-полигоне (§26I)
+
+Envelope, `schema_version:1`, операции, request v1/v2 и exit 0/2/7 не меняются.
+Меняется только класс базовой детали: любой простой замкнутый полигон из 3..256
+Line без constraints. Прежние блоки `extents_mm` означали прямоугольник, и
+bounding box иного контура им не является, поэтому:
+
+* для детали-прямоугольника все блоки v1 и `_v2` побайтно те же;
+* для иного полигона `cut_edit`/`cut_edit_v2`.`target` и
+  `circular_cut_edit`/`circular_cut_edit_v2`.`saved` — `null` при
+  `available:false` и `refusal`, называющем блок `_v3`; `base_height_edit`,
+  `base_height_edit_v2`, `cut_history`, `cut_history_v2` — `null`.
+
+Аддитивные блоки `bodies[].cut_edit_v3`, `features[].circular_cut_edit_v3`,
+`features[].base_height_edit_v3` и `sketches[].cut_history_v3` присутствуют
+всегда (и для прямоугольника) и повторяют `_v2`, но вместо `extents_mm` несут:
+
+```json
+"bounds_mm": [[0.0, 0.0], [60.0, 40.0]],
+"boundary": {"kind": "line_polygon", "orientation": "counter_clockwise",
+             "area_mm2": 1600.0,
+             "segments": [{"curve_id": "…", "start_mm": [0.0, 0.0], "end_mm": [60.0, 0.0]}, …]}
+```
+
+`bounds_mm` — только диапазон, никогда не доказательство вложенности.
+`segments` — сохранённые Line в порядке хранения с их UUID; `orientation`
+(`counter_clockwise`/`clockwise`) — направление, в котором их нарисовали.
+[Контракт §26I и исполняемый рецепт](polygon-cut-history.md).
+
 ## Правка сохранённой кольцевой пары (§25M)
 
 `ferritecad edit-annular <source.fcad> --sketch UUID --expect-version HASH

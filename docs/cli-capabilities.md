@@ -24,6 +24,15 @@ cache hit. Blind↔ThroughAll без потери дна сохраняет им
 с ThroughAll честно недоступны; новые `cut_edit_v2`, `circular_cut_edit_v2`,
 `base_height_edit_v2`, `cut_history_v2` несут `extent` и `request_versions`.
 
+§26I: та же история Cut [в простом Line-полигоне](polygon-cut-history.md) —
+3..256 сторон без constraints, обе ориентации, наклонные стены и вогнутые
+вершины (L-профиль). Инструмент должен отстоять от реальных конечных отрезков
+контура, а не от его bounding box; правка базы проверяет все инструменты и
+называет UUID нарушающего Cut. Команды и request прежние. Discovery: для
+прямоугольника прежние блоки побайтно те же; для иного полигона v1/`_v2`
+недоступны, новые `cut_edit_v3`, `circular_cut_edit_v3`, `base_height_edit_v3`,
+`cut_history_v3` несут `bounds_mm` и типизированный `boundary`.
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.
