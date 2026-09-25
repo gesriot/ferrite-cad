@@ -16,6 +16,13 @@ ferritecad edit-sketch-copy <source.fcad> --sketch <UUID> --expect-version <toke
 
 ## Поддерживаемая модель и identities
 
+[§27B](edit-revolve-profile.md) тем же запросом и тем же маршрутом правит
+координаты профиля самостоятельного full-turn Revolve из §27A (плоскость XY,
+Sketch, Revolve `sketch_y`/`full_turn`/NewBody, Body). Правила числа — политика
+`FullTurnRevolution` (все X > 1e-6 mm); ось, угол, UUID и имена граней
+сохраняются. Какой feature питает профиль, discovery сообщает в
+`sketches[].profile_feature`.
+
 Дополнительно [§26F](edit-cut-base-sketch.md) разрешает координаты исходного
 прямоугольного Line Sketch допустимой истории из 1–16 circular Cut. Инструменты
 остаются в абсолютных XY координатах; каждый проверяется у новых стен. Для такой

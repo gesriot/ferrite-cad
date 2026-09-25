@@ -20,6 +20,9 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
 };
+/// §27B: editing the saved profile of these documents.
+#[path = "revolve/edit.rs"]
+mod edit;
 #[path = "support/pipe.rs"]
 mod pipe;
 
@@ -426,7 +429,13 @@ fn revolve_document_contract_and_discovery_without_kernel() {
         }
     }
     for sketch in catalog["sketches"].as_array().expect("sketches") {
-        assert_eq!(sketch["editable"], json!(false));
+        // §27B: the Line coordinate editor accepts this profile and says it
+        // feeds the Revolve; every other Sketch editor still refuses.
+        assert_eq!(sketch["editable"], json!(true));
+        assert_eq!(sketch["profile_feature"]["kind"], "full_turn_revolve");
+        for editor in ["constraint_edit", "circle_edit", "annulus_edit"] {
+            assert_eq!(sketch[editor]["available"], json!(false), "{editor}");
+        }
         assert!(sketch["cut_history_v3"].is_null());
     }
     let valid = cli()

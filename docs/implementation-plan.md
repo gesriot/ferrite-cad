@@ -3580,10 +3580,52 @@ Viewer exit 0, peak 206.7355 MiB, swap 0. CI logs independently confirm 208
 required test names and 70 ufbx reads per OS. Review corrected two documentation
 claims; no product-code correction was needed. Details are in the verification.
 
-**§27B — pending: edit the saved full-turn Revolve profile in a new copy.**
-Extend the existing coordinate-edit route to the bounded §27A document class,
-keeping curve/object/reference UUIDs and the Revolve intent. Use the shared
-job from UI and CLI, validate the positive-radius profile again inside the
-writer transaction, cold-rebuild and resolve every saved name before atomic
-publication. Axis/angle changes, adding/removing vertices, constraints,
-booleans and in-place Save remain separate work. Implementation has not begun.
+**§27B — edit the saved full-turn Revolve profile in a new copy.**
+
+The existing coordinate-edit route now accepts the standalone §27A document
+class: an untransformed XY plane, one unconstrained closed Line Sketch, one
+`sketch_y`/`full_turn`/NewBody Revolve and its Body.
+* **Rules.** `sketch_edit::coordinate_choice` stays the single owner of the
+  rules for discovery, preparation and the writer's in-transaction
+  re-derivation. It gains a `revolve_frame` beside the unchanged Extrude
+  `frame`, so the circle, annulus, constraint and height editors keep their
+  boundaries.
+* **Profile kind.** `SketchChoice` states its profile's feature as an
+  explicit `SketchProfileUse`, `BlindExtrude { height }` or
+  `FullTurnRevolve`, and checks drafts with that feature's own policy:
+  `PolygonExtrusion` or `FullTurnRevolution`.
+* **Reused unchanged:** `EditSketchRequest`, `edit_sketch_copy`, the SQL
+  copier, the guards, the cold rebuild with every saved reference required,
+  and the atomic publish.
+* **Names.** Line UUIDs, object IDs and `RevolveFace` names survive. A face
+  may change its analytic kind (cylinder → cone) under the same name.
+* **Discovery and UI.** `inspect --json` adds `sketches[].profile_feature`.
+  Edit Sketch shows the saved full turn and axis, with no height field and
+  no feature switch.
+* **Out of scope.** Axis/angle changes, adding/removing vertices,
+  constraints, booleans, in-place Save and preview.
+
+[Contract and recipe](edit-revolve-profile.md),
+[verification](edit-revolve-profile-verification.md).
+
+
+Independent §27B review completed native, real stub, mixed OCCT/no-solver
+and guarded macOS window checks. Numeric editing, drag with one-step Undo,
+Save Cancel, publication/Open and both exports passed for a smaller bushing
+and a cylinder-to-cone edit. Every GUI/CLI SQL cell and both STL/FBX pairs
+match; sources and saved identities are preserved. Viewer peak 199.4542 MiB,
+exit 0, swap 0. CI logs confirm 214 distinct required gate names and 72 ufbx
+reads per OS. Report counts were corrected; product code needed no change.
+[Independent evidence](edit-revolve-profile-verification.md#independent-macos-review--2026-09-25).
+
+**§27C — next: full-turn Revolve profiles closed on the axis (pending).**
+
+Allow bounded solid shafts, stepped shafts and cones, with one explicit Line
+of the profile on the sketch Y axis. Share creation and coordinate-edit
+policy, retain existing hollow-profile behavior, and name only actual faces:
+the axis Line generates no face and must never receive a fake one. Specify
+compatibility and topology-preserving edit boundaries before implementation;
+partial turns, other axes, multiple axis intervals and booleans remain outside
+this slice. Native history/archive, old-reader behavior, independent geometry,
+UI/CLI parity and atomic refusal are required. The cloud implementation leaves
+actual macOS GUI verification to the reviewer.

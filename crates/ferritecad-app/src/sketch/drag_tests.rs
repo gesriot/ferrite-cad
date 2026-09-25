@@ -830,7 +830,10 @@ fn saved_winding_and_crossing_previews_refuse_through_shared_policy() {
         sketch: id,
         name: None,
         vertices: Some(vertices.clone()),
-        height_mm: Some(10.),
+        profile_use: Some(ferritecad_document::SketchProfileUse::BlindExtrude {
+            feature: ferritecad_types::ObjectId::new(),
+            height_mm: 10.,
+        }),
         refusal: None,
     };
     e.editing = Some((

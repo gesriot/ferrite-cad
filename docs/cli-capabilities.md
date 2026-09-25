@@ -44,6 +44,13 @@ UUID (`RevolveFace`). Сборки до §27A открывают такой до
 чтения. Discovery: новый массив `revolves`; `features` его не содержит, прежние
 редакторы отказываются. Без ядра создание отказывается и ничего не публикует.
 
+§27B: [координаты профиля такого Revolve](edit-revolve-profile.md) меняет
+прежний `edit-sketch-copy` (request v1 без изменений) в новую копию. Все UUID
+линий, объектов и имён граней сохраняются; ось, полный оборот и NewBody
+остаются. Касание/пересечение оси, самопересечение, смена порядка/числа линий
+или направления обхода отказываются (exit 2). Discovery добавляет
+`sketches[].profile_feature` с `kind` `blind_extrude` или `full_turn_revolve`.
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.
