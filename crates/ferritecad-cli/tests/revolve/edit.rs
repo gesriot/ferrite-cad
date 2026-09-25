@@ -542,7 +542,7 @@ fn unsupported_variants(root: &Path) -> Vec<(&'static str, PathBuf, &'static str
     all.push(("extra history", extra, "exactly one XY plane"));
     all
 }
-fn rewrite_sketch(path: &Path, change: impl FnOnce(&mut Sketch)) {
+pub(super) fn rewrite_sketch(path: &Path, change: impl FnOnce(&mut Sketch)) {
     let mut d = Document::open(path).expect("open");
     let o = d
         .objects()

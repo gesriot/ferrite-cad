@@ -6,7 +6,7 @@
 //! Expected volumes are written out from cylinder, cone and frustum formulas,
 //! never taken from the production Pappus helper. The Line on the axis must
 //! raise nothing and carry no name; every other Line keeps its own face.
-use super::edit::{check_cells, edit, edit_reply, frustum, saved, write_edit};
+use super::edit::{check_cells, edit, edit_reply, frustum, rewrite_sketch, saved, write_edit};
 use super::*;
 use std::collections::BTreeSet;
 
@@ -658,6 +658,84 @@ fn native_solid_revolution_refusals_are_atomic() {
     let stale = ferritecad_types::ContentHash::of_bytes(b"another").to_string();
     let refusal = refuse(&s.ids, &CYLINDER, &stale, "stale");
     assert!(refusal.contains("source has changed"), "{refusal}");
+    let mut foreign = s.ids.clone();
+    foreign[3] = StableEntityId::new().to_string();
+    let refusal = refuse(&foreign, &CYLINDER, &s.version, "foreign axis Line ID");
+    assert!(
+        refusal.contains("every saved curve UUID exactly once"),
+        "{refusal}"
+    );
+    // Destinations that are taken or are the source itself.
+    write_edit(&request_path, &s.ids, &CYLINDER);
+    let taken = d.path().join("taken.fcad");
+    std::fs::write(&taken, b"keep").expect("taken");
+    let mut destinations = vec![("occupied", taken.clone()), ("the source", source.clone())];
+    #[cfg(unix)]
+    {
+        let hard = d.path().join("hard.fcad");
+        std::fs::hard_link(&source, &hard).expect("hard link");
+        destinations.push(("hard link to the source", hard));
+    }
+    for (why, destination) in destinations {
+        let names = entries(d.path());
+        let bytes = std::fs::read(&source).expect("source");
+        let v = edit_reply(
+            edit(&source, &s.sketch, &s.version, &request_path, &destination)
+                .output()
+                .expect("edit"),
+            2,
+        );
+        let message = v["error"]["message"].as_str().expect("message");
+        assert!(
+            message.contains("already exists") || message.contains("different files"),
+            "{why}: {message}"
+        );
+        assert_eq!(entries(d.path()), names, "{why}");
+        assert_eq!(std::fs::read(&source).expect("source"), bytes, "{why}");
+    }
+    assert_eq!(std::fs::read(&taken).expect("taken"), b"keep");
+    // A constrained solid Sketch is outside the class: not offered, refused.
+    let constrained = d.path().join("constrained.fcad");
+    let labels = write_solid_document(&constrained, &CYLINDER, Some(3));
+    rewrite_sketch(&constrained, |sketch| {
+        sketch
+            .constraints
+            .push(ferritecad_document::SketchConstraint {
+                id: StableEntityId::new(),
+                rule: ferritecad_document::SketchConstraintRule::Horizontal {
+                    a: ferritecad_document::SketchPointRef::new(
+                        labels[0],
+                        ferritecad_document::SketchPointSelector::Start,
+                    ),
+                    b: ferritecad_document::SketchPointRef::new(
+                        labels[0],
+                        ferritecad_document::SketchPointSelector::End,
+                    ),
+                },
+            });
+    });
+    let c = inspect(&constrained);
+    assert_eq!(c["sketches"][0]["editable"], false);
+    let ids: Vec<String> = labels.iter().map(ToString::to_string).collect();
+    write_edit(&request_path, &ids, &CYLINDER);
+    let names = entries(d.path());
+    let bytes = std::fs::read(&constrained).expect("constrained");
+    let v = edit_reply(
+        edit(
+            &constrained,
+            c["sketches"][0]["sketch_id"].as_str().expect("id"),
+            c["content_version"].as_str().expect("version"),
+            &request_path,
+            &out,
+        )
+        .output()
+        .expect("edit"),
+        2,
+    );
+    let message = v["error"]["message"].as_str().expect("message");
+    assert!(message.contains("unconstrained"), "{message}");
+    assert_eq!(entries(d.path()), names);
+    assert_eq!(std::fs::read(&constrained).expect("constrained"), bytes);
     // And a bored part may not become solid.
     let bushing = d.path().join("bushing.fcad");
     request(&input, &BUSHING);

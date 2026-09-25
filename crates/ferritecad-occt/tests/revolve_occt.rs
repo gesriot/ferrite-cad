@@ -467,6 +467,22 @@ fn native_axis_closed_requests_are_checked_not_trusted() {
             "{stated:?}: {error}"
         );
     }
+    // A history that also files a real face under the axis Line — a face of
+    // this solid, already another Line's — is a false name, refused as such.
+    let mut forged = result.clone();
+    let face = result
+        .history
+        .generated(HistoryInput::Segment(labels[0]))
+        .next()
+        .expect("a face");
+    forged
+        .history
+        .record_generated(HistoryInput::Segment(labels[3]), face);
+    let error = ferritecad_topology::TopologyMap::new()
+        .record_revolve(producer, solid.profile(), Some(labels[3]), &forged)
+        .expect_err("a face named for the axis Line")
+        .to_string();
+    assert!(error.contains("reported a face for axis Line"), "{error}");
     kernel.release(result.shape);
     // A label from another profile is refused before any kernel work.
     let (plain, _) = request(&cylinder).expect("request");
