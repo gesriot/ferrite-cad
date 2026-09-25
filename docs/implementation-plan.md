@@ -3528,3 +3528,13 @@ blocks carry `bounds_mm` and a typed `boundary`. The UI and the recipe read
 that same boundary. [Contract and recipe](polygon-cut-history.md),
 [verification](polygon-cut-history-verification.md).
 
+Independent review completed native, genuine stub, mixed OCCT/no-solver and
+guarded macOS GUI checks. The L-profile scenario covered notch/reflex/edge
+refusals, Undo/Redo, Save Cancel, publication/Open, Cut/base-coordinate/base-height
+edits and a refusal naming the obstructed Cut. Four GUI/CLI STL and FBX pairs
+are byte-identical; three edit pairs have equal SQL except `modified_at`.
+The viewer exited normally at 207.423 MiB peak, pressure normal and swap 0.
+The original OOM cause remains unproved. Exact implementation-head CI logs
+confirm 193 distinct required test names and 68 ufbx reads per OS. Review also
+corrected the contract's explanation of infinite-line over-refusal; product
+code needed no change. Full evidence and limits are in the verification record.

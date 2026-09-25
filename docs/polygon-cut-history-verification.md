@@ -133,3 +133,104 @@ before apply equals after restore), positives rerun green:
 * GUI, macOS and Windows execution — CI and the manual macOS scenario.
 * No FFI, schema, capability or cache-protocol change was made, so none was
   verified.
+
+## Independent macOS review — 2026-09-25
+
+Reviewed implementation head `f0a78b13aefc9a17cb8243abcae9ca8b3bd45179`
+against `9d224d7eecf439b76db3c8c25d644bc1de04c94b`. Both implementation commits
+have the repository owner's author/committer identity and no AI coauthor
+trailers. No blocking product defect was found. The contract's explanation of
+infinite supporting lines was corrected: they can over-refuse a disk near a
+reflex vertex; finite segments measure the actual wall. Product sources,
+fixtures, dependencies and workflow definitions are unchanged by this review.
+
+### Local execution
+
+Fresh release CLI/viewer, existing pinned OCCT 8.0.1 and PlaneGCS, sequential
+builds with one job; existing native/stub targets reused. The native selection
+ran **652 tests**: document/topology/eval/jobs 520, CLI 82, app Cut 11, edit
+worker 9 and Sketch 30. Two additional harness passes are explicitly N/A tests
+for a build without the solver; one old timing benchmark remained ignored.
+No geometry gate was credited through a skip. `fmt`, workspace release
+`clippy --all-targets --all-features -- -D warnings`, licence headers,
+export boundary and whitespace checks passed.
+
+The genuine stub has `OpenCASCADE_DIR-NOTFOUND` in CMakeCache and no libTK or
+PlaneGCS imports in `otool -L`: 35 kernel-free tests executed (polygon discovery,
+old consumer, 28 Cut document tests, 5 boundary tests). The mixed OCCT/no-solver
+build executed the exact sloped/winding/translation gate without a skip; its
+imports contain OCCT and no PlaneGCS. The full native binaries were rebuilt
+afterward. No native dependency was rebuilt from source.
+
+The Markdown recipe was extracted and executed with the staged CLI and pinned
+ufbx: counts 1, 2 and 16, sloped profiles and `FCAD_26I_RECIPE_OK` passed.
+The actual previous bundled CLI and current CLI were also compared on the
+same rectangular documents with 0/1/2/3 Cuts, including ThroughAll. Removing
+only the four additive `_v3` blocks leaves identical JSON values and field
+order. The old CLI honestly refuses polygon Cut discovery; current `_v3`
+reports its real boundary. These reads leave the inputs unchanged.
+
+### Actual window and persisted results
+
+A fresh, strictly verified ad-hoc signed `FerriteCAD.app` was staged from the
+reviewed release binaries. Bundled CLI help and viewer solver-info ran with
+loader environment variables unset before the window test. One owned viewer
+ran under `watch-viewer-memory.py`, cap 1536 MiB; no other viewer was launched.
+The GUI used only private temporary models, starting with the documented
+six-Line L-profile (area 1600 mm², height 10 mm).
+
+Observed in the actual window:
+
+* The Cut form states six Lines and 1600 mm². Centres/radii `(40,30)/3`,
+  `(17,17)/4.3`, `(40,17)/4` refuse respectively in the notch, across the reflex
+  vertex and across the concave wall. The saved scene stays accepted.
+* ThroughAll `(10.125,18.625)/2.25` → Apply, then `(45,10)/5` → Apply;
+  Undo/Redo/Undo restores the exact requests. Save Cancel preserves the first
+  draft. Saving `gui-cut.fcad` publishes and asynchronously opens it.
+* Moving the saved Cut into the notch refuses. Moving it to `(10.5,18.5)`
+  publishes/opens `gui-moved.fcad` with the same Cut identities.
+* Moving the two inner-wall vertices from x20 to x12 refuses and names the
+  affected Cut UUID; x21 publishes/opens `gui-wider.fcad`. The tool stays at
+  its absolute coordinates. Base height 13 publishes/opens `gui-tall.fcad`.
+* The final model exports through the actual STL and FBX UI actions. The
+  window and title show the accepted file at each step.
+
+All four GUI results were cold rebuilt and compared with independently
+requested CLI copies: STL/FBX bytes match in every pair. The three edits have
+identical SQL except `meta.modified_at`; separate source-to-copy allowlists
+confirm only the intended object payload/hash changes. The independent add
+allocates new Cut UUIDs, so its whole database is not called byte-identical.
+The eight FBX files pass pinned ufbx (`6 checks, 0 failures` each).
+
+The independent binary STL parser checks directed-edge closure/orientation,
+caps over the real L rather than its notch, and a bore reaching both z0 and
+z13 after the height change. Final STL: 216 triangles, 10884 bytes, measured
+volume 20853.833899 mm³ versus analytic 20853.243933 mm³, within the explicitly
+derived tessellation band (0.01 mm linear, 0.5 rad angular deflection). The
+comparison does not label the mesh volume as an exact B-Rep measurement.
+
+Viewer PID 8403: peak physical footprint **207.423 MiB**, pressure normal,
+swap 0 throughout, exit 0, no watchdog abort. After Quit only the process/log
+was checked; no CUA query relaunched the viewer. One clipboard-paste timeout
+occurred before input and was recovered using normal text entry. The previous
+OOM cause remains unknown. Windows/Linux windowed GUI was not exercised.
+
+### Remote evidence and reproducibility
+
+Implementation head CI: **15/15 checks, 3/3 workflows success**. Independent
+job-log audit found all **193 distinct required test names** on each OS,
+including both native and mixed executions of the new sloped-profile test,
+and **68 pinned ufbx reads per OS**, no reader failures. Repeated executions
+of existing tests are not counted as additional distinct gates. This is
+evidence for the implementation SHA above, not a claim that a later review or
+merge SHA has already run. Publication records carry their own check state.
+
+* [CI](https://github.com/gesriot/ferrite-cad/actions/runs/36076669282)
+* [Combined runtime](https://github.com/gesriot/ferrite-cad/actions/runs/36076640176)
+* [PlaneGCS pin](https://github.com/gesriot/ferrite-cad/actions/runs/36076640156)
+
+Local review scripts, logs, GUI files, SQL/export comparisons and memory
+samples: `/private/tmp/ferrite-26i-review/`; a copy is retained in the task's
+artifact directory. The GUI protocol supplements the cloud/headless proofs.
+The large STEP/partial-FBX campaign was read from exact-head CI rather than
+duplicated locally. No source fixtures or foreign worktrees were modified.

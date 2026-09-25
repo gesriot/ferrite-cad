@@ -59,9 +59,10 @@ A tool disk (centre `c`, radius `r`) is inside the part iff **both**:
 is connected, contains an interior point, and meets no segment. Not
 allowed, and each is a refusal rather than an approximation: bounding-box-only
 tests, centre-only tests, distances to infinite supporting lines (which would
-let a disk poke through a reflex vertex of an L), and any epsilon shift of the
-geometry. The rule is winding- and translation-invariant: it uses only
-relative vectors, and orientation enters nowhere. Equality with the clearance
+reject valid disks near a reflex vertex by treating a wall's extension as part
+of the wall), and any epsilon shift of the geometry. The rule does not depend
+on winding or translation; segment distances use relative vectors and the
+crossing test is independent of orientation. Equality with the clearance
 is refused (strictly more is required), as it always was.
 
 A refusal names what failed: the centre outside the part, or the closest
