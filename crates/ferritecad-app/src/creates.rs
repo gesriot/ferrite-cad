@@ -1077,6 +1077,13 @@ pub(crate) mod tests {
                     ObjectPayload::Body(body) => {
                         format!("body tipped by {:?}", body.tip_feature.map(name_of))
                     }
+                    ObjectPayload::Revolve(revolve) => format!(
+                        "revolve of {} about {:?} by {:?} operation={:?}",
+                        name_of(revolve.profile),
+                        revolve.axis,
+                        revolve.extent,
+                        revolve.operation,
+                    ),
                     other => format!("{other:?}"),
                 };
                 (
@@ -1128,6 +1135,9 @@ pub(crate) mod tests {
                     ),
                     SemanticRole::ExtrudeSide { profile_segment } => {
                         format!("side of {}", segment_of(profile_segment))
+                    }
+                    SemanticRole::RevolveFace { profile_segment } => {
+                        format!("face turned from {}", segment_of(profile_segment))
                     }
                     ref other => format!("{other:?}"),
                 };

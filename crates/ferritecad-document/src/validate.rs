@@ -435,6 +435,15 @@ fn check_semantic_references(
                 }
             }
         }
+        ObjectPayload::Revolve(revolve) => {
+            require(
+                revolve.profile,
+                DependencyRole::Profile,
+                ObjectKind::Sketch,
+                "revolve",
+                report,
+            );
+        }
         ObjectPayload::Body(body) => {
             if let Some(tip) = body.tip_feature {
                 match by_id.get(&tip) {

@@ -46,13 +46,19 @@ pub mod mock;
 pub use context::{CancelToken, OperationContext, ProgressSink};
 pub use handle::{FaceSurface, SessionId, ShapeHandle, SubShapeHandle, SubShapeKind};
 pub use identity::KernelIdentity;
-pub use kernel::{GeometryKernel, cut_cache_key, extrude_cache_key, tessellation_cache_key};
+pub use kernel::{
+    GeometryKernel, cut_cache_key, extrude_cache_key, revolve_cache_key, tessellation_cache_key,
+};
 pub use profile::{
     PlanarPoint, Profile, ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane,
 };
 pub use refusal::TessellationRefusal;
-pub use request::{CutRequest, ExtrudeExtent, ExtrudeRequest, TessellationParams};
+pub use request::{
+    CutRequest, ExtrudeExtent, ExtrudeRequest, RevolveAxis, RevolveRequest, RevolveTurn,
+    TessellationParams,
+};
 pub use result::{
     ArchiveSlot, BrepBlob, CarriedOutcome, CutResult, ExtrudeResult, History, HistoryInput, Mesh,
     MeshEdgeRange, MeshEdges, MeshFaceRange, MeshVertexRange, MeshVertices, OperationResult,
+    RevolveResult,
 };

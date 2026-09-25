@@ -102,6 +102,45 @@ pub fn resolve(map: &TopologyMap, reference: &TopologyRef) -> Result<Vec<SubShap
             }
         }
 
+        SemanticRole::RevolveFace { profile_segment } => {
+            require_kind(reference, EntityKind::Face, "a face of revolution")?;
+
+            // Only a revolution's own faces. An extrusion's sides are filed
+            // elsewhere, so a Revolve reference against an Extrude finds
+            // nothing here and is refused, never answered with a swept face.
+            let faces: Vec<SubShapeHandle> = map
+                .feature(reference.producer_feature)
+                .map(|names| names.revolved_face(*profile_segment).collect())
+                .unwrap_or_default();
+
+            match reference.selection {
+                SelectionRule::Exact => exactly_one(
+                    reference,
+                    faces,
+                    &format!("the face turned from Line {profile_segment}"),
+                ),
+                SelectionRule::AllDerivedFrom { ancestor } => {
+                    if ancestor != *profile_segment {
+                        return Err(CadError::input(format!(
+                            "topology reference {} names the face turned from Line \
+                             {profile_segment} but selects everything derived from {ancestor}",
+                            reference.id
+                        )));
+                    }
+                    if faces.is_empty() {
+                        return Err(CadError::topology(format!(
+                            "topology reference {} selects every face turned from Line \
+                             {ancestor}, and this rebuild turned none; the Line is gone or the \
+                             producer is not a revolution",
+                            reference.id
+                        )));
+                    }
+                    Ok(faces)
+                }
+                ref other => Err(unknown_rule(reference, other)),
+            }
+        }
+
         SemanticRole::ExtrudeCapEdge {
             side,
             profile_segment,

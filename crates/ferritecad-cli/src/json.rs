@@ -37,6 +37,7 @@ pub enum Operation {
     EditCircularCut,
     Create,
     CreateSketchExtrude,
+    CreateSketchRevolve,
     CreateCircleExtrude,
     CreateAnnularExtrude,
     ExportStl,
@@ -99,6 +100,82 @@ pub struct Inspection {
     features: Vec<Feature>,
     bodies: Vec<Body>,
     sketches: Vec<Sketch>,
+    /// Every saved Revolve (§27A), additive. Not a feature entry: `features`
+    /// keeps listing Extrudes only, so no consumer of that array can take a
+    /// Revolve for one.
+    revolves: Vec<RevolveDiscovery>,
+}
+
+/// One saved Revolve, as the pinned reading found it. Nothing edits it yet.
+#[derive(Serialize)]
+struct RevolveDiscovery {
+    feature_id: ObjectId,
+    name: Option<String>,
+    body_id: Option<ObjectId>,
+    profile_sketch_id: ObjectId,
+    plane_id: Option<ObjectId>,
+    axis: &'static str,
+    extent: &'static str,
+    operation: &'static str,
+    profile: RevolveProfile,
+}
+
+#[derive(Serialize)]
+struct RevolveProfile {
+    /// Whether the stored profile is the class this build turns.
+    available: bool,
+    refusal: Option<String>,
+    /// The Lines in stored order, with their saved identities; `null` when the
+    /// profile holds anything else.
+    segments: Option<Vec<RevolveSegment>>,
+}
+
+#[derive(Serialize)]
+struct RevolveSegment {
+    curve_id: StableEntityId,
+    start_mm: [f64; 2],
+    end_mm: [f64; 2],
+}
+
+impl From<ferritecad_document::RevolveChoice> for RevolveDiscovery {
+    fn from(r: ferritecad_document::RevolveChoice) -> Self {
+        Self {
+            feature_id: r.feature,
+            name: r.name,
+            body_id: r.body,
+            profile_sketch_id: r.profile_sketch,
+            plane_id: r.plane,
+            axis: match r.axis {
+                ferritecad_document::RevolveAxis::SketchY => "sketch_y",
+                _ => "unknown",
+            },
+            extent: match r.extent {
+                ferritecad_document::RevolveExtent::FullTurn => "full_turn",
+                _ => "unknown",
+            },
+            operation: match r.operation {
+                ferritecad_document::SolidOperation::NewBody => "new_body",
+                ferritecad_document::SolidOperation::Add => "add",
+                ferritecad_document::SolidOperation::Cut => "cut",
+                ferritecad_document::SolidOperation::Intersect => "intersect",
+                _ => "unknown",
+            },
+            profile: RevolveProfile {
+                available: r.profile_refusal.is_none(),
+                refusal: r.profile_refusal,
+                segments: r.segments.map(|lines| {
+                    lines
+                        .into_iter()
+                        .map(|l| RevolveSegment {
+                            curve_id: l.curve_id,
+                            start_mm: l.start_mm,
+                            end_mm: l.end_mm,
+                        })
+                        .collect()
+                }),
+            },
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -879,6 +956,11 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         .into_iter()
         .map(|c| (c.feature, c))
         .collect();
+    let revolves = source
+        .revolves
+        .into_iter()
+        .map(RevolveDiscovery::from)
+        .collect();
     let result = Inspection {
         document_id: source.version.document_id,
         content_version: source.version.content,
@@ -994,6 +1076,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 })
                 .collect()
         },
+        revolves,
     };
     document.close()?;
     Ok(result)

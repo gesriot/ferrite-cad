@@ -20,66 +20,7 @@ impl PolygonExtrusion {
 
     pub fn new(points: Vec<[f64; 2]>, height: f64) -> Result<Self> {
         let height = ExtrudeExtent::blind(height)?.total_length();
-        if points.len() < 3 || points.len() > Self::MAX_POINTS {
-            return Err(CadError::input("polygon needs 3..256 distinct vertices"));
-        }
-        let points = points
-            .into_iter()
-            .map(|[x, y]| Point2::new(x, y))
-            .collect::<Result<Vec<_>>>()?;
-        // A bounded first editor. Besides making O(n²) checks cheap, this range
-        // keeps orientation arithmetic away from overflow; it is not a kernel limit.
-        if height > 1e6 || points.iter().any(|p| p.x.abs() > 1e6 || p.y.abs() > 1e6) {
-            return Err(CadError::input(
-                "polygon coordinates and height must fit within 1000000 mm",
-            ));
-        }
-        let eps = Self::TOLERANCE_MM;
-        let n = points.len();
-        for i in 0..n {
-            for j in i + 1..n {
-                if distance(points[i], points[j]) <= eps {
-                    return Err(CadError::input(
-                        "polygon has repeated vertices or a zero-length edge; do not repeat the closing vertex",
-                    ));
-                }
-            }
-            let (a, b, c) = (points[i], points[(i + 1) % n], points[(i + 2) % n]);
-            if cross(a, b, c).abs() <= eps * distance(a, b).max(distance(b, c)) {
-                return Err(CadError::input(
-                    "polygon has a collinear or backtracking vertex within 0.000001 mm",
-                ));
-            }
-        }
-        for i in 0..n {
-            for j in i + 1..n {
-                if j == i + 1 || (i == 0 && j == n - 1) {
-                    continue;
-                }
-                let (a, b, c, d) = (
-                    points[i],
-                    points[(i + 1) % n],
-                    points[j],
-                    points[(j + 1) % n],
-                );
-                if intersects(a, b, c, d, eps) {
-                    return Err(CadError::input(
-                        "polygon edges intersect or touch within 0.000001 mm",
-                    ));
-                }
-            }
-        }
-        // Triangulated signed area about the first vertex avoids cancellation
-        // caused solely by translating a small profile far from the origin.
-        let twice_area: f64 = (1..n - 1)
-            .map(|i| cross(points[0], points[i], points[i + 1]))
-            .sum();
-        let perimeter: f64 = (0..n)
-            .map(|i| distance(points[i], points[(i + 1) % n]))
-            .sum();
-        if twice_area.abs() <= eps * perimeter {
-            return Err(CadError::input("polygon has zero or tolerance-sized area"));
-        }
+        let points = simple_line_polygon(points, Some(height))?;
         Ok(Self { points, height })
     }
     pub fn points(&self) -> &[Point2] {
@@ -89,6 +30,139 @@ impl PolygonExtrusion {
         self.height
     }
 }
+/// The one simplicity policy for an unconstrained closed Line polygon, in mm.
+///
+/// Shared by every creation that takes such a profile, so an extrusion and a
+/// revolution accept and refuse exactly the same drawings for exactly the same
+/// reasons, in the same order. `height` is the extrusion's validated height,
+/// which shares the coordinate bound; a revolution has none.
+pub(crate) fn simple_line_polygon(
+    points: Vec<[f64; 2]>,
+    height: Option<f64>,
+) -> Result<Vec<Point2>> {
+    if points.len() < 3 || points.len() > PolygonExtrusion::MAX_POINTS {
+        return Err(CadError::input("polygon needs 3..256 distinct vertices"));
+    }
+    let points = points
+        .into_iter()
+        .map(|[x, y]| Point2::new(x, y))
+        .collect::<Result<Vec<_>>>()?;
+    // A bounded first editor. Besides making O(n²) checks cheap, this range
+    // keeps orientation arithmetic away from overflow; it is not a kernel limit.
+    if height.is_some_and(|h| h > 1e6) || points.iter().any(|p| p.x.abs() > 1e6 || p.y.abs() > 1e6)
+    {
+        return Err(CadError::input(match height {
+            Some(_) => "polygon coordinates and height must fit within 1000000 mm",
+            None => "polygon coordinates must fit within 1000000 mm",
+        }));
+    }
+    let eps = PolygonExtrusion::TOLERANCE_MM;
+    let n = points.len();
+    for i in 0..n {
+        for j in i + 1..n {
+            if distance(points[i], points[j]) <= eps {
+                return Err(CadError::input(
+                    "polygon has repeated vertices or a zero-length edge; do not repeat the closing vertex",
+                ));
+            }
+        }
+        let (a, b, c) = (points[i], points[(i + 1) % n], points[(i + 2) % n]);
+        if cross(a, b, c).abs() <= eps * distance(a, b).max(distance(b, c)) {
+            return Err(CadError::input(
+                "polygon has a collinear or backtracking vertex within 0.000001 mm",
+            ));
+        }
+    }
+    for i in 0..n {
+        for j in i + 1..n {
+            if j == i + 1 || (i == 0 && j == n - 1) {
+                continue;
+            }
+            let (a, b, c, d) = (
+                points[i],
+                points[(i + 1) % n],
+                points[j],
+                points[(j + 1) % n],
+            );
+            if intersects(a, b, c, d, eps) {
+                return Err(CadError::input(
+                    "polygon edges intersect or touch within 0.000001 mm",
+                ));
+            }
+        }
+    }
+    // Triangulated signed area about the first vertex avoids cancellation
+    // caused solely by translating a small profile far from the origin.
+    let twice_area: f64 = (1..n - 1)
+        .map(|i| cross(points[0], points[i], points[i + 1]))
+        .sum();
+    let perimeter: f64 = (0..n)
+        .map(|i| distance(points[i], points[(i + 1) % n]))
+        .sum();
+    if twice_area.abs() <= eps * perimeter {
+        return Err(CadError::input("polygon has zero or tolerance-sized area"));
+    }
+    Ok(points)
+}
+
+/// Shared UI/CLI validity policy for one full-turn revolution, in mm.
+///
+/// One unconstrained simple closed Line polygon on the sketch's XY plane,
+/// turned once — exactly 2π — about the sketch's local Y axis through its
+/// origin. On the canvas X is the radial distance and Y the axial coordinate.
+/// The polygon rules are [`PolygonExtrusion`]'s own; what is added is the side
+/// of the axis: every vertex lies strictly on the positive radial side, by more
+/// than [`Self::AXIS_CLEARANCE_MM`]. Every edge is a straight segment between
+/// two such vertices, so the profile then neither touches nor crosses the axis.
+/// A solid shaft that closes on the axis, partial angles and other axes are
+/// later slices, and are refused here rather than approximated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FullTurnRevolution {
+    points: Vec<Point2>,
+}
+
+impl FullTurnRevolution {
+    /// How far every vertex must stay from the axis, in mm. The polygon
+    /// policy's own tolerance: a vertex nearer than this is on the axis.
+    pub const AXIS_CLEARANCE_MM: f64 = PolygonExtrusion::TOLERANCE_MM;
+
+    pub fn new(points: Vec<[f64; 2]>) -> Result<Self> {
+        let points = simple_line_polygon(points, None)?;
+        if let Some((index, p)) = points
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.x <= Self::AXIS_CLEARANCE_MM)
+        {
+            return Err(CadError::input(format!(
+                "vertex {} at ({}, {}) mm is not strictly on the positive radial side: a full-turn \
+                 revolution about the sketch Y axis needs every x > {} mm, so the profile neither \
+                 touches nor crosses the axis",
+                index + 1,
+                p.x,
+                p.y,
+                Self::AXIS_CLEARANCE_MM
+            )));
+        }
+        Ok(Self { points })
+    }
+    pub fn points(&self) -> &[Point2] {
+        &self.points
+    }
+    /// Pappus: the swept volume, 2π × area × centroid radius, in mm³.
+    pub fn volume_mm3(&self) -> f64 {
+        let p = &self.points;
+        let n = p.len();
+        // ∮ x² dy / 2 = ∫∫ x dA, independent of translation along Y.
+        let moment: f64 = (0..n)
+            .map(|i| {
+                let (a, b) = (p[i], p[(i + 1) % n]);
+                (b.y - a.y) * (a.x * a.x + a.x * b.x + b.x * b.x) / 6.0
+            })
+            .sum();
+        2.0 * std::f64::consts::PI * moment.abs()
+    }
+}
+
 fn distance(a: Point2, b: Point2) -> f64 {
     (a.x - b.x).hypot(a.y - b.y)
 }
@@ -407,5 +481,74 @@ mod tests {
             ferritecad_types::Tolerance::DEFAULT_LINEAR,
             "concentricity is the kernel's point tolerance, not a second opinion"
         );
+    }
+
+    #[test]
+    fn a_full_turn_is_pappus_in_either_winding_and_any_axial_shift() {
+        use std::f64::consts::PI;
+        for (points, volume) in [
+            (
+                vec![[4., 0.], [10., 0.], [10., 15.], [4., 15.]],
+                PI * 84. * 15.,
+            ),
+            (
+                vec![
+                    [4., 0.],
+                    [10., 0.],
+                    [10., 5.],
+                    [7., 5.],
+                    [7., 15.],
+                    [4., 15.],
+                ],
+                750. * PI,
+            ),
+            (vec![[4., 0.], [10., 0.], [7., 15.], [4., 15.]], 855. * PI),
+        ] {
+            let shifted: Vec<_> = points.iter().map(|[x, y]| [*x, y - 3.375]).collect();
+            let mut reversed = shifted.clone();
+            reversed.reverse();
+            for p in [points.clone(), shifted, reversed] {
+                let turn = FullTurnRevolution::new(p.clone()).expect("a turn");
+                assert_eq!(turn.points().len(), p.len());
+                assert!((turn.volume_mm3() - volume).abs() < 1e-9 * volume, "{p:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_full_turn_refuses_the_axis_and_whatever_the_polygon_refuses() {
+        let clear = FullTurnRevolution::AXIS_CLEARANCE_MM;
+        for p in [
+            vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
+            vec![[-2., 0.], [10., 0.], [10., 15.], [-2., 15.]],
+            vec![[clear, 0.], [10., 0.], [10., 15.]],
+            vec![[-4., 0.], [-10., 0.], [-10., 15.], [-4., 15.]],
+        ] {
+            let error = FullTurnRevolution::new(p.clone()).expect_err("axis");
+            assert!(
+                error
+                    .to_string()
+                    .contains("not strictly on the positive radial side"),
+                "{p:?}: {error}"
+            );
+        }
+        assert!(FullTurnRevolution::new(vec![[clear * 2., 0.], [10., 0.], [10., 15.]]).is_ok());
+        for p in [
+            vec![[4., 0.], [10., 0.], [4., 0.]],
+            vec![[4., 0.], [5., 0.], [6., 0.]],
+            vec![[4., 0.], [6., 2.], [4., 2.], [6., 0.]],
+            vec![[4., 0.], [f64::NAN, 0.], [4., 2.]],
+            vec![[4., 0.], [2e6, 0.], [4., 2.]],
+            vec![[4., 0.], [10., 0.]],
+        ] {
+            assert!(FullTurnRevolution::new(p.clone()).is_err(), "{p:?}");
+        }
+        let many: Vec<_> = (0..257)
+            .map(|i| {
+                let a = f64::from(i) * std::f64::consts::TAU / 257.;
+                [20. + 5. * a.cos(), 5. * a.sin()]
+            })
+            .collect();
+        assert!(FullTurnRevolution::new(many).is_err());
     }
 }

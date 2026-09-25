@@ -45,6 +45,12 @@ The part under those Cuts may be any simple, unconstrained Line polygon of
 3–256 sides, concave L-shapes and sloped walls included: a tool must clear the
 real outline, not its bounding box, and editing the base checks every tool.
 [Polygon contract and recipe](docs/polygon-cut-history.md).
+A simple Line polygon drawn entirely at X > 0 can instead be turned one full
+turn about the sketch Y axis: **Feature: Revolve 360°** in the same sketch
+window, or `create-sketch-revolve`. The new Body is a real revolution and each
+Line names its own face; touching or crossing the axis, partial angles and
+editing are not supported yet.
+[Contract and recipe](docs/full-turn-revolve.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

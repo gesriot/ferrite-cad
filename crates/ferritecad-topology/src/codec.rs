@@ -97,6 +97,9 @@ const TAG_CARRIED_SIDE: u16 = 11;
 const TAG_ORIGIN_START_CAP: u16 = 12;
 const TAG_ORIGIN_END_CAP: u16 = 13;
 const TAG_ORIGIN_SIDE: u16 = 14;
+/// The face of revolution one Line raised (§27A). A new tag rather than
+/// `TAG_SIDE`: a turned face must never come back as an extrusion side.
+const TAG_REVOLVED_FACE: u16 = 15;
 
 impl ArchivedFeature {
     /// Writes the archive out as bytes.
@@ -132,6 +135,10 @@ impl ArchivedFeature {
             match name {
                 BoundName::StartCap => payload.extend_from_slice(&TAG_START_CAP.to_le_bytes()),
                 BoundName::EndCap => payload.extend_from_slice(&TAG_END_CAP.to_le_bytes()),
+                BoundName::RevolvedFace { profile_segment } => {
+                    payload.extend_from_slice(&TAG_REVOLVED_FACE.to_le_bytes());
+                    payload.extend_from_slice(&profile_segment.to_bytes());
+                }
                 BoundName::Side { profile_segment } => {
                     payload.extend_from_slice(&TAG_SIDE.to_le_bytes());
                     payload.extend_from_slice(&profile_segment.to_bytes());
@@ -332,6 +339,9 @@ impl ArchivedFeature {
                 TAG_START_CAP => BoundName::StartCap,
                 TAG_END_CAP => BoundName::EndCap,
                 TAG_SIDE => BoundName::Side {
+                    profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
+                },
+                TAG_REVOLVED_FACE => BoundName::RevolvedFace {
                     profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
                 },
                 TAG_START_CAP_EDGE => BoundName::StartCapEdge {

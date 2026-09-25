@@ -27,7 +27,8 @@
 
 use ferritecad_document::CacheStore;
 use ferritecad_kernel::{
-    ExtrudeRequest, KernelIdentity, OperationContext, cut_cache_key, extrude_cache_key,
+    ExtrudeRequest, KernelIdentity, OperationContext, RevolveRequest, cut_cache_key,
+    extrude_cache_key, revolve_cache_key,
 };
 use ferritecad_topology::{ARCHIVE_CACHE_KIND, ArchivedFeature};
 use ferritecad_types::{CanonicalHasher, ContentHash, ObjectId, Result};
@@ -39,6 +40,20 @@ pub fn extrude_archive_key(
     context: &OperationContext,
 ) -> ContentHash {
     extrude_cache_key(kernel, request, context)
+}
+
+/// Where a revolution's archive lives in the sidecar.
+///
+/// The kernel identity, the tolerance, the resolved profile with its Line
+/// labels, the axis and the angle, under a domain of its own; see
+/// [`revolve_cache_key`]. A profile that differs in any coordinate or label is
+/// another entry.
+pub fn revolve_archive_key(
+    kernel: &KernelIdentity,
+    request: &RevolveRequest,
+    context: &OperationContext,
+) -> ContentHash {
+    revolve_cache_key(kernel, request, context)
 }
 
 /// Where a cut's archive lives in the sidecar.

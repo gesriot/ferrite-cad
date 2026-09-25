@@ -43,11 +43,11 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{AnnularExtrusion, CircleExtrusion, PolygonExtrusion};
+use crate::{AnnularExtrusion, CircleExtrusion, FullTurnRevolution, PolygonExtrusion};
 use ferritecad_document::{
     Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, EntityKind,
-    Expression, Extrude, ObjectPayload, Point2, SelectionRule, SemanticRole, Sketch, SketchCurve,
-    SketchGeometry, SolidOperation, TopologyRef,
+    Expression, Extrude, ObjectPayload, Point2, Revolve, RevolveAxis, RevolveExtent, SelectionRule,
+    SemanticRole, Sketch, SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
 };
 use ferritecad_kernel::{GeometryKernel, OperationContext, ProgressSink};
 use ferritecad_types::{DocumentId, ObjectId, Result, StableEntityId, Transform, Unit};
@@ -116,6 +116,10 @@ pub enum NewDocument {
     /// its own identity; the hole is a loop of the one profile rather than a
     /// second solid or an export-time mask.
     AnnularExtrude(AnnularExtrusion),
+    /// A validated XY Line polygon turned one full turn about the sketch's Y
+    /// axis (§27A), cold-checked before publication on the same route. The
+    /// document stores the Revolve's intent, never an equivalent extrusion.
+    SketchRevolve(FullTurnRevolution),
 }
 
 impl NewDocument {
@@ -129,7 +133,10 @@ impl NewDocument {
     pub fn needs_kernel(&self) -> bool {
         match self {
             Self::Empty | Self::SamplePlate(_) => false,
-            Self::SketchExtrude(_) | Self::CircleExtrude(_) | Self::AnnularExtrude(_) => true,
+            Self::SketchExtrude(_)
+            | Self::CircleExtrude(_)
+            | Self::AnnularExtrude(_)
+            | Self::SketchRevolve(_) => true,
         }
     }
 }
@@ -378,6 +385,7 @@ fn build_checked(
         NewDocument::AnnularExtrude(annular) => {
             annulus = Some(populate_annulus(&mut document, annular, "Body")?)
         }
+        NewDocument::SketchRevolve(revolution) => populate_revolve(&mut document, revolution)?,
     }
     check(&document)?;
     document.close()?;
@@ -542,6 +550,106 @@ fn populate_profile(
             fallback_signature: None,
         })?;
 
+        Ok(())
+    })
+}
+
+/// Puts one full-turn revolution into an empty document.
+///
+/// The same four objects a drawn extrusion has — datum plane, Sketch, feature,
+/// Body — with a [`Revolve`] as the feature: the profile, the named axis and
+/// the named full turn. One `RevolveFace` reference per Line names the face
+/// that Line turns into, by the Line's own identity; the cold check before
+/// publication requires every one of them to resolve.
+fn populate_revolve(document: &mut Document, revolution: &FullTurnRevolution) -> Result<()> {
+    let plane = ObjectId::new();
+    let sketch = ObjectId::new();
+    let revolve = ObjectId::new();
+    let body = ObjectId::new();
+    let corners = revolution.points();
+    let curves: Vec<SketchCurve> = corners
+        .iter()
+        .enumerate()
+        .map(|(index, start)| SketchCurve {
+            id: StableEntityId::new(),
+            construction: false,
+            geometry: SketchGeometry::Line {
+                start: *start,
+                end: corners[(index + 1) % corners.len()],
+            },
+        })
+        .collect();
+
+    document.write(|writer| {
+        writer.put_object(
+            plane,
+            None,
+            0,
+            Some("XY"),
+            &ObjectPayload::DatumPlane(DatumPlane {
+                placement: Transform::IDENTITY,
+            }),
+        )?;
+        writer.put_object(
+            sketch,
+            None,
+            1,
+            Some("Profile"),
+            &ObjectPayload::Sketch(Sketch {
+                plane,
+                curves: curves.clone(),
+                constraints: Vec::new(),
+            }),
+        )?;
+        writer.add_dependency(Dependency {
+            dependent: sketch,
+            dependency: plane,
+            role: DependencyRole::Plane,
+        })?;
+        writer.put_object(
+            revolve,
+            None,
+            2,
+            Some("Revolve1"),
+            &ObjectPayload::Revolve(Revolve {
+                profile: sketch,
+                axis: RevolveAxis::SketchY,
+                extent: RevolveExtent::FullTurn,
+                operation: SolidOperation::NewBody,
+            }),
+        )?;
+        writer.put_object(
+            body,
+            None,
+            3,
+            Some("Body"),
+            &ObjectPayload::Body(Body {
+                tip_feature: Some(revolve),
+            }),
+        )?;
+        writer.add_dependency(Dependency {
+            dependent: revolve,
+            dependency: sketch,
+            role: DependencyRole::Profile,
+        })?;
+        writer.add_dependency(Dependency {
+            dependent: body,
+            dependency: revolve,
+            role: DependencyRole::BodyTip,
+        })?;
+        for curve in &curves {
+            writer.put_topology_ref(&TopologyRef {
+                id: StableEntityId::new(),
+                owner: revolve,
+                producer_feature: revolve,
+                expected_kind: EntityKind::Face,
+                output_role: SemanticRole::RevolveFace {
+                    profile_segment: curve.id,
+                },
+                selection: SelectionRule::AllDerivedFrom { ancestor: curve.id },
+                fallback_signature: None,
+            })?;
+        }
         Ok(())
     })
 }

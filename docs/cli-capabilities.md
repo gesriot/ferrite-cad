@@ -33,6 +33,17 @@ cache hit. Blind↔ThroughAll без потери дна сохраняет им
 недоступны, новые `cut_edit_v3`, `circular_cut_edit_v3`, `base_height_edit_v3`,
 `cut_history_v3` несут `bounds_mm` и типизированный `boundary`.
 
+§27A: `create-sketch-revolve <request.json> -o <new.fcad> [--json]` —
+[полный оборот](full-turn-revolve.md) простого Line-полигона 3..256 вершин без
+constraints вокруг локальной оси Y эскиза. Все точки строго при X > 0;
+касание/пересечение оси, частичный угол, другая ось и несколько контуров
+отказываются (exit 2). Request v1 строгий: `request_version`, `points_mm`,
+`axis:"sketch_y"`, `angle:"full_turn"`. Хранится намерение `feature.revolve`
+с новой capability `feature.revolve.v1`; каждая Line даёт одну грань под своим
+UUID (`RevolveFace`). Сборки до §27A открывают такой документ только для
+чтения. Discovery: новый массив `revolves`; `features` его не содержит, прежние
+редакторы отказываются. Без ядра создание отказывается и ничего не публикует.
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.

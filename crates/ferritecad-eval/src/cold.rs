@@ -36,10 +36,12 @@ use ferritecad_topology::{FeatureNames, TopologyMap, archive_feature, restore_fe
 use ferritecad_types::{CadError, ObjectId, Result};
 
 use crate::cache::{
-    cut_archive_key, extrude_archive_key, load_feature_archive, store_feature_archive,
+    cut_archive_key, extrude_archive_key, load_feature_archive, revolve_archive_key,
+    store_feature_archive,
 };
 use crate::convert::{
     Reach, cut_tool_request, extrude_request, plane_from_datum, profile_from_sketch,
+    revolve_request,
 };
 use crate::document_graph::DocumentGraph;
 use crate::presentation::SketchPresentation;
@@ -473,6 +475,42 @@ fn run<K: GeometryKernel + ?Sized>(
                         state.keys.insert(*id, key);
                     }
                 }
+            }
+
+            // A body started by turning a profile. The same cold and cached
+            // path as a NewBody extrusion: one request, one key, restore or
+            // build, name while the result is whole, store. It records no
+            // reach, so nothing downstream can run ThroughAll against it.
+            ObjectPayload::Revolve(feature) => {
+                let profile = state
+                    .profiles
+                    .get(&feature.profile)
+                    .cloned()
+                    .ok_or_else(|| {
+                        CadError::input(format!(
+                            "revolve {id} reads {}, which produced no profile",
+                            feature.profile
+                        ))
+                    })?;
+                let request = revolve_request(feature, profile)?;
+                let key = revolve_archive_key(kernel.identity(), &request, &scoped);
+                let restored = match cache.as_deref_mut() {
+                    Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
+                    None => false,
+                };
+                if !restored {
+                    let result = kernel.revolve(&request, &scoped)?;
+                    state.owned.push(result.shape);
+                    context.check_cancelled()?;
+                    state
+                        .topology
+                        .record_revolve(*id, request.profile(), &result)?;
+                    state.shapes.insert(*id, result.shape);
+                    if let Some(cache) = cache.as_deref_mut() {
+                        store(kernel, cache, key, *id, state, events);
+                    }
+                }
+                state.keys.insert(*id, key);
             }
 
             ObjectPayload::Body(body) => {

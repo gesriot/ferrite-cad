@@ -3538,3 +3538,52 @@ The original OOM cause remains unproved. Exact implementation-head CI logs
 confirm 193 distinct required test names and 68 ufbx reads per OS. Review also
 corrected the contract's explanation of infinite-line over-refusal; product
 code needed no change. Full evidence and limits are in the verification record.
+
+**§27A — full-turn Revolve / NewBody from a simple Line profile.**
+
+The first vertical Revolve slice. It creates one new Body by turning an
+unconstrained, simple, closed XY polygon of 3–256 Lines exactly once about the
+sketch's local Y axis through the datum origin.
+* **Accepted profiles.** Every vertex must be strictly at X > 1e-6 mm. Either
+  winding, sloped walls, steps and any Y translation are accepted. The shared
+  `simple_line_polygon` check is extracted from `PolygonExtrusion` and reused
+  by `FullTurnRevolution`.
+* **Document.** A new `feature.revolve` payload (`sketch_y`, `full_turn`,
+  `new_body`) under its own capability `feature.revolve.v1`. Older builds keep
+  it verbatim and read-only.
+* **Kernel.** `GeometryKernel::revolve` runs the new bridge entry point
+  `fc_occt_revolve` (an explicit axis and full-turn flag), which calls
+  `BRepPrimAPI_MakeRevol`. Each Line's face is read from the sweep's own
+  history and checked to be one per Line, a face of the solid, unshared, and
+  all faces covered.
+* **Naming.** Faces are stored as `RevolveFace { profile_segment }` and
+  archived as `RevolvedFace` under segment UUIDs. There are no caps, seam
+  names or indices.
+* **Evaluator.** Cold and cached builds share one path, keyed by
+  `revolve_cache_key`.
+* **Entry points.** Everything goes through the shared create job, reached
+  from the sketch window's **Revolve 360°** choice and from
+  `create-sketch-revolve` (strict request v1). `inspect --json` adds a
+  `revolves` array; `features` is unchanged.
+* **Out of scope.** Revolve editing, booleans on it, partial angles, other
+  axes and closing on the axis. This does not complete Revolve or wave 5A.
+
+[Contract and recipe](full-turn-revolve.md),
+[verification](full-turn-revolve-verification.md).
+
+Independent review completed native, genuine stub, mixed OCCT/no-solver and
+watchdog-guarded macOS GUI checks for §27A. Actual GUI covered numeric profile
+entry, axis refusal, Undo/Redo, feature switching, Save Cancel, publication,
+Open and both exports. Same-document GUI/CLI STL and FBX are byte-identical;
+independent creations differ only in their expected FBX Body identity fields.
+Viewer exit 0, peak 206.7355 MiB, swap 0. CI logs independently confirm 208
+required test names and 70 ufbx reads per OS. Review corrected two documentation
+claims; no product-code correction was needed. Details are in the verification.
+
+**§27B — pending: edit the saved full-turn Revolve profile in a new copy.**
+Extend the existing coordinate-edit route to the bounded §27A document class,
+keeping curve/object/reference UUIDs and the Revolve intent. Use the shared
+job from UI and CLI, validate the positive-radius profile again inside the
+writer transaction, cold-rebuild and resolve every saved name before atomic
+publication. Axis/angle changes, adding/removing vertices, constraints,
+booleans and in-place Save remain separate work. Implementation has not begun.

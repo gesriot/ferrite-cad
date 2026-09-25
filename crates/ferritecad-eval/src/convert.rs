@@ -9,12 +9,12 @@
 //! than being approximated into something plausible.
 
 use ferritecad_document::{
-    AnnularExtrusion, DatumPlane, EndCondition, Extrude, Point2, Sketch, SketchCurve,
-    SketchGeometry, SolidOperation,
+    AnnularExtrusion, DatumPlane, EndCondition, Extrude, Point2, Revolve, RevolveAxis,
+    RevolveExtent, Sketch, SketchCurve, SketchGeometry, SolidOperation,
 };
 use ferritecad_kernel::{
     ExtrudeExtent, ExtrudeRequest, PlanarPoint, Profile, ProfileLoop, ProfileSegment,
-    SegmentGeometry, SketchPlane,
+    RevolveRequest, SegmentGeometry, SketchPlane,
 };
 use ferritecad_types::{CadError, ObjectId, Point3, Result, StableEntityId, Vec3};
 
@@ -326,6 +326,54 @@ impl Reach {
             _ => None,
         }
     }
+}
+
+/// Builds a full-turn revolution request from a stored Revolve.
+///
+/// The stored intent is checked against the one class this build evaluates —
+/// a NewBody full turn about the sketch Y axis — and the profile against the
+/// shared domain policy ([`ferritecad_document::FullTurnRevolution`]) before
+/// any kernel sees it. A saved profile the policy refuses is refused here even
+/// if a kernel could build it.
+pub fn revolve_request(feature: &Revolve, profile: Profile) -> Result<RevolveRequest> {
+    if feature.operation != SolidOperation::NewBody {
+        return Err(CadError::unsupported(format!(
+            "revolve operation {:?} needs a boolean, which this slice does not implement",
+            feature.operation
+        )));
+    }
+    let axis = match feature.axis {
+        RevolveAxis::SketchY => ferritecad_kernel::RevolveAxis::PlaneY,
+        other => {
+            return Err(CadError::unsupported(format!(
+                "revolve axis {other:?} is not implemented"
+            )));
+        }
+    };
+    let turn = match feature.extent {
+        RevolveExtent::FullTurn => ferritecad_kernel::RevolveTurn::Full,
+        other => {
+            return Err(CadError::unsupported(format!(
+                "revolve extent {other:?} is not implemented"
+            )));
+        }
+    };
+    if !profile.inner().is_empty() || profile.outer().is_closed_curve() {
+        return Err(CadError::unsupported(
+            "a revolution turns one closed polygon of Lines, without holes",
+        ));
+    }
+    let mut points = Vec::with_capacity(profile.outer().segments().len());
+    for segment in profile.outer().segments() {
+        let SegmentGeometry::Line { start, .. } = segment.geometry else {
+            return Err(CadError::unsupported(
+                "a revolution turns a profile of Lines only",
+            ));
+        };
+        points.push([start.x, start.y]);
+    }
+    ferritecad_document::FullTurnRevolution::new(points)?;
+    Ok(RevolveRequest::new(profile, axis, turn))
 }
 
 /// Builds an extrusion request from a stored feature.

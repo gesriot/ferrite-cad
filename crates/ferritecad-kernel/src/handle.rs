@@ -104,7 +104,12 @@ impl fmt::Display for SubShapeKind {
 pub enum FaceSurface {
     Other,
     Plane,
-    Cylinder { radius: f64 },
+    Cylinder {
+        radius: f64,
+    },
+    /// A cone: what a Line that is neither parallel nor perpendicular to an
+    /// axis of revolution raises.
+    Cone,
 }
 
 /// A face, edge or vertex inside a shape held by a kernel session.

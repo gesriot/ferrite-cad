@@ -309,6 +309,34 @@ bounding box иного контура им не является, поэтом�
 (`counter_clockwise`/`clockwise`) — направление, в котором их нарисовали.
 [Контракт §26I и исполняемый рецепт](polygon-cut-history.md).
 
+## Revolve на полный оборот (§27A)
+
+`ferritecad create-sketch-revolve <request.json> -o <new.fcad> [--json]`.
+Request v1 (`deny_unknown_fields`, не больше 65536 байт):
+
+```json
+{"request_version":1,"points_mm":[[4,0],[10,0],[10,15],[4,15]],"axis":"sketch_y","angle":"full_turn"}
+```
+
+Envelope общий: `operation:"create-sketch-revolve"`, result
+`{destination, document_id}`; exit 0 — опубликовано, 2 — отказ (ничего не
+записано), 7 — отчёт не доставлен после публикации.
+
+`inspect --json` получает аддитивный массив верхнего уровня `revolves`:
+
+```json
+"revolves": [{"feature_id": "…", "name": "Revolve1", "body_id": "…",
+  "profile_sketch_id": "…", "plane_id": "…",
+  "axis": "sketch_y", "extent": "full_turn", "operation": "new_body",
+  "profile": {"available": true, "refusal": null,
+              "segments": [{"curve_id": "…", "start_mm": [4.0, 0.0], "end_mm": [10.0, 0.0]}, …]}}]
+```
+
+`features`, `bodies`, `sketches` и их типы не меняются. Revolve не попадает в
+`features`, поэтому прежний потребитель не примет его за Extrude; блоки правки
+тела и эскиза недоступны с отказом. Для документа без Revolve массив пуст.
+[Контракт §27A и исполняемый рецепт](full-turn-revolve.md).
+
 ## Правка сохранённой кольцевой пары (§25M)
 
 `ferritecad edit-annular <source.fcad> --sketch UUID --expect-version HASH

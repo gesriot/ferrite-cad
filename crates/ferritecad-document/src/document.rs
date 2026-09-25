@@ -2234,6 +2234,9 @@ fn required_capabilities_of(role: &SemanticRole) -> Vec<String> {
     ) {
         names.push(crate::TOPOLOGY_CARRIED_FACE_CAPABILITY.to_owned());
     }
+    if matches!(role, SemanticRole::RevolveFace { .. }) {
+        names.push(crate::FEATURE_REVOLVE_CAPABILITY.to_owned());
+    }
     names
 }
 

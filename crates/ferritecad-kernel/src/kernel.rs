@@ -4,8 +4,10 @@ use ferritecad_types::{CanonicalHasher, ContentHash, Result, Transform};
 use crate::context::OperationContext;
 use crate::handle::{ShapeHandle, SubShapeHandle};
 use crate::identity::KernelIdentity;
-use crate::request::{CutRequest, ExtrudeRequest, TessellationParams};
-use crate::result::{ArchiveSlot, BrepBlob, CutResult, ExtrudeResult, Mesh, OperationResult};
+use crate::request::{CutRequest, ExtrudeRequest, RevolveRequest, TessellationParams};
+use crate::result::{
+    ArchiveSlot, BrepBlob, CutResult, ExtrudeResult, Mesh, OperationResult, RevolveResult,
+};
 
 /// The operations FerriteCAD needs from a geometry kernel.
 ///
@@ -41,6 +43,25 @@ pub trait GeometryKernel {
         request: &ExtrudeRequest,
         context: &OperationContext,
     ) -> Result<ExtrudeResult>;
+
+    /// Turns a planar profile about an axis in its plane into a solid.
+    ///
+    /// The result names, through its history, the one face each profile
+    /// segment raised. A kernel that cannot build revolutions refuses with
+    /// [`ferritecad_types::CadError::Unsupported`]; that is the default, so a
+    /// test double never answers with an invented solid. A kernel that can
+    /// must override it.
+    fn revolve(
+        &mut self,
+        request: &RevolveRequest,
+        context: &OperationContext,
+    ) -> Result<RevolveResult> {
+        let _ = (request, context);
+        Err(ferritecad_types::CadError::unsupported(format!(
+            "the {} kernel does not build revolutions",
+            self.identity().id()
+        )))
+    }
 
     /// Removes the material of one shape from another.
     ///
@@ -147,6 +168,23 @@ pub fn extrude_cache_key(
     hasher.finish()
 }
 
+/// The cache key for a revolution under a given kernel and tolerance.
+///
+/// Its own domain, so no revolution can ever share a key with an extrusion of
+/// the same profile.
+pub fn revolve_cache_key(
+    kernel: &KernelIdentity,
+    request: &RevolveRequest,
+    context: &OperationContext,
+) -> ContentHash {
+    let mut hasher = CanonicalHasher::new("kernel.revolve");
+    hasher.algorithm_version(ALGORITHM_VERSION);
+    kernel.feed(&mut hasher);
+    context.tolerance().feed(&mut hasher);
+    request.feed(&mut hasher);
+    hasher.finish()
+}
+
 /// The cache key for a tessellation of an already-keyed shape.
 ///
 /// Takes the shape's own key rather than its handle: a handle is
@@ -229,6 +267,43 @@ mod tests {
         .expect("valid");
 
         ExtrudeRequest::new(profile, ExtrudeExtent::blind(8.0).expect("positive"), false)
+    }
+
+    fn revolution(request: &ExtrudeRequest) -> crate::RevolveRequest {
+        crate::RevolveRequest::new(
+            request.profile().clone(),
+            crate::RevolveAxis::PlaneY,
+            crate::RevolveTurn::Full,
+        )
+    }
+
+    #[test]
+    fn a_revolution_keys_apart_from_an_extrusion_and_by_its_profile() {
+        let kernel = KernelIdentity::new("occt", "8.0.1", "").expect("valid");
+        let context = OperationContext::default();
+        let extrusion = request();
+        let revolve = revolution(&extrusion);
+        let key = revolve_cache_key(&kernel, &revolve, &context);
+        assert_eq!(key, revolve_cache_key(&kernel, &revolve, &context));
+        assert_ne!(key, extrude_cache_key(&kernel, &extrusion, &context));
+        let other = KernelIdentity::new("occt", "8.0.0", "").expect("valid");
+        assert_ne!(key, revolve_cache_key(&other, &revolve, &context));
+        let coarse = OperationContext::new(Tolerance::new(1e-3, 1e-6).expect("positive"));
+        assert_ne!(key, revolve_cache_key(&kernel, &revolve, &coarse));
+        // Another profile, even one differing only in a segment's label, is
+        // another key: labels are what the result's names are filed under.
+        let relabelled = revolution(&request());
+        assert_ne!(key, revolve_cache_key(&kernel, &relabelled, &context));
+    }
+
+    #[test]
+    fn the_mock_refuses_a_revolution_instead_of_inventing_one() {
+        let mut kernel = MockKernel::new();
+        let error = kernel
+            .revolve(&revolution(&request()), &OperationContext::default())
+            .expect_err("the mock has no curved geometry");
+        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Unsupported);
+        assert_eq!(kernel.live_shape_count(), 0);
     }
 
     #[test]

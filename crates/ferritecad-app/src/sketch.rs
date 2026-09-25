@@ -7,7 +7,7 @@ use ferritecad_document::{
 };
 use ferritecad_jobs::{
     AnnularExtrusion, CircleExtrusion, EditAnnulusRequest, EditCircleRequest, EditSketchRequest,
-    NewDocument, PolygonExtrusion,
+    FullTurnRevolution, NewDocument, PolygonExtrusion,
 };
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
@@ -17,6 +17,9 @@ struct State {
     points: Vec<[String; 2]>,
     closed: bool,
     height: String,
+    /// What the closed polygon becomes. Part of the draft, so Undo and Redo
+    /// cover the choice exactly as they cover a typed coordinate.
+    feature: Feature,
 }
 impl Default for State {
     fn default() -> Self {
@@ -24,8 +27,19 @@ impl Default for State {
             points: Vec::new(),
             closed: false,
             height: "10".into(),
+            feature: Feature::Extrude,
         }
     }
+}
+
+/// Which feature a new Line polygon starts its body with.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Feature {
+    /// Blind along +Z by the typed height.
+    #[default]
+    Extrude,
+    /// One full turn about the sketch's local Y axis (§27A). X is the radius.
+    Revolve,
 }
 
 /// Which profile the open draft window is asking for.
@@ -382,6 +396,7 @@ impl Editor {
                 .collect(),
             closed: true,
             height: height.to_string(),
+            feature: Feature::Extrude,
         });
         self.canvas
             .fit(&vertices.iter().map(|v| v.start_mm).collect::<Vec<_>>());
@@ -630,10 +645,15 @@ impl Editor {
             .iter()
             .map(|p| Ok([number(&p[0])?, number(&p[1])?]))
             .collect::<Result<_>>()?;
-        Ok(NewDocument::SketchExtrude(PolygonExtrusion::new(
-            points,
-            number(&draft.height)?,
-        )?))
+        match draft.feature {
+            Feature::Extrude => Ok(NewDocument::SketchExtrude(PolygonExtrusion::new(
+                points,
+                number(&draft.height)?,
+            )?)),
+            // The document's own policy decides, exactly as for an extrusion:
+            // the same simple-polygon rules and the positive-radius rule.
+            Feature::Revolve => Ok(NewDocument::SketchRevolve(FullTurnRevolution::new(points)?)),
+        }
     }
     pub(crate) fn draw(&mut self, ui: &mut egui::Ui, can_begin: bool, running: bool) {
         if self.constraints.active() {
@@ -1012,7 +1032,22 @@ impl Editor {
                 return;
             }
         }
-        ui.label("XY · mm · Line polygon · Blind · NewBody");
+        let revolve = self.editing.is_none()
+            && self
+                .draft
+                .as_ref()
+                .is_some_and(|d| d.feature == Feature::Revolve);
+        ui.label(if revolve {
+            "XY · mm · Line polygon · Revolve 360° about the sketch Y axis · NewBody"
+        } else {
+            "XY · mm · Line polygon · Blind · NewBody"
+        });
+        if revolve {
+            ui.label(
+                "X is the radius and Y runs along the axis. Every point needs X > 0: the \
+                 profile may not touch or cross the axis.",
+            );
+        }
         ui.label(if self.editing.is_some() {
             "Edit exact coordinates. Curve IDs, order, closure and height are retained."
         } else {
@@ -1134,15 +1169,26 @@ impl Editor {
                         self.canvas.selected = None;
                     }
                 });
-            ui.horizontal(|ui| {
-                ui.label("Blind height mm");
-                ui.add_enabled(
-                    self.editing.is_none(),
-                    egui::TextEdit::singleline(&mut draft.height)
-                        .char_limit(64)
-                        .desired_width(100.),
-                );
-            });
+            if self.editing.is_none() {
+                ui.horizontal(|ui| {
+                    ui.label("Feature:");
+                    ui.selectable_value(&mut draft.feature, Feature::Extrude, "Extrude");
+                    ui.selectable_value(&mut draft.feature, Feature::Revolve, "Revolve 360°");
+                });
+            }
+            if draft.feature == Feature::Extrude || self.editing.is_some() {
+                ui.horizontal(|ui| {
+                    ui.label("Blind height mm");
+                    ui.add_enabled(
+                        self.editing.is_none(),
+                        egui::TextEdit::singleline(&mut draft.height)
+                            .char_limit(64)
+                            .desired_width(100.),
+                    );
+                });
+            } else {
+                ui.label("Revolve: one full turn (360°) about the sketch Y axis, through X = 0.");
+            }
         });
         match canvas_edit {
             CanvasEdit::Ordinary => self.record(before),
@@ -1605,6 +1651,29 @@ impl Canvas {
             egui::FontId::proportional(12.),
             egui::Color32::WHITE,
         );
+        if draft.feature == Feature::Revolve {
+            // The axis of revolution: the sketch's local Y axis, X = 0. Drawn
+            // whenever the view reaches it, and named either way, so it is
+            // clear which side of it the profile must stay on.
+            let x = screen([0.0, self.minimum[1]]).x;
+            let colour = egui::Color32::from_rgb(255, 165, 60);
+            if x >= rect.left() && x <= rect.right() {
+                painter.line_segment(
+                    [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                    (2., colour),
+                );
+            }
+            painter.text(
+                egui::pos2(
+                    x.clamp(rect.left() + 4., rect.right() - 4.),
+                    rect.bottom() - 4.,
+                ),
+                egui::Align2::LEFT_BOTTOM,
+                "axis (Y) · radius X > 0 →",
+                egui::FontId::proportional(12.),
+                colour,
+            );
+        }
         if let Some(points) = Self::points(draft) {
             for pair in points.windows(2) {
                 painter.line_segment(
@@ -2398,6 +2467,242 @@ mod tests {
             }
         }
         assert_eq!(bytes[0], bytes[1], "one geometry, two documents");
+    }
+
+    /// §27A: the stepped bushing drawn on the real canvas, turned a full turn.
+    ///
+    /// Clicks put the six vertices down, Close contour closes them, and the
+    /// Feature choice is a draft change Undo and Redo move. The axis refusal
+    /// comes from the document's own policy, with no request made.
+    fn draw_stepped_revolve_through_widgets(e: &mut Editor) -> egui::Context {
+        let ctx = egui::Context::default();
+        let out = frame(&ctx, e, vec![]);
+        click(&ctx, e, text_at(&out, "Create sketch + Extrude…"));
+        frame(&ctx, e, vec![]);
+        for [x, y] in [
+            [4., 0.],
+            [10., 0.],
+            [10., 5.],
+            [7., 5.],
+            [7., 15.],
+            [4., 15.],
+        ] {
+            let out = frame(&ctx, e, vec![]);
+            let rect = out
+                .shapes
+                .iter()
+                .find_map(|c| match &c.shape {
+                    egui::Shape::Rect(r)
+                        if (r.rect.width() - 510.).abs() < 1.
+                            && (r.rect.height() - 250.).abs() < 1. =>
+                    {
+                        Some(r.rect)
+                    }
+                    _ => None,
+                })
+                .expect("visible drawing canvas");
+            click(
+                &ctx,
+                e,
+                rect.left_bottom() + egui::vec2(35. + 4. * x, -30. - 4. * y),
+            );
+        }
+        let out = frame(&ctx, e, vec![]);
+        click(&ctx, e, text_at(&out, "Close contour"));
+        let out = frame(&ctx, e, vec![]);
+        click(&ctx, e, text_at(&out, "Revolve 360°"));
+        assert_eq!(e.draft.as_ref().expect("draft").feature, Feature::Revolve);
+        let out = frame(&ctx, e, vec![]);
+        assert!(
+            out.shapes.iter().any(|c| matches!(&c.shape,
+                egui::Shape::Text(t) if t.galley.text() == "axis (Y) · radius X > 0 →")),
+            "the axis is named on the canvas"
+        );
+        assert!(
+            !out.shapes.iter().any(|c| matches!(&c.shape,
+                egui::Shape::Text(t) if t.galley.text() == "Blind height mm")),
+            "a revolution has no height"
+        );
+        click(&ctx, e, text_at(&out, "Undo draft"));
+        assert_eq!(e.draft.as_ref().expect("draft").feature, Feature::Extrude);
+        let out = frame(&ctx, e, vec![]);
+        click(&ctx, e, text_at(&out, "Redo draft"));
+        assert_eq!(e.draft.as_ref().expect("draft").feature, Feature::Revolve);
+        // Onto the axis: the document refuses, no request, and Undo restores.
+        replace_field(&ctx, e, "4.000", "0");
+        let refused = e.content().expect_err("a vertex on the axis");
+        assert!(
+            refused.to_string().contains("positive radial side"),
+            "{refused}"
+        );
+        let out = frame(&ctx, e, vec![]);
+        assert!(!out.shapes.iter().any(|c| matches!(&c.shape,
+            egui::Shape::Text(t) if t.galley.text() == "Create in new file…")));
+        click(&ctx, e, text_at(&out, "Undo draft"));
+        assert!(matches!(e.content(), Ok(NewDocument::SketchRevolve(_))));
+        ctx
+    }
+
+    #[test]
+    fn revolve_draft_widgets_name_the_axis_and_refuse_it() {
+        let mut e = Editor::default();
+        let ctx = draw_stepped_revolve_through_widgets(&mut e);
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Create in new file…"));
+        let Some(NewDocument::SketchRevolve(revolution)) = e.take_request() else {
+            panic!("one Revolve request")
+        };
+        assert_eq!(
+            revolution
+                .points()
+                .iter()
+                .map(|p| [p.x, p.y])
+                .collect::<Vec<_>>(),
+            [
+                [4., 0.],
+                [10., 0.],
+                [10., 5.],
+                [7., 5.],
+                [7., 15.],
+                [4., 15.]
+            ]
+        );
+        assert!((revolution.volume_mm3() - 750. * std::f64::consts::PI).abs() < 1e-9);
+        assert!(e.take_request().is_none(), "one press, one request");
+    }
+
+    /// The window's worker and the shipped command publish the same Revolve.
+    #[test]
+    fn native_revolve_draft_worker_and_cli_publish_equivalent_models() {
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: no OCCT for the Revolve UI worker");
+            return;
+        }
+        use crate::creates::{
+            self,
+            tests::{ferritecad, read_semantics},
+        };
+        use std::sync::mpsc;
+        let d = tempfile::tempdir().expect("dir");
+        let ui = d.path().join("revolve-ui.fcad");
+        let cli = d.path().join("revolve-cli.fcad");
+        let input = d.path().join("revolve-request.json");
+        let mut creates = creates::Creates::default();
+        draw_stepped_revolve_through_widgets(&mut creates.sketch);
+        let content = creates.sketch.content().expect("a Revolve");
+        let before = creates.sketch.draft.clone();
+        let mut view = ferritecad_ui::ViewportInput::new();
+        let loads = crate::Loads::default();
+        let exports = crate::exports::Exports::default();
+
+        // A cancelled save dialog keeps the draft and starts nothing.
+        assert!(
+            crate::start_new(
+                &mut creates,
+                &loads,
+                &exports,
+                &mut view,
+                content.clone(),
+                None,
+                |_, _, _, _| panic!("no worker on cancel")
+            )
+            .is_none()
+        );
+        assert_eq!(creates.sketch.draft, before);
+        // A taken destination is refused and leaves it alone.
+        let busy = d.path().join("occupied.fcad");
+        std::fs::write(&busy, b"keep").expect("busy");
+        let (_, open) = creates::tests::run_to_completion(
+            &mut creates,
+            &mut view,
+            content.clone(),
+            Some(busy.clone()),
+        );
+        assert!(open.is_none());
+        assert_eq!(creates.sketch.draft, before);
+        assert_eq!(std::fs::read(busy).expect("busy"), b"keep");
+
+        let (tx, rx) = mpsc::channel();
+        let spawn = move |path: &std::path::Path,
+                          content,
+                          generation,
+                          cancel: &ferritecad_kernel::CancelToken| {
+            let path = path.to_path_buf();
+            let ctx = ferritecad_kernel::OperationContext::default().with_cancel(cancel.clone());
+            creates::spawn_create(
+                move || creates::run_create(&path, content, &ctx),
+                move |result| tx.send((generation, result)).expect("reply"),
+            )
+        };
+        crate::start_new(
+            &mut creates,
+            &loads,
+            &exports,
+            &mut view,
+            content.clone(),
+            Some(ui.clone()),
+            spawn,
+        )
+        .expect("worker");
+        let (generation, result) = rx.recv().expect("worker result");
+        assert_eq!(
+            creates::finish_create(&mut creates, &mut view, generation, result),
+            Some(ui.clone())
+        );
+        // A failed async Open gives the published draft back; an accepted one
+        // retires it.
+        creates.sketch.draft_load_finished(&ui, false);
+        assert!(creates.sketch.active(), "failed Open restores the draft");
+        assert_eq!(creates.sketch.draft, before);
+        assert!(creates.sketch.take_request().is_none(), "no resubmission");
+        creates.sketch.draft_published(&ui);
+        creates.sketch.draft_load_finished(&ui, true);
+        assert!(!creates.sketch.active());
+        creates.stop_all();
+
+        std::fs::write(
+            &input,
+            concat!(
+                r#"{"request_version":1,"points_mm":[[4,0],[10,0],[10,5],[7,5],[7,15],[4,15]],"#,
+                r#""axis":"sketch_y","angle":"full_turn"}"#
+            ),
+        )
+        .expect("request");
+        let run = std::process::Command::new(ferritecad())
+            .arg("create-sketch-revolve")
+            .arg(input)
+            .arg("-o")
+            .arg(&cli)
+            .arg("--json")
+            .output()
+            .expect("peer CLI");
+        assert!(run.status.success(), "{run:?}");
+
+        // The same model under two independently minted sets of UUIDs.
+        assert_eq!(read_semantics(&ui).0, read_semantics(&cli).0);
+        assert_ne!(read_semantics(&ui).1, read_semantics(&cli).1);
+        let mut bytes = Vec::new();
+        for path in [&ui, &cli] {
+            for (op, extension) in [("export-stl", "stl"), ("export-fbx", "fbx")] {
+                let out = path.with_extension(extension);
+                let result = std::process::Command::new(ferritecad())
+                    .arg(op)
+                    .arg(path)
+                    .arg("-o")
+                    .arg(&out)
+                    .output()
+                    .expect("export");
+                assert!(result.status.success(), "{result:?}");
+                bytes.push(std::fs::read(&out).expect("export bytes"));
+            }
+        }
+        assert_eq!(bytes[0], bytes[2], "worker/CLI STL bytes");
+        assert_eq!(
+            bytes[1].len(),
+            bytes[3].len(),
+            "FBX carries each document's own UUIDs, so only its size is compared here"
+        );
     }
 
     /// A real source document with one saved analytic circle, and the accepted
