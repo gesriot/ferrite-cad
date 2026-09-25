@@ -1566,8 +1566,8 @@ jobs:
               -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-cli.log
             if grep -q 'skipped:' revolve-cli.log || ! grep -Fq "test $gate ... ok" revolve-cli.log; then exit 1; fi
           done
-          for gate in tests::a_revolution_keys_apart_from_an_extrusion_and_by_its_profile \
-            tests::the_mock_refuses_a_revolution_instead_of_inventing_one
+          for gate in kernel::tests::a_revolution_keys_apart_from_an_extrusion_and_by_its_profile \
+            kernel::tests::the_mock_refuses_a_revolution_instead_of_inventing_one
           do
             cargo test --release -p ferritecad-kernel --lib "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-kernel.log

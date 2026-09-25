@@ -864,7 +864,7 @@ fn native_revolve_geometry_names_cache_reopen_and_exports() {
         .expect("print-topology");
     assert!(listed.status.success(), "{listed:?}");
     let listed = String::from_utf8(listed.stdout).expect("utf-8");
-    let lines = inspect(&path)["result"]["revolves"][0]["profile"]["segments"]
+    let lines = inspect(&path)["revolves"][0]["profile"]["segments"]
         .as_array()
         .expect("segments")
         .iter()
