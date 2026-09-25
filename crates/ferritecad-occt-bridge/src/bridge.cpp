@@ -2660,6 +2660,16 @@ FcOcctStatus fc_occt_tessellate(
         const gp_Vec edge1(nodes[a - 1], nodes[b - 1]);
         const gp_Vec edge2(nodes[a - 1], nodes[c - 1]);
         const gp_Vec cross = edge1.Crossed(edge2);
+        // The corners as they will be stored, widened back to double: the same
+        // arithmetic the STL writer applies to the stored mesh, so a triangle
+        // kept here is one it can write.
+        const auto stored = [&nodes](int node) {
+          const gp_Pnt &point = nodes[static_cast<size_t>(node - 1)];
+          return gp_Pnt(static_cast<float>(point.X()), static_cast<float>(point.Y()),
+                        static_cast<float>(point.Z()));
+        };
+        const gp_Vec stored_cross =
+            gp_Vec(stored(a), stored(b)).Crossed(gp_Vec(stored(a), stored(c)));
         // §27C: where a solid closes on an axis — the apex of a cone — Open
         // CASCADE meshes the degenerate edge as several nodes at one point,
         // and the triangles fanning into it have two corners there. Such a
@@ -2667,8 +2677,11 @@ FcOcctStatus fc_occt_tessellate(
         // it, and nothing can light it. It is dropped wherever it occurs, so
         // a shape rebuilt cold and the same shape restored from an archive
         // (which does not know it was revolved) tessellate identically. A
-        // mesh that never had one — every earlier model — is unchanged.
-        if (cross.SquareMagnitude() == 0.0) {
+        // mesh that never had one — every earlier model — is unchanged. The
+        // apex nodes need not coincide in double (on macOS they can differ in
+        // the last bits and still narrow to one float point), so the test is
+        // made on the stored float corners.
+        if (stored_cross.SquareMagnitude() == 0.0) {
           continue;
         }
         if (cross.SquareMagnitude() > 1.0e-24) {
