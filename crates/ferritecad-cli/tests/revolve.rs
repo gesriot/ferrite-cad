@@ -20,6 +20,9 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
 };
+/// §27B: editing the saved profile of these documents.
+#[path = "revolve/edit.rs"]
+mod edit;
 #[path = "support/pipe.rs"]
 mod pipe;
 

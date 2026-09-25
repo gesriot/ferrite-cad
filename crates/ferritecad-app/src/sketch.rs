@@ -2895,6 +2895,291 @@ mod tests {
         assert!(e.take_circle_edit_request().is_none());
     }
 
+    /// §27B through the real widgets: a saved Revolve profile opens in the
+    /// ordinary coordinate editor with its axis and no height, a radius on the
+    /// axis is refused and undone, and the shared worker and the peer CLI
+    /// publish the same copy with the same identities.
+    #[test]
+    fn native_revolve_profile_edit_widgets_worker_and_cli_publish_one_copy() {
+        use crate::creates::tests::{ferritecad, read_semantics};
+        use ferritecad_document::Document;
+        use ferritecad_kernel::OperationContext;
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: no OCCT for the Revolve profile edit worker");
+            return;
+        }
+        let root = tempfile::tempdir().expect("directory");
+        let source = root.path().join("bushing.fcad");
+        let input = root.path().join("create.json");
+        std::fs::write(
+            &input,
+            concat!(
+                r#"{"request_version":1,"points_mm":[[4.5,0.25],[10.5,0.25],[10.5,15.25],"#,
+                r#"[4.5,15.25]],"axis":"sketch_y","angle":"full_turn"}"#
+            ),
+        )
+        .expect("request");
+        let p = std::process::Command::new(ferritecad())
+            .arg("create-sketch-revolve")
+            .arg(&input)
+            .arg("-o")
+            .arg(&source)
+            .arg("--json")
+            .output()
+            .expect("create");
+        assert!(p.status.success(), "{p:?}");
+        let bytes = std::fs::read(&source).expect("source");
+        let loaded = {
+            let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+            ferritecad_scene::snapshot_of(
+                &source,
+                &mut k,
+                |k, b| k.import_step(b),
+                &Default::default(),
+                &OperationContext::default(),
+            )
+            .expect("accepted scene")
+        };
+        let reading = loaded.edit_source.expect("accepted edit facts");
+        let choice = &reading.sketches[0];
+        assert!(matches!(
+            choice.profile_use,
+            Some(SketchProfileUse::FullTurnRevolve { .. })
+        ));
+        let saved_ids: Vec<_> = choice
+            .vertices
+            .as_ref()
+            .expect("editable")
+            .iter()
+            .map(|v| v.curve_id)
+            .collect();
+
+        let mut e = Editor::default();
+        assert!(e.begin_edit(&source, &reading, choice.sketch));
+        assert_eq!(e.draft.as_ref().expect("draft").feature, Feature::Revolve);
+        assert_eq!(e.draft.as_ref().expect("draft").height, "", "no height");
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut e, vec![]);
+        let out = frame(&ctx, &mut e, vec![]);
+        let texts: Vec<String> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        for wanted in [
+            "axis (Y) · radius X > 0 →",
+            "Revolve: one full turn (360°) about the sketch Y axis, through X = 0.",
+            "XY · mm · Line polygon · Revolve 360° about the sketch Y axis · NewBody",
+        ] {
+            assert!(texts.iter().any(|t| t == wanted), "{wanted} in {texts:?}");
+        }
+        assert!(texts.iter().any(|t| t.contains("saved full turn about Y")));
+        for absent in ["Blind height mm", "Feature:", "Extrude", "Revolve 360°"] {
+            assert!(!texts.iter().any(|t| t == absent), "{absent} shown");
+        }
+
+        // Real fields: both inner vertices, then both outer ones.
+        replace_field(&ctx, &mut e, "4.5", "3.5");
+        replace_field(&ctx, &mut e, "4.5", "3.5");
+        replace_field(&ctx, &mut e, "10.5", "8.5");
+        replace_field(&ctx, &mut e, "10.5", "8.5");
+        let before_y = e.draft.clone().expect("draft");
+        for (i, y) in [(0, "2.5"), (1, "2.5"), (2, "12.5"), (3, "12.5")] {
+            e.draft.as_mut().expect("draft").points[i][1] = y.into();
+        }
+        e.record(before_y);
+        let valid = e.draft.clone().expect("draft");
+        assert_eq!(
+            valid.points,
+            [
+                ["3.5", "2.5"],
+                ["8.5", "2.5"],
+                ["8.5", "12.5"],
+                ["3.5", "12.5"]
+            ]
+            .map(|p| p.map(str::to_owned))
+            .to_vec()
+        );
+        // A radius on the wrong side of the axis: refused by the Revolve
+        // policy, shown, and undone through the real button.
+        replace_field(&ctx, &mut e, "3.5", "-0.5");
+        let refusal = e.edit_request().expect_err("axis").to_string();
+        assert!(refusal.contains("positive radial side"), "{refusal}");
+        let out = frame(&ctx, &mut e, vec![]);
+        assert!(out.shapes.iter().any(|c| matches!(&c.shape,
+            egui::Shape::Text(t) if t.galley.text().contains("positive radial side"))));
+        click(&ctx, &mut e, text_at(&out, "Undo draft"));
+        assert_eq!(e.draft.as_ref(), Some(&valid));
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Redo draft"));
+        assert_eq!(e.draft.as_ref().expect("draft").points[0][0], "-0.5");
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Undo draft"));
+        assert_eq!(e.draft.as_ref(), Some(&valid));
+
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Save edited copy…"));
+        let request = e.take_edit_request().expect("submit");
+        assert_eq!(
+            request
+                .vertices
+                .iter()
+                .map(|v| v.curve_id)
+                .collect::<Vec<_>>(),
+            saved_ids,
+            "the saved Lines, in saved order"
+        );
+        assert_eq!(request.expected, reading.version);
+        let kept = e.draft.clone();
+
+        let mut edits = crate::edits::Edits::default();
+        for occupied in [true, false] {
+            let mut request = request.clone();
+            request.destination =
+                root.path()
+                    .join(if occupied { "occupied.fcad" } else { "ui.fcad" });
+            if occupied {
+                std::fs::write(&request.destination, b"keep").expect("sentinel");
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let generation = edits
+                .start_sketch(request.clone(), move |r, g, c| {
+                    crate::edits::spawn_sketch_edit(r, c, move |result| {
+                        tx.send((g, result)).expect("reply")
+                    })
+                })
+                .expect("worker");
+            assert!(
+                finish_edit(
+                    &mut e,
+                    &mut edits,
+                    generation + 1,
+                    Err(CadError::input("stale response"))
+                )
+                .is_none(),
+                "a reply for another request changes nothing"
+            );
+            assert_eq!(e.draft, kept);
+            let (g, result) = rx.recv().expect("completed");
+            let path = finish_edit(&mut e, &mut edits, g, result);
+            if occupied {
+                assert!(path.is_none(), "a taken destination publishes nothing");
+                assert_eq!(e.draft, kept, "and keeps the draft");
+                assert_eq!(
+                    std::fs::read(root.path().join("occupied.fcad")).expect("sentinel"),
+                    b"keep"
+                );
+            } else {
+                let path = path.expect("published");
+                assert!(!e.active());
+                e.draft_load_finished(&path, false);
+                assert!(e.active(), "a failed Open restores the edited draft");
+                assert_eq!(e.draft, kept);
+                assert_eq!(e.draft.as_ref().expect("draft").feature, Feature::Revolve);
+                e.draft_published(&path);
+                e.draft_load_finished(&path, true);
+                assert!(!e.active());
+            }
+        }
+
+        // The peer CLI, the same request, the same source.
+        let edit = root.path().join("edit.json");
+        let vertices: Vec<String> = request
+            .vertices
+            .iter()
+            .map(|v| {
+                format!(
+                    r#"{{"curve_id":"{}","start_mm":[{},{}]}}"#,
+                    v.curve_id, v.start_mm[0], v.start_mm[1]
+                )
+            })
+            .collect();
+        std::fs::write(
+            &edit,
+            format!(
+                r#"{{"request_version":1,"vertices":[{}]}}"#,
+                vertices.join(",")
+            ),
+        )
+        .expect("edit request");
+        let cli = root.path().join("cli.fcad");
+        let p = std::process::Command::new(ferritecad())
+            .arg("edit-sketch-copy")
+            .arg(&source)
+            .arg("--sketch")
+            .arg(choice.sketch.to_string())
+            .arg("--expect-version")
+            .arg(reading.version.content.to_string())
+            .arg("--request")
+            .arg(&edit)
+            .arg("-o")
+            .arg(&cli)
+            .arg("--json")
+            .output()
+            .expect("peer CLI");
+        assert!(p.status.success(), "{p:?}");
+        let ui = root.path().join("ui.fcad");
+        assert_eq!(read_semantics(&ui), read_semantics(&cli));
+        let a = Document::open_read_only(&ui).expect("UI");
+        let b = Document::open_read_only(&cli).expect("CLI");
+        assert_eq!(a.meta(), b.meta());
+        assert_eq!(a.objects().expect("objects"), b.objects().expect("objects"));
+        assert_eq!(
+            a.topology_refs().expect("refs"),
+            b.topology_refs().expect("refs")
+        );
+        let original = Document::open_read_only(&source).expect("source");
+        assert_eq!(
+            a.topology_refs().expect("refs"),
+            original.topology_refs().expect("refs"),
+            "no new names"
+        );
+        original.close().expect("close");
+        // The kernel's own volume: π·(8.5² − 3.5²)·10.
+        let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+        let context = OperationContext::default();
+        let built = ferritecad_eval::rebuild_cold(&a, &mut kernel, &context).expect("cold");
+        let body = a
+            .objects()
+            .expect("objects")
+            .iter()
+            .find(|o| matches!(o.payload, ferritecad_document::ObjectPayload::Body(_)))
+            .map(|o| o.id)
+            .expect("Body");
+        let body = built.shape(body).expect("one solid");
+        let (_, volume) = kernel.shape_stats(body).expect("stats");
+        let expected = std::f64::consts::PI * (8.5f64 * 8.5 - 3.5 * 3.5) * 10.;
+        assert!((volume - expected).abs() < 1e-6 * expected, "{volume}");
+        built.release_all(&mut kernel);
+        a.close().expect("close");
+        b.close().expect("close");
+        let mut exported = Vec::new();
+        for path in [&ui, &cli] {
+            for (op, extension) in [("export-stl", "stl"), ("export-fbx", "fbx")] {
+                let out = path.with_extension(extension);
+                let p = std::process::Command::new(ferritecad())
+                    .arg(op)
+                    .arg(path)
+                    .arg("-o")
+                    .arg(&out)
+                    .output()
+                    .expect("export");
+                assert!(p.status.success(), "{p:?}");
+                exported.push(std::fs::read(&out).expect("bytes"));
+            }
+        }
+        assert_eq!(exported[0], exported[2], "STL bytes");
+        assert_eq!(
+            exported[1], exported[3],
+            "FBX bytes: same stored identities"
+        );
+        assert_eq!(std::fs::read(&source).expect("source"), bytes);
+    }
+
     #[test]
     fn native_circle_edit_worker_and_cli_publish_equivalent_copies() {
         use crate::creates::tests::{ferritecad, read_semantics};
