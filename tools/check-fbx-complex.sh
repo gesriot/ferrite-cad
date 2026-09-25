@@ -340,3 +340,13 @@ if [ -n "${FCAD_POLYGON_CUT_FBX_DIR:-}" ]; then
     done
     echo "FCAD_POLYGON_CUT_UFBX_EXECUTED"
 fi
+if [ -n "${FCAD_REVOLVE_FBX_DIR:-}" ]; then
+    for name in revolve-0 revolve-1; do
+        "$reader" --identity "$FCAD_REVOLVE_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0$' "$work/$name-reader.txt"; then
+            echo "error: full-turn Revolve FBX was not independently read: $name" >&2
+            exit 1
+        fi
+    done
+    echo "FCAD_REVOLVE_UFBX_EXECUTED"
+fi

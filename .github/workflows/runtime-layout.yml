@@ -508,6 +508,13 @@ jobs:
             -- --exact --nocapture --test-threads=1 2>&1 | tee polygon-no-solver.log
           if grep -q 'skipped:' polygon-no-solver.log || ! grep -Fq "test $gate ... ok" polygon-no-solver.log; then exit 1; fi
 
+          # §27A: a full-turn Revolve of an unconstrained Line profile needs a
+          # kernel and no solver.
+          gate=occt_without_solver_revolves_a_profile
+          FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release --no-default-features -p ferritecad-cli --test revolve "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-no-solver.log
+          if grep -q 'skipped:' revolve-no-solver.log || ! grep -Fq "test $gate ... ok" revolve-no-solver.log; then exit 1; fi
+
       - name: Build the real application and the command line tool against both
         id: build
         env:
@@ -1522,6 +1529,66 @@ jobs:
           if grep -q 'skipped:' polygon-ui.log || ! grep -Fq "test $gate ... ok" polygon-ui.log; then exit 1; fi
           echo "FCAD_POLYGON_CUT_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
 
+      - name: Revolve a simple Line profile one full turn
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          CARGO_BUILD_JOBS: '1'
+          CMAKE_BUILD_PARALLEL_LEVEL: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          artifacts="$RUNNER_TEMP/revolve"
+          mkdir -p "$artifacts"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH"; artifacts="$(cygpath -w "$artifacts")" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          export FCAD_REVOLVE_ARTIFACTS="$artifacts"
+          for gate in native_full_turn_revolutions_are_what_pappus_and_their_lines_say \
+            native_revolve_refuses_the_axis_other_kinds_and_cancellation \
+            native_a_revolution_survives_the_named_archive_face_by_face
+          do
+            cargo test --release -p ferritecad-occt --test revolve_occt "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-occt.log
+            if grep -q 'skipped:' revolve-occt.log || ! grep -Fq "test $gate ... ok" revolve-occt.log; then exit 1; fi
+          done
+          for gate in revolve_request_refusals_and_usage_preserve_files \
+            revolve_alias_and_stub_kernel_refusals_preserve_storage \
+            revolve_document_contract_and_discovery_without_kernel \
+            native_revolve_geometry_names_cache_reopen_and_exports \
+            native_revolve_publication_delivery_and_cancellation
+          do
+            cargo test --release --features planegcs -p ferritecad-cli --test revolve "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-cli.log
+            if grep -q 'skipped:' revolve-cli.log || ! grep -Fq "test $gate ... ok" revolve-cli.log; then exit 1; fi
+          done
+          for gate in tests::a_revolution_keys_apart_from_an_extrusion_and_by_its_profile \
+            tests::the_mock_refuses_a_revolution_instead_of_inventing_one
+          do
+            cargo test --release -p ferritecad-kernel --lib "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-kernel.log
+            if grep -q 'skipped:' revolve-kernel.log || ! grep -Fq "test $gate ... ok" revolve-kernel.log; then exit 1; fi
+          done
+          for gate in polygon::tests::a_full_turn_is_pappus_in_either_winding_and_any_axial_shift \
+            polygon::tests::a_full_turn_refuses_the_axis_and_whatever_the_polygon_refuses
+          do
+            cargo test --release -p ferritecad-document --lib "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-domain.log
+            if grep -q 'skipped:' revolve-domain.log || ! grep -Fq "test $gate ... ok" revolve-domain.log; then exit 1; fi
+          done
+          for gate in sketch::tests::revolve_draft_widgets_name_the_axis_and_refuse_it \
+            sketch::tests::native_revolve_draft_worker_and_cli_publish_equivalent_models
+          do
+            cargo test --release --features planegcs -p ferritecad-app "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-ui.log
+            if grep -q 'skipped:' revolve-ui.log || ! grep -Fq "test $gate ... ok" revolve-ui.log; then exit 1; fi
+          done
+          echo "FCAD_REVOLVE_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
+
       - name: Create, discover, edit and export through the JSON v1 CLI contract
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
@@ -1622,6 +1689,7 @@ jobs:
           grep -q '^FCAD_CUT_HEIGHT_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_CUT_THROUGH_ALL_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_POLYGON_CUT_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_REVOLVE_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

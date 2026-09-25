@@ -482,4 +482,73 @@ mod tests {
             "concentricity is the kernel's point tolerance, not a second opinion"
         );
     }
+
+    #[test]
+    fn a_full_turn_is_pappus_in_either_winding_and_any_axial_shift() {
+        use std::f64::consts::PI;
+        for (points, volume) in [
+            (
+                vec![[4., 0.], [10., 0.], [10., 15.], [4., 15.]],
+                PI * 84. * 15.,
+            ),
+            (
+                vec![
+                    [4., 0.],
+                    [10., 0.],
+                    [10., 5.],
+                    [7., 5.],
+                    [7., 15.],
+                    [4., 15.],
+                ],
+                750. * PI,
+            ),
+            (vec![[4., 0.], [10., 0.], [7., 15.], [4., 15.]], 855. * PI),
+        ] {
+            let shifted: Vec<_> = points.iter().map(|[x, y]| [*x, y - 3.375]).collect();
+            let mut reversed = shifted.clone();
+            reversed.reverse();
+            for p in [points.clone(), shifted, reversed] {
+                let turn = FullTurnRevolution::new(p.clone()).expect("a turn");
+                assert_eq!(turn.points().len(), p.len());
+                assert!((turn.volume_mm3() - volume).abs() < 1e-9 * volume, "{p:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_full_turn_refuses_the_axis_and_whatever_the_polygon_refuses() {
+        let clear = FullTurnRevolution::AXIS_CLEARANCE_MM;
+        for p in [
+            vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
+            vec![[-2., 0.], [10., 0.], [10., 15.], [-2., 15.]],
+            vec![[clear, 0.], [10., 0.], [10., 15.]],
+            vec![[-4., 0.], [-10., 0.], [-10., 15.], [-4., 15.]],
+        ] {
+            let error = FullTurnRevolution::new(p.clone()).expect_err("axis");
+            assert!(
+                error
+                    .to_string()
+                    .contains("not strictly on the positive radial side"),
+                "{p:?}: {error}"
+            );
+        }
+        assert!(FullTurnRevolution::new(vec![[clear * 2., 0.], [10., 0.], [10., 15.]]).is_ok());
+        for p in [
+            vec![[4., 0.], [10., 0.], [4., 0.]],
+            vec![[4., 0.], [5., 0.], [6., 0.]],
+            vec![[4., 0.], [6., 2.], [4., 2.], [6., 0.]],
+            vec![[4., 0.], [f64::NAN, 0.], [4., 2.]],
+            vec![[4., 0.], [2e6, 0.], [4., 2.]],
+            vec![[4., 0.], [10., 0.]],
+        ] {
+            assert!(FullTurnRevolution::new(p.clone()).is_err(), "{p:?}");
+        }
+        let many: Vec<_> = (0..257)
+            .map(|i| {
+                let a = f64::from(i) * std::f64::consts::TAU / 257.;
+                [20. + 5. * a.cos(), 5. * a.sin()]
+            })
+            .collect();
+        assert!(FullTurnRevolution::new(many).is_err());
+    }
 }

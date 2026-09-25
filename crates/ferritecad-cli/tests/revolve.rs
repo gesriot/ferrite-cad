@@ -855,6 +855,30 @@ fn native_revolve_geometry_names_cache_reopen_and_exports() {
     reply(create(&input, &path).output().expect("create"), 0);
     let cold = measure(&path, &STEPPED, None);
     use CacheOutcome::{Hit, Miss};
+    // A person reading the stored references sees each one named after its
+    // own Line, all resolved.
+    let listed = cli()
+        .arg("print-topology")
+        .arg(&path)
+        .output()
+        .expect("print-topology");
+    assert!(listed.status.success(), "{listed:?}");
+    let listed = String::from_utf8(listed.stdout).expect("utf-8");
+    let lines = inspect(&path)["result"]["revolves"][0]["profile"]["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .map(|s| s["curve_id"].as_str().expect("id").to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), STEPPED.len());
+    for id in &lines {
+        assert!(
+            listed.contains(&format!("revolve face from segment {id}")),
+            "{listed}"
+        );
+    }
+    assert!(!listed.contains("unknown semantic role"), "{listed}");
+    assert!(listed.contains("6 of 6 references resolved"), "{listed}");
     assert_eq!(cold, measure(&path, &STEPPED, Some(&[Miss])));
     assert_eq!(cold, measure(&path, &STEPPED, Some(&[Hit])));
     let wider: Vec<[f64; 2]> = STEPPED

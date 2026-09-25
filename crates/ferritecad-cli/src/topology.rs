@@ -259,6 +259,9 @@ fn describe_role(role: &SemanticRole) -> String {
         }
         SemanticRole::SketchSegment { segment } => format!("sketch segment {segment}"),
         SemanticRole::FilletFace { source_edge } => format!("fillet face from edge {source_edge}"),
+        SemanticRole::RevolveFace { profile_segment } => {
+            format!("revolve face from segment {profile_segment}")
+        }
         _ => "unknown semantic role".to_owned(),
     }
 }

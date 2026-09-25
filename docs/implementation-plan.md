@@ -3538,3 +3538,35 @@ The original OOM cause remains unproved. Exact implementation-head CI logs
 confirm 193 distinct required test names and 68 ufbx reads per OS. Review also
 corrected the contract's explanation of infinite-line over-refusal; product
 code needed no change. Full evidence and limits are in the verification record.
+
+**§27A — full-turn Revolve / NewBody from a simple Line profile.**
+
+The first vertical Revolve slice. It creates one new Body by turning an
+unconstrained, simple, closed XY polygon of 3–256 Lines exactly once about the
+sketch's local Y axis through the datum origin.
+* **Accepted profiles.** Every vertex must be strictly at X > 1e-6 mm. Either
+  winding, sloped walls, steps and any Y translation are accepted. The shared
+  `simple_line_polygon` check is extracted from `PolygonExtrusion` and reused
+  by `FullTurnRevolution`.
+* **Document.** A new `feature.revolve` payload (`sketch_y`, `full_turn`,
+  `new_body`) under its own capability `feature.revolve.v1`. Older builds keep
+  it verbatim and read-only.
+* **Kernel.** `GeometryKernel::revolve` runs the new bridge entry point
+  `fc_occt_revolve` (an explicit axis and full-turn flag), which calls
+  `BRepPrimAPI_MakeRevol`. Each Line's face is read from the sweep's own
+  history and checked to be one per Line, a face of the solid, unshared, and
+  all faces covered.
+* **Naming.** Faces are stored as `RevolveFace { profile_segment }` and
+  archived as `RevolvedFace` under segment UUIDs. There are no caps, seam
+  names or indices.
+* **Evaluator.** Cold and cached builds share one path, keyed by
+  `revolve_cache_key`.
+* **Entry points.** Everything goes through the shared create job, reached
+  from the sketch window's **Revolve 360°** choice and from
+  `create-sketch-revolve` (strict request v1). `inspect --json` adds a
+  `revolves` array; `features` is unchanged.
+* **Out of scope.** Revolve editing, booleans on it, partial angles, other
+  axes and closing on the axis. This does not complete Revolve or wave 5A.
+
+[Contract and recipe](full-turn-revolve.md),
+[verification](full-turn-revolve-verification.md).
