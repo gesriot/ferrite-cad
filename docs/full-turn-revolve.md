@@ -161,7 +161,9 @@ snapshot. Each entry is:
 * a Revolve is not listed as a feature, so an old consumer cannot take it for
   an Extrude;
 * its Body's `cut_edit` blocks refuse;
-* its Sketch's editors refuse.
+* its Sketch's editors refuse, except the coordinate editor since
+  [§27B](edit-revolve-profile.md): `sketches[].editable` and `vertices` then
+  describe the profile, and `profile_feature` names the Revolve.
 
 ### UI
 
@@ -194,8 +196,9 @@ through the same worker, job and Open path.
   can check each named face against its own Line.
 * **Old editors.** `print-topology` names each reference as
   `revolve face from segment <UUID>`. The Extrude-shaped editors refuse:
-  `edit_extrude`, `cut_edit*` and the sketch edit blocks each say they
-  require a forward Blind Extrude/NewBody.
+  `edit_extrude`, `cut_edit*` and the constraint, circle and annulus sketch
+  blocks each say they require a forward Blind Extrude/NewBody. The Line
+  coordinate editor accepts this class since [§27B](edit-revolve-profile.md).
 
 ## Stepped fixture for the bundled CLI
 

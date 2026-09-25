@@ -3580,10 +3580,30 @@ Viewer exit 0, peak 206.7355 MiB, swap 0. CI logs independently confirm 208
 required test names and 70 ufbx reads per OS. Review corrected two documentation
 claims; no product-code correction was needed. Details are in the verification.
 
-**§27B — pending: edit the saved full-turn Revolve profile in a new copy.**
-Extend the existing coordinate-edit route to the bounded §27A document class,
-keeping curve/object/reference UUIDs and the Revolve intent. Use the shared
-job from UI and CLI, validate the positive-radius profile again inside the
-writer transaction, cold-rebuild and resolve every saved name before atomic
-publication. Axis/angle changes, adding/removing vertices, constraints,
-booleans and in-place Save remain separate work. Implementation has not begun.
+**§27B — edit the saved full-turn Revolve profile in a new copy.**
+
+The existing coordinate-edit route now accepts the standalone §27A document
+class: an untransformed XY plane, one unconstrained closed Line Sketch, one
+`sketch_y`/`full_turn`/NewBody Revolve and its Body.
+* **Rules.** `sketch_edit::coordinate_choice` stays the single owner of the
+  rules for discovery, preparation and the writer's in-transaction
+  re-derivation. It gains a `revolve_frame` beside the unchanged Extrude
+  `frame`, so the circle, annulus, constraint and height editors keep their
+  boundaries.
+* **Profile kind.** `SketchChoice` states its profile's feature as an
+  explicit `SketchProfileUse`, `BlindExtrude { height }` or
+  `FullTurnRevolve`, and checks drafts with that feature's own policy:
+  `PolygonExtrusion` or `FullTurnRevolution`.
+* **Reused unchanged:** `EditSketchRequest`, `edit_sketch_copy`, the SQL
+  copier, the guards, the cold rebuild with every saved reference required,
+  and the atomic publish.
+* **Names.** Line UUIDs, object IDs and `RevolveFace` names survive. A face
+  may change its analytic kind (cylinder → cone) under the same name.
+* **Discovery and UI.** `inspect --json` adds `sketches[].profile_feature`.
+  Edit Sketch shows the saved full turn and axis, with no height field and
+  no feature switch.
+* **Out of scope.** Axis/angle changes, adding/removing vertices,
+  constraints, booleans, in-place Save and preview.
+
+[Contract and recipe](edit-revolve-profile.md),
+[verification](edit-revolve-profile-verification.md).

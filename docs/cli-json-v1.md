@@ -337,6 +337,27 @@ Envelope общий: `operation:"create-sketch-revolve"`, result
 тела и эскиза недоступны с отказом. Для документа без Revolve массив пуст.
 [Контракт §27A и исполняемый рецепт](full-turn-revolve.md).
 
+## Правка профиля Revolve и `profile_feature` (§27B)
+
+`edit-sketch-copy`, его request v1, envelope и exit 0/2/7 не меняются. Для
+самостоятельного документа §27A строка `sketches[]` теперь имеет
+`editable:true` (если документ и структура позволяют) и заполненные
+`vertices`; прежде она отказывала. На прежних моделях все прежние поля и
+значения те же. Аддитивное поле каждой строки `sketches[]`:
+
+```json
+"profile_feature": null
+"profile_feature": {"kind": "blind_extrude", "feature_id": "…", "height_mm": 10.0}
+"profile_feature": {"kind": "full_turn_revolve", "feature_id": "…", "body_id": "…",
+                    "axis": "sketch_y", "extent": "full_turn", "axis_clearance_mm": 1e-6}
+```
+
+`null` ровно тогда, когда `vertices` — null. `kind` называет политику, которую
+применит задание: `PolygonExtrusion` или `FullTurnRevolution`. Revolve
+по-прежнему не входит в `features`; `revolves[].profile.available` означает
+только читаемость профиля, а разрешение правки — `editable` строки Sketch.
+[Контракт §27B и исполняемый рецепт](edit-revolve-profile.md).
+
 ## Правка сохранённой кольцевой пары (§25M)
 
 `ferritecad edit-annular <source.fcad> --sketch UUID --expect-version HASH
