@@ -247,9 +247,10 @@ This test also runs in the stub build.
 
 ## Stub results (no OCCT)
 
-* **Tests.** The `revolve` binary: 11 passed. The 5 kernel-free tests,
-  including the §27B discovery/protocol/writer test, run; the 6 native ones
-  print `skipped:`.
+* **Tests.** The `revolve` binary: 11 harness passes. Four kernel-free tests,
+  including the §27B discovery/protocol/writer test, execute; seven
+  geometry-dependent tests print `skipped:`. Those seven are not native
+  passes (count corrected during independent review).
 * **Linking.** `ldd` on the stub `ferritecad` shows no `libTK*` or
   `planegcs`.
 * **Discovery.** Stub `inspect --json` on a §27A document reports the row
@@ -265,7 +266,9 @@ This test also runs in the stub build.
 ## Mutations
 
 Each mutation was applied by a script that kept a backup, then restored. The
-file's SHA-256 was checked, and all 7 positive gates re-ran green.
+file's SHA-256 was checked, and the positive gates re-ran green. The slice
+adds six distinct gate names: four CLI gates in the combined-native step,
+one CLI mixed OCCT/no-solver gate, and one app gate.
 
 | # | Mutation | Killed by |
 |---|---|---|
@@ -392,3 +395,99 @@ and the log; do not query the application's accessibility state.
 
 Expected memory: the same order as §27A (about 207 MiB peak), exit 0,
 swap 0.
+
+
+## Independent macOS review — 2026-09-25
+
+Reviewed implementation head `b3e52d3866aa82e923fa10fc34061f6d0b60a973`
+against merge base `5843f27ba21f84ef83c5875f41c82635bf02ff38`. No product-code
+correction was needed. Review corrected the stub/gate counts above and added
+this independently executed window and regression evidence.
+
+### Local execution
+
+Existing pinned OCCT 8.0.1 and PlaneGCS libraries, one build job, existing
+native/stub targets. A fresh release CLI and viewer were built before peer
+worker tests. Native document/eval/jobs: 441 harness passes, including two
+explicit solver-absent tests that are N/A in this solver-present build, and
+one old ignored timing benchmark. CLI regression suites: 98 executed; app
+sketch/constraints/edits: 33/19/9 executed. **598 tests executed successfully**,
+two N/A and one ignored counted separately. No required geometry gate skipped.
+Fmt and workspace clippy `--all-targets --all-features -D warnings` passed.
+
+The real stub reports `OpenCASCADE_DIR-NOTFOUND`; `otool -L` shows neither
+libTK nor PlaneGCS. Its Revolve suite has four actual executions and seven
+explicit skips. The exact mixed gate
+`edit::occt_without_solver_edits_a_revolve_profile` executed successfully:
+libTK present, PlaneGCS absent. Full native CLI/viewer were restored afterward.
+
+The Markdown recipe was extracted and executed with the fresh staged CLI
+and pinned ufbx: `FCAD_27B_RECIPE_OK 6`. Four older saved documents (plain
+Extrude, L polygon and Cut histories) were inspected by both the §27A and
+§27B bundled CLIs. After removing only the additive `profile_feature`, all
+previous JSON fields, values and types match; source hashes are unchanged.
+
+### Actual window, dialogs, publication and exports
+
+The staged `.app` passed strict deep code-signature verification. Its CLI
+and viewer solver-info ran without DYLD overrides. One owned viewer, PID
+93665, ran under the 1536 MiB watchdog on temporary models outside checkout.
+
+* Bushing: changed all eight numeric coordinates to (3,2.5), (8,2.5),
+  (8,12.5), (3,12.5). Confirmed the saved full-turn/Y-axis header and axis
+  annotation, no height or feature switch, and disabled add/remove controls.
+* X = 0 produced the visible radial refusal and removed the Save action.
+  Undo/Redo/Undo restored exactly the valid/invalid/valid drafts.
+* Save Cancel retained the draft and wrote no model. Go to Folder followed
+  by a basename saved `bushing-gui.fcad`; async Open accepted that copy.
+* In the **same PID**, Open loaded `bushing-cone-source.fcad`. With 1 mm
+  Snap, dragging vertex 3 from X = 10 to 7 changed the outer wall to a cone.
+  One Undo restored the entire gesture; Redo restored X = 7. Publication
+  and async Open succeeded; the isometric view showed the changed wall.
+* Both models were exported by the actual GUI STL and FBX actions. Quit
+  returned 0. After Quit only PID/logs were inspected, with no app lookup
+  that could relaunch the viewer.
+
+For **both** saved copies, every SQL cell matches the CLI-equivalent copy.
+Compared with the source, exactly the selected Sketch's `payload` and
+`payload_hash` cells changed; even `meta.modified_at` remained equal. All
+UUIDs, dependencies, feature data and four topology references survive.
+Both source hashes are unchanged. GUI/CLI STL and FBX pairs are byte-identical,
+with no UUID or other normalization.
+
+| Copy | Exact analytic volume mm³ | STL mesh volume mm³ | Triangles |
+| --- | ---: | ---: | ---: |
+| Smaller, translated bushing | 550π = 1727.875959 | 1726.820830 | 576 |
+| Outer cylinder → cone | 855π = 2686.061719 | 2683.214956 | 1614 |
+
+An independent binary STL parser checked directed-edge closure, consistent
+orientation, positive signed volume, radial/axial bounds and the conical
+radial envelope. An independent parser of the writer's ASCII FBX subset
+inverted its axis/unit map and checked the same closed mesh and volume.
+Both FBX files also passed pinned ufbx 0.23.0 strict: 6 checks, 0 failures each.
+These mesh volumes are tessellated approximations, not B-Rep measurements.
+
+Watchdog: **199.4542 MiB** peak, 457 samples, pressure normal throughout,
+swap 0, exit 0, no abort. A first harness launch failed before starting any
+viewer because shell redirection had precreated a watchdog-owned output
+name; it was not counted as a GUI run. A distinct log name fixed the harness.
+The original historical OOM cause remains unproved.
+
+### Remote CI and limits
+
+Exact implementation-head CI: 15/15 check runs, 3/3 workflows succeeded:
+[CI](https://github.com/gesriot/ferrite-cad/actions/runs/36128407243),
+[runtime layout](https://github.com/gesriot/ferrite-cad/actions/runs/36128366495),
+[PlaneGCS pin](https://github.com/gesriot/ferrite-cad/actions/runs/36128366476).
+Downloaded runtime logs independently confirm **214 distinct required gate
+names per OS**, 253 executions of those names including intentional repeats,
+and **72 ufbx reads per OS**, zero missing gates, skips or reader failures.
+All prior 208 names remain; six new names were added. CI regression checks
+for redraw scheduling and the prior Cut guards also passed on all three OSes.
+
+Review evidence is under `/private/tmp/ferrite-27b-review/` (logs, native/stub/
+mixed proof, recipe, SQL/geometry comparisons, CI audit and watchdog samples).
+No Linux/Windows window smoke, full pixel/Unity campaign or local large STEP
+corpus rerun was claimed. Remote CI above covers the existing full runtime
+campaign. Dependencies/native inputs are unchanged; no upstream library rebuild
+or inventory regeneration was required.

@@ -3607,3 +3607,25 @@ class: an untransformed XY plane, one unconstrained closed Line Sketch, one
 
 [Contract and recipe](edit-revolve-profile.md),
 [verification](edit-revolve-profile-verification.md).
+
+
+Independent §27B review completed native, real stub, mixed OCCT/no-solver
+and guarded macOS window checks. Numeric editing, drag with one-step Undo,
+Save Cancel, publication/Open and both exports passed for a smaller bushing
+and a cylinder-to-cone edit. Every GUI/CLI SQL cell and both STL/FBX pairs
+match; sources and saved identities are preserved. Viewer peak 199.4542 MiB,
+exit 0, swap 0. CI logs confirm 214 distinct required gate names and 72 ufbx
+reads per OS. Report counts were corrected; product code needed no change.
+[Independent evidence](edit-revolve-profile-verification.md#independent-macos-review--2026-09-25).
+
+**§27C — next: full-turn Revolve profiles closed on the axis (pending).**
+
+Allow bounded solid shafts, stepped shafts and cones, with one explicit Line
+of the profile on the sketch Y axis. Share creation and coordinate-edit
+policy, retain existing hollow-profile behavior, and name only actual faces:
+the axis Line generates no face and must never receive a fake one. Specify
+compatibility and topology-preserving edit boundaries before implementation;
+partial turns, other axes, multiple axis intervals and booleans remain outside
+this slice. Native history/archive, old-reader behavior, independent geometry,
+UI/CLI parity and atomic refusal are required. The cloud implementation leaves
+actual macOS GUI verification to the reviewer.
