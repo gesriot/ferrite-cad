@@ -290,13 +290,14 @@ left to the reviewer; the fixture generator below makes the documents.
   are green. That includes the new step "Discover Revolve profile
   constraints without native geometry".
 * **Native runtime and packaging** ([run 36262363899](https://github.com/gesriot/ferrite-cad/actions/runs/36262363899)):
-  * Linux ([job](https://github.com/gesriot/ferrite-cad/actions/runs/36262363899/job/108460495997))
-    and macOS ([job](https://github.com/gesriot/ferrite-cad/actions/runs/36262363899/job/108460495884))
+  * Linux ([job](https://github.com/gesriot/ferrite-cad/actions/runs/36262363899/job/108460495997)),
+    macOS ([job](https://github.com/gesriot/ferrite-cad/actions/runs/36262363899/job/108460495884))
+    and Windows ([job](https://github.com/gesriot/ferrite-cad/actions/runs/36262363899/job/108460496029))
     are green.
   * **What the tool returned.** It gives only the last 5000 lines of each
     job log, and the direct blob download is blocked, so only that tail
     was read here.
-  * **In that tail, on both OSes:**
+  * **In that tail, on all three OSes:**
     * the five new exact-name gates of the Revolve step `... ok`;
     * `FCAD_REVOLVE_CONSTRAINT_UFBX_EXECUTED`;
     * no `FAILED` and no panic;
