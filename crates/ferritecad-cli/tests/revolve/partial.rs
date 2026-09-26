@@ -612,21 +612,21 @@ fn native_partial_revolutions_measure_caps_names_cache_and_exports() {
                     if let Some(dir) = std::env::var_os("FCAD_REVOLVE_PARTIAL_ARTIFACTS") {
                         let dir = Path::new(&dir);
                         std::fs::create_dir_all(dir).expect("artifacts");
-                        std::fs::copy(
-                            out.with_extension("stl"),
-                            dir.join(format!("revolve-partial-{artifact}.stl")),
-                        )
-                        .expect("STL artifact");
-                        let fbx = dir.join(format!("revolve-partial-{artifact}.fbx"));
-                        let r = cli()
-                            .arg("export-fbx")
-                            .arg(&out)
-                            .arg("-o")
-                            .arg(&fbx)
-                            .arg("--json")
-                            .output()
-                            .expect("FBX");
-                        assert!(r.status.success(), "{r:?}");
+                        // Both at the default tessellation, the only one
+                        // export-fbx has, so the CI join compares one mesh.
+                        for (op, extension) in [("export-stl", "stl"), ("export-fbx", "fbx")] {
+                            let target =
+                                dir.join(format!("revolve-partial-{artifact}.{extension}"));
+                            let r = cli()
+                                .arg(op)
+                                .arg(&out)
+                                .arg("-o")
+                                .arg(&target)
+                                .arg("--json")
+                                .output()
+                                .expect("artifact");
+                            assert!(r.status.success(), "{r:?}");
+                        }
                     }
                     artifact += 1;
                 }

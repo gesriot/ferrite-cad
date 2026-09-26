@@ -370,3 +370,28 @@ if [ -n "${FCAD_REVOLVE_AXIS_FBX_DIR:-}" ]; then
     done
     echo "FCAD_REVOLVE_AXIS_UFBX_EXECUTED"
 fi
+if [ -n "${FCAD_REVOLVE_PARTIAL_FBX_DIR:-}" ]; then
+    # Hosted Windows images name the interpreter python rather than python3.
+    python="$(command -v python3 || command -v python || true)"
+    [ -n "$python" ] || { echo "error: no Python interpreter for the STL join" >&2; exit 1; }
+    # §27D: each sector is read by pinned ufbx twice — its identity channel,
+    # and every world-space triangle — and the triangles are joined against the
+    # STL of the same Body under (x, z, -y) * 0.001, winding included.
+    for name in revolve-partial-0 revolve-partial-1 revolve-partial-2; do
+        "$reader" --identity "$FCAD_REVOLVE_PARTIAL_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0$' "$work/$name-reader.txt"; then
+            echo "error: partial Revolve FBX was not independently read: $name" >&2
+            exit 1
+        fi
+        "$reader" --triangles "$FCAD_REVOLVE_PARTIAL_FBX_DIR/$name.fbx" > "$work/$name-triangles.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=[0-9]* failures=0$' "$work/$name-triangles.txt"; then
+            echo "error: partial Revolve FBX triangles were not read: $name" >&2
+            exit 1
+        fi
+        "$python" "$(native "$root/tools/fbx/stl-matches-fbx.py")" \
+            "$FCAD_REVOLVE_PARTIAL_FBX_DIR/$name.stl" "$(native "$work/$name-triangles.txt")" \
+            | tee "$work/$name-match.txt"
+        grep -q '^FCAD_STL_FBX_MATCH triangles=[1-9][0-9]* ' "$work/$name-match.txt"
+    done
+    echo "FCAD_REVOLVE_PARTIAL_UFBX_EXECUTED"
+fi
