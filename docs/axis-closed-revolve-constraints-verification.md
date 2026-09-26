@@ -188,7 +188,13 @@ OCCT without a solver (native env, no `planegcs` feature):
 Kernel-free stub build: 8 passed, of which 6 printed `skipped:` (4 solver,
 2 OCCT-without-solver). The two discovery/writer tests ran.
 
-REGRESSION_PLACEHOLDER
+Regression with the local PlaneGCS: `cargo test --no-fail-fast -p
+ferritecad-document -p ferritecad-jobs -p ferritecad-eval -p
+ferritecad-cli` with `planegcs` gives 684 passed, 1 ignored and 1 failed.
+The failure is the known N/A `validate::validation_really_read_only_permissions`,
+which cannot hold when the container runs as root. `cargo fmt --all --
+--check` is clean, and `cargo clippy` on the document, CLI and app crates,
+all targets, with `planegcs`, `-D warnings`, is clean.
 
 ### Mutations — local, executed, restored byte for byte
 
