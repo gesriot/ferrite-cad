@@ -562,17 +562,33 @@ fn native_partial_revolutions_measure_caps_names_cache_and_exports() {
                 assert_eq!(ids.len(), n);
                 let axis_id = axis_line(&p).map(|i| ids[i].clone());
                 assert_eq!(r["axis_curve_id"], json!(axis_id));
+                // §27F replaces §27D's refusal: the sector's profile is
+                // editable, as a kind of its own that states the angle.
                 let row = &c["sketches"][0];
-                assert_eq!(row["editable"], false);
-                assert!(
-                    row["refusal"]
-                        .as_str()
-                        .expect("refusal")
-                        .contains("partial Revolve"),
-                    "{row}"
+                assert_eq!(row["editable"], true, "{row}");
+                assert_eq!(row["refusal"], Value::Null);
+                assert_eq!(
+                    row["vertices"]
+                        .as_array()
+                        .expect("vertices")
+                        .iter()
+                        .map(|v| v["curve_id"].as_str().expect("id").to_owned())
+                        .collect::<Vec<_>>(),
+                    ids
                 );
-                assert_eq!(row["vertices"], Value::Null);
-                assert_eq!(row["profile_feature"], Value::Null);
+                let use_ = &row["profile_feature"];
+                assert_eq!(use_["angle_deg"], json!(degrees));
+                assert_eq!(use_["extent"], "partial_turn");
+                assert_eq!(use_["feature_id"], r["feature_id"]);
+                assert_eq!(
+                    use_["kind"],
+                    if solid {
+                        "partial_turn_revolve_axis_closed"
+                    } else {
+                        "partial_turn_revolve"
+                    }
+                );
+                assert_eq!(use_["axis_curve_id"], json!(axis_id));
                 assert_eq!(capability_rows(&out), expected_capabilities(solid));
                 assert_eq!(payload_version(&out), if solid { 4 } else { 3 });
 
@@ -804,54 +820,89 @@ fn native_partial_revolve_guards_delivery_and_cancellation() {
     assert_eq!(entries(d.path()), names, "no scratch left behind");
 }
 
+/// §27F replaces §27D's "a sector refuses every coordinate edit" with the
+/// class contract: a sector's profile is edited like a full turn's, and every
+/// edit outside the class it states is refused atomically, by name, with
+/// nothing written and the source unchanged.
 #[test]
-fn native_saved_partial_revolve_refuses_coordinate_editing_atomically() {
+fn native_saved_partial_revolve_refuses_coordinate_edits_outside_the_class() {
     if !native() {
         return;
     }
     let d = tempfile::tempdir().expect("dir");
-    let input = d.path().join("sector.json");
-    let source = d.path().join("sector.fcad");
-    request_v2(&input, &BUSHING, angle(90.));
-    reply(create(&input, &source).output().expect("create"), 0);
-    let before = std::fs::read(&source).expect("source");
-    let c = inspect(&source);
-    let sketch = c["sketches"][0]["sketch_id"]
-        .as_str()
-        .expect("id")
-        .to_owned();
-    let version = c["content_version"].as_str().expect("version").to_owned();
-    let ids: Vec<String> = c["revolves"][0]["profile"]["segments"]
-        .as_array()
-        .expect("segments")
-        .iter()
-        .map(|s| s["curve_id"].as_str().expect("id").to_owned())
-        .collect();
-    let request = d.path().join("edit.json");
-    write_edit(
-        &request,
-        &ids,
-        &[[5., 0.], [10., 0.], [10., 15.], [5., 15.]],
-    );
     let out = d.path().join("edited.fcad");
-    let names = entries(d.path());
-    let v = edit_reply(
-        edit(&source, &sketch, &version, &request, &out)
-            .output()
-            .expect("edit"),
-        2,
-    );
-    assert_eq!(v["error"]["kind"], "unsupported", "{v}");
-    assert!(
-        v["error"]["message"]
-            .as_str()
-            .expect("message")
-            .contains("partial Revolve"),
-        "{v}"
-    );
-    assert_eq!(entries(d.path()), names);
-    assert_eq!(std::fs::read(&source).expect("source"), before);
-    assert_eq!(c["edit_extrude"]["available"], false);
+    let request = d.path().join("edit.json");
+    for (name, points, cases) in [
+        (
+            "bushing",
+            BUSHING.to_vec(),
+            vec![
+                (
+                    "hollow to solid",
+                    vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
+                    "cannot change between hollow and solid",
+                ),
+                (
+                    "across the axis",
+                    vec![[-2., 0.], [10., 0.], [10., 15.], [-2., 15.]],
+                    "positive radial side",
+                ),
+                (
+                    "winding",
+                    vec![[4., 15.], [10., 15.], [10., 0.], [4., 0.]],
+                    "winding",
+                ),
+            ],
+        ),
+        (
+            "cylinder",
+            CYLINDER.to_vec(),
+            vec![
+                (
+                    "solid to hollow",
+                    vec![[2., 0.], [10., 0.], [10., 15.], [2., 15.]],
+                    "cannot change between solid and hollow",
+                ),
+                (
+                    "the axis on another Line",
+                    vec![[0., 15.], [0., 0.], [10., 0.], [10., 15.]],
+                    "the axis Line cannot change",
+                ),
+            ],
+        ),
+    ] {
+        let input = d.path().join(format!("{name}.json"));
+        let source = d.path().join(format!("{name}.fcad"));
+        request_v2(&input, &points, angle(137.5));
+        reply(create(&input, &source).output().expect("create"), 0);
+        let before = std::fs::read(&source).expect("source");
+        let c = inspect(&source);
+        let row = &c["sketches"][0];
+        assert_eq!(row["editable"], true, "{row}");
+        let sketch = row["sketch_id"].as_str().expect("id").to_owned();
+        let version = c["content_version"].as_str().expect("version").to_owned();
+        let ids: Vec<String> = row["vertices"]
+            .as_array()
+            .expect("vertices")
+            .iter()
+            .map(|v| v["curve_id"].as_str().expect("id").to_owned())
+            .collect();
+        for (why, to, wanted) in cases {
+            write_edit(&request, &ids, &to);
+            let names = entries(d.path());
+            let v = edit_reply(
+                edit(&source, &sketch, &version, &request, &out)
+                    .output()
+                    .expect("edit"),
+                2,
+            );
+            let message = v["error"]["message"].as_str().expect("message");
+            assert!(message.contains(wanted), "{name}, {why}: {v}");
+            assert_eq!(entries(d.path()), names, "{name}, {why}: nothing written");
+            assert_eq!(std::fs::read(&source).expect("source"), before);
+        }
+        assert_eq!(c["edit_extrude"]["available"], false);
+    }
 }
 
 /// A sector document written without a kernel: the layout and the
@@ -926,7 +977,16 @@ fn partial_revolution_payload_capabilities_and_discovery_without_kernel() {
         let c = inspect(&path);
         assert_eq!(c["revolves"][0]["extent"], "partial_turn");
         assert_eq!(c["revolves"][0]["angle_deg"], 137.5);
-        assert_eq!(c["sketches"][0]["editable"], false);
+        assert_eq!(c["sketches"][0]["editable"], true);
+        assert_eq!(
+            c["sketches"][0]["profile_feature"]["kind"],
+            if solid {
+                "partial_turn_revolve_axis_closed"
+            } else {
+                "partial_turn_revolve"
+            }
+        );
+        assert_eq!(c["sketches"][0]["profile_feature"]["angle_deg"], 137.5);
         // A header claiming the full-turn layout over a sector is refused: it
         // would hide the angle from a build that reads that layout.
         {

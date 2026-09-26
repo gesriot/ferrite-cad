@@ -433,6 +433,35 @@ Discovery аддитивна: у каждой записи `revolves[]` есть
 
 [Контракт §27E и исполняемый рецепт](edit-revolve-angle.md).
 
+### Правка профиля сохранённого сектора (§27F)
+
+Та же команда `edit-sketch-copy` и тот же request v1: все сохранённые
+`curve_id` по одному разу, в сохранённом порядке. Угла, оси и extent в
+запросе нет.
+
+Строка `sketches[]` сектора теперь `editable:true`, у неё есть `vertices`,
+а `profile_feature` получает один из двух новых видов:
+
+```json
+{"kind":"partial_turn_revolve","feature_id":"…","body_id":"…","axis":"sketch_y",
+ "extent":"partial_turn","angle_deg":137.5,"axis_clearance_mm":1e-6}
+{"kind":"partial_turn_revolve_axis_closed","feature_id":"…","body_id":"…",
+ "axis":"sketch_y","extent":"partial_turn","angle_deg":220,
+ "axis_curve_id":"…","off_axis_clearance_mm":1e-6}
+```
+
+Прежние виды и поля не меняются. Клиент, не знающий новых видов,
+останавливается на них.
+
+Request этого маршрута строже прежнего:
+- исходные байты десериализуются в строгий тип один раз;
+- дубли ключей на любом уровне, включая записанные через JSON escape,
+  отказываются как `input`;
+- запрос и каждая вершина обязаны быть JSON-объектами.
+
+Остальные команды не менялись.
+[Контракт §27F и исполняемый рецепт](edit-partial-revolve-profile.md).
+
 ## Правка сохранённой кольцевой пары (§25M)
 
 `ferritecad edit-annular <source.fcad> --sketch UUID --expect-version HASH

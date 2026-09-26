@@ -65,9 +65,13 @@ the sector has two separately named end faces.
 [Partial Revolve contract and recipe](docs/partial-angle-revolve.md).
 A saved sector's angle is changed with **Edit Revolve angle** or
 `edit-revolve-angle` into a new copy. The copy keeps every object, Line and
-cap UUID, and the angle is the only thing that changes. A sector's
-coordinates are still not editable, and a full turn does not become a
-sector. [Angle edit contract and recipe](docs/edit-revolve-angle.md).
+cap UUID, and the angle is the only thing that changes. A full turn does
+not become a sector. [Angle edit contract and recipe](docs/edit-revolve-angle.md).
+A saved sector's profile is edited like a full turn's, in the same **Edit
+Sketch** editor (drag or exact X/Y) or with `edit-sketch-copy`. The saved
+angle, axis and every Line and cap UUID are kept; a part with a bore stays
+one and the axis Line stays on the axis.
+[Sector profile edit contract and recipe](docs/edit-partial-revolve-profile.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

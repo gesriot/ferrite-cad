@@ -124,9 +124,10 @@ from the same pinned `ExtrudeEditSource` reading and the same
   priority as `circle_edit`/`annulus_edit`.
 * **The saved angle** stays in the existing `angle_deg`. No existing field
   changes type or meaning.
-* **Sketch rows** still report a sector's Sketch as `editable: false` with
-  the §27D refusal, because coordinate editing of a partial Sketch remains
-  unavailable.
+* **Sketch rows** reported a sector's Sketch as `editable: false` with
+  the §27D refusal. §27F makes it editable
+  ([contract](edit-partial-revolve-profile.md)). The angle stays this edit's
+  alone.
 
 The Rust catalogue is additive: `ExtrudeEditSource.revolve_angles:
 Vec<RevolveAngleChoice>` is computed from the same `objects()`. The shared
@@ -258,8 +259,8 @@ It never parses prose beyond the `print-topology` count.
   * the file it was made from is byte-identical;
   * SQL cells: only the Revolve row's `payload`/`payload_hash` and
     `meta.modified_at` differ;
-  * `angle_deg` is the new angle, `angle_edit` is available, and the Sketch
-    is still refused, naming the new sector;
+  * `angle_deg` is the new angle and `angle_edit` is available. Since
+    §27F, the Sketch is editable and states the new angle;
   * `validate` and `rebuild --cold` pass;
   * `print-topology` resolves the same number of names as the source,
     including both caps.
@@ -497,8 +498,9 @@ for name, points in PROFILES.items():
         [r] = c["revolves"]
         assert r["angle_deg"] == degrees and r["extent"] == "partial_turn"
         assert r["angle_edit"]["available"]
-        assert not c["sketches"][0]["editable"]
-        assert f"partial Revolve ({degrees:g}° sector)" in c["sketches"][0]["refusal"]
+        # §27F: the profile is editable and states the copy's angle.
+        assert c["sketches"][0]["editable"]
+        assert c["sketches"][0]["profile_feature"]["angle_deg"] == degrees
         run(["validate", out])
         assert "1 shape built" in run(["rebuild", "--cold", out])
         topology = run(["print-topology", out])

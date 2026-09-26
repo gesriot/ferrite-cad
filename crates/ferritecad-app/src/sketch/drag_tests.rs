@@ -1522,3 +1522,313 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
     assert_eq!(export(&edited), export(&peer), "STL and FBX bytes");
     assert_eq!(std::fs::read(&ui).expect("source"), source_bytes);
 }
+
+/// §27F through the real widgets: a saved 220° sector of a solid cylinder is
+/// opened from its own Edit Sketch row, shows its angle read-only, is edited
+/// by one drag and exact fields, refuses an axis end moved off the axis, and
+/// the shared worker and the peer CLI publish the same copy — the same SQL,
+/// the same stored angle and names, and the same STL and FBX bytes.
+#[test]
+fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
+    use crate::creates::tests::{ferritecad, read_semantics};
+    use ferritecad_document::{Document, ObjectPayload, RevolveExtent};
+    use ferritecad_kernel::OperationContext;
+    if !ferritecad_occt::is_available() {
+        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+        eprintln!("skipped: no OCCT for the partial Revolve profile worker");
+        return;
+    }
+    let root = tempfile::tempdir().expect("directory");
+    let source = root.path().join("sector.fcad");
+    let input = root.path().join("create.json");
+    std::fs::write(
+        &input,
+        r#"{"request_version":2,"points_mm":[[0,0],[10,0],[10,15],[0,15]],"axis":"sketch_y","extent":{"kind":"angle","degrees":220}}"#,
+    )
+    .expect("request");
+    let p = std::process::Command::new(ferritecad())
+        .arg("create-sketch-revolve")
+        .arg(&input)
+        .arg("-o")
+        .arg(&source)
+        .arg("--json")
+        .output()
+        .expect("create");
+    assert!(p.status.success(), "{p:?}");
+    let source_bytes = std::fs::read(&source).expect("source");
+    let reading = {
+        let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+        ferritecad_scene::snapshot_of(
+            &source,
+            &mut k,
+            |k, b| k.import_step(b),
+            &Default::default(),
+            &OperationContext::default(),
+        )
+        .expect("accepted scene")
+        .edit_source
+        .expect("accepted edit facts")
+    };
+    let choice = &reading.sketches[0];
+    assert_eq!(choice.refusal, None);
+    let saved = choice.vertices.clone().expect("editable");
+    let Some(SketchProfileUse::PartialRevolve {
+        axis_segment: Some(axis),
+        degrees,
+        ..
+    }) = choice.profile_use
+    else {
+        panic!("a solid sector: {:?}", choice.profile_use)
+    };
+    assert_eq!(degrees.degrees(), 220.);
+    assert_eq!(axis, saved[3].curve_id, "(0,15)→(0,0) lies on the axis");
+
+    // Opened from its own row among the saved-object actions.
+    let ctx = egui::Context::default();
+    let mut e = Editor::default();
+    super::tests::click_saved_action(
+        &ctx,
+        &mut e,
+        &source,
+        &reading,
+        &format!("Edit Sketch Profile — {}…", choice.sketch),
+    );
+    assert!(e.editing.is_some(), "the row opened the Sketch editor");
+    assert_eq!(
+        e.draft.as_ref().expect("draft").feature,
+        Feature::RevolveAngle
+    );
+    assert_eq!(e.draft.as_ref().expect("draft").angle, "220");
+    frame(&ctx, &mut e, vec![]);
+    let out = frame(&ctx, &mut e, vec![]);
+    let texts: Vec<String> = out
+        .shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+            _ => None,
+        })
+        .collect();
+    for wanted in [
+        "XY · mm · Line polygon · Revolve through an angle about the sketch Y axis · NewBody",
+        "Edit exact coordinates. Curve IDs, order, closure and the saved 220° sector about Y \
+         are retained.",
+        "Revolve: the saved sector, right-handed about the sketch Y axis through X = 0. Its \
+         angle is kept; change it with Edit Revolve angle.",
+        "Angle °",
+        "220",
+        "axis (Y) at X = 0 · radius X →",
+    ] {
+        assert!(texts.iter().any(|t| t == wanted), "{wanted} in {texts:?}");
+    }
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.starts_with("Solid part: edge 4 (Line "))
+    );
+    for absent in ["Feature:", "Revolve 360°", "Blind height mm"] {
+        assert!(!texts.iter().any(|t| t == absent), "{absent} shown");
+    }
+    choose(&ctx, &mut e, "1 mm");
+
+    // One drag, one Undo step: the top outer corner in by 5 mm.
+    let original = e.draft.clone();
+    let at = vertex(&ctx, &mut e, 2);
+    let dx = -(5. * e.canvas.scale) - 1.25;
+    press(&ctx, &mut e, at);
+    for fraction in [0.25, 0.5, 0.75, 1.] {
+        move_to(&ctx, &mut e, at + egui::vec2(dx * fraction, 0.));
+    }
+    button(&ctx, &mut e, at + egui::vec2(dx, 0.), false);
+    assert_eq!(
+        e.draft.as_ref().expect("draft").points[2],
+        ["5".to_owned(), "15".to_owned()]
+    );
+    assert_eq!(e.undo.len(), 1);
+    let dragged = e.draft.clone();
+    choose(&ctx, &mut e, "Undo draft");
+    assert_eq!(e.draft, original);
+    choose(&ctx, &mut e, "Redo draft");
+    assert_eq!(e.draft, dragged);
+    // Exact fields: the top of the part down to 12.5 on both vertices.
+    replace_field(&ctx, &mut e, "15", "12.5");
+    replace_field(&ctx, &mut e, "15", "12.5");
+    let exact = e.draft.clone().expect("draft");
+    assert_eq!(
+        exact.points,
+        [["0", "0"], ["10", "0"], ["5", "12.5"], ["0", "12.5"]]
+            .map(|p| p.map(str::to_owned))
+            .to_vec()
+    );
+    assert_eq!(exact.angle, "220", "the angle is not part of the edit");
+    // An axis end dragged off the axis is refused in preview and cancelled.
+    let at = vertex(&ctx, &mut e, 0);
+    let off = at + egui::vec2(3. * e.canvas.scale, 0.);
+    press(&ctx, &mut e, at);
+    move_to(&ctx, &mut e, off);
+    let refused = e.edit_request().expect_err("off the axis").to_string();
+    assert!(refused.contains("touches the axis alone"), "{refused}");
+    let out = frame(&ctx, &mut e, vec![]);
+    assert!(!out.shapes.iter().any(|c| matches!(&c.shape,
+        egui::Shape::Text(t) if t.galley.text() == "Save edited copy…")));
+    frame(&ctx, &mut e, vec![key(egui::Key::Escape)]);
+    button(&ctx, &mut e, off, false);
+    assert_eq!(e.draft.as_ref(), Some(&exact));
+
+    choose(&ctx, &mut e, "Save edited copy…");
+    let request = e.take_edit_request().expect("submit");
+    assert_eq!(request.expected, reading.version);
+    assert_eq!(
+        request
+            .vertices
+            .iter()
+            .map(|v| v.curve_id)
+            .collect::<Vec<_>>(),
+        saved.iter().map(|v| v.curve_id).collect::<Vec<_>>()
+    );
+    let kept = e.draft.clone();
+    let mut edits = crate::edits::Edits::default();
+    for occupied in [true, false] {
+        let mut request = request.clone();
+        request.destination = root
+            .path()
+            .join(if occupied { "occupied.fcad" } else { "ui.fcad" });
+        if occupied {
+            std::fs::write(&request.destination, b"keep").expect("sentinel");
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let generation = edits
+            .start_sketch(request.clone(), move |r, g, c| {
+                crate::edits::spawn_sketch_edit(r, c, move |result| {
+                    tx.send((g, result)).expect("reply")
+                })
+            })
+            .expect("worker");
+        let (g, result) = rx.recv().expect("completed");
+        assert_eq!(g, generation);
+        let path = finish_edit(&mut e, &mut edits, g, result);
+        if occupied {
+            assert!(path.is_none(), "a taken destination publishes nothing");
+            assert_eq!(e.draft, kept, "and keeps the draft");
+            assert_eq!(
+                std::fs::read(root.path().join("occupied.fcad")).expect("sentinel"),
+                b"keep"
+            );
+        } else {
+            let path = path.expect("published");
+            assert!(!e.active());
+            e.draft_load_finished(&path, false);
+            assert_eq!(e.draft, kept, "a failed Open restores the edited draft");
+            e.draft_published(&path);
+            e.draft_load_finished(&path, true);
+            assert!(!e.active());
+        }
+    }
+
+    // The peer CLI, the same request, the same source.
+    let edit = root.path().join("edit.json");
+    let vertices: Vec<String> = request
+        .vertices
+        .iter()
+        .map(|v| {
+            format!(
+                r#"{{"curve_id":"{}","start_mm":[{},{}]}}"#,
+                v.curve_id, v.start_mm[0], v.start_mm[1]
+            )
+        })
+        .collect();
+    std::fs::write(
+        &edit,
+        format!(
+            r#"{{"request_version":1,"vertices":[{}]}}"#,
+            vertices.join(",")
+        ),
+    )
+    .expect("edit request");
+    let ui = root.path().join("ui.fcad");
+    let peer = root.path().join("cli.fcad");
+    let p = std::process::Command::new(ferritecad())
+        .arg("edit-sketch-copy")
+        .arg(&source)
+        .arg("--sketch")
+        .arg(choice.sketch.to_string())
+        .arg("--expect-version")
+        .arg(reading.version.content.to_string())
+        .arg("--request")
+        .arg(&edit)
+        .arg("-o")
+        .arg(&peer)
+        .arg("--json")
+        .output()
+        .expect("peer CLI");
+    assert!(p.status.success(), "{p:?}");
+    assert_eq!(sql_facts(&ui), sql_facts(&peer), "every SQL cell");
+    assert_eq!(read_semantics(&ui), read_semantics(&peer));
+    let a = Document::open_read_only(&ui).expect("UI");
+    let original = Document::open_read_only(&source).expect("source");
+    assert_eq!(
+        a.topology_refs().expect("refs"),
+        original.topology_refs().expect("refs"),
+        "no new names, both caps kept"
+    );
+    let revolve = |d: &Document| {
+        d.objects()
+            .expect("objects")
+            .into_iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Revolve(_)))
+            .expect("Revolve")
+    };
+    assert_eq!(
+        revolve(&a),
+        revolve(&original),
+        "the Revolve row, angle included"
+    );
+    let ObjectPayload::Revolve(r) = revolve(&a).payload else {
+        panic!("a Revolve")
+    };
+    assert!(matches!(r.extent, RevolveExtent::Partial { degrees } if degrees.degrees() == 220.));
+    original.close().expect("close");
+    // A frustum R = 10, r = 5, h = 12.5, turned through 220°.
+    let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+    let context = OperationContext::default();
+    let built = ferritecad_eval::rebuild_cold(&a, &mut kernel, &context).expect("cold");
+    let body = a
+        .objects()
+        .expect("objects")
+        .iter()
+        .find(|o| matches!(o.payload, ObjectPayload::Body(_)))
+        .map(|o| o.id)
+        .expect("Body");
+    let (faces, volume) = kernel
+        .shape_stats(built.shape(body).expect("one solid"))
+        .expect("stats");
+    assert_eq!(
+        faces, 5,
+        "two discs, one cone, two caps, no face for the axis"
+    );
+    let expected = std::f64::consts::PI * 12.5 / 3. * (100. + 50. + 25.) * 220. / 360.;
+    assert!(
+        (volume - expected).abs() < 1e-9 * expected,
+        "{volume} != {expected}"
+    );
+    built.release_all(&mut kernel);
+    a.close().expect("close");
+    let export = |path: &std::path::Path| {
+        let mut bytes = Vec::new();
+        for (op, extension) in [("export-stl", "stl"), ("export-fbx", "fbx")] {
+            let out = path.with_extension(extension);
+            let p = std::process::Command::new(ferritecad())
+                .arg(op)
+                .arg(path)
+                .arg("-o")
+                .arg(&out)
+                .output()
+                .expect("export");
+            assert!(p.status.success(), "{p:?}");
+            bytes.push(std::fs::read(&out).expect("bytes"));
+        }
+        bytes
+    };
+    assert_eq!(export(&ui), export(&peer), "STL and FBX bytes, no mapping");
+    assert_eq!(std::fs::read(&source).expect("source"), source_bytes);
+}

@@ -22,7 +22,7 @@ use std::sync::{
 const EDIT_ANGLE: &str = "edit-revolve-angle";
 
 /// A part with a bore, stepped, at fractional sizes, shifted along Y.
-const STEPPED_SHIFTED: [[f64; 2]; 6] = [
+pub(super) const STEPPED_SHIFTED: [[f64; 2]; 6] = [
     [4.25, 1.5],
     [10.75, 1.5],
     [10.75, 6.5],
@@ -31,9 +31,10 @@ const STEPPED_SHIFTED: [[f64; 2]; 6] = [
     [4.25, 16.25],
 ];
 /// Solid, closed on the axis along its last Line, below and above Y = 0.
-const CYLINDER_SHIFTED: [[f64; 2]; 4] = [[0., -2.5], [9.75, -2.5], [9.75, 12.25], [0., 12.25]];
+pub(super) const CYLINDER_SHIFTED: [[f64; 2]; 4] =
+    [[0., -2.5], [9.75, -2.5], [9.75, 12.25], [0., 12.25]];
 /// Solid, closed on the axis, a cone off the origin.
-const CONE_SHIFTED: [[f64; 2]; 3] = [[0., 0.5], [8.5, 0.5], [0., 13.75]];
+pub(super) const CONE_SHIFTED: [[f64; 2]; 3] = [[0., 0.5], [8.5, 0.5], [0., 13.75]];
 
 pub(super) fn angle_edit(
     source: &Path,
@@ -67,12 +68,12 @@ pub(super) fn angle_reply(out: Output, code: i32) -> Value {
     v
 }
 
-fn write_angle(path: &Path, degrees: f64) {
+pub(super) fn write_angle(path: &Path, degrees: f64) {
     write(path, &json!({"request_version":1,"angle_deg":degrees}));
 }
 
 /// The Revolve discovery reports, and the version to pin.
-fn target(path: &Path) -> (String, String, Value) {
+pub(super) fn target(path: &Path) -> (String, String, Value) {
     let c = inspect(path);
     let [r] = c["revolves"].as_array().expect("revolves").as_slice() else {
         panic!("one Revolve")
@@ -132,7 +133,7 @@ fn check_angle_cells(source: &Path, copy: &Path, feature: &str, changes: bool) {
     }
 }
 
-fn revolve_payload(path: &Path) -> Vec<u8> {
+pub(super) fn revolve_payload(path: &Path) -> Vec<u8> {
     let sql =
         rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .expect("SQL");
@@ -144,7 +145,7 @@ fn revolve_payload(path: &Path) -> Vec<u8> {
     .expect("payload")
 }
 
-fn refs(path: &Path) -> Vec<TopologyRef> {
+pub(super) fn refs(path: &Path) -> Vec<TopologyRef> {
     let d = Document::open_read_only(path).expect("open");
     let mut refs = d.topology_refs().expect("refs");
     d.close().expect("close");
@@ -152,7 +153,7 @@ fn refs(path: &Path) -> Vec<TopologyRef> {
     refs
 }
 
-fn default_stl(path: &Path, out: &Path) -> Vec<u8> {
+pub(super) fn default_stl(path: &Path, out: &Path) -> Vec<u8> {
     let r = cli()
         .arg("export-stl")
         .arg(path)
@@ -243,14 +244,18 @@ fn native_revolve_angle_edits_measure_caps_names_cache_sql_and_exports() {
             assert_eq!(r["angle_deg"], json!(degrees));
             assert_eq!(r["extent"], "partial_turn");
             assert_eq!(r["angle_edit"]["available"], true);
+            // §27F: the sector's profile is editable, and reports the angle
+            // this copy now has.
             let sketch = &c["sketches"][0];
-            assert_eq!(sketch["editable"], false);
-            assert!(
-                sketch["refusal"]
-                    .as_str()
-                    .expect("refusal")
-                    .contains(&format!("partial Revolve ({degrees}° sector)")),
-                "{sketch}"
+            assert_eq!(sketch["editable"], true, "{sketch}");
+            assert_eq!(sketch["profile_feature"]["angle_deg"], json!(degrees));
+            assert_eq!(
+                sketch["profile_feature"]["kind"],
+                if solid {
+                    "partial_turn_revolve_axis_closed"
+                } else {
+                    "partial_turn_revolve"
+                }
             );
 
             // Every archive the chain has built so far, under this copy's
@@ -380,7 +385,7 @@ fn native_revolve_angle_edits_measure_caps_names_cache_sql_and_exports() {
 
 /// A sector written without a kernel: a hollow profile turned through
 /// `degrees`, with its Line faces and both cap names.
-fn stub_sector(path: &Path, degrees: f64) -> ObjectId {
+pub(super) fn stub_sector(path: &Path, degrees: f64) -> ObjectId {
     let (revolve, _) = write_revolve_document(path, &BUSHING);
     let sketch = doc_sketch(path);
     let mut doc = Document::open(path).expect("open");

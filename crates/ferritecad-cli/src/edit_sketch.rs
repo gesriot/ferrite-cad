@@ -55,8 +55,26 @@ fn result(args: &EditSketchArgs) -> Result<EditedSketch> {
     if bytes.len() > 65536 {
         return Err(CadError::input("sketch request exceeds 65536 bytes"));
     }
+    // One strict decode of the original bytes: the derived shapes refuse
+    // unknown and duplicate keys at every level, escaped duplicates included,
+    // which a detour through `Value` would silently collapse (§27E review).
     let input: Input = serde_json::from_slice(&bytes)
         .map_err(|e| CadError::input(format!("invalid sketch edit JSON: {e}")))?;
+    // The derive also takes a struct from a JSON array in field order;
+    // `[1, [...]]` is not a request anybody wrote, at the top or per vertex.
+    // Only the shape is read here — the request itself is `input`.
+    let objects = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(serde_json::Value::Object(map)) => map
+            .get("vertices")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|all| all.iter().all(serde_json::Value::is_object)),
+        _ => false,
+    };
+    if !objects {
+        return Err(CadError::input(
+            "invalid sketch edit JSON: the request and each vertex must be objects",
+        ));
+    }
     if input.request_version != 1 {
         return Err(CadError::unsupported(
             "unsupported sketch edit request_version; expected 1",

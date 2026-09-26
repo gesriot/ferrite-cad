@@ -483,11 +483,21 @@ impl Editor {
         };
         // The saved feature decides what the draft shows. A Revolve has no
         // height to show, so none is invented; the editor offers no switch.
-        let (height, feature) = match profile_use {
-            SketchProfileUse::BlindExtrude { height_mm, .. } => {
-                (height_mm.to_string(), Feature::Extrude)
+        // §27F: a sector shows its saved angle, which the edit keeps.
+        let (height, feature, angle) = match profile_use {
+            SketchProfileUse::BlindExtrude { height_mm, .. } => (
+                height_mm.to_string(),
+                Feature::Extrude,
+                State::default().angle,
+            ),
+            SketchProfileUse::FullTurnRevolve { .. } => {
+                (String::new(), Feature::Revolve, State::default().angle)
             }
-            SketchProfileUse::FullTurnRevolve { .. } => (String::new(), Feature::Revolve),
+            SketchProfileUse::PartialRevolve { degrees, .. } => (
+                String::new(),
+                Feature::RevolveAngle,
+                degrees.degrees().to_string(),
+            ),
         };
         self.dismiss();
         self.draft = Some(State {
@@ -498,7 +508,7 @@ impl Editor {
             closed: true,
             height,
             feature,
-            angle: State::default().angle,
+            angle,
         });
         self.canvas
             .fit(&vertices.iter().map(|v| v.start_mm).collect::<Vec<_>>());
@@ -1298,18 +1308,35 @@ impl Editor {
                  solid part. The profile may not cross the axis or touch it at a single point.",
             );
         }
-        ui.label(if self.editing.is_some() && revolve {
-            "Edit exact coordinates. Curve IDs, order, closure and the saved full turn about Y \
-             are retained."
-        } else if self.editing.is_some() {
-            "Edit exact coordinates. Curve IDs, order, closure and height are retained."
-        } else {
-            "Click to add vertices, or enter exact coordinates. Last edge closes to vertex 1."
+        let sector = self
+            .draft
+            .as_ref()
+            .filter(|d| d.feature == Feature::RevolveAngle)
+            .map(|d| d.angle.clone());
+        ui.label(match (&self.editing, &sector) {
+            (Some(_), Some(angle)) => format!(
+                "Edit exact coordinates. Curve IDs, order, closure and the saved {angle}° sector \
+                 about Y are retained."
+            ),
+            (Some(_), None) if revolve => "Edit exact coordinates. Curve IDs, order, closure and \
+                 the saved full turn about Y are retained."
+                .to_owned(),
+            (Some(_), None) => {
+                "Edit exact coordinates. Curve IDs, order, closure and height are retained."
+                    .to_owned()
+            }
+            (None, _) => {
+                "Click to add vertices, or enter exact coordinates. Last edge closes to vertex 1."
+                    .to_owned()
+            }
         });
         if let Some((request, choice)) = &self.editing {
             // §27C: the saved class of a Revolve is fixed. A solid part names
             // the one Line that lies on the axis; it stays there.
-            if let Some(SketchProfileUse::FullTurnRevolve { axis_segment, .. }) = choice.profile_use
+            if let Some(
+                SketchProfileUse::FullTurnRevolve { axis_segment, .. }
+                | SketchProfileUse::PartialRevolve { axis_segment, .. },
+            ) = choice.profile_use
             {
                 ui.label(match axis_segment {
                     Some(line) => {
@@ -1462,18 +1489,28 @@ impl Editor {
             } else if draft.feature == Feature::RevolveAngle {
                 ui.horizontal(|ui| {
                     ui.label("Angle °");
-                    ui.add(
+                    // A saved sector's angle is shown, not edited here: the
+                    // angle has its own edit (§27E).
+                    ui.add_enabled(
+                        self.editing.is_none(),
                         egui::TextEdit::singleline(&mut draft.angle)
                             .char_limit(64)
                             .desired_width(100.),
                     );
                 });
-                ui.label(format!(
-                    "Revolve: a sector from the profile, right-handed about the sketch Y axis \
-                     through X = 0; {}° to {}°. For 360° choose Revolve 360°.",
-                    RevolveAngle::MIN_DEGREES,
-                    RevolveAngle::MAX_DEGREES
-                ));
+                if self.editing.is_some() {
+                    ui.label(
+                        "Revolve: the saved sector, right-handed about the sketch Y axis through \
+                         X = 0. Its angle is kept; change it with Edit Revolve angle.",
+                    );
+                } else {
+                    ui.label(format!(
+                        "Revolve: a sector from the profile, right-handed about the sketch Y axis \
+                         through X = 0; {}° to {}°. For 360° choose Revolve 360°.",
+                        RevolveAngle::MIN_DEGREES,
+                        RevolveAngle::MAX_DEGREES
+                    ));
+                }
             } else {
                 ui.label("Revolve: one full turn (360°) about the sketch Y axis, through X = 0.");
             }
@@ -3725,7 +3762,7 @@ mod tests {
 
     /// Scrolls the saved-object actions until `label` is fully visible, then
     /// clicks it through real pointer input.
-    fn click_saved_action(
+    pub(super) fn click_saved_action(
         ctx: &egui::Context,
         e: &mut Editor,
         path: &Path,
@@ -3836,19 +3873,15 @@ mod tests {
         assert_eq!(angle.refusal, None);
         assert_eq!(angle.degrees, Some(137.5));
         let feature = angle.feature;
-        // The sector's coordinates stay refused, by name.
+        // §27F: the sector's coordinates are a separate, available edit.
         let sketch = &reading.sketches[0];
-        assert!(
-            sketch
-                .refusal
-                .as_deref()
-                .is_some_and(|r| r.contains("partial Revolve (137.5° sector)")),
-            "{:?}",
-            sketch.refusal
-        );
+        assert_eq!(sketch.refusal, None);
+        assert!(matches!(
+            sketch.profile_use,
+            Some(SketchProfileUse::PartialRevolve { degrees, .. }) if degrees.degrees() == 137.5
+        ));
 
         let mut e = Editor::default();
-        assert!(!e.begin_edit(&source, &reading, sketch.sketch));
         let ctx = egui::Context::default();
         click_saved_action(
             &ctx,

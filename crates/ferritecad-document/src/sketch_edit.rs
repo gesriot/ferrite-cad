@@ -38,6 +38,16 @@ pub enum SketchProfileUse {
         body: ObjectId,
         axis_segment: Option<StableEntityId>,
     },
+    /// A partial turn about the sketch Y axis, NewBody (§27D); edited by
+    /// §27F. The same profile policy as a full turn, against the class the
+    /// Revolve states; `degrees` is the saved angle, reported and kept, and
+    /// never part of a coordinate edit.
+    PartialRevolve {
+        feature: ObjectId,
+        body: ObjectId,
+        axis_segment: Option<StableEntityId>,
+        degrees: crate::RevolveAngle,
+    },
 }
 
 impl SketchProfileUse {
@@ -51,7 +61,8 @@ impl SketchProfileUse {
                     .points()
                     .to_vec()
             }
-            Self::FullTurnRevolve { axis_segment, .. } => {
+            Self::FullTurnRevolve { axis_segment, .. }
+            | Self::PartialRevolve { axis_segment, .. } => {
                 let lines: Vec<_> = vertices.iter().map(|v| (v.curve_id, v.start_mm)).collect();
                 crate::stated_revolution(axis_segment, &lines)?
                     .points()
@@ -299,36 +310,41 @@ fn revolve_frame<'a>(
         object,
         "Revolve profile edit",
         |revolve| {
-            // §27D: a sector's coordinates are not edited in this slice. Said
-            // by name, before the generic refusal below, so the reason is the
-            // real one.
-            if let RevolveExtent::Partial { degrees } = revolve.extent {
-                return Err(unsupported(&format!(
-                    "coordinate editing of a partial Revolve ({}° sector) is not supported in \
-                     this build; only a full-turn Revolve profile can be edited",
-                    degrees.degrees()
-                )));
-            }
             // Named one by one rather than compared with a default: an axis,
-            // angle or operation a later build adds is refused here, never
-            // edited as if it were the full turn about Y this slice measured.
+            // extent or operation a later build adds is refused here, never
+            // edited as if it were one of the turns about Y measured so far.
+            // §27F: a partial turn is edited like a full one; its angle is
+            // kept, never part of the edit.
             if !matches!(revolve.axis, RevolveAxis::SketchY)
-                || !matches!(revolve.extent, RevolveExtent::FullTurn)
+                || !matches!(
+                    revolve.extent,
+                    RevolveExtent::FullTurn | RevolveExtent::Partial { .. }
+                )
                 || revolve.operation != SolidOperation::NewBody
             {
                 return Err(unsupported(
-                    "Revolve profile edit requires a full turn about the sketch Y axis, NewBody",
+                    "Revolve profile edit requires a turn about the sketch Y axis, NewBody",
                 ));
             }
             Ok(())
         },
     )?;
+    let (feature, body, axis_segment) =
+        (frame.feature.id, frame.body.id, frame.revolve.axis_segment);
     Ok((
         frame.sketch,
-        SketchProfileUse::FullTurnRevolve {
-            feature: frame.feature.id,
-            body: frame.body.id,
-            axis_segment: frame.revolve.axis_segment,
+        match frame.revolve.extent {
+            RevolveExtent::Partial { degrees } => SketchProfileUse::PartialRevolve {
+                feature,
+                body,
+                axis_segment,
+                degrees,
+            },
+            _ => SketchProfileUse::FullTurnRevolve {
+                feature,
+                body,
+                axis_segment,
+            },
         },
     ))
 }

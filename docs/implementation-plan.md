@@ -3701,3 +3701,20 @@ preview and in-place Save remain out of scope.
 
 [Contract and executable recipe](edit-revolve-angle.md),
 [verification](edit-revolve-angle-verification.md).
+
+**§27F — edit a saved sector's profile in a new copy.**
+
+The existing coordinate editor and `edit-sketch-copy` now also accept a
+standalone partial Revolve: v3 with a bore, v4 closed on the axis. The
+frame and profile policy are the §27B/§27C ones, reported as the new
+`PartialRevolve` use; the angle is stated and kept, never part of the
+request. Only the Sketch row changes. Every UUID, both caps, the Revolve
+row and `meta` are kept.
+
+The request of this route is now strict about duplicate keys and arrays.
+§27D's blanket "a sector refuses coordinate edits" gate is replaced by the
+class contract: hollow↔solid, the axis Line and the frame are still
+refused.
+
+[Contract and executable recipe](edit-partial-revolve-profile.md),
+[verification](edit-partial-revolve-profile-verification.md).

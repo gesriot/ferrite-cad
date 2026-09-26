@@ -292,6 +292,28 @@ enum ProfileFeature {
         axis_curve_id: StableEntityId,
         off_axis_clearance_mm: f64,
     },
+    /// §27F: a sector with a bore, edited as a full turn with a bore is, and
+    /// turned through the saved `angle_deg`, which the edit keeps. Kinds of
+    /// their own, so a client that knows only the full-turn ones stops here
+    /// rather than reading a sector as a full turn.
+    PartialTurnRevolve {
+        feature_id: ObjectId,
+        body_id: ObjectId,
+        axis: &'static str,
+        extent: &'static str,
+        angle_deg: f64,
+        axis_clearance_mm: f64,
+    },
+    /// §27F: a solid sector closed on the axis along `axis_curve_id`.
+    PartialTurnRevolveAxisClosed {
+        feature_id: ObjectId,
+        body_id: ObjectId,
+        axis: &'static str,
+        extent: &'static str,
+        angle_deg: f64,
+        axis_curve_id: StableEntityId,
+        off_axis_clearance_mm: f64,
+    },
 }
 
 impl ProfileFeature {
@@ -323,6 +345,33 @@ impl ProfileFeature {
                 body_id: body,
                 axis: "sketch_y",
                 extent: "full_turn",
+                axis_curve_id: axis,
+                off_axis_clearance_mm: ferritecad_document::FullTurnRevolution::AXIS_CLEARANCE_MM,
+            },
+            ferritecad_document::SketchProfileUse::PartialRevolve {
+                feature,
+                body,
+                axis_segment: None,
+                degrees,
+            } => Self::PartialTurnRevolve {
+                feature_id: feature,
+                body_id: body,
+                axis: "sketch_y",
+                extent: "partial_turn",
+                angle_deg: degrees.degrees(),
+                axis_clearance_mm: ferritecad_document::FullTurnRevolution::AXIS_CLEARANCE_MM,
+            },
+            ferritecad_document::SketchProfileUse::PartialRevolve {
+                feature,
+                body,
+                axis_segment: Some(axis),
+                degrees,
+            } => Self::PartialTurnRevolveAxisClosed {
+                feature_id: feature,
+                body_id: body,
+                axis: "sketch_y",
+                extent: "partial_turn",
+                angle_deg: degrees.degrees(),
                 axis_curve_id: axis,
                 off_axis_clearance_mm: ferritecad_document::FullTurnRevolution::AXIS_CLEARANCE_MM,
             },
