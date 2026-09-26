@@ -573,10 +573,15 @@ impl TopologyMap {
     /// Line of the turned profile, and every Line must have raised one. A
     /// revolution has no caps, cap edges, sweep edges or corner vertices, and
     /// nothing is filed under those names.
+    /// `axis_segment` is the Line the caller's checked policy put on the axis
+    /// of a solid part (§27C), or `None` for a part with a bore. That one Line
+    /// must raise nothing; every other Line must still raise a face, exactly
+    /// as before. Nothing here decides which Line lies on the axis.
     pub fn record_revolve(
         &mut self,
         producer: ObjectId,
         profile: &Profile,
+        axis_segment: Option<StableEntityId>,
         result: &RevolveResult,
     ) -> Result<()> {
         result.validate()?;
@@ -591,6 +596,13 @@ impl TopologyMap {
             .iter()
             .map(|segment| segment.label)
             .collect();
+        if let Some(axis) = axis_segment
+            && !lines.contains(&axis)
+        {
+            return Err(CadError::topology(format!(
+                "feature {producer} names axis Line {axis}, which is not in the turned profile"
+            )));
+        }
         for input in result.history.inputs() {
             let HistoryInput::Segment(label) = input else {
                 return Err(CadError::topology(format!(
@@ -615,6 +627,17 @@ impl TopologyMap {
                 .history
                 .generated(HistoryInput::Segment(*label))
                 .collect();
+            if axis_segment == Some(*label) {
+                // The Line on the axis turns into nothing. A face reported for
+                // it would be a name without a face of its own to describe.
+                if !faces.is_empty() {
+                    return Err(CadError::topology(format!(
+                        "feature {producer} reported a face for axis Line {label}, which lies \
+                         on the axis and raises none"
+                    )));
+                }
+                continue;
+            }
             if faces.is_empty() {
                 return Err(CadError::topology(format!(
                     "feature {producer} raised no face from Line {label}"

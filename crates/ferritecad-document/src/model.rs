@@ -160,6 +160,17 @@ pub const FEATURE_THROUGH_ALL_CAPABILITY: &str = "feature.through-all.v1";
 /// keep such a document verbatim and read-only instead of rewriting it.
 pub const FEATURE_REVOLVE_CAPABILITY: &str = "feature.revolve.v1";
 
+/// The capability a [`Revolve`] of a profile closed on its axis depends on
+/// (§27C): a solid part whose one saved axis Line raises no face.
+///
+/// The layout moves with the meaning, exactly as for `previous` and
+/// ThroughAll. Such a Revolve names its axis Line in `axis_segment` and is
+/// stored at payload v2, which a §27A/§27B build does not read: it keeps the
+/// object verbatim and opens the document read-only, rather than treating the
+/// axis Line as a Line that failed to raise a face. A Revolve with a bore is
+/// still the v1 feature any §27A build can rewrite.
+pub const FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY: &str = "feature.revolve.axis-closed.v1";
+
 /// The capability an [`ImportedStep`] object depends on.
 ///
 /// Declared separately from [`CORE_CAPABILITY`] so a reader that understands
@@ -240,6 +251,11 @@ impl ObjectKind {
     pub fn required_capabilities(self, schema_version: u32) -> Vec<String> {
         match (self, schema_version) {
             (Self::ImportedStep, _) => vec![IMPORTED_STEP_CAPABILITY.to_owned()],
+            (Self::Revolve, 2) => vec![
+                CORE_CAPABILITY.to_owned(),
+                FEATURE_REVOLVE_CAPABILITY.to_owned(),
+                FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY.to_owned(),
+            ],
             (Self::Revolve, _) => vec![
                 CORE_CAPABILITY.to_owned(),
                 FEATURE_REVOLVE_CAPABILITY.to_owned(),
@@ -276,7 +292,11 @@ impl ObjectKind {
     pub fn known_capabilities(self) -> &'static [&'static str] {
         match self {
             Self::ImportedStep => &[IMPORTED_STEP_CAPABILITY],
-            Self::Revolve => &[CORE_CAPABILITY, FEATURE_REVOLVE_CAPABILITY],
+            Self::Revolve => &[
+                CORE_CAPABILITY,
+                FEATURE_REVOLVE_CAPABILITY,
+                FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY,
+            ],
             Self::Sketch => &[
                 CORE_CAPABILITY,
                 SKETCH_CONSTRAINTS_CAPABILITY,
@@ -314,6 +334,9 @@ impl ObjectKind {
             // written as themselves, because what a feature is stored at is
             // decided by what it holds; see [`Extrude::schema_version`].
             Self::Extrude => 3,
+            // v2 names the Line a solid part closes on (§27C). A Revolve with
+            // a bore is still stored at v1; see [`Revolve::schema_version`].
+            Self::Revolve => 2,
             _ => 1,
         }
     }
@@ -327,6 +350,7 @@ impl ObjectKind {
             Self::ImportedStep => &[3, 2, 1],
             Self::Sketch => &[3, 2, 1],
             Self::Extrude => &[3, 2, 1],
+            Self::Revolve => &[2, 1],
             _ => &[1],
         }
     }
@@ -991,14 +1015,31 @@ pub struct Revolve {
     pub axis: RevolveAxis,
     pub extent: RevolveExtent,
     pub operation: SolidOperation,
+    /// §27C: the saved profile Line that lies on the axis, for a solid part
+    /// closed on it. That Line raises no face; every other Line raises one.
+    ///
+    /// `None` for a profile strictly off the axis (a part with a bore), which
+    /// is the §27A layout, unchanged and byte-identical. Present only at
+    /// payload v2; see [`FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY`]. Stated
+    /// rather than inferred: every reader checks it against the class the
+    /// profile policy derives from the saved coordinates, and refuses when
+    /// the two disagree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub axis_segment: Option<StableEntityId>,
 }
 
 impl Revolve {
+    /// The layout this feature has to be stored at: decided by what it holds.
+    pub fn schema_version(&self) -> u32 {
+        if self.axis_segment.is_some() { 2 } else { 1 }
+    }
+
     /// The cache key for this feature's own contribution; the caller adds the
     /// resolved profile and the kernel identity.
     pub fn cache_key(&self, tolerance: ferritecad_types::Tolerance) -> ContentHash {
         let mut hasher = CanonicalHasher::new("feature.revolve");
-        hasher.algorithm_version(ObjectKind::Revolve.schema_version());
+        // The stored layout, so a Revolve with a bore keeps the key it had.
+        hasher.algorithm_version(self.schema_version());
         tolerance.feed(&mut hasher);
         hasher.field("profile").bytes(&self.profile.to_bytes());
         hasher.field("axis").str(match self.axis {
@@ -1013,6 +1054,9 @@ impl Revolve {
             SolidOperation::Cut => "cut",
             SolidOperation::Intersect => "intersect",
         });
+        if let Some(axis) = self.axis_segment {
+            hasher.field("axis_segment").bytes(&axis.to_bytes());
+        }
         hasher.finish()
     }
 }
@@ -1727,6 +1771,7 @@ impl ObjectPayload {
             // Same rule, same reason: see [`Sketch::schema_version`].
             Self::Sketch(sketch) => sketch.schema_version(),
             Self::Extrude(extrude) => extrude.schema_version(),
+            Self::Revolve(revolve) => revolve.schema_version(),
             known => known
                 .kind()
                 .map(ObjectKind::schema_version)
@@ -1830,7 +1875,19 @@ impl ObjectPayload {
             ObjectKind::Sketch => Self::Sketch(envelope.decode()?),
             ObjectKind::Body => Self::Body(envelope.decode()?),
             ObjectKind::Extrude => Self::Extrude(envelope.decode()?),
-            ObjectKind::Revolve => Self::Revolve(envelope.decode()?),
+            ObjectKind::Revolve => {
+                let revolve: Revolve = envelope.decode()?;
+                // The header and the content must say the same thing: a v1
+                // header over an axis Line would hide it from a §27A build.
+                if revolve.schema_version() != envelope.schema_version {
+                    return Err(CadError::input(format!(
+                        "Revolve payload v{} does not match what it holds (v{})",
+                        envelope.schema_version,
+                        revolve.schema_version()
+                    )));
+                }
+                Self::Revolve(revolve)
+            }
             ObjectKind::ImportedStep => Self::ImportedStep(match envelope.schema_version {
                 1 => {
                     let stored: StoredImport<LegacyScene> = envelope.decode()?;

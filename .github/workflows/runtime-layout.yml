@@ -521,6 +521,13 @@ jobs:
             -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-edit-no-solver.log
           if grep -q 'skipped:' revolve-edit-no-solver.log || ! grep -Fq "test $gate ... ok" revolve-edit-no-solver.log; then exit 1; fi
 
+          # §27C: a solid Revolve closed on the axis, created and edited with a
+          # kernel and no solver.
+          gate=axis::occt_without_solver_builds_and_edits_a_solid_revolve
+          FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release --no-default-features -p ferritecad-cli --test revolve "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-axis-no-solver.log
+          if grep -q 'skipped:' revolve-axis-no-solver.log || ! grep -Fq "test $gate ... ok" revolve-axis-no-solver.log; then exit 1; fi
+
       - name: Build the real application and the command line tool against both
         id: build
         env:
@@ -1560,9 +1567,17 @@ jobs:
             windows) edit_artifacts="$(cygpath -w "$edit_artifacts")" ;;
           esac
           export FCAD_REVOLVE_EDIT_ARTIFACTS="$edit_artifacts"
+          axis_artifacts="$RUNNER_TEMP/revolve-axis"
+          mkdir -p "$axis_artifacts"
+          case '${{ matrix.name }}' in
+            windows) axis_artifacts="$(cygpath -w "$axis_artifacts")" ;;
+          esac
+          export FCAD_REVOLVE_AXIS_ARTIFACTS="$axis_artifacts"
           for gate in native_full_turn_revolutions_are_what_pappus_and_their_lines_say \
             native_revolve_refuses_the_axis_other_kinds_and_cancellation \
-            native_a_revolution_survives_the_named_archive_face_by_face
+            native_a_revolution_survives_the_named_archive_face_by_face \
+            native_axis_closed_revolutions_are_solid_and_name_every_line_but_the_axis \
+            native_axis_closed_requests_are_checked_not_trusted
           do
             FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-occt --test revolve_occt "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-occt.log
@@ -1576,21 +1591,29 @@ jobs:
             edit::revolve_profile_discovery_protocol_and_writer_without_kernel \
             edit::native_revolve_profile_edits_keep_names_measure_cache_sql_and_exports \
             edit::native_revolve_profile_edit_refusals_preserve_every_file \
-            edit::native_revolve_profile_edit_delivery_late_guards_and_cancellation
+            edit::native_revolve_profile_edit_delivery_late_guards_and_cancellation \
+            axis::native_solid_revolutions_create_measure_name_cache_and_export \
+            axis::native_solid_revolution_edits_keep_the_axis_names_sql_and_cache \
+            axis::native_solid_revolution_refusals_are_atomic \
+            axis::solid_revolution_discovery_payload_and_writer_without_kernel \
+            axis::native_solid_revolve_delivery_late_guards_and_cancellation
           do
             cargo test --release --features planegcs -p ferritecad-cli --test revolve "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-cli.log
             if grep -q 'skipped:' revolve-cli.log || ! grep -Fq "test $gate ... ok" revolve-cli.log; then exit 1; fi
           done
           for gate in kernel::tests::a_revolution_keys_apart_from_an_extrusion_and_by_its_profile \
-            kernel::tests::the_mock_refuses_a_revolution_instead_of_inventing_one
+            kernel::tests::the_mock_refuses_a_revolution_instead_of_inventing_one \
+            kernel::tests::a_stated_axis_line_keys_apart_and_must_be_a_profile_line
           do
             FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-kernel --lib "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-kernel.log
             if grep -q 'skipped:' revolve-kernel.log || ! grep -Fq "test $gate ... ok" revolve-kernel.log; then exit 1; fi
           done
           for gate in polygon::tests::a_full_turn_is_pappus_in_either_winding_and_any_axial_shift \
-            polygon::tests::a_full_turn_refuses_the_axis_and_whatever_the_polygon_refuses
+            polygon::tests::a_full_turn_refuses_the_axis_and_whatever_the_polygon_refuses \
+            polygon::tests::an_axis_closed_profile_is_one_named_line_on_the_axis \
+            polygon::tests::an_axis_closed_profile_refuses_every_other_way_of_meeting_the_axis
           do
             FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-document --lib "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-domain.log
@@ -1598,7 +1621,8 @@ jobs:
           done
           for gate in sketch::tests::revolve_draft_widgets_name_the_axis_and_refuse_it \
             sketch::tests::native_revolve_draft_worker_and_cli_publish_equivalent_models \
-            sketch::tests::native_revolve_profile_edit_widgets_worker_and_cli_publish_one_copy
+            sketch::tests::native_revolve_profile_edit_widgets_worker_and_cli_publish_one_copy \
+            sketch::drag_tests::native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit
           do
             cargo test --release --features planegcs -p ferritecad-app "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-ui.log
@@ -1606,6 +1630,7 @@ jobs:
           done
           echo "FCAD_REVOLVE_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
           echo "FCAD_REVOLVE_EDIT_FBX_DIR=$edit_artifacts" >> "$GITHUB_ENV"
+          echo "FCAD_REVOLVE_AXIS_FBX_DIR=$axis_artifacts" >> "$GITHUB_ENV"
 
       - name: Create, discover, edit and export through the JSON v1 CLI contract
         env:
@@ -1709,6 +1734,7 @@ jobs:
           grep -q '^FCAD_POLYGON_CUT_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_REVOLVE_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_REVOLVE_EDIT_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_REVOLVE_AXIS_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

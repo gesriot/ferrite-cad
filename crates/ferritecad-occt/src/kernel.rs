@@ -350,10 +350,24 @@ impl GeometryKernel for OcctKernel {
             segments.push(segment_of(&segment.geometry));
         }
 
+        // The segment the caller's policy put on the axis, by its label; the
+        // bridge checks that it is, and that it alone raises no face.
+        let axis_segment = match request.axis_segment() {
+            Some(label) => Some(
+                drawn
+                    .iter()
+                    .position(|segment| segment.label == label)
+                    .ok_or_else(|| {
+                        CadError::input(format!("axis segment {label} is not in the profile"))
+                    })?,
+            ),
+            None => None,
+        };
         context.progress().report(0.0);
         let raw = self.session.revolve_full_turn(
             &plane_of(plane),
             &segments,
+            axis_segment,
             axis_origin,
             axis_direction,
             context.cancel(),

@@ -51,6 +51,18 @@ UUID (`RevolveFace`). Сборки до §27A открывают такой до
 или направления обхода отказываются (exit 2). Discovery добавляет
 `sketches[].profile_feature` с `kind` `blind_extrude` или `full_turn_revolve`.
 
+§27C: тот же `create-sketch-revolve` и тот же request v1 принимают и сплошной
+профиль: X ≥ 0 и ровно одна целая Line точно на X = 0 (−0 равно 0), прочие
+вершины при X > 1e-6. Одиночное касание, пересечение, несколько отрезков на
+оси и вершина вплотную к оси отказываются (exit 2). Такой Revolve хранится
+payload v2 с `axis_segment` и требует capability
+`feature.revolve.axis-closed.v1`; сборка §27B открывает его только для чтения
+и не правит. Line на оси грани не даёт и имени не получает. `edit-sketch-copy`
+правит его координаты, оставляя ту же Line на оси; переход между сплошной
+деталью и деталью с отверстием отказывается (exit 2). Discovery:
+`profile_feature.kind` `full_turn_revolve_axis_closed`.
+[Контракт §27C и исполняемый рецепт](axis-closed-revolve.md).
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.

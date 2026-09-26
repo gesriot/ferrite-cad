@@ -105,45 +105,120 @@ pub(crate) fn simple_line_polygon(
     Ok(points)
 }
 
+/// Which side of the axis a full-turn profile keeps, decided once by
+/// [`FullTurnRevolution::new`] from the coordinates themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevolutionClosure {
+    /// Every vertex strictly off the axis: a part with a bore (§27A).
+    RadialClear,
+    /// Exactly one whole Line on the axis, from `points[axis_line]` to the
+    /// next vertex: a solid part (§27C). That Line turns into nothing; every
+    /// other Line turns into a face.
+    AxisClosed { axis_line: usize },
+}
+
 /// Shared UI/CLI validity policy for one full-turn revolution, in mm.
 ///
 /// One unconstrained simple closed Line polygon on the sketch's XY plane,
 /// turned once — exactly 2π — about the sketch's local Y axis through its
 /// origin. On the canvas X is the radial distance and Y the axial coordinate.
-/// The polygon rules are [`PolygonExtrusion`]'s own; what is added is the side
-/// of the axis: every vertex lies strictly on the positive radial side, by more
-/// than [`Self::AXIS_CLEARANCE_MM`]. Every edge is a straight segment between
-/// two such vertices, so the profile then neither touches nor crosses the axis.
-/// A solid shaft that closes on the axis, partial angles and other axes are
-/// later slices, and are refused here rather than approximated.
+/// The polygon rules are [`PolygonExtrusion`]'s own; what is added is how the
+/// profile meets the axis, which is one of two named classes
+/// ([`RevolutionClosure`]):
+///
+/// * every vertex strictly on the positive radial side, by more than
+///   [`Self::AXIS_CLEARANCE_MM`] — a part with a bore; or
+/// * exactly two vertices exactly on the axis (`x == 0`), which are the two
+///   ends of one Line, and every other vertex beyond the clearance — a solid
+///   part closed on the axis along that Line.
+///
+/// "On the axis" is exact. IEEE −0 is the same number and is stored as +0; no
+/// small positive coordinate is ever taken for 0. A vertex inside the
+/// clearance but not on the axis, a vertex on the negative side, an isolated
+/// touch, two separate touches and several axis intervals are refused. Partial
+/// angles and other axes are later slices.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FullTurnRevolution {
     points: Vec<Point2>,
+    closure: RevolutionClosure,
 }
 
 impl FullTurnRevolution {
-    /// How far every vertex must stay from the axis, in mm. The polygon
-    /// policy's own tolerance: a vertex nearer than this is on the axis.
+    /// Minimum clearance of an off-axis vertex, in mm. The two ends of an
+    /// axis Line instead need exactly zero X; nearby vertices are not snapped.
     pub const AXIS_CLEARANCE_MM: f64 = PolygonExtrusion::TOLERANCE_MM;
 
     pub fn new(points: Vec<[f64; 2]>) -> Result<Self> {
+        // −0 and +0 are one number; store the one a reader expects.
+        let points = points
+            .into_iter()
+            .map(|p| p.map(|v| if v == 0.0 { 0.0 } else { v }))
+            .collect();
         let points = simple_line_polygon(points, None)?;
-        if let Some((index, p)) = points
-            .iter()
-            .enumerate()
-            .find(|(_, p)| p.x <= Self::AXIS_CLEARANCE_MM)
-        {
-            return Err(CadError::input(format!(
-                "vertex {} at ({}, {}) mm is not strictly on the positive radial side: a full-turn \
-                 revolution about the sketch Y axis needs every x > {} mm, so the profile neither \
-                 touches nor crosses the axis",
-                index + 1,
-                p.x,
-                p.y,
-                Self::AXIS_CLEARANCE_MM
-            )));
+        let n = points.len();
+        let mut on_axis = Vec::new();
+        for (index, p) in points.iter().enumerate() {
+            if p.x == 0.0 {
+                on_axis.push(index);
+            } else if p.x < 0.0 {
+                return Err(CadError::input(format!(
+                    "vertex {} at ({}, {}) mm is not on the positive radial side: the profile \
+                     would cross the sketch Y axis, and a full-turn revolution needs every x >= 0",
+                    index + 1,
+                    p.x,
+                    p.y
+                )));
+            } else if p.x <= Self::AXIS_CLEARANCE_MM {
+                return Err(CadError::input(format!(
+                    "vertex {} at ({}, {}) mm is not strictly on the positive radial side and not \
+                     on the axis: a vertex needs x > {} mm, or x = 0 exactly as one end of the one \
+                     Line a solid part closes on",
+                    index + 1,
+                    p.x,
+                    p.y,
+                    Self::AXIS_CLEARANCE_MM
+                )));
+            }
         }
-        Ok(Self { points })
+        let closure = match on_axis.as_slice() {
+            [] => RevolutionClosure::RadialClear,
+            [a, b] if b - a == 1 => RevolutionClosure::AxisClosed { axis_line: *a },
+            [0, b] if *b == n - 1 => RevolutionClosure::AxisClosed { axis_line: n - 1 },
+            [only] => {
+                return Err(CadError::input(format!(
+                    "vertex {} touches the axis alone: a solid part closes on the sketch Y axis \
+                     along one whole Line, whose two ends both have x = 0",
+                    only + 1
+                )));
+            }
+            [a, b] => {
+                return Err(CadError::input(format!(
+                    "vertices {} and {} touch the axis but are not the ends of one Line: a solid \
+                     part closes on the sketch Y axis along exactly one whole Line",
+                    a + 1,
+                    b + 1
+                )));
+            }
+            many => {
+                return Err(CadError::input(format!(
+                    "{} vertices lie on the axis: a solid part closes on the sketch Y axis along \
+                     exactly one Line, never along several",
+                    many.len()
+                )));
+            }
+        };
+        Ok(Self { points, closure })
+    }
+    /// How this profile meets the axis.
+    pub fn closure(&self) -> RevolutionClosure {
+        self.closure
+    }
+    /// The index of the Line on the axis, for a solid part.
+    pub fn axis_line(&self) -> Option<usize> {
+        match self.closure {
+            RevolutionClosure::AxisClosed { axis_line } => Some(axis_line),
+            RevolutionClosure::RadialClear => None,
+        }
     }
     pub fn points(&self) -> &[Point2] {
         &self.points
@@ -518,19 +593,28 @@ mod tests {
     #[test]
     fn a_full_turn_refuses_the_axis_and_whatever_the_polygon_refuses() {
         let clear = FullTurnRevolution::AXIS_CLEARANCE_MM;
-        for p in [
-            vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
-            vec![[-2., 0.], [10., 0.], [10., 15.], [-2., 15.]],
-            vec![[clear, 0.], [10., 0.], [10., 15.]],
-            vec![[-4., 0.], [-10., 0.], [-10., 15.], [-4., 15.]],
+        // §27C: a whole Line on the axis is a solid part now; a single touch
+        // is still refused, and so is every crossing and near miss.
+        for (p, message) in [
+            (
+                vec![[0., 0.], [10., 0.], [10., 15.], [4., 15.]],
+                "touches the axis alone",
+            ),
+            (
+                vec![[-2., 0.], [10., 0.], [10., 15.], [-2., 15.]],
+                "not on the positive radial side",
+            ),
+            (
+                vec![[clear, 0.], [10., 0.], [10., 15.]],
+                "not strictly on the positive radial side",
+            ),
+            (
+                vec![[-4., 0.], [-10., 0.], [-10., 15.], [-4., 15.]],
+                "not on the positive radial side",
+            ),
         ] {
             let error = FullTurnRevolution::new(p.clone()).expect_err("axis");
-            assert!(
-                error
-                    .to_string()
-                    .contains("not strictly on the positive radial side"),
-                "{p:?}: {error}"
-            );
+            assert!(error.to_string().contains(message), "{p:?}: {error}");
         }
         assert!(FullTurnRevolution::new(vec![[clear * 2., 0.], [10., 0.], [10., 15.]]).is_ok());
         for p in [
@@ -550,5 +634,121 @@ mod tests {
             })
             .collect();
         assert!(FullTurnRevolution::new(many).is_err());
+    }
+
+    /// §27C: solid parts closed on the axis, their Pappus volumes written out
+    /// from cylinder and cone formulas, in either winding, at any Y and with
+    /// the axis Line anywhere in the saved order.
+    #[test]
+    fn an_axis_closed_profile_is_one_named_line_on_the_axis() {
+        use std::f64::consts::PI;
+        let cylinder = |r: f64, h: f64| PI * r * r * h;
+        let cone = |r: f64, h: f64| PI * r * r * h / 3.;
+        for (points, volume) in [
+            (
+                vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
+                cylinder(10., 15.),
+            ),
+            (vec![[0., 0.], [10., 0.], [0., 15.]], cone(10., 15.)),
+            (
+                vec![
+                    [0., 0.],
+                    [10., 0.],
+                    [10., 5.],
+                    [6., 5.],
+                    [6., 15.],
+                    [0., 15.],
+                ],
+                cylinder(10., 5.) + cylinder(6., 10.),
+            ),
+            (
+                vec![[0., -1.25], [3.5, -1.25], [3.5, 7.75], [0., 7.75]],
+                cylinder(3.5, 9.),
+            ),
+        ] {
+            let n = points.len();
+            for rotation in 0..n {
+                for reversed in [false, true] {
+                    let mut p: Vec<[f64; 2]> = (0..n).map(|i| points[(i + rotation) % n]).collect();
+                    if reversed {
+                        p.reverse();
+                    }
+                    let turn = FullTurnRevolution::new(p.clone()).expect("a solid part");
+                    let axis = turn.axis_line().expect("closed on the axis");
+                    assert_eq!(
+                        turn.closure(),
+                        RevolutionClosure::AxisClosed { axis_line: axis }
+                    );
+                    assert_eq!(p[axis][0], 0.);
+                    assert_eq!(p[(axis + 1) % n][0], 0.);
+                    assert!(
+                        (turn.volume_mm3() - volume).abs() < 1e-9 * volume,
+                        "{p:?}: {} != {volume}",
+                        turn.volume_mm3()
+                    );
+                }
+            }
+        }
+        // −0 is 0, stored as +0: never a different profile.
+        let turn = FullTurnRevolution::new(vec![[-0., 0.], [10., 0.], [10., 15.], [-0., 15.]])
+            .expect("-0 is on the axis");
+        assert_eq!(turn.axis_line(), Some(3));
+        assert!(turn.points().iter().all(|p| !p.x.is_sign_negative()));
+        // A part with a bore stays the class it was.
+        let bore = FullTurnRevolution::new(vec![[4., 0.], [10., 0.], [10., 15.], [4., 15.]])
+            .expect("a bore");
+        assert_eq!(bore.closure(), RevolutionClosure::RadialClear);
+    }
+
+    #[test]
+    fn an_axis_closed_profile_refuses_every_other_way_of_meeting_the_axis() {
+        let clear = FullTurnRevolution::AXIS_CLEARANCE_MM;
+        for (why, p, message) in [
+            (
+                "isolated touch",
+                vec![[4., 0.], [10., 0.], [10., 15.], [0., 7.]],
+                "touches the axis alone",
+            ),
+            (
+                "two separate touches",
+                vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.], [5., 7.5]],
+                "are not the ends of one Line",
+            ),
+            (
+                "two axis Lines",
+                vec![
+                    [0., 0.],
+                    [0., 5.],
+                    [5., 7.5],
+                    [0., 10.],
+                    [0., 15.],
+                    [10., 7.5],
+                ],
+                "vertices lie on the axis",
+            ),
+            (
+                "crossing",
+                vec![[0., 0.], [10., 0.], [10., 15.], [-1., 15.]],
+                "not on the positive radial side",
+            ),
+            (
+                "near the axis, not on it",
+                vec![[0., 0.], [10., 0.], [10., 15.], [clear / 2., 15.]],
+                "not strictly on the positive radial side",
+            ),
+            (
+                "an axis end nudged off",
+                vec![[1e-9, 0.], [10., 0.], [10., 15.], [0., 15.]],
+                "not strictly on the positive radial side",
+            ),
+        ] {
+            let error = FullTurnRevolution::new(p.clone()).expect_err(why);
+            assert!(error.to_string().contains(message), "{why}: {error}");
+        }
+        // A collapsed axis Line is a repeated vertex, refused by the shared
+        // polygon rules before the axis is considered.
+        assert!(FullTurnRevolution::new(vec![[0., 0.], [10., 0.], [10., 15.], [0., 0.]]).is_err());
+        // A Line along the axis that doubles back on itself is degenerate.
+        assert!(FullTurnRevolution::new(vec![[0., 0.], [0., 5.], [0., 15.], [10., 7.]]).is_err());
     }
 }

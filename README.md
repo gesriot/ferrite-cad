@@ -54,6 +54,11 @@ Such a part's profile coordinates can be changed later in the ordinary
 **Edit Sketch** window or with `edit-sketch-copy`, saving a new copy that keeps
 every Line, face name and UUID; the axis and the full turn stay as saved.
 [Profile edit contract and recipe](docs/edit-revolve-profile.md).
+A solid cylinder, cone or stepped shaft is made the same way by putting exactly
+one whole edge of the profile on X = 0. That Line lies on the axis and raises
+no face, so it gets no name. Its coordinates are edited like any other
+Revolve's, but the axis edge stays on the axis: a part cannot change between
+solid and bored. [Solid Revolve contract and recipe](docs/axis-closed-revolve.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

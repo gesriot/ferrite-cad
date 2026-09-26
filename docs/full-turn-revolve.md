@@ -45,6 +45,10 @@ A profile is accepted iff all of these hold:
 * **Refused:** zero or negative radius, touching or crossing the axis, a
   solid shaft that closes on the axis, partial angles, another axis or plane,
   several loops, construction or non-Line geometry, and constraints.
+* **Widened by §27C.** A solid profile with exactly one whole Line on X = 0
+  is now accepted as a second, separately stored class; see
+  [axis-closed-revolve.md](axis-closed-revolve.md). Everything above still
+  describes the class with a bore, unchanged.
 
 The same domain value, `FullTurnRevolution`, is checked in several places:
 * the UI draft;
@@ -221,13 +225,15 @@ JSON
    * The header reads "XY · mm · Line polygon · Revolve 360° about the
      sketch Y axis · NewBody" and explains that X is the radius.
    * The canvas shows an orange vertical line at X = 0 labelled
-     "axis (Y) · radius X > 0 →".
+     "axis (Y) · radius X > 0 →" (since §27C: "axis (Y) at X = 0 · radius
+     X →").
    * The height field is replaced by "Revolve: one full turn (360°) about
      the sketch Y axis, through X = 0."
 2. **Enter the profile.** Enter the stepped points (4,0) (10,0) (10,5) (7,5)
    (7,15) (4,15) in the numeric editor. `Create in new file…` appears.
 3. **Refuse the axis.** Change (4,0) to (0,0). In place of the button, a red
-   refusal says the point is "not strictly on the positive radial side".
+   refusal says the point is "not strictly on the positive radial side"
+   (since §27C: the profile "touches the axis alone").
    * Undo restores (4,0) and the button.
    * Redo brings the refusal back; Undo once more.
 4. **Switch features.** Switch to **Extrude**, where the height field
@@ -376,7 +382,9 @@ for name, (points, exact) in PROFILES.items():
         assert c["features"] == [], "a Revolve is never listed as an Extrude"
         assert not c["edit_extrude"]["available"]
         assert not c["bodies"][0]["cut_edit_v3"]["available"]
-        assert not c["sketches"][0]["editable"]
+        # Since §27B the coordinate editor accepts this Sketch, as a Revolve.
+        assert c["sketches"][0]["editable"]
+        assert c["sketches"][0]["profile_feature"]["kind"] == "full_turn_revolve"
         [rev] = c["revolves"]
         assert (rev["axis"], rev["extent"], rev["operation"]) == ("sketch_y", "full_turn", "new_body")
         assert rev["body_id"] == c["bodies"][0]["body_id"]
@@ -404,7 +412,8 @@ for name, (points, exact) in PROFILES.items():
 
 bushing = PROFILES["bushing"][0]
 for name, points, extra in (
-    ("touch", [[0, 0], [10, 0], [10, 15], [0, 15]], {}),
+    # §27C accepts one whole Line on the axis; a single vertex is still refused.
+    ("touch", [[0, 0], [10, 0], [10, 15], [4, 15]], {}),
     ("cross", [[-2, 0], [10, 0], [10, 15], [-2, 15]], {}),
     ("half", bushing, {"angle": "half_turn"}),
     ("unknown", bushing, {"height_mm": 10}),

@@ -1131,3 +1131,394 @@ fn completed_pointer_gesture_does_not_edit_through_an_overlapping_window() {
     assert_eq!(e.canvas.selected, None);
     assert!(e.undo.is_empty());
 }
+
+/// §27C: a solid cylinder drawn on the real canvas and published by the
+/// window's worker and the peer CLI alike, then reopened and reshaped into a
+/// frustum by one drag, with the saved axis Line held on the axis.
+#[test]
+fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
+    use crate::creates::{
+        self,
+        tests::{ferritecad, read_semantics},
+    };
+    use ferritecad_document::Document;
+    use ferritecad_kernel::OperationContext;
+    if !ferritecad_occt::is_available() {
+        assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+        eprintln!("skipped: no OCCT for the solid Revolve worker");
+        return;
+    }
+    let pi = std::f64::consts::PI;
+    let root = tempfile::tempdir().expect("directory");
+    let ui = root.path().join("cylinder-ui.fcad");
+    let cli = root.path().join("cylinder-cli.fcad");
+    let mut creates = creates::Creates::default();
+    let ctx = egui::Context::default();
+    {
+        let e = &mut creates.sketch;
+        let out = frame(&ctx, e, vec![]);
+        click(&ctx, e, text_at(&out, "Create sketch + Extrude…"));
+        frame(&ctx, e, vec![]);
+        for [x, y] in [[0., 0.], [10., 0.], [10., 15.], [0., 15.]] {
+            let rect = canvas(&frame(&ctx, e, vec![]));
+            click(
+                &ctx,
+                e,
+                rect.left_bottom() + egui::vec2(35. + 4. * x, -30. - 4. * y),
+            );
+        }
+        choose(&ctx, e, "Close contour");
+        choose(&ctx, e, "Revolve 360°");
+        let Ok(NewDocument::SketchRevolve(cylinder)) = e.content() else {
+            panic!("a solid cylinder is a Revolve")
+        };
+        assert_eq!(
+            cylinder
+                .points()
+                .iter()
+                .map(|p| [p.x, p.y])
+                .collect::<Vec<_>>(),
+            [[0., 0.], [10., 0.], [10., 15.], [0., 15.]]
+        );
+        assert!((cylinder.volume_mm3() - 1500. * pi).abs() < 1e-9);
+        let out = frame(&ctx, e, vec![]);
+        let texts: Vec<String> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t == "axis (Y) at X = 0 · radius X →"));
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("put exactly one whole edge on X = 0 for a solid part")),
+            "{texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("Keep every point X > 0")),
+            "no unconditional X > 0 rule"
+        );
+        // An isolated touch and a crossing are refused by the document's own
+        // policy, with nothing to publish, and Undo gives the cylinder back.
+        let valid = e.draft.clone();
+        for (to, refusal) in [("4", "touches the axis alone"), ("-1", "cross")] {
+            replace_field(&ctx, e, "0.000", to);
+            let refused = e.content().expect_err("refused").to_string();
+            assert!(refused.contains(refusal), "{to}: {refused}");
+            let out = frame(&ctx, e, vec![]);
+            assert!(!out.shapes.iter().any(|c| matches!(&c.shape,
+                egui::Shape::Text(t) if t.galley.text() == "Create in new file…")));
+            click(&ctx, e, text_at(&out, "Undo draft"));
+            assert_eq!(e.draft, valid);
+        }
+    }
+    let content = creates.sketch.content().expect("a Revolve");
+    let before = creates.sketch.draft.clone();
+    let mut view = ferritecad_ui::ViewportInput::new();
+    let loads = crate::Loads::default();
+    let exports = crate::exports::Exports::default();
+    assert!(
+        crate::start_new(
+            &mut creates,
+            &loads,
+            &exports,
+            &mut view,
+            content.clone(),
+            None,
+            |_, _, _, _| panic!("no worker on cancel")
+        )
+        .is_none(),
+        "a cancelled Save starts nothing"
+    );
+    assert_eq!(creates.sketch.draft, before);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawn = move |path: &std::path::Path,
+                      content,
+                      generation,
+                      cancel: &ferritecad_kernel::CancelToken| {
+        let path = path.to_path_buf();
+        let ctx = OperationContext::default().with_cancel(cancel.clone());
+        creates::spawn_create(
+            move || creates::run_create(&path, content, &ctx),
+            move |result| tx.send((generation, result)).expect("reply"),
+        )
+    };
+    crate::start_new(
+        &mut creates,
+        &loads,
+        &exports,
+        &mut view,
+        content,
+        Some(ui.clone()),
+        spawn,
+    )
+    .expect("worker");
+    let (generation, result) = rx.recv().expect("worker result");
+    assert_eq!(
+        creates::finish_create(&mut creates, &mut view, generation, result),
+        Some(ui.clone())
+    );
+    creates.sketch.draft_load_finished(&ui, false);
+    assert_eq!(
+        creates.sketch.draft, before,
+        "a failed Open keeps the draft"
+    );
+    creates.sketch.draft_published(&ui);
+    creates.sketch.draft_load_finished(&ui, true);
+    assert!(!creates.sketch.active());
+    creates.stop_all();
+
+    let input = root.path().join("cylinder.json");
+    std::fs::write(
+        &input,
+        r#"{"request_version":1,"points_mm":[[0,0],[10,0],[10,15],[0,15]],"axis":"sketch_y","angle":"full_turn"}"#,
+    )
+    .expect("request");
+    let p = std::process::Command::new(ferritecad())
+        .arg("create-sketch-revolve")
+        .arg(&input)
+        .arg("-o")
+        .arg(&cli)
+        .arg("--json")
+        .output()
+        .expect("peer CLI");
+    assert!(p.status.success(), "{p:?}");
+    assert_eq!(read_semantics(&ui).0, read_semantics(&cli).0);
+    let export = |path: &std::path::Path| {
+        let mut bytes = Vec::new();
+        for (op, extension) in [("export-stl", "stl"), ("export-fbx", "fbx")] {
+            let out = path.with_extension(extension);
+            let p = std::process::Command::new(ferritecad())
+                .arg(op)
+                .arg(path)
+                .arg("-o")
+                .arg(&out)
+                .output()
+                .expect("export");
+            assert!(p.status.success(), "{p:?}");
+            bytes.push(std::fs::read(&out).expect("bytes"));
+        }
+        bytes
+    };
+    let (a, b) = (export(&ui), export(&cli));
+    assert_eq!(a[0], b[0], "worker/CLI STL bytes");
+    let mapped_fbx = |path: &std::path::Path, bytes: &[u8]| {
+        let document = Document::open_read_only(path).expect("document");
+        let body = document
+            .objects()
+            .expect("objects")
+            .into_iter()
+            .find(|o| matches!(o.payload, ferritecad_document::ObjectPayload::Body(_)))
+            .expect("Body");
+        let text = std::str::from_utf8(bytes).expect("ASCII FBX");
+        assert_eq!(text.matches(&body.id.to_string()).count(), 3);
+        let mapped = text.replace(&body.id.to_string(), "same-body");
+        document.close().expect("close");
+        mapped
+    };
+    assert_eq!(
+        mapped_fbx(&ui, &a[1]),
+        mapped_fbx(&cli, &b[1]),
+        "all FBX bytes agree after mapping the two created Body identities"
+    );
+
+    // Reopen the worker's file and edit it in the same Line editor.
+    let source_bytes = std::fs::read(&ui).expect("source");
+    let reading = {
+        let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+        ferritecad_scene::snapshot_of(
+            &ui,
+            &mut k,
+            |k, b| k.import_step(b),
+            &Default::default(),
+            &OperationContext::default(),
+        )
+        .expect("accepted scene")
+        .edit_source
+        .expect("accepted edit facts")
+    };
+    let choice = &reading.sketches[0];
+    let saved = choice.vertices.clone().expect("editable");
+    let Some(SketchProfileUse::FullTurnRevolve {
+        axis_segment: Some(axis),
+        ..
+    }) = choice.profile_use
+    else {
+        panic!(
+            "a solid Revolve names its axis Line: {:?}",
+            choice.profile_use
+        )
+    };
+    assert_eq!(axis, saved[3].curve_id, "(0,15)→(0,0) lies on the axis");
+    let mut e = Editor::default();
+    assert!(e.begin_edit(&ui, &reading, choice.sketch));
+    frame(&ctx, &mut e, vec![]);
+    let out = frame(&ctx, &mut e, vec![]);
+    let wanted = format!(
+        "Solid part: edge 4 (Line {axis}) stays on the axis at X = 0; every other point stays at X > 0."
+    );
+    assert!(
+        out.shapes.iter().any(|c| matches!(&c.shape,
+            egui::Shape::Text(t) if t.galley.text() == wanted)),
+        "the axis Line is named"
+    );
+    for absent in ["Revolve 360°", "Blind height mm", "Feature:"] {
+        assert!(!out.shapes.iter().any(|c| matches!(&c.shape,
+            egui::Shape::Text(t) if t.galley.text() == absent)));
+    }
+    choose(&ctx, &mut e, "1 mm");
+    assert_eq!(e.canvas.snap, Snap::One);
+
+    // One drag, one Undo step: the top outer corner in by 5 mm.
+    let original = e.draft.clone();
+    let at = vertex(&ctx, &mut e, 2);
+    let dx = -(5. * e.canvas.scale) - 1.25;
+    press(&ctx, &mut e, at);
+    for fraction in [0.25, 0.5, 0.75, 1.] {
+        move_to(&ctx, &mut e, at + egui::vec2(dx * fraction, 0.));
+        assert!(e.undo.is_empty(), "no per-frame history");
+    }
+    button(&ctx, &mut e, at + egui::vec2(dx, 0.), false);
+    assert_eq!(
+        e.draft.as_ref().expect("draft").points[2],
+        ["5".to_owned(), "15".to_owned()]
+    );
+    assert_eq!(e.undo.len(), 1);
+    let frustum = e.draft.clone();
+    choose(&ctx, &mut e, "Undo draft");
+    assert_eq!(e.draft, original);
+    choose(&ctx, &mut e, "Redo draft");
+    assert_eq!(e.draft, frustum);
+
+    // An axis end dragged off the axis is refused in preview; Escape cancels
+    // the whole gesture.
+    let at = vertex(&ctx, &mut e, 0);
+    let off = at + egui::vec2(3. * e.canvas.scale, 0.);
+    press(&ctx, &mut e, at);
+    move_to(&ctx, &mut e, off);
+    let refused = e.edit_request().expect_err("off the axis").to_string();
+    assert!(refused.contains("touches the axis alone"), "{refused}");
+    let out = frame(&ctx, &mut e, vec![]);
+    assert!(!out.shapes.iter().any(|c| matches!(&c.shape,
+        egui::Shape::Text(t) if t.galley.text() == "Save edited copy…")));
+    frame(&ctx, &mut e, vec![key(egui::Key::Escape)]);
+    button(&ctx, &mut e, off, false);
+    assert_eq!(e.draft, frustum);
+    assert_eq!(e.undo.len(), 1);
+    // Both axis ends off the axis would make a bored part: refused as a
+    // class change, and undone.
+    let before = e.draft.clone().expect("draft");
+    for i in [0, 3] {
+        e.draft.as_mut().expect("draft").points[i][0] = "1".into();
+    }
+    e.record(before);
+    let refused = e.edit_request().expect_err("hollow").to_string();
+    assert!(refused.contains("cannot change between"), "{refused}");
+    choose(&ctx, &mut e, "Undo draft");
+    assert_eq!(e.draft, frustum);
+
+    choose(&ctx, &mut e, "Save edited copy…");
+    let mut request = e.take_edit_request().expect("submit");
+    assert_eq!(
+        request
+            .vertices
+            .iter()
+            .map(|v| v.curve_id)
+            .collect::<Vec<_>>(),
+        saved.iter().map(|v| v.curve_id).collect::<Vec<_>>()
+    );
+    let kept = e.draft.clone();
+    let edited = root.path().join("frustum-ui.fcad");
+    request.destination = edited.clone();
+    let mut edits = crate::edits::Edits::default();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let generation = edits
+        .start_sketch(request.clone(), move |r, g, c| {
+            crate::edits::spawn_sketch_edit(r, c, move |result| {
+                tx.send((g, result)).expect("reply")
+            })
+        })
+        .expect("worker");
+    let (g, result) = rx.recv().expect("completed");
+    assert_eq!(g, generation);
+    let path = finish_edit(&mut e, &mut edits, g, result).expect("published");
+    e.draft_load_finished(&path, false);
+    assert_eq!(e.draft, kept, "a failed Open restores the edited draft");
+    e.draft_published(&path);
+    e.draft_load_finished(&path, true);
+    assert!(!e.active());
+
+    let edit = root.path().join("edit.json");
+    let vertices: Vec<String> = request
+        .vertices
+        .iter()
+        .map(|v| {
+            format!(
+                r#"{{"curve_id":"{}","start_mm":[{},{}]}}"#,
+                v.curve_id, v.start_mm[0], v.start_mm[1]
+            )
+        })
+        .collect();
+    std::fs::write(
+        &edit,
+        format!(
+            r#"{{"request_version":1,"vertices":[{}]}}"#,
+            vertices.join(",")
+        ),
+    )
+    .expect("edit request");
+    let peer = root.path().join("frustum-cli.fcad");
+    let p = std::process::Command::new(ferritecad())
+        .arg("edit-sketch-copy")
+        .arg(&ui)
+        .arg("--sketch")
+        .arg(choice.sketch.to_string())
+        .arg("--expect-version")
+        .arg(reading.version.content.to_string())
+        .arg("--request")
+        .arg(&edit)
+        .arg("-o")
+        .arg(&peer)
+        .arg("--json")
+        .output()
+        .expect("peer CLI");
+    assert!(p.status.success(), "{p:?}");
+    let a = Document::open_read_only(&edited).expect("UI");
+    let b = Document::open_read_only(&peer).expect("CLI");
+    assert_eq!(a.objects().expect("objects"), b.objects().expect("objects"));
+    let original = Document::open_read_only(&ui).expect("source");
+    assert_eq!(
+        a.topology_refs().expect("refs"),
+        original.topology_refs().expect("refs"),
+        "no new names, and still none for the axis Line"
+    );
+    assert_eq!(
+        a.topology_refs().expect("refs"),
+        b.topology_refs().expect("refs")
+    );
+    original.close().expect("close");
+    // π·h/3·(R² + R·r + r²) for R = 10, r = 5, h = 15.
+    let mut kernel = ferritecad_occt::OcctKernel::new().expect("kernel");
+    let context = OperationContext::default();
+    let built = ferritecad_eval::rebuild_cold(&a, &mut kernel, &context).expect("cold");
+    let body = a
+        .objects()
+        .expect("objects")
+        .iter()
+        .find(|o| matches!(o.payload, ferritecad_document::ObjectPayload::Body(_)))
+        .map(|o| o.id)
+        .expect("Body");
+    let (faces, volume) = kernel
+        .shape_stats(built.shape(body).expect("one solid"))
+        .expect("stats");
+    assert_eq!(faces, 3, "two discs and one cone, no face for the axis");
+    assert!((volume - 875. * pi).abs() < 1e-6 * 875. * pi, "{volume}");
+    built.release_all(&mut kernel);
+    a.close().expect("close");
+    b.close().expect("close");
+    assert_eq!(export(&edited), export(&peer), "STL and FBX bytes");
+    assert_eq!(std::fs::read(&ui).expect("source"), source_bytes);
+}

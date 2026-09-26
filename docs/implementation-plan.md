@@ -3618,14 +3618,48 @@ exit 0, swap 0. CI logs confirm 214 distinct required gate names and 72 ufbx
 reads per OS. Report counts were corrected; product code needed no change.
 [Independent evidence](edit-revolve-profile-verification.md#independent-macos-review--2026-09-25).
 
-**§27C — next: full-turn Revolve profiles closed on the axis (pending).**
+**§27C — solid full-turn Revolve: a profile closed on the axis.**
 
-Allow bounded solid shafts, stepped shafts and cones, with one explicit Line
-of the profile on the sketch Y axis. Share creation and coordinate-edit
-policy, retain existing hollow-profile behavior, and name only actual faces:
-the axis Line generates no face and must never receive a fake one. Specify
-compatibility and topology-preserving edit boundaries before implementation;
-partial turns, other axes, multiple axis intervals and booleans remain outside
-this slice. Native history/archive, old-reader behavior, independent geometry,
-UI/CLI parity and atomic refusal are required. The cloud implementation leaves
-actual macOS GUI verification to the reviewer.
+The §27A/B limit (every X > 1e-6 mm) is widened by exactly one class: a
+simple Line polygon with X ≥ 0 and exactly one whole Line exactly on X = 0.
+* **Policy.** `FullTurnRevolution` names its class, `RadialClear` or
+  `AxisClosed { axis_line }`. On the axis means exactly 0; −0 is stored as +0,
+  and nothing is snapped. A single touch, a crossing, several or disjoint
+  axis Lines and a vertex within 1e-6 mm of the axis are refused.
+* **Stated and re-derived.** The Revolve stores its axis Line by UUID
+  (`axis_segment`, payload v2, capability `feature.revolve.axis-closed.v1`);
+  hollow Revolves stay v1, byte for byte. `stated_revolution` compares the
+  stated Line with the class derived from the coordinates in creation,
+  discovery, edit preparation, the writer and the evaluator.
+* **No face for the axis Line.** The kernel request, the bridge
+  (`fc_occt_revolve(..., axis_segment, ...)`) and `record_revolve` carry the
+  same statement: that one Line must raise nothing, and every other Line
+  still exactly one face. The axis Line gets no reference, and a cone's apex
+  no face. The bridge also drops zero-area triangles, which OCCT makes at an
+  apex, using stored float positions. Covered earlier meshes retain their
+  output; an entire face collapsing at float precision causes export refusal.
+* **Editing.** Coordinates change under the same guards; the axis Line stays
+  the same Line on the axis, and hollow ↔ solid is refused before copying.
+* **Compatibility.** A §27B build refuses to create such a profile, and
+  opens a v2 document read-only: it preserves the object, cannot rebuild or
+  export it, and refuses to edit it, naming the capability.
+* **Discovery and UI.** `profile_feature.kind` `full_turn_revolve_axis_closed`
+  with `axis_curve_id`; `revolves[].closure` and `axis_curve_id`. The
+  window explains both classes and names the saved axis Line when editing.
+* **Out of scope.** Partial turns, other axes, Circle/Arc, constraints,
+  several profiles, booleans on the Revolve, in-place Save and preview.
+
+[Contract and recipe](axis-closed-revolve.md),
+[verification](axis-closed-revolve-verification.md). The cloud
+implementation leaves actual macOS GUI verification to the reviewer.
+
+Independent §27C review completed native, genuine stub, OCCT/no-solver and
+actual macOS window checks. Creation of cylinder/cone/stepped shaft and a
+saved cylinder-to-frustum drag edit passed, including refusals, Undo/Redo,
+Save Cancel, publication/Open and both exports. Four same-document STL/FBX
+pairs are byte-identical; the edited GUI/CLI copies have equal SQL. Viewer
+peak 211.673 MiB, exit 0, swap 0. Review strengthened FBX comparison and
+added a precision-boundary refusal case for the global triangle filter;
+no geometry/storage implementation correction was needed. Initial exact
+head CI logs confirm 226 distinct native gate names and 74 ufbx reads per
+OS. [Independent evidence](axis-closed-revolve-verification.md#independent-macos-review--2026-09-25).

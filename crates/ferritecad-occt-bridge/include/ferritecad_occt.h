@@ -20,6 +20,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* No segment of a revolved profile lies on the axis (§27C). */
+#define FC_OCCT_NO_AXIS_SEGMENT SIZE_MAX
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -284,6 +287,13 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
  * CASCADE's linear confusion, so the profile neither touches nor crosses it;
  * which profiles are acceptable is otherwise the caller's policy.
  *
+ * `axis_segment` (§27C) is FC_OCCT_NO_AXIS_SEGMENT for such a profile, or the
+ * index of the one segment that lies on the axis of a solid part closed on
+ * it. The caller decided which; this checks it: exactly that segment's two
+ * vertices lie on the axis (within the linear confusion), every other vertex
+ * is off it on one side, the sweep makes no face of that segment, and every
+ * other segment still raises exactly one face of the solid.
+ *
  * `full_turn` states the angle and must be 1: exactly one full turn, 2π. Any
  * other value is refused as unsupported rather than read as an angle.
  *
@@ -300,7 +310,8 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
  */
 FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
                              const FcOcctSegment *segments,
-                             size_t segment_count, const double *axis_origin,
+                             size_t segment_count, size_t axis_segment,
+                             const double *axis_origin,
                              const double *axis_direction, int32_t full_turn,
                              FcOcctCancelFn cancel, void *cancel_context,
                              uint64_t *out_shape,

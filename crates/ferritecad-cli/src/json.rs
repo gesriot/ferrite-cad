@@ -120,6 +120,12 @@ struct RevolveDiscovery {
     extent: &'static str,
     operation: &'static str,
     profile: RevolveProfile,
+    /// §27C, additive: `"radial_clear"` for a part with a bore, whose every
+    /// profile point is off the axis, or `"axis_closed"` for a solid part
+    /// closed on the axis along `axis_curve_id`. What the Revolve states.
+    closure: &'static str,
+    /// The saved Line on the axis of a solid part; null for a part with a bore.
+    axis_curve_id: Option<StableEntityId>,
 }
 
 #[derive(Serialize)]
@@ -162,6 +168,12 @@ impl From<ferritecad_document::RevolveChoice> for RevolveDiscovery {
                 ferritecad_document::SolidOperation::Intersect => "intersect",
                 _ => "unknown",
             },
+            closure: if r.axis_segment.is_some() {
+                "axis_closed"
+            } else {
+                "radial_clear"
+            },
+            axis_curve_id: r.axis_segment,
             profile: RevolveProfile {
                 available: r.profile_refusal.is_none(),
                 refusal: r.profile_refusal,
@@ -218,12 +230,25 @@ enum ProfileFeature {
         feature_id: ObjectId,
         height_mm: f64,
     },
+    /// Every profile point strictly off the axis, by more than the clearance.
     FullTurnRevolve {
         feature_id: ObjectId,
         body_id: ObjectId,
         axis: &'static str,
         extent: &'static str,
         axis_clearance_mm: f64,
+    },
+    /// §27C: a solid part closed on the axis along `axis_curve_id`, whose two
+    /// ends are exactly on it; every other point beyond the clearance. A kind
+    /// of its own, so a client that knows only the one above stops here
+    /// rather than reading it as a profile strictly off the axis.
+    FullTurnRevolveAxisClosed {
+        feature_id: ObjectId,
+        body_id: ObjectId,
+        axis: &'static str,
+        extent: &'static str,
+        axis_curve_id: StableEntityId,
+        off_axis_clearance_mm: f64,
     },
 }
 
@@ -236,15 +261,29 @@ impl ProfileFeature {
                     height_mm,
                 }
             }
-            ferritecad_document::SketchProfileUse::FullTurnRevolve { feature, body } => {
-                Self::FullTurnRevolve {
-                    feature_id: feature,
-                    body_id: body,
-                    axis: "sketch_y",
-                    extent: "full_turn",
-                    axis_clearance_mm: ferritecad_document::FullTurnRevolution::AXIS_CLEARANCE_MM,
-                }
-            }
+            ferritecad_document::SketchProfileUse::FullTurnRevolve {
+                feature,
+                body,
+                axis_segment: None,
+            } => Self::FullTurnRevolve {
+                feature_id: feature,
+                body_id: body,
+                axis: "sketch_y",
+                extent: "full_turn",
+                axis_clearance_mm: ferritecad_document::FullTurnRevolution::AXIS_CLEARANCE_MM,
+            },
+            ferritecad_document::SketchProfileUse::FullTurnRevolve {
+                feature,
+                body,
+                axis_segment: Some(axis),
+            } => Self::FullTurnRevolveAxisClosed {
+                feature_id: feature,
+                body_id: body,
+                axis: "sketch_y",
+                extent: "full_turn",
+                axis_curve_id: axis,
+                off_axis_clearance_mm: ferritecad_document::FullTurnRevolution::AXIS_CLEARANCE_MM,
+            },
         }
     }
 }

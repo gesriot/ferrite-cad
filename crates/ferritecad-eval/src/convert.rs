@@ -363,17 +363,24 @@ pub fn revolve_request(feature: &Revolve, profile: Profile) -> Result<RevolveReq
             "a revolution turns one closed polygon of Lines, without holes",
         ));
     }
-    let mut points = Vec::with_capacity(profile.outer().segments().len());
+    let mut lines = Vec::with_capacity(profile.outer().segments().len());
     for segment in profile.outer().segments() {
         let SegmentGeometry::Line { start, .. } = segment.geometry else {
             return Err(CadError::unsupported(
                 "a revolution turns a profile of Lines only",
             ));
         };
-        points.push([start.x, start.y]);
+        lines.push((segment.label, [start.x, start.y]));
     }
-    ferritecad_document::FullTurnRevolution::new(points)?;
-    Ok(RevolveRequest::new(profile, axis, turn))
+    // The class the coordinates fall in must be the one the feature states
+    // (§27C); the axis Line then comes from the checked policy, never from a
+    // guess in the kernel.
+    let policy = ferritecad_document::stated_revolution(feature.axis_segment, &lines)?;
+    let request = RevolveRequest::new(profile, axis, turn);
+    match policy.axis_line() {
+        Some(index) => request.with_axis_segment(lines[index].0),
+        None => Ok(request),
+    }
 }
 
 /// Builds an extrusion request from a stored feature.

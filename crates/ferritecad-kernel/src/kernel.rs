@@ -297,6 +297,37 @@ mod tests {
     }
 
     #[test]
+    fn a_stated_axis_line_keys_apart_and_must_be_a_profile_line() {
+        let kernel = KernelIdentity::new("occt", "8.0.1", "").expect("valid");
+        let context = OperationContext::default();
+        let hollow = revolution(&request());
+        let key = revolve_cache_key(&kernel, &hollow, &context);
+        let labels: Vec<_> = hollow
+            .profile()
+            .outer()
+            .segments()
+            .iter()
+            .map(|s| s.label)
+            .collect();
+        // §27C: the axis Line is fed only when stated, so a part with a bore
+        // keeps its key; a solid part keys by which Line lies on the axis.
+        assert_eq!(hollow.axis_segment(), None);
+        let first = hollow.clone().with_axis_segment(labels[0]).expect("a Line");
+        let second = hollow.clone().with_axis_segment(labels[1]).expect("a Line");
+        assert_eq!(first.axis_segment(), Some(labels[0]));
+        let keys = [
+            key,
+            revolve_cache_key(&kernel, &first, &context),
+            revolve_cache_key(&kernel, &second, &context),
+        ];
+        assert!(keys[0] != keys[1] && keys[1] != keys[2] && keys[0] != keys[2]);
+        let error = hollow
+            .with_axis_segment(ferritecad_types::StableEntityId::new())
+            .expect_err("not a Line of this profile");
+        assert_eq!(error.kind(), ferritecad_types::ErrorKind::Input);
+    }
+
+    #[test]
     fn the_mock_refuses_a_revolution_instead_of_inventing_one() {
         let mut kernel = MockKernel::new();
         let error = kernel

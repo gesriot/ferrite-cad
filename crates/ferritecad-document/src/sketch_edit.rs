@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId, Transform};
 
 use crate::{
-    Dependency, DependencyRole, Document, FullTurnRevolution, ObjectPayload, ObjectRecord, Point2,
-    PolygonExtrusion, RevolveAxis, RevolveExtent, SavedCutTool, SketchCurve, SketchGeometry,
-    SolidOperation, editable_extrude,
+    Dependency, DependencyRole, Document, ObjectPayload, ObjectRecord, Point2, PolygonExtrusion,
+    RevolveAxis, RevolveExtent, SavedCutTool, SketchCurve, SketchGeometry, SolidOperation,
+    editable_extrude,
 };
 
 /// The start of this persisted curve; its predecessor's end is the same vertex.
@@ -28,18 +28,35 @@ pub enum SketchProfileUse {
     /// base of a validated circular Cut history (§26F/§26I).
     BlindExtrude { feature: ObjectId, height_mm: f64 },
     /// One full turn about the sketch Y axis, NewBody (§27A); edited by §27B.
-    FullTurnRevolve { feature: ObjectId, body: ObjectId },
+    ///
+    /// `axis_segment` is what the Revolve states (§27C): `None` for a part
+    /// with a bore, or the saved Line a solid part closes on. An edit keeps
+    /// it, so a draft is checked against it rather than against whatever
+    /// class its numbers happen to fall in.
+    FullTurnRevolve {
+        feature: ObjectId,
+        body: ObjectId,
+        axis_segment: Option<StableEntityId>,
+    },
 }
 
 impl SketchProfileUse {
-    /// The profile policy of this use, applied to candidate starts. The same
-    /// value creation uses, so an edit can never publish what creation refuses.
-    fn check(&self, points: Vec<[f64; 2]>) -> Result<Vec<Point2>> {
+    /// The profile policy of this use, applied to candidate starts in saved
+    /// order. The same value creation and the evaluator use, so an edit can
+    /// never publish what either refuses.
+    fn check(&self, vertices: &[SketchVertex]) -> Result<Vec<Point2>> {
         Ok(match *self {
             Self::BlindExtrude { height_mm, .. } => {
-                PolygonExtrusion::new(points, height_mm)?.points().to_vec()
+                PolygonExtrusion::new(vertices.iter().map(|v| v.start_mm).collect(), height_mm)?
+                    .points()
+                    .to_vec()
             }
-            Self::FullTurnRevolve { .. } => FullTurnRevolution::new(points)?.points().to_vec(),
+            Self::FullTurnRevolve { axis_segment, .. } => {
+                let lines: Vec<_> = vertices.iter().map(|v| (v.curve_id, v.start_mm)).collect();
+                crate::stated_revolution(axis_segment, &lines)?
+                    .points()
+                    .to_vec()
+            }
         })
     }
 }
@@ -350,6 +367,7 @@ fn revolve_frame<'a>(
         SketchProfileUse::FullTurnRevolve {
             feature: feature.id,
             body: body.id,
+            axis_segment: revolve.axis_segment,
         },
     ))
 }
@@ -393,7 +411,7 @@ fn lines(
         }
     }
     profile_use
-        .check(vertices.iter().map(|v| v.start_mm).collect())
+        .check(&vertices)
         .map_err(|e| unsupported(&format!("saved polygon is outside edit policy: {e}")))?;
     Ok(vertices)
 }
@@ -510,7 +528,7 @@ fn validate_coordinates(
             "request must contain every saved curve UUID exactly once in saved order",
         ));
     }
-    let points = profile_use.check(vertices.iter().map(|v| v.start_mm).collect())?;
+    let points = profile_use.check(vertices)?;
     let old: Vec<_> = original
         .iter()
         .map(|v| Point2 {

@@ -19,11 +19,11 @@ use std::sync::{
 const EDIT: &str = "edit-sketch-copy";
 
 /// π·(R² − r²)·h: a straight bushing.
-fn annulus(outer: f64, inner: f64, height: f64) -> f64 {
+pub(super) fn annulus(outer: f64, inner: f64, height: f64) -> f64 {
     PI * (outer * outer - inner * inner) * height
 }
 /// π·h·(R² + R·r + r²)/3: a solid frustum.
-fn frustum(r1: f64, r2: f64, height: f64) -> f64 {
+pub(super) fn frustum(r1: f64, r2: f64, height: f64) -> f64 {
     PI * height * (r1 * r1 + r1 * r2 + r2 * r2) / 3.
 }
 
@@ -95,7 +95,13 @@ fn cases() -> Vec<Case> {
     base.into_iter().chain(reversed).collect()
 }
 
-fn edit(source: &Path, sketch: &str, version: &str, request: &Path, out: &Path) -> Command {
+pub(super) fn edit(
+    source: &Path,
+    sketch: &str,
+    version: &str,
+    request: &Path,
+    out: &Path,
+) -> Command {
     let mut c = cli();
     c.arg(EDIT)
         .arg(source)
@@ -110,7 +116,7 @@ fn edit(source: &Path, sketch: &str, version: &str, request: &Path, out: &Path) 
         .arg("--json");
     c
 }
-fn edit_reply(out: Output, code: i32) -> Value {
+pub(super) fn edit_reply(out: Output, code: i32) -> Value {
     assert_eq!(out.status.code(), Some(code), "{out:?}");
     let v: Value = serde_json::from_slice(&out.stdout).expect("JSON");
     assert_eq!(v["schema_version"], 1);
@@ -121,12 +127,12 @@ fn edit_reply(out: Output, code: i32) -> Value {
 
 /// What discovery says about the one Sketch: its ID, the version to pin and
 /// the saved vertices in order.
-struct Saved {
-    sketch: String,
-    version: String,
-    ids: Vec<String>,
+pub(super) struct Saved {
+    pub(super) sketch: String,
+    pub(super) version: String,
+    pub(super) ids: Vec<String>,
 }
-fn saved(path: &Path) -> Saved {
+pub(super) fn saved(path: &Path) -> Saved {
     let c = inspect(path);
     let s = &c["sketches"][0];
     Saved {
@@ -140,7 +146,7 @@ fn saved(path: &Path) -> Saved {
             .collect(),
     }
 }
-fn write_edit(path: &Path, ids: &[String], points: &[[f64; 2]]) {
+pub(super) fn write_edit(path: &Path, ids: &[String], points: &[[f64; 2]]) {
     let vertices: Vec<Value> = ids
         .iter()
         .zip(points)
@@ -150,7 +156,7 @@ fn write_edit(path: &Path, ids: &[String], points: &[[f64; 2]]) {
 }
 
 /// Every cell of every table, keyed by table name, rows in a stable order.
-fn cells(path: &Path) -> BTreeMap<String, Vec<Vec<String>>> {
+pub(super) fn cells(path: &Path) -> BTreeMap<String, Vec<Vec<String>>> {
     let c = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .expect("SQL");
     let tables: Vec<String> = c
@@ -187,7 +193,7 @@ fn cells(path: &Path) -> BTreeMap<String, Vec<Vec<String>>> {
 
 /// The allowlist: only the selected Sketch row's `payload` and
 /// `payload_hash` may differ, and nothing may be added or removed.
-fn check_cells(source: &Path, copy: &Path, sketch: &str) {
+pub(super) fn check_cells(source: &Path, copy: &Path, sketch: &str) {
     let sketch = sketch.parse::<ObjectId>().expect("UUID");
     let id = format!("id=Blob({:?})", sketch.to_bytes().to_vec());
     let (a, b) = (cells(source), cells(copy));
@@ -230,7 +236,7 @@ fn check_cells(source: &Path, copy: &Path, sketch: &str) {
 }
 
 /// The Lines of a profile, in order, as `(start, end)`.
-fn lines_of(points: &[[f64; 2]]) -> Vec<([f64; 2], [f64; 2])> {
+pub(super) fn lines_of(points: &[[f64; 2]]) -> Vec<([f64; 2], [f64; 2])> {
     (0..points.len())
         .map(|i| (points[i], points[(i + 1) % points.len()]))
         .collect()
@@ -536,7 +542,7 @@ fn unsupported_variants(root: &Path) -> Vec<(&'static str, PathBuf, &'static str
     all.push(("extra history", extra, "exactly one XY plane"));
     all
 }
-fn rewrite_sketch(path: &Path, change: impl FnOnce(&mut Sketch)) {
+pub(super) fn rewrite_sketch(path: &Path, change: impl FnOnce(&mut Sketch)) {
     let mut d = Document::open(path).expect("open");
     let o = d
         .objects()
@@ -713,9 +719,11 @@ fn revolve_profile_discovery_protocol_and_writer_without_kernel() {
     // Preparation refuses what the policy refuses, by name.
     for (why, points, message) in [
         (
+            // §27C: a whole Line on the axis would make this bored part
+            // solid, which an edit may not do.
             "axis contact",
             vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
-            "positive radial side",
+            "cannot change between hollow and solid",
         ),
         (
             "axis crossing",
@@ -856,9 +864,11 @@ fn native_revolve_profile_edit_refusals_preserve_every_file() {
     };
     for (why, points, message) in [
         (
+            // §27C: a whole Line on the axis would make this bored part
+            // solid, which an edit may not do.
             "axis contact",
             vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
-            "positive radial side",
+            "cannot change between hollow and solid",
         ),
         (
             "axis crossing",

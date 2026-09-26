@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-use ferritecad_types::{CadError, CanonicalHasher, Result, normalize_f64};
+use ferritecad_types::{CadError, CanonicalHasher, Result, StableEntityId, normalize_f64};
 
 use crate::handle::ShapeHandle;
 use crate::profile::Profile;
@@ -122,15 +122,45 @@ pub struct RevolveRequest {
     profile: Profile,
     axis: RevolveAxis,
     turn: RevolveTurn,
+    axis_segment: Option<StableEntityId>,
 }
 
 impl RevolveRequest {
+    /// A profile strictly off the axis: every segment raises a face.
     pub fn new(profile: Profile, axis: RevolveAxis, turn: RevolveTurn) -> Self {
         Self {
             profile,
             axis,
             turn,
+            axis_segment: None,
         }
+    }
+
+    /// §27C: the profile closes on the axis along this segment, which lies on
+    /// it and therefore raises no face; every other segment still must.
+    ///
+    /// The caller's policy decided which segment that is. An adapter checks it
+    /// — the segment's ends on the axis, every other vertex off it, no face
+    /// from it — and never infers it.
+    pub fn with_axis_segment(mut self, label: StableEntityId) -> Result<Self> {
+        if !self
+            .profile
+            .outer()
+            .segments()
+            .iter()
+            .any(|segment| segment.label == label)
+        {
+            return Err(CadError::input(format!(
+                "axis segment {label} is not a segment of the profile being turned"
+            )));
+        }
+        self.axis_segment = Some(label);
+        Ok(self)
+    }
+
+    /// The segment on the axis, for a profile closed on it.
+    pub fn axis_segment(&self) -> Option<StableEntityId> {
+        self.axis_segment
     }
 
     pub fn profile(&self) -> &Profile {
@@ -157,6 +187,10 @@ impl RevolveRequest {
         hasher.field("turn").str(match self.turn {
             RevolveTurn::Full => "full",
         });
+        // Only when present, so a profile with a bore keeps the key it had.
+        if let Some(label) = self.axis_segment {
+            hasher.field("axis_segment").bytes(&label.to_bytes());
+        }
     }
 }
 

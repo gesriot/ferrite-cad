@@ -39,6 +39,8 @@ pub(crate) const SEGMENT_CIRCLE: i32 = 2;
 const SURFACE_PLANE: i32 = 1;
 const SURFACE_CYLINDER: i32 = 2;
 const SURFACE_CONE: i32 = 3;
+/// `FC_OCCT_NO_AXIS_SEGMENT`: no segment of a revolved profile is on the axis.
+const NO_AXIS_SEGMENT: usize = usize::MAX;
 
 /// Must match the `FC_OCCT_CARRIED_*` constants in `ferritecad_occt.h`.
 pub(crate) const CARRIED_KEPT: i32 = 0;
@@ -176,6 +178,7 @@ unsafe extern "C" {
         plane: *const Plane,
         segments: *const Segment,
         segment_count: usize,
+        axis_segment: usize,
         axis_origin: *const f64,
         axis_direction: *const f64,
         full_turn: i32,
@@ -655,6 +658,7 @@ impl Session {
         &mut self,
         plane: &Plane,
         segments: &[Segment],
+        axis_segment: Option<usize>,
         axis_origin: [f64; 3],
         axis_direction: [f64; 3],
         cancel: &CancelToken,
@@ -676,6 +680,7 @@ impl Session {
                 plane,
                 segments.as_ptr(),
                 segments.len(),
+                axis_segment.unwrap_or(NO_AXIS_SEGMENT),
                 axis_origin.as_ptr(),
                 axis_direction.as_ptr(),
                 1,
@@ -1712,6 +1717,7 @@ mod tests {
             "const FcOcctPlane *plane",
             "const FcOcctSegment *segments",
             "size_t segment_count",
+            "size_t axis_segment",
             "const double *axis_origin",
             "const double *axis_direction",
             "int32_t full_turn",

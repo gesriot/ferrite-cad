@@ -561,6 +561,10 @@ fn populate_profile(
 /// the named full turn. One `RevolveFace` reference per Line names the face
 /// that Line turns into, by the Line's own identity; the cold check before
 /// publication requires every one of them to resolve.
+///
+/// §27C: for a solid part closed on the axis, the Line on the axis is named
+/// in the Revolve itself (`axis_segment`) and gets no reference — it turns into
+/// nothing, and nothing is invented for it.
 fn populate_revolve(document: &mut Document, revolution: &FullTurnRevolution) -> Result<()> {
     let plane = ObjectId::new();
     let sketch = ObjectId::new();
@@ -579,6 +583,7 @@ fn populate_revolve(document: &mut Document, revolution: &FullTurnRevolution) ->
             },
         })
         .collect();
+    let axis_segment = revolution.axis_line().map(|index| curves[index].id);
 
     document.write(|writer| {
         writer.put_object(
@@ -616,6 +621,7 @@ fn populate_revolve(document: &mut Document, revolution: &FullTurnRevolution) ->
                 axis: RevolveAxis::SketchY,
                 extent: RevolveExtent::FullTurn,
                 operation: SolidOperation::NewBody,
+                axis_segment,
             }),
         )?;
         writer.put_object(
@@ -637,7 +643,7 @@ fn populate_revolve(document: &mut Document, revolution: &FullTurnRevolution) ->
             dependency: revolve,
             role: DependencyRole::BodyTip,
         })?;
-        for curve in &curves {
+        for curve in curves.iter().filter(|c| Some(c.id) != axis_segment) {
             writer.put_topology_ref(&TopologyRef {
                 id: StableEntityId::new(),
                 owner: revolve,

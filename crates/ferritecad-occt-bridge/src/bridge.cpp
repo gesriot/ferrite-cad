@@ -965,7 +965,8 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
 
 FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
                              const FcOcctSegment *segments,
-                             size_t segment_count, const double *axis_origin,
+                             size_t segment_count, size_t axis_segment,
+                             const double *axis_origin,
                              const double *axis_direction, int32_t full_turn,
                              FcOcctCancelFn cancel, void *cancel_context,
                              uint64_t *out_shape,
@@ -985,6 +986,12 @@ FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
     if (segment_count < 3) {
       write_error(out_error, "a revolved polygon needs at least three Lines, got " +
                                  std::to_string(segment_count));
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const bool closed_on_axis = axis_segment != FC_OCCT_NO_AXIS_SEGMENT;
+    if (closed_on_axis && axis_segment >= segment_count) {
+      write_error(out_error, "the axis segment " + std::to_string(axis_segment) +
+                                 " is not a segment of the profile");
       return FC_OCCT_INVALID_INPUT;
     }
     for (size_t i = 0; i < segment_count; ++i) {
@@ -1066,6 +1073,20 @@ FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
     for (size_t i = 0; i < segment_count; ++i) {
       const gp_Pnt point = to_model(segments[i].start_x, segments[i].start_y);
       const double distance = gp_Vec(axis_point, point).Dot(gp_Vec(radial));
+      // Vertex i starts segment i and ends segment i - 1: it belongs on the
+      // axis exactly when one of the two is the stated axis segment.
+      const bool axis_vertex =
+          closed_on_axis &&
+          (i == axis_segment || (axis_segment + 1) % segment_count == i);
+      if (axis_vertex) {
+        if (std::abs(distance) > Precision::Confusion()) {
+          write_error(out_error, "vertex " + std::to_string(i) +
+                                     " ends the axis segment but is not on the axis");
+          return FC_OCCT_INVALID_INPUT;
+        }
+        corners.push_back(BRepBuilderAPI_MakeVertex(point));
+        continue;
+      }
       if (std::abs(distance) <= Precision::Confusion()) {
         write_error(out_error, "vertex " + std::to_string(i) +
                                    " lies on the axis of revolution");
@@ -1157,6 +1178,19 @@ FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
     record.revolve_faces.resize(segment_count);
     for (size_t i = 0; i < segment_count; ++i) {
       const TopoDS_Shape candidate = sweep.Shape(edges[i]);
+      if (closed_on_axis && i == axis_segment) {
+        // Measured on OCCT 8.0.1: a Line on the axis sweeps into nothing
+        // (a null shape, and MakeRevol::Generated is empty). Anything that is
+        // a face of the solid here would be a face no name could honestly
+        // describe, so it refuses the result rather than being ignored.
+        if (!candidate.IsNull() && candidate.ShapeType() == TopAbs_FACE &&
+            solid_faces.Contains(candidate)) {
+          write_error(out_error, "the revolution made a face of the axis segment " +
+                                     std::to_string(i));
+          return FC_OCCT_KERNEL;
+        }
+        continue;
+      }
       if (candidate.IsNull() || candidate.ShapeType() != TopAbs_FACE ||
           !solid_faces.Contains(candidate)) {
         write_error(out_error, "the revolution made nothing of segment " +
@@ -2626,6 +2660,31 @@ FcOcctStatus fc_occt_tessellate(
         const gp_Vec edge1(nodes[a - 1], nodes[b - 1]);
         const gp_Vec edge2(nodes[a - 1], nodes[c - 1]);
         const gp_Vec cross = edge1.Crossed(edge2);
+        // The corners as they will be stored, widened back to double: the same
+        // arithmetic the STL writer applies to the stored mesh, so a triangle
+        // kept here is one it can write.
+        const auto stored = [&nodes](int node) {
+          const gp_Pnt &point = nodes[static_cast<size_t>(node - 1)];
+          return gp_Pnt(static_cast<float>(point.X()), static_cast<float>(point.Y()),
+                        static_cast<float>(point.Z()));
+        };
+        const gp_Vec stored_cross =
+            gp_Vec(stored(a), stored(b)).Crossed(gp_Vec(stored(a), stored(c)));
+        // §27C: where a solid closes on an axis — the apex of a cone — Open
+        // CASCADE meshes the degenerate edge as several nodes at one point,
+        // and the triangles fanning into it have two corners there. Such a
+        // triangle covers no surface and has no direction: STL cannot write
+        // it, and nothing can light it. It is dropped wherever it occurs, so
+        // a shape rebuilt cold and the same shape restored from an archive
+        // (which does not know it was revolved) tessellate identically. A
+        // mesh that never had one is unchanged. If an entire face collapses,
+        // the mesh validator rejects its empty face range before export. The
+        // apex nodes need not coincide in double (on macOS they can differ in
+        // the last bits and still narrow to one float point), so the test is
+        // made on the stored float corners.
+        if (stored_cross.SquareMagnitude() == 0.0) {
+          continue;
+        }
         if (cross.SquareMagnitude() > 1.0e-24) {
           accumulated[a - 1] += cross;
           accumulated[b - 1] += cross;

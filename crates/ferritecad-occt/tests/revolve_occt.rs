@@ -294,3 +294,204 @@ fn native_a_revolution_survives_the_named_archive_face_by_face() {
     kernel.release(restored);
     assert_eq!(kernel.live_shape_count(), 0);
 }
+
+/// §27C: the checked request for a profile closed on the axis along the Line
+/// that starts at `axis` in `points`.
+fn solid_request(points: &[[f64; 2]], axis: usize) -> (RevolveRequest, Vec<StableEntityId>) {
+    let (request, labels) = request(points).expect("request");
+    let request = request
+        .with_axis_segment(labels[axis])
+        .expect("a segment of this profile");
+    (request, labels)
+}
+
+/// A solid part: the stated axis Line raises nothing; every other Line
+/// raises its own face — plane, cylinder or cone on the Y axis — and the
+/// solid has exactly those faces and the analytic volume.
+fn check_solid(points: &[[f64; 2]], axis: usize, volume: f64) {
+    let mut kernel = OcctKernel::new().expect("kernel");
+    let context = OperationContext::default();
+    let (request, labels) = solid_request(points, axis);
+    let result = kernel.revolve(&request, &context).expect("revolve");
+    let (faces, measured) = kernel.shape_stats(result.shape).expect("stats");
+    assert!(
+        (measured - volume).abs() < 1e-6 * volume,
+        "{measured} != {volume} for {points:?}"
+    );
+    assert_eq!(
+        faces as usize,
+        points.len() - 1,
+        "one face per Line off the axis, none for the axis Line, no cap"
+    );
+    let n = points.len();
+    let mut seen = BTreeSet::new();
+    for (i, label) in labels.iter().enumerate() {
+        let generated: Vec<_> = result
+            .history
+            .generated(HistoryInput::Segment(*label))
+            .collect();
+        if i == axis {
+            assert!(generated.is_empty(), "the axis Line raised {generated:?}");
+            continue;
+        }
+        let [face] = generated.as_slice() else {
+            panic!("Line {i} raised {generated:?}")
+        };
+        assert!(seen.insert(*face), "one face for two Lines");
+        let (a, b) = (points[i], points[(i + 1) % n]);
+        let surface = kernel.face_surface(*face).expect("surface");
+        match expected(a, b) {
+            Expected::Annulus { .. } => assert_eq!(surface, FaceSurface::Plane, "Line {i}"),
+            Expected::Cylinder { radius } => {
+                assert_eq!(surface, FaceSurface::Cylinder { radius }, "Line {i}");
+            }
+            Expected::Cone => assert_eq!(surface, FaceSurface::Cone, "Line {i}"),
+        }
+        if !matches!(surface, FaceSurface::Plane) {
+            let (origin, direction) = kernel.surface_axis(*face).expect("axis");
+            assert!(
+                origin[0].abs() < 1e-9 && origin[2].abs() < 1e-9,
+                "{origin:?}"
+            );
+            assert!((direction[1].abs() - 1.).abs() < 1e-12, "{direction:?}");
+        }
+    }
+    assert_eq!(seen.len(), faces as usize, "every face is some Line's");
+    kernel.release(result.shape);
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+#[test]
+fn native_axis_closed_revolutions_are_solid_and_name_every_line_but_the_axis() {
+    if !native() {
+        return;
+    }
+    let cylinder = |r: f64, h: f64| PI * r * r * h;
+    let cone = |r: f64, h: f64| PI * r * r * h / 3.;
+    for (points, axis, volume) in [
+        (
+            vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
+            3,
+            cylinder(10., 15.),
+        ),
+        (vec![[0., 0.], [10., 0.], [0., 15.]], 2, cone(10., 15.)),
+        (
+            vec![
+                [0., 0.],
+                [10., 0.],
+                [10., 5.],
+                [6., 5.],
+                [6., 15.],
+                [0., 15.],
+            ],
+            5,
+            cylinder(10., 5.) + cylinder(6., 10.),
+        ),
+        (
+            vec![[0., -1.25], [3.5, -1.25], [3.5, 7.75], [0., 7.75]],
+            3,
+            cylinder(3.5, 9.),
+        ),
+    ] {
+        let n = points.len();
+        // Every place in the saved order, and both windings.
+        for rotation in 0..n {
+            let rotated: Vec<_> = (0..n).map(|i| points[(i + rotation) % n]).collect();
+            let at = (axis + n - rotation) % n;
+            check_solid(&rotated, at, volume);
+            let reversed: Vec<_> = rotated.iter().rev().copied().collect();
+            // Reversed, the Line from rotated[at] to rotated[at+1] runs from
+            // reversed[n-2-at] to reversed[n-1-at].
+            check_solid(&reversed, (2 * n - 2 - at) % n, volume);
+        }
+    }
+}
+
+#[test]
+fn native_axis_closed_requests_are_checked_not_trusted() {
+    if !native() {
+        return;
+    }
+    let mut kernel = OcctKernel::new().expect("kernel");
+    let context = OperationContext::default();
+    let cylinder = [[0., 0.], [10., 0.], [10., 15.], [0., 15.]];
+    // The Line on the axis, not stated: refused as before.
+    let (undeclared, _) = request(&cylinder).expect("request");
+    let error = kernel
+        .revolve(&undeclared, &context)
+        .expect_err("undeclared");
+    assert!(error.to_string().contains("lies on the axis"), "{error}");
+    // A stated axis Line that is not on the axis.
+    let (off, _) = solid_request(&cylinder, 1);
+    // Vertices are checked in order, so the true axis vertex 0 may be
+    // refused as unstated before the stated one is found off the axis.
+    let error = kernel.revolve(&off, &context).expect_err("off the axis");
+    assert_eq!(error.kind(), ErrorKind::Input);
+    assert!(
+        ["not on the axis", "lies on the axis"]
+            .iter()
+            .any(|m| error.to_string().contains(m)),
+        "{error}"
+    );
+    // A part with a bore cannot state an axis Line.
+    let (bore, _) = solid_request(&[[4., 0.], [10., 0.], [10., 15.], [4., 15.]], 3);
+    let error = kernel.revolve(&bore, &context).expect_err("a bore");
+    assert!(error.to_string().contains("not on the axis"), "{error}");
+    // The topology map checks the same fact against the kernel's history:
+    // the stated axis Line must raise nothing, every other Line one face.
+    let (solid, labels) = solid_request(&cylinder, 3);
+    let result = kernel.revolve(&solid, &context).expect("revolve");
+    let producer = ferritecad_types::ObjectId::new();
+    let mut map = ferritecad_topology::TopologyMap::new();
+    map.record_revolve(producer, solid.profile(), Some(labels[3]), &result)
+        .expect("the axis Line raised nothing");
+    // Lines are checked in label order, so a swapped statement is refused at
+    // whichever of its two false Lines comes first.
+    for (stated, refusals) in [
+        (None, &["raised no face"][..]),
+        (
+            Some(labels[1]),
+            &["reported a face for axis Line", "raised no face"][..],
+        ),
+        (
+            Some(StableEntityId::new()),
+            &["not in the turned profile"][..],
+        ),
+    ] {
+        let error = ferritecad_topology::TopologyMap::new()
+            .record_revolve(producer, solid.profile(), stated, &result)
+            .expect_err("a false statement of the axis Line")
+            .to_string();
+        assert!(
+            refusals.iter().any(|r| error.contains(r)),
+            "{stated:?}: {error}"
+        );
+    }
+    // A history that also files a real face under the axis Line — a face of
+    // this solid, already another Line's — is a false name, refused as such.
+    let mut forged = result.clone();
+    let face = result
+        .history
+        .generated(HistoryInput::Segment(labels[0]))
+        .next()
+        .expect("a face");
+    forged
+        .history
+        .record_generated(HistoryInput::Segment(labels[3]), face);
+    let error = ferritecad_topology::TopologyMap::new()
+        .record_revolve(producer, solid.profile(), Some(labels[3]), &forged)
+        .expect_err("a face named for the axis Line")
+        .to_string();
+    assert!(error.contains("reported a face for axis Line"), "{error}");
+    kernel.release(result.shape);
+    // A label from another profile is refused before any kernel work.
+    let (plain, _) = request(&cylinder).expect("request");
+    assert_eq!(
+        plain
+            .with_axis_segment(StableEntityId::new())
+            .expect_err("foreign")
+            .kind(),
+        ErrorKind::Input
+    );
+    assert_eq!(kernel.live_shape_count(), 0);
+}

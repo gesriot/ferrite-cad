@@ -1051,8 +1051,9 @@ impl Editor {
         });
         if revolve {
             ui.label(
-                "X is the radius and Y runs along the axis. Every point needs X > 0: the \
-                 profile may not touch or cross the axis.",
+                "X is the radius and Y runs along the axis, which is X = 0. Keep every point \
+                 at X > 0 for a part with a hole, or put exactly one whole edge on X = 0 for a \
+                 solid part. The profile may not cross the axis or touch it at a single point.",
             );
         }
         ui.label(if self.editing.is_some() && revolve {
@@ -1064,6 +1065,25 @@ impl Editor {
             "Click to add vertices, or enter exact coordinates. Last edge closes to vertex 1."
         });
         if let Some((request, choice)) = &self.editing {
+            // §27C: the saved class of a Revolve is fixed. A solid part names
+            // the one Line that lies on the axis; it stays there.
+            if let Some(SketchProfileUse::FullTurnRevolve { axis_segment, .. }) = choice.profile_use
+            {
+                ui.label(match axis_segment {
+                    Some(line) => {
+                        let at = request
+                            .vertices
+                            .iter()
+                            .position(|v| v.curve_id == line)
+                            .map_or(0, |i| i + 1);
+                        format!(
+                            "Solid part: edge {at} (Line {line}) stays on the axis at X = 0; \
+                             every other point stays at X > 0."
+                        )
+                    }
+                    None => "Part with a bore: every point stays at X > 0.".to_owned(),
+                });
+            }
             if let Some(history) = &choice.cut_history {
                 ui.label(format!(
                     "Base of {} circular Cuts. Tools stay at their saved XY coordinates.",
@@ -1679,7 +1699,7 @@ impl Canvas {
                     rect.bottom() - 4.,
                 ),
                 egui::Align2::LEFT_BOTTOM,
-                "axis (Y) · radius X > 0 →",
+                "axis (Y) at X = 0 · radius X →",
                 egui::FontId::proportional(12.),
                 colour,
             );
@@ -2525,7 +2545,7 @@ mod tests {
         let out = frame(&ctx, e, vec![]);
         assert!(
             out.shapes.iter().any(|c| matches!(&c.shape,
-                egui::Shape::Text(t) if t.galley.text() == "axis (Y) · radius X > 0 →")),
+                egui::Shape::Text(t) if t.galley.text() == "axis (Y) at X = 0 · radius X →")),
             "the axis is named on the canvas"
         );
         assert!(
@@ -2540,9 +2560,10 @@ mod tests {
         assert_eq!(e.draft.as_ref().expect("draft").feature, Feature::Revolve);
         // Onto the axis: the document refuses, no request, and Undo restores.
         replace_field(&ctx, e, "4.000", "0");
+        // One vertex alone on the axis is not a Line on it (§27C).
         let refused = e.content().expect_err("a vertex on the axis");
         assert!(
-            refused.to_string().contains("positive radial side"),
+            refused.to_string().contains("touches the axis alone"),
             "{refused}"
         );
         let out = frame(&ctx, e, vec![]);
@@ -2971,7 +2992,7 @@ mod tests {
             })
             .collect();
         for wanted in [
-            "axis (Y) · radius X > 0 →",
+            "axis (Y) at X = 0 · radius X →",
             "Revolve: one full turn (360°) about the sketch Y axis, through X = 0.",
             "XY · mm · Line polygon · Revolve 360° about the sketch Y axis · NewBody",
         ] {
