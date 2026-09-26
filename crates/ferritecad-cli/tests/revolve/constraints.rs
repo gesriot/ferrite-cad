@@ -10,7 +10,6 @@
 //! end faces' planes, outward sides and areas. The stored coordinates are the
 //! solver's starting geometry and must never change.
 use super::angle::{angle_edit, angle_reply, refs, revolve_payload, target, write_angle};
-use super::axis::write_solid_document;
 use super::edit::cells;
 use super::partial::{
     angle, cap_frame, check_partial_mesh, cross, dot, in_profile, length, pappus, profile_area,
@@ -18,7 +17,7 @@ use super::partial::{
 };
 use super::*;
 use ferritecad_document::{
-    RevolveAngle, SketchConstraint, SketchConstraintRule, SketchPointRef, SketchPointSelector,
+    SketchConstraint, SketchConstraintRule, SketchPointRef, SketchPointSelector,
 };
 use ferritecad_kernel::{CancelToken, ProgressSink};
 use std::collections::BTreeSet;
@@ -48,7 +47,7 @@ const SECTOR_TALL: [[f64; 2]; 5] = [
 ];
 const SECTOR_DEG: f64 = 137.5;
 
-fn solver() -> bool {
+pub(super) fn solver() -> bool {
     if ferritecad_occt::is_available() && cfg!(feature = "planegcs") {
         return true;
     }
@@ -60,7 +59,7 @@ fn solver() -> bool {
     false
 }
 
-fn constrain(source: &Path, catalog: &Value, request: &Path, out: &Path) -> Command {
+pub(super) fn constrain(source: &Path, catalog: &Value, request: &Path, out: &Path) -> Command {
     let mut c = cli();
     c.arg(EDIT)
         .arg(source)
@@ -79,7 +78,7 @@ fn constrain(source: &Path, catalog: &Value, request: &Path, out: &Path) -> Comm
         .arg("--json");
     c
 }
-fn edit_reply(out: Output, code: i32) -> Value {
+pub(super) fn edit_reply(out: Output, code: i32) -> Value {
     assert_eq!(out.status.code(), Some(code), "{out:?}");
     assert_eq!(out.stdout.iter().filter(|&&b| b == b'\n').count(), 1);
     let v: Value = serde_json::from_slice(&out.stdout).expect("JSON");
@@ -89,7 +88,7 @@ fn edit_reply(out: Output, code: i32) -> Value {
     v
 }
 /// Publish one request and return its result.
-fn publish(source: &Path, request: &Path, edits: &Value, out: &Path) -> Value {
+pub(super) fn publish(source: &Path, request: &Path, edits: &Value, out: &Path) -> Value {
     let catalog = inspect(source);
     write(request, edits);
     edit_reply(
@@ -101,7 +100,7 @@ fn publish(source: &Path, request: &Path, edits: &Value, out: &Path) -> Value {
         .clone()
 }
 /// Refuse one request: nothing appears, the source is byte-identical.
-fn refuse(source: &Path, request: &Path, edits: &Value, out: &Path) -> Value {
+pub(super) fn refuse(source: &Path, request: &Path, edits: &Value, out: &Path) -> Value {
     let catalog = inspect(source);
     let before = std::fs::read(source).expect("source");
     let directory = entries(out.parent().expect("dir"));
@@ -118,26 +117,26 @@ fn refuse(source: &Path, request: &Path, edits: &Value, out: &Path) -> Value {
     v["error"].clone()
 }
 
-fn curve(catalog: &Value, i: usize) -> Value {
+pub(super) fn curve(catalog: &Value, i: usize) -> Value {
     catalog["sketches"][0]["constraint_edit"]["curves"][i]["curve_id"].clone()
 }
-fn rule(catalog: &Value, i: usize, rule: &str) -> Value {
+pub(super) fn rule(catalog: &Value, i: usize, rule: &str) -> Value {
     json!({"curve_id": curve(catalog, i), "rule": rule})
 }
-fn distance(catalog: &Value, i: usize, mm: f64) -> Value {
+pub(super) fn distance(catalog: &Value, i: usize, mm: f64) -> Value {
     json!({"curve_id": curve(catalog, i), "rule": "distance", "distance_mm": mm})
 }
-fn fixed(catalog: &Value, i: usize, at: &str, x: f64, y: f64) -> Value {
+pub(super) fn fixed(catalog: &Value, i: usize, at: &str, x: f64, y: f64) -> Value {
     json!({"curve_id": curve(catalog, i), "rule": "fixed", "at": at, "x_mm": x, "y_mm": y})
 }
-fn pair(catalog: &Value, kind: &str, i: usize, j: usize) -> Value {
+pub(super) fn pair(catalog: &Value, kind: &str, i: usize, j: usize) -> Value {
     json!({"rule": kind, "a_curve_id": curve(catalog, i), "b_curve_id": curve(catalog, j)})
 }
-fn adds(add: Vec<Value>) -> Value {
+pub(super) fn adds(add: Vec<Value>) -> Value {
     json!({"request_version": 1, "remove": [], "add": add})
 }
 /// The one stored constraint of `kind` on Line `i`, by its UUID.
-fn stored_id(catalog: &Value, kind: &str, i: usize) -> Value {
+pub(super) fn stored_id(catalog: &Value, kind: &str, i: usize) -> Value {
     let id = curve(catalog, i);
     catalog["sketches"][0]["constraint_edit"]["constraints"]
         .as_array()
@@ -150,7 +149,7 @@ fn stored_id(catalog: &Value, kind: &str, i: usize) -> Value {
         .unwrap_or_else(|| panic!("no {kind} on Line {i}"))["constraint_id"]
         .clone()
 }
-fn constraint_ids(catalog: &Value) -> Vec<Value> {
+pub(super) fn constraint_ids(catalog: &Value) -> Vec<Value> {
     catalog["sketches"][0]["constraint_edit"]["constraints"]
         .as_array()
         .expect("constraints")
@@ -159,7 +158,7 @@ fn constraint_ids(catalog: &Value) -> Vec<Value> {
         .collect()
 }
 
-fn sketch_of(path: &Path) -> (ObjectId, Sketch) {
+pub(super) fn sketch_of(path: &Path) -> (ObjectId, Sketch) {
     let d = Document::open_read_only(path).expect("open");
     let found = d
         .objects()
@@ -179,7 +178,7 @@ fn sketch_of(path: &Path) -> (ObjectId, Sketch) {
 /// `sketch.constraints.v1` row, which may appear as required or turn
 /// required. Every other row and cell of every table — the Revolve row, the
 /// Body, the plane, the dependencies, every name and `meta` — is equal.
-fn check_constraint_cells(source: &Path, copy: &Path, sketch: ObjectId) {
+pub(super) fn check_constraint_cells(source: &Path, copy: &Path, sketch: ObjectId) {
     let id = format!("id=Blob({:?})", sketch.to_bytes().to_vec());
     let (a, b) = (cells(source), cells(copy));
     assert_eq!(
@@ -244,12 +243,12 @@ fn check_constraint_cells(source: &Path, copy: &Path, sketch: ObjectId) {
 }
 
 /// What a cold or cached rebuild says about one saved constrained Revolve.
-struct Solved {
-    dof: usize,
-    redundant: Vec<StableEntityId>,
+pub(super) struct Solved {
+    pub(super) dof: usize,
+    pub(super) redundant: Vec<StableEntityId>,
     /// The solved Lines in stored order: `(curve UUID, start, end)`.
-    lines: Vec<(StableEntityId, [f64; 2], [f64; 2])>,
-    volume: f64,
+    pub(super) lines: Vec<(StableEntityId, [f64; 2], [f64; 2])>,
+    pub(super) volume: f64,
 }
 impl Solved {
     fn starts(&self) -> Vec<[f64; 2]> {
@@ -259,7 +258,7 @@ impl Solved {
 fn near(a: [f64; 2], b: [f64; 2], tolerance: f64) -> bool {
     (a[0] - b[0]).abs() <= tolerance && (a[1] - b[1]).abs() <= tolerance
 }
-fn assert_solved(solved: &Solved, expected: &[[f64; 2]]) {
+pub(super) fn assert_solved(solved: &Solved, expected: &[[f64; 2]]) {
     let starts = solved.starts();
     assert_eq!(starts.len(), expected.len());
     for (s, e) in starts.iter().zip(expected) {
@@ -270,7 +269,7 @@ fn assert_solved(solved: &Solved, expected: &[[f64; 2]]) {
 /// The kernel's account of a constrained Revolve, measured against its
 /// solved Lines only. `degrees` is `None` for a full turn. `cache` is a store
 /// path shared across copies, and the outcomes this rebuild must report.
-fn measure_solved(
+pub(super) fn measure_solved(
     path: &Path,
     degrees: Option<f64>,
     cache: Option<(&Path, &[CacheOutcome])>,
@@ -313,6 +312,14 @@ fn measure_solved(
             _ => None,
         })
         .expect("body");
+    // §27H: the Line the saved Revolve states is on the axis, if any.
+    let axis_segment = objects
+        .iter()
+        .find_map(|o| match &o.payload {
+            ObjectPayload::Revolve(r) => Some(r.axis_segment),
+            _ => None,
+        })
+        .expect("revolve");
     let report = built.solve_report(sketch_id).expect("one solve report");
     let picture = built
         .sketch_presentation(sketch_id)
@@ -335,7 +342,21 @@ fn measure_solved(
         assert!(near(*end, next, 1e-7), "joint {i}: {end:?} != {next:?}");
     }
     let points: Vec<[f64; 2]> = lines.iter().map(|(_, a, _)| *a).collect();
-    let n = points.len();
+    if let Some(axis) = axis_segment {
+        // The solved Line the Revolve states lies exactly on the axis; no
+        // other vertex does.
+        let (_, a, b) = lines
+            .iter()
+            .find(|(id, _, _)| *id == axis)
+            .expect("stated Line");
+        assert!(a[0] == 0. && b[0] == 0., "{a:?} {b:?} off the axis");
+        for (id, a, _) in &lines {
+            assert!(
+                *id == axis || lines.iter().any(|(i, _, e)| *i == axis && e == a) || a[0] > 1e-6
+            );
+        }
+    }
+    let n = points.len() - usize::from(axis_segment.is_some());
     assert_eq!(built.shape_count(), 1);
     let shape = built.shape(body).expect("Body");
     assert_eq!(built.shape(revolve), Some(shape));
@@ -388,6 +409,11 @@ fn measure_solved(
                     SelectionRule::AllDerivedFrom {
                         ancestor: profile_segment
                     }
+                );
+                assert_ne!(
+                    Some(profile_segment),
+                    axis_segment,
+                    "the axis Line raises a face"
                 );
                 let (a, b) = by_id[&profile_segment];
                 if (b[1] - a[1]).abs() < 1e-9 {
@@ -487,7 +513,7 @@ fn measure_solved(
 
 /// STL, independently integrated against the solved profile, and FBX; the
 /// pair kept for the pinned reader when the gate asks for artifacts.
-fn exports(path: &Path, solved: &Solved, degrees: Option<f64>, artifact: &str) {
+pub(super) fn exports(path: &Path, solved: &Solved, degrees: Option<f64>, artifact: &str) {
     let points = solved.starts();
     let m = mesh(path, &path.with_extension("stl"));
     match degrees {
@@ -525,14 +551,14 @@ fn exports(path: &Path, solved: &Solved, degrees: Option<f64>, artifact: &str) {
     }
 }
 
-fn create_full(root: &Path, points: &[[f64; 2]], name: &str) -> PathBuf {
+pub(super) fn create_full(root: &Path, points: &[[f64; 2]], name: &str) -> PathBuf {
     let input = root.join(format!("{name}.json"));
     request(&input, points);
     let out = root.join(format!("{name}.fcad"));
     reply(create(&input, &out).output().expect("create"), 0);
     out
 }
-fn create_sector(root: &Path, points: &[[f64; 2]], degrees: f64, name: &str) -> PathBuf {
+pub(super) fn create_sector(root: &Path, points: &[[f64; 2]], degrees: f64, name: &str) -> PathBuf {
     let input = root.join(format!("{name}.json"));
     request_v2(&input, points, angle(degrees));
     let out = root.join(format!("{name}.fcad"));
@@ -1093,37 +1119,8 @@ fn revolve_constraint_discovery_writer_and_refusals_without_solver() {
         SECTOR_DEG
     );
 
-    // Axis-closed profiles, full and partial, are refused with the reason.
-    let solid = root.join("solid.fcad");
-    write_solid_document(
-        &solid,
-        &[[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
-        Some(3),
-    );
-    let solid_sector = root.join("solid-sector.fcad");
-    write_solid_document(
-        &solid_sector,
-        &[[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
-        Some(3),
-    );
-    rewrite_revolve(&solid_sector, |r| {
-        r.extent = RevolveExtent::Partial {
-            degrees: RevolveAngle::new(90.).expect("angle"),
-        }
-    });
-    for path in [&solid, &solid_sector] {
-        let edit = inspect(path)["sketches"][0]["constraint_edit"].clone();
-        assert_eq!(edit["available"], false, "{edit}");
-        assert!(
-            edit["refusal"]
-                .as_str()
-                .expect("refusal")
-                .contains("closed on the axis along Line"),
-            "{edit}"
-        );
-        assert_eq!(edit["curves"], Value::Null);
-        assert_eq!(edit["profile_feature"], Value::Null);
-    }
+    // Axis-closed profiles, full and partial, are editable since §27H; their
+    // discovery, writer and refusals are in `axis_constraints`.
 
     // A constrained profile whose stored inputs touch the axis is outside
     // the class before anything is solved, and so is a Circle profile.
@@ -1418,7 +1415,7 @@ fn occt_without_solver_refuses_revolve_constraints_honestly() {
 
 /// The Coincident link at every adjacent joint, End of one Line to Start of
 /// the next.
-fn closure(labels: &[StableEntityId]) -> Vec<SketchConstraint> {
+pub(super) fn closure(labels: &[StableEntityId]) -> Vec<SketchConstraint> {
     (0..labels.len())
         .map(|i| SketchConstraint {
             id: StableEntityId::new(),
@@ -1430,7 +1427,7 @@ fn closure(labels: &[StableEntityId]) -> Vec<SketchConstraint> {
         .collect()
 }
 
-fn horizontal(curve: StableEntityId) -> SketchConstraint {
+pub(super) fn horizontal(curve: StableEntityId) -> SketchConstraint {
     SketchConstraint {
         id: StableEntityId::new(),
         rule: SketchConstraintRule::Horizontal {
@@ -1440,7 +1437,7 @@ fn horizontal(curve: StableEntityId) -> SketchConstraint {
     }
 }
 
-fn rewrite_revolve(path: &Path, change: impl FnOnce(&mut Revolve)) {
+pub(super) fn rewrite_revolve(path: &Path, change: impl FnOnce(&mut Revolve)) {
     let mut d = Document::open(path).expect("open");
     let mut object = d
         .objects()

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! §27G: the existing constraints editor on the profile of a saved Revolve
-//! with a bore, driven through its real widgets and its real worker.
+//! with a bore, driven through its real widgets and its real worker; §27H:
+//! the same on a solid profile closed on the axis along its stated Line.
 use super::*;
 use ferritecad_document::{
     Body, DatumPlane, Dependency, DependencyRole, ObjectPayload, Point2, Revolve, RevolveAngle,
@@ -25,8 +26,28 @@ const SECTOR_TALL: [[f64; 2]; 5] = [
     [2.75, 9.5],
 ];
 
-/// The standalone Revolve frame, written without a kernel.
-fn write_sector(path: &Path, points: &[[f64; 2]], degrees: f64) -> ObjectId {
+/// A solid stepped shaft; Line 6 (index 5) is on the axis.
+const SHAFT_T: [[f64; 2]; 6] = [
+    [0., -2.25],
+    [8., -2.25],
+    [8., 3.5],
+    [5.5, 3.5],
+    [5.5, 12.75],
+    [0., 12.75],
+];
+/// The same once its base is dimensioned 9.25 mm.
+const SHAFT_WIDE: [[f64; 2]; 6] = [
+    [0., -2.25],
+    [9.25, -2.25],
+    [9.25, 3.5],
+    [6.75, 3.5],
+    [6.75, 12.75],
+    [0., 12.75],
+];
+
+/// The standalone Revolve frame, written without a kernel. `axis` is the
+/// index of the stated axis Line of a solid part.
+fn write_sector(path: &Path, points: &[[f64; 2]], degrees: f64, axis: Option<usize>) -> ObjectId {
     let mut d = Document::create(path).expect("document");
     let [plane, sketch, revolve, body] = std::array::from_fn(|_| ObjectId::new());
     let n = points.len();
@@ -40,10 +61,11 @@ fn write_sector(path: &Path, points: &[[f64; 2]], degrees: f64) -> ObjectId {
                 placement: Transform::IDENTITY,
             }),
         )?;
+        let labels: Vec<StableEntityId> = (0..n).map(|_| StableEntityId::new()).collect();
         let curves = (0..n)
             .map(|i| {
                 Ok(SketchCurve {
-                    id: StableEntityId::new(),
+                    id: labels[i],
                     construction: false,
                     geometry: SketchGeometry::Line {
                         start: Point2::new(points[i][0], points[i][1])?,
@@ -75,7 +97,7 @@ fn write_sector(path: &Path, points: &[[f64; 2]], degrees: f64) -> ObjectId {
                     degrees: RevolveAngle::new(degrees)?,
                 },
                 operation: SolidOperation::NewBody,
-                axis_segment: None,
+                axis_segment: axis.map(|i| labels[i]),
             }),
         )?;
         w.put_object(
@@ -187,7 +209,7 @@ fn expected_sector(curves: &[SketchCurve]) -> Vec<AddSketchConstraint> {
 fn revolve_constraint_widgets_name_the_revolve_build_and_replace_a_length() {
     let root = tempfile::tempdir().expect("dir");
     let path = root.path().join("sector.fcad");
-    let revolve = write_sector(&path, &SECTOR_P, 137.5);
+    let revolve = write_sector(&path, &SECTOR_P, 137.5, None);
     let source = reading(&path);
     let choice = &source.constraint_sketches[0];
     assert_eq!(choice.refusal, None);
@@ -442,6 +464,331 @@ fn native_revolve_constraint_worker_and_cli_publish_the_same_solved_sector() {
         std::fs::read(tall.0.with_extension("stl")).expect("tall"),
         std::fs::read(ui.0.with_extension("stl")).expect("rigid"),
         "a taller wall is a different Body"
+    );
+}
+
+/// The rigid dimensioning of `SHAFT_T`: H/V on every Line, the base's
+/// start — the axis Line's lower end — pinned at X 0, four lengths.
+fn dimension_shaft(ctx: &egui::Context, e: &mut Editor) {
+    for (segment, button) in [
+        (1, "Add Horizontal"),
+        (2, "Add Vertical"),
+        (3, "Add Horizontal"),
+        (4, "Add Vertical"),
+        (5, "Add Horizontal"),
+        (6, "Add Vertical"),
+    ] {
+        add_on(ctx, e, segment, button);
+    }
+    add_pin(ctx, e, 1, "0", "-2.25");
+    add_length(ctx, e, 1, "8");
+    add_length(ctx, e, 2, "5.75");
+    add_length(ctx, e, 3, "2.5");
+    add_length(ctx, e, 4, "9.25");
+}
+fn expected_shaft(curves: &[SketchCurve]) -> Vec<AddSketchConstraint> {
+    let id = |i: usize| curves[i].id;
+    let mut add: Vec<_> = (0..6)
+        .map(|i| {
+            on(
+                id(i),
+                if i % 2 == 0 {
+                    LineConstraintKind::Horizontal
+                } else {
+                    LineConstraintKind::Vertical
+                },
+            )
+        })
+        .collect();
+    add.push(on(
+        id(0),
+        LineConstraintKind::Fixed {
+            at: LineEndpoint::Start,
+            x: SketchCoordinateMm::new(0.).expect("x"),
+            y: SketchCoordinateMm::new(-2.25).expect("y"),
+        },
+    ));
+    add.extend([
+        on(id(0), mm(8.)),
+        on(id(1), mm(5.75)),
+        on(id(2), mm(2.5)),
+        on(id(3), mm(9.25)),
+    ]);
+    add
+}
+
+/// §27H, without a kernel or a solver: the window names the stated axis Line
+/// and says what keeps it on the axis; the widgets build the rigid request,
+/// Undo/Redo and a refused addition keep the draft, a cancelled Save keeps
+/// it retryable, and Replace length is one exact removal plus one addition.
+#[test]
+fn axis_closed_constraint_widgets_name_the_axis_line_and_keep_the_draft() {
+    let root = tempfile::tempdir().expect("dir");
+    let path = root.path().join("shaft.fcad");
+    let revolve = write_sector(&path, &SHAFT_T, 137.5, Some(5));
+    let source = reading(&path);
+    let choice = &source.constraint_sketches[0];
+    assert_eq!(choice.refusal, None);
+    assert_eq!(choice.height_mm, None);
+    let curves = choice.stored.as_ref().expect("stored").curves.clone();
+    let axis = curves[5].id;
+    let Some(SketchProfileUse::PartialRevolve {
+        feature,
+        axis_segment: Some(stated),
+        degrees,
+        ..
+    }) = choice.profile_use
+    else {
+        panic!("a solid sector: {:?}", choice.profile_use)
+    };
+    assert_eq!((feature, stated, degrees.degrees()), (revolve, axis, 137.5));
+    let mut e = Editor::default();
+    assert!(e.begin(&path, &source, choice.sketch));
+    let ctx = egui::Context::default();
+    for _ in 0..3 {
+        frame(&ctx, &mut e, vec![]);
+    }
+    let owner = painted_prefix(&frame(&ctx, &mut e, vec![]), "Profile of Revolve")
+        .expect("the owning Revolve is named");
+    assert_eq!(
+        owner,
+        format!(
+            "Profile of Revolve {revolve}: 137.5° about the sketch Y axis, closed on the axis \
+             along Line {axis}. The turn and that Line are kept; the solved Line must lie exactly \
+             on the axis — pin one of its ends at X 0 and keep it vertical."
+        )
+    );
+    dimension_shaft(&ctx, &mut e);
+    let rigid = expected_shaft(&curves);
+    assert_eq!(history_state(&e).0.add, rigid);
+    assert_eq!(history_state(&e).1.len(), rigid.len());
+    click(&ctx, &mut e, "Undo");
+    assert_eq!(history_state(&e).0.add, rigid[..rigid.len() - 1]);
+    click(&ctx, &mut e, "Redo");
+    assert_eq!(history_state(&e).0.add, rigid);
+    let kept = history_state(&e);
+    add_on(&ctx, &mut e, 6, "Add Vertical");
+    assert!(e.draft.as_ref().expect("draft").refusal.is_some());
+    assert_eq!(history_state(&e), kept);
+    click(&ctx, &mut e, "Save constraints copy…");
+    let request = e.take_request().expect("widget request");
+    assert_eq!(request.edits.add, rigid);
+    assert_eq!(
+        (request.source.as_path(), request.sketch, request.expected),
+        (path.as_path(), choice.sketch, source.version)
+    );
+    // Save Cancel returns no path: nothing is submitted, the same draft and
+    // history stay, and Save offers the same request again.
+    assert!(e.take_request().is_none());
+    assert_eq!(history_state(&e), kept);
+    click(&ctx, &mut e, "Save constraints copy…");
+    let retry = e.take_request().expect("retry");
+    assert_eq!(
+        (retry.edits, retry.source, retry.sketch, retry.expected),
+        (
+            request.edits.clone(),
+            request.source.clone(),
+            request.sketch,
+            request.expected
+        )
+    );
+    if ferritecad_occt::is_available() && !ferritecad_sketch_solver::is_available() {
+        let before = std::fs::read(&path).expect("source");
+        let mut r = request.clone();
+        r.destination = root.path().join("copy.fcad");
+        let mut state = crate::edits::Edits::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        state
+            .start_constraints(r, move |r, g, c| {
+                crate::edits::spawn_constraint_edit(r, c, move |result| {
+                    tx.send((g, result)).expect("reply")
+                })
+            })
+            .expect("worker");
+        let (g, result) = rx.recv().expect("worker reply");
+        let error = result.as_ref().expect_err("no solver").to_string();
+        assert!(error.contains("planegcs"), "{error}");
+        assert_eq!(finish_edit(&mut e, &mut state, g, result), None);
+        assert_eq!(history_state(&e), kept, "the draft survives the refusal");
+        assert!(!root.path().join("copy.fcad").exists());
+        assert_eq!(std::fs::read(&path).expect("source"), before);
+    }
+
+    let mut document = Document::open(&path).expect("open");
+    let prepared = ferritecad_document::prepare_sketch_constraints(
+        &document,
+        choice.sketch,
+        &SketchConstraintEdits {
+            remove: vec![],
+            add: rigid.clone(),
+        },
+    )
+    .expect("prepared");
+    document
+        .write_sketch_constraints(&prepared)
+        .expect("stored constraints");
+    document.close().expect("close");
+    let stored = reading(&path);
+    let base = stored.constraint_sketches[0]
+        .stored
+        .as_ref()
+        .expect("stored")
+        .constraints
+        .iter()
+        .find(
+            |c| matches!(c.rule, SketchConstraintRule::Distance { distance, .. } if distance == 8.),
+        )
+        .expect("the base")
+        .id;
+    let mut e = Editor::default();
+    assert!(e.begin(&path, &stored, choice.sketch));
+    for _ in 0..3 {
+        frame(&ctx, &mut e, vec![]);
+    }
+    click(&ctx, &mut e, "Segment 1");
+    enter_length(&ctx, &mut e, "9.25", false);
+    click(&ctx, &mut e, "Replace length");
+    assert_eq!(
+        history_state(&e).0,
+        SketchConstraintEdits {
+            remove: vec![base],
+            add: vec![on(curves[0].id, mm(9.25))],
+        }
+    );
+    assert_eq!(history_state(&e).1.len(), 1, "one checkpoint");
+}
+
+/// §27H with Open CASCADE and PlaneGCS: the widgets' rigid request on a
+/// solid shaft sector is published by the real worker and the peer CLI
+/// alike, reopened through async Open, and its base replaced the same two
+/// ways; the solved axis Line stays at exactly X 0.
+#[test]
+fn native_axis_closed_worker_and_cli_publish_the_same_solved_shaft() {
+    use crate::creates::tests::ferritecad;
+    if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
+        assert_ne!(
+            std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+            Ok("1")
+        );
+        eprintln!("skipped: the Revolve constraint worker requires OCCT and PlaneGCS");
+        return;
+    }
+    let root = tempfile::tempdir().expect("dir");
+    let source = root.path().join("shaft.fcad");
+    let input = root.path().join("create.json");
+    std::fs::write(
+        &input,
+        r#"{"request_version":2,"points_mm":[[0,-2.25],[8,-2.25],[8,3.5],[5.5,3.5],[5.5,12.75],[0,12.75]],"axis":"sketch_y","extent":{"kind":"angle","degrees":137.5}}"#,
+    )
+    .expect("request");
+    let o = std::process::Command::new(ferritecad())
+        .arg("create-sketch-revolve")
+        .arg(&input)
+        .arg("-o")
+        .arg(&source)
+        .arg("--json")
+        .output()
+        .expect("create");
+    assert!(o.status.success(), "{o:?}");
+    let original = std::fs::read(&source).expect("source");
+    let open = |path: &Path| {
+        let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+        ferritecad_scene::snapshot_of(
+            path,
+            &mut k,
+            |k, b| k.import_step(b),
+            &Default::default(),
+            &OperationContext::default(),
+        )
+        .expect("async Open route")
+        .edit_source
+        .expect("catalog")
+    };
+    let on_axis = |starts: &[[f64; 2]], expected: &[[f64; 2]]| {
+        for (s, e) in starts.iter().zip(expected) {
+            assert!(
+                (s[0] - e[0]).abs() < 1e-7 && (s[1] - e[1]).abs() < 1e-7,
+                "{starts:?}"
+            );
+        }
+        assert!(starts[0][0] == 0. && starts[5][0] == 0., "{starts:?}");
+    };
+    let first = open(&source);
+    let choice = first.constraint_sketches[0].clone();
+    assert!(matches!(
+        choice.profile_use,
+        Some(SketchProfileUse::PartialRevolve {
+            axis_segment: Some(_),
+            ..
+        })
+    ));
+    let id = choice.sketch;
+    let curves = choice.stored.as_ref().expect("stored").curves.clone();
+    let ctx = egui::Context::default();
+    let mut e = Editor::default();
+    assert!(e.begin(&source, &first, id));
+    for _ in 0..3 {
+        frame(&ctx, &mut e, vec![]);
+    }
+    dimension_shaft(&ctx, &mut e);
+    click(&ctx, &mut e, "Save constraints copy…");
+    let request = e.take_request().expect("widget request");
+    assert_eq!(request.edits.add, expected_shaft(&curves));
+    let ui = publish_both(
+        &mut e,
+        request,
+        root.path(),
+        "axis-rigid",
+        &source,
+        &first,
+        id,
+        ferritecad,
+    );
+    let (dof, starts) = solved(&ui.0);
+    assert_eq!(dof, 0);
+    on_axis(&starts, &SHAFT_T);
+    assert_eq!(std::fs::read(&source).expect("source"), original);
+
+    let second = open(&ui.0);
+    let base = second.constraint_sketches[0]
+        .stored
+        .as_ref()
+        .expect("stored")
+        .constraints
+        .iter()
+        .find(
+            |c| matches!(c.rule, SketchConstraintRule::Distance { distance, .. } if distance == 8.),
+        )
+        .expect("the base")
+        .id;
+    assert!(e.begin(&ui.0, &second, id));
+    for _ in 0..3 {
+        frame(&ctx, &mut e, vec![]);
+    }
+    click(&ctx, &mut e, "Segment 1");
+    enter_length(&ctx, &mut e, "9.25", false);
+    click(&ctx, &mut e, "Replace length");
+    click(&ctx, &mut e, "Save constraints copy…");
+    let request = e.take_request().expect("replacement");
+    assert_eq!(request.edits.remove, vec![base]);
+    assert_eq!(request.edits.add, vec![on(curves[0].id, mm(9.25))]);
+    let wide = publish_both(
+        &mut e,
+        request,
+        root.path(),
+        "axis-wide",
+        &ui.0,
+        &second,
+        id,
+        ferritecad,
+    );
+    let (dof, starts) = solved(&wide.0);
+    assert_eq!(dof, 0);
+    on_axis(&starts, &SHAFT_WIDE);
+    assert_ne!(
+        std::fs::read(wide.0.with_extension("stl")).expect("wide"),
+        std::fs::read(ui.0.with_extension("stl")).expect("rigid"),
+        "a wider base is a different Body"
     );
 }
 

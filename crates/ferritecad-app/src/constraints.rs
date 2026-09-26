@@ -15,17 +15,32 @@ const HISTORY_LIMIT: usize = 128;
 /// The line naming the Revolve that turns a constrained profile, or `None`
 /// for an extruded one.
 fn revolve_owner(profile_use: SketchProfileUse) -> Option<String> {
-    let (feature, turn) = match profile_use {
-        SketchProfileUse::FullTurnRevolve { feature, .. } => (feature, "a full turn".to_owned()),
+    let (feature, turn, axis_segment) = match profile_use {
+        SketchProfileUse::FullTurnRevolve {
+            feature,
+            axis_segment,
+            ..
+        } => (feature, "a full turn".to_owned(), axis_segment),
         SketchProfileUse::PartialRevolve {
-            feature, degrees, ..
-        } => (feature, format!("{}°", degrees.degrees())),
+            feature,
+            degrees,
+            axis_segment,
+            ..
+        } => (feature, format!("{}°", degrees.degrees()), axis_segment),
         SketchProfileUse::BlindExtrude { .. } => return None,
     };
-    Some(format!(
-        "Profile of Revolve {feature}: {turn} about the sketch Y axis. The turn and the axis \
-         are kept; the solved profile must keep its bore clear of the axis."
-    ))
+    Some(match axis_segment {
+        None => format!(
+            "Profile of Revolve {feature}: {turn} about the sketch Y axis. The turn and the \
+             axis are kept; the solved profile must keep its bore clear of the axis."
+        ),
+        // §27H: nothing is snapped to the axis, so say what keeps it there.
+        Some(axis) => format!(
+            "Profile of Revolve {feature}: {turn} about the sketch Y axis, closed on the axis \
+             along Line {axis}. The turn and that Line are kept; the solved Line must lie \
+             exactly on the axis — pin one of its ends at X 0 and keep it vertical."
+        ),
+    })
 }
 
 /// Only pending requests belong to history, never selection or solver results.

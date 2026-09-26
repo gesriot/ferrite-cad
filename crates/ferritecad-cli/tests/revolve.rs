@@ -26,6 +26,9 @@ mod angle;
 /// §27C: solid parts closed on the axis along one Line.
 #[path = "revolve/axis.rs"]
 mod axis;
+/// §27H: dimensional constraints on those solid profiles.
+#[path = "revolve/axis_constraints.rs"]
+mod axis_constraints;
 /// §27G: dimensional constraints on those profiles with a bore.
 #[path = "revolve/constraints.rs"]
 mod constraints;

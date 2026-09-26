@@ -178,6 +178,13 @@ jobs:
           gate=constraints::tests::revolve::revolve_constraint_widgets_name_the_revolve_build_and_replace_a_length
           cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-constraints-widgets.log
           if grep -q 'skipped:' revolve-constraints-widgets.log || ! grep -Fq "test $gate ... ok" revolve-constraints-widgets.log; then exit 1; fi
+          # §27H: the same for a solid profile closed on the axis.
+          gate=axis_constraints::axis_closed_constraint_discovery_writer_and_refusals_without_solver
+          cargo test -p ferritecad-cli --test revolve "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee axis-constraints-discovery.log
+          if grep -q 'skipped:' axis-constraints-discovery.log || ! grep -Fq "test $gate ... ok" axis-constraints-discovery.log; then exit 1; fi
+          gate=constraints::tests::revolve::axis_closed_constraint_widgets_name_the_axis_line_and_keep_the_draft
+          cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee axis-constraints-widgets.log
+          if grep -q 'skipped:' axis-constraints-widgets.log || ! grep -Fq "test $gate ... ok" axis-constraints-widgets.log; then exit 1; fi
 
       - name: Discover sequential cuts without native geometry
         shell: bash

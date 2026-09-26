@@ -3739,3 +3739,28 @@ What is new:
 
 [Contract and executable recipe](revolve-profile-constraints.md),
 [verification](revolve-profile-constraints-verification.md).
+
+**§27H — dimensional constraints on a saved Revolve profile closed on the
+axis.**
+
+The §27G constraint editor and `edit-sketch-constraints-copy` also accept the
+solid Revolve frame: full turn v2 and sector v4, with the same stated
+`axis_segment`. Before the refusal was widened, the native solver was probed
+at the axis: H/V and Coincident alias parameters, a Fixed is solved, and with
+a pin at X 0 and V on the axis Line the solved ends came back exactly 0.0 for
+rigid, wider, taller, fractional, cone and stepped profiles.
+
+What does not change:
+- the request, rules, history, Replace length, job and writer;
+- the evaluator, kernel, bridge, topology, solver and storage;
+- versions, JSON field types and capabilities.
+
+What is new:
+- `constraint_frame` returns the axis-closed use with its stated Line; the
+  stored and every solved profile are judged against that Line alone.
+- Nothing is snapped: a solution whose axis Line is not exactly at X 0 is
+  refused before publication.
+- The window's owner line names the axis Line and what keeps it there.
+
+[Contract and executable recipe](axis-closed-revolve-constraints.md),
+[verification](axis-closed-revolve-constraints-verification.md).
