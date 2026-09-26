@@ -1272,14 +1272,14 @@ fn revolve_constraint_discovery_writer_and_refusals_without_solver() {
         (
             "an escaped duplicate key",
             format!(
-                r#"{{"request_version":1,"remove":[],"add":[{{"curve_id":{id},"curve_id":{id},"rule":"horizontal"}}]}}"#
+                r#"{{"request_version":1,"remove":[],"add":[{{"curve_id":{id},"\u0063urve_id":{id},"rule":"horizontal"}}]}}"#
             ),
             "duplicate",
         ),
         (
             "an escaped duplicate rule",
             format!(
-                r#"{{"request_version":1,"remove":[],"add":[{{"curve_id":{id},"rule":"horizontal","rule":"vertical"}}]}}"#
+                r#"{{"request_version":1,"remove":[],"add":[{{"curve_id":{id},"rule":"horizontal","\u0072ule":"vertical"}}]}}"#
             ),
             "duplicate",
         ),

@@ -540,6 +540,29 @@ fn publish_both(
             assert_eq!(rows, &b[table], "{table}: every cell, rowids included");
         }
     }
+    let db = rusqlite::Connection::open_with_flags(&ui, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .expect("SQL");
+    let columns: Vec<String> = db
+        .prepare("SELECT rowid,* FROM objects")
+        .expect("columns")
+        .column_names()
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    let id_column = columns.iter().position(|name| name == "id").expect("id");
+    assert_eq!(a["objects"].len(), b["objects"].len(), "all objects");
+    for (left, right) in a["objects"].iter().zip(&b["objects"]) {
+        let selected =
+            left[id_column] == rusqlite::types::Value::Blob(id.as_uuid().as_bytes().to_vec());
+        for (column, (left, right)) in columns.iter().zip(left.iter().zip(right)) {
+            if !selected || !matches!(column.as_str(), "payload" | "payload_hash") {
+                assert_eq!(
+                    left, right,
+                    "objects.{column}: only new constraint UUIDs may differ"
+                );
+            }
+        }
+    }
     let (x, y) = (
         Document::open_read_only(&ui).expect("UI"),
         Document::open_read_only(&cli).expect("CLI"),

@@ -362,7 +362,7 @@ FERRITECAD=/path/to/staged/ferritecad FCAD_27G_DIR=/tmp/fcad-27g python3 ferrite
 
 ```python
 # FCAD_27G_MAC_FIXTURES
-import json, os, pathlib, sqlite3, subprocess, sys
+import json, os, pathlib, sqlite3, subprocess, sys, uuid
 cli = os.environ["FERRITECAD"]
 out = pathlib.Path(os.environ["FCAD_27G_DIR"])
 out.mkdir(parents=True, exist_ok=True)
@@ -388,13 +388,63 @@ def exports(path):
         run(op, path, "-o", path.with_suffix(suffix), "--json")
 
 def model(path):
-    """Every SQL cell, and the Sketch row as discovery reports it."""
+    """Every SQL cell, including rowids where the table has them."""
     db = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
-    cells = {t: sorted(db.execute(f'SELECT * FROM "{t}"').fetchall(), key=repr)
-             for (t,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    cells = {}
+    for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+        quoted = table.replace('"', '""')
+        try:
+            rows = db.execute(f'SELECT rowid,* FROM "{quoted}" ORDER BY rowid')
+        except sqlite3.OperationalError:
+            rows = db.execute(f'SELECT * FROM "{quoted}"')
+        columns = [c[0] for c in rows.description]
+        cells[table] = (columns, sorted(rows.fetchall(), key=repr))
     db.close()
-    catalog = inspect(path)["sketches"][0]
-    return cells, catalog
+    return cells, inspect(path)["sketches"][0]
+
+def compare_sql(gui, peer, source):
+    (a, x), (b, y) = model(gui), model(peer)
+    assert a.keys() == b.keys()
+    for table in a:
+        assert a[table][0] == b[table][0], (table, "columns")
+        if table != "objects":
+            assert a[table] == b[table], table
+    assert x["sketch_id"] == y["sketch_id"]
+    selected = uuid.UUID(x["sketch_id"]).bytes
+    original = inspect(source)["sketches"][0]["constraint_edit"]["constraints"]
+    kept = {r["constraint_id"] for r in original}
+    left = x["constraint_edit"]["constraints"]
+    right = y["constraint_edit"]["constraints"]
+    assert len(left) == len(right)
+    replacements = []
+    for u, v in zip(left, right):
+        assert u["rule"] == v["rule"], "ordered rules"
+        u, v = u["constraint_id"], v["constraint_id"]
+        if u in kept or v in kept:
+            assert u == v, "preserved constraint UUID"
+        else:
+            replacements.append((uuid.UUID(v).bytes, uuid.UUID(u).bytes))
+    columns, left_rows = a["objects"]
+    right_rows = b["objects"][1]
+    assert len(left_rows) == len(right_rows), "object count"
+    for left, right in zip(left_rows, right_rows):
+        left, right = dict(zip(columns, left)), dict(zip(columns, right))
+        assert left["id"] == right["id"]
+        if left["id"] == selected:
+            # UUIDs are stored as CBOR byte strings. Map only the newly added
+            # constraint identities, then compare the entire encoded envelope.
+            # No CBOR field or selected-object metadata is discarded.
+            payload = right["payload"]
+            assert not {v for v, _ in replacements} & {u for _, u in replacements}
+            for old, new in replacements:
+                assert payload.count(old) == 1, "one new constraint UUID in payload"
+                payload = payload.replace(old, new)
+            assert left["payload"] == payload, "whole Sketch payload after UUID mapping"
+            for column in columns:
+                if column not in ("payload", "payload_hash"):
+                    assert left[column] == right[column], ("objects", column)
+        else:
+            assert left == right, "every non-selected object cell"
 
 if sys.argv[1:] != ["compare"]:
     for name, body in (
@@ -434,17 +484,14 @@ else:
             constrain(source, {"remove": [wall], "add": [{"curve_id": catalog["curves"][1]["curve_id"],
                                "rule": "distance", "distance_mm": 7.0}]}, peer)
             exports(peer)
-        exports(gui)
-        (a, x), (b, y) = model(gui), model(peer)
-        assert a.keys() == b.keys()
-        for table in a:
-            if table != "objects":
-                assert a[table] == b[table], table
-        assert x["constraint_edit"]["curves"] == y["constraint_edit"]["curves"], "stored inputs"
-        rules = lambda c: [r["rule"] for r in c["constraint_edit"]["constraints"]]
-        assert rules(x) == rules(y), "the same rules in the same order"
+        source = out / ("sector.fcad" if peer.stem == "peer-rigid" else "gui-rigid.fcad")
+        compare_sql(gui, peer, source)
         for suffix in (".stl", ".fbx"):
-            assert gui.with_suffix(suffix).read_bytes() == peer.with_suffix(suffix).read_bytes(), suffix
+            # These must have been produced through the window. Comparison
+            # never calls an exporter for a GUI path or repairs missing proof.
+            artifact = gui.with_suffix(suffix)
+            assert artifact.is_file(), f"missing GUI export: {artifact}"
+            assert artifact.read_bytes() == peer.with_suffix(suffix).read_bytes(), suffix
         print(f"{gui.name} == {peer.name}: SQL outside the Sketch payload, rules, STL and FBX bytes")
 ```
 
@@ -452,7 +499,9 @@ The compare step builds `peer-tall.fcad` from the GUI's own `gui-rigid.fcad`,
 so the removed UUID is the one the window removed. The two rigid copies
 differ only in new UUIDs. That shows in the Sketch payload/hash and nowhere
 else: every other SQL cell, the ordered rules and the export bytes are
-compared exactly.
+compared exactly, including rowids and the full encoded Sketch payload after
+mapping only new constraint UUIDs. Missing GUI exports are a failure; the
+comparison never creates or replaces them.
 
 ### Window scenario
 

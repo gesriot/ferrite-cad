@@ -338,8 +338,9 @@ fn extrude_frame<'a>(
 /// The same shape as the Extrude frame — four root objects, the untransformed
 /// XY plane, one feature, its Body and exactly three dependencies — with the
 /// Revolve's own intent checked instead of a height. Kept beside [`frame`]
-/// rather than folded into it, because the circle, annulus and constraint
-/// editors that call `frame` are Extrude-only and must stay so.
+/// rather than folded into it, because the circle and annulus editors that
+/// call `frame` are Extrude-only. The constraint editor selects the appropriate
+/// frame explicitly.
 fn revolve_frame<'a>(
     document: &Document,
     objects: &'a [ObjectRecord],
