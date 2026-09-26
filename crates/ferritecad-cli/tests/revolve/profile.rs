@@ -567,12 +567,12 @@ fn partial_profile_requests_refuse_duplicates_arrays_and_foreign_fields() {
         ),
         (
             format!(
-                r#"{{"request_version":1,"vertices":[{{"curve_id":"{id0}","start_mm":[3.5,0.5],"start_mm":[9,9]}}{rest}]}}"#
+                r#"{{"request_version":1,"vertices":[{{"curve_id":"{id0}","start_mm":[3.5,0.5],"\u0073tart_mm":[9,9]}}{rest}]}}"#
             ),
             "an escaped duplicate start_mm",
         ),
         (
-            format!(r#"{{"request_version":1,"request_version":1,"vertices":[{list}]}}"#),
+            format!(r#"{{"request_version":1,"\u0072equest_version":1,"vertices":[{list}]}}"#),
             "an escaped duplicate version",
         ),
         (format!("[1,[{list}]]"), "an array for the request"),

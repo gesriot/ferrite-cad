@@ -455,3 +455,13 @@ python3 tools/watch-viewer-memory.py \
 
 Expected: exit 0, memory of the same order as §27A–E (about 220 MiB peak),
 swap 0.
+
+## Independent review correction (2026-09-26)
+
+The two process inputs labelled escaped duplicate keys actually used literal
+keys. They now contain JSON Unicode escapes for the first character of
+`start_mm` and `request_version`; strict decoding still refuses both. The
+exact process gate passed on native macOS after the correction. Production
+behavior is unchanged. The shared frame comment now describes both supported
+turn extents. Final review-head CI is separate from the incoming-head results
+above; its evidence is recorded in the PR review.

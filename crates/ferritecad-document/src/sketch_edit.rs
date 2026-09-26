@@ -364,7 +364,7 @@ pub(crate) struct RevolveDocument<'a> {
 ///
 /// Shared rather than copied, so the two edits cannot drift apart about the
 /// document they accept. What each edit asks of the Revolve's own intent —
-/// a full turn for coordinates, a partial angle for the angle — is `intent`,
+/// either supported turn for coordinates, a partial turn for the angle — is `intent`,
 /// checked as soon as the Revolve is found; `what` names the edit in each
 /// refusal.
 pub(crate) fn revolve_document<'a>(
