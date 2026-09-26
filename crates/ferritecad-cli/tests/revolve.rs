@@ -110,9 +110,14 @@ fn revolve_request_refusals_and_usage_preserve_files() {
     let square = json!([[4, 0], [10, 0], [10, 15], [4, 15]]);
     for (value, kind, why) in [
         (
-            json!({"request_version":2,"points_mm":square,"axis":"sketch_y","angle":"full_turn"}),
+            json!({"request_version":3,"points_mm":square,"axis":"sketch_y","angle":"full_turn"}),
             "unsupported",
             "a later request version",
+        ),
+        (
+            json!({"request_version":2,"points_mm":square,"axis":"sketch_y","angle":"full_turn"}),
+            "input",
+            "v1's angle spelling in request v2 (§27D)",
         ),
         (
             json!({"request_version":1,"points_mm":square,"axis":"sketch_y","angle":"full_turn","height_mm":10}),

@@ -2237,6 +2237,10 @@ fn required_capabilities_of(role: &SemanticRole) -> Vec<String> {
     if matches!(role, SemanticRole::RevolveFace { .. }) {
         names.push(crate::FEATURE_REVOLVE_CAPABILITY.to_owned());
     }
+    if matches!(role, SemanticRole::RevolveCap { .. }) {
+        names.push(crate::FEATURE_REVOLVE_CAPABILITY.to_owned());
+        names.push(crate::FEATURE_REVOLVE_PARTIAL_CAPABILITY.to_owned());
+    }
     names
 }
 

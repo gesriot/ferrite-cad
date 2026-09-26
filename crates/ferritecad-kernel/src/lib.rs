@@ -54,8 +54,8 @@ pub use profile::{
 };
 pub use refusal::TessellationRefusal;
 pub use request::{
-    CutRequest, ExtrudeExtent, ExtrudeRequest, RevolveAxis, RevolveRequest, RevolveTurn,
-    TessellationParams,
+    CutRequest, ExtrudeExtent, ExtrudeRequest, PartialTurn, RevolveAxis, RevolveRequest,
+    RevolveTurn, TessellationParams,
 };
 pub use result::{
     ArchiveSlot, BrepBlob, CarriedOutcome, CutResult, ExtrudeResult, History, HistoryInput, Mesh,

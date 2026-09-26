@@ -196,6 +196,30 @@ unsafe extern "C" {
         out_count: *mut usize,
         out_error: *mut RawError,
     ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn fc_occt_revolve_partial(
+        session: *mut RawSession,
+        plane: *const Plane,
+        segments: *const Segment,
+        segment_count: usize,
+        axis_segment: usize,
+        axis_origin: *const f64,
+        axis_direction: *const f64,
+        angle_degrees: f64,
+        cancel: Option<CancelFn>,
+        cancel_context: *mut c_void,
+        out_shape: *mut u64,
+        out_error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_revolve_caps(
+        session: *mut RawSession,
+        shape: u64,
+        which: i32,
+        out_ids: *mut u64,
+        capacity: usize,
+        out_count: *mut usize,
+        out_error: *mut RawError,
+    ) -> i32;
     fn fc_occt_surface_axis(
         session: *mut RawSession,
         shape: u64,
@@ -692,6 +716,66 @@ impl Session {
         };
         interpret(status, &error, "revolving a profile")?;
         Ok(shape)
+    }
+
+    /// §27D: turns the profile through `angle_degrees`, a sector with two
+    /// end faces. Every other argument is [`Self::revolve_full_turn`]'s.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn revolve_partial(
+        &mut self,
+        plane: &Plane,
+        segments: &[Segment],
+        axis_segment: Option<usize>,
+        axis_origin: [f64; 3],
+        axis_direction: [f64; 3],
+        angle_degrees: f64,
+        cancel: &CancelToken,
+    ) -> Result<u64> {
+        if segments.len() < 3 {
+            return Err(CadError::input(
+                "a revolved polygon needs at least three Lines",
+            ));
+        }
+        let mut shape = 0u64;
+        let mut error = RawError::empty();
+        let context = cancel as *const CancelToken as *mut c_void;
+        // SAFETY: as for `revolve_full_turn`: the slice and both arrays live
+        // across the call, the out-parameters are valid, the token is borrowed
+        // for exactly its duration, and the bridge is noexcept.
+        let status = unsafe {
+            fc_occt_revolve_partial(
+                self.raw,
+                plane,
+                segments.as_ptr(),
+                segments.len(),
+                axis_segment.unwrap_or(NO_AXIS_SEGMENT),
+                axis_origin.as_ptr(),
+                axis_direction.as_ptr(),
+                angle_degrees,
+                Some(cancel_trampoline),
+                context,
+                &mut shape,
+                &mut error,
+            )
+        };
+        interpret(
+            status,
+            &error,
+            "revolving a profile through a partial angle",
+        )?;
+        Ok(shape)
+    }
+
+    /// The start (`end == false`) or end face of a partial revolution.
+    pub(crate) fn revolve_caps(&mut self, shape: u64, end: bool) -> Result<Vec<u64>> {
+        let which = i32::from(end);
+        self.collect_ids(
+            "reading an end face of a partial revolution",
+            |s, ids, cap, count, err| {
+                // SAFETY: pointers are valid for the call; see `collect_ids`.
+                unsafe { fc_occt_revolve_caps(s, shape, which, ids, cap, count, err) }
+            },
+        )
     }
 
     /// The face of revolution one profile segment raised.
@@ -1730,6 +1814,37 @@ mod tests {
             assert!(
                 found.is_some(),
                 "fc_occt_revolve declares {parameter} after position {at}"
+            );
+            at += found.expect("checked just above") + parameter.len();
+        }
+        // §27D: the sector's own entry point, with the angle in its own slot
+        // and in degrees; the full-turn signature above is unchanged.
+        let declared = header
+            .split_once("FcOcctStatus fc_occt_revolve_partial(")
+            .expect("the header declares fc_occt_revolve_partial")
+            .1
+            .split_once(';')
+            .expect("the declaration ends")
+            .0;
+        let mut at = 0;
+        for parameter in [
+            "FcOcctSession *session",
+            "const FcOcctPlane *plane",
+            "const FcOcctSegment *segments",
+            "size_t segment_count",
+            "size_t axis_segment",
+            "const double *axis_origin",
+            "const double *axis_direction",
+            "double angle_degrees",
+            "FcOcctCancelFn cancel",
+            "void *cancel_context",
+            "uint64_t *out_shape",
+            "FcOcctError *out_error",
+        ] {
+            let found = declared[at..].find(parameter);
+            assert!(
+                found.is_some(),
+                "fc_occt_revolve_partial declares {parameter} after position {at}"
             );
             at += found.expect("checked just above") + parameter.len();
         }

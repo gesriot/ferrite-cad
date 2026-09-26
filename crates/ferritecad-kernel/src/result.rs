@@ -109,11 +109,56 @@ pub struct OperationResult {
 pub struct RevolveResult {
     pub shape: ShapeHandle,
     pub history: History,
+    /// §27D: the face closing the start of a partial turn — the profile's
+    /// region where the turn begins. Empty for a full turn, which has none.
+    pub start_cap: Vec<SubShapeHandle>,
+    /// The face closing the end of a partial turn. Empty for a full turn.
+    pub end_cap: Vec<SubShapeHandle>,
 }
 
 impl RevolveResult {
-    /// Every named output is a face of this result.
+    /// Every named output is a face of this result; the caps are both absent
+    /// (a full turn) or one face each, distinct from each other and from every
+    /// face a profile segment raised.
     pub fn validate(&self) -> Result<()> {
+        match (self.start_cap.as_slice(), self.end_cap.as_slice()) {
+            ([], []) => {}
+            ([start], [end]) => {
+                for cap in [start, end] {
+                    if cap.shape() != self.shape || cap.kind() != SubShapeKind::Face {
+                        return Err(CadError::kernel(format!(
+                            "a revolution named {cap} as a cap, which is not a face of its own \
+                             result"
+                        )));
+                    }
+                }
+                if start == end {
+                    return Err(CadError::kernel(
+                        "a revolution named one face as both its start and its end cap",
+                    ));
+                }
+                for input in self.history.inputs() {
+                    if self
+                        .history
+                        .generated(input)
+                        .chain(self.history.modified(input))
+                        .any(|face| face == *start || face == *end)
+                    {
+                        return Err(CadError::kernel(
+                            "a revolution named one face both as a cap and as a segment's face",
+                        ));
+                    }
+                }
+            }
+            (start, end) => {
+                return Err(CadError::kernel(format!(
+                    "a revolution reported {} start and {} end cap faces; a turn has none or one \
+                     of each",
+                    start.len(),
+                    end.len()
+                )));
+            }
+        }
         for input in self.history.inputs() {
             for output in self
                 .history

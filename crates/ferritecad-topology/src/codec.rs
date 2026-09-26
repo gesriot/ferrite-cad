@@ -101,6 +101,13 @@ const TAG_ORIGIN_SIDE: u16 = 14;
 /// `TAG_SIDE`: a turned face must never come back as an extrusion side.
 const TAG_REVOLVED_FACE: u16 = 15;
 
+/// The start and end faces of a partial revolution (§27D). New tags rather
+/// than `TAG_START_CAP`/`TAG_END_CAP`: a sector's end face must never come
+/// back as an extrusion cap. A reader that predates them refuses the unknown
+/// tag and rebuilds, which is what the format promises.
+const TAG_REVOLVED_START_CAP: u16 = 16;
+const TAG_REVOLVED_END_CAP: u16 = 17;
+
 impl ArchivedFeature {
     /// Writes the archive out as bytes.
     ///
@@ -138,6 +145,12 @@ impl ArchivedFeature {
                 BoundName::RevolvedFace { profile_segment } => {
                     payload.extend_from_slice(&TAG_REVOLVED_FACE.to_le_bytes());
                     payload.extend_from_slice(&profile_segment.to_bytes());
+                }
+                BoundName::RevolvedStartCap => {
+                    payload.extend_from_slice(&TAG_REVOLVED_START_CAP.to_le_bytes())
+                }
+                BoundName::RevolvedEndCap => {
+                    payload.extend_from_slice(&TAG_REVOLVED_END_CAP.to_le_bytes())
                 }
                 BoundName::Side { profile_segment } => {
                     payload.extend_from_slice(&TAG_SIDE.to_le_bytes());
@@ -344,6 +357,8 @@ impl ArchivedFeature {
                 TAG_REVOLVED_FACE => BoundName::RevolvedFace {
                     profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
                 },
+                TAG_REVOLVED_START_CAP => BoundName::RevolvedStartCap,
+                TAG_REVOLVED_END_CAP => BoundName::RevolvedEndCap,
                 TAG_START_CAP_EDGE => BoundName::StartCapEdge {
                     profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
                 },

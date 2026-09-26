@@ -7,7 +7,7 @@ use ferritecad_document::{
 };
 use ferritecad_jobs::{
     AnnularExtrusion, CircleExtrusion, EditAnnulusRequest, EditCircleRequest, EditSketchRequest,
-    FullTurnRevolution, NewDocument, PolygonExtrusion,
+    FullTurnRevolution, NewDocument, PolygonExtrusion, RevolveAngle,
 };
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
@@ -20,6 +20,10 @@ struct State {
     /// What the closed polygon becomes. Part of the draft, so Undo and Redo
     /// cover the choice exactly as they cover a typed coordinate.
     feature: Feature,
+    /// §27D: the partial Revolve's angle in degrees, as typed. Kept while
+    /// another feature is chosen, like the height, so switching back does not
+    /// lose it; read only for [`Feature::RevolveAngle`].
+    angle: String,
 }
 impl Default for State {
     fn default() -> Self {
@@ -28,6 +32,7 @@ impl Default for State {
             closed: false,
             height: "10".into(),
             feature: Feature::Extrude,
+            angle: "90".into(),
         }
     }
 }
@@ -40,6 +45,16 @@ enum Feature {
     Extrude,
     /// One full turn about the sketch's local Y axis (§27A). X is the radius.
     Revolve,
+    /// §27D: the same turn through a typed partial angle, a sector with two
+    /// end faces. The same profile policy; the angle is the document's.
+    RevolveAngle,
+}
+
+impl Feature {
+    /// Whether the profile is turned about the sketch Y axis, fully or not.
+    fn revolves(self) -> bool {
+        matches!(self, Self::Revolve | Self::RevolveAngle)
+    }
 }
 
 /// Which profile the open draft window is asking for.
@@ -405,6 +420,7 @@ impl Editor {
             closed: true,
             height,
             feature,
+            angle: State::default().angle,
         });
         self.canvas
             .fit(&vertices.iter().map(|v| v.start_mm).collect::<Vec<_>>());
@@ -661,6 +677,12 @@ impl Editor {
             // The document's own policy decides, exactly as for an extrusion:
             // the same simple-polygon rules and the positive-radius rule.
             Feature::Revolve => Ok(NewDocument::SketchRevolve(FullTurnRevolution::new(points)?)),
+            // §27D: the same profile policy, and the angle's own policy, both
+            // the document's. Parsed here and decided nothing else.
+            Feature::RevolveAngle => Ok(NewDocument::SketchPartialRevolve {
+                profile: FullTurnRevolution::new(points)?,
+                angle: RevolveAngle::new(number(&draft.angle)?)?,
+            }),
         }
     }
     pub(crate) fn draw(&mut self, ui: &mut egui::Ui, can_begin: bool, running: bool) {
@@ -1040,14 +1062,16 @@ impl Editor {
                 return;
             }
         }
-        let revolve = self
-            .draft
-            .as_ref()
-            .is_some_and(|d| d.feature == Feature::Revolve);
-        ui.label(if revolve {
-            "XY · mm · Line polygon · Revolve 360° about the sketch Y axis · NewBody"
-        } else {
-            "XY · mm · Line polygon · Blind · NewBody"
+        let feature = self.draft.as_ref().map(|d| d.feature);
+        let revolve = feature.is_some_and(Feature::revolves);
+        ui.label(match feature {
+            Some(Feature::Revolve) => {
+                "XY · mm · Line polygon · Revolve 360° about the sketch Y axis · NewBody"
+            }
+            Some(Feature::RevolveAngle) => {
+                "XY · mm · Line polygon · Revolve through an angle about the sketch Y axis · NewBody"
+            }
+            _ => "XY · mm · Line polygon · Blind · NewBody",
         });
         if revolve {
             ui.label(
@@ -1204,6 +1228,7 @@ impl Editor {
                     ui.label("Feature:");
                     ui.selectable_value(&mut draft.feature, Feature::Extrude, "Extrude");
                     ui.selectable_value(&mut draft.feature, Feature::Revolve, "Revolve 360°");
+                    ui.selectable_value(&mut draft.feature, Feature::RevolveAngle, "Revolve angle");
                 });
             }
             if draft.feature == Feature::Extrude {
@@ -1216,6 +1241,21 @@ impl Editor {
                             .desired_width(100.),
                     );
                 });
+            } else if draft.feature == Feature::RevolveAngle {
+                ui.horizontal(|ui| {
+                    ui.label("Angle °");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut draft.angle)
+                            .char_limit(64)
+                            .desired_width(100.),
+                    );
+                });
+                ui.label(format!(
+                    "Revolve: a sector from the profile, right-handed about the sketch Y axis \
+                     through X = 0; {}° to {}°. For 360° choose Revolve 360°.",
+                    RevolveAngle::MIN_DEGREES,
+                    RevolveAngle::MAX_DEGREES
+                ));
             } else {
                 ui.label("Revolve: one full turn (360°) about the sketch Y axis, through X = 0.");
             }
@@ -1681,7 +1721,7 @@ impl Canvas {
             egui::FontId::proportional(12.),
             egui::Color32::WHITE,
         );
-        if draft.feature == Feature::Revolve {
+        if draft.feature.revolves() {
             // The axis of revolution: the sketch's local Y axis, X = 0. Drawn
             // whenever the view reaches it, and named either way, so it is
             // clear which side of it the profile must stay on.

@@ -506,6 +506,7 @@ fn run<K: GeometryKernel + ?Sized>(
                         *id,
                         request.profile(),
                         request.axis_segment(),
+                        request.turn(),
                         &result,
                     )?;
                     state.shapes.insert(*id, result.shape);

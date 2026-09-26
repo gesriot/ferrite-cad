@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ferritecad_document::CapSide;
 use ferritecad_kernel::{
-    CutResult, ExtrudeResult, HistoryInput, Profile, RevolveResult, ShapeHandle, SubShapeHandle,
-    SubShapeKind,
+    CutResult, ExtrudeResult, HistoryInput, Profile, RevolveResult, RevolveTurn, ShapeHandle,
+    SubShapeHandle, SubShapeKind,
 };
 use ferritecad_types::{CadError, ObjectId, ProfileJoint, Result, StableEntityId};
 
@@ -50,6 +50,11 @@ pub struct FeatureNames {
     /// different meanings, so an extrusion-side reference can never resolve to
     /// a face of revolution, nor the other way round.
     revolved: BTreeMap<StableEntityId, BTreeSet<SubShapeHandle>>,
+    /// §27D: the start and end faces of a partial Revolve. Apart from the
+    /// extrusion caps for the same reason `revolved` is apart from `sides`:
+    /// an extrusion-cap reference must never resolve to a Revolve's end face.
+    revolved_start_cap: BTreeSet<SubShapeHandle>,
+    revolved_end_cap: BTreeSet<SubShapeHandle>,
     /// Immediate predecessor, for the unchanged legacy CarriedCap/Side roles.
     previous: Option<ObjectId>,
     /// Original producer and role, never reassigned by an intervening boolean.
@@ -220,6 +225,19 @@ impl FeatureNames {
         self.revolved.keys().copied()
     }
 
+    /// §27D: one end face of a partial revolution; empty for a full turn and
+    /// for every extrusion. `None` for a side this build does not understand.
+    pub fn revolved_cap(
+        &self,
+        side: CapSide,
+    ) -> Option<impl ExactSizeIterator<Item = SubShapeHandle> + '_> {
+        match side {
+            CapSide::Start => Some(self.revolved_start_cap.iter().copied()),
+            CapSide::End => Some(self.revolved_end_cap.iter().copied()),
+            _ => None,
+        }
+    }
+
     /// The faces an earlier feature's cap became, as this feature leaves it.
     ///
     /// `None` for a side this build does not understand, exactly as
@@ -311,6 +329,9 @@ pub struct RestoredNames {
     pub carried: BTreeMap<(ObjectId, CarriedName), Vec<SubShapeHandle>>,
     /// Faces of revolution by the Line that raised them.
     pub revolved: BTreeMap<StableEntityId, Vec<SubShapeHandle>>,
+    /// §27D: a partial revolution's start and end faces.
+    pub revolved_start_cap: Vec<SubShapeHandle>,
+    pub revolved_end_cap: Vec<SubShapeHandle>,
     pub carried_deleted: BTreeSet<(ObjectId, CarriedName)>,
 }
 
@@ -577,14 +598,48 @@ impl TopologyMap {
     /// of a solid part (§27C), or `None` for a part with a bore. That one Line
     /// must raise nothing; every other Line must still raise a face, exactly
     /// as before. Nothing here decides which Line lies on the axis.
+    ///
+    /// `turn` is the request's (§27D). A full turn must report no caps; a
+    /// partial turn exactly one start and one end face, filed under their own
+    /// names and nowhere else.
     pub fn record_revolve(
         &mut self,
         producer: ObjectId,
         profile: &Profile,
         axis_segment: Option<StableEntityId>,
+        turn: RevolveTurn,
         result: &RevolveResult,
     ) -> Result<()> {
         result.validate()?;
+        let partial = match turn {
+            RevolveTurn::Full => false,
+            RevolveTurn::Partial(_) => true,
+            other => {
+                return Err(CadError::topology(format!(
+                    "feature {producer} turned through {other:?}, which this build does not name"
+                )));
+            }
+        };
+        match (
+            partial,
+            result.start_cap.as_slice(),
+            result.end_cap.as_slice(),
+        ) {
+            (false, [], []) | (true, [_], [_]) => {}
+            (false, _, _) => {
+                return Err(CadError::topology(format!(
+                    "feature {producer} is a full turn, which has no end faces, but reported some"
+                )));
+            }
+            (true, start, end) => {
+                return Err(CadError::topology(format!(
+                    "feature {producer} is a partial turn and reported {} start and {} end \
+                     faces; it has exactly one of each",
+                    start.len(),
+                    end.len()
+                )));
+            }
+        }
         if !profile.inner().is_empty() {
             return Err(CadError::topology(format!(
                 "feature {producer} turned a profile with holes, which this build does not name"
@@ -655,6 +710,23 @@ impl TopologyMap {
                 names.revolved.entry(*label).or_default().insert(face);
             }
         }
+        for (faces, into, what) in [
+            (
+                &result.start_cap,
+                &mut names.revolved_start_cap,
+                "a revolution's start face",
+            ),
+            (
+                &result.end_cap,
+                &mut names.revolved_end_cap,
+                "a revolution's end face",
+            ),
+        ] {
+            for face in faces {
+                check(*face, result.shape, producer, what)?;
+                into.insert(*face);
+            }
+        }
         self.features.insert(producer, names);
         Ok(())
     }
@@ -691,7 +763,10 @@ impl TopologyMap {
                 names.sides.entry(*segment).or_default().insert(*face);
             }
         }
-        if !restored.revolved.is_empty()
+        let turned_any = !restored.revolved.is_empty()
+            || !restored.revolved_start_cap.is_empty()
+            || !restored.revolved_end_cap.is_empty();
+        if turned_any
             && (!restored.sides.is_empty()
                 || !restored.start_cap.is_empty()
                 || !restored.end_cap.is_empty()
@@ -714,6 +789,38 @@ impl TopologyMap {
                     )));
                 }
                 names.revolved.entry(*segment).or_default().insert(*face);
+            }
+        }
+        // A sector's end faces come back as both or neither, each one face,
+        // distinct from each other and from every face of revolution.
+        match (
+            restored.revolved_start_cap.as_slice(),
+            restored.revolved_end_cap.as_slice(),
+        ) {
+            ([], []) => {}
+            ([start], [end]) if start != end => {
+                for (face, into, what) in [
+                    (
+                        start,
+                        &mut names.revolved_start_cap,
+                        "a restored start face",
+                    ),
+                    (end, &mut names.revolved_end_cap, "a restored end face"),
+                ] {
+                    check(*face, shape, producer, what)?;
+                    if turned.contains_key(face) {
+                        return Err(CadError::topology(format!(
+                            "feature {producer} restored one face as both an end face and a \
+                             face of revolution"
+                        )));
+                    }
+                    into.insert(*face);
+                }
+            }
+            _ => {
+                return Err(CadError::topology(format!(
+                    "feature {producer} restored end faces that are not one start and one end face"
+                )));
             }
         }
         names.previous = restored.previous;

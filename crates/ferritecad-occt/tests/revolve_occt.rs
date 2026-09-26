@@ -443,8 +443,14 @@ fn native_axis_closed_requests_are_checked_not_trusted() {
     let result = kernel.revolve(&solid, &context).expect("revolve");
     let producer = ferritecad_types::ObjectId::new();
     let mut map = ferritecad_topology::TopologyMap::new();
-    map.record_revolve(producer, solid.profile(), Some(labels[3]), &result)
-        .expect("the axis Line raised nothing");
+    map.record_revolve(
+        producer,
+        solid.profile(),
+        Some(labels[3]),
+        RevolveTurn::Full,
+        &result,
+    )
+    .expect("the axis Line raised nothing");
     // Lines are checked in label order, so a swapped statement is refused at
     // whichever of its two false Lines comes first.
     for (stated, refusals) in [
@@ -459,7 +465,13 @@ fn native_axis_closed_requests_are_checked_not_trusted() {
         ),
     ] {
         let error = ferritecad_topology::TopologyMap::new()
-            .record_revolve(producer, solid.profile(), stated, &result)
+            .record_revolve(
+                producer,
+                solid.profile(),
+                stated,
+                RevolveTurn::Full,
+                &result,
+            )
             .expect_err("a false statement of the axis Line")
             .to_string();
         assert!(
@@ -479,7 +491,13 @@ fn native_axis_closed_requests_are_checked_not_trusted() {
         .history
         .record_generated(HistoryInput::Segment(labels[3]), face);
     let error = ferritecad_topology::TopologyMap::new()
-        .record_revolve(producer, solid.profile(), Some(labels[3]), &forged)
+        .record_revolve(
+            producer,
+            solid.profile(),
+            Some(labels[3]),
+            RevolveTurn::Full,
+            &forged,
+        )
         .expect_err("a face named for the axis Line")
         .to_string();
     assert!(error.contains("reported a face for axis Line"), "{error}");

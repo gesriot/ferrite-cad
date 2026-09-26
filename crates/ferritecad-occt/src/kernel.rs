@@ -331,14 +331,17 @@ impl GeometryKernel for OcctKernel {
                 )));
             }
         };
-        match request.turn() {
-            RevolveTurn::Full => {}
+        // The angle is the request's: exactly one full turn, or a sector
+        // through its own degrees on the bridge's own entry point.
+        let partial = match request.turn() {
+            RevolveTurn::Full => None,
+            RevolveTurn::Partial(turn) => Some(turn.degrees()),
             other => {
                 return Err(CadError::unsupported(format!(
                     "revolution angle {other:?} is not implemented"
                 )));
             }
-        }
+        };
         let drawn = profile.outer().segments();
         let mut segments = Vec::with_capacity(drawn.len());
         for segment in drawn {
@@ -364,14 +367,25 @@ impl GeometryKernel for OcctKernel {
             None => None,
         };
         context.progress().report(0.0);
-        let raw = self.session.revolve_full_turn(
-            &plane_of(plane),
-            &segments,
-            axis_segment,
-            axis_origin,
-            axis_direction,
-            context.cancel(),
-        )?;
+        let raw = match partial {
+            None => self.session.revolve_full_turn(
+                &plane_of(plane),
+                &segments,
+                axis_segment,
+                axis_origin,
+                axis_direction,
+                context.cancel(),
+            )?,
+            Some(degrees) => self.session.revolve_partial(
+                &plane_of(plane),
+                &segments,
+                axis_segment,
+                axis_origin,
+                axis_direction,
+                degrees,
+                context.cancel(),
+            )?,
+        };
         context.progress().report(1.0);
         let shape = ShapeHandle::new(self.session_id, raw);
         let assembled = (|| -> Result<RevolveResult> {
@@ -386,7 +400,24 @@ impl GeometryKernel for OcctKernel {
                     );
                 }
             }
-            let result = RevolveResult { shape, history };
+            // A sector's two end faces, from the bridge's own history; a full
+            // turn has none and is never asked.
+            let (start_cap, end_cap) = if partial.is_some() {
+                let start = self.session.revolve_caps(raw, false)?;
+                let end = self.session.revolve_caps(raw, true)?;
+                (
+                    start.into_iter().map(|f| self.face(shape, f)).collect(),
+                    end.into_iter().map(|f| self.face(shape, f)).collect(),
+                )
+            } else {
+                (Vec::new(), Vec::new())
+            };
+            let result = RevolveResult {
+                shape,
+                history,
+                start_cap,
+                end_cap,
+            };
             result.validate()?;
             Ok(result)
         })();
