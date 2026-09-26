@@ -204,9 +204,13 @@ Envelopes, operation names, the result object and exit codes (0 published,
   - **`angle_deg`**, new: the stored degrees for a sector, null for a full
     turn.
 * **`sketches[]`** of a sector's profile:
-  - `editable` is false, and `refusal` says coordinate editing of a partial
-    Revolve is not supported in this build.
-  - `vertices` and `profile_feature` are null.
+  - In §27D, `editable` was false, and `refusal` said coordinate editing
+    of a partial Revolve was not supported. `vertices` and
+    `profile_feature` were null.
+  - §27F replaces this: the row is editable, with its `vertices` and the
+    new kinds `partial_turn_revolve`/`partial_turn_revolve_axis_closed`,
+    which state `angle_deg`
+    ([contract](edit-partial-revolve-profile.md)).
   - No field of the full-turn kinds changes.
 * **`print-topology`** names the caps as `revolve start cap` and
   `revolve end cap`.
@@ -214,9 +218,11 @@ Envelopes, operation names, the result object and exit codes (0 published,
 ### Editing
 
 * **Full turns.** Coordinate editing (§27B/§27C) is unchanged.
-* **A saved sector is not editable in this slice.**
-  - `edit-sketch-copy` and Edit Sketch refuse atomically: exit 2, nothing
+* **A saved sector was not editable in this slice.**
+  - `edit-sketch-copy` and Edit Sketch refused atomically: exit 2, nothing
     written, the source unchanged.
+  - §27F replaces this with the class contract of
+    [editing a sector's profile](edit-partial-revolve-profile.md).
   - The writer's own re-derivation refuses too, so the refusal does not
     depend on the discovery layer alone.
   - Angle editing is a separate slice, since added by §27E:
@@ -274,8 +280,8 @@ and the reader's `--identity` and `--triangles` output. It never parses prose.
   clockwise and from a shifted start: 48 documents.
 * **Discovery.** `revolves[0].extent` is `partial_turn` with the exact
   `angle_deg`. `closure` is `axis_closed` exactly when a Line lies on
-  X = 0. The Sketch is not editable, and its refusal names a partial
-  Revolve.
+  X = 0. Since §27F, the Sketch is editable as a
+  `partial_turn_revolve*` kind that states the angle.
 * **Rebuild.** `validate` and `rebuild --cold` pass. `print-topology` names
   both end faces and resolves every reference.
 * **STL, parsed independently.**
@@ -294,7 +300,8 @@ and the reader's `--identity` and `--triangles` output. It never parses prose.
   - 0°, −90°, 0.005°, 359.995°, 360°, 400°;
   - an angle on a full turn, an unknown kind, v1's spelling;
   - an occupied output, whose bytes are unchanged;
-  - `edit-sketch-copy` of a sector (`unsupported`, source unchanged).
+  - since §27F, an `edit-sketch-copy` that would make a bored sector
+    solid (`input`, "hollow and solid", source unchanged).
 
 ```sh
 python3 - <<'EXTRACT'
@@ -449,8 +456,11 @@ for name, points in PROFILES.items():
             solid = any(p[0] == 0 for p in drawn)
             assert r["closure"] == ("axis_closed" if solid else "radial_clear")
             row = c["sketches"][0]
-            assert not row["editable"] and "partial Revolve" in row["refusal"]
-            assert row["vertices"] is None and row["profile_feature"] is None
+            # §27F: the sector's profile is editable and states its angle.
+            assert row["editable"] and row["refusal"] is None
+            assert row["profile_feature"]["angle_deg"] == degrees
+            assert row["profile_feature"]["kind"] == (
+                "partial_turn_revolve_axis_closed" if solid else "partial_turn_revolve")
             run(["validate", out])
             assert "1 shape built" in run(["rebuild", "--cold", out])
             topology = run(["print-topology", out])
@@ -487,13 +497,16 @@ assert taken.read_bytes() == b"keep"
 c = run(["inspect", source, "--json"])["result"]
 segments = c["revolves"][0]["profile"]["segments"]
 edit = root / "edit.json"
+# §27F: a sector's profile edits like a full turn's, inside its class; the
+# bored sector pulled onto the axis would become solid, which is refused.
 edit.write_text(json.dumps({"request_version": 1, "vertices": [
-    {"curve_id": s["curve_id"], "start_mm": [s["start_mm"][0] + 1, s["start_mm"][1]]} for s in segments]}))
+    {"curve_id": s["curve_id"], "start_mm": [0 if s["start_mm"][0] == 4 else s["start_mm"][0],
+                                              s["start_mm"][1]]} for s in segments]}))
 names = sorted(p.name for p in root.iterdir())
 reply = run(["edit-sketch-copy", source, "--sketch", c["sketches"][0]["sketch_id"],
              "--expect-version", c["content_version"], "--request", edit,
              "-o", root / "edited.fcad", "--json"], 2)
-assert reply["error"]["kind"] == "unsupported" and "partial Revolve" in reply["error"]["message"]
+assert reply["error"]["kind"] == "input" and "hollow and solid" in reply["error"]["message"]
 assert sorted(p.name for p in root.iterdir()) == names and source.read_bytes() == kept
 print("FCAD_27D_RECIPE_OK", checked, "fbx" if reader else "no-fbx-reader", root)
 ```

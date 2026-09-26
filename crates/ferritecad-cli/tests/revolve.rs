@@ -34,6 +34,9 @@ mod edit;
 mod partial;
 #[path = "support/pipe.rs"]
 mod pipe;
+/// §27F: editing the saved profile of those sectors.
+#[path = "revolve/profile.rs"]
+mod profile;
 
 const OP: &str = "create-sketch-revolve";
 const LINEAR_MM: f64 = 0.05;

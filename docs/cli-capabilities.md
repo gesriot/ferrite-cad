@@ -69,8 +69,9 @@ payload v2 с `axis_segment` и требует capability
 задавать как полный оборот. Обе прежние формы профиля поддержаны. У сектора
 два собственных `RevolveCap` и capability `feature.revolve.partial.v1`;
 `revolves[].extent` становится `partial_turn`, новый `angle_deg` — число
-(null у полного оборота). Правка координат сохранённого сектора
-отказывается. Request v1, response и exit 0/2/7 сохраняются.
+(null у полного оборота). Правка координат сохранённого сектора в §27D
+отказывалась; §27F её добавляет (см. ниже). Request v1, response и exit
+0/2/7 сохраняются.
 [Контракт §27D и исполняемый рецепт](partial-angle-revolve.md).
 
 §27E: угол сохранённого сектора меняется в новой копии:
@@ -99,9 +100,29 @@ payload и прочие SQL-ячейки сохраняются, источни�
 - угол вне 0.01°–359.99° (`input`, решает `RevolveAngle`);
 - любой другой состав документа.
 
-Discovery — аддитивный `revolves[].angle_edit`. Координаты сектора, смена
-оси/направления и full↔partial не входят.
+Discovery — аддитивный `revolves[].angle_edit`. Смена оси/направления и
+full↔partial не входят.
 [Контракт §27E и исполняемый рецепт](edit-revolve-angle.md).
+
+§27F: координаты сохранённого сектора (v3 с отверстием, v4 замкнутый на оси)
+правятся тем же `Edit Sketch` (перетаскивание или точные X/Y, Undo/Redo) и
+тем же `edit-sketch-copy` с прежним request v1. Угол не входит в запрос и не
+меняется.
+
+Как и у полного оборота, сохраняются:
+- класс детали (с отверстием или сплошная);
+- Line на оси;
+- число и порядок Lines, все UUID, оба `RevolveCap`.
+
+Меняются только payload/payload_hash строки Sketch; `meta.modified_at` при
+правке координат не штампуется. Discovery аддитивна: строка Sketch сектора
+становится `editable:true` с новым видом `profile_feature.kind`
+`partial_turn_revolve` / `partial_turn_revolve_axis_closed` и полем
+`angle_deg`.
+
+Request этого маршрута стал строже: дубли ключей (в том числе через JSON
+escape) и массивы на месте объектов отказываются как `input`.
+[Контракт §27F и исполняемый рецепт](edit-partial-revolve-profile.md).
 
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`

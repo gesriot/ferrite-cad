@@ -362,6 +362,79 @@ mod tests {
         full.close().expect("close");
     }
 
+    /// §27F: the coordinate route reached directly on a sector. Discovery
+    /// states the angle; the writer derives the Sketch again inside its
+    /// transaction and refuses a forged class change and a stale row; an
+    /// honest edit changes the Sketch and leaves the Revolve row as it was.
+    #[test]
+    fn sector_profile_writer_rederives_and_refuses_forged_or_stale_sketches() {
+        use crate::{SketchProfileUse, SketchVertex};
+        let root = tempfile::tempdir().expect("directory");
+        let (mut d, revolve, sketch) = sector(&root.path().join("sector.fcad"), quarter());
+        let objects = d.objects().expect("objects");
+        let [choice] = crate::sketch_choices(&d, &objects)
+            .try_into()
+            .expect("one Sketch");
+        assert_eq!(choice.refusal, None);
+        assert!(matches!(
+            choice.profile_use,
+            Some(SketchProfileUse::PartialRevolve { feature, axis_segment: None, degrees, .. })
+                if feature == revolve && degrees.degrees() == 90.
+        ));
+        let saved = choice.vertices.clone().expect("editable");
+        let moved = |points: [[f64; 2]; 4]| -> Vec<SketchVertex> {
+            saved
+                .iter()
+                .zip(points)
+                .map(|(v, p)| SketchVertex {
+                    curve_id: v.curve_id,
+                    start_mm: p,
+                })
+                .collect()
+        };
+        let revolve_row = d.object(revolve).expect("row").expect("Revolve");
+        let edit = moved([[3.5, 1.5], [11., 1.5], [11., 14.5], [3.5, 14.5]]);
+        let prepared = crate::replace_sketch_coordinates(&d, sketch, &edit).expect("prepared");
+        // Forged: a bored sector made solid inside the prepared payload.
+        let mut forged = prepared.clone();
+        let ObjectPayload::Sketch(s) = &mut forged.payload else {
+            panic!("a Sketch")
+        };
+        for i in [0, 3] {
+            let SketchGeometry::Line { start, .. } = &mut s.curves[i].geometry else {
+                panic!("a Line")
+            };
+            *start = Point2::new(0., start.y).expect("point");
+        }
+        for i in [3, 2] {
+            let SketchGeometry::Line { end, .. } = &mut s.curves[i].geometry else {
+                panic!("a Line")
+            };
+            *end = Point2::new(0., end.y).expect("point");
+        }
+        let error = d.write_sketch_geometry(&forged).expect_err("forged class");
+        assert!(error.to_string().contains("hollow and solid"), "{error}");
+        // Stale: the Sketch changed after preparation.
+        d.write_sketch_coordinates(sketch, &moved([[5., 0.], [10., 0.], [10., 15.], [5., 15.]]))
+            .expect("another edit first");
+        let error = d.write_sketch_geometry(&prepared).expect_err("stale");
+        assert!(error.to_string().contains("changed after"), "{error}");
+        // Honest: prepared against the current row, it writes the Sketch
+        // and not a byte of the Revolve.
+        let prepared = crate::replace_sketch_coordinates(&d, sketch, &edit).expect("prepared");
+        d.write_sketch_geometry(&prepared).expect("written");
+        assert_eq!(
+            d.object(sketch).expect("row").expect("Sketch").payload,
+            prepared.payload
+        );
+        assert_eq!(
+            d.object(revolve).expect("row").expect("Revolve"),
+            revolve_row
+        );
+        assert_eq!(stored_degrees(&d, revolve), 90.);
+        d.close().expect("close");
+    }
+
     /// The writer's own gate, reached directly: a prepared value that does
     /// not describe the document it is written to is refused inside the
     /// transaction, and nothing is written.
