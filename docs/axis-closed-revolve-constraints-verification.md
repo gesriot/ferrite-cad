@@ -237,7 +237,50 @@ PlaneGCS; the pinned library is CI's. A reader older than §27C cannot open
 axis-closed documents at all (capability `feature.revolve.axis-closed.v1`),
 as before.
 
-CI_PLACEHOLDER
+## CI
+
+The code, the CI files and the recipe are those of `c20a299`. The later
+heads `fe816cc` and `eb3e6d4` change only this record, so the push-triggered
+runtime run on `c20a299` was not dispatched again.
+
+* **Ordinary CI** on `eb3e6d4`
+  ([run 36277909297](https://github.com/gesriot/ferrite-cad/actions/runs/36277909297))
+  and `fe816cc`
+  ([run 36277218397](https://github.com/gesriot/ferrite-cad/actions/runs/36277218397)):
+  success, including the step "Discover Revolve profile constraints without
+  native geometry" with the two §27H kernel-free gates.
+* **Native runtime and packaging** on `c20a299`
+  ([run 36276765014](https://github.com/gesriot/ferrite-cad/actions/runs/36276765014)):
+  Linux ([job](https://github.com/gesriot/ferrite-cad/actions/runs/36276765014/job/108500923136)),
+  macOS ([job](https://github.com/gesriot/ferrite-cad/actions/runs/36276765014/job/108500923025))
+  and Windows ([job](https://github.com/gesriot/ferrite-cad/actions/runs/36276765014/job/108500922886))
+  are green, and so is the cross-platform comparison job. `planegcs pin`
+  ([run 36276765019](https://github.com/gesriot/ferrite-cad/actions/runs/36276765019))
+  is green.
+  * **What the tool returned.** Only the last 5000 lines of each job log
+    (5018, 5018 and 5082 lines), which begin inside the native steps; the
+    rest was not read here.
+  * **In that tail, on all three OSes:**
+    * `test axis_constraints::…discovery_writer_and_refusals_without_solver ... ok`,
+      `…native_axis_closed_cylinder_and_cone_dimension_replace_remove_and_refuse ... ok`
+      and `…native_axis_closed_sector_caps_names_angle_edit_and_exports ... ok`
+      with the pinned PlaneGCS;
+    * `constraints::tests::revolve::axis_closed_constraint_widgets_name_the_axis_line_and_keep_the_draft ... ok`
+      and `…native_axis_closed_worker_and_cli_publish_the_same_solved_shaft ... ok`;
+    * `FCAD_27H_RECIPE_OK {"cylinder_rigid_mm3": 2506.773, "cylinder_wide_mm3": 3447.913, "cylinder_wide_r_mm": 8.5, "shaft_wide_mm3": 1091.615, "shaft_wide_r_mm": 9.25, "shaft_turned_mm3": 1685.133}`,
+      identical on the three OSes and to the local run;
+    * `FCAD_AXIS_CONSTRAINT_UFBX_EXECUTED` (pinned ufbx, identity and
+      triangle join with the STL of the same copy);
+    * the unchanged §27G gates and `FCAD_27G_RECIPE_OK` line;
+    * no `FAILED`, no panic, and no test output line with `skipped:` (the
+      only matches are the gates' own `grep` lines).
+  * **Outside that tail, and not read here:** the OCCT-without-solver gate
+    `axis_constraints::occt_without_solver_refuses_axis_closed_constraints_honestly`.
+    Its step is green, and the step exits 1 on a missing `ok` or a
+    `skipped:`.
+* **Base.** The merge-triggered workflows on `a57dded` all concluded
+  success, including combined runtime layout
+  ([run 36275142786](https://github.com/gesriot/ferrite-cad/actions/runs/36275142786)).
 
 ## Limits
 
