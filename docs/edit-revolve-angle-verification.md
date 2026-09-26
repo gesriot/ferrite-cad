@@ -291,8 +291,40 @@ write the contract forbids.
 
 Every gate name of the base workflow is still present (the set difference
 against `origin/main` is empty), and exactly 8 names were added.
-The counts from the CI logs of the exact head are recorded below once the
-run has finished.
+### CI on 56ef028 (the code head) — read from the jobs and their logs
+
+* **All green on 56ef028:**
+  * the CI workflow: lint, supply-chain, sbom, notices, and test on
+    ubuntu, macos and windows;
+  * planegcs pin (linux, macos, windows and the three-platform compare);
+  * combined runtime layout (run 36229314207): linux, macos and windows,
+    every step success.
+* **How much of each log could be read.** The log tool returns the last
+  5000 lines of each runtime job (Linux 8296 lines in total). Direct log
+  download is refused by this container's proxy. So the early
+  no-solver step is outside what could be read, and its result is taken
+  from the job itself.
+* **The mixed gate.** Step 18 ("Build circles with OCCT and refuse
+  constraints without the solver") finished success on all three
+  platforms. That step fails unless the exact `test <gate> ... ok` line is
+  present and no `skipped:` appears, so
+  `angle::occt_without_solver_edits_a_partial_revolve_angle` ran and passed
+  there.
+* **In the readable part of each of the three logs:**
+  * the 7 other new names each have exactly one `test <name> ... ok`
+    line;
+  * `FCAD_REVOLVE_ANGLE_UFBX_EXECUTED` is present;
+  * `FCAD_STL_FBX_MATCH` reports `triangles=632`, `244` and `658`, worst
+    `1.73e-18` m, for the three angle-edited copies. The §27D sector joins
+    beside them are unchanged (168, 984 or 980, and 498 triangles).
+* **Totals.** A total per OS of distinct names and executions, as the
+  previous slices recorded it (240 and 279), is not reproduced here,
+  because the first part of each log is not readable. What is established
+  is that every gate name of the base workflow is still in the workflow and
+  8 were added. Each gate step refuses a missing or skipped name, and every
+  gate step was green on all three platforms.
+* **Base.** On `main` 6a129a2, every workflow finished success, including
+  combined runtime layout (run 36226853287).
 
 ## Limits
 
