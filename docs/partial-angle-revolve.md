@@ -219,7 +219,8 @@ Envelopes, operation names, the result object and exit codes (0 published,
     written, the source unchanged.
   - The writer's own re-derivation refuses too, so the refusal does not
     depend on the discovery layer alone.
-  - Angle editing is a separate slice.
+  - Angle editing is a separate slice, since added by §27E:
+    [edit a saved sector's angle](edit-revolve-angle.md).
 
 ### UI
 

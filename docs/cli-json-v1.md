@@ -7,6 +7,7 @@ discovery и `export-stl --json`; §24G добавляет `export-fbx --json`,
 без изменения `schema_version`:
 
 ```text
+ferritecad edit-revolve-angle <source.fcad> --feature <uuid> --expect-version <token> --request <angle.json> -o <new.fcad> --json
 ferritecad edit-circular-cut <source.fcad> --feature <uuid> --expect-version <token> --request <cut.json> -o <new.fcad> --json
 ferritecad cut-circular-copy <source.fcad> --body <uuid> --expect-version <token> --request <cut.json> -o <new.fcad> --json
 ferritecad edit-circle <source.fcad> --sketch <uuid> --expect-version <token> --request <circle.json> -o <new.fcad> --json
@@ -40,7 +41,7 @@ stdout-логов рядом нет. Диагностика для челове�
 | Поле | Тип и правило |
 | --- | --- |
 | `schema_version` | integer, сейчас ровно `1` |
-| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate`, `create-sketch-extrude`, `create-circle-extrude`, `create-annular-extrude`, `edit-sketch-copy`, `edit-circle`, `edit-annular`, `edit-sketch-constraints-copy`, `cut-circular-copy` или `edit-circular-cut` |
+| `operation` | string: `inspect`, `edit-extrude`, `create`, `export-stl`, `export-fbx`, `import-step`, `validate`, `create-sketch-extrude`, `create-circle-extrude`, `create-annular-extrude`, `edit-sketch-copy`, `edit-circle`, `edit-annular`, `edit-sketch-constraints-copy`, `cut-circular-copy`, `edit-circular-cut`, `create-sketch-revolve` или `edit-revolve-angle` |
 | `ok` | boolean |
 | `result` | объект соответствующей операции, присутствует только при `ok: true` |
 | `error` | объект ошибки, присутствует только при `ok: false` |
@@ -398,6 +399,39 @@ Envelope v1, operation, result и exit 0/2/7 прежние.
 требует `feature.revolve.partial.v1`; старый читатель сохраняет объект, но
 не может перестроить его как полный оборот.
 [Контракт §27D и исполняемый рецепт](partial-angle-revolve.md).
+
+### Правка угла сохранённого сектора (§27E)
+
+```text
+ferritecad edit-revolve-angle <source.fcad> --feature <uuid> --expect-version <token> --request <angle.json> -o <new.fcad> --json
+```
+
+Request v1 строгий:
+- ровно `{"request_version":1,"angle_deg":220}`;
+- только JSON-объект; массив, строка или `null` на месте числа, лишнее поле и
+  файл больше 65536 байт дают `input`;
+- `request_version` ≠ 1 даёт `unsupported`.
+
+Угол решает доменный `RevolveAngle`: 0.01°–359.99° включительно, хранится
+как задан, без округления и без превращения 360 в полный оборот.
+
+Успех:
+`{"schema_version":1,"operation":"edit-revolve-angle","ok":true,"result":{"destination":…,"document_id":…,"feature_id":…}}`.
+Коды выхода 0/2/7 прежние: при 7 копия опубликована.
+
+Discovery аддитивна: у каждой записи `revolves[]` есть
+`"angle_edit":{"available":…,"refusal":…,"document_refusal":…,"min_deg":0.01,"max_deg":359.99}`.
+Сохранённый угол остаётся в `angle_deg`. Полный оборот имеет
+`available:false`, причина — «a full-turn Revolve has no angle to edit».
+
+Приоритет ошибок:
+1. UTF-8 путей и request;
+2. открытие источника;
+3. ядро: stub-сборка здесь отвечает `unsupported` на любой корректный
+   request, какой бы ни был угол;
+4. job: вывод и версия, затем UUID, класс и угол.
+
+[Контракт §27E и исполняемый рецепт](edit-revolve-angle.md).
 
 ## Правка сохранённой кольцевой пары (§25M)
 

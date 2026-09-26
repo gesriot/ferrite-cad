@@ -293,10 +293,75 @@ fn revolve_frame<'a>(
     object: &'a ObjectRecord,
 ) -> Result<(&'a crate::Sketch, SketchProfileUse)> {
     require_lossless_payload(object)?;
+    let frame = revolve_document(
+        document,
+        objects,
+        object,
+        "Revolve profile edit",
+        |revolve| {
+            // §27D: a sector's coordinates are not edited in this slice. Said
+            // by name, before the generic refusal below, so the reason is the
+            // real one.
+            if let RevolveExtent::Partial { degrees } = revolve.extent {
+                return Err(unsupported(&format!(
+                    "coordinate editing of a partial Revolve ({}° sector) is not supported in \
+                     this build; only a full-turn Revolve profile can be edited",
+                    degrees.degrees()
+                )));
+            }
+            // Named one by one rather than compared with a default: an axis,
+            // angle or operation a later build adds is refused here, never
+            // edited as if it were the full turn about Y this slice measured.
+            if !matches!(revolve.axis, RevolveAxis::SketchY)
+                || !matches!(revolve.extent, RevolveExtent::FullTurn)
+                || revolve.operation != SolidOperation::NewBody
+            {
+                return Err(unsupported(
+                    "Revolve profile edit requires a full turn about the sketch Y axis, NewBody",
+                ));
+            }
+            Ok(())
+        },
+    )?;
+    Ok((
+        frame.sketch,
+        SketchProfileUse::FullTurnRevolve {
+            feature: frame.feature.id,
+            body: frame.body.id,
+            axis_segment: frame.revolve.axis_segment,
+        },
+    ))
+}
+
+/// The standalone document around one Revolve, as both Revolve edits find it.
+pub(crate) struct RevolveDocument<'a> {
+    pub(crate) sketch: &'a crate::Sketch,
+    pub(crate) feature: &'a ObjectRecord,
+    pub(crate) revolve: &'a crate::Revolve,
+    pub(crate) body: &'a ObjectRecord,
+}
+
+/// The one frame the Revolve profile edit (§27B) and the Revolve angle edit
+/// (§27E) both require: the untransformed XY plane, the Sketch `object`, its
+/// only Revolve, that Revolve's Body, and exactly the plane, profile and
+/// body-tip dependencies.
+///
+/// Shared rather than copied, so the two edits cannot drift apart about the
+/// document they accept. What each edit asks of the Revolve's own intent —
+/// a full turn for coordinates, a partial angle for the angle — is `intent`,
+/// checked as soon as the Revolve is found; `what` names the edit in each
+/// refusal.
+pub(crate) fn revolve_document<'a>(
+    document: &Document,
+    objects: &'a [ObjectRecord],
+    object: &'a ObjectRecord,
+    what: &str,
+    intent: impl FnOnce(&crate::Revolve) -> Result<()>,
+) -> Result<RevolveDocument<'a>> {
     if objects.len() != 4 || objects.iter().any(|o| o.parent.is_some()) {
-        return Err(unsupported(
-            "Revolve profile edit requires exactly one XY plane, Sketch, Revolve and Body",
-        ));
+        return Err(unsupported(&format!(
+            "{what} requires exactly one XY plane, Sketch, Revolve and Body"
+        )));
     }
     let ObjectPayload::Sketch(sketch) = &object.payload else {
         return Err(unsupported("selected object is not a Sketch"));
@@ -307,43 +372,24 @@ fn revolve_frame<'a>(
         .ok_or_else(|| unsupported("missing sketch plane"))?;
     if !matches!(&plane.payload, ObjectPayload::DatumPlane(p) if p.placement == Transform::IDENTITY)
     {
-        return Err(unsupported(
-            "Revolve profile edit requires the untransformed XY plane",
-        ));
+        return Err(unsupported(&format!(
+            "{what} requires the untransformed XY plane"
+        )));
     }
     let mut revolves = objects.iter().filter_map(|o| match &o.payload {
         ObjectPayload::Revolve(r) if r.profile == object.id => Some((o, r)),
         _ => None,
     });
     let (Some((feature, revolve)), None) = (revolves.next(), revolves.next()) else {
-        return Err(unsupported(
-            "Revolve profile edit requires exactly one Revolve of this Sketch",
-        ));
-    };
-    // §27D: a sector's coordinates are not edited in this slice. Said by
-    // name, before the generic refusal below, so the reason is the real one.
-    if let RevolveExtent::Partial { degrees } = revolve.extent {
         return Err(unsupported(&format!(
-            "coordinate editing of a partial Revolve ({}° sector) is not supported in this build; \
-             only a full-turn Revolve profile can be edited",
-            degrees.degrees()
+            "{what} requires exactly one Revolve of this Sketch"
         )));
-    }
-    // Named one by one rather than compared with a default: an axis, angle or
-    // operation a later build adds is refused here, never edited as if it
-    // were the full turn about Y this slice measured.
-    if !matches!(revolve.axis, RevolveAxis::SketchY)
-        || !matches!(revolve.extent, RevolveExtent::FullTurn)
-        || revolve.operation != SolidOperation::NewBody
-    {
-        return Err(unsupported(
-            "Revolve profile edit requires a full turn about the sketch Y axis, NewBody",
-        ));
-    }
+    };
+    intent(revolve)?;
     let body = objects
         .iter()
         .find(|o| matches!(&o.payload, ObjectPayload::Body(b) if b.tip_feature == Some(feature.id)))
-        .ok_or_else(|| unsupported("Revolve profile edit requires the Revolve's single Body"))?;
+        .ok_or_else(|| unsupported(&format!("{what} requires the Revolve's single Body")))?;
     let expected = BTreeSet::from([
         Dependency {
             dependent: object.id,
@@ -367,18 +413,16 @@ fn revolve_frame<'a>(
         .collect::<BTreeSet<_>>()
         != expected
     {
-        return Err(unsupported(
-            "Revolve profile edit requires only plane, profile and body-tip dependencies",
-        ));
+        return Err(unsupported(&format!(
+            "{what} requires only plane, profile and body-tip dependencies"
+        )));
     }
-    Ok((
+    Ok(RevolveDocument {
         sketch,
-        SketchProfileUse::FullTurnRevolve {
-            feature: feature.id,
-            body: body.id,
-            axis_segment: revolve.axis_segment,
-        },
-    ))
+        feature,
+        revolve,
+        body,
+    })
 }
 
 fn lines(

@@ -2,12 +2,13 @@
 //! A disposable drawing, separate from the accepted scene and persisted model.
 //! No kernel, filesystem, IDs, or document mutation occurs while editing it.
 use ferritecad_document::{
-    AnnulusChoice, AnnulusEdit, CircleChoice, CircleEdit, ExtrudeEditSource, SketchChoice,
-    SketchProfileUse, SketchVertex,
+    AnnulusChoice, AnnulusEdit, CircleChoice, CircleEdit, ExtrudeEditSource, RevolveAngleChoice,
+    SketchChoice, SketchProfileUse, SketchVertex,
 };
 use ferritecad_jobs::{
-    AnnularExtrusion, CircleExtrusion, EditAnnulusRequest, EditCircleRequest, EditSketchRequest,
-    FullTurnRevolution, NewDocument, PolygonExtrusion, RevolveAngle,
+    AnnularExtrusion, CircleExtrusion, EditAnnulusRequest, EditCircleRequest,
+    EditRevolveAngleRequest, EditSketchRequest, FullTurnRevolution, NewDocument, PolygonExtrusion,
+    RevolveAngle,
 };
 use ferritecad_types::{CadError, Result};
 use std::path::{Path, PathBuf};
@@ -153,6 +154,15 @@ pub(crate) struct Editor {
     annulus_undo: Vec<AnnulusState>,
     annulus_redo: Vec<AnnulusState>,
     annulus_applied: Option<AnnulusState>,
+    /// §27E: the saved partial Revolve whose angle is being edited, with the
+    /// request it was read from, the angle as typed, and that draft's own
+    /// bounded history under the same policy as the others.
+    editing_angle: Option<(EditRevolveAngleRequest, RevolveAngleChoice)>,
+    pending_angle_edit: Option<EditRevolveAngleRequest>,
+    angle_edit: String,
+    angle_undo: Vec<String>,
+    angle_redo: Vec<String>,
+    angle_applied: Option<String>,
     /// Publication is complete, but its picture has not yet been accepted.
     /// Keep one recovery draft without preventing the ordinary async Open.
     published_draft: Option<(PathBuf, Box<Editor>)>,
@@ -171,6 +181,7 @@ impl Editor {
         self.draft.is_some()
             || self.editing_circle.is_some()
             || self.editing_annulus.is_some()
+            || self.editing_angle.is_some()
             || self.constraints.active()
             || self.cuts.active()
     }
@@ -188,6 +199,73 @@ impl Editor {
     }
     pub(crate) fn take_annulus_edit_request(&mut self) -> Option<EditAnnulusRequest> {
         self.pending_annulus_edit.take()
+    }
+    pub(crate) fn take_angle_edit_request(&mut self) -> Option<EditRevolveAngleRequest> {
+        self.pending_angle_edit.take()
+    }
+    /// Begin editing the angle of one saved partial Revolve of the accepted
+    /// scene (§27E).
+    ///
+    /// The path and the version come from the reading that was accepted, so a
+    /// later Open that has not been accepted cannot retarget this draft. The
+    /// form opens on the saved angle, exactly as stored.
+    pub(crate) fn begin_angle_edit(
+        &mut self,
+        path: &Path,
+        source: &ExtrudeEditSource,
+        id: ferritecad_types::ObjectId,
+    ) -> bool {
+        if self.active() || source.refusal.is_some() {
+            return false;
+        }
+        let Some(choice) = source
+            .revolve_angles
+            .iter()
+            .find(|c| c.feature == id && c.refusal.is_none())
+        else {
+            return false;
+        };
+        let Some(degrees) = choice.degrees else {
+            return false;
+        };
+        self.dismiss();
+        self.angle_edit = degrees.to_string();
+        self.angle_applied = Some(self.angle_edit.clone());
+        self.editing_angle = Some((
+            EditRevolveAngleRequest {
+                source: path.to_path_buf(),
+                expected: source.version,
+                feature: id,
+                degrees,
+                destination: PathBuf::new(),
+            },
+            choice.clone(),
+        ));
+        true
+    }
+    /// What the angle edit form is asking for, or why it is not an edit yet.
+    /// Parses here; whether the number is an angle is the document's answer.
+    fn angle_edit_request(&self) -> Result<EditRevolveAngleRequest> {
+        let (basis, choice) = self
+            .editing_angle
+            .as_ref()
+            .ok_or_else(|| CadError::input("no saved Revolve angle draft"))?;
+        let mut request = basis.clone();
+        request.degrees = choice.validate_angle(number(&self.angle_edit)?)?.degrees();
+        Ok(request)
+    }
+    fn apply_angle(&mut self) -> Result<()> {
+        let request = self.angle_edit_request()?;
+        self.angle_edit = request.degrees.to_string();
+        let before = self
+            .angle_applied
+            .replace(self.angle_edit.clone())
+            .ok_or_else(|| CadError::input("no applied Revolve angle draft"))?;
+        if self.angle_edit != before {
+            push_bounded(&mut self.angle_undo, before);
+            self.angle_redo.clear();
+        }
+        Ok(())
     }
     pub(crate) fn take_cut_request(&mut self) -> Option<ferritecad_jobs::CircularCutRequest> {
         self.cuts.take_request()
@@ -517,6 +595,23 @@ impl Editor {
                     response.on_hover_text(reason);
                 }
             }
+            for choice in &source.revolve_angles {
+                let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
+                let response = ui.add_enabled(
+                    can_begin && refusal.is_none(),
+                    egui::Button::new(format!(
+                        "Edit Revolve angle {} — {}…",
+                        choice.name.as_deref().unwrap_or("Unnamed"),
+                        choice.feature
+                    )),
+                );
+                if response.clicked() {
+                    self.begin_angle_edit(path, source, choice.feature);
+                }
+                if let Some(reason) = refusal {
+                    response.on_hover_text(reason);
+                }
+            }
         }
     }
     fn edit_request(&self) -> Result<EditSketchRequest> {
@@ -593,6 +688,18 @@ impl Editor {
         self.redo.clear();
     }
     fn undo(&mut self) {
+        if self.editing_angle.is_some() {
+            if let Some(previous) = self.angle_undo.pop() {
+                push_bounded(
+                    &mut self.angle_redo,
+                    self.angle_applied
+                        .replace(previous.clone())
+                        .expect("applied angle"),
+                );
+                self.angle_edit = previous;
+            }
+            return;
+        }
         if self.editing_annulus.is_some() {
             if let Some(previous) = self.annulus_undo.pop() {
                 push_bounded(
@@ -624,6 +731,18 @@ impl Editor {
         }
     }
     fn redo(&mut self) {
+        if self.editing_angle.is_some() {
+            if let Some(next) = self.angle_redo.pop() {
+                push_bounded(
+                    &mut self.angle_undo,
+                    self.angle_applied
+                        .replace(next.clone())
+                        .expect("applied angle"),
+                );
+                self.angle_edit = next;
+            }
+            return;
+        }
         if self.editing_annulus.is_some() {
             if let Some(next) = self.annulus_redo.pop() {
                 push_bounded(
@@ -703,7 +822,9 @@ impl Editor {
             }
             return;
         }
-        egui::Window::new(if self.editing_annulus.is_some() {
+        egui::Window::new(if self.editing_angle.is_some() {
+            "Edit Revolve angle — new copy"
+        } else if self.editing_annulus.is_some() {
             "Edit saved annulus — new copy"
         } else if self.editing_circle.is_some() {
             "Edit saved Circle — new copy"
@@ -877,6 +998,72 @@ impl Editor {
         }
     }
 
+    /// The saved-Revolve-angle half of the same window (§27E).
+    ///
+    /// Shows what is stored, by identity, and offers the one number this edit
+    /// may change. The profile, the axis and the direction are named as kept:
+    /// they are not editable here, and a sector's coordinates are not
+    /// editable at all in this build.
+    fn draw_angle_edit(&mut self, ui: &mut egui::Ui) {
+        let Some((request, choice)) = &self.editing_angle else {
+            return;
+        };
+        ui.label("Saved partial Revolve · angle only · right-handed about the sketch +Y axis");
+        ui.small(format!(
+            "Revolve {} · {}",
+            request.feature,
+            request.source.display()
+        ));
+        ui.small(format!(
+            "Saved angle {}° · {} · profile, axis, direction and every UUID are retained",
+            choice.degrees.map(|d| d.to_string()).unwrap_or_default(),
+            match choice.axis_segment {
+                Some(line) => format!("solid, closed on the axis along Line {line}"),
+                None => "with a bore".to_owned(),
+            }
+        ));
+        egui::Grid::new("ferritecad saved revolve angle")
+            .num_columns(3)
+            .show(ui, |ui| {
+                ui.label("Angle");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.angle_edit)
+                        .char_limit(64)
+                        .desired_width(120.),
+                );
+                ui.label(format!(
+                    "° ({}–{}, a full turn is not an angle)",
+                    RevolveAngle::MIN_DEGREES,
+                    RevolveAngle::MAX_DEGREES
+                ));
+                ui.end_row();
+            });
+        match self.angle_edit_request() {
+            Ok(request) => {
+                let pending = self.angle_applied.as_ref() != Some(&self.angle_edit);
+                if ui
+                    .add_enabled(pending, egui::Button::new("Apply angle change"))
+                    .clicked()
+                {
+                    self.apply_angle().expect("validated angle draft");
+                }
+                let applied = self.angle_applied.as_ref() == Some(&self.angle_edit);
+                if ui
+                    .add_enabled(applied, egui::Button::new("Save edited Revolve copy…"))
+                    .clicked()
+                {
+                    self.pending_angle_edit = Some(request);
+                }
+                if !applied {
+                    ui.small("Apply the angle before saving the copy.");
+                }
+            }
+            Err(error) => {
+                ui.colored_label(ui.visuals().error_fg_color, error.to_string());
+            }
+        }
+    }
+
     /// The saved-annulus half of the same window.
     ///
     /// Shows what is stored, by identity, and offers the three numbers this edit
@@ -959,6 +1146,37 @@ impl Editor {
     }
 
     fn draw_draft(&mut self, ui: &mut egui::Ui, running: bool) {
+        if self.editing_angle.is_some() {
+            ui.add_enabled_ui(!running, |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(!self.angle_undo.is_empty(), egui::Button::new("Undo draft"))
+                        .clicked()
+                    {
+                        self.undo();
+                    }
+                    if ui
+                        .add_enabled(!self.angle_redo.is_empty(), egui::Button::new("Redo draft"))
+                        .clicked()
+                    {
+                        self.redo();
+                    }
+                    if ui.button("Cancel draft").clicked() {
+                        self.dismiss();
+                    }
+                });
+            });
+            // Cancel took the draft down; there is nothing left to draw.
+            if self.editing_angle.is_none() {
+                return;
+            }
+            ui.add_enabled_ui(!running, |ui| self.draw_angle_edit(ui));
+            if running {
+                ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
+            }
+            ui.small("Undo/redo changes only this draft; history ends at publication.");
+            return;
+        }
         if self.editing_annulus.is_some() {
             ui.add_enabled_ui(!running, |ui| {
                 ui.horizontal(|ui| {
@@ -1338,6 +1556,22 @@ pub(crate) fn finish_circle_edit(
         editor.draft_published(&saved.destination);
     }
     edits.finish_circle(generation, result)
+}
+
+/// Finish one Revolve angle edit at the application boundary (§27E), through
+/// the same two steps and the same shared draft mechanism as the circle edit.
+pub(crate) fn finish_angle_edit(
+    editor: &mut Editor,
+    edits: &mut crate::edits::Edits,
+    generation: u64,
+    result: Result<ferritecad_jobs::EditedDocument>,
+) -> Option<PathBuf> {
+    if edits.accepts(generation)
+        && let Ok(saved) = &result
+    {
+        editor.draft_published(&saved.destination);
+    }
+    edits.finish(generation, result)
 }
 
 /// Finish one annulus edit at the application boundary.
@@ -3464,6 +3698,327 @@ mod tests {
         let expected = std::f64::consts::PI * (8.5f64 * 8.5 - 3.5 * 3.5) * 10.;
         assert!((volume - expected).abs() < 1e-6 * expected, "{volume}");
         built.release_all(&mut kernel);
+        a.close().expect("close");
+        b.close().expect("close");
+        let mut exported = Vec::new();
+        for path in [&ui, &cli] {
+            for (op, extension) in [("export-stl", "stl"), ("export-fbx", "fbx")] {
+                let out = path.with_extension(extension);
+                let p = std::process::Command::new(ferritecad())
+                    .arg(op)
+                    .arg(path)
+                    .arg("-o")
+                    .arg(&out)
+                    .output()
+                    .expect("export");
+                assert!(p.status.success(), "{p:?}");
+                exported.push(std::fs::read(&out).expect("bytes"));
+            }
+        }
+        assert_eq!(exported[0], exported[2], "STL bytes");
+        assert_eq!(
+            exported[1], exported[3],
+            "FBX bytes: same stored identities"
+        );
+        assert_eq!(std::fs::read(&source).expect("source"), bytes);
+    }
+
+    /// Scrolls the saved-object actions until `label` is fully visible, then
+    /// clicks it through real pointer input.
+    fn click_saved_action(
+        ctx: &egui::Context,
+        e: &mut Editor,
+        path: &Path,
+        source: &ExtrudeEditSource,
+        label: &str,
+    ) {
+        let mut at = None;
+        for step in 0..40 {
+            let events = if step == 0 {
+                Vec::new()
+            } else {
+                vec![
+                    egui::Event::PointerMoved(egui::pos2(400., 200.)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        phase: egui::TouchPhase::Move,
+                        delta: egui::vec2(0., -60.),
+                        modifiers: Default::default(),
+                    },
+                ]
+            };
+            let mut out = document_frame(ctx, e, path, source, events);
+            for _ in 0..10 {
+                out = document_frame(ctx, e, path, source, vec![]);
+            }
+            at = out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t)
+                    if t.galley.text() == label
+                        && s.clip_rect.contains_rect(t.visual_bounding_rect()) =>
+                {
+                    Some(t.visual_bounding_rect().center())
+                }
+                _ => None,
+            });
+            if at.is_some() {
+                break;
+            }
+        }
+        let at = at.unwrap_or_else(|| panic!("{label} must be reachable"));
+        document_frame(ctx, e, path, source, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            document_frame(
+                ctx,
+                e,
+                path,
+                source,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                }],
+            );
+        }
+    }
+
+    /// §27E through the real widgets: a saved sector's angle opens from its
+    /// own action while its Sketch stays refused, a full turn is refused in
+    /// the form, Apply/Undo/Redo move through the bounded history, and the
+    /// shared worker and the peer CLI publish the same copy.
+    #[test]
+    fn native_revolve_angle_edit_widgets_worker_and_cli_publish_one_copy() {
+        use crate::creates::tests::{ferritecad, read_semantics};
+        use ferritecad_document::{Document, ObjectPayload, RevolveExtent};
+        use ferritecad_kernel::OperationContext;
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: no OCCT for the Revolve angle edit worker");
+            return;
+        }
+        let root = tempfile::tempdir().expect("directory");
+        let source = root.path().join("sector.fcad");
+        let input = root.path().join("create.json");
+        std::fs::write(
+            &input,
+            concat!(
+                r#"{"request_version":2,"points_mm":[[4.25,1.5],[10.75,1.5],[10.75,6.5],"#,
+                r#"[7.5,6.5],[7.5,16.25],[4.25,16.25]],"axis":"sketch_y","#,
+                r#""extent":{"kind":"angle","degrees":137.5}}"#
+            ),
+        )
+        .expect("request");
+        let p = std::process::Command::new(ferritecad())
+            .arg("create-sketch-revolve")
+            .arg(&input)
+            .arg("-o")
+            .arg(&source)
+            .arg("--json")
+            .output()
+            .expect("create");
+        assert!(p.status.success(), "{p:?}");
+        let bytes = std::fs::read(&source).expect("source");
+        let loaded = {
+            let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+            ferritecad_scene::snapshot_of(
+                &source,
+                &mut k,
+                |k, b| k.import_step(b),
+                &Default::default(),
+                &OperationContext::default(),
+            )
+            .expect("accepted scene")
+        };
+        let reading = loaded.edit_source.expect("accepted edit facts");
+        let [angle] = reading.revolve_angles.as_slice() else {
+            panic!("one Revolve angle row");
+        };
+        assert_eq!(angle.refusal, None);
+        assert_eq!(angle.degrees, Some(137.5));
+        let feature = angle.feature;
+        // The sector's coordinates stay refused, by name.
+        let sketch = &reading.sketches[0];
+        assert!(
+            sketch
+                .refusal
+                .as_deref()
+                .is_some_and(|r| r.contains("partial Revolve (137.5° sector)")),
+            "{:?}",
+            sketch.refusal
+        );
+
+        let mut e = Editor::default();
+        assert!(!e.begin_edit(&source, &reading, sketch.sketch));
+        let ctx = egui::Context::default();
+        click_saved_action(
+            &ctx,
+            &mut e,
+            &source,
+            &reading,
+            &format!("Edit Revolve angle Revolve1 — {feature}…"),
+        );
+        assert!(e.editing_angle.is_some(), "the row opened the angle form");
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        let out = frame(&ctx, &mut e, vec![]);
+        let texts: Vec<String> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        for wanted in [
+            "Edit Revolve angle — new copy",
+            "Saved partial Revolve · angle only · right-handed about the sketch +Y axis",
+            "Saved angle 137.5° · with a bore · profile, axis, direction and every UUID are retained",
+            "137.5",
+            "° (0.01–359.99, a full turn is not an angle)",
+        ] {
+            assert!(texts.iter().any(|t| t == wanted), "{wanted} in {texts:?}");
+        }
+        assert!(e.angle_undo.is_empty() && e.angle_redo.is_empty());
+
+        // A full turn is refused by the one angle policy, in the form.
+        replace_field(&ctx, &mut e, "137.5", "360");
+        let refusal = e.angle_edit_request().expect_err("full turn").to_string();
+        assert!(refusal.contains("state a full turn"), "{refusal}");
+        let out = frame(&ctx, &mut e, vec![]);
+        assert!(out.shapes.iter().any(|c| matches!(&c.shape,
+            egui::Shape::Text(t) if t.galley.text().contains("state a full turn"))));
+        assert!(
+            !out.shapes.iter().any(|c| matches!(&c.shape,
+            egui::Shape::Text(t) if t.galley.text() == "Save edited Revolve copy…")),
+            "no Save for a refused angle"
+        );
+        for bad in ["0", "-90", "359.995", "400", "NaN", "inf", "ninety"] {
+            e.angle_edit = bad.into();
+            assert!(e.angle_edit_request().is_err(), "{bad} accepted");
+        }
+        e.angle_edit = "360".into();
+
+        // Through 180°, applied, undone and redone through the real buttons.
+        replace_field(&ctx, &mut e, "360", "220");
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Apply angle change"));
+        assert_eq!(e.angle_applied.as_deref(), Some("220"));
+        assert_eq!(e.angle_undo, ["137.5"]);
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Undo draft"));
+        assert_eq!(e.angle_edit, "137.5");
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Redo draft"));
+        assert_eq!(e.angle_edit, "220");
+        // Applying the same number again adds no checkpoint.
+        e.apply_angle().expect("same angle");
+        assert_eq!(e.angle_undo, ["137.5"]);
+        assert!(e.angle_redo.is_empty());
+
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Save edited Revolve copy…"));
+        let request = e.take_angle_edit_request().expect("submit");
+        assert_eq!(request.feature, feature);
+        assert_eq!(request.degrees, 220.0);
+        assert_eq!(request.expected, reading.version);
+        let kept = (e.angle_edit.clone(), e.angle_undo.clone());
+
+        let mut edits = crate::edits::Edits::default();
+        for occupied in [true, false] {
+            let mut request = request.clone();
+            request.destination =
+                root.path()
+                    .join(if occupied { "occupied.fcad" } else { "ui.fcad" });
+            if occupied {
+                std::fs::write(&request.destination, b"keep").expect("sentinel");
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let generation = edits
+                .start_revolve_angle(request.clone(), move |r, g, c| {
+                    crate::edits::spawn_revolve_angle_edit(r, c, move |result| {
+                        tx.send((g, result)).expect("reply")
+                    })
+                })
+                .expect("worker");
+            assert!(
+                finish_angle_edit(
+                    &mut e,
+                    &mut edits,
+                    generation + 1,
+                    Err(CadError::input("stale response"))
+                )
+                .is_none(),
+                "a reply for another request changes nothing"
+            );
+            assert_eq!((e.angle_edit.clone(), e.angle_undo.clone()), kept);
+            let (g, result) = rx.recv().expect("completed");
+            let path = finish_angle_edit(&mut e, &mut edits, g, result);
+            if occupied {
+                assert!(path.is_none(), "a taken destination publishes nothing");
+                assert!(e.editing_angle.is_some(), "and keeps the draft");
+                assert_eq!(
+                    std::fs::read(root.path().join("occupied.fcad")).expect("sentinel"),
+                    b"keep"
+                );
+            } else {
+                let path = path.expect("published");
+                assert!(!e.active());
+                e.draft_load_finished(&path, false);
+                assert!(e.active(), "a failed Open restores the edited draft");
+                assert_eq!((e.angle_edit.clone(), e.angle_undo.clone()), kept);
+                e.draft_published(&path);
+                e.draft_load_finished(&path, true);
+                assert!(!e.active());
+            }
+        }
+
+        // The peer CLI, the same request, the same source.
+        let edit = root.path().join("angle.json");
+        std::fs::write(&edit, r#"{"request_version":1,"angle_deg":220}"#).expect("request");
+        let cli = root.path().join("cli.fcad");
+        let p = std::process::Command::new(ferritecad())
+            .arg("edit-revolve-angle")
+            .arg(&source)
+            .arg("--feature")
+            .arg(feature.to_string())
+            .arg("--expect-version")
+            .arg(reading.version.content.to_string())
+            .arg("--request")
+            .arg(&edit)
+            .arg("-o")
+            .arg(&cli)
+            .arg("--json")
+            .output()
+            .expect("peer CLI");
+        assert!(p.status.success(), "{p:?}");
+        let ui = root.path().join("ui.fcad");
+        assert_eq!(read_semantics(&ui), read_semantics(&cli));
+        let a = Document::open_read_only(&ui).expect("UI");
+        let b = Document::open_read_only(&cli).expect("CLI");
+        assert_eq!(a.objects().expect("objects"), b.objects().expect("objects"));
+        assert_eq!(
+            a.topology_refs().expect("refs"),
+            b.topology_refs().expect("refs")
+        );
+        let original = Document::open_read_only(&source).expect("source");
+        assert_eq!(
+            a.topology_refs().expect("refs"),
+            original.topology_refs().expect("refs"),
+            "no new names"
+        );
+        original.close().expect("close");
+        let revolve = a
+            .objects()
+            .expect("objects")
+            .into_iter()
+            .find_map(|o| match o.payload {
+                ObjectPayload::Revolve(r) => Some(r),
+                _ => None,
+            })
+            .expect("Revolve");
+        assert!(matches!(revolve.extent,
+            RevolveExtent::Partial { degrees } if degrees.degrees() == 220.0));
         a.close().expect("close");
         b.close().expect("close");
         let mut exported = Vec::new();

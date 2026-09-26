@@ -536,6 +536,12 @@ jobs:
             -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-partial-no-solver.log
           if grep -q 'skipped:' revolve-partial-no-solver.log || ! grep -Fq "test $gate ... ok" revolve-partial-no-solver.log; then exit 1; fi
 
+          # §27E: editing a saved sector's angle needs a kernel and no solver.
+          gate=angle::occt_without_solver_edits_a_partial_revolve_angle
+          FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release --no-default-features -p ferritecad-cli --test revolve "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-angle-no-solver.log
+          if grep -q 'skipped:' revolve-angle-no-solver.log || ! grep -Fq "test $gate ... ok" revolve-angle-no-solver.log; then exit 1; fi
+
       - name: Build the real application and the command line tool against both
         id: build
         env:
@@ -1587,6 +1593,12 @@ jobs:
             windows) partial_artifacts="$(cygpath -w "$partial_artifacts")" ;;
           esac
           export FCAD_REVOLVE_PARTIAL_ARTIFACTS="$partial_artifacts"
+          angle_artifacts="$RUNNER_TEMP/revolve-angle"
+          mkdir -p "$angle_artifacts"
+          case '${{ matrix.name }}' in
+            windows) angle_artifacts="$(cygpath -w "$angle_artifacts")" ;;
+          esac
+          export FCAD_REVOLVE_ANGLE_ARTIFACTS="$angle_artifacts"
           for gate in native_full_turn_revolutions_are_what_pappus_and_their_lines_say \
             native_revolve_refuses_the_axis_other_kinds_and_cancellation \
             native_a_revolution_survives_the_named_archive_face_by_face \
@@ -1616,7 +1628,11 @@ jobs:
             partial::partial_revolution_requests_refuse_every_other_turn_atomically \
             partial::native_partial_revolve_guards_delivery_and_cancellation \
             partial::native_saved_partial_revolve_refuses_coordinate_editing_atomically \
-            partial::partial_revolution_payload_capabilities_and_discovery_without_kernel
+            partial::partial_revolution_payload_capabilities_and_discovery_without_kernel \
+            angle::native_revolve_angle_edits_measure_caps_names_cache_sql_and_exports \
+            angle::revolve_angle_discovery_and_request_refusals_preserve_every_file \
+            angle::native_revolve_angle_edit_refusals_preserve_every_file \
+            angle::native_revolve_angle_edit_delivery_late_guards_and_cancellation
           do
             cargo test --release --features planegcs -p ferritecad-cli --test revolve "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-cli.log
@@ -1636,7 +1652,9 @@ jobs:
             polygon::tests::a_full_turn_refuses_the_axis_and_whatever_the_polygon_refuses \
             polygon::tests::an_axis_closed_profile_is_one_named_line_on_the_axis \
             polygon::tests::an_axis_closed_profile_refuses_every_other_way_of_meeting_the_axis \
-            model::tests::a_partial_angle_is_a_validated_extent_with_its_own_layout
+            model::tests::a_partial_angle_is_a_validated_extent_with_its_own_layout \
+            revolve_angle_edit::tests::catalogue_names_each_refusal_and_prepares_only_the_angle \
+            revolve_angle_edit::tests::writer_rederives_and_refuses_forged_or_stale_preparations
           do
             FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-document --lib "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-domain.log
@@ -1647,7 +1665,8 @@ jobs:
             sketch::tests::native_revolve_profile_edit_widgets_worker_and_cli_publish_one_copy \
             sketch::drag_tests::native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit \
             sketch::tests::partial_revolve_draft_widgets_state_the_angle_and_refuse_others \
-            sketch::tests::native_partial_revolve_draft_worker_and_cli_publish_equivalent_models
+            sketch::tests::native_partial_revolve_draft_worker_and_cli_publish_equivalent_models \
+            sketch::tests::native_revolve_angle_edit_widgets_worker_and_cli_publish_one_copy
           do
             cargo test --release --features planegcs -p ferritecad-app "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-ui.log
@@ -1667,6 +1686,7 @@ jobs:
             echo "FCAD_REVOLVE_EDIT_FBX_DIR=$edit_artifacts"
             echo "FCAD_REVOLVE_AXIS_FBX_DIR=$axis_artifacts"
             echo "FCAD_REVOLVE_PARTIAL_FBX_DIR=$partial_artifacts"
+            echo "FCAD_REVOLVE_ANGLE_FBX_DIR=$angle_artifacts"
           } >> "$GITHUB_ENV"
 
       - name: Create, discover, edit and export through the JSON v1 CLI contract
@@ -1773,6 +1793,7 @@ jobs:
           grep -q '^FCAD_REVOLVE_EDIT_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_REVOLVE_AXIS_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_REVOLVE_PARTIAL_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_REVOLVE_ANGLE_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

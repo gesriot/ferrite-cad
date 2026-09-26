@@ -59,6 +59,7 @@ mod edit;
 mod height_edit;
 mod polygon;
 mod revolve;
+mod revolve_angle_edit;
 mod sketch_edit;
 pub use annulus_edit::{
     AnnulusChoice, AnnulusEdit, SavedAnnulus, annulus_choices, replace_annulus_geometry,
@@ -77,6 +78,9 @@ pub use polygon::{
     AnnularExtrusion, CircleExtrusion, FullTurnRevolution, PolygonExtrusion, RevolutionClosure,
 };
 pub use revolve::{RevolveChoice, RevolveSegment, revolve_choices, stated_revolution};
+pub use revolve_angle_edit::{
+    PreparedRevolveAngle, RevolveAngleChoice, prepare_revolve_angle, revolve_angle_choices,
+};
 pub use sketch_edit::{
     SketchChoice, SketchCutHistory, SketchProfileUse, SketchVertex, replace_sketch_coordinates,
     sketch_choices,
