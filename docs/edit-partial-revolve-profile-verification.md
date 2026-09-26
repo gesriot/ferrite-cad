@@ -276,6 +276,43 @@ and M2 publishes a class change the contract forbids.
 * **ufbx reads per OS.** 86 become 92: 3 printed identity reads plus 3
   redirected triangle reads, that is 83 printed and 9 redirected.
 
+### CI on e6ce4d3 (the code head), read from the jobs and their logs
+
+* **All green on e6ce4d3:**
+  * the CI workflow: lint, supply-chain, sbom, notices, and test on
+    ubuntu, macos and windows;
+  * planegcs pin (three platforms, and their compare);
+  * combined runtime layout (run 36244076477): linux, macos and windows,
+    every step success, including step 18 (no solver) and step 44 (FBX and
+    ufbx).
+* **How much of each log could be read.** The log tool returns only the
+  last 5000 lines of each runtime job, and direct download is refused by
+  this container's proxy. So the early no-solver step (18) is outside what
+  could be read.
+* **The mixed gate.** Step 18 fails unless the exact `test <gate> ... ok`
+  line is present and no `skipped:` appears. It finished success on all
+  three platforms, so
+  `profile::occt_without_solver_edits_a_partial_revolve_profile` ran and
+  passed there.
+* **In the readable part of each of the three logs:**
+  * the replacement gate and the five other new names each have exactly one
+    `test <name> ... ok` line;
+  * the replaced name
+    `partial::native_saved_partial_revolve_refuses_coordinate_editing_atomically`
+    appears nowhere;
+  * `FCAD_REVOLVE_PROFILE_UFBX_EXECUTED` is present;
+  * `FCAD_STL_FBX_MATCH` reports `triangles=640`, `220` and `686` for the
+    three profile-edited copies. The earlier sector and angle joins beside
+    them are unchanged: 168, 984 or 980, 498, 632, 244 and 658.
+* **Totals.** Per-OS totals of distinct names and executions, and of ufbx
+  reads, cannot be recounted from the logs, because the first part of each
+  is not readable. From the workflow: 254 names and 293 executions (was
+  248 and 287), and 92 ufbx reads (was 86). Every gate step was green on
+  all three platforms.
+* **Base.** On `main` 9e1c5d5 (merge CI, a separate run from this PR's),
+  every workflow finished success, including combined runtime layout (run
+  36241981002).
+
 ## Limits
 
 * **The cone.** A cone sector's mesh has T-junctions (§27D). It is checked
