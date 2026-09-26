@@ -674,7 +674,9 @@ fn native_bushing_constraints_dimension_replace_remove_cache_and_exports() {
     assert!(!named.is_empty(), "{said}");
     let known: Vec<Value> = constraint_ids(&inspect(&redundant));
     assert!(named.iter().all(|id| known.contains(id)), "{named:?}");
-    eprintln!("redundant {named:?}; the equality is {equality}");
+    // Measured on the CI solver: it names the equality that repeats what
+    // the rectangle already says.
+    assert!(named.contains(&equality), "{named:?} does not name {equality}");
     assert_eq!(said["solve"]["degrees_of_freedom"], 0);
     assert_solved(&measure_solved(&redundant, None, None), &BUSHING_WIDE);
 
@@ -735,7 +737,6 @@ fn native_bushing_constraints_dimension_replace_remove_cache_and_exports() {
         );
         let message = error["message"].as_str().expect("message");
         assert!(wanted.iter().any(|w| message.contains(w)), "{why}: {error}");
-        eprintln!("{why}: {message}");
     }
 
     // Removing every user constraint keeps the closure, the stored inputs
