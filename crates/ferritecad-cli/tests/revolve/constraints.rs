@@ -676,7 +676,10 @@ fn native_bushing_constraints_dimension_replace_remove_cache_and_exports() {
     assert!(named.iter().all(|id| known.contains(id)), "{named:?}");
     // Measured on the CI solver: it names the equality that repeats what
     // the rectangle already says.
-    assert!(named.contains(&equality), "{named:?} does not name {equality}");
+    assert!(
+        named.contains(&equality),
+        "{named:?} does not name {equality}"
+    );
     assert_eq!(said["solve"]["degrees_of_freedom"], 0);
     assert_solved(&measure_solved(&redundant, None, None), &BUSHING_WIDE);
 
