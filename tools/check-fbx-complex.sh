@@ -374,6 +374,7 @@ if [ -n "${FCAD_REVOLVE_PARTIAL_FBX_DIR:-}" ]; then
     # Hosted Windows images name the interpreter python rather than python3.
     python="$(command -v python3 || command -v python || true)"
     [ -n "$python" ] || { echo "error: no Python interpreter for the STL join" >&2; exit 1; }
+    "$python" "$(native "$root/tools/fbx/test_stl_matches_fbx.py")"
     # §27D: each sector is read by pinned ufbx twice — its identity channel,
     # and every world-space triangle — and the triangles are joined against the
     # STL of the same Body under (x, z, -y) * 0.001, winding included.

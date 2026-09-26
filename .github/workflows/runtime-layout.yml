@@ -50,6 +50,7 @@ on:
       # Changes to the executed FBX campaign and its pinned reader are inputs
       # to this measurement, even when no product source changes.
       - 'tools/check-fbx-complex.sh'
+      - 'tools/fbx/**'
       - 'tools/unity-fbx-smoke/scripts/**'
       - 'tools/macos-bundle.sh'
       - 'tools/macos-bundle-plist.py'
@@ -1661,10 +1662,12 @@ jobs:
           FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-topology --lib "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-partial-codec.log
           if grep -q 'skipped:' revolve-partial-codec.log || ! grep -Fq "test $gate ... ok" revolve-partial-codec.log; then exit 1; fi
-          echo "FCAD_REVOLVE_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
-          echo "FCAD_REVOLVE_EDIT_FBX_DIR=$edit_artifacts" >> "$GITHUB_ENV"
-          echo "FCAD_REVOLVE_AXIS_FBX_DIR=$axis_artifacts" >> "$GITHUB_ENV"
-          echo "FCAD_REVOLVE_PARTIAL_FBX_DIR=$partial_artifacts" >> "$GITHUB_ENV"
+          {
+            echo "FCAD_REVOLVE_FBX_DIR=$artifacts"
+            echo "FCAD_REVOLVE_EDIT_FBX_DIR=$edit_artifacts"
+            echo "FCAD_REVOLVE_AXIS_FBX_DIR=$axis_artifacts"
+            echo "FCAD_REVOLVE_PARTIAL_FBX_DIR=$partial_artifacts"
+          } >> "$GITHUB_ENV"
 
       - name: Create, discover, edit and export through the JSON v1 CLI contract
         env:

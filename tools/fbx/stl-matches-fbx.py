@@ -13,6 +13,8 @@ not accepted as equal geometry.
 
 usage: stl-matches-fbx.py BODY.stl READER-OUTPUT.txt
 """
+import math
+import re
 import struct
 import sys
 
@@ -21,30 +23,40 @@ TOLERANCE_M = 1e-9  # 1 nm: far below float32 spacing at these sizes
 
 def stl(path):
     data = open(path, "rb").read()
+    if len(data) < 84:
+        sys.exit(f"error: {path} has no binary STL header")
     (count,) = struct.unpack_from("<I", data, 80)
-    if len(data) != 84 + 50 * count:
+    if count == 0 or len(data) != 84 + 50 * count:
         sys.exit(f"error: {path} is not a binary STL of {count} triangles")
     out = []
     for i in range(count):
         corners = [struct.unpack_from("<3f", data, 84 + 50 * i + 12 + 12 * k) for k in range(3)]
+        if not all(math.isfinite(v) for p in corners for v in p):
+            sys.exit(f"error: {path} has a non-finite STL position")
         out.append(tuple((x * 0.001, z * 0.001, -y * 0.001) for x, y, z in corners))
     return out
 
 
 def fbx(path):
-    out, summary = [], None
+    out, summary, executed = [], None, False
     for line in open(path):
         if line.startswith("FCAD_TRIANGLE "):
             v = [float(t) for t in line.split()[1:]]
-            if len(v) != 9:
+            if len(v) != 9 or not all(math.isfinite(x) for x in v):
                 sys.exit(f"error: malformed triangle line: {line!r}")
             out.append((tuple(v[0:3]), tuple(v[3:6]), tuple(v[6:9])))
         elif line.startswith("FCAD_TRIANGLE_SUMMARY"):
-            summary = line.split()
-        elif line.startswith("FCAD_PRODUCTION_FBX_UFBX_EXECUTED") and "failures=0" not in line:
-            sys.exit(f"error: the reader reported failures: {line.strip()}")
-    if summary is None:
-        sys.exit("error: the reader printed no triangle summary")
+            match = re.fullmatch(r"FCAD_TRIANGLE_SUMMARY instances=([1-9][0-9]*) triangles=([1-9][0-9]*)\n?", line)
+            if summary is not None or match is None:
+                sys.exit("error: malformed or repeated triangle summary")
+            summary = int(match[2])
+        elif line.startswith("FCAD_PRODUCTION_FBX_UFBX_EXECUTED"):
+            match = re.fullmatch(r"FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=([1-9][0-9]*) failures=0\n?", line)
+            if executed or match is None or int(match[1]) < 5:
+                sys.exit(f"error: invalid reader result: {line.strip()}")
+            executed = True
+    if summary != len(out) or not executed:
+        sys.exit("error: missing or inconsistent completed reader report")
     return out
 
 

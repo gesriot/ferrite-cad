@@ -396,3 +396,80 @@ python3 tools/watch-viewer-memory.py \
 
 Expected: exit 0, memory of the same order as §27A–C (about 200 MiB peak),
 swap 0.
+
+## Independent macOS review — 2026-09-25
+
+Reviewed PR #56 at `992f2800d38a6ae3f72f7ad02015f66fa470a883` against
+`f45df99d52a59fecc46e02c7f5d1f5984bd817fb`. No product geometry, persistence or
+UI implementation fix was needed. Review corrected the proof and its routing:
+
+* The STL/FBX join accepted nine `nan` coordinates as a perfect match
+  (`exit 0`, `worst_m=0`). It now rejects non-finite positions on either side,
+  empty/truncated STL and missing, repeated or inconsistent reader reports.
+  An executable test covers two positive oriented matches and eleven negative
+  cases, including winding and coordinate changes. It runs in the existing
+  FBX campaign. The real sector files still match.
+* `tools/fbx/**` now triggers the runtime workflow, since that helper is an
+  input to its proof. Grouped environment writes also clear actionlint's
+  SC2129 finding. README, the shared CLI contract, capabilities and the plan
+  now describe the partial turn rather than leaving discovery to a new page.
+
+Local sequential native builds reused the installed pinned OCCT/PlaneGCS and
+existing target. Core packages: 643 harness passes, of which two are explicit
+no-solver-only N/A; one older timing benchmark ignored. OCCT: 140; selected
+CLI suites: 119; sketch app: 36; edit app: 9. Thus **945 executed native tests**,
+no failures and no native geometry skips. Fmt, workspace clippy all targets and
+features with `-D warnings`, licence headers, export boundary, shellcheck,
+actionlint and whitespace checks passed. A genuine stub (`NOTFOUND`, no native
+imports) executed seven protocol/discovery tests and explicitly skipped 16
+geometry tests. Mixed OCCT/no-solver executed the exact partial-turn gate;
+imports were checked and the native CLI restored afterward.
+
+The Markdown recipe executed all 48 cases with the rebuilt pinned ufbx reader.
+Six local sector STL/FBX pairs passed the strengthened triangle join. The real
+§27C bundled CLI could inspect both partial document classes read-only, but
+validate/rebuild/STL/FBX refused (exit 2, including the new cap capability).
+Sources stayed byte-identical and no outputs appeared. Full-turn discovery
+matched after removing only the additive null `angle_deg`; old/new CLI STL and
+FBX exports of the same full-turn document were byte-identical.
+
+Initial exact-head CI was independently read from GitHub logs, including the
+manual runtime run `36213931917` which the PR's short rollup omitted. On each
+of Linux/macOS/Windows: **240 distinct required gate names, 279 executions**,
+no required skips, 77 printed successful ufbx summaries plus three redirected
+triangle-reader runs proved by their successful joins (80 reads total).
+These are results for the incoming head; CI of the review commit must finish
+before merge and is reported in the PR.
+
+### Observed window coverage and interruptions
+
+The fresh relocated, ad-hoc-signed bundle passed strict signature and loader
+checks without DYLD variables. An initial owned viewer was stopped by the
+watchdog at **216.282 MiB** because system pressure became elevated (level 2),
+not because the 1536 MiB process cap was reached; swap remained zero. That run
+is not a GUI pass. After native checks and pressure returning to normal, a
+second guarded viewer was used.
+
+Observed in that window: exact six-point stepped profile; Revolve angle;
+visible refusals for 0, 360 and nonnumeric input; angle Undo/Redo; preservation
+of 137.5 when switching full/partial mode; Save Cancel preserving the draft;
+successful publication and async Open of the 137.5-degree stepped sector.
+The saved GUI-created model, exported by the bundled CLI, has byte-equal STL
+and identity-normalized FBX against the independent CLI creation, and all
+**8/8 refs** resolve, including both named caps. This is not a claim that the
+GUI export buttons were exercised.
+
+CUA then repeatedly returned `noWindowsAvailable` for coordinate clicks while
+its AX tree still named the live window; reconnecting did not restore clicks.
+The owned viewer was closed through its native close button and exit 0 was
+verified by PID, without querying the app afterward. Peak **196.939 MiB**,
+pressure normal and swap zero throughout that second run. Remaining window
+steps are both GUI export buttons, cylinder/cone creation and the refusal
+hover. They remain unverified here; headless checks do not substitute for
+these observations. Any later completion is recorded in the PR review log.
+The cause of the older user OOM is not established by these runs.
+
+Review logs, readback scripts, temporary models and both watchdog transcripts:
+`/private/tmp/ferrite-27d-review/` (also preserved with the task's review
+artifacts). No upstream native library rebuild, large local STEP campaign,
+foreign worktree operation or cache deletion was performed.

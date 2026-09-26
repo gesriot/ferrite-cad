@@ -375,6 +375,30 @@ Envelope общий: `operation:"create-sketch-revolve"`, result
 `axis_curve_id` (null или UUID Line на оси).
 [Контракт §27C и исполняемый рецепт](axis-closed-revolve.md).
 
+### Сектор Revolve (§27D)
+
+`create-sketch-revolve` аддитивно принимает строгий request v2:
+
+```json
+{"request_version":2,"points_mm":[[4,0],[10,0],[10,15],[4,15]],
+ "axis":"sketch_y","extent":{"kind":"angle","degrees":137.5}}
+```
+
+Вместо угла допустимо `extent:{"kind":"full_turn"}` без `degrees`.
+Неизвестные поля отказываются, v2 не принимает прежнее поле `angle`;
+request v1 с `angle:"full_turn"` сохранён. Диапазон угла — 0.01°–359.99°
+включительно; 360° не преобразуется в полный оборот автоматически.
+Envelope v1, operation, result и exit 0/2/7 прежние.
+
+`revolves[].extent` сохраняет строковый тип: сектор имеет `"partial_turn"`.
+Новое обязательное поле `angle_deg` — число для сектора, null для полного
+оборота. Клиент останавливается на незнакомом extent. У сохранённого сектора
+`sketches[].editable:false`, `vertices:null`, `profile_feature:null`, а
+`refusal` объясняет отсутствие правки. Payload v3 (полый) / v4 (на оси)
+требует `feature.revolve.partial.v1`; старый читатель сохраняет объект, но
+не может перестроить его как полный оборот.
+[Контракт §27D и исполняемый рецепт](partial-angle-revolve.md).
+
 ## Правка сохранённой кольцевой пары (§25M)
 
 `ferritecad edit-annular <source.fcad> --sketch UUID --expect-version HASH
