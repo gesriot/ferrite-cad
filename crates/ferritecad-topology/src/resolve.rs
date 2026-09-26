@@ -141,6 +141,41 @@ pub fn resolve(map: &TopologyMap, reference: &TopologyRef) -> Result<Vec<SubShap
             }
         }
 
+        SemanticRole::RevolveCap { side } => {
+            require_kind(reference, EntityKind::Face, "a revolution's end face")?;
+            match side {
+                CapSide::Start | CapSide::End => {}
+                other => {
+                    return Err(CadError::unsupported(format!(
+                        "topology reference {} names revolution end face {other:?}, which this \
+                         build does not understand",
+                        reference.id
+                    )));
+                }
+            }
+            match reference.selection {
+                SelectionRule::Exact => {}
+                SelectionRule::AllDerivedFrom { .. } => {
+                    return Err(CadError::input(format!(
+                        "topology reference {} names a revolution's end face but selects \
+                         everything derived from an ancestor; an end face descends from no Line \
+                         and is selected exactly",
+                        reference.id
+                    )));
+                }
+                ref other => return Err(unknown_rule(reference, other)),
+            }
+
+            // Only a partial revolution's own end faces: an extrusion's caps are
+            // filed elsewhere, so this never answers with one, and a full turn
+            // has none to answer with.
+            let faces: Vec<SubShapeHandle> = map
+                .feature(reference.producer_feature)
+                .and_then(|names| names.revolved_cap(*side).map(Iterator::collect))
+                .unwrap_or_default();
+            exactly_one(reference, faces, &format!("the revolution's {side:?} face"))
+        }
+
         SemanticRole::ExtrudeCapEdge {
             side,
             profile_segment,

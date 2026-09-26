@@ -109,11 +109,56 @@ pub struct OperationResult {
 pub struct RevolveResult {
     pub shape: ShapeHandle,
     pub history: History,
+    /// §27D: the face closing the start of a partial turn — the profile's
+    /// region where the turn begins. Empty for a full turn, which has none.
+    pub start_cap: Vec<SubShapeHandle>,
+    /// The face closing the end of a partial turn. Empty for a full turn.
+    pub end_cap: Vec<SubShapeHandle>,
 }
 
 impl RevolveResult {
-    /// Every named output is a face of this result.
+    /// Every named output is a face of this result; the caps are both absent
+    /// (a full turn) or one face each, distinct from each other and from every
+    /// face a profile segment raised.
     pub fn validate(&self) -> Result<()> {
+        match (self.start_cap.as_slice(), self.end_cap.as_slice()) {
+            ([], []) => {}
+            ([start], [end]) => {
+                for cap in [start, end] {
+                    if cap.shape() != self.shape || cap.kind() != SubShapeKind::Face {
+                        return Err(CadError::kernel(format!(
+                            "a revolution named {cap} as a cap, which is not a face of its own \
+                             result"
+                        )));
+                    }
+                }
+                if start == end {
+                    return Err(CadError::kernel(
+                        "a revolution named one face as both its start and its end cap",
+                    ));
+                }
+                for input in self.history.inputs() {
+                    if self
+                        .history
+                        .generated(input)
+                        .chain(self.history.modified(input))
+                        .any(|face| face == *start || face == *end)
+                    {
+                        return Err(CadError::kernel(
+                            "a revolution named one face both as a cap and as a segment's face",
+                        ));
+                    }
+                }
+            }
+            (start, end) => {
+                return Err(CadError::kernel(format!(
+                    "a revolution reported {} start and {} end cap faces; a turn has none or one \
+                     of each",
+                    start.len(),
+                    end.len()
+                )));
+            }
+        }
         for input in self.history.inputs() {
             for output in self
                 .history
@@ -810,6 +855,49 @@ mod tests {
     fn face(index: u64) -> SubShapeHandle {
         let shape = ShapeHandle::new(SessionId::new(), 0);
         SubShapeHandle::new(shape, SubShapeKind::Face, index)
+    }
+
+    /// §27D: a revolution's caps are none (a full turn) or one of each,
+    /// faces of its own result, distinct, and never a segment's face.
+    #[test]
+    fn a_revolution_reports_no_caps_or_one_distinct_face_for_each() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let at = |index| SubShapeHandle::new(shape, SubShapeKind::Face, index);
+        let segment = HistoryInput::Segment(StableEntityId::new());
+        let mut history = History::new();
+        history.record_generated(segment, at(1));
+        let result = |start: Vec<SubShapeHandle>, end: Vec<SubShapeHandle>| RevolveResult {
+            shape,
+            history: history.clone(),
+            start_cap: start,
+            end_cap: end,
+        };
+        assert!(result(vec![], vec![]).validate().is_ok());
+        assert!(result(vec![at(2)], vec![at(3)]).validate().is_ok());
+        for (start, end) in [
+            (vec![at(2)], vec![]),
+            (vec![], vec![at(3)]),
+            (vec![at(2), at(4)], vec![at(3)]),
+            (vec![at(2)], vec![at(2)]),
+            (vec![at(1)], vec![at(3)]),
+            (
+                vec![SubShapeHandle::new(shape, SubShapeKind::Edge, 2)],
+                vec![at(3)],
+            ),
+            (
+                vec![SubShapeHandle::new(
+                    ShapeHandle::new(SessionId::new(), 0),
+                    SubShapeKind::Face,
+                    2,
+                )],
+                vec![at(3)],
+            ),
+        ] {
+            assert!(
+                result(start.clone(), end.clone()).validate().is_err(),
+                "{start:?} {end:?}"
+            );
+        }
     }
 
     #[test]

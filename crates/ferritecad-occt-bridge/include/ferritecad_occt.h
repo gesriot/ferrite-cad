@@ -305,6 +305,9 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
  * face of a radial Line as deleted although the face is in the solid. A full
  * turn has no start or end face; nothing is reported as a cap.
  *
+ * The argument list and meaning are those of §27A/§27C and do not change: a
+ * partial angle has its own entry point below and is never passed here.
+ *
  * Cancellation is consulted before the profile is built and before and after
  * the revolution, and is installed as a progress indicator for the algorithm.
  */
@@ -327,6 +330,42 @@ FcOcctStatus fc_occt_revolve_faces(FcOcctSession *session, uint64_t shape,
                                    size_t segment_index, uint64_t *out_ids,
                                    size_t capacity, size_t *out_count,
                                    FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/*
+ * §27D: turn the same profile through a partial angle: a sector with a start
+ * and an end face.
+ *
+ * Every argument but the angle means exactly what it means for
+ * fc_occt_revolve, and is checked the same way. `angle_degrees` is the turn in
+ * degrees, right-handed about `axis_direction`, starting at the profile. It
+ * must be finite and strictly between 0 and 360; anything else is refused and
+ * never widened to a full turn or wrapped around. The conversion to radians
+ * is `angle_degrees * (pi / 180)`, done once, here. Which angles a document
+ * may hold is the caller's policy.
+ *
+ * On top of the checks fc_occt_revolve makes, the sweep's history of the
+ * profile face (BRepSweep_Revol::FirstShape and LastShape) must name exactly
+ * one start face and one end face of the finished solid, distinct from each
+ * other and from every segment's face, and the segments' faces and the two
+ * caps together must be every face of the solid.
+ */
+FcOcctStatus fc_occt_revolve_partial(
+    FcOcctSession *session, const FcOcctPlane *plane,
+    const FcOcctSegment *segments, size_t segment_count, size_t axis_segment,
+    const double *axis_origin, const double *axis_direction,
+    double angle_degrees, FcOcctCancelFn cancel, void *cancel_context,
+    uint64_t *out_shape, FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/*
+ * The start (`which` 0) or end (`which` 1) face of a partial revolution, as
+ * registered from the solid itself. Two-call count/buffer protocol. Refused
+ * for a full turn, which has none, and for a shape that is not a fresh
+ * revolution, including one decoded from a cache blob.
+ */
+FcOcctStatus fc_occt_revolve_caps(FcOcctSession *session, uint64_t shape,
+                                  int32_t which, uint64_t *out_ids,
+                                  size_t capacity, size_t *out_count,
+                                  FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*
  * The faces the sweep raised from one profile segment.

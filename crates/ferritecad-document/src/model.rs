@@ -171,6 +171,15 @@ pub const FEATURE_REVOLVE_CAPABILITY: &str = "feature.revolve.v1";
 /// still the v1 feature any §27A build can rewrite.
 pub const FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY: &str = "feature.revolve.axis-closed.v1";
 
+/// The capability a [`Revolve`] through a partial angle depends on (§27D): a
+/// sector of a turned part, with two end faces named by their own role.
+///
+/// A §27C build reads Revolve payloads v1 and v2 only. It keeps a sector
+/// (payload v3 or v4) verbatim and opens the document read-only, rather than
+/// reading its angle as a full turn. Full-turn Revolves keep their layouts
+/// and never declare this.
+pub const FEATURE_REVOLVE_PARTIAL_CAPABILITY: &str = "feature.revolve.partial.v1";
+
 /// The capability an [`ImportedStep`] object depends on.
 ///
 /// Declared separately from [`CORE_CAPABILITY`] so a reader that understands
@@ -256,6 +265,17 @@ impl ObjectKind {
                 FEATURE_REVOLVE_CAPABILITY.to_owned(),
                 FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY.to_owned(),
             ],
+            (Self::Revolve, 3) => vec![
+                CORE_CAPABILITY.to_owned(),
+                FEATURE_REVOLVE_CAPABILITY.to_owned(),
+                FEATURE_REVOLVE_PARTIAL_CAPABILITY.to_owned(),
+            ],
+            (Self::Revolve, 4) => vec![
+                CORE_CAPABILITY.to_owned(),
+                FEATURE_REVOLVE_CAPABILITY.to_owned(),
+                FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY.to_owned(),
+                FEATURE_REVOLVE_PARTIAL_CAPABILITY.to_owned(),
+            ],
             (Self::Revolve, _) => vec![
                 CORE_CAPABILITY.to_owned(),
                 FEATURE_REVOLVE_CAPABILITY.to_owned(),
@@ -296,6 +316,7 @@ impl ObjectKind {
                 CORE_CAPABILITY,
                 FEATURE_REVOLVE_CAPABILITY,
                 FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY,
+                FEATURE_REVOLVE_PARTIAL_CAPABILITY,
             ],
             Self::Sketch => &[
                 CORE_CAPABILITY,
@@ -334,9 +355,11 @@ impl ObjectKind {
             // written as themselves, because what a feature is stored at is
             // decided by what it holds; see [`Extrude::schema_version`].
             Self::Extrude => 3,
-            // v2 names the Line a solid part closes on (§27C). A Revolve with
-            // a bore is still stored at v1; see [`Revolve::schema_version`].
-            Self::Revolve => 2,
+            // v2 names the Line a solid part closes on (§27C); v3 and v4 are
+            // the same two classes turned through a partial angle (§27D). A
+            // full turn with a bore is still stored at v1; see
+            // [`Revolve::schema_version`].
+            Self::Revolve => 4,
             _ => 1,
         }
     }
@@ -350,7 +373,7 @@ impl ObjectKind {
             Self::ImportedStep => &[3, 2, 1],
             Self::Sketch => &[3, 2, 1],
             Self::Extrude => &[3, 2, 1],
-            Self::Revolve => &[2, 1],
+            Self::Revolve => &[4, 3, 2, 1],
             _ => &[1],
         }
     }
@@ -993,12 +1016,106 @@ pub enum RevolveAxis {
     SketchY,
 }
 
-/// How far a [`Revolve`] turns. §27A: exactly one full turn, 2π.
+/// How far a [`Revolve`] turns.
+///
+/// §27A: exactly one full turn, 2π, which closes on itself and has no end
+/// faces. §27D: a partial angle, a sector with a start and an end face. The
+/// two are different topology and never stand in for each other: 360° is not
+/// a partial angle, and no partial angle is widened to a full turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum RevolveExtent {
     FullTurn,
+    Partial { degrees: RevolveAngle },
+}
+
+/// The angle of a partial [`Revolve`], in degrees: the one domain policy for
+/// it, applied by the UI draft, the CLI request, the create job, the payload
+/// decoder and the evaluator alike (§27D).
+///
+/// A right-handed turn about the sketch's +Y axis, starting at the profile.
+/// Stored exactly as given: nothing is rounded, reduced modulo 360 or turned
+/// into another operation. Accepted from [`Self::MIN_DEGREES`] to
+/// [`Self::MAX_DEGREES`], both inclusive; 0, negative angles, angles within
+/// 0.01° of 0 or of a full turn, exactly 360, several turns, NaN and
+/// infinities are refused. The limits come from kernel and single-precision
+/// mesh checks, recorded in `docs/partial-angle-revolve.md`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(try_from = "f64", into = "f64")]
+pub struct RevolveAngle(f64);
+
+impl RevolveAngle {
+    /// The thinnest sector this build keeps, in degrees.
+    pub const MIN_DEGREES: f64 = 0.01;
+    /// The widest partial sector, in degrees: 0.01° short of a full turn.
+    pub const MAX_DEGREES: f64 = 359.99;
+
+    pub fn new(degrees: f64) -> Result<Self> {
+        if !degrees.is_finite() {
+            return Err(CadError::input(format!(
+                "the revolve angle {degrees} is not a finite number of degrees"
+            )));
+        }
+        if degrees <= 0.0 {
+            return Err(CadError::input(format!(
+                "the revolve angle {degrees}° is not positive: a partial revolve turns right-handed \
+                 about +Y through more than 0°, and a mirrored sweep is not supported"
+            )));
+        }
+        if degrees == 360.0 {
+            return Err(CadError::input(
+                "the revolve angle 360° is a full turn, which has no end faces: state a full turn \
+                 instead of a partial angle",
+            ));
+        }
+        if degrees > 360.0 {
+            return Err(CadError::input(format!(
+                "the revolve angle {degrees}° is more than one turn: a solid turns at most once"
+            )));
+        }
+        if degrees < Self::MIN_DEGREES {
+            return Err(CadError::input(format!(
+                "the revolve angle {degrees}° is below the {}° minimum: the sector would be too \
+                 thin to keep every face",
+                Self::MIN_DEGREES
+            )));
+        }
+        if degrees > Self::MAX_DEGREES {
+            return Err(CadError::input(format!(
+                "the revolve angle {degrees}° is within {}° of a full turn: a partial revolve \
+                 turns at most {}°, and a full turn is stated as one",
+                360.0 - Self::MAX_DEGREES,
+                Self::MAX_DEGREES
+            )));
+        }
+        Ok(Self(degrees))
+    }
+
+    pub fn degrees(self) -> f64 {
+        self.0
+    }
+}
+
+// Validated finite and positive, so equality by bits is equality by value.
+impl PartialEq for RevolveAngle {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+impl Eq for RevolveAngle {}
+
+impl TryFrom<f64> for RevolveAngle {
+    type Error = CadError;
+    fn try_from(degrees: f64) -> Result<Self> {
+        Self::new(degrees)
+    }
+}
+
+impl From<RevolveAngle> for f64 {
+    fn from(angle: RevolveAngle) -> Self {
+        angle.0
+    }
 }
 
 /// Turns a sketch profile about an axis in its own plane.
@@ -1031,7 +1148,12 @@ pub struct Revolve {
 impl Revolve {
     /// The layout this feature has to be stored at: decided by what it holds.
     pub fn schema_version(&self) -> u32 {
-        if self.axis_segment.is_some() { 2 } else { 1 }
+        match (self.extent, self.axis_segment.is_some()) {
+            (RevolveExtent::FullTurn, false) => 1,
+            (RevolveExtent::FullTurn, true) => 2,
+            (RevolveExtent::Partial { .. }, false) => 3,
+            (RevolveExtent::Partial { .. }, true) => 4,
+        }
     }
 
     /// The cache key for this feature's own contribution; the caller adds the
@@ -1045,9 +1167,19 @@ impl Revolve {
         hasher.field("axis").str(match self.axis {
             RevolveAxis::SketchY => "sketch_y",
         });
-        hasher.field("extent").str(match self.extent {
-            RevolveExtent::FullTurn => "full_turn",
-        });
+        match self.extent {
+            RevolveExtent::FullTurn => {
+                hasher.field("extent").str("full_turn");
+            }
+            // The degrees' own bits, so two sectors differ exactly when their
+            // stored angles do; a full turn feeds nothing new.
+            RevolveExtent::Partial { degrees } => {
+                hasher
+                    .field("extent")
+                    .str("partial")
+                    .bytes(&degrees.degrees().to_bits().to_le_bytes());
+            }
+        }
         hasher.field("operation").str(match self.operation {
             SolidOperation::NewBody => "new_body",
             SolidOperation::Add => "add",
@@ -1300,6 +1432,13 @@ pub enum SemanticRole {
     /// other's feature. A full turn has no caps; the annular end faces are the
     /// rotations of the radial Lines and are named by those Lines.
     RevolveFace { profile_segment: StableEntityId },
+    /// One of the two planar end faces of a partial [`Revolve`] (§27D): the
+    /// profile's region at the start of the turn, or at its end.
+    ///
+    /// Its own role, not [`SemanticRole::ExtrudeCap`]: neither may resolve
+    /// against the other's feature. Owned by the Revolve that turned it and
+    /// answered from that revolution's own history; a full turn has none.
+    RevolveCap { side: CapSide },
 }
 
 /// How many entities a reference selects, and which.
@@ -1427,6 +1566,12 @@ impl TopologyRef {
                 hasher
                     .str("revolve_face")
                     .bytes(&profile_segment.to_bytes());
+            }
+            SemanticRole::RevolveCap { side } => {
+                hasher.str("revolve_cap").str(match side {
+                    CapSide::Start => "start",
+                    CapSide::End => "end",
+                });
             }
             SemanticRole::ExtrudeCapEdge {
                 side,
@@ -2005,9 +2150,13 @@ impl ObjectPayload {
             // may write; this build stores and rebuilds only the §27A class,
             // and refuses to write anything else under its name.
             Self::Revolve(revolve) => match (revolve.axis, revolve.extent, revolve.operation) {
-                (RevolveAxis::SketchY, RevolveExtent::FullTurn, SolidOperation::NewBody) => Ok(()),
+                (
+                    RevolveAxis::SketchY,
+                    RevolveExtent::FullTurn | RevolveExtent::Partial { .. },
+                    SolidOperation::NewBody,
+                ) => Ok(()),
                 _ => Err(CadError::unsupported(
-                    "this build writes only a full-turn NewBody Revolve about the sketch Y axis",
+                    "this build writes only a NewBody Revolve about the sketch Y axis",
                 )),
             },
             Self::ImportedStep(imported) => imported.validate(),
@@ -2030,6 +2179,138 @@ fn validate_positive(value: f64, what: &str) -> Result<()> {
 mod tests {
     use super::*;
     use ferritecad_types::Tolerance;
+
+    /// §27D: one validated angle, its own payload layouts and capabilities,
+    /// and a cache key that moves with the angle while a full turn keeps its.
+    #[test]
+    fn a_partial_angle_is_a_validated_extent_with_its_own_layout() {
+        for bad in [
+            0.0,
+            -0.0,
+            -90.0,
+            0.009_999,
+            359.990_001,
+            360.0,
+            400.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            assert!(RevolveAngle::new(bad).is_err(), "{bad}");
+        }
+        for good in [0.01, 1.0, 90.0, 137.5, 100.0 / 3.0, 359.99] {
+            assert_eq!(RevolveAngle::new(good).expect("a sector").degrees(), good);
+        }
+        let mut revolve = Revolve {
+            profile: ObjectId::new(),
+            axis: RevolveAxis::SketchY,
+            extent: RevolveExtent::FullTurn,
+            operation: SolidOperation::NewBody,
+            axis_segment: None,
+        };
+        let tolerance = Tolerance::default();
+        let full = revolve.cache_key(tolerance);
+        assert_eq!(revolve.schema_version(), 1);
+        revolve.extent = RevolveExtent::Partial {
+            degrees: RevolveAngle::new(90.0).expect("a sector"),
+        };
+        assert_eq!(revolve.schema_version(), 3);
+        let quarter = revolve.cache_key(tolerance);
+        assert_ne!(quarter, full);
+        revolve.extent = RevolveExtent::Partial {
+            degrees: RevolveAngle::new(90.000_000_001).expect("a sector"),
+        };
+        assert_ne!(revolve.cache_key(tolerance), quarter);
+        revolve.axis_segment = Some(StableEntityId::new());
+        assert_eq!(revolve.schema_version(), 4);
+        assert_eq!(
+            ObjectKind::Revolve.required_capabilities(3),
+            [
+                CORE_CAPABILITY,
+                FEATURE_REVOLVE_CAPABILITY,
+                FEATURE_REVOLVE_PARTIAL_CAPABILITY
+            ]
+        );
+        assert_eq!(
+            ObjectKind::Revolve.required_capabilities(4),
+            [
+                CORE_CAPABILITY,
+                FEATURE_REVOLVE_CAPABILITY,
+                FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY,
+                FEATURE_REVOLVE_PARTIAL_CAPABILITY
+            ]
+        );
+        // Full turns still declare exactly what they did.
+        assert_eq!(
+            ObjectKind::Revolve.required_capabilities(1),
+            [CORE_CAPABILITY, FEATURE_REVOLVE_CAPABILITY]
+        );
+        assert_eq!(
+            ObjectKind::Revolve.readable_schema_versions(),
+            &[4, 3, 2, 1]
+        );
+        let payload = ObjectPayload::Revolve(revolve.clone());
+        let bytes = payload.to_storage_bytes().expect("encodes");
+        assert_eq!(
+            ObjectPayload::from_storage_bytes(&bytes).expect("decodes"),
+            payload
+        );
+        // A stored angle outside the policy is refused when read, never
+        // repaired into a sector or widened into a full turn.
+        #[derive(Serialize)]
+        struct Forged {
+            profile: ObjectId,
+            axis: RevolveAxis,
+            extent: BTreeMap<&'static str, BTreeMap<&'static str, f64>>,
+            operation: SolidOperation,
+        }
+        for degrees in [360.0, 0.0, 720.0] {
+            let forged = Envelope::encode(
+                "feature.revolve",
+                3,
+                ObjectKind::Revolve.required_capabilities(3),
+                &Forged {
+                    profile: revolve.profile,
+                    axis: RevolveAxis::SketchY,
+                    extent: BTreeMap::from([("partial", BTreeMap::from([("degrees", degrees)]))]),
+                    operation: SolidOperation::NewBody,
+                },
+            )
+            .expect("forged")
+            .to_bytes()
+            .expect("bytes");
+            assert!(
+                ObjectPayload::from_storage_bytes(&forged).is_err(),
+                "{degrees}"
+            );
+        }
+        // The two end faces are two meanings, and neither is an Extrude cap:
+        // one reference identity throughout, so only the role differs.
+        let id = StableEntityId::new();
+        let meaning = |role: SemanticRole| {
+            TopologyRef {
+                id,
+                owner: revolve.profile,
+                producer_feature: revolve.profile,
+                expected_kind: EntityKind::Face,
+                output_role: role,
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            }
+            .meaning_hash()
+        };
+        let start = meaning(SemanticRole::RevolveCap {
+            side: CapSide::Start,
+        });
+        let end = meaning(SemanticRole::RevolveCap { side: CapSide::End });
+        assert_ne!(start, end);
+        assert_ne!(
+            start,
+            meaning(SemanticRole::ExtrudeCap {
+                side: CapSide::Start
+            })
+        );
+    }
 
     fn sample_extrude() -> Extrude {
         Extrude {

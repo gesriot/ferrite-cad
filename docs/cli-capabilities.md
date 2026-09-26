@@ -63,6 +63,16 @@ payload v2 с `axis_segment` и требует capability
 `profile_feature.kind` `full_turn_revolve_axis_closed`.
 [Контракт §27C и исполняемый рецепт](axis-closed-revolve.md).
 
+§27D: тот же `create-sketch-revolve` принимает строгий request v2 с
+`extent:{"kind":"angle","degrees":137.5}` либо `extent:{"kind":"full_turn"}`.
+Допустимый угол — 0.01°–359.99° включительно, вокруг +Y; 360° нужно явно
+задавать как полный оборот. Обе прежние формы профиля поддержаны. У сектора
+два собственных `RevolveCap` и capability `feature.revolve.partial.v1`;
+`revolves[].extent` становится `partial_turn`, новый `angle_deg` — число
+(null у полного оборота). Правка сохранённого сектора пока отказывается.
+Request v1, response и exit 0/2/7 сохраняются.
+[Контракт §27D и исполняемый рецепт](partial-angle-revolve.md).
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.

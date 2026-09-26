@@ -328,10 +328,11 @@ impl Reach {
     }
 }
 
-/// Builds a full-turn revolution request from a stored Revolve.
+/// Builds a revolution request from a stored Revolve.
 ///
-/// The stored intent is checked against the one class this build evaluates —
-/// a NewBody full turn about the sketch Y axis — and the profile against the
+/// The stored intent is checked against the classes this build evaluates —
+/// a NewBody full turn or partial turn (§27D) about the sketch Y axis — and
+/// the profile against the
 /// shared domain policy ([`ferritecad_document::FullTurnRevolution`]) before
 /// any kernel sees it. A saved profile the policy refuses is refused here even
 /// if a kernel could build it.
@@ -352,6 +353,10 @@ pub fn revolve_request(feature: &Revolve, profile: Profile) -> Result<RevolveReq
     };
     let turn = match feature.extent {
         RevolveExtent::FullTurn => ferritecad_kernel::RevolveTurn::Full,
+        // §27D: the stored, already-validated degrees, passed on unchanged.
+        RevolveExtent::Partial { degrees } => ferritecad_kernel::RevolveTurn::Partial(
+            ferritecad_kernel::PartialTurn::new(degrees.degrees())?,
+        ),
         other => {
             return Err(CadError::unsupported(format!(
                 "revolve extent {other:?} is not implemented"

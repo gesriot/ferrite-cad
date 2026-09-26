@@ -46,8 +46,8 @@ use std::path::{Path, PathBuf};
 use crate::{AnnularExtrusion, CircleExtrusion, FullTurnRevolution, PolygonExtrusion};
 use ferritecad_document::{
     Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, EntityKind,
-    Expression, Extrude, ObjectPayload, Point2, Revolve, RevolveAxis, RevolveExtent, SelectionRule,
-    SemanticRole, Sketch, SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
+    Expression, Extrude, ObjectPayload, Point2, Revolve, RevolveAngle, RevolveAxis, RevolveExtent,
+    SelectionRule, SemanticRole, Sketch, SketchCurve, SketchGeometry, SolidOperation, TopologyRef,
 };
 use ferritecad_kernel::{GeometryKernel, OperationContext, ProgressSink};
 use ferritecad_types::{DocumentId, ObjectId, Result, StableEntityId, Transform, Unit};
@@ -120,6 +120,14 @@ pub enum NewDocument {
     /// axis (§27A), cold-checked before publication on the same route. The
     /// document stores the Revolve's intent, never an equivalent extrusion.
     SketchRevolve(FullTurnRevolution),
+    /// §27D: the same validated profile turned through a validated partial
+    /// angle, cold-checked before publication on the same route. The
+    /// document stores the sector's intent: the profile, the axis and the
+    /// angle, with both end faces named.
+    SketchPartialRevolve {
+        profile: FullTurnRevolution,
+        angle: RevolveAngle,
+    },
 }
 
 impl NewDocument {
@@ -136,7 +144,8 @@ impl NewDocument {
             Self::SketchExtrude(_)
             | Self::CircleExtrude(_)
             | Self::AnnularExtrude(_)
-            | Self::SketchRevolve(_) => true,
+            | Self::SketchRevolve(_)
+            | Self::SketchPartialRevolve { .. } => true,
         }
     }
 }
@@ -385,7 +394,14 @@ fn build_checked(
         NewDocument::AnnularExtrude(annular) => {
             annulus = Some(populate_annulus(&mut document, annular, "Body")?)
         }
-        NewDocument::SketchRevolve(revolution) => populate_revolve(&mut document, revolution)?,
+        NewDocument::SketchRevolve(revolution) => {
+            populate_revolve(&mut document, revolution, RevolveExtent::FullTurn)?
+        }
+        NewDocument::SketchPartialRevolve { profile, angle } => populate_revolve(
+            &mut document,
+            profile,
+            RevolveExtent::Partial { degrees: *angle },
+        )?,
     }
     check(&document)?;
     document.close()?;
@@ -565,7 +581,14 @@ fn populate_profile(
 /// §27C: for a solid part closed on the axis, the Line on the axis is named
 /// in the Revolve itself (`axis_segment`) and gets no reference — it turns into
 /// nothing, and nothing is invented for it.
-fn populate_revolve(document: &mut Document, revolution: &FullTurnRevolution) -> Result<()> {
+///
+/// §27D: a partial turn also gets one `RevolveCap` reference for each of its
+/// two end faces, owned by the Revolve; a full turn has none and gets none.
+fn populate_revolve(
+    document: &mut Document,
+    revolution: &FullTurnRevolution,
+    extent: RevolveExtent,
+) -> Result<()> {
     let plane = ObjectId::new();
     let sketch = ObjectId::new();
     let revolve = ObjectId::new();
@@ -619,7 +642,7 @@ fn populate_revolve(document: &mut Document, revolution: &FullTurnRevolution) ->
             &ObjectPayload::Revolve(Revolve {
                 profile: sketch,
                 axis: RevolveAxis::SketchY,
-                extent: RevolveExtent::FullTurn,
+                extent,
                 operation: SolidOperation::NewBody,
                 axis_segment,
             }),
@@ -655,6 +678,19 @@ fn populate_revolve(document: &mut Document, revolution: &FullTurnRevolution) ->
                 selection: SelectionRule::AllDerivedFrom { ancestor: curve.id },
                 fallback_signature: None,
             })?;
+        }
+        if matches!(extent, RevolveExtent::Partial { .. }) {
+            for side in [CapSide::Start, CapSide::End] {
+                writer.put_topology_ref(&TopologyRef {
+                    id: StableEntityId::new(),
+                    owner: revolve,
+                    producer_feature: revolve,
+                    expected_kind: EntityKind::Face,
+                    output_role: SemanticRole::RevolveCap { side },
+                    selection: SelectionRule::Exact,
+                    fallback_signature: None,
+                })?;
+            }
         }
         Ok(())
     })

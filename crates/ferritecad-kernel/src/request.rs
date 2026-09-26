@@ -109,7 +109,43 @@ pub enum RevolveTurn {
     /// Exactly one full turn, 2π. A full turn closes on itself: it has no
     /// start or end face.
     Full,
+    /// A sector (§27D): a right-handed turn about the axis through this many
+    /// degrees, starting at the profile, with a start and an end face.
+    Partial(PartialTurn),
 }
+
+/// The degrees of a partial turn, as a kernel accepts them: finite and
+/// strictly between 0 and 360.
+///
+/// Only what a kernel must re-check to build one sector. Which angles a
+/// document may hold is the caller's policy, narrower than this; an adapter
+/// never widens a partial angle into a full turn or wraps it around.
+#[derive(Debug, Clone, Copy)]
+pub struct PartialTurn(f64);
+
+impl PartialTurn {
+    pub fn new(degrees: f64) -> Result<Self> {
+        if degrees.is_finite() && degrees > 0.0 && degrees < 360.0 {
+            Ok(Self(degrees))
+        } else {
+            Err(CadError::input(format!(
+                "a partial turn needs a finite angle strictly between 0° and 360°, got {degrees}"
+            )))
+        }
+    }
+
+    pub fn degrees(self) -> f64 {
+        self.0
+    }
+}
+
+// Finite and positive by construction, so equality by bits is equality.
+impl PartialEq for PartialTurn {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+impl Eq for PartialTurn {}
 
 /// Turn a planar profile about an axis in its plane.
 ///
@@ -184,9 +220,18 @@ impl RevolveRequest {
         hasher.field("axis").str(match self.axis {
             RevolveAxis::PlaneY => "plane_y",
         });
-        hasher.field("turn").str(match self.turn {
-            RevolveTurn::Full => "full",
-        });
+        match self.turn {
+            RevolveTurn::Full => {
+                hasher.field("turn").str("full");
+            }
+            // The angle's own bits, only for a sector, so full-turn keys stay.
+            RevolveTurn::Partial(turn) => {
+                hasher
+                    .field("turn")
+                    .str("partial")
+                    .bytes(&turn.degrees().to_bits().to_le_bytes());
+            }
+        }
         // Only when present, so a profile with a bore keeps the key it had.
         if let Some(label) = self.axis_segment {
             hasher.field("axis_segment").bytes(&label.to_bytes());

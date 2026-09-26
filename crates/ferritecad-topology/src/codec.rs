@@ -101,6 +101,13 @@ const TAG_ORIGIN_SIDE: u16 = 14;
 /// `TAG_SIDE`: a turned face must never come back as an extrusion side.
 const TAG_REVOLVED_FACE: u16 = 15;
 
+/// The start and end faces of a partial revolution (§27D). New tags rather
+/// than `TAG_START_CAP`/`TAG_END_CAP`: a sector's end face must never come
+/// back as an extrusion cap. A reader that predates them refuses the unknown
+/// tag and rebuilds, which is what the format promises.
+const TAG_REVOLVED_START_CAP: u16 = 16;
+const TAG_REVOLVED_END_CAP: u16 = 17;
+
 impl ArchivedFeature {
     /// Writes the archive out as bytes.
     ///
@@ -138,6 +145,12 @@ impl ArchivedFeature {
                 BoundName::RevolvedFace { profile_segment } => {
                     payload.extend_from_slice(&TAG_REVOLVED_FACE.to_le_bytes());
                     payload.extend_from_slice(&profile_segment.to_bytes());
+                }
+                BoundName::RevolvedStartCap => {
+                    payload.extend_from_slice(&TAG_REVOLVED_START_CAP.to_le_bytes())
+                }
+                BoundName::RevolvedEndCap => {
+                    payload.extend_from_slice(&TAG_REVOLVED_END_CAP.to_le_bytes())
                 }
                 BoundName::Side { profile_segment } => {
                     payload.extend_from_slice(&TAG_SIDE.to_le_bytes());
@@ -344,6 +357,8 @@ impl ArchivedFeature {
                 TAG_REVOLVED_FACE => BoundName::RevolvedFace {
                     profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
                 },
+                TAG_REVOLVED_START_CAP => BoundName::RevolvedStartCap,
+                TAG_REVOLVED_END_CAP => BoundName::RevolvedEndCap,
                 TAG_START_CAP_EDGE => BoundName::StartCapEdge {
                     profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
                 },
@@ -525,6 +540,7 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
     use crate::{archive_feature, map::TopologyMap};
+    use ferritecad_kernel::SubShapeKind;
     use ferritecad_kernel::{
         ExtrudeExtent, ExtrudeRequest, GeometryKernel, OperationContext, PlanarPoint, Profile,
         ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane, mock::MockKernel,
@@ -569,6 +585,41 @@ mod tests {
         let identity = kernel.identity().clone();
         let archived = archive_feature(&mut kernel, &map, producer).expect("archives");
         (archived, producer, identity)
+    }
+
+    /// §27D: a sector's end faces are written under their own tags and read
+    /// back as themselves, never as an extrusion's caps.
+    #[test]
+    fn a_sectors_end_faces_keep_their_own_tags() {
+        let kernel = MockKernel::new();
+        let identity = kernel.identity().clone();
+        let blob = BrepBlob::new(identity.clone(), vec![1, 2, 3]);
+        let hash = blob.content_hash();
+        let producer = ObjectId::new();
+        let archive = ArchivedFeature::from_parts(
+            producer,
+            blob,
+            hash,
+            [
+                (BoundName::RevolvedStartCap, ArchiveSlot::new(1)),
+                (BoundName::RevolvedEndCap, ArchiveSlot::new(2)),
+            ],
+        )
+        .expect("an archive");
+        let bytes = archive.encode().expect("encodes");
+        let back = ArchivedFeature::decode(&bytes, producer, &identity).expect("reads back");
+        assert_eq!(back, archive);
+        let names: Vec<_> = back.bindings().map(|(name, _)| name).collect();
+        assert!(names.contains(&BoundName::RevolvedStartCap));
+        assert!(names.contains(&BoundName::RevolvedEndCap));
+        assert!(!names.contains(&BoundName::StartCap) && !names.contains(&BoundName::EndCap));
+        assert_eq!(BoundName::RevolvedStartCap.kind(), SubShapeKind::Face);
+        for tag in [TAG_REVOLVED_START_CAP, TAG_REVOLVED_END_CAP] {
+            assert!(
+                bytes.windows(2).any(|w| w == tag.to_le_bytes()),
+                "tag {tag} written"
+            );
+        }
     }
 
     #[test]

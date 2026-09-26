@@ -48,8 +48,8 @@ real outline, not its bounding box, and editing the base checks every tool.
 A simple Line polygon drawn entirely at X > 0 can instead be turned one full
 turn about the sketch Y axis: **Feature: Revolve 360°** in the same sketch
 window, or `create-sketch-revolve`. The new Body is a real revolution and each
-Line names its own face; touching or crossing the axis and partial angles are
-not supported. [Contract and recipe](docs/full-turn-revolve.md).
+Line names its own face. Crossing the axis is not supported.
+[Contract and recipe](docs/full-turn-revolve.md).
 Such a part's profile coordinates can be changed later in the ordinary
 **Edit Sketch** window or with `edit-sketch-copy`, saving a new copy that keeps
 every Line, face name and UUID; the axis and the full turn stay as saved.
@@ -59,6 +59,10 @@ one whole edge of the profile on X = 0. That Line lies on the axis and raises
 no face, so it gets no name. Its coordinates are edited like any other
 Revolve's, but the axis edge stays on the axis: a part cannot change between
 solid and bored. [Solid Revolve contract and recipe](docs/axis-closed-revolve.md).
+Both profile classes also support **Feature: Revolve angle**, from 0.01° to
+359.99° about the same +Y axis. CLI request v2 states the angle explicitly;
+the sector has two separately named end faces. Saved sectors cannot yet be
+edited. [Partial Revolve contract and recipe](docs/partial-angle-revolve.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

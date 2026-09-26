@@ -320,6 +320,15 @@ fn revolve_frame<'a>(
             "Revolve profile edit requires exactly one Revolve of this Sketch",
         ));
     };
+    // §27D: a sector's coordinates are not edited in this slice. Said by
+    // name, before the generic refusal below, so the reason is the real one.
+    if let RevolveExtent::Partial { degrees } = revolve.extent {
+        return Err(unsupported(&format!(
+            "coordinate editing of a partial Revolve ({}° sector) is not supported in this build; \
+             only a full-turn Revolve profile can be edited",
+            degrees.degrees()
+        )));
+    }
     // Named one by one rather than compared with a default: an axis, angle or
     // operation a later build adds is refused here, never edited as if it
     // were the full turn about Y this slice measured.

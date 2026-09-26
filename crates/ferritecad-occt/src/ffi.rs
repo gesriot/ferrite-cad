@@ -196,6 +196,30 @@ unsafe extern "C" {
         out_count: *mut usize,
         out_error: *mut RawError,
     ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn fc_occt_revolve_partial(
+        session: *mut RawSession,
+        plane: *const Plane,
+        segments: *const Segment,
+        segment_count: usize,
+        axis_segment: usize,
+        axis_origin: *const f64,
+        axis_direction: *const f64,
+        angle_degrees: f64,
+        cancel: Option<CancelFn>,
+        cancel_context: *mut c_void,
+        out_shape: *mut u64,
+        out_error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_revolve_caps(
+        session: *mut RawSession,
+        shape: u64,
+        which: i32,
+        out_ids: *mut u64,
+        capacity: usize,
+        out_count: *mut usize,
+        out_error: *mut RawError,
+    ) -> i32;
     fn fc_occt_surface_axis(
         session: *mut RawSession,
         shape: u64,
@@ -692,6 +716,66 @@ impl Session {
         };
         interpret(status, &error, "revolving a profile")?;
         Ok(shape)
+    }
+
+    /// §27D: turns the profile through `angle_degrees`, a sector with two
+    /// end faces. Every other argument is [`Self::revolve_full_turn`]'s.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn revolve_partial(
+        &mut self,
+        plane: &Plane,
+        segments: &[Segment],
+        axis_segment: Option<usize>,
+        axis_origin: [f64; 3],
+        axis_direction: [f64; 3],
+        angle_degrees: f64,
+        cancel: &CancelToken,
+    ) -> Result<u64> {
+        if segments.len() < 3 {
+            return Err(CadError::input(
+                "a revolved polygon needs at least three Lines",
+            ));
+        }
+        let mut shape = 0u64;
+        let mut error = RawError::empty();
+        let context = cancel as *const CancelToken as *mut c_void;
+        // SAFETY: as for `revolve_full_turn`: the slice and both arrays live
+        // across the call, the out-parameters are valid, the token is borrowed
+        // for exactly its duration, and the bridge is noexcept.
+        let status = unsafe {
+            fc_occt_revolve_partial(
+                self.raw,
+                plane,
+                segments.as_ptr(),
+                segments.len(),
+                axis_segment.unwrap_or(NO_AXIS_SEGMENT),
+                axis_origin.as_ptr(),
+                axis_direction.as_ptr(),
+                angle_degrees,
+                Some(cancel_trampoline),
+                context,
+                &mut shape,
+                &mut error,
+            )
+        };
+        interpret(
+            status,
+            &error,
+            "revolving a profile through a partial angle",
+        )?;
+        Ok(shape)
+    }
+
+    /// The start (`end == false`) or end face of a partial revolution.
+    pub(crate) fn revolve_caps(&mut self, shape: u64, end: bool) -> Result<Vec<u64>> {
+        let which = i32::from(end);
+        self.collect_ids(
+            "reading an end face of a partial revolution",
+            |s, ids, cap, count, err| {
+                // SAFETY: pointers are valid for the call; see `collect_ids`.
+                unsafe { fc_occt_revolve_caps(s, shape, which, ids, cap, count, err) }
+            },
+        )
     }
 
     /// The face of revolution one profile segment raised.
@@ -1614,6 +1698,83 @@ mod tests {
         ]
     }
 
+    /// §27D: the sector's own entry point refuses, before building anything,
+    /// every angle that is not strictly inside (0°, 360°) — never widening one
+    /// to a full turn or wrapping it round — answers exactly one start and one
+    /// end face for a sector, and answers no end face for a full turn.
+    #[test]
+    fn the_partial_entry_refuses_what_is_not_a_sector_and_a_full_turn_has_no_caps() {
+        let mut session = Session::new().expect("opens a real OCCT session");
+        let plane = Plane {
+            origin: [0.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        };
+        let line = |start_x, start_y, end_x, end_y| Segment {
+            start_x,
+            start_y,
+            end_x,
+            end_y,
+            ..Segment::zeroed()
+        };
+        let ring = [
+            line(4.0, 0.0, 10.0, 0.0),
+            line(10.0, 0.0, 10.0, 15.0),
+            line(10.0, 15.0, 4.0, 15.0),
+            line(4.0, 15.0, 4.0, 0.0),
+        ];
+        let token = CancelToken::new();
+        let (origin, y) = ([0.0; 3], [0.0, 1.0, 0.0]);
+        for angle in [
+            0.0,
+            -0.0,
+            -90.0,
+            360.0,
+            720.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            let error = session
+                .revolve_partial(&plane, &ring, None, origin, y, angle, &token)
+                .expect_err("not a sector");
+            assert_eq!(error.kind(), ErrorKind::Input, "{angle}");
+            assert!(error.to_string().contains("strictly between"), "{error}");
+        }
+        let sector = session
+            .revolve_partial(&plane, &ring, None, origin, y, 90.0, &token)
+            .expect("a sector");
+        let start = session.revolve_caps(sector, false).expect("start");
+        let end = session.revolve_caps(sector, true).expect("end");
+        assert_eq!((start.len(), end.len()), (1, 1));
+        assert_ne!(start, end);
+        let (faces, volume) = session.shape_stats(sector).expect("stats");
+        assert_eq!(faces, 6);
+        let quarter = std::f64::consts::PI * (100.0 - 16.0) * 15.0 / 4.0;
+        assert!((volume - quarter).abs() < 1e-9 * quarter, "{volume}");
+        for index in 0..ring.len() {
+            let face = session.revolve_faces(sector, index).expect("a Line's face");
+            assert_eq!(face.len(), 1);
+            assert!(face[0] != start[0] && face[0] != end[0]);
+        }
+        for face in [start[0], end[0]] {
+            assert_eq!(
+                session.face_surface(sector, face).expect("surface"),
+                FaceSurface::Plane
+            );
+        }
+        let full = session
+            .revolve_full_turn(&plane, &ring, None, origin, y, &token)
+            .expect("a full turn");
+        for end in [false, true] {
+            let error = session.revolve_caps(full, end).expect_err("no caps");
+            assert_eq!(error.kind(), ErrorKind::Unsupported);
+            assert!(error.to_string().contains("full turn"), "{error}");
+        }
+        session.release(sector);
+        session.release(full);
+    }
+
     /// One whole circle as the bridge receives it.
     ///
     /// Named apart from the local `circle` bindings in the single-circle tests
@@ -1730,6 +1891,37 @@ mod tests {
             assert!(
                 found.is_some(),
                 "fc_occt_revolve declares {parameter} after position {at}"
+            );
+            at += found.expect("checked just above") + parameter.len();
+        }
+        // §27D: the sector's own entry point, with the angle in its own slot
+        // and in degrees; the full-turn signature above is unchanged.
+        let declared = header
+            .split_once("FcOcctStatus fc_occt_revolve_partial(")
+            .expect("the header declares fc_occt_revolve_partial")
+            .1
+            .split_once(';')
+            .expect("the declaration ends")
+            .0;
+        let mut at = 0;
+        for parameter in [
+            "FcOcctSession *session",
+            "const FcOcctPlane *plane",
+            "const FcOcctSegment *segments",
+            "size_t segment_count",
+            "size_t axis_segment",
+            "const double *axis_origin",
+            "const double *axis_direction",
+            "double angle_degrees",
+            "FcOcctCancelFn cancel",
+            "void *cancel_context",
+            "uint64_t *out_shape",
+            "FcOcctError *out_error",
+        ] {
+            let found = declared[at..].find(parameter);
+            assert!(
+                found.is_some(),
+                "fc_occt_revolve_partial declares {parameter} after position {at}"
             );
             at += found.expect("checked just above") + parameter.len();
         }

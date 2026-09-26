@@ -62,6 +62,12 @@ pub enum BoundName {
     },
     /// The face of revolution one profile Line raised.
     RevolvedFace { profile_segment: StableEntityId },
+    /// §27D: the face closing the start of a partial revolution. Its own
+    /// name, never [`Self::StartCap`]: an extrusion cap and a sector's end
+    /// face are different meanings.
+    RevolvedStartCap,
+    /// The face closing the end of a partial revolution.
+    RevolvedEndCap,
 }
 
 impl BoundName {
@@ -122,7 +128,9 @@ impl BoundName {
             | Self::CarriedSide { .. }
             | Self::OriginCap { .. }
             | Self::OriginSide { .. }
-            | Self::RevolvedFace { .. } => SubShapeKind::Face,
+            | Self::RevolvedFace { .. }
+            | Self::RevolvedStartCap
+            | Self::RevolvedEndCap => SubShapeKind::Face,
             Self::StartCapEdge { .. } | Self::EndCapEdge { .. } | Self::SweepEdge { .. } => {
                 SubShapeKind::Edge
             }
@@ -331,6 +339,15 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
             ));
         }
     }
+    // A sector's two end faces (§27D); a full turn and an extrusion have none.
+    for (side, name) in [
+        (CapSide::Start, BoundName::RevolvedStartCap),
+        (CapSide::End, BoundName::RevolvedEndCap),
+    ] {
+        for face in names.revolved_cap(side).into_iter().flatten() {
+            wanted.push((name, face));
+        }
+    }
     // The cap edges, gathered through the same ordered map for the same
     // reason. A segment with no such edge contributes nothing rather than an
     // entry pointing nowhere.
@@ -493,6 +510,8 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
         let mut end_cap_vertices: BTreeMap<ProfileJoint, Vec<_>> = BTreeMap::new();
         let mut carried: BTreeMap<(ObjectId, crate::CarriedName), Vec<_>> = BTreeMap::new();
         let mut revolved: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
+        let mut revolved_start_cap = Vec::new();
+        let mut revolved_end_cap = Vec::new();
         let mut claimed = BTreeMap::new();
 
         for (name, face) in names.into_iter().zip(faces) {
@@ -541,6 +560,8 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 BoundName::RevolvedFace { profile_segment } => {
                     revolved.entry(profile_segment).or_default().push(face)
                 }
+                BoundName::RevolvedStartCap => revolved_start_cap.push(face),
+                BoundName::RevolvedEndCap => revolved_end_cap.push(face),
                 carried_name => {
                     let origin = carried_origin(carried_name, archived.previous)?;
                     carried.entry(origin).or_default().push(face);
@@ -573,6 +594,8 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 carried,
                 carried_deleted,
                 revolved,
+                revolved_start_cap,
+                revolved_end_cap,
             },
         )
     })();

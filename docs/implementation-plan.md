@@ -3663,3 +3663,18 @@ added a precision-boundary refusal case for the global triangle filter;
 no geometry/storage implementation correction was needed. Initial exact
 head CI logs confirm 226 distinct native gate names and 74 ufbx reads per
 OS. [Independent evidence](axis-closed-revolve-verification.md#independent-macos-review--2026-09-25).
+
+**§27D — partial-angle Revolve / NewBody.**
+
+The same bored or axis-closed Line profile now turns through an explicit
+0.01°–359.99° angle about sketch +Y. CLI request v2 and the ordinary sketch
+window share the creation job. Full turns retain request v1 and payload
+v1/v2; partial turns use v3/v4 and `feature.revolve.partial.v1`.
+The two new `RevolveCap` names come from OCCT sweep history, separately from
+each non-axis Line's face, and survive cold and cached rebuilds. Discovery
+adds `angle_deg` (null for a full turn) and the `partial_turn` extent.
+Saved sectors deliberately refuse coordinate/angle editing in this slice.
+Other axes, constraints, booleans, preview and in-place Save remain pending.
+
+[Contract and executable recipe](partial-angle-revolve.md),
+[verification and independent review](partial-angle-revolve-verification.md).

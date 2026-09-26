@@ -126,6 +126,9 @@ struct RevolveDiscovery {
     closure: &'static str,
     /// The saved Line on the axis of a solid part; null for a part with a bore.
     axis_curve_id: Option<StableEntityId>,
+    /// §27D, additive: the stored angle of a partial turn, in degrees
+    /// (`extent` is then `"partial_turn"`); null for a full turn.
+    angle_deg: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -159,7 +162,12 @@ impl From<ferritecad_document::RevolveChoice> for RevolveDiscovery {
             },
             extent: match r.extent {
                 ferritecad_document::RevolveExtent::FullTurn => "full_turn",
+                ferritecad_document::RevolveExtent::Partial { .. } => "partial_turn",
                 _ => "unknown",
+            },
+            angle_deg: match r.extent {
+                ferritecad_document::RevolveExtent::Partial { degrees } => Some(degrees.degrees()),
+                _ => None,
             },
             operation: match r.operation {
                 ferritecad_document::SolidOperation::NewBody => "new_body",

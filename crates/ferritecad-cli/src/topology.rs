@@ -262,6 +262,11 @@ fn describe_role(role: &SemanticRole) -> String {
         SemanticRole::RevolveFace { profile_segment } => {
             format!("revolve face from segment {profile_segment}")
         }
+        SemanticRole::RevolveCap { side } => match side {
+            CapSide::Start => "revolve start cap".to_owned(),
+            CapSide::End => "revolve end cap".to_owned(),
+            _ => "revolve cap of an unknown side".to_owned(),
+        },
         _ => "unknown semantic role".to_owned(),
     }
 }

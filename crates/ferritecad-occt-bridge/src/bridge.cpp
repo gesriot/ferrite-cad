@@ -142,6 +142,11 @@ struct ShapeRecord {
   bool revolved = false;
   /// The one face of revolution each profile segment raised, in segment order.
   std::vector<std::vector<uint64_t>> revolve_faces;
+  /// §27D: the start and end faces of a partial turn, read from the sweep's
+  /// own history. Empty for a full turn, which has none. Kept apart from the
+  /// extrusion caps below, which no revolution ever answers.
+  std::vector<uint64_t> revolve_start_cap;
+  std::vector<uint64_t> revolve_end_cap;
   /// Face identifiers raised from each profile segment, in segment order.
   std::vector<std::vector<uint64_t>> side_faces;
   std::vector<uint64_t> start_cap;
@@ -963,26 +968,19 @@ FcOcctStatus fc_occt_extrude(FcOcctSession *session, const FcOcctPlane *plane,
   });
 }
 
-FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
+namespace {
+
+/// The one revolution both entry points share. `partial` is false for
+/// exactly one full turn, or true for a sector of `angle_degrees`, which the
+/// caller has already checked is finite and strictly inside (0, 360).
+FcOcctStatus revolve_profile(FcOcctSession *session, const FcOcctPlane *plane,
                              const FcOcctSegment *segments,
                              size_t segment_count, size_t axis_segment,
                              const double *axis_origin,
-                             const double *axis_direction, int32_t full_turn,
-                             FcOcctCancelFn cancel, void *cancel_context,
-                             uint64_t *out_shape,
-                             FcOcctError *out_error) noexcept {
-  return guarded(out_error, [&]() -> FcOcctStatus {
-    if (session == nullptr || plane == nullptr || segments == nullptr ||
-        axis_origin == nullptr || axis_direction == nullptr ||
-        out_shape == nullptr) {
-      write_error(out_error, "fc_occt_revolve was given a null argument");
-      return FC_OCCT_INVALID_INPUT;
-    }
-    if (full_turn != 1) {
-      write_error(out_error, "only a full turn is supported; full_turn must be 1, got " +
-                                 std::to_string(full_turn));
-      return FC_OCCT_UNSUPPORTED;
-    }
+                             const double *axis_direction, bool partial,
+                             double angle_degrees, FcOcctCancelFn cancel,
+                             void *cancel_context, uint64_t *out_shape,
+                             FcOcctError *out_error) {
     if (segment_count < 3) {
       write_error(out_error, "a revolved polygon needs at least three Lines, got " +
                                  std::to_string(segment_count));
@@ -1128,11 +1126,12 @@ FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
       return FC_OCCT_CANCELLED;
     }
 
-    // Exactly one full turn: the angle is the contract's, not a caller's
-    // number that happens to be 2π.
-    // std::acos(-1) rather than M_PI, which MSVC defines only on request.
-    const double one_full_turn = 2.0 * std::acos(-1.0);
-    BRepPrimAPI_MakeRevol revol(face, gp_Ax1(axis_point, axis_dir), one_full_turn);
+    // A full turn is exactly 2π: the angle is the contract's, not a caller's
+    // number that happens to be 2π. A sector converts its stated degrees once,
+    // here. std::acos(-1) rather than M_PI, which MSVC defines only on request.
+    const double pi = std::acos(-1.0);
+    const double angle = partial ? angle_degrees * (pi / 180.0) : 2.0 * pi;
+    BRepPrimAPI_MakeRevol revol(face, gp_Ax1(axis_point, axis_dir), angle);
     Handle(CancelIndicator) indicator = new CancelIndicator(cancel, cancel_context);
     revol.Build(indicator->Start());
     if (cancelled(cancel, cancel_context)) {
@@ -1205,6 +1204,36 @@ FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
       claimed.Add(candidate);
       record.revolve_faces[i].push_back(record.remember(candidate));
     }
+    if (partial) {
+      // §27D: the two end faces, from the sweep's own history of the profile
+      // face: FirstShape where the turn begins, LastShape where it ends.
+      // Measured on OCCT 8.0.1, each is one face of the finished solid,
+      // distinct from the other and from every Line's face; FirstShape is a
+      // copy of the profile face, not the profile face itself, so it is taken
+      // from the history and never matched by position. The solid's own
+      // instance is registered, which carries the solid's orientation.
+      const TopoDS_Shape caps[2] = {sweep.FirstShape(face), sweep.LastShape(face)};
+      std::vector<uint64_t> *into[2] = {&record.revolve_start_cap, &record.revolve_end_cap};
+      for (int side = 0; side < 2; ++side) {
+        const TopoDS_Shape &cap = caps[side];
+        const char *which = side == 0 ? "start" : "end";
+        const int at = cap.IsNull() || cap.ShapeType() != TopAbs_FACE
+                           ? 0
+                           : solid_faces.FindIndex(cap);
+        if (at == 0) {
+          write_error(out_error, std::string("the partial revolution made no ") + which +
+                                     " face of the finished solid");
+          return FC_OCCT_KERNEL;
+        }
+        if (claimed.Contains(cap)) {
+          write_error(out_error, std::string("the partial revolution's ") + which +
+                                     " face is also a segment's face or the other cap");
+          return FC_OCCT_KERNEL;
+        }
+        claimed.Add(cap);
+        into[side]->push_back(record.remember(solid_faces(at)));
+      }
+    }
     if (claimed.Extent() != solid_faces.Extent()) {
       write_error(out_error, "the solid has " + std::to_string(solid_faces.Extent()) +
                                  " faces but its segments raised " +
@@ -1216,6 +1245,60 @@ FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
     session->shapes.emplace(id, std::move(record));
     *out_shape = id;
     return FC_OCCT_OK;
+}
+
+} // namespace
+
+FcOcctStatus fc_occt_revolve(FcOcctSession *session, const FcOcctPlane *plane,
+                             const FcOcctSegment *segments,
+                             size_t segment_count, size_t axis_segment,
+                             const double *axis_origin,
+                             const double *axis_direction, int32_t full_turn,
+                             FcOcctCancelFn cancel, void *cancel_context,
+                             uint64_t *out_shape,
+                             FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr || plane == nullptr || segments == nullptr ||
+        axis_origin == nullptr || axis_direction == nullptr ||
+        out_shape == nullptr) {
+      write_error(out_error, "fc_occt_revolve was given a null argument");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    if (full_turn != 1) {
+      write_error(out_error, "only a full turn is supported; full_turn must be 1, got " +
+                                 std::to_string(full_turn));
+      return FC_OCCT_UNSUPPORTED;
+    }
+    return revolve_profile(session, plane, segments, segment_count, axis_segment,
+                           axis_origin, axis_direction, false, 0.0, cancel,
+                           cancel_context, out_shape, out_error);
+  });
+}
+
+FcOcctStatus fc_occt_revolve_partial(
+    FcOcctSession *session, const FcOcctPlane *plane,
+    const FcOcctSegment *segments, size_t segment_count, size_t axis_segment,
+    const double *axis_origin, const double *axis_direction,
+    double angle_degrees, FcOcctCancelFn cancel, void *cancel_context,
+    uint64_t *out_shape, FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr || plane == nullptr || segments == nullptr ||
+        axis_origin == nullptr || axis_direction == nullptr ||
+        out_shape == nullptr) {
+      write_error(out_error, "fc_occt_revolve_partial was given a null argument");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    // Only what building one sector needs; the caller's policy is narrower.
+    // Never widened to a full turn and never wrapped around.
+    if (!std::isfinite(angle_degrees) || !(angle_degrees > 0.0) ||
+        !(angle_degrees < 360.0)) {
+      write_error(out_error, "a partial revolution needs a finite angle strictly between 0 "
+                             "and 360 degrees");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    return revolve_profile(session, plane, segments, segment_count, axis_segment,
+                           axis_origin, axis_direction, true, angle_degrees, cancel,
+                           cancel_context, out_shape, out_error);
   });
 }
 
@@ -1490,6 +1573,43 @@ FcOcctStatus fc_occt_revolve_faces(FcOcctSession *session, uint64_t shape,
     }
     return copy_ids(found->second.revolve_faces[segment_index], out_ids,
                     capacity, out_count, out_error);
+  });
+}
+
+FcOcctStatus fc_occt_revolve_caps(FcOcctSession *session, uint64_t shape,
+                                  int32_t which, uint64_t *out_ids,
+                                  size_t capacity, size_t *out_count,
+                                  FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr) {
+      write_error(out_error, "no session");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    if (which != 0 && which != 1) {
+      write_error(out_error, "which must be 0 (start) or 1 (end), got " +
+                                 std::to_string(which));
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    if (found->second.decoded || !found->second.revolved) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " is not a fresh revolution, so it has no revolution "
+                                 "history to report");
+      return FC_OCCT_UNSUPPORTED;
+    }
+    const std::vector<uint64_t> &cap =
+        which == 0 ? found->second.revolve_start_cap : found->second.revolve_end_cap;
+    if (cap.empty()) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " is a full turn, which has no start or end face");
+      return FC_OCCT_UNSUPPORTED;
+    }
+    return copy_ids(cap, out_ids, capacity, out_count, out_error);
   });
 }
 
