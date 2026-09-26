@@ -168,6 +168,11 @@ pub(crate) struct Discovery {
     /// Stored circles; [] for a managed Line profile, null when unsupported.
     circles: Option<Vec<CircleCurve>>,
     constraints: Option<Vec<Constraint>>,
+    /// §27G, additive: the feature that turns this profile into a solid, in
+    /// the kinds `profile_feature` of the Sketch row already uses, and so the
+    /// policy its solved drawing must satisfy. Null exactly when `curves` is.
+    /// No height is reported for a Revolve, which has none.
+    profile_feature: Option<super::ProfileFeature>,
 }
 impl Discovery {
     pub(crate) fn new(choice: ConstraintSketchChoice, document_refusal: Option<String>) -> Self {
@@ -218,6 +223,7 @@ impl Discovery {
                 .stored
                 .as_ref()
                 .map(|s| s.constraints.iter().map(Constraint::from).collect()),
+            profile_feature: choice.profile_use.map(super::ProfileFeature::of),
         }
     }
 }

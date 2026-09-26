@@ -3718,3 +3718,24 @@ refused.
 
 [Contract and executable recipe](edit-partial-revolve-profile.md),
 [verification](edit-partial-revolve-profile-verification.md).
+
+**§27G — dimensional constraints on a saved Revolve profile with a bore.**
+
+The existing constraint editor and `edit-sketch-constraints-copy` now also
+accept the standalone Revolve frame of a radial-clear profile: full turn v1
+and sector v3. The profile's owning feature is explicit
+(`SketchProfileUse`), never a height invented for a Revolve.
+
+What does not change:
+- the request, its seven Line families and the bounded history;
+- Replace length, and the shared copy job and writer.
+
+What is new:
+- The solved Lines answer to the Revolve's own class policy in the
+  evaluator and again in the copy job before publication.
+- Axis-closed profiles, Circles, new axes and booleans are refused.
+- The sector angle edit keeps a constrained profile.
+- The request of this command refuses arrays in place of objects.
+
+[Contract and executable recipe](revolve-profile-constraints.md),
+[verification](revolve-profile-constraints-verification.md).

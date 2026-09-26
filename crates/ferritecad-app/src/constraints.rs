@@ -4,13 +4,29 @@ use ferritecad_document::{
     AddLineConstraint, AddSketchConstraint, CircleConstraintKind, CircleRadiusMm,
     ConstraintSketchChoice, DocumentVersion, ExtrudeEditSource, LineConstraintKind, LineEndpoint,
     LineLengthMm, LineRelation, Sketch, SketchConstraintEdits, SketchConstraintRule,
-    SketchCoordinateMm, SketchGeometry,
+    SketchCoordinateMm, SketchGeometry, SketchProfileUse,
 };
 use ferritecad_jobs::{EditSketchConstraintsRequest, EditedSketchConstraints};
 use ferritecad_types::{ObjectId, Result, StableEntityId};
 use std::path::{Path, PathBuf};
 
 const HISTORY_LIMIT: usize = 128;
+
+/// The line naming the Revolve that turns a constrained profile, or `None`
+/// for an extruded one.
+fn revolve_owner(profile_use: SketchProfileUse) -> Option<String> {
+    let (feature, turn) = match profile_use {
+        SketchProfileUse::FullTurnRevolve { feature, .. } => (feature, "a full turn".to_owned()),
+        SketchProfileUse::PartialRevolve {
+            feature, degrees, ..
+        } => (feature, format!("{}°", degrees.degrees())),
+        SketchProfileUse::BlindExtrude { .. } => return None,
+    };
+    Some(format!(
+        "Profile of Revolve {feature}: {turn} about the sketch Y axis. The turn and the axis \
+         are kept; the solved profile must keep its bore clear of the axis."
+    ))
+}
 
 /// Only pending requests belong to history, never selection or solver results.
 #[derive(Debug, Clone, Default)]
@@ -160,6 +176,11 @@ impl Editor {
                     draft.source.display()
                 ));
                 ui.label("Coordinates below are stored inputs, not the solved drawing.");
+                // §27G: a turned profile says which Revolve owns it and what
+                // that Revolve keeps; it never shows a height it does not have.
+                if let Some(owner) = draft.choice.profile_use.and_then(revolve_owner) {
+                    ui.label(owner);
+                }
                 ui.add_enabled_ui(!running, |ui| {
                     ui.horizontal(|ui| {
                         if ui.button("Cancel constraints draft").clicked() {
@@ -875,6 +896,8 @@ mod tests {
     use super::*;
     use ferritecad_document::Document;
     use ferritecad_kernel::OperationContext;
+    /// §27G: the same editor on the profile of a Revolve with a bore.
+    mod revolve;
     /// The single-Line halves of a pending request, in the request's own words.
     fn kind_of(add: &AddSketchConstraint) -> LineConstraintKind {
         match *add {

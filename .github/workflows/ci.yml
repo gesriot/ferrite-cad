@@ -168,6 +168,17 @@ jobs:
             if grep -q 'skipped:' "$gate.log" || ! grep -Fq "test $gate ... ok" "$gate.log"; then exit 1; fi
           done
 
+      - name: Discover Revolve profile constraints without native geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          gate=constraints::revolve_constraint_discovery_writer_and_refusals_without_solver
+          cargo test -p ferritecad-cli --test revolve "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-constraints-discovery.log
+          if grep -q 'skipped:' revolve-constraints-discovery.log || ! grep -Fq "test $gate ... ok" revolve-constraints-discovery.log; then exit 1; fi
+          gate=constraints::tests::revolve::revolve_constraint_widgets_name_the_revolve_build_and_replace_a_length
+          cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-constraints-widgets.log
+          if grep -q 'skipped:' revolve-constraints-widgets.log || ! grep -Fq "test $gate ... ok" revolve-constraints-widgets.log; then exit 1; fi
+
       - name: Discover sequential cuts without native geometry
         shell: bash
         run: |

@@ -462,6 +462,36 @@ Request этого маршрута строже прежнего:
 Остальные команды не менялись.
 [Контракт §27F и исполняемый рецепт](edit-partial-revolve-profile.md).
 
+### Ограничения профиля Revolve с отверстием (§27G)
+
+Та же команда `edit-sketch-constraints-copy`, тот же request v1 и тот же
+result (`added_constraints`, `removed_constraint_ids`, `solve`). У строки
+`sketches[]` профиля Revolve `constraint_edit.available` теперь `true` для
+полного оборота и сектора с отверстием. `constraint_edit` аддитивно получает
+`profile_feature`: `null` ровно тогда, когда `curves` равен `null`, иначе
+объект прежних видов `profile_feature`:
+
+```json
+{"kind":"partial_turn_revolve","feature_id":"…","body_id":"…","axis":"sketch_y",
+ "extent":"partial_turn","angle_deg":137.5,"axis_clearance_mm":1e-6}
+```
+
+У вытянутого полигона это `{"kind":"blind_extrude","feature_id":"…","height_mm":10}`.
+
+- `sketches[].profile_feature` по-прежнему описывает только правку
+  координат и равен `null` у профиля с ограничениями.
+- `revolves[].profile` больше не отказывает профилю только из-за
+  ограничений. Его `segments` — сохранённые, а не решённые Lines.
+
+Отказы решённого профиля:
+- решение, которое пересекает ось или касается её, либо меняет класс
+  детали, — `input` с причиной;
+- противоречивый набор — `constraint` с `constraint_conflict`.
+
+Request этой команды отказывает JSON-массиву на месте запроса или
+добавления (`input`). Дубли ключей, включая escape, отказывались и раньше.
+[Контракт §27G и исполняемый рецепт](revolve-profile-constraints.md).
+
 ## Правка сохранённой кольцевой пары (§25M)
 
 `ferritecad edit-annular <source.fcad> --sketch UUID --expect-version HASH

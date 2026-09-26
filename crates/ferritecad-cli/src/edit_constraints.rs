@@ -243,8 +243,26 @@ fn result(args: &EditConstraintsArgs) -> Result<EditedSketchConstraints> {
     if bytes.len() > 65536 {
         return Err(CadError::input("constraint request exceeds 65536 bytes"));
     }
+    // One strict decode of the original bytes: the derived shapes refuse
+    // unknown and duplicate keys at every level, escaped duplicates included.
     let input: Input = serde_json::from_slice(&bytes)
         .map_err(|e| CadError::input(format!("invalid constraint request JSON: {e}")))?;
+    // The derives also take a request from a JSON array in field order, and a
+    // tagged addition from an array led by its rule (§27G). Neither is a
+    // request anybody wrote; only the shape is read here, the request itself
+    // is `input`.
+    let objects = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(serde_json::Value::Object(map)) => map
+            .get("add")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|all| all.iter().all(serde_json::Value::is_object)),
+        _ => false,
+    };
+    if !objects {
+        return Err(CadError::input(
+            "invalid constraint request JSON: the request and each addition must be objects",
+        ));
+    }
     if input.request_version != 1 {
         return Err(CadError::unsupported(
             "unsupported constraint request_version; expected 1",

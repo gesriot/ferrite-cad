@@ -161,7 +161,8 @@ This is unchanged from §27B.
 * **Out of scope:**
   * full↔partial;
   * new axes and operations;
-  * constraints on a Revolve profile;
+  * constraints on a Revolve profile (added for profiles with a bore by
+    [§27G](revolve-profile-constraints.md));
   * Circle/Arc;
   * booleans and several bodies;
   * live preview;

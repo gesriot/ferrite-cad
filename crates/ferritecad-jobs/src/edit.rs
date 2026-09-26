@@ -564,7 +564,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         CopyWrite::Constraints(p) => match &p.object().payload {
             ObjectPayload::Sketch(sketch) if !sketch.constraints.is_empty() => Some(SolveCheck {
                 sketch: selected.id,
-                height_mm: p.height_mm,
+                profile_use: p.profile_use(),
                 roles: p.circle_roles(),
             }),
             _ => None,
@@ -633,7 +633,10 @@ fn require_version(document: &Document, expected: DocumentVersion) -> Result<()>
 #[derive(Debug, Clone, Copy)]
 struct SolveCheck {
     sketch: ObjectId,
-    height_mm: f64,
+    /// The feature that turns the profile into a solid (§27G): an Extrude of
+    /// a height, or a Revolve with its stated turn. Never a height made up
+    /// for a Revolve.
+    profile_use: ferritecad_document::SketchProfileUse,
     roles: Option<(StableEntityId, StableEntityId)>,
 }
 
@@ -669,7 +672,7 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
         }
         let solve = if let Some(SolveCheck {
             sketch: id,
-            height_mm: height,
+            profile_use,
             roles,
         }) = constraints
         {
@@ -688,11 +691,16 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
             let mut starts = Vec::new();
             let mut ends = Vec::new();
             let mut circles = Vec::new();
+            let mut vertices = Vec::new();
             for curve in picture.curves() {
                 match *curve.geometry() {
                     ferritecad_document::SketchGeometry::Line { start, end } => {
                         starts.push([start.x, start.y]);
                         ends.push([end.x, end.y]);
+                        vertices.push(ferritecad_document::SketchVertex {
+                            curve_id: curve.id(),
+                            start_mm: [start.x, start.y],
+                        });
                     }
                     ferritecad_document::SketchGeometry::Circle { center, radius } => {
                         circles.push((curve.id(), [center.x, center.y], radius));
@@ -704,6 +712,16 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
                     }
                 }
             }
+            // Only an extrusion has a height for a circle policy; the catalogue
+            // never offers a Revolve profile of circles, and none is assumed.
+            let extrusion = || match profile_use {
+                ferritecad_document::SketchProfileUse::BlindExtrude { height_mm, .. } => {
+                    Ok(height_mm)
+                }
+                _ => Err(CadError::unsupported(
+                    "a Revolve profile is Lines, and this solved to a Circle",
+                )),
+            };
             if starts.is_empty() == circles.is_empty() {
                 return Err(CadError::unsupported(
                     "a constrained profile is Lines or one Circle, and this solved to neither",
@@ -722,7 +740,11 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
                         ));
                     }
                 }
-                ferritecad_document::PolygonExtrusion::new(starts, height)?;
+                // The policy of the feature that uses the profile, asked of
+                // the solved starts: the polygon an Extrude of the saved
+                // height publishes, or, for a turned profile, the class the
+                // Revolve states with its axis clearance.
+                profile_use.check(&vertices)?;
             } else if let Some((outer_id, inner_id)) = roles {
                 // Two circles, and which is which was decided from the saved
                 // radii before the solve. Each is found by its own UUID: taking
@@ -765,7 +787,7 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
                     outer_center,
                     outer_radius,
                     inner_radius,
-                    height,
+                    extrusion()?,
                 )?;
             } else {
                 let [(_, center, radius)] = circles.as_slice() else {
@@ -776,7 +798,7 @@ fn checked_rebuild<K: GeometryKernel + ?Sized>(
                 // The solved numbers, not the saved guess: a solve that moved
                 // the circle outside what this build will publish has to be
                 // refused here rather than at the kernel.
-                ferritecad_document::CircleExtrusion::new(*center, *radius, height)?;
+                ferritecad_document::CircleExtrusion::new(*center, *radius, extrusion()?)?;
             }
             Some(report.clone())
         } else {

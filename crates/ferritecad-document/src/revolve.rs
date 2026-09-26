@@ -33,7 +33,9 @@ pub struct RevolveChoice {
     pub axis: RevolveAxis,
     pub extent: RevolveExtent,
     pub operation: SolidOperation,
-    /// The profile's Lines in stored order, when every curve is a Line.
+    /// The profile's Lines in stored order, when every curve is a Line. For
+    /// a constrained profile these are the stored inputs to the solver, not
+    /// the solved drawing (§27G).
     pub segments: Option<Vec<RevolveSegment>>,
     /// Why the stored profile is outside the §27A/§27C classes, if it is.
     pub profile_refusal: Option<String>,
@@ -108,11 +110,12 @@ pub fn revolve_choices(_document: &Document, objects: &[ObjectRecord]) -> Vec<Re
                     })
                     .collect::<Option<Vec<_>>>()
             });
+            // §27G: constraints are not a refusal of their own. The stored
+            // Lines are the solver's starting geometry and answer to the same
+            // class check; the solved Lines answer to it again in the
+            // evaluator, on every rebuild.
             let profile_refusal = match (sketch, &segments) {
                 (None, _) => Some("the Revolve's profile is not a Sketch".to_owned()),
-                (Some(s), _) if !s.constraints.is_empty() => {
-                    Some("the Revolve's profile carries constraints".to_owned())
-                }
                 (Some(_), None) => Some(
                     "the Revolve's profile holds something other than non-construction Lines"
                         .to_owned(),

@@ -800,7 +800,7 @@ fn collapsed_float_faces_refuse_publication(directory: &Path) {
 /// A solid Revolve document written without any kernel, the way §27A's
 /// kernel-free test writes a bored one: the stated axis Line in the payload,
 /// and one RevolveFace per other Line.
-fn write_solid_document(
+pub(super) fn write_solid_document(
     path: &Path,
     points: &[[f64; 2]],
     stated_axis: Option<usize>,

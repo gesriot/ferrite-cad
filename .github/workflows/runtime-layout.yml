@@ -548,6 +548,12 @@ jobs:
             -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-profile-no-solver.log
           if grep -q 'skipped:' revolve-profile-no-solver.log || ! grep -Fq "test $gate ... ok" revolve-profile-no-solver.log; then exit 1; fi
 
+          # §27G: without a solver a constrained Revolve is refused, typed.
+          gate=constraints::occt_without_solver_refuses_revolve_constraints_honestly
+          FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release --no-default-features -p ferritecad-cli --test revolve "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-constraints-no-solver.log
+          if grep -q 'skipped:' revolve-constraints-no-solver.log || ! grep -Fq "test $gate ... ok" revolve-constraints-no-solver.log; then exit 1; fi
+
       - name: Build the real application and the command line tool against both
         id: build
         env:
@@ -1611,6 +1617,12 @@ jobs:
             windows) profile_artifacts="$(cygpath -w "$profile_artifacts")" ;;
           esac
           export FCAD_REVOLVE_PROFILE_ARTIFACTS="$profile_artifacts"
+          constraint_artifacts="$RUNNER_TEMP/revolve-constraints"
+          mkdir -p "$constraint_artifacts"
+          case '${{ matrix.name }}' in
+            windows) constraint_artifacts="$(cygpath -w "$constraint_artifacts")" ;;
+          esac
+          export FCAD_REVOLVE_CONSTRAINT_ARTIFACTS="$constraint_artifacts"
           for gate in native_full_turn_revolutions_are_what_pappus_and_their_lines_say \
             native_revolve_refuses_the_axis_other_kinds_and_cancellation \
             native_a_revolution_survives_the_named_archive_face_by_face \
@@ -1647,7 +1659,10 @@ jobs:
             angle::native_revolve_angle_edit_delivery_late_guards_and_cancellation \
             profile::native_partial_profile_edits_measure_caps_names_cache_sql_and_exports \
             profile::native_partial_profile_edit_delivery_late_guards_and_cancellation \
-            profile::partial_profile_requests_refuse_duplicates_arrays_and_foreign_fields
+            profile::partial_profile_requests_refuse_duplicates_arrays_and_foreign_fields \
+            constraints::revolve_constraint_discovery_writer_and_refusals_without_solver \
+            constraints::native_bushing_constraints_dimension_replace_remove_cache_and_exports \
+            constraints::native_sector_constraints_measure_caps_names_angle_edit_and_exports
           do
             cargo test --release --features planegcs -p ferritecad-cli --test revolve "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-cli.log
@@ -1683,12 +1698,29 @@ jobs:
             sketch::tests::partial_revolve_draft_widgets_state_the_angle_and_refuse_others \
             sketch::tests::native_partial_revolve_draft_worker_and_cli_publish_equivalent_models \
             sketch::tests::native_revolve_angle_edit_widgets_worker_and_cli_publish_one_copy \
-            sketch::drag_tests::native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy
+            sketch::drag_tests::native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy \
+            constraints::tests::revolve::revolve_constraint_widgets_name_the_revolve_build_and_replace_a_length \
+            constraints::tests::revolve::native_revolve_constraint_worker_and_cli_publish_the_same_solved_sector
           do
             cargo test --release --features planegcs -p ferritecad-app "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-ui.log
             if grep -q 'skipped:' revolve-ui.log || ! grep -Fq "test $gate ... ok" revolve-ui.log; then exit 1; fi
           done
+          # §27G: the public agent recipe, extracted from its Markdown and run
+          # against this build's CLI. A missing solver is a failure here.
+          py="$(command -v python3 || command -v python)"
+          recipe_cli="$PWD/target/release/ferritecad"
+          case '${{ matrix.name }}' in
+            windows) recipe_cli="$(cygpath -w "$recipe_cli.exe")" ;;
+          esac
+          "$py" - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/revolve-profile-constraints.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_27G_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-27g-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$recipe_cli" FCAD_EXPECT_SOLVER=1 "$py" ferrite-27g-recipe.py | tee revolve-constraints-recipe.log
+          grep -q '^FCAD_27G_RECIPE_OK ' revolve-constraints-recipe.log
           # §27D: the sector's own bridge entry point and its archived names.
           gate=ffi::tests::the_partial_entry_refuses_what_is_not_a_sector_and_a_full_turn_has_no_caps
           FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-occt --lib "$gate" \
@@ -1705,6 +1737,7 @@ jobs:
             echo "FCAD_REVOLVE_PARTIAL_FBX_DIR=$partial_artifacts"
             echo "FCAD_REVOLVE_ANGLE_FBX_DIR=$angle_artifacts"
             echo "FCAD_REVOLVE_PROFILE_FBX_DIR=$profile_artifacts"
+            echo "FCAD_REVOLVE_CONSTRAINT_FBX_DIR=$constraint_artifacts"
           } >> "$GITHUB_ENV"
 
       - name: Create, discover, edit and export through the JSON v1 CLI contract
@@ -1813,6 +1846,7 @@ jobs:
           grep -q '^FCAD_REVOLVE_PARTIAL_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_REVOLVE_ANGLE_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_REVOLVE_PROFILE_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_REVOLVE_CONSTRAINT_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

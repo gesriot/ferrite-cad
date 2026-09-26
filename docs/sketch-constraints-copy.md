@@ -5,6 +5,8 @@
 исходным состоянием solver; они не являются solved presentation. Coordinate edit,
 drag и Snap constrained Sketch по-прежнему недоступны. Отдельная операция ниже
 добавляет/удаляет Horizontal/Vertical и евклидову длину Line. Нет in-place Save.
+[§27G](revolve-profile-constraints.md) расширяет класс Line-профилей тем же
+request на профиль сохранённого Revolve с отверстием (полный оборот и сектор).
 
 ## Request и атомарность
 
