@@ -1698,6 +1698,83 @@ mod tests {
         ]
     }
 
+    /// §27D: the sector's own entry point refuses, before building anything,
+    /// every angle that is not strictly inside (0°, 360°) — never widening one
+    /// to a full turn or wrapping it round — answers exactly one start and one
+    /// end face for a sector, and answers no end face for a full turn.
+    #[test]
+    fn the_partial_entry_refuses_what_is_not_a_sector_and_a_full_turn_has_no_caps() {
+        let mut session = Session::new().expect("opens a real OCCT session");
+        let plane = Plane {
+            origin: [0.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        };
+        let line = |start_x, start_y, end_x, end_y| Segment {
+            start_x,
+            start_y,
+            end_x,
+            end_y,
+            ..Segment::zeroed()
+        };
+        let ring = [
+            line(4.0, 0.0, 10.0, 0.0),
+            line(10.0, 0.0, 10.0, 15.0),
+            line(10.0, 15.0, 4.0, 15.0),
+            line(4.0, 15.0, 4.0, 0.0),
+        ];
+        let token = CancelToken::new();
+        let (origin, y) = ([0.0; 3], [0.0, 1.0, 0.0]);
+        for angle in [
+            0.0,
+            -0.0,
+            -90.0,
+            360.0,
+            720.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            let error = session
+                .revolve_partial(&plane, &ring, None, origin, y, angle, &token)
+                .expect_err("not a sector");
+            assert_eq!(error.kind(), ErrorKind::Input, "{angle}");
+            assert!(error.to_string().contains("strictly between"), "{error}");
+        }
+        let sector = session
+            .revolve_partial(&plane, &ring, None, origin, y, 90.0, &token)
+            .expect("a sector");
+        let start = session.revolve_caps(sector, false).expect("start");
+        let end = session.revolve_caps(sector, true).expect("end");
+        assert_eq!((start.len(), end.len()), (1, 1));
+        assert_ne!(start, end);
+        let (faces, volume) = session.shape_stats(sector).expect("stats");
+        assert_eq!(faces, 6);
+        let quarter = std::f64::consts::PI * (100.0 - 16.0) * 15.0 / 4.0;
+        assert!((volume - quarter).abs() < 1e-9 * quarter, "{volume}");
+        for index in 0..ring.len() {
+            let face = session.revolve_faces(sector, index).expect("a Line's face");
+            assert_eq!(face.len(), 1);
+            assert!(face[0] != start[0] && face[0] != end[0]);
+        }
+        for face in [start[0], end[0]] {
+            assert_eq!(
+                session.face_surface(sector, face).expect("surface"),
+                FaceSurface::Plane
+            );
+        }
+        let full = session
+            .revolve_full_turn(&plane, &ring, None, origin, y, &token)
+            .expect("a full turn");
+        for end in [false, true] {
+            let error = session.revolve_caps(full, end).expect_err("no caps");
+            assert_eq!(error.kind(), ErrorKind::Unsupported);
+            assert!(error.to_string().contains("full turn"), "{error}");
+        }
+        session.release(sector);
+        session.release(full);
+    }
+
     /// One whole circle as the bridge receives it.
     ///
     /// Named apart from the local `circle` bindings in the single-circle tests

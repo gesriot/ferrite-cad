@@ -540,6 +540,7 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
     use crate::{archive_feature, map::TopologyMap};
+    use ferritecad_kernel::SubShapeKind;
     use ferritecad_kernel::{
         ExtrudeExtent, ExtrudeRequest, GeometryKernel, OperationContext, PlanarPoint, Profile,
         ProfileLoop, ProfileSegment, SegmentGeometry, SketchPlane, mock::MockKernel,
@@ -584,6 +585,41 @@ mod tests {
         let identity = kernel.identity().clone();
         let archived = archive_feature(&mut kernel, &map, producer).expect("archives");
         (archived, producer, identity)
+    }
+
+    /// §27D: a sector's end faces are written under their own tags and read
+    /// back as themselves, never as an extrusion's caps.
+    #[test]
+    fn a_sectors_end_faces_keep_their_own_tags() {
+        let kernel = MockKernel::new();
+        let identity = kernel.identity().clone();
+        let blob = BrepBlob::new(identity.clone(), vec![1, 2, 3]);
+        let hash = blob.content_hash();
+        let producer = ObjectId::new();
+        let archive = ArchivedFeature::from_parts(
+            producer,
+            blob,
+            hash,
+            [
+                (BoundName::RevolvedStartCap, ArchiveSlot::new(1)),
+                (BoundName::RevolvedEndCap, ArchiveSlot::new(2)),
+            ],
+        )
+        .expect("an archive");
+        let bytes = archive.encode().expect("encodes");
+        let back = ArchivedFeature::decode(&bytes, producer, &identity).expect("reads back");
+        assert_eq!(back, archive);
+        let names: Vec<_> = back.bindings().map(|(name, _)| name).collect();
+        assert!(names.contains(&BoundName::RevolvedStartCap));
+        assert!(names.contains(&BoundName::RevolvedEndCap));
+        assert!(!names.contains(&BoundName::StartCap) && !names.contains(&BoundName::EndCap));
+        assert_eq!(BoundName::RevolvedStartCap.kind(), SubShapeKind::Face);
+        for tag in [TAG_REVOLVED_START_CAP, TAG_REVOLVED_END_CAP] {
+            assert!(
+                bytes.windows(2).any(|w| w == tag.to_le_bytes()),
+                "tag {tag} written"
+            );
+        }
     }
 
     #[test]

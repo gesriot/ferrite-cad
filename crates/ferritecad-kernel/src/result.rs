@@ -857,6 +857,49 @@ mod tests {
         SubShapeHandle::new(shape, SubShapeKind::Face, index)
     }
 
+    /// §27D: a revolution's caps are none (a full turn) or one of each,
+    /// faces of its own result, distinct, and never a segment's face.
+    #[test]
+    fn a_revolution_reports_no_caps_or_one_distinct_face_for_each() {
+        let shape = ShapeHandle::new(SessionId::new(), 0);
+        let at = |index| SubShapeHandle::new(shape, SubShapeKind::Face, index);
+        let segment = HistoryInput::Segment(StableEntityId::new());
+        let mut history = History::new();
+        history.record_generated(segment, at(1));
+        let result = |start: Vec<SubShapeHandle>, end: Vec<SubShapeHandle>| RevolveResult {
+            shape,
+            history: history.clone(),
+            start_cap: start,
+            end_cap: end,
+        };
+        assert!(result(vec![], vec![]).validate().is_ok());
+        assert!(result(vec![at(2)], vec![at(3)]).validate().is_ok());
+        for (start, end) in [
+            (vec![at(2)], vec![]),
+            (vec![], vec![at(3)]),
+            (vec![at(2), at(4)], vec![at(3)]),
+            (vec![at(2)], vec![at(2)]),
+            (vec![at(1)], vec![at(3)]),
+            (
+                vec![SubShapeHandle::new(shape, SubShapeKind::Edge, 2)],
+                vec![at(3)],
+            ),
+            (
+                vec![SubShapeHandle::new(
+                    ShapeHandle::new(SessionId::new(), 0),
+                    SubShapeKind::Face,
+                    2,
+                )],
+                vec![at(3)],
+            ),
+        ] {
+            assert!(
+                result(start.clone(), end.clone()).validate().is_err(),
+                "{start:?} {end:?}"
+            );
+        }
+    }
+
     #[test]
     fn history_reports_what_it_was_told() {
         let segment = HistoryInput::Segment(StableEntityId::new());

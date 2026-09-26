@@ -10,6 +10,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int checks = 0;
@@ -596,6 +597,50 @@ static void check_identity(ufbx_scene *scene)
         seen, definitions, occurrences, scene->meshes.count);
 }
 
+// ------------------------------------------------------------ the triangle channel
+
+// §27D. Every triangle of every mesh instance, in world space as ufbx places
+// it, one line each, in the face order and winding the file states. Nothing
+// is compared here: the caller joins these against an STL of the same Body
+// under the documented axis and unit conversion, so this reader says only
+// what the file contains.
+
+static void check_triangles(ufbx_scene *scene)
+{
+    require(scene->metadata.ascii, "the triangle file is ASCII");
+    require(scene->metadata.version == 7400, "the triangle file is FBX 7400");
+    require(scene->metadata.warnings.count == 0, "the triangle file read with no warning");
+
+    size_t triangles = 0, instances = 0;
+    for (size_t i = 0; i < scene->nodes.count; i++) {
+        ufbx_node *node = scene->nodes.data[i];
+        ufbx_mesh *mesh = node->mesh;
+        if (node->is_root || !mesh) continue;
+        instances++;
+        size_t capacity = mesh->max_face_triangles * 3;
+        uint32_t *indices = capacity ? calloc(capacity, sizeof(uint32_t)) : NULL;
+        require(capacity == 0 || indices != NULL, "triangle index buffer");
+        if (capacity && !indices) continue;
+        for (size_t f = 0; f < mesh->faces.count; f++) {
+            uint32_t count = ufbx_triangulate_face(indices, capacity, mesh, mesh->faces.data[f]);
+            for (uint32_t t = 0; t < count; t++) {
+                fputs("FCAD_TRIANGLE", stdout);
+                for (uint32_t k = 0; k < 3; k++) {
+                    ufbx_vec3 local = ufbx_get_vertex_vec3(&mesh->vertex_position, indices[t * 3 + k]);
+                    ufbx_vec3 world = ufbx_transform_position(&node->geometry_to_world, local);
+                    printf(" %.17g %.17g %.17g", world.x, world.y, world.z);
+                }
+                fputs("\n", stdout);
+                triangles++;
+            }
+        }
+        free(indices);
+    }
+    require(instances > 0, "the triangle file has no mesh instance");
+    require(triangles > 0, "the triangle file has no triangle");
+    printf("FCAD_TRIANGLE_SUMMARY instances=%zu triangles=%zu\n", instances, triangles);
+}
+
 // ------------------------------------------- definition keys that fight the grammar
 
 // §22B-1e3b. Five definition keys chosen to make the identity value ambiguous
@@ -805,13 +850,15 @@ int main(int argc, char **argv)
     bool identity_mode = argc == 3 && strcmp(argv[1], "--identity") == 0;
     bool legacy_mode = argc == 4 && strcmp(argv[1], "--legacy") == 0;
     bool keyed_mode = argc == 3 && strcmp(argv[1], "--escaped-keys") == 0;
+    bool triangles_mode = argc == 3 && strcmp(argv[1], "--triangles") == 0;
     if ((argc != 3 && argc != 4) || (!complex_mode && !identity_mode && !legacy_mode
-            && !keyed_mode && argv[1][0] == '-')) {
+            && !keyed_mode && !triangles_mode && argv[1][0] == '-')) {
         fprintf(stderr, "usage: read_production MEASURED.fbx ESCAPING.fbx\n");
         fprintf(stderr, "       read_production --complex COMPLEX.fbx\n");
         fprintf(stderr, "       read_production --identity FILE.fbx\n");
         fprintf(stderr, "       read_production --legacy MEASURED.fbx LEGACY.fbx\n");
         fprintf(stderr, "       read_production --escaped-keys KEYED.fbx\n");
+        fprintf(stderr, "       read_production --triangles FILE.fbx\n");
         return 2;
     }
 
@@ -833,6 +880,13 @@ int main(int argc, char **argv)
         ufbx_scene *scene = load(argv[2]);
         if (scene) {
             check_identity(scene);
+            ufbx_free_scene(scene);
+        }
+    } else if (triangles_mode) {
+        minimum = 5;
+        ufbx_scene *scene = load(argv[2]);
+        if (scene) {
+            check_triangles(scene);
             ufbx_free_scene(scene);
         }
     } else if (keyed_mode) {

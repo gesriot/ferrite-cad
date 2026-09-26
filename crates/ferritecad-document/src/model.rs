@@ -2180,6 +2180,138 @@ mod tests {
     use super::*;
     use ferritecad_types::Tolerance;
 
+    /// §27D: one validated angle, its own payload layouts and capabilities,
+    /// and a cache key that moves with the angle while a full turn keeps its.
+    #[test]
+    fn a_partial_angle_is_a_validated_extent_with_its_own_layout() {
+        for bad in [
+            0.0,
+            -0.0,
+            -90.0,
+            0.009_999,
+            359.990_001,
+            360.0,
+            400.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            assert!(RevolveAngle::new(bad).is_err(), "{bad}");
+        }
+        for good in [0.01, 1.0, 90.0, 137.5, 100.0 / 3.0, 359.99] {
+            assert_eq!(RevolveAngle::new(good).expect("a sector").degrees(), good);
+        }
+        let mut revolve = Revolve {
+            profile: ObjectId::new(),
+            axis: RevolveAxis::SketchY,
+            extent: RevolveExtent::FullTurn,
+            operation: SolidOperation::NewBody,
+            axis_segment: None,
+        };
+        let tolerance = Tolerance::default();
+        let full = revolve.cache_key(tolerance);
+        assert_eq!(revolve.schema_version(), 1);
+        revolve.extent = RevolveExtent::Partial {
+            degrees: RevolveAngle::new(90.0).expect("a sector"),
+        };
+        assert_eq!(revolve.schema_version(), 3);
+        let quarter = revolve.cache_key(tolerance);
+        assert_ne!(quarter, full);
+        revolve.extent = RevolveExtent::Partial {
+            degrees: RevolveAngle::new(90.000_000_001).expect("a sector"),
+        };
+        assert_ne!(revolve.cache_key(tolerance), quarter);
+        revolve.axis_segment = Some(StableEntityId::new());
+        assert_eq!(revolve.schema_version(), 4);
+        assert_eq!(
+            ObjectKind::Revolve.required_capabilities(3),
+            [
+                CORE_CAPABILITY,
+                FEATURE_REVOLVE_CAPABILITY,
+                FEATURE_REVOLVE_PARTIAL_CAPABILITY
+            ]
+        );
+        assert_eq!(
+            ObjectKind::Revolve.required_capabilities(4),
+            [
+                CORE_CAPABILITY,
+                FEATURE_REVOLVE_CAPABILITY,
+                FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY,
+                FEATURE_REVOLVE_PARTIAL_CAPABILITY
+            ]
+        );
+        // Full turns still declare exactly what they did.
+        assert_eq!(
+            ObjectKind::Revolve.required_capabilities(1),
+            [CORE_CAPABILITY, FEATURE_REVOLVE_CAPABILITY]
+        );
+        assert_eq!(
+            ObjectKind::Revolve.readable_schema_versions(),
+            &[4, 3, 2, 1]
+        );
+        let payload = ObjectPayload::Revolve(revolve.clone());
+        let bytes = payload.to_storage_bytes().expect("encodes");
+        assert_eq!(
+            ObjectPayload::from_storage_bytes(&bytes).expect("decodes"),
+            payload
+        );
+        // A stored angle outside the policy is refused when read, never
+        // repaired into a sector or widened into a full turn.
+        #[derive(Serialize)]
+        struct Forged {
+            profile: ObjectId,
+            axis: RevolveAxis,
+            extent: BTreeMap<&'static str, BTreeMap<&'static str, f64>>,
+            operation: SolidOperation,
+        }
+        for degrees in [360.0, 0.0, 720.0] {
+            let forged = Envelope::encode(
+                "feature.revolve",
+                3,
+                ObjectKind::Revolve.required_capabilities(3),
+                &Forged {
+                    profile: revolve.profile,
+                    axis: RevolveAxis::SketchY,
+                    extent: BTreeMap::from([("partial", BTreeMap::from([("degrees", degrees)]))]),
+                    operation: SolidOperation::NewBody,
+                },
+            )
+            .expect("forged")
+            .to_bytes()
+            .expect("bytes");
+            assert!(
+                ObjectPayload::from_storage_bytes(&forged).is_err(),
+                "{degrees}"
+            );
+        }
+        // The two end faces are two meanings, and neither is an Extrude cap:
+        // one reference identity throughout, so only the role differs.
+        let id = StableEntityId::new();
+        let meaning = |role: SemanticRole| {
+            TopologyRef {
+                id,
+                owner: revolve.profile,
+                producer_feature: revolve.profile,
+                expected_kind: EntityKind::Face,
+                output_role: role,
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            }
+            .meaning_hash()
+        };
+        let start = meaning(SemanticRole::RevolveCap {
+            side: CapSide::Start,
+        });
+        let end = meaning(SemanticRole::RevolveCap { side: CapSide::End });
+        assert_ne!(start, end);
+        assert_ne!(
+            start,
+            meaning(SemanticRole::ExtrudeCap {
+                side: CapSide::Start
+            })
+        );
+    }
+
     fn sample_extrude() -> Extrude {
         Extrude {
             profile: ObjectId::new(),

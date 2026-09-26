@@ -26,6 +26,9 @@ mod axis;
 /// §27B: editing the saved profile of these documents.
 #[path = "revolve/edit.rs"]
 mod edit;
+/// §27D: the same profiles turned through a partial angle.
+#[path = "revolve/partial.rs"]
+mod partial;
 #[path = "support/pipe.rs"]
 mod pipe;
 

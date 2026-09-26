@@ -2776,6 +2776,254 @@ mod tests {
         );
     }
 
+    /// §27D: the stepped profile turned through the angle typed in the same
+    /// window. The choice and the typed angle are part of the draft, so Undo
+    /// and Redo step through them; an angle the document refuses shows the
+    /// refusal in place of the button and keeps the draft.
+    fn draw_partial_revolve_through_widgets(e: &mut Editor) -> egui::Context {
+        let ctx = draw_stepped_revolve_through_widgets(e);
+        let out = frame(&ctx, e, vec![]);
+        click(&ctx, e, text_at(&out, "Revolve angle"));
+        assert_eq!(
+            e.draft.as_ref().expect("draft").feature,
+            Feature::RevolveAngle
+        );
+        let out = frame(&ctx, e, vec![]);
+        for shown in [
+            "XY · mm · Line polygon · Revolve through an angle about the sketch Y axis · NewBody",
+            "Angle °",
+            "axis (Y) at X = 0 · radius X →",
+        ] {
+            assert!(
+                out.shapes.iter().any(|c| matches!(&c.shape,
+                    egui::Shape::Text(t) if t.galley.text() == shown)),
+                "{shown}"
+            );
+        }
+        assert!(matches!(
+            e.content(),
+            Ok(NewDocument::SketchPartialRevolve { angle, .. }) if angle.degrees() == 90.
+        ));
+        // Each value is one no other field of the draft shows, because the
+        // field is found by the text it currently holds.
+        for (typed, refusal) in [
+            ("360", "full turn"),
+            ("0.001", "minimum"),
+            ("359.995", "within"),
+            ("-45", "not positive"),
+            ("0.00", "not positive"),
+            ("abc", ""),
+        ] {
+            let current = e.draft.as_ref().expect("draft").angle.clone();
+            replace_field(&ctx, e, &current, typed);
+            assert_eq!(e.draft.as_ref().expect("draft").angle, typed);
+            let error = e.content().expect_err("not a sector angle").to_string();
+            assert!(error.contains(refusal), "{typed}: {error}");
+            let out = frame(&ctx, e, vec![]);
+            assert!(!out.shapes.iter().any(|c| matches!(&c.shape,
+                egui::Shape::Text(t) if t.galley.text() == "Create in new file…")));
+        }
+        // An emptied field is not an angle either (set directly: typing
+        // nothing over a selection sends no event to clear it with).
+        e.draft.as_mut().expect("draft").angle.clear();
+        assert!(e.content().is_err(), "an empty angle");
+        e.draft.as_mut().expect("draft").angle = "abc".into();
+        // Undo walks back through every typed angle to 90°, Redo forward again.
+        while e.draft.as_ref().expect("draft").angle != "90" {
+            let out = frame(&ctx, e, vec![]);
+            click(&ctx, e, text_at(&out, "Undo draft"));
+        }
+        let out = frame(&ctx, e, vec![]);
+        click(&ctx, e, text_at(&out, "Redo draft"));
+        assert_eq!(e.draft.as_ref().expect("draft").angle, "360");
+        let out = frame(&ctx, e, vec![]);
+        click(&ctx, e, text_at(&out, "Undo draft"));
+        replace_field(&ctx, e, "90", "137.5");
+        assert!(matches!(
+            e.content(),
+            Ok(NewDocument::SketchPartialRevolve { angle, .. }) if angle.degrees() == 137.5
+        ));
+        // The other features keep their own forms, and the angle survives a
+        // switch away and back.
+        let out = frame(&ctx, e, vec![]);
+        click(&ctx, e, text_at(&out, "Revolve 360°"));
+        assert!(matches!(e.content(), Ok(NewDocument::SketchRevolve(_))));
+        let out = frame(&ctx, e, vec![]);
+        click(&ctx, e, text_at(&out, "Revolve angle"));
+        assert_eq!(e.draft.as_ref().expect("draft").angle, "137.5");
+        ctx
+    }
+
+    #[test]
+    fn partial_revolve_draft_widgets_state_the_angle_and_refuse_others() {
+        let mut e = Editor::default();
+        let ctx = draw_partial_revolve_through_widgets(&mut e);
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Create in new file…"));
+        let Some(NewDocument::SketchPartialRevolve { profile, angle }) = e.take_request() else {
+            panic!("one partial Revolve request")
+        };
+        assert_eq!(angle.degrees(), 137.5);
+        assert_eq!(
+            profile
+                .points()
+                .iter()
+                .map(|p| [p.x, p.y])
+                .collect::<Vec<_>>(),
+            [
+                [4., 0.],
+                [10., 0.],
+                [10., 5.],
+                [7., 5.],
+                [7., 15.],
+                [4., 15.]
+            ]
+        );
+        assert!(e.take_request().is_none(), "one press, one request");
+    }
+
+    /// §27D: the window's worker and the shipped command publish the same
+    /// sector. STL bytes are equal; the FBX files are equal byte for byte once
+    /// the two documents' own Body identities — the only ones minted apart —
+    /// are mapped to one name.
+    #[test]
+    fn native_partial_revolve_draft_worker_and_cli_publish_equivalent_models() {
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+            eprintln!("skipped: no OCCT for the partial Revolve UI worker");
+            return;
+        }
+        use crate::creates::{
+            self,
+            tests::{ferritecad, read_semantics},
+        };
+        use std::sync::mpsc;
+        let d = tempfile::tempdir().expect("dir");
+        let ui = d.path().join("sector-ui.fcad");
+        let cli = d.path().join("sector-cli.fcad");
+        let input = d.path().join("sector-request.json");
+        let mut creates = creates::Creates::default();
+        draw_partial_revolve_through_widgets(&mut creates.sketch);
+        let content = creates.sketch.content().expect("a sector");
+        let before = creates.sketch.draft.clone();
+        let mut view = ferritecad_ui::ViewportInput::new();
+        let loads = crate::Loads::default();
+        let exports = crate::exports::Exports::default();
+        // A cancelled save dialog keeps the draft and starts nothing.
+        assert!(
+            crate::start_new(
+                &mut creates,
+                &loads,
+                &exports,
+                &mut view,
+                content.clone(),
+                None,
+                |_, _, _, _| panic!("no worker on cancel")
+            )
+            .is_none()
+        );
+        assert_eq!(creates.sketch.draft, before);
+        let busy = d.path().join("occupied.fcad");
+        std::fs::write(&busy, b"keep").expect("busy");
+        let (_, open) = creates::tests::run_to_completion(
+            &mut creates,
+            &mut view,
+            content.clone(),
+            Some(busy.clone()),
+        );
+        assert!(open.is_none());
+        assert_eq!(creates.sketch.draft, before);
+        assert_eq!(std::fs::read(busy).expect("busy"), b"keep");
+        let (tx, rx) = mpsc::channel();
+        let spawn = move |path: &std::path::Path,
+                          content,
+                          generation,
+                          cancel: &ferritecad_kernel::CancelToken| {
+            let path = path.to_path_buf();
+            let ctx = ferritecad_kernel::OperationContext::default().with_cancel(cancel.clone());
+            creates::spawn_create(
+                move || creates::run_create(&path, content, &ctx),
+                move |result| tx.send((generation, result)).expect("reply"),
+            )
+        };
+        crate::start_new(
+            &mut creates,
+            &loads,
+            &exports,
+            &mut view,
+            content.clone(),
+            Some(ui.clone()),
+            spawn,
+        )
+        .expect("worker");
+        let (generation, result) = rx.recv().expect("worker result");
+        assert_eq!(
+            creates::finish_create(&mut creates, &mut view, generation, result),
+            Some(ui.clone())
+        );
+        creates.sketch.draft_published(&ui);
+        creates.sketch.draft_load_finished(&ui, true);
+        assert!(!creates.sketch.active());
+        creates.stop_all();
+
+        std::fs::write(
+            &input,
+            concat!(
+                r#"{"request_version":2,"points_mm":[[4,0],[10,0],[10,5],[7,5],[7,15],[4,15]],"#,
+                r#""axis":"sketch_y","extent":{"kind":"angle","degrees":137.5}}"#
+            ),
+        )
+        .expect("request");
+        let run = std::process::Command::new(ferritecad())
+            .arg("create-sketch-revolve")
+            .arg(input)
+            .arg("-o")
+            .arg(&cli)
+            .arg("--json")
+            .output()
+            .expect("peer CLI");
+        assert!(run.status.success(), "{run:?}");
+        assert_eq!(read_semantics(&ui).0, read_semantics(&cli).0);
+        assert_ne!(read_semantics(&ui).1, read_semantics(&cli).1);
+        let export = |path: &std::path::Path| {
+            let mut bytes = Vec::new();
+            for (op, extension) in [("export-stl", "stl"), ("export-fbx", "fbx")] {
+                let out = path.with_extension(extension);
+                let p = std::process::Command::new(ferritecad())
+                    .arg(op)
+                    .arg(path)
+                    .arg("-o")
+                    .arg(&out)
+                    .output()
+                    .expect("export");
+                assert!(p.status.success(), "{p:?}");
+                bytes.push(std::fs::read(&out).expect("bytes"));
+            }
+            bytes
+        };
+        let (a, b) = (export(&ui), export(&cli));
+        assert_eq!(a[0], b[0], "worker/CLI STL bytes");
+        let mapped_fbx = |path: &std::path::Path, bytes: &[u8]| {
+            let document = ferritecad_document::Document::open_read_only(path).expect("document");
+            let body = document
+                .objects()
+                .expect("objects")
+                .into_iter()
+                .find(|o| matches!(o.payload, ferritecad_document::ObjectPayload::Body(_)))
+                .expect("Body");
+            let text = std::str::from_utf8(bytes).expect("ASCII FBX");
+            assert_eq!(text.matches(&body.id.to_string()).count(), 3);
+            let mapped = text.replace(&body.id.to_string(), "same-body");
+            document.close().expect("close");
+            mapped
+        };
+        assert_eq!(
+            mapped_fbx(&ui, &a[1]),
+            mapped_fbx(&cli, &b[1]),
+            "all FBX bytes agree after mapping the two created Body identities"
+        );
+    }
+
     /// A real source document with one saved analytic circle, and the accepted
     /// reading of it that a form is allowed to take its facts from.
     fn saved_circle(root: &Path) -> (PathBuf, ferritecad_document::ExtrudeEditSource) {

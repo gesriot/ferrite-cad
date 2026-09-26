@@ -12,9 +12,9 @@ use std::collections::BTreeSet;
 use std::f64::consts::PI;
 
 use ferritecad_kernel::{
-    CancelToken, FaceSurface, GeometryKernel, HistoryInput, OperationContext, PlanarPoint, Profile,
-    ProfileLoop, ProfileSegment, RevolveAxis, RevolveRequest, RevolveTurn, SegmentGeometry,
-    SketchPlane, SubShapeHandle, TessellationParams,
+    CancelToken, FaceSurface, GeometryKernel, HistoryInput, OperationContext, PartialTurn,
+    PlanarPoint, Profile, ProfileLoop, ProfileSegment, RevolveAxis, RevolveRequest, RevolveTurn,
+    SegmentGeometry, SketchPlane, SubShapeHandle, TessellationParams,
 };
 use ferritecad_occt::{OcctKernel, is_available};
 use ferritecad_types::{ErrorKind, Result, StableEntityId};
@@ -511,5 +511,185 @@ fn native_axis_closed_requests_are_checked_not_trusted() {
             .kind(),
         ErrorKind::Input
     );
+    assert_eq!(kernel.live_shape_count(), 0);
+}
+
+/// §27D: a checked partial request: the profile, the Line on the axis if the
+/// profile closes on it, and the angle in degrees.
+fn partial_request(points: &[[f64; 2]], degrees: f64) -> (RevolveRequest, Vec<StableEntityId>) {
+    let (full, labels) = request(points).expect("request");
+    let turn = RevolveTurn::Partial(PartialTurn::new(degrees).expect("a sector"));
+    let partial = RevolveRequest::new(full.profile().clone(), RevolveAxis::PlaneY, turn);
+    let n = points.len();
+    match (0..n).find(|&i| points[i][0] == 0. && points[(i + 1) % n][0] == 0.) {
+        Some(axis) => (
+            partial.with_axis_segment(labels[axis]).expect("axis Line"),
+            labels,
+        ),
+        None => (partial, labels),
+    }
+}
+
+/// The outward normal and area of one face, from the kernel's own mesh: the
+/// winding the mesh gives it, summed over its triangles.
+fn face_normal_and_area(
+    kernel: &mut OcctKernel,
+    shape: ferritecad_kernel::ShapeHandle,
+    face: SubShapeHandle,
+) -> ([f64; 3], f64, Vec<[f64; 3]>) {
+    let mesh = kernel
+        .tessellate(
+            shape,
+            &TessellationParams::default(),
+            &OperationContext::default(),
+        )
+        .expect("mesh");
+    let range = mesh.faces.iter().find(|r| r.face == face).expect("drawn");
+    let at = |v: u32| -> [f64; 3] {
+        std::array::from_fn(|j| f64::from(mesh.positions[v as usize * 3 + j]))
+    };
+    let (mut sum, mut area, mut points) = ([0.; 3], 0., Vec::new());
+    for t in mesh.indices
+        [range.first_index as usize..(range.first_index + range.index_count) as usize]
+        .chunks_exact(3)
+    {
+        let [a, b, c] = [at(t[0]), at(t[1]), at(t[2])];
+        let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let n = [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ];
+        area += (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() / 2.;
+        sum = [sum[0] + n[0], sum[1] + n[1], sum[2] + n[2]];
+        points.extend([a, b, c]);
+    }
+    let length = (sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]).sqrt();
+    (sum.map(|x| x / length), area, points)
+}
+
+#[test]
+fn native_partial_revolutions_name_two_caps_from_the_sweep_history() {
+    if !native() {
+        return;
+    }
+    let mut kernel = OcctKernel::new().expect("kernel");
+    let context = OperationContext::default();
+    for (points, full, area) in [
+        (
+            vec![[4., 0.], [10., 0.], [10., 15.], [4., 15.]],
+            PI * (100. - 16.) * 15.,
+            90.,
+        ),
+        (
+            vec![[0., 0.], [10., 0.], [10., 15.], [0., 15.]],
+            PI * 100. * 15.,
+            150.,
+        ),
+        (
+            vec![[0., 0.], [10., 0.], [0., 15.]],
+            PI * 100. * 15. / 3.,
+            75.,
+        ),
+    ] {
+        for drawn in [points.clone(), points.iter().rev().copied().collect()] {
+            for degrees in [90., 180., 270., 137.5] {
+                let (request, labels) = partial_request(&drawn, degrees);
+                let axis = request.axis_segment();
+                let result = kernel.revolve(&request, &context).expect("a sector");
+                let (faces, volume) = kernel.shape_stats(result.shape).expect("stats");
+                let expected = full * degrees / 360.;
+                assert!((volume - expected).abs() < 1e-9 * expected, "{volume}");
+                let raised = labels.len() - usize::from(axis.is_some());
+                assert_eq!(faces as usize, raised + 2);
+                let ([start], [end]) = (result.start_cap.as_slice(), result.end_cap.as_slice())
+                else {
+                    panic!("one start and one end face: {result:?}")
+                };
+                let mut line_faces = BTreeSet::new();
+                for label in &labels {
+                    let faces: Vec<_> = result
+                        .history
+                        .generated(HistoryInput::Segment(*label))
+                        .collect();
+                    assert_eq!(faces.len(), usize::from(Some(*label) != axis));
+                    line_faces.extend(faces);
+                }
+                assert!(!line_faces.contains(start) && !line_faces.contains(end));
+                assert_ne!(start, end);
+                let (s, c) = f64::to_radians(degrees).sin_cos();
+                for (face, outward) in [(*start, [0., 0., 1.]), (*end, [-s, 0., -c])] {
+                    assert_eq!(
+                        kernel.face_surface(face).expect("surface"),
+                        FaceSurface::Plane
+                    );
+                    let (normal, covered, on) =
+                        face_normal_and_area(&mut kernel, result.shape, face);
+                    let dot =
+                        normal[0] * outward[0] + normal[1] * outward[1] + normal[2] * outward[2];
+                    assert!(dot > 1. - 1e-9, "{normal:?} is not {outward:?}");
+                    assert!((covered - area).abs() < 1e-5 * area, "{covered} of {area}");
+                    for p in on {
+                        let off = p[0] * outward[0] + p[1] * outward[1] + p[2] * outward[2];
+                        assert!(off.abs() < 1e-5, "{p:?} off its plane");
+                    }
+                }
+                // The names go only where the request says: a sector needs its
+                // two caps, a full turn may have none.
+                let producer = ferritecad_types::ObjectId::new();
+                let mut map = ferritecad_topology::TopologyMap::new();
+                map.record_revolve(producer, request.profile(), axis, request.turn(), &result)
+                    .expect("a sector's names");
+                let names = map.feature(producer).expect("named");
+                assert_eq!(
+                    names
+                        .revolved_cap(ferritecad_document::CapSide::Start)
+                        .expect("start")
+                        .collect::<Vec<_>>(),
+                    vec![*start]
+                );
+                let error = ferritecad_topology::TopologyMap::new()
+                    .record_revolve(
+                        producer,
+                        request.profile(),
+                        axis,
+                        RevolveTurn::Full,
+                        &result,
+                    )
+                    .expect_err("a full turn has no caps")
+                    .to_string();
+                assert!(
+                    error.contains("full turn, which has no end faces"),
+                    "{error}"
+                );
+                let mut forged = result.clone();
+                forged.end_cap.clear();
+                assert!(
+                    ferritecad_topology::TopologyMap::new()
+                        .record_revolve(producer, request.profile(), axis, request.turn(), &forged)
+                        .is_err()
+                );
+                let mut forged = result.clone();
+                forged.end_cap = vec![*line_faces.iter().next().expect("a Line face")];
+                assert!(forged.validate().is_err(), "a cap that is a Line's face");
+                // Both caps survive the named archive as the faces they were.
+                let slots = [*start, *end];
+                let (blob, archived) = kernel
+                    .encode_shape_with(result.shape, &slots)
+                    .expect("archive");
+                let (restored, back) = kernel.decode_shape_with(&blob, &archived).expect("restore");
+                for (face, outward) in [(back[0], [0., 0., 1.]), (back[1], [-s, 0., -c])] {
+                    let (normal, covered, _) = face_normal_and_area(&mut kernel, restored, face);
+                    let dot =
+                        normal[0] * outward[0] + normal[1] * outward[1] + normal[2] * outward[2];
+                    assert!(dot > 1. - 1e-9, "restored {normal:?} is not {outward:?}");
+                    assert!((covered - area).abs() < 1e-5 * area);
+                }
+                kernel.release(result.shape);
+                kernel.release(restored);
+            }
+        }
+    }
     assert_eq!(kernel.live_shape_count(), 0);
 }

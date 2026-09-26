@@ -296,6 +296,39 @@ mod tests {
         assert_ne!(key, revolve_cache_key(&kernel, &relabelled, &context));
     }
 
+    /// §27D: a sector keys apart from the full turn of the same profile and
+    /// by the bits of its angle; the full turn keeps its key, and a kernel
+    /// accepts only a finite angle strictly between 0° and 360°.
+    #[test]
+    fn a_partial_turn_keys_by_its_angle_and_leaves_the_full_turn_key() {
+        let kernel = KernelIdentity::new("occt", "8.0.1", "").expect("valid");
+        let context = OperationContext::default();
+        let full = revolution(&request());
+        let sector = |degrees: f64| {
+            crate::RevolveRequest::new(
+                full.profile().clone(),
+                crate::RevolveAxis::PlaneY,
+                crate::RevolveTurn::Partial(crate::PartialTurn::new(degrees).expect("a sector")),
+            )
+        };
+        let full_key = revolve_cache_key(&kernel, &full, &context);
+        let quarter = revolve_cache_key(&kernel, &sector(90.0), &context);
+        assert_ne!(full_key, quarter);
+        assert_eq!(quarter, revolve_cache_key(&kernel, &sector(90.0), &context));
+        assert_ne!(
+            quarter,
+            revolve_cache_key(&kernel, &sector(90.000_000_000_001), &context)
+        );
+        assert_eq!(full_key, revolve_cache_key(&kernel, &full, &context));
+        for bad in [0.0, -0.0, -1.0, 360.0, 400.0, f64::NAN, f64::INFINITY] {
+            assert!(crate::PartialTurn::new(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            crate::PartialTurn::new(359.999).expect("inside").degrees(),
+            359.999
+        );
+    }
+
     #[test]
     fn a_stated_axis_line_keys_apart_and_must_be_a_profile_line() {
         let kernel = KernelIdentity::new("occt", "8.0.1", "").expect("valid");
