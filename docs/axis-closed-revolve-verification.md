@@ -34,7 +34,8 @@
   them. The bridge now drops every zero-area triangle. It does so for every
   shape, not only fresh revolutions, so that a cold build and an
   archive-restored one tessellate identically. The pinned export and pixel
-  corpus below proves no earlier mesh had one.
+  corpus below checks the covered models; it does not establish this for
+  every previously accepted model. See the independent precision probe below.
 * **JSON.** `full_turn_revolve` keeps meaning a profile off the axis, with
   its `axis_clearance_mm`. The new class gets its own kind,
   `full_turn_revolve_axis_closed`, with `axis_curve_id` and
@@ -327,11 +328,132 @@ application's state in a way that could relaunch it.
       `cmp frustum-gui.fbx frustum-cli.fbx` must be identical with **no**
       normalization: both copies keep the source's UUIDs.
     * `cmp cylinder-gui.stl cylinder-cli.stl`, and the same for the cone and
-      the shaft, must be identical. The created FBX files differ only in the
-      UUIDs each creation mints, so compare only their sizes.
+      the shaft, must be identical. For FBX, export the same GUI-created
+      document with the CLI and compare bytes directly. Independently created
+      documents mint different UUIDs; equal file sizes do not prove equality.
     * `"$FERRITECAD" print-topology <file>` must say 3 of 3 references
       resolved for the cylinder and the frustum, 2 of 2 for the cone, and
       5 of 5 for the shaft. None of them names the axis Line.
 
 Expected memory: the same order as §27A/B (about 200 MiB peak), exit 0,
 swap 0.
+
+## Independent macOS review — 2026-09-25
+
+Reviewed implementation head `6bff63c0ce909fbaa5c6b33f5a887cb9e092fa57`
+against `6f3b88d05bdda5ff9b34efff662d0fbe40c1d32c`. No geometry or storage
+implementation correction was needed. Review strengthened two assertions
+and corrected overbroad descriptions:
+
+* **Global float filtering has a real compatibility boundary.** The old
+  §27B binary creates the hollow profile `[(4,100000),(10,100000),
+  (10,100000.002),(4,100000.002)]`. Its B-Rep is valid, but the two Y levels
+  coincide as floats. The old STL exporter refuses; the old FBX exporter
+  publishes a degenerate mesh. The new build refuses both with `kind:kernel`
+  because an entire mesh face owns no triangles. No output/scratch appears
+  and the source is unchanged. This case now runs in the existing required
+  `axis::native_solid_revolution_refusals_are_atomic` gate. Thus the pinned
+  corpus is regression evidence for its members, not proof that every old
+  model is unchanged. No new geometric tolerance was introduced.
+* **Equal FBX sizes were insufficient evidence.** The existing headless
+  solid worker gate now compares every FBX byte after explicitly mapping
+  the two newly created Body UUIDs; exactly three occurrences are required.
+  The window recipe now uses same-document byte comparison as well.
+* The `AXIS_CLEARANCE_MM` comment now describes exact zero for the two axis
+  endpoints and strict clearance for other vertices, with no snapping.
+
+### Local checks on the reviewed changes
+
+One build at a time, existing targets, pinned OCCT 8.0.1 and PlaneGCS.
+`FCAD_ALLOW_LOADER_FAILURE_PROBES` was not enabled. Native release results:
+
+| Suite | Executed passes | Separate N/A / ignored |
+|---|---:|---|
+| kernel/topology/document/eval/jobs | 637 | 2 tests specifically for absent solver; 1 old benchmark |
+| OCCT suites | 138 | 0 |
+| CLI Revolve, sketch/circle/annulus/height/Cut editors, STL/FBX/JSON/validate | 113 | 0 |
+| headless sketch app | 34 | 0 |
+| edit workers | 9 | 0 |
+
+Total **931 executed passes**, without counting the two absent-solver N/A
+cases. Both strengthened exact gates were rerun positively. Fmt, release
+workspace clippy (`--all-targets --all-features -D warnings`) and diff
+whitespace checks pass. Genuine stub: 5 executed Revolve checks, 12 explicit
+native skips; CMake `OpenCASCADE_DIR-NOTFOUND` and no libTK/PlaneGCS imports.
+Mixed OCCT/no-solver: the exact new create/edit gate executes and passes;
+imports contain TKernel and no PlaneGCS. The full native CLI/viewer were
+rebuilt after the mixed build and before staging.
+
+The marked §27C recipe was extracted and executed: `FCAD_27C_RECIPE_OK 24`.
+The previous staged §27B binary independently opened the solid read-only,
+reported the missing capability, and refused cold rebuild and both exports
+without modifying the source or creating output. On a legacy hollow
+Revolve, inspect JSON is identical after removing only the two documented
+new `closure`/`axis_curve_id` fields.
+
+### Actual window and exported files
+
+A fresh staged `.app` passed strict deep signature verification, CLI help
+and viewer solver-info without build-tree loader variables. A single viewer
+PID **49003** ran under the 1536 MiB watchdog on temporary models outside the
+checkout. Actual macOS interaction covered:
+
+* Mouse creation of cylinder, cone and six-Line stepped shaft with 1 mm snap,
+  explicit closure and the Revolve choice; each published and opened.
+* Isolated-axis-touch and negative-X refusals with no Create action, Undo,
+  creation Save Cancel with the draft retained, and subsequent publication.
+* Open of `cylinder-source.fcad`, the exact saved axis Line UUID in Edit
+  Sketch, no feature/height controls, and drag of vertex 3 from X=10 to X=5.
+  One Undo restored the whole drag and one Redo restored the frustum.
+* Numeric movement of one axis endpoint (isolated-touch refusal), then both
+  (solid-to-hollow refusal), two Undo steps, Save Cancel preserving the
+  frustum, publication and async Open of the edited copy.
+* Actual STL and FBX Save dialogs for all four resulting models, then Quit.
+
+The CUA native pipe briefly closed immediately after edit Save Cancel. The
+watchdog confirmed the same viewer PID remained alive; reconnecting to that
+running window showed the retained draft, and the scenario continued. No
+viewer restart occurred. Escape during a held drag was **not** exercised in
+this window run; its headless test is separate. Numeric typing of `-1`
+required two Undo steps because input arrived in two character events;
+this is distinct from the one-step drag assertion.
+
+An independent parser checks closed directed edges, positive signed volume,
+radial/axial bounds and the cone/frustum slope. It reads binary STL directly
+and the exported ASCII FBX arrays using the inverse `(x,z,-y)·0.001` map.
+Each GUI FBX also passes pinned ufbx (6 checks, 0 failures).
+
+| GUI result | STL triangles | STL bytes | Mesh volume mm³ | Analytic mm³ | Resolved refs |
+|---|---:|---:|---:|---:|---:|
+| cylinder | 396 | 19884 | 4709.288976 | 4712.388980 | 3/3 |
+| cone | 1334 | 66784 | 1568.986040 | 1570.796327 | 2/2 |
+| stepped shaft | 704 | 35284 | 2699.481665 | 2701.769682 | 5/5 |
+| edited frustum | 1332 | 66684 | 2745.583863 | 2748.893572 | 3/3 |
+
+Same-document GUI/CLI STL **and FBX** are byte-identical in all four cases.
+The three independent creations also have identical STL; their full FBX
+contents agree after mapping only the known Body UUID (three occurrences).
+GUI/CLI edited copies have every SQL cell equal, including saved identities
+and refs, and both exports are byte-identical without normalization. Against
+the source, only the selected Sketch's payload and hash cells changed. All
+initial source/fixture hashes remain unchanged; the axis Line has no ref.
+
+Watchdog peak **211.673 MiB**, pressure normal (`1`), swap **0** throughout,
+exit **0**, no watchdog abort. Exit was checked by PID/log only, without an
+application query after Quit. The earlier OOM cause remains unproved.
+
+### Remote evidence and limits
+
+On the exact implementation head above, independently downloaded CI logs
+confirm **11/11 checks, 2 workflows**, **226 distinct required test names**
+(**265 executions** including intentional repeats) and **74 pinned ufbx
+reads, 0 failures per OS**, on Linux, macOS and Windows. This recount is
+from executed logs, not only workflow text. Review-commit and merge checks
+are recorded with the PR; these implementation-head numbers do not claim
+that a later commit has already passed.
+
+Windows/Linux window interaction, Unity and the full local heavy STEP/pixel
+campaign were not repeated. The remote native campaign covers the existing
+export corpus. Local evidence, probes, scripts and watchdog samples are in
+`/private/tmp/ferrite-27c-review`; an evidence archive is saved outside temp
+at the end of review.

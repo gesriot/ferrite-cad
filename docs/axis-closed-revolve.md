@@ -63,6 +63,16 @@ with 0 < X ≤ 1e-6 mm is refused as near the axis but not on it.
 * more than two vertices on the axis (several axis Lines or intervals);
 * an off-axis vertex within the clearance.
 
+### Mesh precision
+
+The mesh stores single-precision positions. Triangles with zero area at
+that precision are omitted, including the collapsed triangles at a cone's
+apex. If a whole face loses its triangles, mesh validation refuses export;
+a valid B-Rep alone does not guarantee an exportable mesh. For example, a
+0.002 mm thick hollow revolution at Y = 100000 mm has coincident Y levels
+after float conversion. STL and FBX both refuse atomically, without an
+output file. Earlier builds could publish a degenerate FBX for this case.
+
 ### Storage and capability
 
 * **The axis Line is stated.** An axis-closed Revolve stores it by curve

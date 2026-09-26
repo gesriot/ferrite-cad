@@ -1305,7 +1305,25 @@ fn native_solid_revolve_widgets_drag_worker_and_cli_create_and_edit() {
     };
     let (a, b) = (export(&ui), export(&cli));
     assert_eq!(a[0], b[0], "worker/CLI STL bytes");
-    assert_eq!(a[1].len(), b[1].len(), "FBX differs only in minted UUIDs");
+    let mapped_fbx = |path: &std::path::Path, bytes: &[u8]| {
+        let document = Document::open_read_only(path).expect("document");
+        let body = document
+            .objects()
+            .expect("objects")
+            .into_iter()
+            .find(|o| matches!(o.payload, ferritecad_document::ObjectPayload::Body(_)))
+            .expect("Body");
+        let text = std::str::from_utf8(bytes).expect("ASCII FBX");
+        assert_eq!(text.matches(&body.id.to_string()).count(), 3);
+        let mapped = text.replace(&body.id.to_string(), "same-body");
+        document.close().expect("close");
+        mapped
+    };
+    assert_eq!(
+        mapped_fbx(&ui, &a[1]),
+        mapped_fbx(&cli, &b[1]),
+        "all FBX bytes agree after mapping the two created Body identities"
+    );
 
     // Reopen the worker's file and edit it in the same Line editor.
     let source_bytes = std::fs::read(&ui).expect("source");

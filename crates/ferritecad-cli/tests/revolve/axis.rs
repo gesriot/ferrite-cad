@@ -525,6 +525,7 @@ fn native_solid_revolution_refusals_are_atomic() {
         return;
     }
     let d = tempfile::tempdir().expect("dir");
+    collapsed_float_faces_refuse_publication(d.path());
     let clear = FullTurnRevolution::AXIS_CLEARANCE_MM;
     // Creation: each exits 2 and writes nothing.
     let out = d.path().join("never.fcad");
@@ -756,6 +757,44 @@ fn native_solid_revolution_refusals_are_atomic() {
             .contains("cannot change between hollow and solid")
     );
     assert_eq!(entries(d.path()), names);
+}
+
+// Exercise the global tessellation filter on a pre-existing hollow profile,
+// away from any apex. Its two Y levels coincide in the exported f32 mesh.
+// A valid B-Rep must not become a successful export with a missing whole face.
+fn collapsed_float_faces_refuse_publication(directory: &Path) {
+    let input = directory.join("thin.json");
+    let source = directory.join("thin.fcad");
+    request(
+        &input,
+        &[
+            [4., 100_000.],
+            [10., 100_000.],
+            [10., 100_000.002],
+            [4., 100_000.002],
+        ],
+    );
+    reply(create(&input, &source).output().expect("thin B-Rep"), 0);
+    let bytes = std::fs::read(&source).expect("source");
+    for (operation, extension) in [("export-stl", "stl"), ("export-fbx", "fbx")] {
+        let destination = directory.join(format!("thin.{extension}"));
+        let names = entries(directory);
+        let output = cli()
+            .arg(operation)
+            .arg(&source)
+            .arg("-o")
+            .arg(&destination)
+            .arg("--json")
+            .output()
+            .expect("export");
+        assert_eq!(output.status.code(), Some(2), "{operation}: {output:?}");
+        let value: Value = serde_json::from_slice(&output.stdout).expect("JSON");
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["kind"], "kernel");
+        assert!(!destination.exists(), "{operation} must not omit a face");
+        assert_eq!(entries(directory), names, "no output or scratch");
+        assert_eq!(std::fs::read(&source).expect("source"), bytes);
+    }
 }
 
 /// A solid Revolve document written without any kernel, the way §27A's

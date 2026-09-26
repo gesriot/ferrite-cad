@@ -3636,7 +3636,8 @@ simple Line polygon with X ≥ 0 and exactly one whole Line exactly on X = 0.
   same statement: that one Line must raise nothing, and every other Line
   still exactly one face. The axis Line gets no reference, and a cone's apex
   no face. The bridge also drops zero-area triangles, which OCCT makes at an
-  apex; no earlier mesh contains one.
+  apex, using stored float positions. Covered earlier meshes retain their
+  output; an entire face collapsing at float precision causes export refusal.
 * **Editing.** Coordinates change under the same guards; the axis Line stays
   the same Line on the axis, and hollow ↔ solid is refused before copying.
 * **Compatibility.** A §27B build refuses to create such a profile, and
@@ -3651,3 +3652,14 @@ simple Line polygon with X ≥ 0 and exactly one whole Line exactly on X = 0.
 [Contract and recipe](axis-closed-revolve.md),
 [verification](axis-closed-revolve-verification.md). The cloud
 implementation leaves actual macOS GUI verification to the reviewer.
+
+Independent §27C review completed native, genuine stub, OCCT/no-solver and
+actual macOS window checks. Creation of cylinder/cone/stepped shaft and a
+saved cylinder-to-frustum drag edit passed, including refusals, Undo/Redo,
+Save Cancel, publication/Open and both exports. Four same-document STL/FBX
+pairs are byte-identical; the edited GUI/CLI copies have equal SQL. Viewer
+peak 211.673 MiB, exit 0, swap 0. Review strengthened FBX comparison and
+added a precision-boundary refusal case for the global triangle filter;
+no geometry/storage implementation correction was needed. Initial exact
+head CI logs confirm 226 distinct native gate names and 74 ufbx reads per
+OS. [Independent evidence](axis-closed-revolve-verification.md#independent-macos-review--2026-09-25).

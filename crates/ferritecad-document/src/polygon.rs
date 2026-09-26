@@ -144,8 +144,8 @@ pub struct FullTurnRevolution {
 }
 
 impl FullTurnRevolution {
-    /// How far every vertex must stay from the axis, in mm. The polygon
-    /// policy's own tolerance: a vertex nearer than this is on the axis.
+    /// Minimum clearance of an off-axis vertex, in mm. The two ends of an
+    /// axis Line instead need exactly zero X; nearby vertices are not snapped.
     pub const AXIS_CLEARANCE_MM: f64 = PolygonExtrusion::TOLERANCE_MM;
 
     pub fn new(points: Vec<[f64; 2]>) -> Result<Self> {

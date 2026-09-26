@@ -2677,7 +2677,8 @@ FcOcctStatus fc_occt_tessellate(
         // it, and nothing can light it. It is dropped wherever it occurs, so
         // a shape rebuilt cold and the same shape restored from an archive
         // (which does not know it was revolved) tessellate identically. A
-        // mesh that never had one — every earlier model — is unchanged. The
+        // mesh that never had one is unchanged. If an entire face collapses,
+        // the mesh validator rejects its empty face range before export. The
         // apex nodes need not coincide in double (on macOS they can differ in
         // the last bits and still narrow to one float point), so the test is
         // made on the stored float corners.
