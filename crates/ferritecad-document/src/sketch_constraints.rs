@@ -2,7 +2,8 @@
 //! Bounded persisted Line orientation/length/pin/equality/relation editing. No solver or wire format.
 use crate::{
     CircleExtrusion, Document, ObjectPayload, ObjectRecord, Sketch, SketchConstraint,
-    SketchConstraintRule, SketchGeometry, SketchPointRef, SketchPointSelector, SketchSegmentRef,
+    SketchConstraintRule, SketchGeometry, SketchPointRef, SketchPointSelector, SketchProfileUse,
+    SketchSegmentRef,
 };
 use ferritecad_types::{CadError, ObjectId, Result, StableEntityId};
 use std::collections::BTreeSet;
@@ -221,7 +222,13 @@ pub struct ConstraintSketchChoice {
     pub sketch: ObjectId,
     pub name: Option<String>,
     pub stored: Option<Sketch>,
+    /// The extrusion height, for a profile an Extrude uses; `None` for a
+    /// Revolve profile, which has no height, and for an unsupported Sketch.
     pub height_mm: Option<f64>,
+    /// §27G: the feature that turns this profile into a solid, and so the
+    /// policy its solved drawing must satisfy. Present exactly when `stored`
+    /// is.
+    pub profile_use: Option<SketchProfileUse>,
     pub refusal: Option<String>,
 }
 
@@ -232,8 +239,8 @@ pub fn constraint_sketch_choices(
     objects
         .iter()
         .filter(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
-        .map(|o| match supported(document, objects, o) {
-            Ok(height) => {
+        .map(|o| match supported_family(document, objects, o) {
+            Ok((_, profile_use)) => {
                 let ObjectPayload::Sketch(sketch) = &o.payload else {
                     unreachable!("checked")
                 };
@@ -241,7 +248,8 @@ pub fn constraint_sketch_choices(
                     sketch: o.id,
                     name: o.name.clone(),
                     stored: Some(sketch.clone()),
-                    height_mm: Some(height),
+                    height_mm: extrusion_height(&profile_use),
+                    profile_use: Some(profile_use),
                     refusal: None,
                 }
             }
@@ -250,33 +258,47 @@ pub fn constraint_sketch_choices(
                 name: o.name.clone(),
                 stored: None,
                 height_mm: None,
+                profile_use: None,
                 refusal: Some(e.to_string()),
             },
         })
         .collect()
 }
 
-fn supported(document: &Document, objects: &[ObjectRecord], object: &ObjectRecord) -> Result<f64> {
-    supported_family(document, objects, object).map(|(_, height)| height)
+fn extrusion_height(profile_use: &SketchProfileUse) -> Option<f64> {
+    match *profile_use {
+        SketchProfileUse::BlindExtrude { height_mm, .. } => Some(height_mm),
+        _ => None,
+    }
 }
 
-/// The frame, the geometry family and the height, all from one reading.
+/// The frame, the geometry family and the owning feature, all from one reading.
 fn supported_family(
     document: &Document,
     objects: &[ObjectRecord],
     object: &ObjectRecord,
-) -> Result<(Family, f64)> {
+) -> Result<(Family, SketchProfileUse)> {
     // The frame every copy edit of a saved profile requires is checked once,
-    // in the one place that owns it, before either family is considered.
-    let (sketch, height) = crate::sketch_edit::frame(document, objects, object)?;
+    // in the one place that owns it, before either family is considered. It
+    // also says which feature uses the profile (§27G): an Extrude and its
+    // height, or a Revolve with a bore and its stated turn.
+    let (sketch, profile_use) = crate::sketch_edit::constraint_frame(document, objects, object)?;
     let family = classify(sketch)?;
-    match family {
-        // Unchanged: the Line editor's own class, checked by its own code, so
-        // a profile it managed before this slice is managed identically now.
-        Family::Lines => {
-            crate::sketch_edit::supported(document, objects, object, true)?;
+    let height = extrusion_height(&profile_use);
+    match (family, height) {
+        // The Line editor's own class, checked by its own code against the
+        // policy of the feature that uses it — the same check an Extrude
+        // profile always had, and the Revolve policy for a turned one.
+        (Family::Lines, _) => {
+            crate::sketch_edit::constrained_lines(sketch, &profile_use)?;
         }
-        Family::Circle => {
+        (Family::Circle | Family::Annulus, None) => {
+            return Err(CadError::unsupported(
+                "a Revolve profile is Lines; constraint editing of Circles is supported only on \
+                 an extruded profile",
+            ));
+        }
+        (Family::Circle, Some(height)) => {
             let (_, center, radius) = crate::circle_edit::analytic_circle(&sketch.curves[0])?;
             // The stored geometry has to be inside the policy new numbers are
             // judged by, and it is the *same* policy: one numeric rule, asked
@@ -285,7 +307,7 @@ fn supported_family(
                 CadError::unsupported(format!("saved circle is outside edit policy: {e}"))
             })?;
         }
-        Family::Annulus => {
+        (Family::Annulus, Some(height)) => {
             // The same reading, the same roles and the same numeric policy the
             // annulus editor applies to a saved pair — asked here through the
             // one function that owns them, so a document the two editors both
@@ -294,7 +316,7 @@ fn supported_family(
         }
     }
     managed(sketch, family)?;
-    Ok((family, height))
+    Ok((family, profile_use))
 }
 
 /// Which family this sketch's curves make it, or why it is neither.
@@ -778,12 +800,20 @@ pub struct PreparedSketchConstraints {
     pub(crate) object: ObjectRecord,
     pub added: Vec<SketchConstraint>,
     pub removed: Vec<StableEntityId>,
-    pub height_mm: f64,
+    /// The feature that uses the profile, read with the frame: what the
+    /// solved drawing must satisfy before publication. Private, like the
+    /// payload, so no caller can swap the policy a copy is judged by.
+    profile_use: SketchProfileUse,
     roles: Option<(StableEntityId, StableEntityId)>,
 }
 impl PreparedSketchConstraints {
     pub fn object(&self) -> &ObjectRecord {
         &self.object
+    }
+
+    /// The feature that turns the profile into a solid (§27G).
+    pub fn profile_use(&self) -> SketchProfileUse {
+        self.profile_use
     }
 
     /// The boundary and the bore of the **saved** profile, in that order, or
@@ -824,7 +854,7 @@ pub fn prepare_sketch_constraints(
         .find(|o| o.id == id)
         .cloned()
         .ok_or_else(|| CadError::input("selected Sketch UUID does not exist"))?;
-    let (family, height_mm) = supported_family(document, &objects, &object)?;
+    let (family, profile_use) = supported_family(document, &objects, &object)?;
     let ObjectPayload::Sketch(sketch) = &mut object.payload else {
         unreachable!("checked")
     };
@@ -937,7 +967,7 @@ pub fn prepare_sketch_constraints(
         object,
         added,
         removed: edits.remove.clone(),
-        height_mm,
+        profile_use,
         roles,
     })
 }

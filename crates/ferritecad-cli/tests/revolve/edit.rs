@@ -597,10 +597,16 @@ fn revolve_profile_discovery_protocol_and_writer_without_kernel() {
         row["profile_feature"]["axis_clearance_mm"],
         FullTurnRevolution::AXIS_CLEARANCE_MM
     );
-    // The Revolve keeps its own discovery and meaning; other editors refuse.
+    // The Revolve keeps its own discovery and meaning; the circle editors
+    // refuse. §27G deliberately replaces the old refusal of the constraint
+    // editor: a profile with a bore now names its Revolve there too.
     assert_eq!(c["features"], json!([]));
     assert_eq!(c["revolves"][0]["profile"]["available"], true);
-    assert_eq!(row["constraint_edit"]["available"], false);
+    assert_eq!(row["constraint_edit"]["available"], true);
+    assert_eq!(
+        row["constraint_edit"]["profile_feature"],
+        row["profile_feature"]
+    );
     assert_eq!(row["circle_edit"]["available"], false);
     assert_eq!(row["annulus_edit"]["available"], false);
     assert_eq!(row["cut_history_v3"], Value::Null);

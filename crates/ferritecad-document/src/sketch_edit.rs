@@ -54,7 +54,11 @@ impl SketchProfileUse {
     /// The profile policy of this use, applied to candidate starts in saved
     /// order. The same value creation and the evaluator use, so an edit can
     /// never publish what either refuses.
-    fn check(&self, vertices: &[SketchVertex]) -> Result<Vec<Point2>> {
+    ///
+    /// §27G: also what a constraint copy asks of the **solved** Lines before
+    /// publication, so the solved and the stored profile are judged by one
+    /// rule rather than by a height a Revolve does not have.
+    pub fn check(&self, vertices: &[SketchVertex]) -> Result<Vec<Point2>> {
         Ok(match *self {
             Self::BlindExtrude { height_mm, .. } => {
                 PolygonExtrusion::new(vertices.iter().map(|v| v.start_mm).collect(), height_mm)?
@@ -193,18 +197,56 @@ fn unsupported(message: &str) -> CadError {
     CadError::unsupported(message)
 }
 
-pub(crate) fn supported(
+/// The frame and the owning feature of a profile the constraint editor may
+/// manage (§25E, widened by §27G).
+///
+/// A Sketch that a Revolve turns is judged by the shared Revolve frame alone,
+/// exactly as the coordinate editor judges it, and never by the Extrude frame
+/// as a fallback. Of the Revolve classes, only a part with a bore is accepted:
+/// a profile closed on the axis is refused here, before anything is solved.
+pub(crate) fn constraint_frame<'a>(
     document: &Document,
-    objects: &[ObjectRecord],
-    object: &ObjectRecord,
-    allow_constraints: bool,
-) -> Result<(Vec<SketchVertex>, f64)> {
+    objects: &'a [ObjectRecord],
+    object: &'a ObjectRecord,
+) -> Result<(&'a crate::Sketch, SketchProfileUse)> {
+    if objects
+        .iter()
+        .any(|o| matches!(&o.payload, ObjectPayload::Revolve(r) if r.profile == object.id))
+    {
+        let (sketch, profile_use) = revolve_frame(document, objects, object)?;
+        if let SketchProfileUse::FullTurnRevolve {
+            axis_segment: Some(axis),
+            ..
+        }
+        | SketchProfileUse::PartialRevolve {
+            axis_segment: Some(axis),
+            ..
+        } = profile_use
+        {
+            return Err(CadError::unsupported(format!(
+                "constraint editing supports a Revolve profile with a bore; this profile is \
+                 closed on the axis along Line {axis}, which is not supported"
+            )));
+        }
+        return Ok((sketch, profile_use));
+    }
     let (sketch, height, feature) = extrude_frame(document, objects, object)?;
-    let profile_use = SketchProfileUse::BlindExtrude {
-        feature,
-        height_mm: height,
-    };
-    Ok((lines(sketch, &profile_use, allow_constraints)?, height))
+    Ok((
+        sketch,
+        SketchProfileUse::BlindExtrude {
+            feature,
+            height_mm: height,
+        },
+    ))
+}
+
+/// The ordered Lines of a profile that may carry constraints, with its
+/// **stored** coordinates inside the policy of the feature that uses it.
+pub(crate) fn constrained_lines(
+    sketch: &crate::Sketch,
+    profile_use: &SketchProfileUse,
+) -> Result<Vec<SketchVertex>> {
+    lines(sketch, profile_use, true)
 }
 
 /// The structure every copy edit of a saved profile requires, and the height

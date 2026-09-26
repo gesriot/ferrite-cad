@@ -51,7 +51,7 @@ pub(super) fn profile_area(points: &[[f64; 2]]) -> f64 {
 }
 
 /// Whether (r, y) is inside the profile or within `tolerance` of its edge.
-fn in_profile(points: &[[f64; 2]], r: f64, y: f64, tolerance: f64) -> bool {
+pub(super) fn in_profile(points: &[[f64; 2]], r: f64, y: f64, tolerance: f64) -> bool {
     let n = points.len();
     let mut odd = false;
     let mut near = f64::INFINITY;
@@ -94,13 +94,13 @@ fn phi(p: &[f64; 3]) -> f64 {
 /// just below 0, so rounding at the start plane is not taken for a full turn.
 /// Narrower than the 0.01° the widest sector leaves open, so the end plane of
 /// a 359.99° sector is never read as its start.
-fn signed_phi(p: &[f64; 3]) -> f64 {
+pub(super) fn signed_phi(p: &[f64; 3]) -> f64 {
     let a = phi(p);
     if a > 360. - 1e-3 { a - 360. } else { a }
 }
 
 /// The outward normal and in-plane radial direction of one end face.
-fn cap_frame(side: CapSide, degrees: f64) -> ([f64; 3], [f64; 3]) {
+pub(super) fn cap_frame(side: CapSide, degrees: f64) -> ([f64; 3], [f64; 3]) {
     let (s, c) = degrees.to_radians().sin_cos();
     match side {
         CapSide::Start => ([0., 0., 1.], [1., 0., 0.]),
@@ -108,11 +108,11 @@ fn cap_frame(side: CapSide, degrees: f64) -> ([f64; 3], [f64; 3]) {
     }
 }
 
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+pub(super) fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-fn cross(t: &[[f64; 3]; 3]) -> [f64; 3] {
+pub(super) fn cross(t: &[[f64; 3]; 3]) -> [f64; 3] {
     let u = [t[1][0] - t[0][0], t[1][1] - t[0][1], t[1][2] - t[0][2]];
     let v = [t[2][0] - t[0][0], t[2][1] - t[0][1], t[2][2] - t[0][2]];
     [
@@ -122,7 +122,7 @@ fn cross(t: &[[f64; 3]; 3]) -> [f64; 3] {
     ]
 }
 
-fn length(v: [f64; 3]) -> f64 {
+pub(super) fn length(v: [f64; 3]) -> f64 {
     dot(v, v).sqrt()
 }
 
