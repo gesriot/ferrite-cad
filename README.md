@@ -72,6 +72,12 @@ Sketch** editor (drag or exact X/Y) or with `edit-sketch-copy`. The saved
 angle, axis and every Line and cap UUID are kept; a part with a bore stays
 one and the axis Line stays on the axis.
 [Sector profile edit contract and recipe](docs/edit-partial-revolve-profile.md).
+The Line profile of a full turn or a sector with a bore also takes the
+existing **Edit constraints** dimensions — H/V, Line length, one Fixed
+endpoint, equal length, Parallel, Perpendicular — through the same editor or
+`edit-sketch-constraints-copy`. The Body turns the solved profile, keeps its
+angle, axis and every face and cap UUID, and a solution that reaches the
+axis is refused. [Revolve constraint contract and recipe](docs/revolve-profile-constraints.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

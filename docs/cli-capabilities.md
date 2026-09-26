@@ -124,6 +124,26 @@ Request этого маршрута стал строже: дубли ключе
 escape) и массивы на месте объектов отказываются как `input`.
 [Контракт §27F и исполняемый рецепт](edit-partial-revolve-profile.md).
 
+§27G: `edit-sketch-constraints-copy` с прежним request v1 принимает профиль
+сохранённого Revolve с отверстием — полного оборота (v1) и сектора (v3).
+Те же семь Line-правил, closure, точное удаление по UUID и атомарная замена
+длины. Stored координаты не переписываются; тело строится из решённого
+профиля, и тот же класс (отверстие, зазор до оси, простой полигон)
+проверяется на решении до публикации.
+
+Сохраняются:
+- строка Revolve (угол, ось, `axis_segment`);
+- все UUID объектов, Lines и имён, оба `RevolveCap`.
+
+Меняются только payload/payload_hash/schema_version строки Sketch и строка
+`sketch.constraints.v1`. Замкнутый на оси профиль (v2/v4), окружности,
+booleans и иные документы отказываются. Discovery аддитивна:
+`constraint_edit.profile_feature` называет Revolve теми же видами, что
+`profile_feature`, без выдуманной высоты. Правка угла сектора принимает
+профиль с ограничениями и сохраняет их. Request этой команды теперь
+отказывает массиву на месте запроса или добавления (`input`).
+[Контракт §27G и исполняемый рецепт](revolve-profile-constraints.md).
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.

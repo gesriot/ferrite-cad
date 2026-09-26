@@ -26,6 +26,9 @@ mod angle;
 /// §27C: solid parts closed on the axis along one Line.
 #[path = "revolve/axis.rs"]
 mod axis;
+/// §27G: dimensional constraints on those profiles with a bore.
+#[path = "revolve/constraints.rs"]
+mod constraints;
 /// §27B: editing the saved profile of these documents.
 #[path = "revolve/edit.rs"]
 mod edit;
@@ -449,10 +452,16 @@ fn revolve_document_contract_and_discovery_without_kernel() {
     }
     for sketch in catalog["sketches"].as_array().expect("sketches") {
         // §27B: the Line coordinate editor accepts this profile and says it
-        // feeds the Revolve; every other Sketch editor still refuses.
+        // feeds the Revolve; §27G: so does the constraint editor, naming the
+        // same Revolve. The circle editors still refuse.
         assert_eq!(sketch["editable"], json!(true));
         assert_eq!(sketch["profile_feature"]["kind"], "full_turn_revolve");
-        for editor in ["constraint_edit", "circle_edit", "annulus_edit"] {
+        assert_eq!(sketch["constraint_edit"]["available"], json!(true));
+        assert_eq!(
+            sketch["constraint_edit"]["profile_feature"],
+            sketch["profile_feature"]
+        );
+        for editor in ["circle_edit", "annulus_edit"] {
             assert_eq!(sketch[editor]["available"], json!(false), "{editor}");
         }
         assert!(sketch["cut_history_v3"].is_null());

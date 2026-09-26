@@ -444,3 +444,25 @@ if [ -n "${FCAD_REVOLVE_PROFILE_FBX_DIR:-}" ]; then
     done
     echo "FCAD_REVOLVE_PROFILE_UFBX_EXECUTED"
 fi
+if [ -n "${FCAD_REVOLVE_CONSTRAINT_FBX_DIR:-}" ]; then
+    # §27G: a constrained full-turn bushing and a constrained sector, each
+    # turned from its solved profile, are read the same two ways, and their
+    # triangles joined against the STL of the same copy.
+    for name in revolve-constraints-bushing revolve-constraints-sector; do
+        "$reader" --identity "$FCAD_REVOLVE_CONSTRAINT_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=6 failures=0$' "$work/$name-reader.txt"; then
+            echo "error: constrained Revolve FBX was not independently read: $name" >&2
+            exit 1
+        fi
+        "$reader" --triangles "$FCAD_REVOLVE_CONSTRAINT_FBX_DIR/$name.fbx" > "$work/$name-triangles.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=[0-9]* failures=0$' "$work/$name-triangles.txt"; then
+            echo "error: constrained Revolve FBX triangles were not read: $name" >&2
+            exit 1
+        fi
+        "$python" "$(native "$root/tools/fbx/stl-matches-fbx.py")" \
+            "$FCAD_REVOLVE_CONSTRAINT_FBX_DIR/$name.stl" "$(native "$work/$name-triangles.txt")" \
+            | tee "$work/$name-match.txt"
+        grep -q '^FCAD_STL_FBX_MATCH triangles=[1-9][0-9]* ' "$work/$name-match.txt"
+    done
+    echo "FCAD_REVOLVE_CONSTRAINT_UFBX_EXECUTED"
+fi
