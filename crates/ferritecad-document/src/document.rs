@@ -1179,6 +1179,45 @@ impl Document {
         )
     }
 
+    /// Write a prepared Revolve angle (§27E): only the selected row's payload
+    /// and hash, and the modification time. The object set, payload versions
+    /// and capabilities cannot change, so nothing else is rebuilt or touched.
+    pub fn write_revolve_angle(&mut self, prepared: &crate::PreparedRevolveAngle) -> Result<()> {
+        let record = prepared.feature();
+        let bytes = record.payload.to_storage_bytes()?;
+        let hash = ContentHash::of_bytes(&bytes);
+        self.write_checked_transaction(
+            |document| crate::revolve_angle_edit::rederive(document, prepared),
+            |writer| {
+                let changed = writer
+                    .tx
+                    .execute(
+                        "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
+                        params![
+                            bytes,
+                            hash.as_bytes().as_slice(),
+                            record.id.to_bytes().as_slice()
+                        ],
+                    )
+                    .map_err(|e| CadError::io("writing Revolve angle", e))?;
+                if changed != 1 {
+                    return Err(CadError::input(
+                        "selected Revolve disappeared before angle write",
+                    ));
+                }
+                writer
+                    .tx
+                    .execute(
+                        &format!("UPDATE meta SET modified_at = {NOW_UTC} WHERE id = 1"),
+                        [],
+                    )
+                    .map_err(|e| CadError::io("stamping Revolve angle edit", e))?;
+                Ok(())
+            },
+            false,
+        )
+    }
+
     fn write_transaction<T>(
         &mut self,
         edit: impl FnOnce(&mut DocumentWriter<'_>) -> Result<T>,

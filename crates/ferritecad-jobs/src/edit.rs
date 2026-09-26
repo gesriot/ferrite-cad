@@ -107,6 +107,46 @@ pub fn edit_sketch_copy<K: GeometryKernel + ?Sized>(
     })
 }
 
+/// §27E: a new stated angle for one saved partial Revolve.
+#[derive(Debug, Clone)]
+pub struct EditRevolveAngleRequest {
+    pub source: PathBuf,
+    pub expected: DocumentVersion,
+    pub feature: ObjectId,
+    /// Degrees, exactly as given; the domain's `RevolveAngle` decides.
+    pub degrees: f64,
+    pub destination: PathBuf,
+}
+
+/// The same model at a new angle, every identity kept. Its angle is only
+/// written through the shared copy spine: the prepared row is derived again
+/// inside the write, every saved name must resolve after a cold rebuild, and
+/// the source is checked once more before a no-clobber publication.
+pub fn edit_revolve_angle_copy<K: GeometryKernel + ?Sized>(
+    request: &EditRevolveAngleRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+) -> Result<EditedDocument> {
+    context.check_cancelled()?;
+    edit_object_copy(
+        &request.source,
+        request.expected,
+        &request.destination,
+        kernel,
+        context,
+        |source| {
+            ferritecad_document::prepare_revolve_angle(source, request.feature, request.degrees)
+                .map(CopyWrite::RevolveAngle)
+        },
+        |_, _| Ok(()),
+    )?;
+    Ok(EditedDocument {
+        destination: request.destination.clone(),
+        document_id: request.expected.document_id,
+        feature: request.feature,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct EditCircleRequest {
     pub source: PathBuf,
@@ -424,12 +464,14 @@ enum CopyWrite {
     Constraints(ferritecad_document::PreparedSketchConstraints),
     Circle(ferritecad_document::ObjectRecord),
     Annulus(ferritecad_document::ObjectRecord),
+    RevolveAngle(ferritecad_document::PreparedRevolveAngle),
 }
 impl CopyWrite {
     fn object(&self) -> &ferritecad_document::ObjectRecord {
         match self {
             Self::Coordinates(o) | Self::Circle(o) | Self::Annulus(o) => o,
             Self::Height(p) => p.feature(),
+            Self::RevolveAngle(p) => p.feature(),
             Self::Constraints(p) => p.object(),
             // The body is the one object a cut changes; the two it adds did
             // not exist to be read.
@@ -511,6 +553,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         CopyWrite::Cut(prepared) => document.write_circular_cut(prepared)?,
         CopyWrite::CutParameters(prepared) => document.write_cut_parameters(prepared)?,
         CopyWrite::Height(p) => document.write_extrude_height(p)?,
+        CopyWrite::RevolveAngle(p) => document.write_revolve_angle(p)?,
     }
     // A solve is asked for only when the edited sketch still has something to
     // solve. Taking the last constraint off a circle leaves a drawing with no

@@ -3678,3 +3678,26 @@ Other axes, constraints, booleans, preview and in-place Save remain pending.
 
 [Contract and executable recipe](partial-angle-revolve.md),
 [verification and independent review](partial-angle-revolve-verification.md).
+
+**§27E — edit a saved sector's angle in a new copy.**
+
+The angle of a standalone partial Revolve (payload v3 with a bore, v4 closed
+on the axis) is its one editable intent. `edit-revolve-angle` and **Edit
+Revolve angle** share one job, and the frame is the one the §27B profile edit
+uses:
+
+* **Discovery.** Additive `ExtrudeEditSource.revolve_angles` from the same
+  pinned reading.
+* **Preparation.** `prepare_revolve_angle` replaces only the angle and
+  records the content version.
+* **Write.** `write_revolve_angle` derives the row again inside its
+  transaction and changes only its payload/hash and `meta.modified_at`.
+* **Copy.** The shared copy spine rebuilds cold, requires every saved name
+  and publishes without clobbering.
+
+Full turns, other compositions and angles the domain refuses are refused
+atomically. Sector coordinates, full↔partial, axis/direction, booleans,
+preview and in-place Save remain out of scope.
+
+[Contract and executable recipe](edit-revolve-angle.md),
+[verification](edit-revolve-angle-verification.md).

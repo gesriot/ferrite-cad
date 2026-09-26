@@ -35,6 +35,7 @@ pub enum Operation {
     EditSketchConstraintsCopy,
     CutCircularCopy,
     EditCircularCut,
+    EditRevolveAngle,
     Create,
     CreateSketchExtrude,
     CreateSketchRevolve,
@@ -108,7 +109,8 @@ pub struct Inspection {
 
 /// One saved Revolve, as the pinned reading found it. Its profile's
 /// coordinates are edited through `edit-sketch-copy` (§27B); whether that is
-/// allowed is the Sketch row's `editable`, not `profile.available`.
+/// allowed is the Sketch row's `editable`, not `profile.available`. Its angle
+/// is edited through `edit-revolve-angle` (§27E), as `angle_edit` says.
 #[derive(Serialize)]
 struct RevolveDiscovery {
     feature_id: ObjectId,
@@ -129,6 +131,37 @@ struct RevolveDiscovery {
     /// §27D, additive: the stored angle of a partial turn, in degrees
     /// (`extent` is then `"partial_turn"`); null for a full turn.
     angle_deg: Option<f64>,
+    /// §27E, additive: whether `edit-revolve-angle` accepts this Revolve.
+    angle_edit: AngleEditDiscovery,
+}
+
+/// What `edit-revolve-angle` would accept about one Revolve, from the same
+/// reading. `available` folds in the document-wide refusal, which keeps its
+/// priority; `refusal` is this Revolve's own reason and `document_refusal` the
+/// shared one, as `circle_edit` and `annulus_edit` report them. The bounds are
+/// the domain's, both inclusive; the saved angle stays in `angle_deg`.
+#[derive(Serialize)]
+struct AngleEditDiscovery {
+    available: bool,
+    refusal: Option<String>,
+    document_refusal: Option<String>,
+    min_deg: f64,
+    max_deg: f64,
+}
+
+impl AngleEditDiscovery {
+    fn new(
+        choice: ferritecad_document::RevolveAngleChoice,
+        document_refusal: Option<String>,
+    ) -> Self {
+        Self {
+            available: choice.refusal.is_none() && document_refusal.is_none(),
+            refusal: choice.refusal,
+            document_refusal,
+            min_deg: ferritecad_document::RevolveAngle::MIN_DEGREES,
+            max_deg: ferritecad_document::RevolveAngle::MAX_DEGREES,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -148,9 +181,10 @@ struct RevolveSegment {
     end_mm: [f64; 2],
 }
 
-impl From<ferritecad_document::RevolveChoice> for RevolveDiscovery {
-    fn from(r: ferritecad_document::RevolveChoice) -> Self {
+impl RevolveDiscovery {
+    fn new(r: ferritecad_document::RevolveChoice, angle_edit: AngleEditDiscovery) -> Self {
         Self {
+            angle_edit,
             feature_id: r.feature,
             name: r.name,
             body_id: r.body,
@@ -1048,10 +1082,20 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         .into_iter()
         .map(|c| (c.feature, c))
         .collect();
+    let mut angle_choices: std::collections::BTreeMap<_, _> = source
+        .revolve_angles
+        .into_iter()
+        .map(|c| (c.feature, c))
+        .collect();
     let revolves = source
         .revolves
         .into_iter()
-        .map(RevolveDiscovery::from)
+        .map(|r| {
+            let angle = angle_choices
+                .remove(&r.feature)
+                .expect("same snapshot Revolve catalogue");
+            RevolveDiscovery::new(r, AngleEditDiscovery::new(angle, source.refusal.clone()))
+        })
         .collect();
     let result = Inspection {
         document_id: source.version.document_id,

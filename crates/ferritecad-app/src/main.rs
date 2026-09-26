@@ -242,6 +242,10 @@ enum AppEvent {
         generation: u64,
         result: Result<ferritecad_jobs::EditedAnnulus>,
     },
+    RevolveAngleEdited {
+        generation: u64,
+        result: Result<ferritecad_jobs::EditedDocument>,
+    },
     Cut {
         generation: u64,
         result: Result<ferritecad_jobs::AddedCircularCut>,
@@ -2366,6 +2370,18 @@ impl ApplicationHandler<AppEvent> for App {
                 self.input.request_redraw();
                 self.request_frame_now(event_loop);
             }
+            AppEvent::RevolveAngleEdited { generation, result } => {
+                if let Some(path) = sketch::finish_angle_edit(
+                    &mut self.creates.sketch,
+                    &mut self.edits,
+                    generation,
+                    result,
+                ) {
+                    self.open(path);
+                }
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
+            }
             AppEvent::AnnulusEdited { generation, result } => {
                 if let Some(path) = sketch::finish_annulus_edit(
                     &mut self.creates.sketch,
@@ -2638,6 +2654,9 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(request) = self.creates.sketch.take_annulus_edit_request() {
                             self.ask_where_to_edit_annulus(request);
+                        }
+                        if let Some(request) = self.creates.sketch.take_angle_edit_request() {
+                            self.ask_where_to_edit_revolve_angle(request);
                         }
                         if let Some(request) = self.creates.sketch.take_cut_request() {
                             self.ask_where_to_cut(request);
@@ -3101,6 +3120,38 @@ impl App {
             .start_circle(request, move |request, generation, cancel| {
                 edits::spawn_circle_edit(request, cancel, move |result| {
                     let _ = proxy.send_event(AppEvent::CircleEdited { generation, result });
+                })
+            });
+        self.input.request_redraw();
+    }
+
+    fn ask_where_to_edit_revolve_angle(
+        &mut self,
+        mut request: ferritecad_jobs::EditRevolveAngleRequest,
+    ) {
+        if self.edits.running() {
+            return;
+        }
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Some(chosen) = self.dialogs.choose(
+            dialogs::Action::Edit,
+            rfd::FileDialog::new()
+                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
+                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_file_name("edited-revolve.fcad")
+                .set_parent(live.window.as_ref()),
+            &mut self.input,
+        ) else {
+            return;
+        };
+        request.destination = chosen;
+        let proxy = self.proxy.clone();
+        self.edits
+            .start_revolve_angle(request, move |request, generation, cancel| {
+                edits::spawn_revolve_angle_edit(request, cancel, move |result| {
+                    let _ = proxy.send_event(AppEvent::RevolveAngleEdited { generation, result });
                 })
             });
         self.input.request_redraw();

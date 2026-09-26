@@ -69,9 +69,39 @@ payload v2 с `axis_segment` и требует capability
 задавать как полный оборот. Обе прежние формы профиля поддержаны. У сектора
 два собственных `RevolveCap` и capability `feature.revolve.partial.v1`;
 `revolves[].extent` становится `partial_turn`, новый `angle_deg` — число
-(null у полного оборота). Правка сохранённого сектора пока отказывается.
-Request v1, response и exit 0/2/7 сохраняются.
+(null у полного оборота). Правка координат сохранённого сектора
+отказывается. Request v1, response и exit 0/2/7 сохраняются.
 [Контракт §27D и исполняемый рецепт](partial-angle-revolve.md).
+
+§27E: угол сохранённого сектора меняется в новой копии:
+`edit-revolve-angle source.fcad --feature UUID --expect-version HASH
+--request request.json -o copy.fcad [--json]` с request v1
+`{"request_version":1,"angle_deg":220}`. В окне этому соответствует
+`Edit Revolve angle <имя> — <UUID>…`: поле Angle °, Apply, Undo/Redo и
+`Save edited Revolve copy…`. UI и CLI идут через один job,
+`prepare_revolve_angle` → `write_revolve_angle` → прежний `edit_object_copy`:
+- тот же snapshot;
+- baseline cold rebuild;
+- пере-вывод строки в транзакции записи;
+- обязательное разрешение всех прежних имён;
+- повторная проверка версии источника;
+- атомарная no-clobber публикация.
+
+Меняются только payload/payload_hash строки Revolve и `meta.modified_at`.
+Все UUID (объекты, Lines, оба `RevolveCap`), refs, capabilities, версии
+payload и прочие SQL-ячейки сохраняются, источник побайтово цел. Тот же угол
+принимается и публикует копию с побайтово тем же Revolve.
+
+Отказывают (exit 2):
+- полный оборот (`unsupported`);
+- UUID, который не Revolve;
+- неизвестный UUID (`input`);
+- угол вне 0.01°–359.99° (`input`, решает `RevolveAngle`);
+- любой другой состав документа.
+
+Discovery — аддитивный `revolves[].angle_edit`. Координаты сектора, смена
+оси/направления и full↔partial не входят.
+[Контракт §27E и исполняемый рецепт](edit-revolve-angle.md).
 
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
@@ -406,7 +436,7 @@ Keep сохраняет появившееся назначение, Replace п�
 | `export-stl` только для `Body`; imported-only документ не экспортируется в STL | факт, **измерено** |
 | inspect, validate, graph, topology, rebuild, import, cache — один клиент (CLI), не два | STL с §24E имеет два клиента общей jobs-операции |
 | `rebuild_cached` есть в библиотеке, пользовательского warm rebuild нет | факт |
-| Нет JSON всех команд, stdin/batch/отмены CLI | JSON v1 ограничен inspect/edit-extrude/create/export-stl/export-fbx/import-step/validate/create-sketch-extrude/create-circle-extrude/create-annular-extrude/edit-circle/edit-annular/edit-sketch-copy/edit-sketch-constraints-copy/cut-circular-copy/edit-circular-cut (§24D–J, §25A, §25E–J, §25K–O, §26A–E) |
+| Нет JSON всех команд, stdin/batch/отмены CLI | JSON v1 ограничен inspect/edit-extrude/create/export-stl/export-fbx/import-step/validate/create-sketch-extrude/create-circle-extrude/create-annular-extrude/edit-circle/edit-annular/edit-sketch-copy/edit-sketch-constraints-copy/cut-circular-copy/edit-circular-cut/create-sketch-revolve/edit-revolve-angle (§24D–J, §25A, §25E–J, §25K–O, §26A–E, §27A–E) |
 | `create` без `--force` и с другим текстом отказа, чем publish-команды | факт |
 | Случайные UUID независимых `create` не равны | обещание §4.5, не баг |
 | Временная видимость и камера не в CLI | не предметный разрыв; см. выше |

@@ -20,6 +20,9 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
 };
+/// §27E: editing the saved angle of those sectors.
+#[path = "revolve/angle.rs"]
+mod angle;
 /// §27C: solid parts closed on the axis along one Line.
 #[path = "revolve/axis.rs"]
 mod axis;

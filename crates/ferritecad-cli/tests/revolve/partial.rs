@@ -26,7 +26,7 @@ const FRACTIONAL: [[f64; 2]; 5] = [
 ];
 
 /// This test's own Pappus: 2π ∫∫ x dA, from the profile's own edges.
-fn pappus(points: &[[f64; 2]]) -> f64 {
+pub(super) fn pappus(points: &[[f64; 2]]) -> f64 {
     let n = points.len();
     let moment: f64 = (0..n)
         .map(|i| {
@@ -38,7 +38,7 @@ fn pappus(points: &[[f64; 2]]) -> f64 {
 }
 
 /// The profile's own area, by the shoelace formula.
-fn profile_area(points: &[[f64; 2]]) -> f64 {
+pub(super) fn profile_area(points: &[[f64; 2]]) -> f64 {
     let n = points.len();
     (0..n)
         .map(|i| {
@@ -78,7 +78,7 @@ fn arranged(points: &[[f64; 2]], rotation: usize, reversed: bool) -> Vec<[f64; 2
     p
 }
 
-fn axis_line(points: &[[f64; 2]]) -> Option<usize> {
+pub(super) fn axis_line(points: &[[f64; 2]]) -> Option<usize> {
     let n = points.len();
     (0..n).find(|&i| points[i][0] == 0. && points[(i + 1) % n][0] == 0.)
 }
@@ -126,14 +126,14 @@ fn length(v: [f64; 3]) -> f64 {
     dot(v, v).sqrt()
 }
 
-fn request_v2(path: &Path, points: &[[f64; 2]], extent: Value) {
+pub(super) fn request_v2(path: &Path, points: &[[f64; 2]], extent: Value) {
     write(
         path,
         &json!({"request_version":2,"points_mm":points,"axis":"sketch_y","extent":extent}),
     );
 }
 
-fn angle(degrees: f64) -> Value {
+pub(super) fn angle(degrees: f64) -> Value {
     json!({"kind":"angle","degrees":degrees})
 }
 
@@ -142,7 +142,7 @@ fn angle(degrees: f64) -> Value {
 /// stored name resolving to the face it means — each face of revolution
 /// turned exactly from the start plane to the end plane, each end face on its
 /// plane, facing out, with the profile's area.
-fn measure_partial(
+pub(super) fn measure_partial(
     path: &Path,
     points: &[[f64; 2]],
     degrees: f64,
@@ -362,7 +362,7 @@ fn measure_partial(
 /// the right volume, every vertex inside the turned profile and inside the
 /// angle — nothing in the negative space beyond it — and two planar end faces
 /// on their planes, facing out, each covering the profile's area.
-fn check_partial_mesh(m: &Mesh, points: &[[f64; 2]], degrees: f64, full: f64) {
+pub(super) fn check_partial_mesh(m: &Mesh, points: &[[f64; 2]], degrees: f64, full: f64) {
     closed_through_t_junctions(m);
     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
     for v in m.faces.iter().flatten() {
@@ -484,7 +484,7 @@ fn closed_through_t_junctions(m: &Mesh) {
     );
 }
 
-fn payload_version(path: &Path) -> i64 {
+pub(super) fn payload_version(path: &Path) -> i64 {
     let sql =
         rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .expect("SQL");
@@ -496,7 +496,7 @@ fn payload_version(path: &Path) -> i64 {
     .expect("version")
 }
 
-fn expected_capabilities(solid: bool) -> Vec<String> {
+pub(super) fn expected_capabilities(solid: bool) -> Vec<String> {
     let mut names = vec![
         "core.part.v1",
         "feature.revolve.partial.v1",
@@ -969,7 +969,7 @@ fn partial_revolution_payload_capabilities_and_discovery_without_kernel() {
 }
 
 /// The sketch a document written by `write_revolve_document` holds.
-fn doc_sketch(path: &Path) -> ObjectId {
+pub(super) fn doc_sketch(path: &Path) -> ObjectId {
     let doc = Document::open_read_only(path).expect("open");
     let id = doc
         .objects()
