@@ -467,6 +467,18 @@ fn revolve_angle_discovery_and_request_refusals_preserve_every_file() {
         (&b"{"[..], "malformed JSON"),
         (b"", "empty"),
         (b"[1,90]", "an array"),
+        (
+            br#"{"request_version":2,"request_version":1,"angle_deg":90}"#,
+            "a duplicate version",
+        ),
+        (
+            br#"{"request_version":1,"angle_deg":90,"angle_deg":220}"#,
+            "a duplicate angle",
+        ),
+        (
+            br#"{"request_version":1,"angle_deg":90,"angle_\u0064eg":220}"#,
+            "an escaped duplicate angle",
+        ),
         (br#"{"request_version":1}"#, "no angle"),
         (br#"{"angle_deg":90}"#, "no version"),
         (br#"{"request_version":1,"angle_deg":"90"}"#, "a string"),

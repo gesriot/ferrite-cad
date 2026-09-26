@@ -326,6 +326,28 @@ against `origin/main` is empty), and exactly 8 names were added.
 * **Base.** On `main` 6a129a2, every workflow finished success, including
   combined runtime layout (run 36226853287).
 
+## Independent review — strict JSON correction
+
+The incoming `c41111a` command accepted duplicate `request_version` and
+`angle_deg` keys: its intermediate `serde_json::Value` retained only the
+last value. Actual native processes published copies for both ambiguous
+requests, including a version 2 overwritten by version 1.
+
+The command now requires an object token and deserializes the original
+bytes directly into the strict request. The existing process gate covers
+duplicate versions, duplicate angles and an escaped duplicate key. It
+failed on the incoming code (exit 0/publication instead of exit 2), then
+passed after the correction; all 28 Revolve process tests, fmt and workspace
+all-targets/all-features clippy passed on native macOS. Rejections retain the
+source and leave no destination or scratch file. Array requests stay refused.
+
+Independent full-log audit of the incoming head's CI found all 248 required
+test names, 287 executions, and no required skips on each of Linux, macOS and
+Windows. There were 80 printed ufbx results plus six triangle-reader runs
+whose output feeds the six passing STL joins, with no reader failures.
+These are incoming-head results; final review-head CI and the actual macOS
+window evidence are recorded with the PR review before merge.
+
 ## Limits
 
 * **The cone.** A cone sector's mesh has T-junctions along its first

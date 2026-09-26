@@ -54,14 +54,14 @@ fn result(args: &EditRevolveAngleArgs) -> Result<EditedDocument> {
     }
     // An object, by name: serde's derive also takes a struct from a JSON
     // array in field order, and `[1, 90]` is not a request anybody wrote.
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|e| CadError::input(format!("invalid Revolve angle edit JSON: {e}")))?;
-    if !value.is_object() {
+    // Check the token, then deserialize the original bytes. Going through
+    // Value would silently discard duplicate keys before Input sees them.
+    if bytes.iter().find(|b| !b.is_ascii_whitespace()) != Some(&b'{') {
         return Err(CadError::input(
             "invalid Revolve angle edit JSON: the request must be an object",
         ));
     }
-    let input = Input::deserialize(value)
+    let input: Input = serde_json::from_slice(&bytes)
         .map_err(|e| CadError::input(format!("invalid Revolve angle edit JSON: {e}")))?;
     if input.request_version != 1 {
         return Err(CadError::unsupported(

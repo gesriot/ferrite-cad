@@ -141,7 +141,8 @@ ferritecad edit-revolve-angle SOURCE --feature REVOLVE_UUID \
 
 * **Request v1:** `{"request_version": 1, "angle_deg": 220}`.
   * It has exactly these two fields. It is strict, with `deny_unknown_fields`
-    and at most 65536 bytes.
+    and at most 65536 bytes. Duplicate fields are rejected as input errors,
+    including equivalent names written with JSON escapes.
   * The angle must be a JSON number: a string, `null`, an array or an object
     is invalid JSON input.
   * Any `request_version` other than 1 is `unsupported`.
