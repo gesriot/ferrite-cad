@@ -715,15 +715,16 @@ fn native_bushing_constraints_dimension_replace_remove_cache_and_exports() {
     }
     // Only closure holds the saved bushing: one pinned corner moves alone.
     let catalog = inspect(&source);
-    // A collapsed Line closes the loop early, which the shared profile
-    // reading reports before the policy's own zero-length check can.
+    // A collapsed Line is refused by the shared profile reading — measured
+    // on the CI solver as "a line segment needs two distinct endpoints" —
+    // before the policy's own zero-length check can see it.
     for (why, x, y, wanted) in [
         ("self-intersects", 2.0, 13.0, &["intersect"][..]),
         (
             "collapses a Line",
             4.25,
             -1.5,
-            &["zero-length", "left over"][..],
+            &["zero-length", "left over", "two distinct endpoints"][..],
         ),
     ] {
         let error = refuse(
