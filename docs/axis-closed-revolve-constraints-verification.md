@@ -192,7 +192,18 @@ REGRESSION_PLACEHOLDER
 
 ### Mutations — local, executed, restored byte for byte
 
-MUTATIONS_PLACEHOLDER
+Each mutation was applied by a script, compiled, run against the §27H CLI
+tests with the local PlaneGCS, and the file restored from `HEAD`; the
+restored files' SHA-256 matched the originals
+(`sketch_edit.rs` 715b3122…, `cold.rs` b056be8b…).
+
+| Mutation | Caught by (executed) |
+| --- | --- |
+| M1 — ignore the saved axis identity: `revolve_frame` takes the Line the stored geometry puts on the axis instead of the Revolve's `axis_segment` | `axis_closed_constraint_discovery_writer_and_refusals_without_solver`: the forged document stating another Line became `available: true` with `axis_curve_id` of the geometric axis Line |
+| M2 — use stored geometry after a dimension change: the evaluator's Revolve turns the stored profile (constraints cleared) instead of the solved one | both native §27H tests: after the radius/base change the shared cache answered `Hit` where the solved profile must key a `Miss`; the measure of the solved Lines would follow |
+
+After each restore, `--test revolve` (40 passed) and the app revolve tests
+(4 passed) were rerun with the solver.
 
 ### The prior-main CLI (a57dded) on §27H documents — local
 
