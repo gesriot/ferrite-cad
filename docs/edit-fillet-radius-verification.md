@@ -179,9 +179,35 @@ After restoring, the document (3), CLI `--test fillet` (12) and app
 
 ## CI
 
-The code and CI files are those of the head this section is added to; see
-the pull request for the runs. A later head that changes only this record
-triggers ordinary CI but no native runtime run.
+The code, CI files and tools are those of `7df0d96`. The head that adds this
+section changes only this record, so it triggers ordinary CI and no native
+runtime run (`docs/**` is outside `runtime-layout.yml`'s and
+`planegcs-pin.yml`'s path filters); the native tree is the one measured below.
+
+* **Native runtime and packaging on `7df0d96`**
+  ([run 36326313381](https://github.com/gesriot/ferrite-cad/actions/runs/36326313381)):
+  green on all three platforms, along with the cross-platform comparison
+  ([Linux](https://github.com/gesriot/ferrite-cad/actions/runs/36326313381/job/108639649013),
+  [macOS](https://github.com/gesriot/ferrite-cad/actions/runs/36326313381/job/108639649146),
+  [Windows](https://github.com/gesriot/ferrite-cad/actions/runs/36326313381/job/108639649144)).
+  That covers the no-solver step (two radius gates and
+  `FCAD_28B_RECIPE_OK`), the native Fillet step (the five `radius::`, three
+  `fillet_radius::` and two app radius gates by exact name) and the FBX step
+  (`FCAD_FILLET_RADIUS_UFBX_EXECUTED`). Each of those steps exits 1 on a
+  missing `ok`, a `skipped:` or a missing marker. The job logs themselves
+  were not read here: this container's proxy refuses the log download.
+  Windows passed "Require one owner for every staged file" with the §28A
+  TKBool/TKFillet rows unchanged.
+* **Ordinary CI on `7df0d96`**
+  ([run 36326331384](https://github.com/gesriot/ferrite-cad/actions/runs/36326331384)):
+  lint, supply-chain, sbom, notices and the tests on Linux, macOS and
+  Windows succeeded, including the new stub step with the recipe expecting
+  `FCAD_28B_RECIPE_NO_KERNEL`.
+* **planegcs pin on `7df0d96`**
+  ([run 36326313378](https://github.com/gesriot/ferrite-cad/actions/runs/36326313378)):
+  success on all three platforms.
+* rust sbom, rust notices and product sbom are not triggered by this
+  change's paths on a pull request.
 
 ## Limits
 
