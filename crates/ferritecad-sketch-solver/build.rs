@@ -26,6 +26,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
+    assert!(
+        std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos")
+            || std::env::var("TARGET").as_deref() == Ok("aarch64-apple-darwin"),
+        "FerriteCAD macOS supports only aarch64-apple-darwin (Apple Silicon); Intel is unsupported"
+    );
     println!("cargo:rerun-if-changed=planegcs-bridge");
     println!("cargo:rerun-if-changed=../../tools/planegcs/pin.env");
     println!("cargo:rerun-if-env-changed=FCAD_PLANEGCS_DIR");

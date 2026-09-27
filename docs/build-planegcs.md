@@ -37,6 +37,10 @@ FCAD_PLANEGCS_DIR=<output> cargo build -p ferritecad-app \
 target/debug/ferritecad-viewer --solver-info
 ```
 
+On macOS, the library and its shim are arm64 only, like the application.
+Their CMake definitions reject Intel and universal builds; use the native
+Apple Silicon toolchain described in [platform-support.md](platform-support.md).
+
 On Windows, run it from a shell that has already seen `vcvars64.bat`, so cmake
 finds MSVC's `cl.exe`.
 

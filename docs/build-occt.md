@@ -184,14 +184,18 @@ away. What it found, and the candidate layout it ran, are in
 
 ### macOS
 
-Toolchain: Apple Clang from Xcode Command Line Tools.
+Target: **Apple Silicon only**, `aarch64-apple-darwin` / Mach-O `arm64`.
+Intel macOS and Rosetta are not supported. See [platform-support.md](platform-support.md).
+Use a native arm64 Rust toolchain and Apple Clang from Xcode Command Line Tools.
+Pass `-DCMAKE_OSX_ARCHITECTURES=arm64` to the OCCT configure command above;
+the native bridge and planegcs CMake definitions default to arm64 and refuse
+Intel or multi-architecture values on macOS.
 
 ```sh
 brew install cmake ninja
 ```
 
-Two things differ from Linux and both must be handled before the first release
-build, not after:
+The macOS loader and distribution requirements still apply:
 
 - The pinned 8.0.1 install already gives each `libTK*.dylib` an
   `@rpath/libTK*.dylib` install name, as verified from the adapter executable
@@ -211,12 +215,15 @@ build, not after:
   `DYLD_LIBRARY_PATH` while its process-level CLI gates launch the unbundled
   debug executable. This only makes the pinned build tree runnable during the
   test; it is not a substitute for the bundle-relative RPATH above.
-- Universal binaries need `-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"`, or two
-  separate builds joined with `lipo`. Decide which before the packaging work
-  starts; the second option is usually less painful with OCCT.
+- The delivered CLI, viewer, OCCT and planegcs libraries each carry exactly
+  one `arm64` slice. Staging and the native checks of staged/extracted bundles
+  inspect every image with `lipo -archs`; Intel-only and universal images are
+  refused. `lipo` is used to inspect architecture, not to join release builds.
 
-Anything shipped must also be signed and notarised, which requires the
-dynamic libraries to be signed individually.
+Public distribution still requires signing the nested executables and dynamic
+libraries and notarising the delivery. The current staging signature is ad hoc;
+it is not Developer ID signing or notarisation. Dropping Intel does not establish
+a minimum macOS version: that remains a separate compatibility measurement.
 
 ### Windows
 

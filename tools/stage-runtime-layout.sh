@@ -243,6 +243,11 @@ readonly BUNDLE_IDENTIFIER='io.github.ferrite-cad.FerriteCAD'
 
 stage_macos() {
     local file base name existing plist
+    # Refuse a mislabeled Intel/universal delivery before rewriting or signing.
+    # shellcheck source=tools/macos-bundle.sh
+    . "$(dirname "${BASH_SOURCE[0]}")/macos-bundle.sh"
+    macos_bundle_arm64_ok "$staging/FerriteCAD.app" \
+        || die 'the macOS runtime closure is not arm64-only'
 
     for file in "$lib_dir"/*; do
         [ -f "$file" ] || continue

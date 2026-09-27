@@ -1,6 +1,6 @@
 # FerriteCAD
 
-A local, parametric mechanical CAD for Windows, Linux and macOS. No cloud, no
+A local, parametric mechanical CAD for Windows, Linux and macOS (Apple Silicon only). See [platform support](docs/platform-support.md). No cloud, no
 account, no proprietary container you cannot read back.
 
 **Status: early.** There is a document format with its tooling, geometry
