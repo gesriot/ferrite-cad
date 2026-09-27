@@ -87,6 +87,10 @@ pub struct SketchChoice {
     pub profile_use: Option<SketchProfileUse>,
     /// Present only for the original base of a validated nonempty Cut history.
     pub cut_history: Option<SketchCutHistory>,
+    /// §28D: present only for the base Sketch of a plate the one saved Fillet
+    /// rounds, in the frame the radius and height edits read. The Fillet
+    /// keeps its row; a candidate must keep its corner and fit its radius.
+    pub fillet: Option<crate::SavedFillet>,
     pub refusal: Option<String>,
 }
 
@@ -122,6 +126,7 @@ pub(crate) fn choices_with_history(
                 vertices: None,
                 profile_use: None,
                 cut_history: None,
+                fillet: None,
                 refusal: Some(error.to_string()),
             })
         })
@@ -142,6 +147,7 @@ fn coordinate_choice(
         vertices: None,
         profile_use: None,
         cut_history: None,
+        fillet: None,
         refusal: None,
     };
     let checked = (|| {
@@ -154,6 +160,33 @@ fn coordinate_choice(
         {
             let (sketch, profile_use) = revolve_frame(document, objects, object)?;
             return Ok((lines(sketch, &profile_use, false)?, profile_use));
+        }
+        // §28D: the base of the plate under the one saved Fillet, read by
+        // the frame the radius and height edits read. A Fillet outside that
+        // frame refuses every Sketch of the document, naming the Fillet.
+        match crate::fillet_radius::fillet_over_plate(document, objects) {
+            Ok(None) => {}
+            Ok(Some(saved)) => {
+                if object.id != saved.profile {
+                    return Err(unsupported(&format!(
+                        "coordinate editing of the plate under Fillet {} requires its base \
+                         Sketch {}",
+                        saved.feature, saved.profile
+                    )));
+                }
+                require_lossless_payload(object)?;
+                let ObjectPayload::Sketch(sketch) = &object.payload else {
+                    return Err(unsupported("selected object is not a Sketch"));
+                };
+                let profile_use = SketchProfileUse::BlindExtrude {
+                    feature: saved.previous,
+                    height_mm: saved.height_mm,
+                };
+                let vertices = lines(sketch, &profile_use, false)?;
+                choice.fillet = Some(saved);
+                return Ok((vertices, profile_use));
+            }
+            Err(reason) => return Err(crate::fillet::filleted_outside_frame(objects, &reason)),
         }
         if let Ok(history) = history {
             let target = &history.target;
@@ -574,6 +607,13 @@ impl SketchChoice {
             let curves = coordinate_curves(vertices, &points);
             crate::cut_edit::validate_base(&curves, height_mm, &history.tools)?;
         }
+        if let Some(fillet) = &self.fillet {
+            // The saved corner and radius on the new rectangle, then every
+            // Line on its saved side: the rounded corner stays the same corner
+            // of the part, not the same two UUIDs moved to another one.
+            fillet.corner_on(&coordinate_curves(vertices, &points))?;
+            keeps_every_side(original, &points)?;
+        }
         Ok(points)
     }
 }
@@ -642,6 +682,38 @@ fn validate_coordinates(
         return Err(CadError::input("sketch edit cannot change winding"));
     }
     Ok(points)
+}
+
+/// §28D: each Line runs along the same axis in the same direction as saved.
+fn keeps_every_side(original: &[SketchVertex], points: &[Point2]) -> Result<()> {
+    let sign = |v: f64| (v > 0.) as i8 - (v < 0.) as i8;
+    let n = original.len();
+    for i in 0..n {
+        let (a, b) = (original[i].start_mm, original[(i + 1) % n].start_mm);
+        let (p, q) = (points[i], points[(i + 1) % n]);
+        let saved = (sign(b[0] - a[0]), sign(b[1] - a[1]));
+        let candidate = (sign(q.x - p.x), sign(q.y - p.y));
+        if saved != candidate {
+            return Err(CadError::input(format!(
+                "Line {} of the rounded plate must keep its side: it ran {} and would run {}; \
+                 moving or resizing the rectangle keeps every Line on its side",
+                original[i].curve_id,
+                direction(saved),
+                direction(candidate)
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn direction((x, y): (i8, i8)) -> &'static str {
+    match (x, y) {
+        (1, 0) => "+X",
+        (-1, 0) => "-X",
+        (0, 1) => "+Y",
+        (0, -1) => "-Y",
+        _ => "diagonally",
+    }
 }
 
 fn winding(points: &[Point2]) -> bool {

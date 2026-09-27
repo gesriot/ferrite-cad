@@ -33,6 +33,23 @@ impl SavedFillet {
     pub fn check_radius(&self, radius_mm: f64) -> Result<()> {
         self.corner.check_radius(radius_mm)
     }
+
+    /// §28D: this Fillet's corner on a candidate profile of the same Lines,
+    /// judged exactly as the saved one is: an axis-aligned rectangle
+    /// ([`rectangle_corners`]), the saved joint still one of its corners
+    /// ([`crate::corner_for`], by the two Line UUIDs alone) and the saved
+    /// radius still inside §28A's policy there. Nothing is clamped.
+    pub fn corner_on(&self, curves: &[crate::SketchCurve]) -> Result<FilletCorner> {
+        let candidate = crate::Sketch {
+            plane: self.profile,
+            curves: curves.to_vec(),
+            constraints: Vec::new(),
+        };
+        let corners = rectangle_corners(self.previous, &candidate)?;
+        let corner = crate::corner_for(&corners, self.edge)?;
+        corner.check_radius(self.radius_mm)?;
+        Ok(corner)
+    }
 }
 
 /// One saved Fillet of a reading: editable, or the reason it is not.
@@ -857,7 +874,10 @@ mod tests {
             ErrorKind::Input
         );
         let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
-        assert!(reading.sketches.iter().all(|s| {
+        // The base Sketch is the Sketch edit's (§28D); the constraint editor
+        // still refuses the filleted plate by name.
+        assert!(reading.sketches.iter().all(|s| s.fillet.is_some()));
+        assert!(reading.constraint_sketches.iter().all(|s| {
             s.refusal
                 .as_deref()
                 .is_some_and(|r| r.contains(&fillet.to_string()))

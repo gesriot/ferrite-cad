@@ -1535,7 +1535,7 @@ fn native_a_filleted_copy_and_other_histories_are_refused_by_name() {
     names_it(&catalog["bodies"][0]["fillet_edge"]["refusal"]);
     names_it(&catalog["bodies"][0]["cut_edit"]["refusal"]);
     assert_eq!(catalog["edit_extrude"]["available"], true, "§28C");
-    names_it(&catalog["sketches"][0]["refusal"]);
+    assert_eq!(catalog["sketches"][0]["editable"], true, "§28D");
     names_it(&catalog["sketches"][0]["constraint_edit"]["refusal"]);
     names_it(&catalog["sketches"][0]["circle_edit"]["refusal"]);
     names_it(&catalog["sketches"][0]["annulus_edit"]["refusal"]);
@@ -2511,7 +2511,7 @@ mod height {
         };
         names_it(&f.catalog["bodies"][0]["fillet_edge"]["refusal"]);
         names_it(&f.catalog["bodies"][0]["cut_edit"]["refusal"]);
-        names_it(&f.catalog["sketches"][0]["refusal"]);
+        assert_eq!(f.catalog["sketches"][0]["editable"], true, "§28D");
         names_it(&f.catalog["sketches"][0]["constraint_edit"]["refusal"]);
 
         // The protocol. A build without a kernel reads the source and then

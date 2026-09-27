@@ -234,6 +234,18 @@ pub(crate) fn refuse_filleted(objects: &[ObjectRecord]) -> Result<()> {
     Ok(())
 }
 
+/// Why an editor refuses a filleted part whose Fillet is outside the frame
+/// the radius, height and Sketch edits read: [`refuse_filleted`]'s sentence
+/// naming the Fillet, and the frame's own reason.
+pub(crate) fn filleted_outside_frame(objects: &[ObjectRecord], reason: &CadError) -> CadError {
+    match refuse_filleted(objects) {
+        Err(e) => unsupported(format!(
+            "{e}. This Fillet is outside the frame those edits read: {reason}"
+        )),
+        Ok(()) => unsupported(reason.to_string()),
+    }
+}
+
 fn saved_target(
     document: &Document,
     objects: &[ObjectRecord],
@@ -933,7 +945,12 @@ mod tests {
             |f| f.refusal.is_none() && f.fillet.as_ref().is_some_and(|r| r.feature == saved.id)
         ));
         assert!(reading.cut_bodies.iter().all(|c| c.refusal.is_some()));
+        // Its base Sketch is editable (§28D), with the Fillet as context; the
+        // constraint editor still refuses it by name.
         assert!(reading.sketches.iter().all(|s| {
+            s.refusal.is_none() && s.fillet.as_ref().is_some_and(|r| r.feature == saved.id)
+        }));
+        assert!(reading.constraint_sketches.iter().all(|s| {
             s.refusal
                 .as_deref()
                 .is_some_and(|r| r.contains("ends in Fillet"))

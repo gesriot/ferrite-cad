@@ -1370,6 +1370,18 @@ impl Editor {
                     None => "Part with a bore: every point stays at X > 0.".to_owned(),
                 });
             }
+            if let Some(fillet) = &choice.fillet {
+                ui.label(format!(
+                    "Rounded by Fillet {} at the corner of Lines {} | {}, r {} mm. The Fillet \
+                     keeps its corner and radius: every Line keeps its side, and no side \
+                     may be shorter than {} mm.",
+                    fillet.feature,
+                    fillet.edge.joint.segments()[0],
+                    fillet.edge.joint.segments()[1],
+                    fillet.radius_mm,
+                    fillet.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION
+                ));
+            }
             if let Some(history) = &choice.cut_history {
                 ui.label(format!(
                     "Base of {} circular Cuts. Tools stay at their saved XY coordinates.",
