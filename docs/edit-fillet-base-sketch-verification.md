@@ -29,6 +29,49 @@ opposite side. Accepting the domain's rectangle tolerance does not promise
 that every such profile is buildable by OCCT. Kernel refusals still publish
 nothing; they are not hidden by this correction.
 
+## Independent macOS review and window test
+
+On 2026-09-27, the corrected code at `d7a14a9` was rebuilt on macOS arm64
+with the existing pinned OCCT and PlaneGCS libraries. The final local run
+passed 463 document/jobs/eval tests (one pre-existing ignored benchmark;
+two stub-only cases explicitly N/A with the solver present), 42 CLI tests,
+and 36 app worker/widget tests (4 Fillet, 11 edit, 21 sketch), followed by
+workspace all-target/all-feature clippy with `-D warnings` and fmt.
+The corrected native tolerance regression also ran by its exact name.
+
+A freshly staged, ad-hoc signed arm64 bundle passed its loader checks and
+was used for the window test, not an older bundle. One viewer (PID 54399)
+ran under the 1536 MiB watchdog. In the actual window:
+
+- The saved clockwise rectangle opened with its Fillet context and UUIDs.
+- A 3.75 mm side with radius 2.375 produced a visible radius refusal and
+  kept the typed coordinates; Undo/Redo restored the corresponding drafts.
+- The rectangle was moved/resized to `[-4.5,36.5] × [1.25,15.5]` mm.
+  Dragging one vertex into a non-rectangle refused visibly; one Undo
+  recovered the exact numeric rectangle.
+- Save Cancel preserved the draft. A second Save published `gui.fcad`;
+  async Open accepted it and updated the title. The rounded corner was
+  visible in isometric view, and STL/FBX exports completed from the window.
+- Quit exited normally (0). Completion was checked by PID, with no further
+  CUA call to the closed viewer.
+
+The window and CLI copies agree across 129 SQL cells; only the selected
+Sketch's payload/hash differ from the source. The source SHA-256 is intact,
+and the saved Fillet, Line and topology identities, radius and height agree.
+GUI/CLI STL and FBX are byte-identical. The independent binary STL parser
+measured 64 triangles, 3284 bytes, a closed consistently oriented mesh,
+41 × 14.25 × 6.75 mm extents, and signed volume 3935.444002 mm³ against
+the analytic 3935.516703 mm³. Pinned ufbx 0.23.0 reported 6 checks and
+0 failures; every oriented STL triangle matched its FBX triangle after
+the documented axis/unit conversion (worst difference 6.94e-18 m).
+
+Peak sampled footprint was 205.361 MiB, pressure stayed normal, swap stayed
+0, and free disk stayed above 141 GiB. The watchdog did not fire. This does
+not establish the cause or resolution of the earlier OOM incident.
+The public Markdown recipe was rerun with this bundle's CLI and passed.
+Logs, scripts and temporary models: `/private/tmp/ferrite-pr65-review/`.
+Remote checks for the correction are separate from these local results.
+
 ## Where and how this was run
 
 * **Base.** Freshly fetched `origin/main` at
