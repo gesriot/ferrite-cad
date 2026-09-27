@@ -216,6 +216,32 @@ jobs:
           FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-28a-recipe.py | tee fillet-recipe-stub.log
           grep -q '^FCAD_28A_RECIPE_NO_KERNEL ' fillet-recipe-stub.log
 
+      - name: Discover and refuse Fillet radius edits without native geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          gate=radius::radius_discovery_and_protocol_without_native
+          cargo test -p ferritecad-cli --test fillet "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-radius-discovery.log
+          if grep -q 'skipped:' fillet-radius-discovery.log || ! grep -Fq "test $gate ... ok" fillet-radius-discovery.log; then exit 1; fi
+          gate=fillets::tests::fillet_radius_widgets_show_the_saved_edge_and_keep_the_draft
+          cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-radius-widgets.log
+          if grep -q 'skipped:' fillet-radius-widgets.log || ! grep -Fq "test $gate ... ok" fillet-radius-widgets.log; then exit 1; fi
+          for gate in fillet_radius::tests::only_the_radius_changes_and_repeated_or_equal_edits_keep_every_identity \
+            fillet_radius::tests::the_writer_refuses_a_forged_or_stale_preparation \
+            fillet_radius::tests::a_fillet_outside_the_frame_is_refused_with_its_reason
+          do
+            cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-radius-writer.log
+            if grep -q 'skipped:' fillet-radius-writer.log || ! grep -Fq "test $gate ... ok" fillet-radius-writer.log; then exit 1; fi
+          done
+          python3 - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/edit-fillet-radius.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_28B_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-28b-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-28b-recipe.py | tee fillet-radius-recipe-stub.log
+          grep -q '^FCAD_28B_RECIPE_NO_KERNEL ' fillet-radius-recipe-stub.log
+
       - name: Discover sequential cuts without native geometry
         shell: bash
         run: |

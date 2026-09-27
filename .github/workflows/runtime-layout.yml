@@ -570,6 +570,14 @@ jobs:
           FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release --no-default-features -p ferritecad-cli --test fillet "$gate" \
             -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-cache-no-solver.log
           if grep -q 'skipped:' fillet-cache-no-solver.log || ! grep -Fq "test $gate ... ok" fillet-cache-no-solver.log; then exit 1; fi
+          # §28B: nor does editing that Fillet's radius.
+          for gate in radius::native_radius_edits_move_the_named_cylinder_and_keep_every_identity \
+            radius::native_a_changed_radius_misses_in_place_and_the_plate_is_reused
+          do
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release --no-default-features -p ferritecad-cli --test fillet "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-radius-no-solver.log
+            if grep -q 'skipped:' fillet-radius-no-solver.log || ! grep -Fq "test $gate ... ok" fillet-radius-no-solver.log; then exit 1; fi
+          done
           # And the public recipe, against this build's own CLI.
           py="$(command -v python3 || command -v python)"
           recipe_cli="$PWD/target/release/ferritecad"
@@ -584,6 +592,14 @@ jobs:
           EXTRACT
           FERRITECAD="$recipe_cli" "$py" ferrite-28a-recipe.py | tee fillet-recipe-no-solver.log
           grep -q '^FCAD_28A_RECIPE_OK ' fillet-recipe-no-solver.log
+          "$py" - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/edit-fillet-radius.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_28B_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-28b-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$recipe_cli" "$py" ferrite-28b-recipe.py | tee fillet-radius-recipe-no-solver.log
+          grep -q '^FCAD_28B_RECIPE_OK ' fillet-radius-recipe-no-solver.log
 
       - name: Build the real application and the command line tool against both
         id: build
@@ -1812,7 +1828,12 @@ jobs:
             native_changing_the_plate_invalidates_the_cached_fillet \
             native_fillet_refusals_and_cancellation_are_atomic \
             native_a_filleted_copy_and_other_histories_are_refused_by_name \
-            native_the_evaluator_refuses_a_saved_fillet_outside_the_class
+            native_the_evaluator_refuses_a_saved_fillet_outside_the_class \
+            radius::radius_discovery_and_protocol_without_native \
+            radius::native_radius_edits_move_the_named_cylinder_and_keep_every_identity \
+            radius::native_the_same_radius_publishes_the_same_model \
+            radius::native_a_changed_radius_misses_in_place_and_the_plate_is_reused \
+            radius::native_radius_refusals_races_cancellation_and_report_loss_are_atomic
           do
             cargo test --release --features planegcs -p ferritecad-cli --test fillet "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-cli.log
@@ -1848,7 +1869,10 @@ jobs:
             fillet::tests::anything_but_an_unconstrained_axis_aligned_rectangle_of_lines_is_refused \
             fillet::tests::the_radius_policy_and_the_edge_meaning_refuse_with_their_reasons \
             fillet::tests::one_fillet_is_written_as_the_new_tip_and_a_forged_one_is_refused \
-            fillet::tests::the_validator_refuses_a_fillet_without_its_predecessor_edge_or_target
+            fillet::tests::the_validator_refuses_a_fillet_without_its_predecessor_edge_or_target \
+            fillet_radius::tests::only_the_radius_changes_and_repeated_or_equal_edits_keep_every_identity \
+            fillet_radius::tests::the_writer_refuses_a_forged_or_stale_preparation \
+            fillet_radius::tests::a_fillet_outside_the_frame_is_refused_with_its_reason
           do
             FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-document --lib "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-domain.log
@@ -1863,7 +1887,9 @@ jobs:
             if grep -q 'skipped:' fillet-topology.log || ! grep -Fq "test $gate ... ok" fillet-topology.log; then exit 1; fi
           done
           for gate in fillets::tests::fillet_widgets_list_corners_refuse_like_the_document_and_keep_the_draft \
-            fillets::tests::native_fillet_widgets_worker_and_cli_publish_the_same_part
+            fillets::tests::native_fillet_widgets_worker_and_cli_publish_the_same_part \
+            fillets::tests::fillet_radius_widgets_show_the_saved_edge_and_keep_the_draft \
+            fillets::tests::native_fillet_radius_widgets_worker_and_cli_publish_the_same_part
           do
             cargo test --release --features planegcs -p ferritecad-app "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-ui.log
@@ -1980,6 +2006,7 @@ jobs:
           grep -q '^FCAD_REVOLVE_CONSTRAINT_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_AXIS_CONSTRAINT_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_FILLET_RADIUS_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:
