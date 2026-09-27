@@ -208,6 +208,23 @@ Discovery — аддитивный `fillets[]` в `inspect --json`, без яд�
 корректный запрос, discovery работает.
 [Контракт §28C и исполняемый рецепт](edit-fillet-base-height.md).
 
+§28D: прежний `edit-sketch-copy` двигает и меняет размеры прямоугольника под
+сохранённым Fillet §28B-формы и публикует новую копию. Выбирается базовый
+Sketch (его UUID есть в `inspect --json`, у строки `sketches[]` — аддитивный
+`fillet_base`). Запрос прежний: каждая сохранённая Line один раз, в
+сохранённом порядке, контур замкнут, обход прежний. Кандидат обязан быть
+осепараллельным прямоугольником, каждая Line сохраняет свою сторону (ось и
+направление), стык Fillet'а ищется по двум UUID его Line, а не по номеру
+строки или координатам, и прежний радиус проверяется прежней политикой §28A
+(`r ≤ ½` меньшей соседней стороны) без clamp. Меняются только
+`payload`/`payload_hash` строки Sketch; строка Fillet, его ребро, радиус,
+все UUID, имена, зависимости и capabilities сохраняются. Все сохранённые
+имена обязаны разрешиться после холодной пересборки. Слишком маленький
+прямоугольник и Line на другой стороне — `input`; не прямоугольник и UUID
+не базового Sketch (в том числе самого Fillet'а) — `unsupported`. Stub-сборка
+отвечает `unsupported` на любой корректный запрос, discovery работает.
+[Контракт §28D и исполняемый рецепт](edit-fillet-base-sketch.md).
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.
