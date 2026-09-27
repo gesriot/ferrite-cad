@@ -259,6 +259,10 @@ fn describe_role(role: &SemanticRole) -> String {
         }
         SemanticRole::SketchSegment { segment } => format!("sketch segment {segment}"),
         SemanticRole::FilletFace { source_edge } => format!("fillet face from edge {source_edge}"),
+        SemanticRole::EdgeFilletFace {
+            edge_feature,
+            joint,
+        } => format!("fillet face rounded from the edge {edge_feature} swept at {joint}"),
         SemanticRole::RevolveFace { profile_segment } => {
             format!("revolve face from segment {profile_segment}")
         }

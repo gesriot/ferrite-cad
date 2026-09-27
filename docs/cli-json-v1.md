@@ -513,6 +513,55 @@ positive radial side and not on the axis» или «no longer touches the axis»
 ничего не записано. Конфликт остаётся `constraint` с `constraint_conflict`.
 [Контракт §27H и исполняемый рецепт](axis-closed-revolve-constraints.md).
 
+### Скругление одного ребра плиты (§28A)
+
+Discovery аддитивна: у каждого `bodies[]` появляется `fillet_edge` с полями
+`available`, `refusal`, `document_refusal` и `target`:
+
+```json
+{"available":true,"refusal":null,"document_refusal":null,
+ "target":{"body_id":"…","base_feature_id":"…","profile_sketch_id":"…",
+  "height_mm":6.75,"request_versions":[1],"min_radius_mm":0.01,
+  "max_radius_fraction":0.5,
+  "candidates":[{"edge":{"feature_id":"…","joint":["…","…"]},
+    "label":"vertical edge at (33, 3.25) mm between Lines … and …",
+    "corner_mm":[33.0,3.25],"adjacent_lengths_mm":[37.5,12.25],
+    "max_radius_mm":6.125}]}}
+```
+
+Идентичность — только `edge`: producer и пара реальных Line UUID
+в каноническом порядке. `corner_mm`, длины и лимит — подписи, а не адрес.
+
+Команда `fillet-edge-copy` принимает request v1 (не более 65536 байт):
+
+```json
+{"request_version":1,"edge":{"feature_id":"…","joint":["…","…"]},"radius_mm":2.5}
+```
+
+Разбор строгий:
+- неизвестные ключи и дубли, включая дубли через escape, — `input`;
+- массив на месте запроса или `edge` — `input`;
+- одна Line дважды — `input`;
+- другая `request_version` — `unsupported`.
+
+`operation:"fillet-edge-copy"`. Result содержит:
+- `destination`, `document_id`, `body_id`;
+- `feature_id` — новый Fillet;
+- `previous_feature_id` — Extrude, которое было tip;
+- `edge` — в каноническом порядке;
+- `corner_mm` и `radius_mm`;
+- `references[]` — `reference_id` и `role`: `edge_fillet_face`, два
+  `origin_cap` и четыре `origin_side`.
+
+Коды выхода:
+- 0 — опубликовано;
+- 2 — отказ, ничего не записано;
+- 7 — копия опубликована, но отчёт потерян; её не повторяют и не откатывают.
+
+Для скруглённой копии `fillet_edge.available` равно `false`, а причина
+называет UUID Fillet'а.
+[Контракт §28A и исполняемый рецепт](single-edge-fillet.md).
+
 ## Правка сохранённой кольцевой пары (§25M)
 
 `ferritecad edit-annular <source.fcad> --sketch UUID --expect-version HASH

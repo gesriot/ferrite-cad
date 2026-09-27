@@ -127,6 +127,19 @@ fn report(document: &Document, built: &RebuildResult, kernel: String) -> Result<
                         .expect("writing to a String cannot fail");
                 }
             }
+            ObjectPayload::Fillet(fillet) => {
+                if let Some(names) = built.topology().feature(*id) {
+                    let [a, b] = fillet.edge.joint.segments();
+                    write!(
+                        line,
+                        "solid, {} named faces; r{} mm at {} joint {a}|{b}",
+                        names.named_face_count(),
+                        fillet.radius_mm,
+                        named(fillet.edge.feature)
+                    )
+                    .expect("writing to a String cannot fail");
+                }
+            }
             ObjectPayload::Body(body) => {
                 if let Some(tip) = body.tip_feature {
                     write!(line, "tip {}", named(tip)).expect("writing to a String cannot fail");

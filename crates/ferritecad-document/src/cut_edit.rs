@@ -172,6 +172,20 @@ pub(crate) struct CutHistory {
 }
 
 impl CutHistory {
+    /// §28A: the plate a Fillet may round, which is this history with no Cut.
+    pub(crate) fn target_for_fillet(&self, body: ObjectId) -> Result<SavedCutTarget> {
+        if self.target.body != body {
+            return Err(unsupported("selected Body is not in the supported history"));
+        }
+        if !self.cuts.is_empty() {
+            return Err(unsupported(format!(
+                "this slice rounds an edge of a plate with no Cut, and this Body's history holds                  {} Cut(s)",
+                self.cuts.len()
+            )));
+        }
+        Ok(self.target.clone())
+    }
+
     fn add_target(&self, body: ObjectId) -> Result<SavedCutTarget> {
         if self.target.body != body {
             return Err(unsupported("selected Body is not in the supported history"));
@@ -1007,6 +1021,9 @@ pub(crate) fn saved_cut(
 /// Exactly a plate plus zero to sixteen cuts. All identities and the complete edge
 /// set are derived from links, never names, ordinals or database iteration order.
 pub(crate) fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Result<CutHistory> {
+    // Named first, so every editor built on this reader says why a filleted
+    // part is not its target rather than reporting a shape mismatch.
+    crate::fillet::refuse_filleted(objects)?;
     if objects.len() < 4
         || objects.len() > 4 + 2 * MAX_CIRCULAR_CUTS
         || objects.iter().any(|o| o.parent.is_some())

@@ -422,6 +422,36 @@ pub fn resolve(map: &TopologyMap, reference: &TopologyRef) -> Result<Vec<SubShap
             reference.id
         ))),
 
+        // §28A: the face the producer — a Fillet — made by rounding the edge
+        // `edge_feature` swept at `joint`. Answered only from the fillet's own
+        // history, filed under exactly that edge; another producer, another
+        // edge feature or another corner finds nothing and is refused.
+        SemanticRole::EdgeFilletFace {
+            edge_feature,
+            joint,
+        } => {
+            require_kind(reference, EntityKind::Face, "a fillet face")?;
+            if reference.selection != SelectionRule::Exact {
+                return Err(CadError::input(format!(
+                    "topology reference {} names the face rounded from {joint}, which is one \
+                     face, and must select it exactly",
+                    reference.id
+                )));
+            }
+            let Some(names) = map.feature(reference.producer_feature) else {
+                return Err(CadError::topology(format!(
+                    "topology reference {} names geometry of a feature this rebuild produced \
+                     nothing for",
+                    reference.id
+                )));
+            };
+            exactly_one(
+                reference,
+                names.fillet_face(*edge_feature, *joint).collect(),
+                &format!("the face rounded from the edge {edge_feature} swept at {joint}"),
+            )
+        }
+
         SemanticRole::FilletFace { source_edge } => Err(CadError::unsupported(format!(
             "topology reference {} names a fillet face from edge {source_edge}, and fillets are \
              not implemented",

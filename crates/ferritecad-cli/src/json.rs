@@ -36,6 +36,7 @@ pub enum Operation {
     CutCircularCopy,
     EditCircularCut,
     EditRevolveAngle,
+    FilletEdgeCopy,
     Create,
     CreateSketchExtrude,
     CreateSketchRevolve,
@@ -502,6 +503,94 @@ struct Body {
     cut_edit_v2: CutDiscovery<ExplicitEnd>,
     /// The same answer for any supported polygon, with its real boundary (§26I).
     cut_edit_v3: CutDiscovery<ExplicitEnd, PolygonBoundary>,
+    /// §28A, additive: whether `fillet-edge-copy` can round one vertical edge
+    /// of this Body, and which edges. Structural only: it promises neither an
+    /// installed kernel nor that the geometry will build.
+    fillet_edge: FilletDiscovery,
+}
+
+/// What `fillet-edge-copy` would accept about one Body, from the same reading.
+#[derive(Serialize)]
+struct FilletDiscovery {
+    available: bool,
+    refusal: Option<String>,
+    document_refusal: Option<String>,
+    target: Option<FilletTarget>,
+}
+
+#[derive(Serialize)]
+struct FilletTarget {
+    body_id: ObjectId,
+    /// The feature both consumed and rounded: the plate's base Extrude.
+    base_feature_id: ObjectId,
+    profile_sketch_id: ObjectId,
+    height_mm: f64,
+    request_versions: &'static [u32],
+    min_radius_mm: f64,
+    max_radius_fraction: f64,
+    /// The four vertical edges, in stored segment order.
+    candidates: Vec<FilletCandidate>,
+}
+
+/// One edge, by its meaning. `edge` is the identity a request repeats; the
+/// rest are labels recomputed from the saved profile.
+#[derive(Serialize)]
+struct FilletCandidate {
+    edge: FilletEdgeDto,
+    label: String,
+    corner_mm: [f64; 2],
+    adjacent_lengths_mm: [f64; 2],
+    max_radius_mm: f64,
+}
+
+/// An edge as a request states it: the feature that swept it and the two
+/// Line UUIDs meeting at its corner, in canonical order (either order is
+/// accepted in a request and means the same edge).
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FilletEdgeDto {
+    pub(crate) feature_id: ObjectId,
+    pub(crate) joint: [StableEntityId; 2],
+}
+
+impl FilletDiscovery {
+    fn new(choice: &ferritecad_document::FilletChoice, document_refusal: Option<String>) -> Self {
+        let target = choice.target.as_ref().map(|t| FilletTarget {
+            body_id: t.body,
+            base_feature_id: t.base_feature,
+            profile_sketch_id: t.profile,
+            height_mm: t.height_mm,
+            request_versions: &[1],
+            min_radius_mm: ferritecad_document::MIN_RADIUS_MM,
+            max_radius_fraction: ferritecad_document::MAX_RADIUS_FRACTION,
+            candidates: t
+                .corners
+                .iter()
+                .map(|c| FilletCandidate {
+                    edge: FilletEdgeDto {
+                        feature_id: c.feature,
+                        joint: c.joint.segments(),
+                    },
+                    label: format!(
+                        "vertical edge at ({}, {}) mm between Lines {} and {}",
+                        c.corner_mm[0],
+                        c.corner_mm[1],
+                        c.joint.segments()[0],
+                        c.joint.segments()[1]
+                    ),
+                    corner_mm: c.corner_mm,
+                    adjacent_lengths_mm: c.adjacent_lengths_mm,
+                    max_radius_mm: c.max_radius_mm,
+                })
+                .collect(),
+        });
+        Self {
+            available: choice.refusal.is_none() && document_refusal.is_none(),
+            refusal: choice.refusal.clone(),
+            document_refusal,
+            target,
+        }
+    }
 }
 
 /// What `cut-circular-copy` would accept about one Body, from the same reading.
@@ -1126,6 +1215,11 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
         .collect();
     let mut cut_choices: std::collections::BTreeMap<_, _> =
         source.cut_bodies.into_iter().map(|c| (c.body, c)).collect();
+    let mut fillet_choices: std::collections::BTreeMap<_, _> = source
+        .fillet_bodies
+        .into_iter()
+        .map(|c| (c.body, c))
+        .collect();
     let mut cut_parameter_choices: std::collections::BTreeMap<_, _> = source
         .cut_features
         .into_iter()
@@ -1258,6 +1352,12 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                         cut_edit: CutDiscovery::new(&choice, source.refusal.clone(), "cut_edit"),
                         cut_edit_v2: CutDiscovery::new(&choice, source.refusal.clone(), "cut_edit"),
                         cut_edit_v3: CutDiscovery::new(&choice, source.refusal.clone(), "cut_edit"),
+                        fillet_edge: FilletDiscovery::new(
+                            &fillet_choices
+                                .remove(&body.id)
+                                .expect("same snapshot Body catalogue"),
+                            source.refusal.clone(),
+                        ),
                     }
                 })
                 .collect()

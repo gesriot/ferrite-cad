@@ -350,6 +350,27 @@ unsafe extern "C" {
         out_error: *mut RawError,
     ) -> i32;
 
+    #[allow(clippy::too_many_arguments)]
+    fn fc_occt_fillet_edge(
+        session: *mut RawSession,
+        target: u64,
+        edge: u64,
+        radius: f64,
+        cancel: Option<CancelFn>,
+        cancel_context: *mut c_void,
+        out_shape: *mut u64,
+        out_removed_volume: *mut f64,
+        out_error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_fillet_faces(
+        session: *mut RawSession,
+        shape: u64,
+        out_ids: *mut u64,
+        capacity: usize,
+        out_count: *mut usize,
+        out_error: *mut RawError,
+    ) -> i32;
+
     fn fc_occt_fillet_all(
         session: *mut RawSession,
         shape: u64,
@@ -1150,6 +1171,49 @@ impl Session {
             )));
         }
         Ok(buffer)
+    }
+
+    /// Rounds exactly one edge of `target` (§28A): the new shape and the
+    /// volume removed, measured by the bridge as a difference.
+    pub(crate) fn fillet_edge(
+        &mut self,
+        target: u64,
+        edge: u64,
+        radius: f64,
+        cancel: &CancelToken,
+    ) -> Result<(u64, f64)> {
+        let mut shape = 0u64;
+        let mut removed = 0.0f64;
+        let mut error = RawError::empty();
+        let context = cancel as *const CancelToken as *mut c_void;
+        // SAFETY: the out-parameters are valid for the call, the token is
+        // borrowed for exactly its duration, and the bridge is noexcept.
+        let status = unsafe {
+            fc_occt_fillet_edge(
+                self.raw,
+                target,
+                edge,
+                radius,
+                Some(cancel_trampoline),
+                context,
+                &mut shape,
+                &mut removed,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "rounding one edge")?;
+        Ok((shape, removed))
+    }
+
+    /// The faces the fillet generated from the rounded edge.
+    pub(crate) fn fillet_faces(&mut self, shape: u64) -> Result<Vec<u64>> {
+        self.collect_ids(
+            "reading the face a fillet generated from its edge",
+            |s, ids, cap, count, err| {
+                // SAFETY: pointers are valid for the call; see `collect_ids`.
+                unsafe { fc_occt_fillet_faces(s, shape, ids, cap, count, err) }
+            },
+        )
     }
 
     /// Rounds every edge of a shape to one radius.
@@ -2444,5 +2508,164 @@ mod tests {
             0,
             "an import the caller could not receive leaked its definitions"
         );
+    }
+
+    /// §28A: the selected-edge fillet's entry points, read out of the header
+    /// in the order the extern above passes them.
+    #[test]
+    fn the_fillet_edge_arguments_match_the_c_header() {
+        let header = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../ferritecad-occt-bridge/include/ferritecad_occt.h"
+        ));
+        for (entry, parameters) in [
+            (
+                "FcOcctStatus fc_occt_fillet_edge(",
+                &[
+                    "FcOcctSession *session",
+                    "uint64_t target",
+                    "uint64_t edge",
+                    "double radius",
+                    "FcOcctCancelFn cancel",
+                    "void *cancel_context",
+                    "uint64_t *out_shape",
+                    "double *out_removed_volume",
+                    "FcOcctError *out_error",
+                ][..],
+            ),
+            (
+                "FcOcctStatus fc_occt_fillet_faces(",
+                &[
+                    "FcOcctSession *session",
+                    "uint64_t shape",
+                    "uint64_t *out_ids",
+                    "size_t capacity",
+                    "size_t *out_count",
+                    "FcOcctError *out_error",
+                ][..],
+            ),
+        ] {
+            let declared = header
+                .split_once(entry)
+                .expect("the header declares both fillet entry points")
+                .1
+                .split_once(';')
+                .expect("the declaration ends")
+                .0;
+            let mut at = 0;
+            for parameter in parameters {
+                let found = declared[at..].find(parameter);
+                assert!(
+                    found.is_some(),
+                    "{entry} declares {parameter} after position {at}"
+                );
+                at += found.expect("checked just above") + parameter.len();
+            }
+            assert_eq!(
+                declared[at..].trim(),
+                ") FC_OCCT_NOEXCEPT",
+                "{entry} declares nothing after its error"
+            );
+        }
+    }
+
+    fn line(start: [f64; 2], end: [f64; 2]) -> Segment {
+        let mut segment = Segment::zeroed();
+        segment.kind = SEGMENT_LINE;
+        segment.start_x = start[0];
+        segment.start_y = start[1];
+        segment.end_x = end[0];
+        segment.end_y = end[1];
+        segment
+    }
+
+    /// §28A: one vertical edge of a translated plate, through the real bridge,
+    /// with every argument the entry point checks refused on its own.
+    #[test]
+    fn one_edge_fillet_rounds_exactly_that_edge_and_refuses_bad_arguments() {
+        let mut session = Session::new().expect("opens a real OCCT session");
+        let plane = Plane {
+            origin: [0.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        };
+        let (x0, y0, w, d, h) = (-4.5, 3.25, 37.5, 12.25, 6.75);
+        let c = [[x0, y0], [x0 + w, y0], [x0 + w, y0 + d], [x0, y0 + d]];
+        let segments: Vec<Segment> = (0..4).map(|i| line(c[i], c[(i + 1) % 4])).collect();
+        let shape = session
+            .extrude(&plane, &segments, &[4], 0.0, h, &CancelToken::new())
+            .expect("a plate");
+        let side = session.side_faces(shape, 0).expect("side")[0];
+        let never = CancelToken::new();
+
+        // Nothing but a fresh fillet result answers for its fillet faces.
+        assert!(session.fillet_faces(shape).is_err());
+        // An edge the target does not have, a face where an edge belongs, a
+        // target the session does not hold, and a cancelled run.
+        let edge = session.sweep_edges(shape, 0).expect("edge")[0];
+        assert!(session.fillet_edge(shape, u64::MAX, 2.5, &never).is_err());
+        assert!(session.fillet_edge(shape, side, 2.5, &never).is_err());
+        assert!(session.fillet_edge(u64::MAX, edge, 2.5, &never).is_err());
+        let cancelled = CancelToken::new();
+        cancelled.cancel();
+        assert!(session.fillet_edge(shape, edge, 2.5, &cancelled).is_err());
+        // A radius the kernel cannot build is refused, never clamped.
+        assert!(session.fillet_edge(shape, edge, d, &never).is_err());
+        assert_eq!(session.live_shape_count(), 1, "a refusal kept nothing");
+
+        let r = 2.375;
+        let mut centres = Vec::new();
+        for joint in 0..4 {
+            let edge = session.sweep_edges(shape, joint).expect("edge")[0];
+            let (rounded, removed) = session
+                .fillet_edge(shape, edge, r, &never)
+                .expect("a real fillet");
+            let expected = (1.0 - std::f64::consts::PI / 4.0) * r * r * h;
+            assert!(
+                (removed - expected).abs() < 1e-9 * w * d * h,
+                "{removed} is not {expected}"
+            );
+            let (faces, volume) = session.shape_stats(rounded).expect("stats");
+            assert_eq!(faces, 7);
+            assert!((volume - (w * d * h - expected)).abs() < 1e-9 * w * d * h);
+            let generated = session.fillet_faces(rounded).expect("fillet faces");
+            assert_eq!(generated.len(), 1, "exactly one face replaced the edge");
+            assert_eq!(
+                session
+                    .face_surface(rounded, generated[0])
+                    .expect("surface"),
+                FaceSurface::Cylinder { radius: r }
+            );
+            let (origin, axis) = session
+                .cylinder_axis(rounded, generated[0])
+                .expect("analytic axis");
+            assert!(axis[0].abs() < 1e-12 && axis[1].abs() < 1e-12);
+            assert!((axis[2].abs() - 1.0).abs() < 1e-12);
+            centres.push([origin[0], origin[1]]);
+            // The rounded edge is reported gone, not kept or moved.
+            let (outcome, _) = session.cut_carried(rounded, shape, edge).expect("carried");
+            assert_eq!(outcome, CARRIED_DELETED);
+            session.release(rounded);
+        }
+        // Four joints, four different corners, each centre r inward of its own.
+        let inward = |corner: [f64; 2]| {
+            [
+                corner[0] + if corner[0] == x0 { r } else { -r },
+                corner[1] + if corner[1] == y0 { r } else { -r },
+            ]
+        };
+        for corner in c {
+            let [ex, ey] = inward(corner);
+            assert_eq!(
+                centres
+                    .iter()
+                    .filter(|[x, y]| (x - ex).abs() < 1e-9 && (y - ey).abs() < 1e-9)
+                    .count(),
+                1,
+                "corner {corner:?} was rounded exactly once: {centres:?}"
+            );
+        }
+        session.release(shape);
+        assert_eq!(session.live_shape_count(), 0);
     }
 }

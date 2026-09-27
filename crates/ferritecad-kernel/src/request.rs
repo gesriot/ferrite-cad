@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 use ferritecad_types::{CadError, CanonicalHasher, Result, StableEntityId, normalize_f64};
 
-use crate::handle::ShapeHandle;
+use crate::handle::{ShapeHandle, SubShapeHandle};
 use crate::profile::Profile;
 
 /// How far an extrusion runs, and which way.
@@ -314,6 +314,31 @@ fn positive(value: f64, what: &str) -> Result<f64> {
 mod tests {
     use super::*;
 
+    /// §28A: only an edge of the target, and only a finite positive radius.
+    #[test]
+    fn a_fillet_request_names_an_edge_of_its_target_and_a_real_radius() {
+        use crate::handle::{SessionId, ShapeHandle, SubShapeHandle, SubShapeKind};
+        let target = ShapeHandle::new(SessionId::new(), 0);
+        let edge = SubShapeHandle::new(target, SubShapeKind::Edge, 3);
+        let request = FilletRequest::new(target, edge, 2.5).expect("valid");
+        assert_eq!(
+            (request.target(), request.edge(), request.radius_mm()),
+            (target, edge, 2.5)
+        );
+        let foreign =
+            SubShapeHandle::new(ShapeHandle::new(SessionId::new(), 0), SubShapeKind::Edge, 3);
+        assert!(FilletRequest::new(target, foreign, 2.5).is_err());
+        for kind in [SubShapeKind::Face, SubShapeKind::Vertex] {
+            assert!(FilletRequest::new(target, SubShapeHandle::new(target, kind, 3), 2.5).is_err());
+        }
+        for radius in [0.0, -0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(
+                FilletRequest::new(target, edge, radius).is_err(),
+                "{radius}"
+            );
+        }
+    }
+
     #[test]
     fn a_non_positive_extent_is_refused() {
         assert!(ExtrudeExtent::blind(0.0).is_err());
@@ -409,5 +434,60 @@ impl CutRequest {
     /// The shape whose material is removed.
     pub fn tool(&self) -> ShapeHandle {
         self.tool
+    }
+}
+
+/// What rounding one edge asks of a kernel (§28A).
+///
+/// The edge is a sub-shape handle of the target, obtained from the target's
+/// own names — never an index into a traversal and never a point the edge
+/// passes near. One edge and one constant radius: chains, variable radii and
+/// fillet-all are not what this request can say.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FilletRequest {
+    target: ShapeHandle,
+    edge: SubShapeHandle,
+    radius_mm: f64,
+}
+
+impl FilletRequest {
+    /// Refuses an edge that is not an edge of the target, and a radius that is
+    /// not a finite positive number. Whether the radius fits the part is the
+    /// caller's policy; this is only what no kernel could mean.
+    pub fn new(target: ShapeHandle, edge: SubShapeHandle, radius_mm: f64) -> Result<Self> {
+        if edge.kind() != crate::SubShapeKind::Edge {
+            return Err(CadError::input(format!(
+                "a fillet rounds an edge, and {edge} is a {}",
+                edge.kind()
+            )));
+        }
+        if edge.shape() != target {
+            return Err(CadError::input(format!(
+                "a fillet rounds an edge of the shape it modifies, and {edge} belongs to {}",
+                edge.shape()
+            )));
+        }
+        if !radius_mm.is_finite() || radius_mm <= 0.0 {
+            return Err(CadError::input(format!(
+                "a fillet radius must be finite and positive, found {radius_mm}"
+            )));
+        }
+        Ok(Self {
+            target,
+            edge,
+            radius_mm,
+        })
+    }
+
+    pub fn target(&self) -> ShapeHandle {
+        self.target
+    }
+
+    pub fn edge(&self) -> SubShapeHandle {
+        self.edge
+    }
+
+    pub fn radius_mm(&self) -> f64 {
+        self.radius_mm
     }
 }

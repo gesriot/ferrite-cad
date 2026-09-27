@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ferritecad_document::CapSide;
 use ferritecad_kernel::{
-    CutResult, ExtrudeResult, HistoryInput, Profile, RevolveResult, RevolveTurn, ShapeHandle,
-    SubShapeHandle, SubShapeKind,
+    CutResult, ExtrudeResult, FilletResult, HistoryInput, Profile, RevolveResult, RevolveTurn,
+    ShapeHandle, SubShapeHandle, SubShapeKind,
 };
 use ferritecad_types::{CadError, ObjectId, ProfileJoint, Result, StableEntityId};
 
@@ -55,6 +55,11 @@ pub struct FeatureNames {
     /// an extrusion-cap reference must never resolve to a Revolve's end face.
     revolved_start_cap: BTreeSet<SubShapeHandle>,
     revolved_end_cap: BTreeSet<SubShapeHandle>,
+    /// §28A: the face a Fillet made by rounding the edge one feature swept at
+    /// one corner, keyed by that feature and corner. A set for the reason
+    /// every name here is one: a kernel that reported two is recorded as it
+    /// answered, and the resolver refuses rather than picks.
+    fillet_faces: BTreeMap<(ObjectId, ProfileJoint), BTreeSet<SubShapeHandle>>,
     /// Immediate predecessor, for the unchanged legacy CarriedCap/Side roles.
     previous: Option<ObjectId>,
     /// Original producer and role, never reassigned by an intervening boolean.
@@ -268,6 +273,28 @@ impl FeatureNames {
         self.previous
     }
 
+    /// §28A: the faces rounded from the edge `edge_feature` swept at `joint`.
+    pub fn fillet_face(
+        &self,
+        edge_feature: ObjectId,
+        joint: ProfileJoint,
+    ) -> impl ExactSizeIterator<Item = SubShapeHandle> + '_ {
+        self.fillet_faces
+            .get(&(edge_feature, joint))
+            .map(|s| s.iter())
+            .unwrap_or_default()
+            .copied()
+    }
+
+    /// Every rounded edge this feature names a face for, in order.
+    pub fn named_fillet_edges(&self) -> impl ExactSizeIterator<Item = (ObjectId, ProfileJoint)> {
+        self.fillet_faces
+            .keys()
+            .copied()
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
     pub fn origin_faces(
         &self,
         origin: ObjectId,
@@ -294,6 +321,7 @@ impl FeatureNames {
             + self.end_cap.len()
             + self.sides.values().map(BTreeSet::len).sum::<usize>()
             + self.carried.values().map(BTreeSet::len).sum::<usize>()
+            + self.fillet_faces.values().map(BTreeSet::len).sum::<usize>()
     }
 
     /// Every qualified name, including deleted ancestors, in deterministic order.
@@ -333,6 +361,8 @@ pub struct RestoredNames {
     pub revolved_start_cap: Vec<SubShapeHandle>,
     pub revolved_end_cap: Vec<SubShapeHandle>,
     pub carried_deleted: BTreeSet<(ObjectId, CarriedName)>,
+    /// §28A: fillet faces by the edge they replaced.
+    pub fillet_faces: BTreeMap<(ObjectId, ProfileJoint), Vec<SubShapeHandle>>,
 }
 
 /// What a whole rebuild produced, addressed by feature and role.
@@ -824,6 +854,17 @@ impl TopologyMap {
             }
         }
         names.previous = restored.previous;
+        if !restored.fillet_faces.is_empty() && restored.previous.is_none() {
+            return Err(CadError::topology(format!(
+                "feature {producer} restored a fillet face without the feature it rounded"
+            )));
+        }
+        for (edge, faces) in &restored.fillet_faces {
+            for face in faces {
+                check(*face, shape, producer, "a restored fillet face")?;
+                names.fillet_faces.entry(*edge).or_default().insert(*face);
+            }
+        }
         for (name, faces) in &restored.carried {
             if name.0 == producer || restored.previous.is_none() {
                 return Err(CadError::topology(
@@ -1085,6 +1126,115 @@ impl TopologyMap {
     }
 }
 
+impl TopologyMap {
+    /// Records what rounding one edge produced (§28A).
+    ///
+    /// Two groups of names, both read from the fillet's own history:
+    ///
+    /// * the **new face**, filed under the edge it replaced — the producer
+    ///   that swept the edge and the corner it was swept from;
+    /// * every face the **predecessor** was known by (its own caps and sides,
+    ///   and every origin it carried), as the fillet leaves it, or recorded as
+    ///   removed. Qualified by its original producer, never reassigned.
+    ///
+    /// Nothing here looks at geometry. A face the history does not account
+    /// for refuses, as it does for a boolean.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_fillet(
+        &mut self,
+        producer: ObjectId,
+        previous: ObjectId,
+        edge_feature: ObjectId,
+        joint: ProfileJoint,
+        previous_names: &FeatureNames,
+        edge: SubShapeHandle,
+        result: &FilletResult,
+    ) -> Result<()> {
+        let Some(previous_shape) = previous_names.shape() else {
+            return Err(CadError::topology(format!(
+                "feature {producer} rounds an edge of {previous}, which produced no shape"
+            )));
+        };
+        result.validate(previous_shape, edge)?;
+
+        let mut names = FeatureNames {
+            shape: Some(result.shape),
+            ..FeatureNames::default()
+        };
+        for face in &result.fillet_faces {
+            check(*face, result.shape, producer, "a fillet face")?;
+            names
+                .fillet_faces
+                .entry((edge_feature, joint))
+                .or_default()
+                .insert(*face);
+        }
+
+        let outputs = |input: SubShapeHandle| -> Vec<SubShapeHandle> {
+            result
+                .history
+                .modified(HistoryInput::SubShape(input))
+                .chain(result.history.generated(HistoryInput::SubShape(input)))
+                .collect()
+        };
+        names.previous = Some(previous);
+        let mut inputs: BTreeMap<(ObjectId, CarriedName), Vec<SubShapeHandle>> = BTreeMap::new();
+        for side in [CapSide::Start, CapSide::End] {
+            inputs.insert(
+                (previous, CarriedName::Cap(side)),
+                previous_names.cap(side).into_iter().flatten().collect(),
+            );
+        }
+        for segment in previous_names.named_segments() {
+            inputs.insert(
+                (previous, CarriedName::Side(segment)),
+                previous_names.side(segment).collect(),
+            );
+        }
+        for (origin, name) in previous_names.origins() {
+            inputs.insert(
+                (origin, name),
+                previous_names.origin_faces(origin, name).collect(),
+            );
+        }
+        for (name, faces) in inputs {
+            let mut carried = BTreeSet::new();
+            for face in faces {
+                if !result.carried.contains_key(&face) {
+                    return Err(CadError::topology(
+                        "fillet history omitted a named input face",
+                    ));
+                }
+                for out in outputs(face) {
+                    check(out, result.shape, producer, "a carried origin face")?;
+                    carried.insert(out);
+                }
+            }
+            if carried.is_empty() {
+                names.carried_deleted.insert(name);
+            } else {
+                names.carried.insert(name, carried);
+            }
+        }
+        // A face cannot be both the new fillet face and a carried one.
+        for face in &result.fillet_faces {
+            if names.carried.values().any(|set| set.contains(face)) {
+                return Err(CadError::topology(format!(
+                    "feature {producer} reported {face} both as the fillet face and as a carried \
+                     face"
+                )));
+            }
+        }
+
+        if self.features.insert(producer, names).is_some() {
+            return Err(CadError::topology(format!(
+                "feature {producer} was recorded twice in one rebuild"
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// Refuses a name that is the wrong sort of thing or belongs to another shape.
 ///
 /// One statement for faces and edges alike. A handle of the wrong kind would
@@ -1166,6 +1316,112 @@ mod tests {
         kernel
             .extrude(&square.request, &OperationContext::default())
             .expect("the mock builds")
+    }
+
+    /// §28A: a fillet's own face is filed under the edge it replaced, every
+    /// face of the plate is carried only through the fillet's history, and a
+    /// history that is silent or contradictory is refused.
+    #[test]
+    fn a_fillet_is_named_by_its_edge_and_carries_only_what_its_history_says() {
+        use ferritecad_kernel::{CarriedOutcome, FilletResult, ShapeHandle};
+        let square = square();
+        let mut kernel = MockKernel::new();
+        let result = built(&mut kernel, &square);
+        let base = ObjectId::new();
+        let fillet = ObjectId::new();
+        let mut map = TopologyMap::new();
+        map.record_extrude(base, square.request.profile(), &result)
+            .expect("the plate");
+        let names = map.feature(base).expect("names").clone();
+        let joint = ProfileJoint::new(square.labels[0], square.labels[1]).expect("joint");
+        let edge = SubShapeHandle::new(result.shape, SubShapeKind::Edge, 999);
+        let shape = ShapeHandle::new(SessionId::new(), 1);
+        let face = |index| SubShapeHandle::new(shape, SubShapeKind::Face, index);
+        let mut inputs: Vec<SubShapeHandle> = names
+            .cap(CapSide::Start)
+            .into_iter()
+            .flatten()
+            .chain(names.cap(CapSide::End).into_iter().flatten())
+            .collect();
+        for label in &square.labels {
+            inputs.extend(names.side(*label));
+        }
+        let honest = || {
+            let mut history = History::new();
+            let mut carried = BTreeMap::from([(edge, CarriedOutcome::Deleted)]);
+            for (k, input) in inputs.iter().enumerate() {
+                history.record_modified(HistoryInput::SubShape(*input), face(10 + k as u64));
+                carried.insert(*input, CarriedOutcome::Modified);
+            }
+            FilletResult {
+                shape,
+                history,
+                carried,
+                fillet_faces: vec![face(1)],
+                removed_volume: 1.0,
+            }
+        };
+
+        let mut good = map.clone();
+        good.record_fillet(fillet, base, base, joint, &names, edge, &honest())
+            .expect("an honest fillet");
+        let recorded = good.feature(fillet).expect("the fillet's names");
+        assert_eq!(
+            recorded.fillet_face(base, joint).collect::<Vec<_>>(),
+            [face(1)]
+        );
+        assert_eq!(
+            recorded.named_fillet_edges().collect::<Vec<_>>(),
+            [(base, joint)]
+        );
+        assert_eq!(recorded.previous(), Some(base));
+        for label in &square.labels {
+            assert_eq!(
+                recorded.origin_faces(base, CarriedName::Side(*label)).len(),
+                1
+            );
+        }
+        for side in [CapSide::Start, CapSide::End] {
+            assert_eq!(recorded.origin_faces(base, CarriedName::Cap(side)).len(), 1);
+        }
+        // The base keeps its own, historical names; nothing was repointed.
+        assert_eq!(good.feature(base), Some(&names));
+
+        // A named face the history does not mention, a face that is both the
+        // fillet and a carried face, another edge, and a base with no shape.
+        let mut silent = honest();
+        silent.carried.remove(&inputs[0]);
+        let mut twice = honest();
+        twice
+            .history
+            .record_modified(HistoryInput::SubShape(inputs[0]), face(1));
+        for (why, bad) in [("silent", silent), ("twice", twice)] {
+            let mut m = map.clone();
+            assert!(
+                m.record_fillet(fillet, base, base, joint, &names, edge, &bad)
+                    .is_err(),
+                "{why}"
+            );
+        }
+        let other = SubShapeHandle::new(result.shape, SubShapeKind::Edge, 998);
+        let mut m = map.clone();
+        assert!(
+            m.record_fillet(fillet, base, base, joint, &names, other, &honest())
+                .is_err()
+        );
+        let mut m = map.clone();
+        assert!(
+            m.record_fillet(
+                fillet,
+                base,
+                base,
+                joint,
+                &FeatureNames::default(),
+                edge,
+                &honest()
+            )
+            .is_err()
+        );
     }
 
     #[test]

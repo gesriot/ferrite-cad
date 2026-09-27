@@ -186,6 +186,36 @@ jobs:
           cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee axis-constraints-widgets.log
           if grep -q 'skipped:' axis-constraints-widgets.log || ! grep -Fq "test $gate ... ok" axis-constraints-widgets.log; then exit 1; fi
 
+      - name: Discover single-edge fillets without native geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          for gate in fillet_discovery_and_protocol_without_native \
+            fillet_discovery_refuses_every_composition_outside_the_class_without_native
+          do
+            cargo test -p ferritecad-cli --test fillet "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-discovery.log
+            if grep -q 'skipped:' fillet-discovery.log || ! grep -Fq "test $gate ... ok" fillet-discovery.log; then exit 1; fi
+          done
+          gate=fillets::tests::fillet_widgets_list_corners_refuse_like_the_document_and_keep_the_draft
+          cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-widgets.log
+          if grep -q 'skipped:' fillet-widgets.log || ! grep -Fq "test $gate ... ok" fillet-widgets.log; then exit 1; fi
+          for gate in fillet::tests::one_fillet_is_written_as_the_new_tip_and_a_forged_one_is_refused \
+            fillet::tests::corners_are_the_four_joints_whatever_the_winding_or_starting_segment
+          do
+            cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-writer.log
+            if grep -q 'skipped:' fillet-writer.log || ! grep -Fq "test $gate ... ok" fillet-writer.log; then exit 1; fi
+          done
+          # The public recipe against a build with no kernel: discovery works,
+          # geometry is refused typed, and it says so.
+          python3 - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/single-edge-fillet.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_28A_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-28a-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-28a-recipe.py | tee fillet-recipe-stub.log
+          grep -q '^FCAD_28A_RECIPE_NO_KERNEL ' fillet-recipe-stub.log
+
       - name: Discover sequential cuts without native geometry
         shell: bash
         run: |

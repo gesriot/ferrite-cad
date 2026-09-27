@@ -21,10 +21,12 @@ ferritecad	bin/ferritecad.exe
 ferritecad-viewer	bin/ferritecad-viewer.exe
 occt	bin/TKBO.dll
 occt	bin/TKBRep.dll
+occt	bin/TKBool.dll
 occt	bin/TKCAF.dll
 occt	bin/TKCDF.dll
 occt	bin/TKDE.dll
 occt	bin/TKDESTEP.dll
+occt	bin/TKFillet.dll
 occt	bin/TKG2d.dll
 occt	bin/TKG3d.dll
 occt	bin/TKGeomAlgo.dll

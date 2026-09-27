@@ -261,6 +261,8 @@ fn extrude_frame<'a>(
     // Refuse unknown fields/noncanonical envelopes in the one payload we will
     // rewrite, rather than silently discard bytes this reader did not retain.
     require_lossless_payload(object)?;
+    // §28A: a filleted part is refused by name before its object count is.
+    crate::fillet::refuse_filleted(objects)?;
     // A bounded class, not an attempt to simplify a larger model. For a large
     // unsupported catalogue this returns before any per-object SQL reads.
     if objects.len() != 4 || objects.iter().any(|o| o.parent.is_some()) {
@@ -404,6 +406,7 @@ pub(crate) fn revolve_document<'a>(
     what: &str,
     intent: impl FnOnce(&crate::Revolve) -> Result<()>,
 ) -> Result<RevolveDocument<'a>> {
+    crate::fillet::refuse_filleted(objects)?;
     if objects.len() != 4 || objects.iter().any(|o| o.parent.is_some()) {
         return Err(unsupported(&format!(
             "{what} requires exactly one XY plane, Sketch, Revolve and Body"

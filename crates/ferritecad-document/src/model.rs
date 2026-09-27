@@ -180,6 +180,15 @@ pub const FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY: &str = "feature.revolve.axis-c
 /// and never declare this.
 pub const FEATURE_REVOLVE_PARTIAL_CAPABILITY: &str = "feature.revolve.partial.v1";
 
+/// The capability a [`Fillet`] and every name it raises depend on (§28A).
+///
+/// A new kind of feature, so its own capability rather than an extension of
+/// Extrude's: a build that predates it keeps a `feature.fillet` object
+/// verbatim, cannot build a Body whose tip it is, and must open the document
+/// read-only instead of rewriting it. That is a real refusal of a real older
+/// reader, which is what earns the name.
+pub const FEATURE_FILLET_CAPABILITY: &str = "feature.fillet.v1";
+
 /// The capability an [`ImportedStep`] object depends on.
 ///
 /// Declared separately from [`CORE_CAPABILITY`] so a reader that understands
@@ -217,6 +226,8 @@ pub enum ObjectKind {
     ImportedStep,
     /// A profile turned about an axis (§27A: full turn, NewBody only).
     Revolve,
+    /// One edge of an earlier feature's result, rounded (§28A).
+    Fillet,
 }
 
 impl ObjectKind {
@@ -230,6 +241,7 @@ impl ObjectKind {
             Self::Extrude => "feature.extrude",
             Self::ImportedStep => "exchange.step.imported",
             Self::Revolve => "feature.revolve",
+            Self::Fillet => "feature.fillet",
         }
     }
 
@@ -244,6 +256,7 @@ impl ObjectKind {
             "feature.extrude" => Some(Self::Extrude),
             "exchange.step.imported" => Some(Self::ImportedStep),
             "feature.revolve" => Some(Self::Revolve),
+            "feature.fillet" => Some(Self::Fillet),
             _ => None,
         }
     }
@@ -298,6 +311,13 @@ impl ObjectKind {
                 FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
                 FEATURE_THROUGH_ALL_CAPABILITY.to_owned(),
             ],
+            // Every Fillet consumes a predecessor, so it declares that
+            // contract as well as its own.
+            (Self::Fillet, _) => vec![
+                CORE_CAPABILITY.to_owned(),
+                FEATURE_PREDECESSOR_CAPABILITY.to_owned(),
+                FEATURE_FILLET_CAPABILITY.to_owned(),
+            ],
             _ => vec![CORE_CAPABILITY.to_owned()],
         }
     }
@@ -327,6 +347,11 @@ impl ObjectKind {
                 CORE_CAPABILITY,
                 FEATURE_PREDECESSOR_CAPABILITY,
                 FEATURE_THROUGH_ALL_CAPABILITY,
+            ],
+            Self::Fillet => &[
+                CORE_CAPABILITY,
+                FEATURE_PREDECESSOR_CAPABILITY,
+                FEATURE_FILLET_CAPABILITY,
             ],
             _ => &[CORE_CAPABILITY],
         }
@@ -380,7 +405,7 @@ impl ObjectKind {
 
     /// Whether an object of this kind participates in the rebuild as a feature.
     pub fn is_feature(self) -> bool {
-        matches!(self, Self::Extrude | Self::Revolve)
+        matches!(self, Self::Extrude | Self::Revolve | Self::Fillet)
     }
 }
 
@@ -1193,6 +1218,57 @@ impl Revolve {
     }
 }
 
+/// The one edge a [`Fillet`] rounds, by what it means.
+///
+/// The feature that made the edge and the corner of that feature's profile it
+/// was swept from: the same unordered pair of Line UUIDs
+/// [`SemanticRole::ExtrudeSweepEdge`] names it by. Never an index, a
+/// coordinate or a reference UUID; the evaluator finds exactly this edge in
+/// the producer's output or refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FilletEdge {
+    /// The feature whose output the edge belongs to.
+    pub feature: ObjectId,
+    /// The profile corner the edge was swept from.
+    pub joint: ProfileJoint,
+}
+
+/// Rounds one edge of an earlier feature's result (§28A).
+///
+/// Modifies a result, so it names the feature it consumes, exactly as a Cut
+/// does (ADR 0004): the Body names its tip and ownership is derived. The
+/// radius is one literal constant in millimetres.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fillet {
+    /// The feature whose result this rounds.
+    pub previous: ObjectId,
+    pub edge: FilletEdge,
+    pub radius_mm: f64,
+}
+
+impl Fillet {
+    /// The cache key for this feature's own statement; the caller adds the
+    /// predecessor's key and the kernel identity.
+    pub fn cache_key(&self, tolerance: ferritecad_types::Tolerance) -> ContentHash {
+        let mut hasher = CanonicalHasher::new("feature.fillet");
+        hasher.algorithm_version(1);
+        tolerance.feed(&mut hasher);
+        hasher.field("previous").bytes(&self.previous.to_bytes());
+        let [one, other] = self.edge.joint.segments();
+        hasher
+            .field("edge")
+            .bytes(&self.edge.feature.to_bytes())
+            .bytes(&one.to_bytes())
+            .bytes(&other.to_bytes());
+        hasher
+            .field("radius_mm")
+            .bytes(&self.radius_mm.to_bits().to_le_bytes());
+        hasher.finish()
+    }
+}
+
 /// Sweeps a sketch profile along the plane normal.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Extrude {
@@ -1397,7 +1473,21 @@ pub enum SemanticRole {
     /// points, and nothing durable tells them apart.
     ExtrudeCapVertex { side: CapSide, joint: ProfileJoint },
     /// A face introduced by filleting an identified edge.
+    ///
+    /// Kept for its stored meaning and not written by §28A: one entity UUID
+    /// cannot say which feature produced the edge nor which corner it was.
     FilletFace { source_edge: StableEntityId },
+    /// §28A: the face the reference's producer — a [`Fillet`] — made by
+    /// rounding the edge `edge_feature` swept at `joint`.
+    ///
+    /// The same pair of Line UUIDs that names the edge
+    /// ([`SemanticRole::ExtrudeSweepEdge`]) names the face that replaced it,
+    /// qualified by the feature that made the edge. Answered only from the
+    /// fillet's own history, never from geometry.
+    EdgeFilletFace {
+        edge_feature: ObjectId,
+        joint: ProfileJoint,
+    },
     /// The cap an earlier feature made, as the feature naming it leaves it.
     ///
     /// Its own role rather than [`SemanticRole::ExtrudeCap`] reused under a
@@ -1617,6 +1707,17 @@ impl TopologyRef {
             }
             SemanticRole::FilletFace { source_edge } => {
                 hasher.str("fillet_face").bytes(&source_edge.to_bytes());
+            }
+            SemanticRole::EdgeFilletFace {
+                edge_feature,
+                joint,
+            } => {
+                let [one, other] = joint.segments();
+                hasher
+                    .str("edge_fillet_face")
+                    .bytes(&edge_feature.to_bytes())
+                    .bytes(&one.to_bytes())
+                    .bytes(&other.to_bytes());
             }
         }
 
@@ -1880,6 +1981,8 @@ pub enum ObjectPayload {
     Extrude(Extrude),
     /// A profile turned about an axis.
     Revolve(Revolve),
+    /// One rounded edge of an earlier result (§28A).
+    Fillet(Fillet),
     /// A STEP file and the scene one reading of it produced.
     ImportedStep(ImportedStep),
     /// An object of a type this build does not implement, preserved verbatim.
@@ -1897,6 +2000,7 @@ impl ObjectPayload {
             Self::Body(_) => ObjectKind::Body.as_str(),
             Self::Extrude(_) => ObjectKind::Extrude.as_str(),
             Self::Revolve(_) => ObjectKind::Revolve.as_str(),
+            Self::Fillet(_) => ObjectKind::Fillet.as_str(),
             Self::ImportedStep(_) => ObjectKind::ImportedStep.as_str(),
             Self::Unknown(unknown) => &unknown.type_name,
         }
@@ -1954,6 +2058,7 @@ impl ObjectPayload {
             Self::Body(v) => Envelope::encode(name, version, capabilities, v)?,
             Self::Extrude(v) => Envelope::encode(name, version, capabilities, v)?,
             Self::Revolve(v) => Envelope::encode(name, version, capabilities, v)?,
+            Self::Fillet(v) => Envelope::encode(name, version, capabilities, v)?,
             // Written back at the layout it was read at. A version 1 scene
             // has no keys and a version 2 scene has no placement identities,
             // and inventing either while writing would turn a document that
@@ -2033,6 +2138,7 @@ impl ObjectPayload {
                 }
                 Self::Revolve(revolve)
             }
+            ObjectKind::Fillet => Self::Fillet(envelope.decode()?),
             ObjectKind::ImportedStep => Self::ImportedStep(match envelope.schema_version {
                 1 => {
                     let stored: StoredImport<LegacyScene> = envelope.decode()?;
@@ -2159,8 +2265,33 @@ impl ObjectPayload {
                     "this build writes only a NewBody Revolve about the sketch Y axis",
                 )),
             },
+            // One finite positive radius. Whether it fits the edge is a
+            // question about geometry, asked by the policy that knows the
+            // part (`fillet::FilletCorner::check_radius`) and again by the evaluator.
+            Self::Fillet(fillet) => {
+                let radius = normalize_f64(fillet.radius_mm)?;
+                if radius <= 0.0 {
+                    return Err(CadError::input(format!(
+                        "a fillet radius must be positive, found {radius} mm"
+                    )));
+                }
+                Ok(())
+            }
             Self::ImportedStep(imported) => imported.validate(),
             Self::Unknown(_) => Ok(()),
+        }
+    }
+
+    /// The feature this one consumes, for a feature that modifies a result.
+    ///
+    /// One answer for every feature kind that has one, so the history checks
+    /// (`feature.forked-history`, `body.shared-history`) and the readers that
+    /// walk a Body's history cannot forget a kind.
+    pub fn previous_feature(&self) -> Option<ObjectId> {
+        match self {
+            Self::Extrude(extrude) => extrude.previous,
+            Self::Fillet(fillet) => Some(fillet.previous),
+            _ => None,
         }
     }
 }

@@ -83,6 +83,14 @@ dimensions. Its axis Line stays the saved one and still raises no face; the
 request keeps it on the axis by pinning one of its ends at X = 0 and making it
 vertical, and nothing is snapped. A solution that leaves the axis is refused.
 [Solid Revolve constraint contract and recipe](docs/axis-closed-revolve-constraints.md).
+A saved rectangular plate — one unconstrained XY rectangle of four Lines with
+a forward Blind extrusion — can have one of its four vertical edges rounded
+with **Fillet edge of …** or `fillet-edge-copy`. The edge is chosen from a list
+by the two Lines that meet there, and the radius is from 0.01 mm to half the
+shorter adjacent side. The copy's Body ends in a named Fillet whose rounded
+face is a real cylinder. Chains, cap edges, a second Fillet, Chamfer and
+editing a filleted part are not supported yet.
+[Single-edge Fillet contract and recipe](docs/single-edge-fillet.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

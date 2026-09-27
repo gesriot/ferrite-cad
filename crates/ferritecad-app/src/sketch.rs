@@ -124,6 +124,9 @@ pub(crate) struct Editor {
     /// is added to a body's history, not to a drawing, and it reads a different
     /// catalogue of the same pinned reading.
     pub(crate) cuts: crate::cuts::Editor,
+    /// §28A: the single-edge fillet form, beside the cut one for the same
+    /// reason: it adds to a Body's history and reads its own catalogue.
+    pub(crate) fillets: crate::fillets::Editor,
     draft: Option<State>,
     undo: Vec<State>,
     redo: Vec<State>,
@@ -184,6 +187,7 @@ impl Editor {
             || self.editing_angle.is_some()
             || self.constraints.active()
             || self.cuts.active()
+            || self.fillets.active()
     }
     pub(crate) fn dismiss(&mut self) {
         *self = Self::default();
@@ -274,6 +278,9 @@ impl Editor {
         &mut self,
     ) -> Option<ferritecad_jobs::EditCircularCutRequest> {
         self.cuts.take_edit_request()
+    }
+    pub(crate) fn take_fillet_request(&mut self) -> Option<ferritecad_jobs::EdgeFilletRequest> {
+        self.fillets.take_request()
     }
     /// Begin editing one saved pair of concentric circles of the accepted scene.
     ///
@@ -549,6 +556,7 @@ impl Editor {
         if !self.active() {
             self.constraints.choices(ui, can_begin, path, source);
             self.cuts.choices(ui, can_begin, path, source);
+            self.fillets.choices(ui, can_begin, path, source);
         }
         if self.active() {
             return;
@@ -821,6 +829,10 @@ impl Editor {
         }
         if self.cuts.active() {
             self.cuts.draw(ui, running);
+            return;
+        }
+        if self.fillets.active() {
+            self.fillets.draw(ui, running);
             return;
         }
         if !self.active() {

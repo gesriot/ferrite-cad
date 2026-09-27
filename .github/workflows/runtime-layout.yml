@@ -560,6 +560,31 @@ jobs:
             -- --exact --nocapture --test-threads=1 2>&1 | tee revolve-axis-constraints-no-solver.log
           if grep -q 'skipped:' revolve-axis-constraints-no-solver.log || ! grep -Fq "test $gate ... ok" revolve-axis-constraints-no-solver.log; then exit 1; fi
 
+          # §28A: rounding one edge of an unconstrained plate asks no solver
+          # anything; the same measured gates pass in this build.
+          gate=native_two_corners_both_windings_and_starts_are_what_the_numbers_say
+          FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release --no-default-features -p ferritecad-cli --test fillet "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-no-solver.log
+          if grep -q 'skipped:' fillet-no-solver.log || ! grep -Fq "test $gate ... ok" fillet-no-solver.log; then exit 1; fi
+          gate=native_changing_the_plate_invalidates_the_cached_fillet
+          FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release --no-default-features -p ferritecad-cli --test fillet "$gate" \
+            -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-cache-no-solver.log
+          if grep -q 'skipped:' fillet-cache-no-solver.log || ! grep -Fq "test $gate ... ok" fillet-cache-no-solver.log; then exit 1; fi
+          # And the public recipe, against this build's own CLI.
+          py="$(command -v python3 || command -v python)"
+          recipe_cli="$PWD/target/release/ferritecad"
+          case '${{ matrix.name }}' in
+            windows) recipe_cli="$(cygpath -w "$recipe_cli.exe")" ;;
+          esac
+          "$py" - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/single-edge-fillet.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_28A_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-28a-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$recipe_cli" "$py" ferrite-28a-recipe.py | tee fillet-recipe-no-solver.log
+          grep -q '^FCAD_28A_RECIPE_OK ' fillet-recipe-no-solver.log
+
       - name: Build the real application and the command line tool against both
         id: build
         env:
@@ -1760,6 +1785,92 @@ jobs:
             echo "FCAD_REVOLVE_CONSTRAINT_FBX_DIR=$constraint_artifacts"
           } >> "$GITHUB_ENV"
 
+      - name: Round one vertical edge of a saved plate into a named Fillet
+        env:
+          FERRITECAD_REQUIRE_OCCT: '1'
+          FERRITECAD_REQUIRE_PLANEGCS: '1'
+          CARGO_BUILD_JOBS: '1'
+          CMAKE_BUILD_PARALLEL_LEVEL: '1'
+          OpenCASCADE_DIR: ${{ steps.occt.outputs.config_dir }}
+          FCAD_OCCT_LIB_DIR: ${{ steps.occt.outputs.lib_dir }}
+        run: |
+          set -euo pipefail
+          libs="$FCAD_OCCT_LIB_DIR:$PWD/vendor/planegcs"
+          artifacts="$RUNNER_TEMP/fillet"
+          mkdir -p "$artifacts"
+          case '${{ matrix.name }}' in
+            windows) export PATH="$libs:$PATH"; artifacts="$(cygpath -w "$artifacts")" ;;
+            macos) export DYLD_LIBRARY_PATH="$libs"; export DYLD_FALLBACK_LIBRARY_PATH="$libs" ;;
+            linux) export LD_LIBRARY_PATH="$libs" ;;
+          esac
+          export FCAD_FILLET_ARTIFACTS="$artifacts"
+          # Peer process must be this build before the app worker gate.
+          cargo build --release --features planegcs -p ferritecad-cli
+          for gate in fillet_discovery_and_protocol_without_native \
+            fillet_discovery_refuses_every_composition_outside_the_class_without_native \
+            native_two_corners_both_windings_and_starts_are_what_the_numbers_say \
+            native_changing_the_plate_invalidates_the_cached_fillet \
+            native_fillet_refusals_and_cancellation_are_atomic \
+            native_a_filleted_copy_and_other_histories_are_refused_by_name \
+            native_the_evaluator_refuses_a_saved_fillet_outside_the_class
+          do
+            cargo test --release --features planegcs -p ferritecad-cli --test fillet "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-cli.log
+            if grep -q 'skipped:' fillet-cli.log || ! grep -Fq "test $gate ... ok" fillet-cli.log; then
+              echo "::error::fillet process gate $gate did not execute"; exit 1
+            fi
+          done
+          # The selected-edge operation, through the trait and the bridge.
+          for gate in one_selected_vertical_edge_is_rounded_and_every_tracked_face_is_accounted_for \
+            a_fillet_that_cannot_be_what_it_claims_is_refused_and_keeps_nothing
+          do
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-occt --test fillet_edge_occt "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-occt.log
+            if grep -q 'skipped:' fillet-occt.log || ! grep -Fq "test $gate ... ok" fillet-occt.log; then exit 1; fi
+          done
+          for gate in ffi::tests::the_fillet_edge_arguments_match_the_c_header \
+            ffi::tests::one_edge_fillet_rounds_exactly_that_edge_and_refuses_bad_arguments
+          do
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-occt --lib "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-ffi.log
+            if grep -q 'skipped:' fillet-ffi.log || ! grep -Fq "test $gate ... ok" fillet-ffi.log; then exit 1; fi
+          done
+          for gate in request::tests::a_fillet_request_names_an_edge_of_its_target_and_a_real_radius \
+            result::tests::a_fillet_result_is_held_to_one_deleted_edge_one_face_and_real_removal \
+            kernel::tests::a_fillet_keys_by_target_edge_meaning_and_radius_bits
+          do
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-kernel --lib "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-kernel.log
+            if grep -q 'skipped:' fillet-kernel.log || ! grep -Fq "test $gate ... ok" fillet-kernel.log; then exit 1; fi
+          done
+          for gate in fillet::tests::the_fillet_payload_round_trips_and_refuses_what_it_cannot_mean \
+            fillet::tests::corners_are_the_four_joints_whatever_the_winding_or_starting_segment \
+            fillet::tests::anything_but_an_unconstrained_axis_aligned_rectangle_of_lines_is_refused \
+            fillet::tests::the_radius_policy_and_the_edge_meaning_refuse_with_their_reasons \
+            fillet::tests::one_fillet_is_written_as_the_new_tip_and_a_forged_one_is_refused \
+            fillet::tests::the_validator_refuses_a_fillet_without_its_predecessor_edge_or_target
+          do
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-document --lib "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-domain.log
+            if grep -q 'skipped:' fillet-domain.log || ! grep -Fq "test $gate ... ok" fillet-domain.log; then exit 1; fi
+          done
+          for gate in codec::tests::an_edge_fillet_face_survives_its_byte_form_and_nothing_else_reads_as_it \
+            codec::tests::no_two_stored_names_share_a_tag \
+            map::tests::a_fillet_is_named_by_its_edge_and_carries_only_what_its_history_says
+          do
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-topology --lib "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-topology.log
+            if grep -q 'skipped:' fillet-topology.log || ! grep -Fq "test $gate ... ok" fillet-topology.log; then exit 1; fi
+          done
+          for gate in fillets::tests::fillet_widgets_list_corners_refuse_like_the_document_and_keep_the_draft \
+            fillets::tests::native_fillet_widgets_worker_and_cli_publish_the_same_part
+          do
+            cargo test --release --features planegcs -p ferritecad-app "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-ui.log
+            if grep -q 'skipped:' fillet-ui.log || ! grep -Fq "test $gate ... ok" fillet-ui.log; then exit 1; fi
+          done
+          echo "FCAD_FILLET_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
+
       - name: Create, discover, edit and export through the JSON v1 CLI contract
         env:
           FERRITECAD_REQUIRE_OCCT: '1'
@@ -1868,6 +1979,7 @@ jobs:
           grep -q '^FCAD_REVOLVE_PROFILE_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_REVOLVE_CONSTRAINT_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_AXIS_CONSTRAINT_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_FILLET_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

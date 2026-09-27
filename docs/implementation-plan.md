@@ -3764,3 +3764,38 @@ What is new:
 
 [Contract and executable recipe](axis-closed-revolve-constraints.md),
 [verification](axis-closed-revolve-constraints-verification.md).
+
+**§28A — one named Fillet on one vertical edge of a saved plate, in a new
+copy.** This is the first real Fillet feature. It is not the 5C milestone:
+chains, cap edges, radius edits, a second Fillet, Chamfer and edge
+disappearance stay open.
+
+A person picks one of the four vertical edges of a saved rectangular plate
+from a list, enters a radius, and saves a new `.fcad`. An agent gets the same
+candidates from `inspect --json` and the same result from
+`fillet-edge-copy`. The Body ends in a named `feature.fillet`, which reopens,
+rebuilds cold and from the cache, and exports.
+
+The contract was recorded before implementation:
+- ADR 0004 is reused unchanged: `previous`, the Predecessor edge, and the
+  Body's tip.
+- The edge is named by its producer and `ExtrudeSweepEdge`'s joint (two real
+  Line UUIDs, either order), never by an index or a coordinate.
+- A selected-edge `GeometryKernel::fillet_edge` is added, with
+  `BRepCheck_Analyzer`, one solid, a positive removal and its own history.
+  It is not a wrapper of the corpus probe.
+- A new face role, `EdgeFilletFace`, and archive tag 18 are added. The plate's
+  faces are carried as `OriginCap`/`OriginSide`.
+- The cache key is `eval.fillet.named` over the predecessor's key, the edge
+  meaning and the radius bits.
+- A new capability, `feature.fillet.v1`, exists because a prior-main reader
+  cannot build the tip.
+
+The radius class was measured first on OCCT 8.0.1:
+`0.01 mm ≤ r ≤ ½ · min(adjacent Lines)`. Nothing is clamped. Every other
+editor refuses a filleted part by naming the Fillet.
+
+The historical fillet-corpus OOM is not claimed fixed.
+
+[Contract and executable recipe](single-edge-fillet.md),
+[verification](single-edge-fillet-verification.md).

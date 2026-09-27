@@ -28,7 +28,7 @@
 use ferritecad_document::CacheStore;
 use ferritecad_kernel::{
     ExtrudeRequest, KernelIdentity, OperationContext, RevolveRequest, cut_cache_key,
-    extrude_cache_key, revolve_cache_key,
+    extrude_cache_key, fillet_cache_key, revolve_cache_key,
 };
 use ferritecad_topology::{ARCHIVE_CACHE_KIND, ArchivedFeature};
 use ferritecad_types::{CanonicalHasher, ContentHash, ObjectId, Result};
@@ -85,6 +85,39 @@ pub fn cut_archive_key(
     hasher
         .field("geometry")
         .bytes(cut_cache_key(kernel, target_key, tool_key, context).as_bytes());
+    hasher.finish()
+}
+
+/// Where a fillet's archive lives in the sidecar (§28A).
+///
+/// The predecessor's identity and its own key, the edge's meaning (producer
+/// and canonical corner) and the radius bits: an upstream change moves the
+/// predecessor key, and so this one. Names are bound under the predecessor's
+/// identity, so a different predecessor UUID over the same geometry is a
+/// different entry.
+pub fn fillet_archive_key(
+    kernel: &KernelIdentity,
+    previous: ObjectId,
+    target_key: &ContentHash,
+    edge_feature: ObjectId,
+    joint: ferritecad_types::ProfileJoint,
+    radius_mm: f64,
+    context: &OperationContext,
+) -> ContentHash {
+    let mut hasher = CanonicalHasher::new("eval.fillet.named");
+    hasher.algorithm_version(1);
+    hasher.field("previous").bytes(&previous.to_bytes());
+    hasher.field("geometry").bytes(
+        fillet_cache_key(
+            kernel,
+            target_key,
+            &edge_feature.to_bytes(),
+            joint,
+            radius_mm,
+            context,
+        )
+        .as_bytes(),
+    );
     hasher.finish()
 }
 

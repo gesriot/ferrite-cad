@@ -17,6 +17,7 @@ mod edit_revolve_angle;
 mod edit_sketch;
 mod export;
 mod export_fbx;
+mod fillet;
 mod import;
 mod json;
 mod rebuild;
@@ -134,6 +135,9 @@ enum Command {
     /// Change the stated angle of a saved partial Revolve in a new
     /// identity-preserving FCAD copy. Profile, axis and direction are kept.
     EditRevolveAngle(edit_revolve_angle::EditRevolveAngleArgs),
+    /// Round one vertical edge of a saved rectangular plate to a constant
+    /// radius, publishing a new FCAD copy whose Body ends in a named Fillet.
+    FilletEdgeCopy(fillet::FilletArgs),
     /// Show a document's metadata, objects, graph and references.
     Inspect(InspectArgs),
     /// Check stored consistency without writes, migration or a geometry kernel.
@@ -363,6 +367,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::EditSketchCopy(args) => edit_sketch::run(args),
         Command::EditRevolveAngle(args) => edit_revolve_angle::run(args),
+        Command::FilletEdgeCopy(args) => fillet::run(args),
         Command::EditCircle(args) => edit_circle::run(args),
         Command::EditAnnular(args) => edit_annular::run(args),
         Command::CutCircularCopy(args) => cut::run(args),

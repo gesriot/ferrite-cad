@@ -285,10 +285,12 @@
         "x86_64-pc-windows-msvc": [
           "TKBO.dll",
           "TKBRep.dll",
+          "TKBool.dll",
           "TKCAF.dll",
           "TKCDF.dll",
           "TKDE.dll",
           "TKDESTEP.dll",
+          "TKFillet.dll",
           "TKG2d.dll",
           "TKG3d.dll",
           "TKGeomAlgo.dll",
@@ -788,6 +790,11 @@
         {
           "owner": "native+occt@8.0.1",
           "ownerKind": "component",
+          "path": "bin/TKBool.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
           "path": "bin/TKCAF.dll"
         },
         {
@@ -804,6 +811,11 @@
           "owner": "native+occt@8.0.1",
           "ownerKind": "component",
           "path": "bin/TKDESTEP.dll"
+        },
+        {
+          "owner": "native+occt@8.0.1",
+          "ownerKind": "component",
+          "path": "bin/TKFillet.dll"
         },
         {
           "owner": "native+occt@8.0.1",

@@ -435,6 +435,64 @@ fn check_semantic_references(
                 }
             }
         }
+        // A Fillet consumes an earlier feature's result, stated once and
+        // recorded by the same Predecessor edge a Cut's is (ADR 0004).
+        ObjectPayload::Fillet(fillet) => {
+            let previous = fillet.previous;
+            if previous == object.id {
+                report.error(
+                    "feature.self-predecessor",
+                    Some(object.id),
+                    format!(
+                        "feature {} names itself as the result it modifies",
+                        object.id
+                    ),
+                );
+            } else {
+                match by_id.get(&previous) {
+                    None => report.error(
+                        "reference.missing-target",
+                        Some(object.id),
+                        format!("feature {} modifies missing feature {previous}", object.id),
+                    ),
+                    Some(found) if !found.payload.kind().is_some_and(ObjectKind::is_feature) => {
+                        report.error(
+                            "reference.wrong-kind",
+                            Some(object.id),
+                            format!(
+                                "feature {} expects {previous} to be a feature, found {}",
+                                object.id,
+                                found.payload.type_name()
+                            ),
+                        );
+                    }
+                    Some(_) => {}
+                }
+                if !edges.contains(&(object.id, previous, DependencyRole::Predecessor)) {
+                    report.error(
+                        "reference.missing-edge",
+                        Some(object.id),
+                        format!(
+                            "feature {} modifies {previous} but no predecessor dependency records it",
+                            object.id
+                        ),
+                    );
+                }
+            }
+            if !by_id
+                .get(&fillet.edge.feature)
+                .is_some_and(|found| found.payload.kind().is_some_and(ObjectKind::is_feature))
+            {
+                report.error(
+                    "reference.missing-target",
+                    Some(object.id),
+                    format!(
+                        "fillet {} rounds an edge of {}, which is not a feature of this document",
+                        object.id, fillet.edge.feature
+                    ),
+                );
+            }
+        }
         ObjectPayload::Revolve(revolve) => {
             require(
                 revolve.profile,
@@ -493,8 +551,8 @@ fn check_feature_history(objects: &[crate::document::ObjectRecord], report: &mut
     let mut owners: BTreeMap<ObjectId, Vec<ObjectId>> = BTreeMap::new();
     for object in objects {
         match &object.payload {
-            ObjectPayload::Extrude(extrude) => {
-                if let Some(previous) = extrude.previous {
+            ObjectPayload::Extrude(_) | ObjectPayload::Fillet(_) => {
+                if let Some(previous) = object.payload.previous_feature() {
                     consumers.entry(previous).or_default().push(object.id);
                 }
             }
@@ -546,12 +604,11 @@ fn check_feature_history(objects: &[crate::document::ObjectRecord], report: &mut
     // to leave malformed cycles to the existing graph validator.
     let predecessors: BTreeMap<_, _> = objects
         .iter()
-        .filter_map(|object| {
-            if let ObjectPayload::Extrude(extrude) = &object.payload {
-                Some((object.id, extrude.previous))
-            } else {
-                None
+        .filter_map(|object| match &object.payload {
+            ObjectPayload::Extrude(_) | ObjectPayload::Fillet(_) => {
+                Some((object.id, object.payload.previous_feature()))
             }
+            _ => None,
         })
         .collect();
     let mut history_owners = BTreeMap::new();

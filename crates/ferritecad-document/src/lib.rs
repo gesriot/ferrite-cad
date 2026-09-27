@@ -56,6 +56,7 @@ mod cut_boundary;
 mod cut_edit;
 mod document;
 mod edit;
+mod fillet;
 mod height_edit;
 mod polygon;
 mod revolve;
@@ -73,6 +74,11 @@ pub use cut_edit::{
     MAX_CIRCULAR_CUTS, NewObject, PreparedCircularCut, PreparedCutParameters, SavedCircularCut,
     SavedCutTarget, SavedCutTool, WALL_CLEARANCE_MM, cut_choices, cut_parameter_choices,
     cut_plane_placement, prepare_circular_cut, prepare_cut_parameters,
+};
+pub use fillet::{
+    EdgeFillet, FilletChoice, FilletCorner, MAX_RADIUS_FRACTION, MIN_RADIUS_MM, PreparedEdgeFillet,
+    SavedFilletTarget, corner_for, evaluable_fillet, fillet_choices, prepare_edge_fillet,
+    rectangle_corners,
 };
 pub use polygon::{
     AnnularExtrusion, CircleExtrusion, FullTurnRevolution, PolygonExtrusion, RevolutionClosure,
@@ -102,8 +108,9 @@ pub use graph::{Dependency, DependencyRole, evaluation_order};
 pub use model::{
     Body, CORE_CAPABILITY, CapSide, DatumPlane, EXTRUDE_CAP_EDGE_CAPABILITY,
     EXTRUDE_CAP_VERTEX_CAPABILITY, EXTRUDE_SWEEP_EDGE_CAPABILITY, EndCondition, EntityKind,
-    Expression, Extrude, FEATURE_PREDECESSOR_CAPABILITY, FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY,
-    FEATURE_REVOLVE_CAPABILITY, FEATURE_REVOLVE_PARTIAL_CAPABILITY, FEATURE_THROUGH_ALL_CAPABILITY,
+    Expression, Extrude, FEATURE_FILLET_CAPABILITY, FEATURE_PREDECESSOR_CAPABILITY,
+    FEATURE_REVOLVE_AXIS_CLOSED_CAPABILITY, FEATURE_REVOLVE_CAPABILITY,
+    FEATURE_REVOLVE_PARTIAL_CAPABILITY, FEATURE_THROUGH_ALL_CAPABILITY, Fillet, FilletEdge,
     GeomSignature, IMPORTED_STEP_CAPABILITY, ImportedDefinitionRef, ImportedStep, ImporterIdentity,
     ObjectKind, ObjectPayload, Parameter, Point2, Revolve, RevolveAngle, RevolveAxis,
     RevolveExtent, SKETCH_CIRCLE_CONSTRAINTS_CAPABILITY, SKETCH_CONSTRAINTS_CAPABILITY,

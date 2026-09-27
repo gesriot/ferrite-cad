@@ -54,6 +54,13 @@ pub struct ExtrudeEditSource {
     /// Which saved Revolves' angles can be edited (§27E), from that same
     /// pinned reading, in the same order as `revolves`.
     pub revolve_angles: Vec<crate::RevolveAngleChoice>,
+    /// §28A: which saved Bodies a Fillet can round one vertical edge of, and
+    /// their candidate edges, from that same pinned reading.
+    pub fillet_bodies: Vec<crate::FilletChoice>,
+    /// §28A: why no editor of this build changes the document, when a Body
+    /// ends in a Fillet. Kept apart from `refusal`, which is about the file
+    /// being written at all: discovery still reports the saved Fillet.
+    pub filleted: Option<String>,
     pub refusal: Option<String>,
 }
 
@@ -131,20 +138,27 @@ impl ExtrudeEditSource {
             cut_features,
             revolves: crate::revolve_choices(document, &objects),
             revolve_angles: crate::revolve_angle_choices(document, &objects),
+            fillet_bodies: crate::fillet_choices(document, &objects),
+            filleted: crate::fillet::refuse_filleted(&objects)
+                .err()
+                .map(|e| e.to_string()),
             refusal,
         })
     }
 
     pub fn unavailable_reason(&self) -> Option<&str> {
-        self.refusal.as_deref().or_else(|| {
-            if self.features.is_empty() {
-                Some("This document has no native extrusions.")
-            } else if self.features.iter().all(|f| f.refusal.is_some()) {
-                Some("No supported extrusion: a constant Blind distance is required.")
-            } else {
-                None
-            }
-        })
+        self.refusal
+            .as_deref()
+            .or(self.filleted.as_deref())
+            .or_else(|| {
+                if self.features.is_empty() {
+                    Some("This document has no native extrusions.")
+                } else if self.features.iter().all(|f| f.refusal.is_some()) {
+                    Some("No supported extrusion: a constant Blind distance is required.")
+                } else {
+                    None
+                }
+            })
     }
 }
 
@@ -836,6 +850,10 @@ mod tests {
             cut_features: crate::cut_parameter_choices(document, &objects),
             revolves: crate::revolve_choices(document, &objects),
             revolve_angles: crate::revolve_angle_choices(document, &objects),
+            fillet_bodies: crate::fillet_choices(document, &objects),
+            filleted: crate::fillet::refuse_filleted(&objects)
+                .err()
+                .map(|e| e.to_string()),
             version: DocumentVersion {
                 document_id: document.meta().document_id,
                 content: document.content_version()?,

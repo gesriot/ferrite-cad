@@ -183,6 +183,12 @@ struct ShapeRecord {
   /// Keyed by (input shape identifier, that shape's sub-shape index).
   std::map<std::pair<uint64_t, uint64_t>, std::pair<int32_t, std::vector<uint64_t>>>
       carried;
+  /// True for the fresh result of fc_occt_fillet_edge; only such a record
+  /// answers fc_occt_fillet_faces.
+  bool filleted = false;
+  /// The faces generated from the rounded edge, read from the builder's own
+  /// history while it was alive.
+  std::vector<uint64_t> fillet_faces;
 
   uint64_t remember(const TopoDS_Shape &sub) {
     // The same OCCT face can be reported through more than one route. It must
@@ -2429,6 +2435,193 @@ FcOcctStatus fc_occt_import_step(FcOcctSession *session, const uint8_t *bytes,
     put<uint32_t>(encoded, instance_count);
     encoded.insert(encoded.end(), instance_bytes.begin(), instance_bytes.end());
     return finish(true);
+  });
+}
+
+FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
+                                 uint64_t edge, double radius,
+                                 FcOcctCancelFn cancel, void *cancel_context,
+                                 uint64_t *out_shape, double *out_removed_volume,
+                                 FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr || out_shape == nullptr ||
+        out_removed_volume == nullptr) {
+      write_error(out_error, "fc_occt_fillet_edge was given a null argument");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    if (!std::isfinite(radius) || radius <= 0.0) {
+      write_error(out_error, "a fillet radius must be positive and finite");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const auto found = session->shapes.find(target);
+    if (found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(target) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    const ShapeRecord &source = found->second;
+    if (edge >= source.sub_shapes.size()) {
+      write_error(out_error, "sub-shape " + std::to_string(edge) +
+                                 " was never handed out for shape " +
+                                 std::to_string(target));
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const TopoDS_Shape &selected = source.sub_shapes[edge];
+    if (selected.IsNull() || selected.ShapeType() != TopAbs_EDGE) {
+      write_error(out_error, "sub-shape " + std::to_string(edge) +
+                                 " of shape " + std::to_string(target) +
+                                 " is not an edge");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    if (cancelled(cancel, cancel_context)) {
+      write_error(out_error, "the fillet was cancelled before it began");
+      return FC_OCCT_CANCELLED;
+    }
+
+    GProp_GProps before;
+    BRepGProp::VolumeProperties(source.shape, before);
+
+    BRepFilletAPI_MakeFillet fillet(source.shape);
+    fillet.Add(radius, TopoDS::Edge(selected));
+    Handle(CancelIndicator) indicator = new CancelIndicator(cancel, cancel_context);
+    fillet.Build(indicator->Start());
+
+    if (cancelled(cancel, cancel_context)) {
+      write_error(out_error, "the fillet was cancelled");
+      return FC_OCCT_CANCELLED;
+    }
+    if (!fillet.IsDone()) {
+      write_error(out_error, "Open CASCADE could not round this edge at radius " +
+                                 std::to_string(radius));
+      return FC_OCCT_KERNEL;
+    }
+    const TopoDS_Shape produced = fillet.Shape();
+    if (produced.IsNull()) {
+      write_error(out_error, "the fillet produced nothing");
+      return FC_OCCT_KERNEL;
+    }
+    TopTools_IndexedMapOfShape solids;
+    TopExp::MapShapes(produced, TopAbs_SOLID, solids);
+    if (solids.Extent() != 1) {
+      write_error(out_error, "a fillet must leave exactly one solid, and this left " +
+                                 std::to_string(solids.Extent()));
+      return FC_OCCT_KERNEL;
+    }
+    // Validated as built, not after extracting the solid: the builder's
+    // history speaks about `produced`, and that is the shape kept.
+    if (!well_formed(produced)) {
+      write_error(out_error,
+                  "rounding this edge at radius " + std::to_string(radius) +
+                      " produced a shape Open CASCADE reports as invalid; it "
+                      "is refused rather than returned");
+      return FC_OCCT_KERNEL;
+    }
+    GProp_GProps after;
+    BRepGProp::VolumeProperties(produced, after);
+    const double removed = before.Mass() - after.Mass();
+    if (!std::isfinite(removed) || removed <= 0.0) {
+      write_error(out_error, "the fillet removed no material, so it rounded nothing");
+      return FC_OCCT_KERNEL;
+    }
+
+    ShapeRecord record;
+    record.shape = produced;
+    record.decoded = true;
+    record.filleted = true;
+
+    TopTools_IndexedMapOfShape result_faces;
+    TopExp::MapShapes(produced, TopAbs_FACE, result_faces);
+    TopTools_IndexedMapOfShape result_edges;
+    TopExp::MapShapes(produced, TopAbs_EDGE, result_edges);
+    TopTools_IndexedMapOfShape result_vertices;
+    TopExp::MapShapes(produced, TopAbs_VERTEX, result_vertices);
+    const auto in_result = [&](const TopoDS_Shape &candidate) {
+      switch (candidate.ShapeType()) {
+      case TopAbs_FACE:
+        return result_faces.FindIndex(candidate) != 0;
+      case TopAbs_EDGE:
+        return result_edges.FindIndex(candidate) != 0;
+      case TopAbs_VERTEX:
+        return result_vertices.FindIndex(candidate) != 0;
+      default:
+        return false;
+      }
+    };
+
+    // The faces the builder says it made from the edge, kept only where they
+    // are part of the solid handed back.
+    const TopTools_ListOfShape &generated = fillet.Generated(selected);
+    for (TopTools_ListOfShape::Iterator it(generated); it.More(); it.Next()) {
+      if (it.Value().ShapeType() == TopAbs_FACE && in_result(it.Value())) {
+        record.fillet_faces.push_back(record.remember(it.Value()));
+      }
+    }
+    if (record.fillet_faces.empty()) {
+      write_error(out_error, "the fillet reported no face generated from the rounded edge");
+      return FC_OCCT_KERNEL;
+    }
+
+    // What became of every name the target had, asked now while the builder
+    // is alive; the same four-fact vocabulary a cut answers in.
+    for (size_t i = 0; i < source.sub_shapes.size(); ++i) {
+      const TopoDS_Shape &sub = source.sub_shapes[i];
+      if (sub.IsNull()) {
+        continue;
+      }
+      std::vector<uint64_t> outputs;
+      int32_t kind = FC_OCCT_CARRIED_DELETED;
+      if (!fillet.IsDeleted(sub)) {
+        const TopTools_ListOfShape &changed = fillet.Modified(sub);
+        if (!changed.IsEmpty()) {
+          kind = FC_OCCT_CARRIED_MODIFIED;
+          for (TopTools_ListOfShape::Iterator it(changed); it.More(); it.Next()) {
+            if (in_result(it.Value())) {
+              outputs.push_back(record.remember(it.Value()));
+            }
+          }
+          if (outputs.empty()) {
+            kind = FC_OCCT_CARRIED_DELETED;
+          }
+        } else if (in_result(sub)) {
+          kind = FC_OCCT_CARRIED_KEPT;
+          outputs.push_back(record.remember(sub));
+        }
+      }
+      record.carried.emplace(std::make_pair(target, static_cast<uint64_t>(i)),
+                             std::make_pair(kind, std::move(outputs)));
+    }
+
+    const uint64_t id = session->next_shape++;
+    session->shapes.emplace(id, std::move(record));
+    *out_shape = id;
+    *out_removed_volume = removed;
+    return FC_OCCT_OK;
+  });
+}
+
+FcOcctStatus fc_occt_fillet_faces(FcOcctSession *session, uint64_t shape,
+                                  uint64_t *out_ids, size_t capacity,
+                                  size_t *out_count,
+                                  FcOcctError *out_error) noexcept {
+  return guarded(out_error, [&]() -> FcOcctStatus {
+    if (session == nullptr) {
+      write_error(out_error, "no session");
+      return FC_OCCT_INVALID_INPUT;
+    }
+    const auto found = session->shapes.find(shape);
+    if (found == session->shapes.end()) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " was released or never existed");
+      return FC_OCCT_UNKNOWN_HANDLE;
+    }
+    if (!found->second.filleted) {
+      write_error(out_error, "shape " + std::to_string(shape) +
+                                 " is not a fresh fillet, so it has no fillet "
+                                 "history to report");
+      return FC_OCCT_UNSUPPORTED;
+    }
+    return copy_ids(found->second.fillet_faces, out_ids, capacity, out_count,
+                    out_error);
   });
 }
 

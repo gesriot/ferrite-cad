@@ -4,9 +4,12 @@ use ferritecad_types::{CanonicalHasher, ContentHash, Result, Transform};
 use crate::context::OperationContext;
 use crate::handle::{ShapeHandle, SubShapeHandle};
 use crate::identity::KernelIdentity;
-use crate::request::{CutRequest, ExtrudeRequest, RevolveRequest, TessellationParams};
+use crate::request::{
+    CutRequest, ExtrudeRequest, FilletRequest, RevolveRequest, TessellationParams,
+};
 use crate::result::{
-    ArchiveSlot, BrepBlob, CutResult, ExtrudeResult, Mesh, OperationResult, RevolveResult,
+    ArchiveSlot, BrepBlob, CutResult, ExtrudeResult, FilletResult, Mesh, OperationResult,
+    RevolveResult,
 };
 
 /// The operations FerriteCAD needs from a geometry kernel.
@@ -85,6 +88,30 @@ pub trait GeometryKernel {
         track: &[SubShapeHandle],
         context: &OperationContext,
     ) -> Result<CutResult>;
+
+    /// Rounds exactly one edge of a shape to one constant radius (§28A).
+    ///
+    /// The edge is named by the caller from the target's own names. The
+    /// result is one valid solid that lost material, with the rounded edge
+    /// reported gone and the face generated from it reported, or a refusal.
+    /// `track` names the sub-shapes of the target the caller wants an account
+    /// of, as for [`Self::cut`].
+    ///
+    /// A kernel that cannot round a selected edge refuses with
+    /// [`ferritecad_types::CadError::Unsupported`]; that is the default, so a
+    /// test double never answers with an invented solid.
+    fn fillet_edge(
+        &mut self,
+        request: &FilletRequest,
+        track: &[SubShapeHandle],
+        context: &OperationContext,
+    ) -> Result<FilletResult> {
+        let _ = (request, track, context);
+        Err(ferritecad_types::CadError::unsupported(format!(
+            "the {} kernel does not round edges",
+            self.identity().id()
+        )))
+    }
 
     /// Places a shape somewhere else.
     fn transform(
@@ -228,6 +255,36 @@ pub fn cut_cache_key(
     hasher.finish()
 }
 
+/// The cache key for rounding one edge of a cached result (§28A).
+///
+/// The target's key carries everything upstream; the edge is its semantic
+/// meaning (producer and the canonical pair of Line UUIDs), never a handle,
+/// and the radius is its exact bits.
+pub fn fillet_cache_key(
+    kernel: &KernelIdentity,
+    target_key: &ContentHash,
+    edge_feature: &[u8],
+    joint: ferritecad_types::ProfileJoint,
+    radius_mm: f64,
+    context: &OperationContext,
+) -> ContentHash {
+    let mut hasher = CanonicalHasher::new("kernel.fillet_edge");
+    hasher.algorithm_version(ALGORITHM_VERSION);
+    kernel.feed(&mut hasher);
+    context.tolerance().feed(&mut hasher);
+    hasher.field("target").hash(target_key);
+    let [one, other] = joint.segments();
+    hasher
+        .field("edge")
+        .bytes(edge_feature)
+        .bytes(&one.to_bytes())
+        .bytes(&other.to_bytes());
+    hasher
+        .field("radius_mm")
+        .bytes(&radius_mm.to_bits().to_le_bytes());
+    hasher.finish()
+}
+
 /// Bumped whenever the meaning of a cached result changes.
 const ALGORITHM_VERSION: u32 = 1;
 
@@ -275,6 +332,63 @@ mod tests {
             crate::RevolveAxis::PlaneY,
             crate::RevolveTurn::Full,
         )
+    }
+
+    /// §28A: every part of a fillet's meaning is in its key, and the joint's
+    /// two spellings are one key because they are one joint.
+    #[test]
+    fn a_fillet_keys_by_target_edge_meaning_and_radius_bits() {
+        let kernel = KernelIdentity::new("occt", "8.0.1", "").expect("valid");
+        let context = OperationContext::default();
+        let target = ContentHash::of_bytes(b"target");
+        let [a, b, c] = [(); 3].map(|_| StableEntityId::new());
+        let joint = ferritecad_types::ProfileJoint::new(a, b).expect("joint");
+        let key = |kernel: &KernelIdentity, target: &ContentHash, feature: &[u8], joint, r| {
+            fillet_cache_key(kernel, target, feature, joint, r, &context)
+        };
+        let base = key(&kernel, &target, b"feature", joint, 2.5);
+        assert_eq!(
+            base,
+            key(
+                &kernel,
+                &target,
+                b"feature",
+                ferritecad_types::ProfileJoint::new(b, a).expect("joint"),
+                2.5
+            )
+        );
+        for changed in [
+            key(
+                &kernel,
+                &ContentHash::of_bytes(b"other"),
+                b"feature",
+                joint,
+                2.5,
+            ),
+            key(&kernel, &target, b"another", joint, 2.5),
+            key(
+                &kernel,
+                &target,
+                b"feature",
+                ferritecad_types::ProfileJoint::new(a, c).expect("joint"),
+                2.5,
+            ),
+            key(&kernel, &target, b"feature", joint, 2.5000000000000004),
+            key(
+                &KernelIdentity::new("occt", "8.0.2", "").expect("valid"),
+                &target,
+                b"feature",
+                joint,
+                2.5,
+            ),
+        ] {
+            assert_ne!(base, changed);
+        }
+        let loose = OperationContext::new(Tolerance::new(1e-3, 1e-6).expect("positive"));
+        assert_ne!(
+            base,
+            fillet_cache_key(&kernel, &target, b"feature", joint, 2.5, &loose)
+        );
     }
 
     #[test]
