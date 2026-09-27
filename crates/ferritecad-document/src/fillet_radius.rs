@@ -412,14 +412,15 @@ mod tests {
             .collect()
     }
 
-    /// Every cell, except the selected Fillet row's payload and hash and the
-    /// modification stamp, is the same before and after.
-    fn only_the_radius_moved(
+    /// Every cell, except one row's payload and hash and the modification
+    /// stamp, is the same before and after: the Fillet's for a radius edit,
+    /// the base Extrude's for a height edit (§28C).
+    fn only_this_row_moved(
         before: &std::collections::BTreeMap<String, (Vec<String>, Rows)>,
         after: &std::collections::BTreeMap<String, (Vec<String>, Rows)>,
-        fillet: ObjectId,
+        row: ObjectId,
     ) -> usize {
-        let selected = rusqlite::types::Value::Blob(fillet.to_bytes().to_vec());
+        let selected = rusqlite::types::Value::Blob(row.to_bytes().to_vec());
         let mut moved = 0;
         assert_eq!(
             before.keys().collect::<Vec<_>>(),
@@ -475,7 +476,7 @@ mod tests {
             assert_eq!(prepared.radius_mm(), radius);
             d.write_fillet_radius(&prepared).expect("written");
             let after = cells(&d);
-            let changed = only_the_radius_moved(&before, &after, fillet);
+            let changed = only_this_row_moved(&before, &after, fillet);
             // A changed radius moves the payload, its hash and the stamp; the
             // same radius moves at most the stamp.
             if moved {
@@ -657,5 +658,267 @@ mod tests {
             .filter(|o| !matches!(o.payload, ObjectPayload::Fillet(_)))
             .collect();
         assert!(fillet_radius_choices(&d, &objects).is_empty());
+    }
+
+    fn base_of(d: &Document, fillet: ObjectId) -> ObjectId {
+        match &d.object(fillet).expect("read").expect("Fillet").payload {
+            ObjectPayload::Fillet(f) => f.previous,
+            _ => panic!("a Fillet"),
+        }
+    }
+
+    fn stored_fillet(d: &Document, fillet: ObjectId) -> Fillet {
+        match &d.object(fillet).expect("read").expect("Fillet").payload {
+            ObjectPayload::Fillet(f) => f.clone(),
+            _ => panic!("a Fillet"),
+        }
+    }
+
+    fn height_of(d: &Document, base: ObjectId) -> f64 {
+        match &d.object(base).expect("read").expect("Extrude").payload {
+            ObjectPayload::Extrude(Extrude {
+                end_condition: EndCondition::Blind { distance },
+                ..
+            }) => distance.value(),
+            _ => panic!("a Blind Extrude"),
+        }
+    }
+
+    /// §28C: the plate under the Fillet takes a new height, alone; the Fillet
+    /// row, every name and every other cell stay. Height and radius edits
+    /// interleave on the same UUIDs.
+    #[test]
+    fn the_base_height_changes_alone_and_interleaves_with_the_radius() {
+        let (_root, mut d, fillet) = filleted(2.375);
+        let base = base_of(&d, fillet);
+        let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
+        assert_eq!(reading.unavailable_reason(), None);
+        let choice = reading
+            .features
+            .iter()
+            .find(|f| f.feature == base)
+            .expect("the base row");
+        assert_eq!(choice.refusal, None);
+        assert_eq!(choice.cut_history, None, "a Fillet is not a Cut history");
+        let context = choice.fillet.clone().expect("the Fillet as context");
+        assert_eq!(context.feature, fillet);
+        assert_eq!(context.radius_mm, 2.375);
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                choice.validate_distance(bad).expect_err("outside").kind(),
+                ErrorKind::Input,
+                "{bad}"
+            );
+        }
+        // No bound but a positive height: h < r is a plate like any other.
+        choice.validate_distance(0.40625).expect("h < r");
+
+        let refs = d.topology_refs().expect("refs");
+        let mut before = cells(&d);
+        let mut radius = 2.375;
+        for (step, height, moved) in [
+            ("up", 9.5, true),
+            ("below r", 0.40625, true),
+            ("the same", 0.40625, false),
+            ("radius", 0.0, true),
+            ("after the radius", 13.1875, true),
+        ] {
+            let row = if step == "radius" {
+                radius = 4.8125;
+                let p = prepare_fillet_radius(&d, fillet, radius).expect("radius");
+                assert_eq!(p.saved().previous, base);
+                d.write_fillet_radius(&p).expect("radius written");
+                fillet
+            } else {
+                let p = crate::prepare_extrude_height(&d, base, height).expect(step);
+                assert_eq!(p.history(), None, "{step}");
+                let saved = p.fillet().expect("the Fillet kept");
+                assert_eq!((saved.feature, saved.radius_mm), (fillet, radius));
+                d.write_extrude_height(&p).expect(step);
+                assert_eq!(height_of(&d, base), height, "{step}");
+                base
+            };
+            let after = cells(&d);
+            let changed = only_this_row_moved(&before, &after, row);
+            if moved {
+                assert!(changed >= 2, "{step}: {changed}");
+            } else {
+                assert!(changed <= 1, "{step}: {changed}");
+            }
+            before = after;
+            let stored = stored_fillet(&d, fillet);
+            assert_eq!(stored.previous, base, "{step}");
+            assert_eq!(stored.edge, context.edge, "{step}");
+            assert_eq!(stored.radius_mm, radius, "{step}");
+            assert_eq!(
+                d.topology_refs().expect("refs"),
+                refs,
+                "{step}: no name moved"
+            );
+            assert!(d.validate().expect("validate").is_ok(), "{step}");
+        }
+    }
+
+    /// §28C: the writer re-derives the whole preparation. A forged row, a
+    /// preparation that hides the Fillet (which would take the legacy writer
+    /// and its weaker reference promise), another Fillet context, another
+    /// version and a stale document are all refused and write nothing.
+    #[test]
+    fn the_height_writer_refuses_a_forged_or_stale_preparation() {
+        let (_root, mut d, fillet) = filleted(2.375);
+        let base = base_of(&d, fillet);
+        let honest = crate::prepare_extrude_height(&d, base, 9.5).expect("prepared");
+        let mut forged = Vec::new();
+        let mut p = honest.clone();
+        p.fillet = None;
+        forged.push(("a preparation without the Fillet", p));
+        let mut p = honest.clone();
+        if let Some(f) = &mut p.fillet {
+            f.radius_mm = 3.0;
+        }
+        forged.push(("another Fillet radius", p));
+        let mut p = honest.clone();
+        if let Some(f) = &mut p.fillet {
+            f.feature = ObjectId::new();
+        }
+        forged.push(("another Fillet", p));
+        let mut p = honest.clone();
+        if let ObjectPayload::Extrude(e) = &mut p.feature.payload {
+            e.reversed = true;
+        }
+        forged.push(("a reversed plate", p));
+        let mut p = honest.clone();
+        if let ObjectPayload::Extrude(e) = &mut p.feature.payload {
+            e.profile = ObjectId::new();
+        }
+        forged.push(("another profile", p));
+        let mut p = honest.clone();
+        p.feature.name = Some("Renamed".to_owned());
+        forged.push(("another name", p));
+        let mut p = honest.clone();
+        p.feature.id = fillet;
+        forged.push(("the Fillet's row", p));
+        let mut p = honest.clone();
+        p.source_version = ContentHash::of_bytes(b"another version");
+        forged.push(("another version", p));
+        let before = cells(&d);
+        for (why, p) in &forged {
+            assert!(d.write_extrude_height(p).is_err(), "{why} was written");
+            assert_eq!(cells(&d), before, "{why} wrote something");
+        }
+        // Stale: a name of the Fillet disappears after preparation.
+        let name = d
+            .topology_refs()
+            .expect("refs")
+            .into_iter()
+            .find(|r| r.owner == fillet)
+            .expect("a Fillet name");
+        rusqlite::Connection::open(d.path())
+            .expect("sqlite")
+            .execute(
+                "DELETE FROM topology_refs WHERE id = ?1",
+                [name.id.to_bytes().to_vec()],
+            )
+            .expect("drop a name");
+        let before = cells(&d);
+        assert!(d.write_extrude_height(&honest).is_err(), "stale");
+        assert_eq!(cells(&d), before, "stale wrote something");
+        assert!(
+            crate::prepare_extrude_height(&d, base, 9.5).is_err(),
+            "frame"
+        );
+    }
+
+    /// §28C refusals: another feature, a bad height, and a Fillet outside the
+    /// frame. The blanket refusal stays on every editor but the height.
+    #[test]
+    fn a_height_under_a_fillet_outside_the_frame_is_refused_with_its_reason() {
+        let (_root, d, fillet) = filleted(2.375);
+        let base = base_of(&d, fillet);
+        for bad in [0.0, -2.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                crate::prepare_extrude_height(&d, base, bad)
+                    .expect_err("a height")
+                    .kind(),
+                ErrorKind::Input,
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            crate::prepare_extrude_height(&d, fillet, 9.5)
+                .expect_err("the Fillet")
+                .kind(),
+            ErrorKind::Unsupported
+        );
+        assert_eq!(
+            crate::prepare_extrude_height(&d, ObjectId::new(), 9.5)
+                .expect_err("nothing")
+                .kind(),
+            ErrorKind::Input
+        );
+        let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
+        assert!(reading.sketches.iter().all(|s| {
+            s.refusal
+                .as_deref()
+                .is_some_and(|r| r.contains(&fillet.to_string()))
+        }));
+        assert!(reading.cut_bodies.iter().all(|c| c.refusal.is_some()));
+
+        // An extra name owned by the Fillet: the height is refused too, by
+        // the same reason the radius edit gives.
+        let (_root, mut d, fillet) = filleted(2.375);
+        let base = base_of(&d, fillet);
+        d.write(|w| {
+            w.put_topology_ref(&TopologyRef {
+                id: StableEntityId::new(),
+                owner: fillet,
+                producer_feature: fillet,
+                expected_kind: EntityKind::Face,
+                output_role: SemanticRole::FilletFace {
+                    source_edge: StableEntityId::new(),
+                },
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            })
+        })
+        .expect("extra name");
+        let error = crate::prepare_extrude_height(&d, base, 9.5).expect_err("frame");
+        assert!(error.to_string().contains("more faces"), "{error}");
+        let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
+        let reason = reading.unavailable_reason().expect("refused");
+        assert!(
+            reason.contains(&fillet.to_string()) && reason.contains("more faces"),
+            "{reason}"
+        );
+        let row = reading
+            .features
+            .iter()
+            .find(|f| f.feature == base)
+            .expect("row");
+        assert!(row.fillet.is_none() && row.refusal.is_some());
+
+        // A Body whose tip is not the Fillet.
+        let (_root, mut d, fillet) = filleted(2.375);
+        let base = base_of(&d, fillet);
+        let body = d
+            .objects()
+            .expect("objects")
+            .into_iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Body(_)))
+            .expect("Body");
+        d.write(|w| {
+            w.put_object(
+                body.id,
+                body.parent,
+                body.ordinal,
+                body.name.as_deref(),
+                &ObjectPayload::Body(Body {
+                    tip_feature: Some(base),
+                }),
+            )
+            .map(|_| ())
+        })
+        .expect("move the tip");
+        assert!(crate::prepare_extrude_height(&d, base, 9.5).is_err());
     }
 }

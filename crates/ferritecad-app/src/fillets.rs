@@ -466,7 +466,7 @@ pub(crate) fn finish_fillet_radius(
 
 #[cfg(test)]
 #[allow(clippy::panic)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use ferritecad_document::{
         Body, CapSide, DatumPlane, Dependency, DependencyRole, Document, EndCondition, EntityKind,
@@ -1113,7 +1113,8 @@ mod tests {
 
     /// §28B: the plate of [`plate`], with a §28A Fillet on its (33, 3.25)
     /// corner written by the shipped preparation and writer, and no kernel.
-    fn rounded(radius: f64) -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
+    /// §28C's height form tests use it too.
+    pub(crate) fn rounded(radius: f64) -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         let (root, path, source) = plate();
         let target = source.fillet_bodies[0].target.clone().expect("a target");
         let corner = target

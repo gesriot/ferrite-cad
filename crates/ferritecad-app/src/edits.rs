@@ -1610,4 +1610,251 @@ mod tests {
             assert_eq!(std::fs::read(&source).expect("source"), original);
         }
     }
+
+    /// §28C: types a new height into the selected row's field.
+    fn type_height(
+        ctx: &egui::Context,
+        e: &mut Edits,
+        path: &Path,
+        reading: &ExtrudeEditSource,
+        shown: &str,
+        typed: &str,
+    ) {
+        height_click(ctx, e, path, reading, shown);
+        height_frame(
+            ctx,
+            e,
+            path,
+            reading,
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::A,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers {
+                        command: true,
+                        ..Default::default()
+                    },
+                },
+                egui::Event::Text(typed.into()),
+            ],
+        );
+    }
+
+    fn painted(out: &egui::FullOutput, text: &str) -> bool {
+        out.shapes
+            .iter()
+            .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains(text)))
+    }
+
+    /// §28C, kernel-free: the existing Edit extrusion form opens on a rounded
+    /// plate, shows the Fillet it keeps as context, refuses what the document
+    /// would, hands over the widgets' request for the base Extrude, and keeps
+    /// its draft through a cancelled Save, a stale reply and a worker refusal.
+    #[test]
+    fn fillet_base_height_widgets_show_the_fillet_and_keep_the_draft() {
+        let (_root, path, reading) = crate::fillets::tests::rounded(2.375);
+        assert_eq!(reading.unavailable_reason(), None);
+        let base = reading
+            .features
+            .iter()
+            .find(|f| f.fillet.is_some())
+            .expect("the base under the Fillet");
+        let fillet = base.fillet.clone().expect("context");
+        let mut e = Edits::default();
+        assert!(
+            e.begin(&path, &reading),
+            "the form opens on a rounded plate"
+        );
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            height_frame(&ctx, &mut e, &path, &reading, vec![]);
+        }
+        let row = e
+            .form
+            .as_ref()
+            .expect("form")
+            .shown
+            .features
+            .iter()
+            .find(|f| f.feature == base.feature)
+            .expect("row")
+            .clone();
+        assert_eq!(row.refusal, None);
+        height_click(&ctx, &mut e, &path, &reading, &row.label);
+        let out = height_frame(&ctx, &mut e, &path, &reading, vec![]);
+        assert!(painted(
+            &out,
+            &format!(
+                "Rounded by Fillet {} at (33, 3.25), r 2.375 mm. The Fillet keeps its edge and \
+                 radius; only the plate's height changes.",
+                fillet.feature
+            )
+        ));
+        assert_eq!(e.form.as_ref().expect("selected").shown.distance, "6.75");
+
+        for (typed, why) in [
+            ("0", "positive"),
+            ("-3", "positive"),
+            ("banana", "Enter a distance"),
+        ] {
+            e.form.as_mut().expect("form").shown.distance = typed.into();
+            assert!(e.request(PathBuf::from("never.fcad")).is_none(), "{typed}");
+            let refusal = e.form.as_ref().expect("form").shown.refusal.clone();
+            assert!(
+                refusal.as_deref().is_some_and(|r| r.contains(why)),
+                "{typed}: {refusal:?}"
+            );
+        }
+        e.form.as_mut().expect("form").shown.distance = "6.75".into();
+        type_height(&ctx, &mut e, &path, &reading, "6.75", "0.40625");
+        assert_eq!(e.form.as_ref().expect("typed").shown.distance, "0.40625");
+        // Save Cancel submits nothing and keeps the form.
+        height_click(&ctx, &mut e, &path, &reading, "Save new file…");
+        assert!(!e.running());
+        let request = e.request(PathBuf::from("ui.fcad")).expect("valid request");
+        assert_eq!(request.feature, base.feature);
+        assert_eq!(
+            request.distance_mm, 0.40625,
+            "h < r is a plate like any other"
+        );
+        assert_eq!(request.expected, reading.version);
+        assert_eq!(request.source, path);
+
+        let g = e
+            .start(request, |_, _, _| std::thread::spawn(|| {}))
+            .expect("started");
+        assert!(
+            e.finish(
+                g + 1,
+                Ok(EditedDocument {
+                    destination: PathBuf::from("stale.fcad"),
+                    document_id: reading.version.document_id,
+                    feature: base.feature,
+                })
+            )
+            .is_none(),
+            "a stale reply is not this job's"
+        );
+        assert!(e.running());
+        assert!(
+            e.finish(g, Err(CadError::kernel("refused by the worker")))
+                .is_none()
+        );
+        assert_eq!(
+            e.form
+                .as_ref()
+                .expect("a refusal keeps the draft")
+                .shown
+                .distance,
+            "0.40625"
+        );
+        e.cancel();
+        assert!(!e.busy());
+    }
+
+    /// §28C, native: the widgets' request through the app's worker and the
+    /// same edit through the shipped CLI publish one document. Every SQL cell
+    /// is equal with no identifier mapped (nothing is minted), except each
+    /// copy's stamp, and the STL and FBX are byte-identical. The accepted
+    /// scene is the new height under the same Fillet.
+    #[test]
+    fn native_fillet_base_height_widgets_worker_and_cli_publish_the_same_part() {
+        if !native() {
+            return;
+        }
+        let (root, path, reading) = crate::fillets::tests::rounded(2.375);
+        let original = std::fs::read(&path).expect("bytes");
+        let base = reading
+            .features
+            .iter()
+            .find(|f| f.fillet.is_some())
+            .expect("base")
+            .clone();
+        let mut e = Edits::default();
+        assert!(e.begin(&path, &reading));
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            height_frame(&ctx, &mut e, &path, &reading, vec![]);
+        }
+        let label = e
+            .form
+            .as_ref()
+            .expect("form")
+            .shown
+            .features
+            .iter()
+            .find(|f| f.feature == base.feature)
+            .expect("row")
+            .label
+            .clone();
+        height_click(&ctx, &mut e, &path, &reading, &label);
+        type_height(&ctx, &mut e, &path, &reading, "6.75", "11.4375");
+        let ui = root.path().join("ui.fcad");
+        height_click(&ctx, &mut e, &path, &reading, "Save new file…");
+        assert!(!ui.exists(), "Save Cancel wrote nothing");
+        let request = e.request(ui.clone()).expect("request");
+        let (tx, rx) = mpsc::channel();
+        let g = e
+            .start(request, move |r, g, c| {
+                spawn_edit(r, c, move |v| tx.send((g, v)).expect("reply"))
+            })
+            .expect("start");
+        let (g2, result) = rx.recv().expect("worker result");
+        assert_eq!(g, g2);
+        assert_eq!(e.finish(g, result).expect("published"), ui);
+        e.draft_load_finished(&ui, false);
+        assert_eq!(
+            e.form
+                .as_ref()
+                .expect("a failed Open restores the draft")
+                .shown
+                .distance,
+            "11.4375"
+        );
+        let accepted = opened(&ui).edit_source.expect("the new scene's catalogue");
+        let current = accepted
+            .features
+            .iter()
+            .find(|f| f.feature == base.feature)
+            .expect("the same base");
+        assert_eq!(current.distance_mm, Some(11.4375));
+        assert_eq!(
+            current.fillet.as_ref().map(|f| (f.feature, f.radius_mm)),
+            base.fillet.as_ref().map(|f| (f.feature, f.radius_mm))
+        );
+        e.cancel();
+        e.draft_load_finished(&ui, true);
+
+        let peer = root.path().join("cli.fcad");
+        run(&[
+            "edit-extrude".as_ref(),
+            path.as_os_str(),
+            "--feature".as_ref(),
+            base.feature.to_string().as_ref(),
+            "--expect-version".as_ref(),
+            reading.version.content.to_string().as_ref(),
+            "--distance-mm".as_ref(),
+            "11.4375".as_ref(),
+            "-o".as_ref(),
+            peer.as_os_str(),
+        ]);
+        assert_eq!(tables(&ui), tables(&peer), "every SQL cell but the stamp");
+        for format in ["stl", "fbx"] {
+            let mut bytes = Vec::new();
+            for model in [&ui, &peer] {
+                let out = model.with_extension(format);
+                run(&[
+                    format!("export-{format}").as_ref(),
+                    model.as_os_str(),
+                    "-o".as_ref(),
+                    out.as_os_str(),
+                ]);
+                bytes.push(std::fs::read(out).expect("export"));
+            }
+            assert_eq!(bytes[0], bytes[1], "worker/CLI {format}");
+        }
+        assert_eq!(std::fs::read(&path).expect("source"), original);
+    }
 }
