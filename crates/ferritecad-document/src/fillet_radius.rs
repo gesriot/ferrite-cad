@@ -245,3 +245,401 @@ pub(crate) fn rederive(document: &Document, prepared: &PreparedFilletRadius) -> 
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::{
+        Body, CapSide, DatumPlane, Dependency, DependencyRole, EdgeFillet, EndCondition,
+        EntityKind, Expression, Extrude, Point2, SelectionRule, SemanticRole, Sketch, SketchCurve,
+        SketchGeometry, SolidOperation, TopologyRef,
+    };
+    use ferritecad_types::{ErrorKind, Transform};
+
+    const PLATE: [[f64; 2]; 4] = [[-4.5, 3.25], [33., 3.25], [33., 15.5], [-4.5, 15.5]];
+
+    /// A plate with one §28A Fillet on its second corner, written with the
+    /// shipped preparation and writer and no kernel.
+    fn filleted(radius: f64) -> (tempfile::TempDir, Document, ObjectId) {
+        let root = tempfile::tempdir().expect("dir");
+        let mut d = Document::create(root.path().join("plate.fcad")).expect("document");
+        let [plane, profile, extrude, body] = std::array::from_fn(|_| ObjectId::new());
+        let segments: Vec<StableEntityId> = (0..4).map(|_| StableEntityId::new()).collect();
+        d.write(|w| {
+            w.put_object(
+                plane,
+                None,
+                0,
+                Some("XY"),
+                &ObjectPayload::DatumPlane(DatumPlane {
+                    placement: Transform::IDENTITY,
+                }),
+            )?;
+            let curves = (0..4)
+                .map(|i| {
+                    Ok(SketchCurve {
+                        id: segments[i],
+                        construction: false,
+                        geometry: SketchGeometry::Line {
+                            start: Point2::new(PLATE[i][0], PLATE[i][1])?,
+                            end: Point2::new(PLATE[(i + 1) % 4][0], PLATE[(i + 1) % 4][1])?,
+                        },
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            w.put_object(
+                profile,
+                None,
+                1,
+                Some("Profile"),
+                &ObjectPayload::Sketch(Sketch {
+                    plane,
+                    curves,
+                    constraints: Vec::new(),
+                }),
+            )?;
+            w.put_object(
+                extrude,
+                None,
+                2,
+                Some("Extrude1"),
+                &ObjectPayload::Extrude(Extrude {
+                    profile,
+                    end_condition: EndCondition::Blind {
+                        distance: Expression::constant(6.75)?,
+                    },
+                    reversed: false,
+                    operation: SolidOperation::NewBody,
+                    target_body: None,
+                    previous: None,
+                }),
+            )?;
+            w.put_object(
+                body,
+                None,
+                3,
+                Some("Body"),
+                &ObjectPayload::Body(Body {
+                    tip_feature: Some(extrude),
+                }),
+            )?;
+            for (dependent, dependency, role) in [
+                (profile, plane, DependencyRole::Plane),
+                (extrude, profile, DependencyRole::Profile),
+                (body, extrude, DependencyRole::BodyTip),
+            ] {
+                w.add_dependency(Dependency {
+                    dependent,
+                    dependency,
+                    role,
+                })?;
+            }
+            for side in [CapSide::Start, CapSide::End] {
+                w.put_topology_ref(&TopologyRef {
+                    id: StableEntityId::new(),
+                    owner: extrude,
+                    producer_feature: extrude,
+                    expected_kind: EntityKind::Face,
+                    output_role: SemanticRole::ExtrudeCap { side },
+                    selection: SelectionRule::Exact,
+                    fallback_signature: None,
+                })?;
+            }
+            Ok(())
+        })
+        .expect("plate");
+        let target = crate::fillet_choices(&d, &d.objects().expect("objects"))[0]
+            .target
+            .clone()
+            .expect("a target");
+        let fillet = EdgeFillet {
+            edge: FilletEdge {
+                feature: target.base_feature,
+                joint: target.corners[1].joint,
+            },
+            radius_mm: radius,
+        };
+        let prepared = crate::prepare_edge_fillet(&d, body, &fillet).expect("prepared");
+        let id = prepared.feature().id;
+        d.write_edge_fillet(&prepared).expect("written");
+        (root, d, id)
+    }
+
+    type Rows = Vec<Vec<rusqlite::types::Value>>;
+    fn cells(d: &Document) -> std::collections::BTreeMap<String, (Vec<String>, Rows)> {
+        let c = rusqlite::Connection::open(d.path()).expect("sqlite");
+        let names: Vec<String> = c
+            .prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")
+            .expect("names")
+            .query_map([], |r| r.get(0))
+            .expect("names")
+            .collect::<rusqlite::Result<_>>()
+            .expect("names");
+        names
+            .into_iter()
+            .map(|name| {
+                let mut stmt = c
+                    .prepare(&format!("SELECT * FROM \"{name}\" ORDER BY 1,2"))
+                    .expect("table");
+                let n = stmt.column_count();
+                let columns = (0..n)
+                    .map(|i| stmt.column_name(i).expect("column").to_owned())
+                    .collect();
+                let rows = stmt
+                    .query_map([], |r| (0..n).map(|i| r.get(i)).collect())
+                    .expect("rows")
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .expect("rows");
+                (name, (columns, rows))
+            })
+            .collect()
+    }
+
+    /// Every cell, except the selected Fillet row's payload and hash and the
+    /// modification stamp, is the same before and after.
+    fn only_the_radius_moved(
+        before: &std::collections::BTreeMap<String, (Vec<String>, Rows)>,
+        after: &std::collections::BTreeMap<String, (Vec<String>, Rows)>,
+        fillet: ObjectId,
+    ) -> usize {
+        let selected = rusqlite::types::Value::Blob(fillet.to_bytes().to_vec());
+        let mut moved = 0;
+        assert_eq!(
+            before.keys().collect::<Vec<_>>(),
+            after.keys().collect::<Vec<_>>()
+        );
+        for (table, (columns, rows)) in before {
+            let (theirs, mine) = &after[table];
+            assert_eq!(columns, theirs);
+            assert_eq!(rows.len(), mine.len(), "{table} rows");
+            for (a, b) in rows.iter().zip(mine) {
+                for (i, column) in columns.iter().enumerate() {
+                    if a[i] == b[i] {
+                        continue;
+                    }
+                    moved += 1;
+                    let allowed = match (table.as_str(), column.as_str()) {
+                        ("objects", "payload" | "payload_hash") => a.contains(&selected),
+                        ("meta", "modified_at") => true,
+                        _ => false,
+                    };
+                    assert!(allowed, "{table}.{column} changed");
+                }
+            }
+        }
+        moved
+    }
+
+    #[test]
+    fn only_the_radius_changes_and_repeated_or_equal_edits_keep_every_identity() {
+        let (_root, mut d, fillet) = filleted(2.375);
+        let choices = fillet_radius_choices(&d, &d.objects().expect("objects"));
+        assert_eq!(choices.len(), 1);
+        let choice = &choices[0];
+        assert_eq!(choice.refusal, None);
+        let saved = choice.saved.clone().expect("editable");
+        assert_eq!(saved.radius_mm, 2.375);
+        assert_eq!(saved.corner.corner_mm, [33., 3.25]);
+        assert_eq!(saved.corner.max_radius_mm, 6.125);
+        choice.validate(6.125).expect("the bound is inclusive");
+        for bad in [0.0, -1.0, 0.009, 6.126, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                choice.validate(bad).expect_err("outside").kind(),
+                ErrorKind::Input,
+                "{bad}"
+            );
+        }
+
+        let mut before = cells(&d);
+        let refs = d.topology_refs().expect("refs");
+        for (radius, moved) in [(4.8125, true), (1.1875, true), (1.1875, false)] {
+            let prepared = prepare_fillet_radius(&d, fillet, radius).expect("prepared");
+            assert_eq!(prepared.saved().feature, fillet);
+            assert_eq!(prepared.radius_mm(), radius);
+            d.write_fillet_radius(&prepared).expect("written");
+            let after = cells(&d);
+            let changed = only_the_radius_moved(&before, &after, fillet);
+            // A changed radius moves the payload, its hash and the stamp; the
+            // same radius moves at most the stamp.
+            if moved {
+                assert!(changed >= 2, "{changed}");
+            } else {
+                assert!(changed <= 1, "{changed}");
+            }
+            before = after;
+            let ObjectPayload::Fillet(stored) =
+                &d.object(fillet).expect("read").expect("the Fillet").payload
+            else {
+                panic!("a Fillet");
+            };
+            assert_eq!(stored.radius_mm, radius);
+            assert_eq!(stored.edge, saved.edge);
+            assert_eq!(stored.previous, saved.previous);
+            assert_eq!(d.topology_refs().expect("refs"), refs, "no name moved");
+            assert!(d.validate().expect("validate").is_ok());
+        }
+    }
+
+    #[test]
+    fn the_writer_refuses_a_forged_or_stale_preparation() {
+        let (_root, mut d, fillet) = filleted(2.375);
+        let honest = prepare_fillet_radius(&d, fillet, 3.0).expect("prepared");
+        let mut forged = Vec::new();
+        let mut p = honest.clone();
+        if let ObjectPayload::Fillet(f) = &mut p.feature.payload {
+            f.radius_mm = 6.2;
+        }
+        forged.push(("an out-of-policy radius", p));
+        let mut p = honest.clone();
+        if let ObjectPayload::Fillet(f) = &mut p.feature.payload {
+            let [_, b] = f.edge.joint.segments();
+            f.edge.joint =
+                ferritecad_types::ProfileJoint::new(b, StableEntityId::new()).expect("joint");
+        }
+        forged.push(("another edge", p));
+        let mut p = honest.clone();
+        if let ObjectPayload::Fillet(f) = &mut p.feature.payload {
+            f.previous = ObjectId::new();
+        }
+        forged.push(("another predecessor", p));
+        let mut p = honest.clone();
+        p.feature.name = Some("Renamed".to_owned());
+        forged.push(("another name", p));
+        let mut p = honest.clone();
+        p.source_version = ContentHash::of_bytes(b"another version");
+        forged.push(("another version", p));
+        let before = cells(&d);
+        for (why, p) in &forged {
+            assert!(d.write_fillet_radius(p).is_err(), "{why} was written");
+            assert_eq!(cells(&d), before, "{why} wrote something");
+        }
+        // Stale: the document changes after preparation.
+        let objects = d.objects().expect("objects");
+        let first = objects.first().expect("an object").clone();
+        d.write(|w| {
+            w.put_object(
+                first.id,
+                first.parent,
+                first.ordinal,
+                Some("changed after preparation"),
+                &first.payload,
+            )
+            .map(|_| ())
+        })
+        .expect("change");
+        let stale = d.write_fillet_radius(&honest).expect_err("stale");
+        assert!(stale.to_string().contains("changed"), "{stale}");
+    }
+
+    #[test]
+    fn a_fillet_outside_the_frame_is_refused_with_its_reason() {
+        // An extra name owned by the Fillet.
+        let (_root, mut d, fillet) = filleted(2.375);
+        d.write(|w| {
+            w.put_topology_ref(&TopologyRef {
+                id: StableEntityId::new(),
+                owner: fillet,
+                producer_feature: fillet,
+                expected_kind: EntityKind::Face,
+                output_role: SemanticRole::FilletFace {
+                    source_edge: StableEntityId::new(),
+                },
+                selection: SelectionRule::Exact,
+                fallback_signature: None,
+            })
+        })
+        .expect("extra name");
+        let choice = &fillet_radius_choices(&d, &d.objects().expect("objects"))[0];
+        assert!(choice.saved.is_none());
+        assert!(
+            choice
+                .refusal
+                .as_deref()
+                .expect("reason")
+                .contains("more faces"),
+            "{:?}",
+            choice.refusal
+        );
+        assert!(prepare_fillet_radius(&d, fillet, 3.0).is_err());
+
+        // A name removed from the Fillet.
+        let (_root, d, fillet) = filleted(2.375);
+        let first = d
+            .topology_refs()
+            .expect("refs")
+            .into_iter()
+            .find(|r| r.owner == fillet)
+            .expect("a Fillet name");
+        rusqlite::Connection::open(d.path())
+            .expect("sqlite")
+            .execute(
+                "DELETE FROM topology_refs WHERE id = ?1",
+                [first.id.to_bytes().to_vec()],
+            )
+            .expect("drop a name");
+        assert!(prepare_fillet_radius(&d, fillet, 3.0).is_err());
+
+        // A feature that is not the Fillet, and one that does not exist.
+        let (_root, d, fillet) = filleted(2.375);
+        let base = match &d.object(fillet).expect("read").expect("Fillet").payload {
+            ObjectPayload::Fillet(f) => f.previous,
+            _ => panic!("a Fillet"),
+        };
+        assert_eq!(
+            prepare_fillet_radius(&d, base, 3.0)
+                .expect_err("an Extrude")
+                .kind(),
+            ErrorKind::Input
+        );
+        assert_eq!(
+            prepare_fillet_radius(&d, ObjectId::new(), 3.0)
+                .expect_err("nothing")
+                .kind(),
+            ErrorKind::Input
+        );
+
+        // A Body whose tip is not the Fillet.
+        let (_root, mut d, fillet) = filleted(2.375);
+        let body = d
+            .objects()
+            .expect("objects")
+            .into_iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Body(_)))
+            .expect("Body");
+        d.write(|w| {
+            w.put_object(
+                body.id,
+                body.parent,
+                body.ordinal,
+                body.name.as_deref(),
+                &ObjectPayload::Body(Body {
+                    tip_feature: Some(base),
+                }),
+            )
+            .map(|_| ())
+        })
+        .expect("move the tip");
+        let choice = &fillet_radius_choices(&d, &d.objects().expect("objects"))[0];
+        assert!(
+            choice
+                .refusal
+                .as_deref()
+                .expect("reason")
+                .contains("not the Body's tip"),
+            "{:?}",
+            choice.refusal
+        );
+        assert!(prepare_fillet_radius(&d, fillet, 3.0).is_err());
+
+        // A document with no Fillet offers none.
+        let (_root, d, _) = filleted(2.375);
+        let objects: Vec<_> = d
+            .objects()
+            .expect("objects")
+            .into_iter()
+            .filter(|o| !matches!(o.payload, ObjectPayload::Fillet(_)))
+            .collect();
+        assert!(fillet_radius_choices(&d, &objects).is_empty());
+    }
+}
