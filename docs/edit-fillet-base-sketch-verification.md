@@ -177,9 +177,9 @@ After restoring, the document `fillet` (16), CLI `--test fillet` (22) and app
   ([run 36347302957](https://github.com/gesriot/ferrite-cad/actions/runs/36347302957)),
   rust sbom, rust notices and product sbom concluded success, and so did
   combined runtime layout
-  ([run 36347302962](https://github.com/gesriot/ferrite-cad/actions/runs/36347302962))
-  concluded success on all three platforms and in the cross-platform
-  comparison, after this change was pushed.
+  ([run 36347302962](https://github.com/gesriot/ferrite-cad/actions/runs/36347302962)),
+  on all three platforms and in the cross-platform comparison; it finished
+  after this change was pushed.
 * **Code head `f397a47`** (the code, CI files and tools of this change;
   the head that adds this paragraph changes only this record, and
   `docs/**` is outside `runtime-layout.yml`'s and `planegcs-pin.yml`'s path
