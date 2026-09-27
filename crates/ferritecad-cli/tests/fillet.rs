@@ -2467,6 +2467,13 @@ mod height {
     /// stub build's real order of checks. No kernel is needed to run it.
     #[test]
     fn height_discovery_and_protocol_without_native() {
+        // Both builds run this whole test, so which answers to expect is
+        // decided here without `native()`, whose "skipped:" line would read
+        // as a skipped gate.
+        let kernel = ferritecad_occt::is_available();
+        if !kernel {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+        }
         let plain = Fixture::drawn(Plate::new(CCW));
         assert_eq!(plain.base_row()["fillet_base"], Value::Null);
         let f = filleted_without_kernel(CCW, [X0 + W, Y0 + D], 2.375);
@@ -2534,7 +2541,7 @@ mod height {
                 OP,
                 2,
             );
-            if native() {
+            if kernel {
                 assert_eq!(refused(&v), kind, "{why}: {v}");
             } else {
                 assert_eq!(refused(&v), "unsupported", "{why}: {v}");
@@ -2583,7 +2590,7 @@ mod height {
         );
         assert_eq!(catalog["features"][0]["editable"], false);
         assert_eq!(catalog["features"][0]["fillet_base"], Value::Null);
-        if native() {
+        if kernel {
             let odd = Fixture { catalog, ..odd };
             let v = reply(
                 odd.raise(&odd.source, odd.base_id(), "9", &never)
