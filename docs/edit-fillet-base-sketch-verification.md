@@ -175,12 +175,36 @@ After restoring, the document `fillet` (16), CLI `--test fillet` (22) and app
   ([run 36347302947](https://github.com/gesriot/ferrite-cad/actions/runs/36347302947)),
   planegcs pin
   ([run 36347302957](https://github.com/gesriot/ferrite-cad/actions/runs/36347302957)),
-  rust sbom, rust notices and product sbom concluded success. Combined
-  runtime layout
+  rust sbom, rust notices and product sbom concluded success, and so did
+  combined runtime layout
   ([run 36347302962](https://github.com/gesriot/ferrite-cad/actions/runs/36347302962))
-  was still running when this change was pushed.
-* **This change:** not yet run when this section was written; the results
-  on the code head are recorded in a later documentation-only commit.
+  concluded success on all three platforms and in the cross-platform
+  comparison, after this change was pushed.
+* **Code head `f397a47`** (the code, CI files and tools of this change;
+  the head that adds this paragraph changes only this record, and
+  `docs/**` is outside `runtime-layout.yml`'s and `planegcs-pin.yml`'s path
+  filters, so it triggers ordinary CI only):
+  * native runtime and packaging
+    ([run 36350147817](https://github.com/gesriot/ferrite-cad/actions/runs/36350147817)):
+    green on
+    [Linux](https://github.com/gesriot/ferrite-cad/actions/runs/36350147817/job/108707134979),
+    [macOS](https://github.com/gesriot/ferrite-cad/actions/runs/36350147817/job/108707135080),
+    [Windows](https://github.com/gesriot/ferrite-cad/actions/runs/36350147817/job/108707135151)
+    and the
+    [comparison](https://github.com/gesriot/ferrite-cad/actions/runs/36350147817/job/108719324019).
+    That covers the no-solver step with the two `sketch::` gates and
+    `FCAD_28D_RECIPE_OK`, the Fillet step with the five `sketch::` CLI,
+    four document and two app gates, the FBX step with
+    `FCAD_FILLET_SKETCH_UFBX_EXECUTED`, and the arm64 checks on macOS. Each
+    of those steps exits 1 on a missing `ok`, a `skipped:` or a missing
+    marker. The job logs were not read here: this container's proxy refuses
+    the log download, so no count of gates is claimed from them.
+  * ordinary CI
+    ([run 36350162702](https://github.com/gesriot/ferrite-cad/actions/runs/36350162702)),
+    the new stub step with `FCAD_28D_RECIPE_NO_KERNEL` included: success.
+  * planegcs pin
+    ([run 36350147847](https://github.com/gesriot/ferrite-cad/actions/runs/36350147847)):
+    success.
 
 ## Limits
 
