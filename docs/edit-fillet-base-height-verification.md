@@ -5,6 +5,79 @@
 This records what was executed for this slice and where. It does not repeat
 §28A's or §28B's evidence, nor the reviewer's §28B GUI and CI measurements.
 
+## Independent review on macOS, 2026-09-27
+
+Reviewed PR #64 at `9c670f6eb3c497121cb8406ece3af81bbd27df36`, including the
+normal merge of the Apple Silicon-only policy from PR #63. No production-code
+fix was needed. The review checked the shared Fillet frame, transactional
+re-derivation, strict reference resolution, additive JSON fields, SQL write
+allowlist, and preservation of existing runtime gates.
+
+CI attribution is explicit: the native code and workflows are identical to
+`f086e805fdb7138f9cc5fd669ff45acfee5b0c69`; the change from that commit to
+`9c670f6` is this verification document only. On `f086e80`, CI run
+[36339637257](https://github.com/gesriot/ferrite-cad/actions/runs/36339637257),
+PlaneGCS pin run
+[36339634624](https://github.com/gesriot/ferrite-cad/actions/runs/36339634624),
+and runtime run
+[36339634617](https://github.com/gesriot/ferrite-cad/actions/runs/36339634617)
+all succeeded. The downloaded runtime logs contain all ten new distinct gate
+names on each OS, with fourteen executions per OS including repeats in the
+mixed and app steps; the recipe and height-reader markers are present. Each
+OS log has 106 visible successful ufbx markers, with no failures; triangle
+reader output redirected to files is not included in that marker count.
+The seven ordinary CI jobs on the documentation head `9c670f6` also passed.
+The documentation head did not trigger another native runtime workflow.
+
+Local builds used the existing OCCT 8.0.1 and PlaneGCS installations and the
+existing native target, one build at a time, with both native requirements
+enabled. The CLI and viewer were rebuilt in release mode. Document/jobs/eval
+reported 459 passes and one existing ignored benchmark; two stub-only refusal
+tests explicitly reported N/A because a solver was present. The CLI Fillet,
+edit-extrude and JSON suites reported 32 passes; app Fillet and edit worker
+tests reported 4 + 11 passes, with no native skips. Workspace clippy with all
+targets/features and `-D warnings`, fmt and diff whitespace checks passed.
+The extracted public recipe completed with `FCAD_28C_RECIPE_OK`. This local
+review did not repeat the large STEP campaign or rebuild native libraries.
+
+A fresh bundle passed the arm64 check for all 53 Mach-O files, strict deep
+code-sign verification, bundled CLI startup and viewer `--solver-info`.
+One viewer, PID 25788, ran under the 1536 MiB watchdog. The actual window and
+system Save panels demonstrated:
+
+- opening the generated rounded plate and selecting its base Extrude;
+- the saved Fillet UUID, corner and radius in the height form;
+- zero height refused with Save disabled;
+- entering 11.4375 mm, cancelling Save, and retaining that draft;
+- saving `gui.fcad`, automatic Open with the new window title, and the taller
+  rounded part visible in isometric view;
+- exporting `gui.stl` and `gui.fbx` through the window, then normal Quit.
+
+After the first system Save panel, CUA coordinate clicks failed with
+`noWindowsAvailable`; the same viewer remained alive and responsive. Tab/Space
+navigation completed the form and export actions, and accessibility actions
+operated the system panels. A mistyped Save filename was corrected and checked
+before publication. These automation failures were not application crashes.
+After Quit, only the owned PID was checked; no app lookup relaunched it.
+
+The extracted comparator consumed these actual GUI files (it does not create
+them): `FCAD_28C_GUI_COMPARE_OK cells=129 height=11.4375`. GUI/CLI copies differ
+only in the allowed timestamp; against the source, only the selected base
+Extrude payload/hash and timestamp changed. The source hash stayed identical.
+GUI and CLI STL/FBX bytes match exactly. The independent binary STL parser
+measured 64 triangles, 3284 bytes, dimensions 37.5 × 12.25 × 11.4375 mm,
+closed consistently oriented edges, and signed mesh volume 5240.133410 mm³
+(analytic reference 5240.256600 mm³; tessellation is not exact B-Rep volume).
+A freshly compiled pinned ufbx 0.23.0 reader reported six identity checks,
+zero failures; its triangle output matched the STL under the documented
+coordinate conversion: `FCAD_STL_FBX_MATCH triangles=64 worst_m=8.67e-19`.
+
+Watchdog: peak footprint 209.96994 MiB, pressure normal throughout, swap 0
+throughout, exit 0, no abort. This does not establish the cause or resolution
+of the earlier OOM. Raw logs, fixtures, comparator output and measurements
+were captured in `/private/tmp/ferrite-pr64-review` and copied to the review's
+durable evidence directory before handoff.
+
 ## Where and how this was run
 
 * **Base.** Freshly fetched `origin/main` at
