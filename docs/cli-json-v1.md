@@ -601,6 +601,33 @@ Discovery аддитивна: верхний уровень `inspect` получ
 корректный — `unsupported` до структурных проверок.
 [Контракт §28B и исполняемый рецепт](edit-fillet-radius.md).
 
+### Высота скруглённой плиты (§28C)
+
+Отдельной команды нет: высоту базы меняет прежний `edit-extrude` с прежними
+аргументами, envelope, result и кодами выхода (0, 2, 7).
+
+Discovery аддитивна. На поддержанной скруглённой плите
+`edit_extrude.available` равно `true`, а строка базового Extrude в
+`features[]` — `editable` и получает `fillet_base`:
+
+```json
+{"fillet_base":{"fillet_feature_id":"…","body_id":"…",
+  "edge":{"feature_id":"…","joint":["…","…"]},
+  "corner_mm":[33.0,3.25],"radius_mm":2.375}}
+```
+
+У остальных строк и в остальных документах `fillet_base` равно `null`. Это
+не Cut-история: `base_height_edit*` остаются `null`. Если Fillet вне класса,
+`edit_extrude.available` равно `false`, а причина называет UUID Fillet'а и
+то, почему класс не выполнен.
+
+Отказы: ноль, отрицательное или неконечное — `input`; UUID Fillet'а или
+Sketch — `unsupported`; неизвестный UUID и устаревшая версия — `input`;
+высота, которую OCCT не скругляет, — `kernel`. Ничего не записывается.
+Порядок проверок в stub-сборке: при `--json` сначала UTF-8-пути, затем
+чтение источника, затем ядро, поэтому любой корректный запрос — `unsupported`.
+[Контракт §28C и исполняемый рецепт](edit-fillet-base-height.md).
+
 ## Правка сохранённой кольцевой пары (§25M)
 
 `ferritecad edit-annular <source.fcad> --sketch UUID --expect-version HASH

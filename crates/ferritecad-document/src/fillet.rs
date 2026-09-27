@@ -224,9 +224,10 @@ pub(crate) fn refuse_filleted(objects: &[ObjectRecord]) -> Result<()> {
         .find(|o| matches!(o.payload, ObjectPayload::Fillet(_)))
     {
         return Err(unsupported(format!(
-            "this Body ends in Fillet {} (§28A); only its radius can be edited \
-             (edit-fillet-radius, §28B). Editing the rest of a filleted part, and adding a \
-             second Fillet or a Cut after one, are not supported yet",
+            "this Body ends in Fillet {} (§28A); only its radius (edit-fillet-radius, §28B) \
+             and the rounded plate's height (edit-extrude, §28C) can be edited. Editing the \
+             rest of a filleted part, and adding a second Fillet or a Cut after one, are not \
+             supported yet",
             fillet.id
         )));
     }
@@ -913,7 +914,8 @@ mod tests {
         );
         assert!(d.validate().expect("validate").is_ok());
 
-        // A second fillet, and every editor of the plate, refuse by name.
+        // A second fillet, and every editor of the plate but its height
+        // (§28C), refuse by name.
         let again = fillet_choices(&d, &d.objects().expect("objects"));
         assert!(again[0].target.is_none());
         assert!(
@@ -925,8 +927,11 @@ mod tests {
         );
         assert!(prepare_edge_fillet(&d, body, &fillet).is_err());
         let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
-        let reason = reading.unavailable_reason().expect("height edit refused");
-        assert!(reason.contains("ends in Fillet"), "{reason}");
+        assert_eq!(reading.unavailable_reason(), None, "the plate's height");
+        let base = reading.features.iter().find(|f| f.fillet.is_some());
+        assert!(base.is_some_and(
+            |f| f.refusal.is_none() && f.fillet.as_ref().is_some_and(|r| r.feature == saved.id)
+        ));
         assert!(reading.cut_bodies.iter().all(|c| c.refusal.is_some()));
         assert!(reading.sketches.iter().all(|s| {
             s.refusal

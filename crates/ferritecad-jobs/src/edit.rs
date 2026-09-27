@@ -628,11 +628,12 @@ impl CopyWrite {
     ///
     /// True for every edit to a profile: moving a vertex, a constraint or a
     /// circle may not cost the document a name it had. An extrusion distance
-    /// edit without a Cut history predates the rule and keeps its weaker promise,
-    /// so it is named here rather than everything else being exempted by
-    /// default.
+    /// edit with neither a Cut history nor a Fillet over it predates the rule
+    /// and keeps its weaker promise, so it is named here rather than
+    /// everything else being exempted by default. A rounded plate (§28C) is
+    /// not that edit: every saved name must survive its height.
     fn requires_resolved_references(&self) -> bool {
-        !matches!(self, Self::Height(p) if p.history().is_none())
+        !matches!(self, Self::Height(p) if p.history().is_none() && p.fillet().is_none())
     }
 }
 

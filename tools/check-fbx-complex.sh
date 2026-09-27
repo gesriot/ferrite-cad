@@ -489,6 +489,9 @@ if [ -n "${FCAD_REVOLVE_CONSTRAINT_FBX_DIR:-}" ]; then
     echo "FCAD_AXIS_CONSTRAINT_UFBX_EXECUTED"
 fi
 if [ -n "${FCAD_FILLET_FBX_DIR:-}" ]; then
+    # Its own interpreter, as the Revolve blocks above set theirs: this one
+    # must not depend on a Revolve directory having been given as well.
+    python="$(command -v python3 || command -v python || true)"
     # §28A: two corners of the same asymmetric plate, for both windings and
     # another starting segment, each read the same two ways and joined
     # against the STL of the same copy.
@@ -528,4 +531,23 @@ if [ -n "${FCAD_FILLET_FBX_DIR:-}" ]; then
         grep -q '^FCAD_STL_FBX_MATCH triangles=[1-9][0-9]* ' "$work/$name-match.txt"
     done
     echo "FCAD_FILLET_RADIUS_UFBX_EXECUTED"
+    # §28C: the same Fillet after its plate's height was raised and then
+    # lowered below the radius, in both windings and from another start.
+    for name in height-ccw-up height-ccw-down height-cw-up height-cw-down height-third-up height-third-down; do
+        "$reader" --identity "$FCAD_FILLET_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=[1-9][0-9]* failures=0$' "$work/$name-reader.txt"; then
+            echo "error: re-heighted plate FBX was not independently read: $name" >&2
+            exit 1
+        fi
+        "$reader" --triangles "$FCAD_FILLET_FBX_DIR/$name.fbx" > "$work/$name-triangles.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=[0-9]* failures=0$' "$work/$name-triangles.txt"; then
+            echo "error: re-heighted plate FBX triangles were not read: $name" >&2
+            exit 1
+        fi
+        "$python" "$(native "$root/tools/fbx/stl-matches-fbx.py")" \
+            "$FCAD_FILLET_FBX_DIR/$name.stl" "$(native "$work/$name-triangles.txt")" \
+            | tee "$work/$name-match.txt"
+        grep -q '^FCAD_STL_FBX_MATCH triangles=[1-9][0-9]* ' "$work/$name-match.txt"
+    done
+    echo "FCAD_FILLET_HEIGHT_UFBX_EXECUTED"
 fi

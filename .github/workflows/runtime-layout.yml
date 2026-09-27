@@ -583,7 +583,9 @@ jobs:
           if grep -q 'skipped:' fillet-cache-no-solver.log || ! grep -Fq "test $gate ... ok" fillet-cache-no-solver.log; then exit 1; fi
           # §28B: nor does editing that Fillet's radius.
           for gate in radius::native_radius_edits_move_the_named_cylinder_and_keep_every_identity \
-            radius::native_a_changed_radius_misses_in_place_and_the_plate_is_reused
+            radius::native_a_changed_radius_misses_in_place_and_the_plate_is_reused \
+            height::native_height_edits_keep_the_named_cylinder_and_every_identity \
+            height::native_a_changed_height_misses_in_place_and_interleaves_with_the_radius
           do
             FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release --no-default-features -p ferritecad-cli --test fillet "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-radius-no-solver.log
@@ -611,6 +613,14 @@ jobs:
           EXTRACT
           FERRITECAD="$recipe_cli" "$py" ferrite-28b-recipe.py | tee fillet-radius-recipe-no-solver.log
           grep -q '^FCAD_28B_RECIPE_OK ' fillet-radius-recipe-no-solver.log
+          "$py" - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/edit-fillet-base-height.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_28C_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-28c-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$recipe_cli" "$py" ferrite-28c-recipe.py | tee fillet-height-recipe-no-solver.log
+          grep -q '^FCAD_28C_RECIPE_OK ' fillet-height-recipe-no-solver.log
 
       - name: Build the real application and the command line tool against both
         id: build
@@ -1844,7 +1854,12 @@ jobs:
             radius::native_radius_edits_move_the_named_cylinder_and_keep_every_identity \
             radius::native_the_same_radius_publishes_the_same_model \
             radius::native_a_changed_radius_misses_in_place_and_the_plate_is_reused \
-            radius::native_radius_refusals_races_cancellation_and_report_loss_are_atomic
+            radius::native_radius_refusals_races_cancellation_and_report_loss_are_atomic \
+            height::height_discovery_and_protocol_without_native \
+            height::native_height_edits_keep_the_named_cylinder_and_every_identity \
+            height::native_the_same_height_publishes_the_same_model \
+            height::native_a_changed_height_misses_in_place_and_interleaves_with_the_radius \
+            height::native_height_refusals_races_cancellation_and_report_loss_are_atomic
           do
             cargo test --release --features planegcs -p ferritecad-cli --test fillet "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-cli.log
@@ -1883,7 +1898,10 @@ jobs:
             fillet::tests::the_validator_refuses_a_fillet_without_its_predecessor_edge_or_target \
             fillet_radius::tests::only_the_radius_changes_and_repeated_or_equal_edits_keep_every_identity \
             fillet_radius::tests::the_writer_refuses_a_forged_or_stale_preparation \
-            fillet_radius::tests::a_fillet_outside_the_frame_is_refused_with_its_reason
+            fillet_radius::tests::a_fillet_outside_the_frame_is_refused_with_its_reason \
+            fillet_radius::tests::the_base_height_changes_alone_and_interleaves_with_the_radius \
+            fillet_radius::tests::the_height_writer_refuses_a_forged_or_stale_preparation \
+            fillet_radius::tests::a_height_under_a_fillet_outside_the_frame_is_refused_with_its_reason
           do
             FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-document --lib "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-domain.log
@@ -1900,7 +1918,9 @@ jobs:
           for gate in fillets::tests::fillet_widgets_list_corners_refuse_like_the_document_and_keep_the_draft \
             fillets::tests::native_fillet_widgets_worker_and_cli_publish_the_same_part \
             fillets::tests::fillet_radius_widgets_show_the_saved_edge_and_keep_the_draft \
-            fillets::tests::native_fillet_radius_widgets_worker_and_cli_publish_the_same_part
+            fillets::tests::native_fillet_radius_widgets_worker_and_cli_publish_the_same_part \
+            edits::tests::fillet_base_height_widgets_show_the_fillet_and_keep_the_draft \
+            edits::tests::native_fillet_base_height_widgets_worker_and_cli_publish_the_same_part
           do
             cargo test --release --features planegcs -p ferritecad-app "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-ui.log
@@ -2018,6 +2038,7 @@ jobs:
           grep -q '^FCAD_AXIS_CONSTRAINT_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_RADIUS_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_FILLET_HEIGHT_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

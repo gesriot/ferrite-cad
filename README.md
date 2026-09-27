@@ -90,10 +90,13 @@ by the two Lines that meet there, and the radius is from 0.01 mm to half the
 shorter adjacent side. The copy's Body ends in a named Fillet whose rounded
 face is a real cylinder. Its radius can then be changed in a new copy with
 **Edit Fillet radius** or `edit-fillet-radius`: the same Fillet on the same
-edge, with every name kept. Chains, cap edges, a second Fillet, another edge,
-Chamfer and editing the rest of a filleted part are not supported yet.
+edge, with every name kept. The plate's height can be changed under it with
+the ordinary **Edit extrusion** form or `edit-extrude`; the Fillet keeps its
+edge and radius. Chains, cap edges, a second Fillet, another edge, Chamfer
+and editing the rest of a filleted part are not supported yet.
 [Single-edge Fillet contract and recipe](docs/single-edge-fillet.md).
 [Fillet radius edit contract and recipe](docs/edit-fillet-radius.md).
+[Rounded-plate height contract and recipe](docs/edit-fillet-base-height.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

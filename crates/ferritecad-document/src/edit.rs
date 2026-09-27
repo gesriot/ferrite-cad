@@ -21,6 +21,9 @@ pub struct ExtrudeChoice {
     pub name: Option<String>,
     pub distance_mm: Option<f64>,
     pub cut_history: Option<crate::BaseHeightContext>,
+    /// §28C: the saved Fillet over this plate, when this is the base Extrude
+    /// under it and the frame holds. Context, not a Cut history.
+    pub fillet: Option<crate::SavedFillet>,
     pub refusal: Option<String>,
 }
 
@@ -60,9 +63,11 @@ pub struct ExtrudeEditSource {
     /// §28B: every saved Fillet, with whether its radius can be edited, from
     /// that same pinned reading.
     pub fillet_features: Vec<crate::FilletRadiusChoice>,
-    /// §28A: why no editor of this build changes the document, when a Body
-    /// ends in a Fillet. Kept apart from `refusal`, which is about the file
-    /// being written at all: discovery still reports the saved Fillet.
+    /// §28A: why the extrusion editor refuses the document, when a Body ends
+    /// in a Fillet whose plate it cannot change (§28C). Kept apart from
+    /// `refusal`, which is about the file being written at all: discovery
+    /// still reports the saved Fillet. The other editors refuse a filleted
+    /// part on their own.
     pub filleted: Option<String>,
     pub refusal: Option<String>,
 }
@@ -91,6 +96,9 @@ impl ExtrudeEditSource {
             sketches,
             height,
         } = crate::cut_edit::cut_catalog(document, &objects);
+        // §28C: the one frame a filleted plate's height is edited in, read
+        // once for every row from this same snapshot.
+        let fillet = crate::fillet_radius::fillet_over_plate(document, &objects);
         let features = objects
             .iter()
             .filter_map(|object| {
@@ -109,6 +117,12 @@ impl ExtrudeEditSource {
                     distance_mm,
                     cut_history: height.as_ref().ok().and_then(|h| h.as_ref())
                         .filter(|h| h.base_feature == object.id).cloned(),
+                    fillet: fillet
+                        .as_ref()
+                        .ok()
+                        .and_then(Option::as_ref)
+                        .filter(|f| f.previous == object.id)
+                        .cloned(),
                     refusal: blind_literal_distance(object)
                         .map_err(|e| e.to_string())
                         .and_then(|distance| {
@@ -117,6 +131,15 @@ impl ExtrudeEditSource {
                                 .map_err(|e| e.to_string())
                         })
                         .and_then(|_| {
+                            if let Ok(Some(saved)) = &fillet {
+                                if saved.previous == object.id {
+                                    return Ok(());
+                                }
+                                return Err(format!(
+                                    "unsupported: select the base Extrude {} under Fillet {}",
+                                    saved.previous, saved.feature
+                                ));
+                            }
                             let context = height.as_ref().map_err(Clone::clone)?;
                             if context.as_ref().is_some_and(|h| h.base_feature != object.id) {
                                 return Err("unsupported: select the original base Extrude of the Cut history".to_owned());
@@ -143,9 +166,12 @@ impl ExtrudeEditSource {
             revolve_angles: crate::revolve_angle_choices(document, &objects),
             fillet_bodies: crate::fillet_choices(document, &objects),
             fillet_features: crate::fillet_radius_choices(document, &objects),
-            filleted: crate::fillet::refuse_filleted(&objects)
-                .err()
-                .map(|e| e.to_string()),
+            filleted: match fillet {
+                Ok(_) => None,
+                Err(reason) => crate::fillet::refuse_filleted(&objects).err().map(|e| {
+                    format!("{e}. This Fillet is outside the frame those edits read: {reason}")
+                }),
+            },
             refusal,
         })
     }
@@ -837,6 +863,7 @@ mod tests {
                 Some(ExtrudeChoice {
                     feature: object.id,
                     cut_history: None,
+                    fillet: None,
                     name: object.name.clone(),
                     distance_mm,
                     refusal: editable_extrude(document, object)
