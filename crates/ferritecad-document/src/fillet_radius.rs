@@ -1055,7 +1055,7 @@ mod tests {
     /// a shape that is no longer a rectangle, the loop in another order.
     #[test]
     fn a_candidate_rectangle_that_does_not_keep_the_rounded_corner_is_refused() {
-        let (_root, d, _) = filleted(2.375);
+        let (_root, mut d, _) = filleted(2.375);
         let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
         let choice = &reading.sketches[0];
         let (_, vertices) = starts(&d, [[0.; 2]; 4]);
@@ -1100,6 +1100,19 @@ mod tests {
             choice.validate_coordinates(&reordered).is_err(),
             "reordered"
         );
+        // The rectangle reader accepts sub-tolerance coordinate noise. It
+        // does not turn a horizontal side into a different side, in either
+        // the candidate or the saved profile. Keep the supplied numbers;
+        // there is no snapping in a coordinate edit.
+        let clean = [[0., 0.], [40., 0.], [40., 20.], [0., 20.]];
+        let mut noisy = clean;
+        noisy[1][1] = 1e-10;
+        let p = crate::replace_sketch_coordinates(&d, choice.sketch, &with(noisy))
+            .expect("same side within the rectangle reader's tolerance");
+        d.write_sketch_geometry(&p).expect("write noisy rectangle");
+        let p = crate::replace_sketch_coordinates(&d, choice.sketch, &with(clean))
+            .expect("a saved nearly horizontal side can become exactly horizontal");
+        d.write_sketch_geometry(&p).expect("write exact rectangle");
     }
 
     /// §28D: the coordinate writer re-derives the edit from the new

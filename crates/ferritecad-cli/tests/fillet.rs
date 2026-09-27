@@ -3540,6 +3540,51 @@ mod sketch {
         );
         assert_eq!(only_this_row_changed(&f.source, &copy, f.sketch_id()), 0);
         measure(&f.source, None).same_as(&measure(&copy, None));
+
+        // A rectangle accepted by the shared reader may contain tiny
+        // off-axis noise. Both introducing and removing it must preserve
+        // the side and the chosen Fillet, without silently snapping it.
+        let mut noisy = CCW;
+        noisy[2][1] += 1e-10;
+        f.ask_starts(&noisy);
+        let near = f.root.path().join("near-axis.fcad");
+        reply(
+            f.redraw(&f.source, f.version(), &near)
+                .output()
+                .expect("near-axis edit"),
+            OP,
+            0,
+        );
+        let near_catalog = inspect(&near);
+        assert_eq!(
+            near_catalog["sketches"][0]["vertices"][2]["start_mm"],
+            json!(noisy[2]),
+            "the accepted coordinates are not snapped"
+        );
+        assert_eq!(stored_refs(&near), stored_refs(&f.source));
+        let measured = measure(&near, None);
+        assert_eq!(measured.faces, 7);
+        assert_eq!(measured.fillet, FaceSurface::Cylinder { radius: 2.375 });
+        let volume = exact(SAVED, 2.375, H);
+        assert!((measured.volume - volume).abs() < volume * 1e-9);
+        let normalized = f.root.path().join("exact-axis.fcad");
+        f.ask_rect(SAVED);
+        reply(
+            f.redraw(
+                &near,
+                near_catalog["content_version"].as_str().expect("version"),
+                &normalized,
+            )
+            .output()
+            .expect("exact-axis edit"),
+            OP,
+            0,
+        );
+        assert_eq!(
+            only_this_row_changed(&f.source, &normalized, f.sketch_id()),
+            0
+        );
+        measure(&f.source, None).same_as(&measure(&normalized, None));
     }
 
     /// The cache under one document path: after the rectangle changes there,

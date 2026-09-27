@@ -687,12 +687,23 @@ fn validate_coordinates(
 /// §28D: each Line runs along the same axis in the same direction as saved.
 fn keeps_every_side(original: &[SketchVertex], points: &[Point2]) -> Result<()> {
     let sign = |v: f64| (v > 0.) as i8 - (v < 0.) as i8;
+    // Both profiles already passed the shared rectangle/radius checks.
+    // Their dominant component identifies the side; a sub-tolerance
+    // component on the other axis must not invent a diagonal direction.
+    // Keep the supplied coordinates and leave tolerance to that one reader.
+    let side = |dx: f64, dy: f64| {
+        if dx.abs() >= dy.abs() {
+            (sign(dx), 0)
+        } else {
+            (0, sign(dy))
+        }
+    };
     let n = original.len();
     for i in 0..n {
         let (a, b) = (original[i].start_mm, original[(i + 1) % n].start_mm);
         let (p, q) = (points[i], points[(i + 1) % n]);
-        let saved = (sign(b[0] - a[0]), sign(b[1] - a[1]));
-        let candidate = (sign(q.x - p.x), sign(q.y - p.y));
+        let saved = side(b[0] - a[0], b[1] - a[1]);
+        let candidate = side(q.x - p.x, q.y - p.y);
         if saved != candidate {
             return Err(CadError::input(format!(
                 "Line {} of the rounded plate must keep its side: it ran {} and would run {}; \

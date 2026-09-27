@@ -5,6 +5,30 @@
 This records what was executed for this slice and where. It does not repeat
 the evidence of §28A–§28C.
 
+## Independent review correction
+
+The review reproduced an inconsistency at `ecfa974`: `rectangle_corners`
+accepts the shared rectangle tolerance, but `keeps_every_side` compared both
+components to exact zero. A 1e-10 mm coordinate perturbation therefore made
+an accepted horizontal side "diagonal" and prevented a coordinate edit,
+although creating and rounding that same profile succeeded. The domain
+regression failed at an executed assertion before the correction.
+
+After both profiles have passed the shared rectangle/radius checks, their
+dominant component now identifies the axis and direction. No new tolerance,
+coordinate snapping or relaxed rectangle/radius rule is introduced. The
+existing exact-name domain gate covers introducing and removing the noise;
+the existing native same-rectangle gate publishes the nearly horizontal
+profile, checks its stored numbers, names, seven faces, radius and volume,
+and restores the exact profile with identical SQL and geometry. Both pass
+locally after the correction. Existing rotated-side refusals remain tested.
+
+A preliminary native sample perturbed a side adjacent to the rounded corner
+and OCCT refused the Fillet as invalid; the passing native case perturbs the
+opposite side. Accepting the domain's rectangle tolerance does not promise
+that every such profile is buildable by OCCT. Kernel refusals still publish
+nothing; they are not hidden by this correction.
+
 ## Where and how this was run
 
 * **Base.** Freshly fetched `origin/main` at
