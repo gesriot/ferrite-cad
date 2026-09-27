@@ -16,7 +16,7 @@ earlier slices' evidence.
   rust sbom, product sbom, planegcs pin and rust notices had concluded
   success; combined runtime layout
   ([run 36307533504](https://github.com/gesriot/ferrite-cad/actions/runs/36307533504))
-  was still in progress. See [CI](#ci) for its final state.
+  was still in progress then; it later concluded success (see [CI](#ci)).
 * **Cloud container.** Linux x86_64, 4 CPUs, 15 GiB RAM, the session's
   OCCT 8.0.1 and its existing native and stub targets. No PlaneGCS is linked
   here (`FERRITECAD_REQUIRE_PLANEGCS=0`). None is needed: a Fillet asks no
@@ -220,7 +220,60 @@ two builds.
 
 ## CI
 
-To be completed from the runs on this branch.
+The code and CI files are those of `a51c0d1`. Any later head changes only
+this record, so it triggers ordinary CI but no native runtime run.
+
+* **First native run, on `bbb907a`**
+  ([run 36310418061](https://github.com/gesriot/ferrite-cad/actions/runs/36310418061)):
+  * Linux and macOS were green, including the new Fillet step and the FBX
+    loop.
+  * Windows passed every functional step, the Fillet step included. It then
+    failed "Require one owner for every staged file": `bin/TKBool.dll` and
+    `bin/TKFillet.dll` were staged but owned by nobody.
+    * Why: MSVC imports only what is referenced. With `fillet_edge` in the
+      product, the Windows binaries now load TKFillet and its TKBool
+      dependency. Linux and macOS already staged both.
+    * The fix (`a51c0d1`) adds the two rows to
+      `tools/native/staged-windows.tsv` and regenerates the native inventory
+      and the product SBOMs with the repository's generators. Locally,
+      `check-native-inventory.sh` passed 58 checks and
+      `check-product-sbom.sh` passed 40.
+* **Native runtime and packaging on `a51c0d1`**
+  ([run 36314451887](https://github.com/gesriot/ferrite-cad/actions/runs/36314451887)):
+  green on all three platforms, along with the cross-platform comparison
+  and release-set job
+  ([Linux](https://github.com/gesriot/ferrite-cad/actions/runs/36314451887/job/108606392492),
+  [macOS](https://github.com/gesriot/ferrite-cad/actions/runs/36314451887/job/108606392506),
+  [Windows](https://github.com/gesriot/ferrite-cad/actions/runs/36314451887/job/108606392398)).
+  * **What the tool returned.** Only the last 20000 lines of each job log.
+    They begin inside the native steps, after the no-solver step.
+  * **In that tail, on all three OSes:**
+    * `ok` for all 14 names searched, all seven CLI `fillet` gates among them;
+    * the two `fillet_edge_occt` tests, the two `ffi` tests, the two app
+      `fillets::` tests, and `record_fillet`;
+    * `FCAD_FILLET_UFBX_EXECUTED` (pinned ufbx identity and the triangle
+      join with the STL);
+    * no `FAILED`, no panic, and no test output with `skipped:`.
+  * **Outside that tail, and not read here:** the no-solver step's two
+    Fillet gates and its `FCAD_28A_RECIPE_OK` line. That step is green; it
+    exits 1 on a missing `ok`, a `skipped:` or a missing marker.
+* **Ordinary CI on `a51c0d1`**
+  ([run 36314453921](https://github.com/gesriot/ferrite-cad/actions/runs/36314453921)):
+  success on all three OSes. On `958ee69`
+  ([run 36311042342](https://github.com/gesriot/ferrite-cad/actions/runs/36311042342))
+  the Ubuntu log showed the stub step's gates passing and
+  `FCAD_28A_RECIPE_NO_KERNEL`.
+* **Other workflows on `a51c0d1`:** product sbom
+  ([run 36314453914](https://github.com/gesriot/ferrite-cad/actions/runs/36314453914))
+  and rust sbom
+  ([run 36314453903](https://github.com/gesriot/ferrite-cad/actions/runs/36314453903))
+  succeeded. planegcs pin on `bbb907a`
+  ([run 36310418040](https://github.com/gesriot/ferrite-cad/actions/runs/36310418040))
+  succeeded.
+* **Base.** Every merge-triggered workflow on `226cb16` concluded success.
+  That includes combined runtime layout
+  ([run 36307533504](https://github.com/gesriot/ferrite-cad/actions/runs/36307533504)),
+  which finished after this slice began.
 
 ## Limits
 
