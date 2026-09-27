@@ -206,9 +206,51 @@ unresolved name tells the two rules apart. After restoring, the document
 
 ## CI
 
-The code and CI files are those of the head this section is added to; see
-the pull request for the runs. A later head that changes only this record
-triggers ordinary CI but no native runtime run.
+The code, CI files and tools are those of `f086e80`. The head that adds this
+section changes only this record, so it triggers ordinary CI and no native
+runtime run (`docs/**` is outside `runtime-layout.yml`'s and
+`planegcs-pin.yml`'s path filters).
+
+* **The first head, `bdeee80`,** failed the stub step of ordinary CI
+  ([run 36335714625](https://github.com/gesriot/ferrite-cad/actions/runs/36335714625)):
+  `height::height_discovery_and_protocol_without_native` passed, but it chose
+  its expected answers through `native()`, which prints `skipped:` in a build
+  with no kernel, and the exact-name gate rightly fails on any `skipped:`.
+  Reproduced locally (8 such lines); `b1e073a` decides the branch with
+  `ferritecad_occt::is_available()` instead, and the gate, run exactly as the
+  workflow runs it, passed. The native runtime runs on `bdeee80` and
+  `b1e073a` were cancelled by the next push.
+* **main `4b32ee3` (PR #63, macOS on Apple Silicon only) was merged in** as
+  `f086e80`, an ordinary merge commit with no conflict. Four files were
+  changed on both sides (`ci.yml`, `runtime-layout.yml`, the README, the
+  plan); both groups of gates are kept. After the merge the Fillet tests (17
+  CLI, 12 document, 6 app) passed again here; the architecture check refuses
+  to run on this Linux host, as it should, and ran on macOS in CI.
+* **Native runtime and packaging on `f086e80`**
+  ([run 36339634617](https://github.com/gesriot/ferrite-cad/actions/runs/36339634617)):
+  green on all three platforms and in the cross-platform comparison
+  ([Linux](https://github.com/gesriot/ferrite-cad/actions/runs/36339634617/job/108677107335),
+  [macOS](https://github.com/gesriot/ferrite-cad/actions/runs/36339634617/job/108677107114),
+  [Windows](https://github.com/gesriot/ferrite-cad/actions/runs/36339634617/job/108677107248)).
+  That covers the Fillet step with the five `height::`, three document and
+  two app gates, the no-solver step with `FCAD_28C_RECIPE_OK`, the FBX step
+  with `FCAD_FILLET_HEIGHT_UFBX_EXECUTED`, and #63's arm64 checks on macOS.
+  Each of those steps exits 1 on a missing `ok`, a `skipped:` or a missing
+  marker. The job logs were not read here: this container's proxy refuses
+  the log download, so no count of gates is claimed from them.
+* **Ordinary CI on `f086e80`**
+  ([run 36339637257](https://github.com/gesriot/ferrite-cad/actions/runs/36339637257)):
+  lint, supply-chain, sbom, notices and the tests on Linux, macOS and
+  Windows succeeded, the new stub step included.
+* **planegcs pin on `f086e80`**
+  ([run 36339634624](https://github.com/gesriot/ferrite-cad/actions/runs/36339634624)):
+  success on all three platforms.
+* **Bases.** Every merge-triggered workflow on `30920ef` concluded success,
+  including combined runtime layout
+  ([run 36332420351](https://github.com/gesriot/ferrite-cad/actions/runs/36332420351)).
+  On `4b32ee3` CI, planegcs pin, rust sbom, rust notices and product sbom
+  succeeded, and so did combined runtime layout
+  ([run 36339485744](https://github.com/gesriot/ferrite-cad/actions/runs/36339485744)).
 
 ## Limits
 
