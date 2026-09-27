@@ -8,6 +8,9 @@ The counts and sizes below describe that run. Packaging and desktop launch have
 since been implemented; §23B adds `Info.plist` and `CodeResources` to the macOS
 layout. For the current build and launch instructions, see
 [the application section in README](../README.md#an-application-you-can-open-without-a-terminal).
+Current macOS delivery policy is [Apple Silicon only](platform-support.md):
+staging and native bundle checks require exactly arm64 in every Mach-O image.
+This does not change the historical measurements below.
 
 ## Why this needed its own slice
 

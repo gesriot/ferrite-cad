@@ -176,6 +176,33 @@ start and it is not executable"
     return 0
 }
 
+# Architecture is a fact about every delivered image, not the machine running
+# the checker or the target written in a manifest. Called only for real images;
+# --no-execute archive fixtures contain synthetic bytes and prove no architecture.
+macos_bundle_arm64_ok() { # bundle-directory
+    local bundle="$1" directory file arches count=0
+    command -v lipo >/dev/null 2>&1 || {
+        macos_bundle_say 'lipo is required to inspect the macOS image architecture'
+        return 1
+    }
+    for directory in "$bundle/Contents/MacOS" "$bundle/Contents/Frameworks"; do
+        [ -d "$directory" ] || { macos_bundle_say "missing image directory: $directory"; return 1; }
+        for file in "$directory"/*; do
+            [ -f "$file" ] || { macos_bundle_say "not a delivered Mach-O file: $file"; return 1; }
+            arches="$(lipo -archs "$file")" || {
+                macos_bundle_say "cannot read Mach-O architecture: $file"
+                return 1
+            }
+            [ "$arches" = arm64 ] || {
+                macos_bundle_say "$file has architecture '$arches'; FerriteCAD macOS requires arm64 only (Apple Silicon)"
+                return 1
+            }
+            count=$((count + 1))
+        done
+    done
+    macos_bundle_say "verified arm64-only architecture of $count Mach-O images"
+}
+
 # Whether the ad-hoc signature the delivery carries still answers for it.
 #
 # Asked separately from macos_bundle_check, and only of a real product. The

@@ -170,7 +170,8 @@ done
 # build script names one of these, spelled out, and a read whose argument is
 # not a literal from the list is refused whatever it turns out to say.
 readonly BUILD_SCRIPT='crates/ferritecad-sketch-solver/build.rs'
-readonly ALLOWED_ENV='CARGO_MANIFEST_DIR|CARGO_CFG_TARGET_OS|CARGO_FEATURE_PLANEGCS|OUT_DIR|FCAD_PLANEGCS_DIR|FERRITECAD_REQUIRE_PLANEGCS'
+# TARGET is supplied by Cargo and only enforces the macOS arm64 policy.
+readonly ALLOWED_ENV='TARGET|CARGO_MANIFEST_DIR|CARGO_CFG_TARGET_OS|CARGO_FEATURE_PLANEGCS|OUT_DIR|FCAD_PLANEGCS_DIR|FERRITECAD_REQUIRE_PLANEGCS'
 reads="$(grep -coE 'env::var(_os)?\(' "${BUILD_SCRIPT}" || true)"
 allowed="$(grep -coE "env::var(_os)?\\(\"(${ALLOWED_ENV})\"\\)" "${BUILD_SCRIPT}" || true)"
 if [ "${reads}" != "${allowed}" ]; then
