@@ -3002,6 +3002,51 @@ mod height {
         assert!(!stale_out.exists());
         assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
 
+        // A saved name of the plate that resolves to nothing. The legacy
+        // standalone extrusion edit may keep such a name unresolved; a
+        // rounded plate may not, so the copy is refused and nothing is
+        // published.
+        let dangling = f.root.path().join("dangling-source.fcad");
+        std::fs::copy(&f.source, &dangling).expect("copy");
+        let mut d = Document::open(&dangling).expect("writable");
+        let base: ferritecad_types::ObjectId = f.base_id().parse().expect("UUID");
+        d.write(|w| {
+            w.put_topology_ref(&ferritecad_document::TopologyRef {
+                id: ferritecad_types::StableEntityId::new(),
+                owner: base,
+                producer_feature: base,
+                expected_kind: ferritecad_document::EntityKind::Face,
+                output_role: SemanticRole::ExtrudeSide {
+                    profile_segment: ferritecad_types::StableEntityId::new(),
+                },
+                selection: ferritecad_document::SelectionRule::Exact,
+                fallback_signature: None,
+            })
+        })
+        .expect("a name of nothing");
+        d.close().expect("close");
+        let g = Fixture {
+            catalog: inspect(&dangling),
+            source: dangling.clone(),
+            root: tempfile::tempdir().expect("dir"),
+            request: f.request.clone(),
+        };
+        let dangling_before = std::fs::read(&dangling).expect("bytes");
+        let out = f.root.path().join("dangling.fcad");
+        let v = reply(
+            g.raise(&dangling, g.base_id(), "9", &out)
+                .output()
+                .expect("process"),
+            OP,
+            2,
+        );
+        // The frame accepts it; the copy's reference check is what refuses.
+        assert_eq!(g.catalog["edit_extrude"]["available"], true);
+        assert_eq!(refused(&v), "topology", "{v}");
+        assert!(v.to_string().contains("unresolved"), "{v}");
+        assert!(!out.exists());
+        assert_eq!(std::fs::read(&dangling).expect("bytes"), dangling_before);
+
         // A publication whose report is lost stays published: exit 7.
         let lost = f.root.path().join("lost.fcad");
         assert_eq!(
