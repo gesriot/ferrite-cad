@@ -991,6 +991,96 @@ impl Document {
         }, false)
     }
 
+    /// Writes one prepared fillet (§28A): the new Fillet row, the Body's tip,
+    /// the predecessor and tip edges, the Fillet's own references and the
+    /// capabilities those new rows need. Nothing else.
+    pub fn write_edge_fillet(&mut self, prepared: &crate::PreparedEdgeFillet) -> Result<()> {
+        let current = self
+            .object(prepared.body().id)?
+            .ok_or_else(|| CadError::input("selected Body disappeared before the fillet"))?;
+        let ObjectPayload::Body(stored) = &current.payload else {
+            return Err(CadError::input("the selected object is not a Body"));
+        };
+        if stored.tip_feature != Some(prepared.previous()) {
+            return Err(CadError::input(
+                "the Body's tip changed after the fillet was prepared",
+            ));
+        }
+        if self.object(prepared.feature().id)?.is_some() {
+            return Err(CadError::input(
+                "a fillet may not overwrite an object that already exists",
+            ));
+        }
+        let body = prepared.body().clone();
+        let feature = prepared.feature().clone();
+        let added = prepared.added_dependencies.clone();
+        let removed = prepared.removed_dependencies.clone();
+        let references = prepared.references.clone();
+        let body_bytes = body.payload.to_storage_bytes()?;
+        let body_hash = ContentHash::of_bytes(&body_bytes);
+        self.write_checked_transaction(
+            |document| crate::fillet::rederive(document, prepared),
+            move |writer| {
+                require_fresh_cut_ids(
+                    writer.tx,
+                    std::iter::once(feature.id.to_bytes())
+                        .chain(references.iter().map(|r| r.id.to_bytes())),
+                )?;
+                writer.put_object(
+                    feature.id,
+                    None,
+                    feature.ordinal,
+                    Some(&feature.name),
+                    &feature.payload,
+                )?;
+                writer
+                    .tx
+                    .execute(
+                        "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
+                        params![
+                            body_bytes,
+                            body_hash.as_bytes().as_slice(),
+                            body.id.to_bytes().as_slice()
+                        ],
+                    )
+                    .map_err(|e| CadError::io("moving Body tip", e))?;
+                for dependency in removed {
+                    writer.remove_dependency(dependency)?;
+                }
+                for dependency in added {
+                    writer.add_dependency(dependency)?;
+                }
+                for reference in &references {
+                    writer.put_topology_ref(reference)?;
+                }
+                let mut capabilities = BTreeSet::new();
+                capabilities.extend(feature.payload.required_capabilities());
+                for reference in &references {
+                    capabilities.extend(required_capabilities_of(&reference.output_role));
+                }
+                for name in capabilities {
+                    writer
+                        .tx
+                        .execute(
+                            "INSERT INTO capabilities(name,required) VALUES(?1,1) ON CONFLICT(name) \
+                             DO UPDATE SET required=1 WHERE required<>1",
+                            params![name],
+                        )
+                        .map_err(|e| CadError::io("recording fillet capability", e))?;
+                }
+                writer
+                    .tx
+                    .execute(
+                        &format!("UPDATE meta SET modified_at = {NOW_UTC} WHERE id = 1"),
+                        [],
+                    )
+                    .map_err(|e| CadError::io("stamping fillet", e))?;
+                Ok(())
+            },
+            false,
+        )
+    }
+
     /// Writes one prepared parameter edit of a saved circular cut: the tool
     /// circle's new geometry, the cut's new depth, and the historical/final
     /// floor names gained when a through hole becomes a pocket.
@@ -2275,6 +2365,9 @@ fn required_capabilities_of(role: &SemanticRole) -> Vec<String> {
     }
     if matches!(role, SemanticRole::RevolveFace { .. }) {
         names.push(crate::FEATURE_REVOLVE_CAPABILITY.to_owned());
+    }
+    if matches!(role, SemanticRole::EdgeFilletFace { .. }) {
+        names.push(crate::FEATURE_FILLET_CAPABILITY.to_owned());
     }
     if matches!(role, SemanticRole::RevolveCap { .. }) {
         names.push(crate::FEATURE_REVOLVE_CAPABILITY.to_owned());

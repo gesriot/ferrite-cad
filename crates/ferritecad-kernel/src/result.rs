@@ -1829,6 +1829,108 @@ pub struct CutResult {
     pub removed_volume: f64,
 }
 
+/// The result of rounding one edge (§28A).
+///
+/// `history` and `carried` speak about sub-shapes of the target only, in the
+/// same four-fact vocabulary a Cut uses. `fillet_faces` are the faces the
+/// kernel reported as generated from the rounded edge — read from the
+/// operation's own history while it was alive, never found by looking at the
+/// result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FilletResult {
+    pub shape: ShapeHandle,
+    pub history: History,
+    pub carried: BTreeMap<SubShapeHandle, CarriedOutcome>,
+    /// The faces generated from the rounded edge, as sub-shapes of `shape`.
+    pub fillet_faces: Vec<SubShapeHandle>,
+    /// Material the fillet removed, in cubic millimetres, measured by the
+    /// kernel as a difference. A convex fillet removes material; one that
+    /// removes nothing did not round anything.
+    pub removed_volume: f64,
+}
+
+impl FilletResult {
+    /// Checks what a naming layer is entitled to assume about a fillet.
+    ///
+    /// Every account is about the target; every output belongs to the result;
+    /// the rounded edge is gone and exactly one face replaced it; and material
+    /// was removed.
+    pub fn validate(&self, target: ShapeHandle, edge: SubShapeHandle) -> Result<()> {
+        for input in self.history.inputs() {
+            let HistoryInput::SubShape(sub) = input else {
+                return Err(CadError::kernel(
+                    "a fillet's history is about sub-shapes of its target, not profile segments",
+                ));
+            };
+            if sub.shape() != target {
+                return Err(CadError::kernel(format!(
+                    "the fillet history names {sub}, which is not a sub-shape of its target"
+                )));
+            }
+            for output in self
+                .history
+                .generated(input)
+                .chain(self.history.modified(input))
+            {
+                if output.shape() != self.shape {
+                    return Err(CadError::kernel(format!(
+                        "the fillet reported {output} for {sub}, which belongs to another shape"
+                    )));
+                }
+            }
+        }
+        for (sub, outcome) in &self.carried {
+            if sub.shape() != target {
+                return Err(CadError::kernel(format!(
+                    "the fillet reported an outcome for {sub}, which is not a sub-shape of its \
+                     target"
+                )));
+            }
+            let input = HistoryInput::SubShape(*sub);
+            let produced =
+                self.history.modified(input).count() + self.history.generated(input).count();
+            match outcome {
+                CarriedOutcome::Deleted if produced != 0 => {
+                    return Err(CadError::kernel(format!(
+                        "the fillet called {sub} deleted and also reported {produced} outputs"
+                    )));
+                }
+                CarriedOutcome::Kept | CarriedOutcome::Modified if produced == 0 => {
+                    return Err(CadError::kernel(format!(
+                        "the fillet called {sub} {} and reported no geometry for it",
+                        outcome.as_str()
+                    )));
+                }
+                _ => {}
+            }
+        }
+        if self.carried.get(&edge) != Some(&CarriedOutcome::Deleted) {
+            return Err(CadError::kernel(format!(
+                "the fillet did not report the rounded edge {edge} as gone"
+            )));
+        }
+        let [face] = self.fillet_faces.as_slice() else {
+            return Err(CadError::kernel(format!(
+                "rounding one edge generated {} faces; this slice names exactly one",
+                self.fillet_faces.len()
+            )));
+        };
+        if face.shape() != self.shape || face.kind() != SubShapeKind::Face {
+            return Err(CadError::kernel(format!(
+                "the fillet face {face} is not a face of the result {}",
+                self.shape
+            )));
+        }
+        if !self.removed_volume.is_finite() || self.removed_volume <= 0.0 {
+            return Err(CadError::kernel(format!(
+                "the fillet removed {} mm³, so it rounded nothing",
+                self.removed_volume
+            )));
+        }
+        Ok(())
+    }
+}
+
 impl CutResult {
     /// Checks the naming a consumer is entitled to assume.
     ///

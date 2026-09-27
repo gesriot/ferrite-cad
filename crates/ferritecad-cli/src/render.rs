@@ -238,6 +238,10 @@ fn describe_role(role: &SemanticRole) -> String {
             format!("extrude side from segment {profile_segment}")
         }
         SemanticRole::FilletFace { source_edge } => format!("fillet face from edge {source_edge}"),
+        SemanticRole::EdgeFilletFace {
+            edge_feature,
+            joint,
+        } => format!("fillet face rounded from the edge {edge_feature} swept at {joint}"),
         other => format!("{other:?}"),
     }
 }

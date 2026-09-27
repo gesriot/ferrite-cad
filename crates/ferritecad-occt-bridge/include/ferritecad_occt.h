@@ -713,6 +713,46 @@ FcOcctStatus fc_occt_import_step(
     FcOcctError *out_error) FC_OCCT_NOEXCEPT;
 
 /*
+ * Rounds exactly one edge of a shape to one constant radius (§28A).
+ *
+ * `edge` indexes `target`'s own sub-shape table and must be an edge; a
+ * sub-shape of any other shape, or of another kind, is refused. `radius` is in
+ * millimetres, finite and positive. Whether it fits the part is the caller's
+ * policy; this refuses only what the kernel itself reports.
+ *
+ * Success requires every one of: the builder reports done; the result is
+ * exactly one solid; BRepCheck_Analyzer calls it valid; it encloses less
+ * volume than the target, by a finite positive amount written to
+ * `*out_removed_volume`; and at least one face generated from the edge lies
+ * in the result. `IsDone()` alone is not trusted — see fc_occt_fillet_all.
+ *
+ * # History
+ *
+ * What became of every registered sub-shape of the target is asked while the
+ * builder is alive and stored with the result; read it with
+ * fc_occt_cut_carried, passing `target` as the input. The faces generated
+ * from the rounded edge are read with fc_occt_fillet_faces.
+ *
+ * Cancellation: consulted before the build and installed as a progress
+ * indicator. On success `*out_shape` receives a session-local identifier.
+ */
+FcOcctStatus fc_occt_fillet_edge(FcOcctSession *session, uint64_t target,
+                                 uint64_t edge, double radius,
+                                 FcOcctCancelFn cancel, void *cancel_context,
+                                 uint64_t *out_shape, double *out_removed_volume,
+                                 FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/*
+ * The faces fc_occt_fillet_edge reported as generated from the rounded edge,
+ * as sub-shape identifiers of `shape`. Refuses a shape that is not the fresh
+ * result of fc_occt_fillet_edge. Count-then-buffer, as the other queries.
+ */
+FcOcctStatus fc_occt_fillet_faces(FcOcctSession *session, uint64_t shape,
+                                  uint64_t *out_ids, size_t capacity,
+                                  size_t *out_count,
+                                  FcOcctError *out_error) FC_OCCT_NOEXCEPT;
+
+/*
  * Rounds every edge of a shape to one radius.
  *
  * Evaluation surface, not yet part of any feature. It exists to find out where

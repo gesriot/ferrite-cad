@@ -108,6 +108,12 @@ const TAG_REVOLVED_FACE: u16 = 15;
 const TAG_REVOLVED_START_CAP: u16 = 16;
 const TAG_REVOLVED_END_CAP: u16 = 17;
 
+/// §28A: the face a Fillet made from one producer's edge at one corner. A new
+/// tag, the vocabulary-only route: the layout of an entry is unchanged, so
+/// the format version is not, and a reader that predates the tag refuses the
+/// whole entry as malformed and rebuilds.
+const TAG_EDGE_FILLET_FACE: u16 = 18;
+
 impl ArchivedFeature {
     /// Writes the archive out as bytes.
     ///
@@ -215,6 +221,16 @@ impl ArchivedFeature {
                     payload.extend_from_slice(&TAG_ORIGIN_SIDE.to_le_bytes());
                     payload.extend_from_slice(&origin_feature.to_bytes());
                     payload.extend_from_slice(&profile_segment.to_bytes());
+                }
+                BoundName::EdgeFilletFace {
+                    edge_feature,
+                    joint,
+                } => {
+                    payload.extend_from_slice(&TAG_EDGE_FILLET_FACE.to_le_bytes());
+                    payload.extend_from_slice(&edge_feature.to_bytes());
+                    for segment in joint.segments() {
+                        payload.extend_from_slice(&segment.to_bytes());
+                    }
                 }
             }
             payload.extend_from_slice(&slot.index().to_le_bytes());
@@ -359,6 +375,13 @@ impl ArchivedFeature {
                 },
                 TAG_REVOLVED_START_CAP => BoundName::RevolvedStartCap,
                 TAG_REVOLVED_END_CAP => BoundName::RevolvedEndCap,
+                TAG_EDGE_FILLET_FACE => BoundName::EdgeFilletFace {
+                    edge_feature: ObjectId::from_bytes(reader.array("edge feature")?)?,
+                    joint: ProfileJoint::from_canonical([
+                        StableEntityId::from_bytes(reader.array("first profile segment")?)?,
+                        StableEntityId::from_bytes(reader.array("second profile segment")?)?,
+                    ])?,
+                },
                 TAG_START_CAP_EDGE => BoundName::StartCapEdge {
                     profile_segment: StableEntityId::from_bytes(reader.array("profile segment")?)?,
                 },

@@ -350,6 +350,27 @@ unsafe extern "C" {
         out_error: *mut RawError,
     ) -> i32;
 
+    #[allow(clippy::too_many_arguments)]
+    fn fc_occt_fillet_edge(
+        session: *mut RawSession,
+        target: u64,
+        edge: u64,
+        radius: f64,
+        cancel: Option<CancelFn>,
+        cancel_context: *mut c_void,
+        out_shape: *mut u64,
+        out_removed_volume: *mut f64,
+        out_error: *mut RawError,
+    ) -> i32;
+    fn fc_occt_fillet_faces(
+        session: *mut RawSession,
+        shape: u64,
+        out_ids: *mut u64,
+        capacity: usize,
+        out_count: *mut usize,
+        out_error: *mut RawError,
+    ) -> i32;
+
     fn fc_occt_fillet_all(
         session: *mut RawSession,
         shape: u64,
@@ -1150,6 +1171,49 @@ impl Session {
             )));
         }
         Ok(buffer)
+    }
+
+    /// Rounds exactly one edge of `target` (§28A): the new shape and the
+    /// volume removed, measured by the bridge as a difference.
+    pub(crate) fn fillet_edge(
+        &mut self,
+        target: u64,
+        edge: u64,
+        radius: f64,
+        cancel: &CancelToken,
+    ) -> Result<(u64, f64)> {
+        let mut shape = 0u64;
+        let mut removed = 0.0f64;
+        let mut error = RawError::empty();
+        let context = cancel as *const CancelToken as *mut c_void;
+        // SAFETY: the out-parameters are valid for the call, the token is
+        // borrowed for exactly its duration, and the bridge is noexcept.
+        let status = unsafe {
+            fc_occt_fillet_edge(
+                self.raw,
+                target,
+                edge,
+                radius,
+                Some(cancel_trampoline),
+                context,
+                &mut shape,
+                &mut removed,
+                &mut error,
+            )
+        };
+        interpret(status, &error, "rounding one edge")?;
+        Ok((shape, removed))
+    }
+
+    /// The faces the fillet generated from the rounded edge.
+    pub(crate) fn fillet_faces(&mut self, shape: u64) -> Result<Vec<u64>> {
+        self.collect_ids(
+            "reading the face a fillet generated from its edge",
+            |s, ids, cap, count, err| {
+                // SAFETY: pointers are valid for the call; see `collect_ids`.
+                unsafe { fc_occt_fillet_faces(s, shape, ids, cap, count, err) }
+            },
+        )
     }
 
     /// Rounds every edge of a shape to one radius.

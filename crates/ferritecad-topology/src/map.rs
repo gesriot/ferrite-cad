@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ferritecad_document::CapSide;
 use ferritecad_kernel::{
-    CutResult, ExtrudeResult, HistoryInput, Profile, RevolveResult, RevolveTurn, ShapeHandle,
-    SubShapeHandle, SubShapeKind,
+    CutResult, ExtrudeResult, FilletResult, HistoryInput, Profile, RevolveResult, RevolveTurn,
+    ShapeHandle, SubShapeHandle, SubShapeKind,
 };
 use ferritecad_types::{CadError, ObjectId, ProfileJoint, Result, StableEntityId};
 
@@ -55,6 +55,11 @@ pub struct FeatureNames {
     /// an extrusion-cap reference must never resolve to a Revolve's end face.
     revolved_start_cap: BTreeSet<SubShapeHandle>,
     revolved_end_cap: BTreeSet<SubShapeHandle>,
+    /// §28A: the face a Fillet made by rounding the edge one feature swept at
+    /// one corner, keyed by that feature and corner. A set for the reason
+    /// every name here is one: a kernel that reported two is recorded as it
+    /// answered, and the resolver refuses rather than picks.
+    fillet_faces: BTreeMap<(ObjectId, ProfileJoint), BTreeSet<SubShapeHandle>>,
     /// Immediate predecessor, for the unchanged legacy CarriedCap/Side roles.
     previous: Option<ObjectId>,
     /// Original producer and role, never reassigned by an intervening boolean.
@@ -268,6 +273,28 @@ impl FeatureNames {
         self.previous
     }
 
+    /// §28A: the faces rounded from the edge `edge_feature` swept at `joint`.
+    pub fn fillet_face(
+        &self,
+        edge_feature: ObjectId,
+        joint: ProfileJoint,
+    ) -> impl ExactSizeIterator<Item = SubShapeHandle> + '_ {
+        self.fillet_faces
+            .get(&(edge_feature, joint))
+            .map(|s| s.iter())
+            .unwrap_or_default()
+            .copied()
+    }
+
+    /// Every rounded edge this feature names a face for, in order.
+    pub fn named_fillet_edges(&self) -> impl ExactSizeIterator<Item = (ObjectId, ProfileJoint)> {
+        self.fillet_faces
+            .keys()
+            .copied()
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
     pub fn origin_faces(
         &self,
         origin: ObjectId,
@@ -294,6 +321,7 @@ impl FeatureNames {
             + self.end_cap.len()
             + self.sides.values().map(BTreeSet::len).sum::<usize>()
             + self.carried.values().map(BTreeSet::len).sum::<usize>()
+            + self.fillet_faces.values().map(BTreeSet::len).sum::<usize>()
     }
 
     /// Every qualified name, including deleted ancestors, in deterministic order.
@@ -333,6 +361,8 @@ pub struct RestoredNames {
     pub revolved_start_cap: Vec<SubShapeHandle>,
     pub revolved_end_cap: Vec<SubShapeHandle>,
     pub carried_deleted: BTreeSet<(ObjectId, CarriedName)>,
+    /// §28A: fillet faces by the edge they replaced.
+    pub fillet_faces: BTreeMap<(ObjectId, ProfileJoint), Vec<SubShapeHandle>>,
 }
 
 /// What a whole rebuild produced, addressed by feature and role.
@@ -824,6 +854,17 @@ impl TopologyMap {
             }
         }
         names.previous = restored.previous;
+        if !restored.fillet_faces.is_empty() && restored.previous.is_none() {
+            return Err(CadError::topology(format!(
+                "feature {producer} restored a fillet face without the feature it rounded"
+            )));
+        }
+        for (edge, faces) in &restored.fillet_faces {
+            for face in faces {
+                check(*face, shape, producer, "a restored fillet face")?;
+                names.fillet_faces.entry(*edge).or_default().insert(*face);
+            }
+        }
         for (name, faces) in &restored.carried {
             if name.0 == producer || restored.previous.is_none() {
                 return Err(CadError::topology(
@@ -1073,6 +1114,114 @@ impl TopologyMap {
                 names.carried_deleted.insert(name);
             } else {
                 names.carried.insert(name, carried);
+            }
+        }
+
+        if self.features.insert(producer, names).is_some() {
+            return Err(CadError::topology(format!(
+                "feature {producer} was recorded twice in one rebuild"
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl TopologyMap {
+    /// Records what rounding one edge produced (§28A).
+    ///
+    /// Two groups of names, both read from the fillet's own history:
+    ///
+    /// * the **new face**, filed under the edge it replaced — the producer
+    ///   that swept the edge and the corner it was swept from;
+    /// * every face the **predecessor** was known by (its own caps and sides,
+    ///   and every origin it carried), as the fillet leaves it, or recorded as
+    ///   removed. Qualified by its original producer, never reassigned.
+    ///
+    /// Nothing here looks at geometry. A face the history does not account
+    /// for refuses, as it does for a boolean.
+    pub fn record_fillet(
+        &mut self,
+        producer: ObjectId,
+        previous: ObjectId,
+        edge_feature: ObjectId,
+        joint: ProfileJoint,
+        previous_names: &FeatureNames,
+        edge: SubShapeHandle,
+        result: &FilletResult,
+    ) -> Result<()> {
+        let Some(previous_shape) = previous_names.shape() else {
+            return Err(CadError::topology(format!(
+                "feature {producer} rounds an edge of {previous}, which produced no shape"
+            )));
+        };
+        result.validate(previous_shape, edge)?;
+
+        let mut names = FeatureNames {
+            shape: Some(result.shape),
+            ..FeatureNames::default()
+        };
+        for face in &result.fillet_faces {
+            check(*face, result.shape, producer, "a fillet face")?;
+            names
+                .fillet_faces
+                .entry((edge_feature, joint))
+                .or_default()
+                .insert(*face);
+        }
+
+        let outputs = |input: SubShapeHandle| -> Vec<SubShapeHandle> {
+            result
+                .history
+                .modified(HistoryInput::SubShape(input))
+                .chain(result.history.generated(HistoryInput::SubShape(input)))
+                .collect()
+        };
+        names.previous = Some(previous);
+        let mut inputs: BTreeMap<(ObjectId, CarriedName), Vec<SubShapeHandle>> = BTreeMap::new();
+        for side in [CapSide::Start, CapSide::End] {
+            inputs.insert(
+                (previous, CarriedName::Cap(side)),
+                previous_names.cap(side).into_iter().flatten().collect(),
+            );
+        }
+        for segment in previous_names.named_segments() {
+            inputs.insert(
+                (previous, CarriedName::Side(segment)),
+                previous_names.side(segment).collect(),
+            );
+        }
+        for (origin, name) in previous_names.origins() {
+            inputs.insert(
+                (origin, name),
+                previous_names.origin_faces(origin, name).collect(),
+            );
+        }
+        for (name, faces) in inputs {
+            let mut carried = BTreeSet::new();
+            for face in faces {
+                if !result.carried.contains_key(&face) {
+                    return Err(CadError::topology(
+                        "fillet history omitted a named input face",
+                    ));
+                }
+                for out in outputs(face) {
+                    check(out, result.shape, producer, "a carried origin face")?;
+                    carried.insert(out);
+                }
+            }
+            if carried.is_empty() {
+                names.carried_deleted.insert(name);
+            } else {
+                names.carried.insert(name, carried);
+            }
+        }
+        // A face cannot be both the new fillet face and a carried one.
+        for face in &result.fillet_faces {
+            if names.carried.values().any(|set| set.contains(face)) {
+                return Err(CadError::topology(format!(
+                    "feature {producer} reported {face} both as the fillet face and as a carried \
+                     face"
+                )));
             }
         }
 

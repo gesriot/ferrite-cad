@@ -54,6 +54,9 @@ pub struct ExtrudeEditSource {
     /// Which saved Revolves' angles can be edited (§27E), from that same
     /// pinned reading, in the same order as `revolves`.
     pub revolve_angles: Vec<crate::RevolveAngleChoice>,
+    /// §28A: which saved Bodies a Fillet can round one vertical edge of, and
+    /// their candidate edges, from that same pinned reading.
+    pub fillet_bodies: Vec<crate::FilletChoice>,
     pub refusal: Option<String>,
 }
 
@@ -131,6 +134,7 @@ impl ExtrudeEditSource {
             cut_features,
             revolves: crate::revolve_choices(document, &objects),
             revolve_angles: crate::revolve_angle_choices(document, &objects),
+            fillet_bodies: crate::fillet_choices(document, &objects),
             refusal,
         })
     }
@@ -836,6 +840,7 @@ mod tests {
             cut_features: crate::cut_parameter_choices(document, &objects),
             revolves: crate::revolve_choices(document, &objects),
             revolve_angles: crate::revolve_angle_choices(document, &objects),
+            fillet_bodies: crate::fillet_choices(document, &objects),
             version: DocumentVersion {
                 document_id: document.meta().document_id,
                 content: document.content_version()?,

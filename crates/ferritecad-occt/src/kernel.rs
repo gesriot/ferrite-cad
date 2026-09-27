@@ -4,11 +4,11 @@ use std::collections::BTreeMap;
 use ferritecad_exchange::Import;
 use ferritecad_kernel::{
     ArchiveSlot, BrepBlob, CarriedOutcome, CutRequest, CutResult, ExtrudeExtent, ExtrudeRequest,
-    ExtrudeResult, FaceSurface, GeometryKernel, History, HistoryInput, KernelIdentity, Mesh,
-    MeshEdgeRange, MeshEdges, MeshFaceRange, MeshVertexRange, MeshVertices, OperationContext,
-    ProfileLoop, ProfileSegment, RevolveAxis, RevolveRequest, RevolveResult, RevolveTurn,
-    SegmentGeometry, SessionId, ShapeHandle, SketchPlane, SubShapeHandle, SubShapeKind,
-    TessellationParams,
+    ExtrudeResult, FaceSurface, FilletRequest, FilletResult, GeometryKernel, History, HistoryInput,
+    KernelIdentity, Mesh, MeshEdgeRange, MeshEdges, MeshFaceRange, MeshVertexRange, MeshVertices,
+    OperationContext, ProfileLoop, ProfileSegment, RevolveAxis, RevolveRequest, RevolveResult,
+    RevolveTurn, SegmentGeometry, SessionId, ShapeHandle, SketchPlane, SubShapeHandle,
+    SubShapeKind, TessellationParams,
 };
 use ferritecad_types::{CadError, ContentHash, ProfileJoint, Result, Transform};
 
@@ -727,6 +727,99 @@ impl GeometryKernel for OcctKernel {
                 removed_volume,
             };
             result.validate(request.target(), request.tool())?;
+            Ok(result)
+        })();
+
+        match assembled {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                self.session.release(raw);
+                Err(error)
+            }
+        }
+    }
+
+    fn fillet_edge(
+        &mut self,
+        request: &FilletRequest,
+        track: &[SubShapeHandle],
+        context: &OperationContext,
+    ) -> Result<FilletResult> {
+        context.check_cancelled()?;
+        let target = self.raw(request.target())?;
+        let edge = request.edge();
+        // Every name asked about, the rounded edge included, is the target's,
+        // and was handed out by this session: the bridge answers by (shape,
+        // index), and a handle from elsewhere would describe another face.
+        for sub in track.iter().chain(std::iter::once(&edge)) {
+            if sub.shape() != request.target() {
+                return Err(CadError::input(format!(
+                    "{sub} is not a sub-shape of the shape this fillet rounds"
+                )));
+            }
+            if sub.index() >= self.session.sub_shape_count(target)? as u64 {
+                return Err(CadError::input(format!(
+                    "{sub} was never handed out by this session"
+                )));
+            }
+        }
+
+        context.progress().report(0.0);
+        let (raw, removed_volume) = self.session.fillet_edge(
+            target,
+            edge.index(),
+            request.radius_mm(),
+            context.cancel(),
+        )?;
+        context.progress().report(1.0);
+
+        let shape = ShapeHandle::new(self.session_id, raw);
+        let assembled = (|| -> Result<FilletResult> {
+            context.check_cancelled()?;
+            let mut history = History::new();
+            let mut carried = BTreeMap::new();
+            let mut asked: Vec<SubShapeHandle> = track.to_vec();
+            if !asked.contains(&edge) {
+                asked.push(edge);
+            }
+            for sub in &asked {
+                let (kind, ids) = self.session.cut_carried(raw, target, sub.index())?;
+                let outcome = match kind {
+                    ffi::CARRIED_KEPT => CarriedOutcome::Kept,
+                    ffi::CARRIED_MODIFIED => CarriedOutcome::Modified,
+                    ffi::CARRIED_DELETED => CarriedOutcome::Deleted,
+                    other => {
+                        return Err(CadError::kernel(format!(
+                            "the bridge described a fillet outcome as {other}, which this build \
+                             has no reading of"
+                        )));
+                    }
+                };
+                for id in ids {
+                    history.record_modified(
+                        HistoryInput::SubShape(*sub),
+                        SubShapeHandle::new(shape, sub.kind(), id),
+                    );
+                }
+                carried.insert(*sub, outcome);
+            }
+            let fillet_faces = self
+                .session
+                .fillet_faces(raw)?
+                .into_iter()
+                .map(|id| SubShapeHandle::new(shape, SubShapeKind::Face, id))
+                .collect::<Vec<_>>();
+            // Kept beside the history, not in it: the edge is reported
+            // gone, and the face that replaced it is a separate fact the
+            // naming layer files under the edge's meaning.
+            let result = FilletResult {
+                shape,
+                history,
+                carried,
+                fillet_faces,
+                removed_volume,
+            };
+            result.validate(request.target(), edge)?;
             Ok(result)
         })();
 

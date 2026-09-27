@@ -54,12 +54,13 @@ pub use create::{
     create_document, create_document_with_kernel,
 };
 pub use edit::{
-    AddedCircularCut, CircularCutRequest, EditAnnulusRequest, EditCircleRequest,
-    EditCircularCutRequest, EditExtrudeRequest, EditRevolveAngleRequest,
+    AddedCircularCut, AddedEdgeFillet, CircularCutRequest, EdgeFilletRequest, EditAnnulusRequest,
+    EditCircleRequest, EditCircularCutRequest, EditExtrudeRequest, EditRevolveAngleRequest,
     EditSketchConstraintsRequest, EditSketchRequest, EditedAnnulus, EditedCircle,
     EditedCircularCut, EditedDocument, EditedSketch, EditedSketchConstraints, circular_cut_copy,
     edit_annulus_copy, edit_circle_copy, edit_circular_cut_copy, edit_extrude_copy,
-    edit_revolve_angle_copy, edit_sketch_constraints_copy, edit_sketch_copy, read_extrude_source,
+    edit_revolve_angle_copy, edit_sketch_constraints_copy, edit_sketch_copy, fillet_edge_copy,
+    read_extrude_source,
 };
 pub use fbx::{FbxExport, FbxExportRequest, SOURCE_IS_DESTINATION, export_document_as_fbx};
 pub use import::{

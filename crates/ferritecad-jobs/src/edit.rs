@@ -378,6 +378,73 @@ pub fn circular_cut_copy<K: GeometryKernel + ?Sized>(
     )
 }
 
+/// What one fillet asks for, in identities (§28A).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EdgeFilletRequest {
+    pub source: PathBuf,
+    pub expected: DocumentVersion,
+    pub body: ObjectId,
+    pub fillet: ferritecad_document::EdgeFillet,
+    pub destination: PathBuf,
+}
+
+/// What one published fillet is, in identities.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AddedEdgeFillet {
+    pub destination: PathBuf,
+    pub document_id: ferritecad_types::DocumentId,
+    /// The Body whose tip the Fillet now is; its identity is the source's.
+    pub body: ObjectId,
+    pub feature: ObjectId,
+    /// The feature rounded, which was the tip before.
+    pub previous: ObjectId,
+    /// The corner rounded, with its labels.
+    pub corner: ferritecad_document::FilletCorner,
+    pub radius_mm: f64,
+    /// The new references the Fillet persisted, by role, for a report.
+    pub references: Vec<ferritecad_document::TopologyRef>,
+}
+
+/// Rounds one vertical edge of a saved plate, publishing a new copy (§28A).
+///
+/// The same snapshot, version guard, read-only source, baseline rebuild,
+/// reference check (every baseline and every minted name must resolve),
+/// SQLite close and atomic no-clobber publication every copy operation uses.
+pub fn fillet_edge_copy<K: GeometryKernel + ?Sized>(
+    request: &EdgeFilletRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+) -> Result<AddedEdgeFillet> {
+    context.check_cancelled()?;
+    edit_object_copy(
+        &request.source,
+        request.expected,
+        &request.destination,
+        kernel,
+        context,
+        |source| {
+            ferritecad_document::prepare_edge_fillet(source, request.body, &request.fillet)
+                .map(Box::new)
+                .map(CopyWrite::Fillet)
+        },
+        |prepared, _| {
+            let CopyWrite::Fillet(prepared) = prepared else {
+                return Err(CadError::input("missing prepared fillet"));
+            };
+            Ok(AddedEdgeFillet {
+                destination: request.destination.clone(),
+                document_id: request.expected.document_id,
+                body: request.body,
+                feature: prepared.feature().id,
+                previous: prepared.previous(),
+                corner: prepared.corner(),
+                radius_mm: prepared.radius_mm(),
+                references: prepared.references().to_vec(),
+            })
+        },
+    )
+}
+
 /// What one published parameter edit of a saved cut is, in identities.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EditCircularCutRequest {
@@ -465,6 +532,8 @@ enum CopyWrite {
     Circle(ferritecad_document::ObjectRecord),
     Annulus(ferritecad_document::ObjectRecord),
     RevolveAngle(ferritecad_document::PreparedRevolveAngle),
+    /// §28A; boxed for the reason Cut is.
+    Fillet(Box<ferritecad_document::PreparedEdgeFillet>),
 }
 impl CopyWrite {
     fn object(&self) -> &ferritecad_document::ObjectRecord {
@@ -476,6 +545,8 @@ impl CopyWrite {
             // The body is the one object a cut changes; the two it adds did
             // not exist to be read.
             Self::Cut(p) => p.body(),
+            // The Body is the one saved object a fillet changes.
+            Self::Fillet(p) => p.body(),
             // Two objects change here, and this is the one a generic write
             // would name. Nothing but that generic write uses it, and this
             // variant does not take it.
@@ -554,6 +625,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         CopyWrite::CutParameters(prepared) => document.write_cut_parameters(prepared)?,
         CopyWrite::Height(p) => document.write_extrude_height(p)?,
         CopyWrite::RevolveAngle(p) => document.write_revolve_angle(p)?,
+        CopyWrite::Fillet(p) => document.write_edge_fillet(p)?,
     }
     // A solve is asked for only when the edited sketch still has something to
     // solve. Taking the last constraint off a circle leaves a drawing with no
@@ -577,6 +649,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
     let minted: BTreeSet<StableEntityId> = match &prepared {
         CopyWrite::Height(p) => p.added_references().iter().map(|r| r.id).collect(),
         CopyWrite::Cut(p) => p.references().iter().map(|r| r.id).collect(),
+        CopyWrite::Fillet(p) => p.references().iter().map(|r| r.id).collect(),
         CopyWrite::CutParameters(p) => p.added_references().iter().map(|r| r.id).collect(),
         _ => BTreeSet::new(),
     };

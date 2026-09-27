@@ -29,15 +29,15 @@ use std::collections::BTreeMap;
 use ferritecad_document::TopologyRef;
 use ferritecad_document::{CacheStore, Document, EndCondition, ObjectPayload, ObjectRecord};
 use ferritecad_kernel::{
-    CutRequest, GeometryKernel, OperationContext, Profile, ProgressSink, ShapeHandle, SketchPlane,
-    SubShapeHandle,
+    CutRequest, FilletRequest, GeometryKernel, OperationContext, Profile, ProgressSink,
+    ShapeHandle, SketchPlane, SubShapeHandle,
 };
 use ferritecad_topology::{FeatureNames, TopologyMap, archive_feature, restore_feature};
 use ferritecad_types::{CadError, ObjectId, Result};
 
 use crate::cache::{
-    cut_archive_key, extrude_archive_key, load_feature_archive, revolve_archive_key,
-    store_feature_archive,
+    cut_archive_key, extrude_archive_key, fillet_archive_key, load_feature_archive,
+    revolve_archive_key, store_feature_archive,
 };
 use crate::convert::{
     Reach, cut_tool_request, extrude_request, plane_from_datum, profile_from_sketch,
@@ -547,6 +547,80 @@ fn run<K: GeometryKernel + ?Sized>(
             ObjectPayload::ImportedStep(_) => {
                 state.imports.push(*id);
                 continue;
+            }
+
+            // §28A: one edge of the result this feature consumes, rounded. The
+            // same cold and cached path as a Cut: one key, restore or build,
+            // name while the result is whole, store.
+            ObjectPayload::Fillet(fillet) => {
+                let previous = fillet.previous;
+                let joint = fillet.edge.joint;
+                // The class and the radius policy, asked of the saved objects
+                // at every rebuild — not only when this build wrote them.
+                let saved: Vec<_> = objects.values().cloned().collect();
+                ferritecad_document::evaluable_fillet(&saved, fillet)?;
+                let target_key = state.keys.get(&previous).copied().ok_or_else(|| {
+                    CadError::input(format!(
+                        "fillet {id} rounds an edge of {previous}, which produced no result"
+                    ))
+                })?;
+                let key = fillet_archive_key(
+                    kernel.identity(),
+                    previous,
+                    &target_key,
+                    fillet.edge.feature,
+                    joint,
+                    fillet.radius_mm,
+                    &scoped,
+                );
+                let restored = match cache.as_deref_mut() {
+                    Some(cache) => restore(kernel, cache, &scoped, key, *id, state, events)?,
+                    None => false,
+                };
+                if !restored {
+                    let previous_names =
+                        state.topology.feature(previous).cloned().ok_or_else(|| {
+                            CadError::topology(format!(
+                                "fillet {id} rounds an edge of {previous}, which named nothing"
+                            ))
+                        })?;
+                    let target_shape = previous_names.shape().ok_or_else(|| {
+                        CadError::topology(format!(
+                            "fillet {id} rounds an edge of {previous}, which built no shape"
+                        ))
+                    })?;
+                    // Exactly the edge the payload means, found by its name
+                    // in the predecessor's own output. None, or more than
+                    // one, is a refusal: never the nearest edge.
+                    let edges: Vec<_> = previous_names.sweep_edge(joint).collect();
+                    let [edge] = edges.as_slice() else {
+                        return Err(CadError::topology(format!(
+                            "fillet {id} rounds the edge {previous} swept at {joint}, and that \
+                             name matches {} edges; it must match exactly one",
+                            edges.len()
+                        )));
+                    };
+                    let mut track = tracked(&previous_names, &FeatureNames::default());
+                    track.push(*edge);
+                    let request = FilletRequest::new(target_shape, *edge, fillet.radius_mm)?;
+                    let result = kernel.fillet_edge(&request, &track, &scoped)?;
+                    state.owned.push(result.shape);
+                    context.check_cancelled()?;
+                    state.topology.record_fillet(
+                        *id,
+                        previous,
+                        fillet.edge.feature,
+                        joint,
+                        &previous_names,
+                        *edge,
+                        &result,
+                    )?;
+                    state.shapes.insert(*id, result.shape);
+                    if let Some(cache) = cache.as_deref_mut() {
+                        store(kernel, cache, key, *id, state, events);
+                    }
+                }
+                state.keys.insert(*id, key);
             }
 
             ObjectPayload::Unknown(unknown) => {

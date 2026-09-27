@@ -68,6 +68,12 @@ pub enum BoundName {
     RevolvedStartCap,
     /// The face closing the end of a partial revolution.
     RevolvedEndCap,
+    /// §28A: the face a Fillet made by rounding the edge `edge_feature`
+    /// swept at `joint`.
+    EdgeFilletFace {
+        edge_feature: ObjectId,
+        joint: ProfileJoint,
+    },
 }
 
 impl BoundName {
@@ -130,7 +136,8 @@ impl BoundName {
             | Self::OriginSide { .. }
             | Self::RevolvedFace { .. }
             | Self::RevolvedStartCap
-            | Self::RevolvedEndCap => SubShapeKind::Face,
+            | Self::RevolvedEndCap
+            | Self::EdgeFilletFace { .. } => SubShapeKind::Face,
             Self::StartCapEdge { .. } | Self::EndCapEdge { .. } | Self::SweepEdge { .. } => {
                 SubShapeKind::Edge
             }
@@ -362,6 +369,19 @@ pub fn archive_feature<K: GeometryKernel + ?Sized>(
         }
     }
 
+    // §28A: the faces a Fillet made, by the edge each replaced.
+    for (edge_feature, joint) in names.named_fillet_edges() {
+        for face in names.fillet_face(edge_feature, joint) {
+            wanted.push((
+                BoundName::EdgeFilletFace {
+                    edge_feature,
+                    joint,
+                },
+                face,
+            ));
+        }
+    }
+
     // The edges along the sweep, by the joint that names them.
     for joint in names.named_joints() {
         for edge in names.sweep_edge(joint) {
@@ -512,6 +532,7 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
         let mut revolved: BTreeMap<StableEntityId, Vec<_>> = BTreeMap::new();
         let mut revolved_start_cap = Vec::new();
         let mut revolved_end_cap = Vec::new();
+        let mut fillet_faces: BTreeMap<(ObjectId, ProfileJoint), Vec<_>> = BTreeMap::new();
         let mut claimed = BTreeMap::new();
 
         for (name, face) in names.into_iter().zip(faces) {
@@ -562,6 +583,13 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 }
                 BoundName::RevolvedStartCap => revolved_start_cap.push(face),
                 BoundName::RevolvedEndCap => revolved_end_cap.push(face),
+                BoundName::EdgeFilletFace {
+                    edge_feature,
+                    joint,
+                } => fillet_faces
+                    .entry((edge_feature, joint))
+                    .or_default()
+                    .push(face),
                 carried_name => {
                     let origin = carried_origin(carried_name, archived.previous)?;
                     carried.entry(origin).or_default().push(face);
@@ -596,6 +624,7 @@ pub fn restore_feature<K: GeometryKernel + ?Sized>(
                 revolved,
                 revolved_start_cap,
                 revolved_end_cap,
+                fillet_faces,
             },
         )
     })();
