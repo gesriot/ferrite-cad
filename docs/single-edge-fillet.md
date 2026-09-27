@@ -267,12 +267,14 @@ Every other cell is byte-identical.
 
 ### Clients
 
-* **`inspect --json`**: an additive `fillets[]` per Body. Each entry has
-  `available`, `refusal`, `base_feature_id` and `candidates[]`: `feature_id`,
-  `joint`, `corner_mm`, `adjacent_lengths_mm` and `max_radius_mm`, plus
-  `min_radius_mm`. It is structural only: it promises neither native
-  libraries nor successful geometry. It is read from the existing pinned
-  snapshot.
+* **`inspect --json`**: an additive `bodies[].fillet_edge` per Body, with
+  `available`, `refusal`, `document_refusal` and `target`. The target has
+  `body_id`, `base_feature_id`, `profile_sketch_id`, `height_mm`,
+  `request_versions`, `min_radius_mm`, `max_radius_fraction` and
+  `candidates[]`: each with `edge` (`feature_id`, `joint`), `label`,
+  `corner_mm`, `adjacent_lengths_mm` and `max_radius_mm`. It is structural
+  only: it promises neither native libraries nor successful geometry. It is
+  read from the existing pinned snapshot.
 * **`fillet-edge-copy`**: JSON v1, strict. It refuses unknown, duplicate and
   escape-duplicate keys, and arrays where objects belong, with `input`.
   Exit 7 means published with the report lost; the file is never retried or
@@ -296,3 +298,179 @@ Revolve editors.
 * Stub builds discover and refuse geometry with a typed reason. An OCCT build
   without PlaneGCS fillets normally: an unconstrained fillet has no solver
   dependency.
+
+## Agent recipe
+
+The recipe below is the whole agent route, with no prior knowledge of the
+document:
+
+* create an asymmetric, translated plate with fractional sizes;
+* read the four candidates from `inspect --json` and choose one by its label;
+* send the pair in the other order, which is the same edge;
+* check the SQL allowlist, `validate`, a cold `rebuild`, and the STL and FBX
+  exports, measured independently of the product;
+* check that the chosen corner, and only it, is rounded;
+* check that an excessive radius and a second Fillet are refused and leave
+  every file as it was.
+
+Extract it from this file and run it:
+
+```sh
+python3 - <<'EXTRACT'
+from pathlib import Path
+text = Path("docs/single-edge-fillet.md").read_text(encoding="utf-8")
+code = text.split("# FCAD_28A_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+Path("ferrite-28a-recipe.py").write_text(code, encoding="utf-8")
+EXTRACT
+FERRITECAD=/path/to/ferritecad python3 ferrite-28a-recipe.py
+```
+
+A build without Open CASCADE stops at the first geometry and prints
+`FCAD_28A_RECIPE_NO_KERNEL` with the typed `unsupported` error. A complete run
+prints `FCAD_28A_RECIPE_OK` with the measured volume. No sketch solver is
+involved.
+
+```python
+# FCAD_28A_AGENT_RECIPE
+import json, math, os, pathlib, sqlite3, struct, subprocess, sys, tempfile
+cli = os.environ["FERRITECAD"]
+root = pathlib.Path(tempfile.mkdtemp(prefix="ferrite-28a-"))
+OP = "fillet-edge-copy"
+
+def run(args, code=0):
+    p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
+    if p.returncode == 7:
+        raise RuntimeError("report lost: inspect the destination; do not retry blindly")
+    assert p.returncode == code, (args, p.returncode, p.stdout, p.stderr)
+    return json.loads(p.stdout) if "--json" in args else p.stdout
+
+def inspect(path):
+    return run(["inspect", path, "--json"])["result"]
+
+def geometry(args, out):
+    """A step that needs the kernel: a build without one refuses it typed."""
+    p = subprocess.run([cli, *map(str, args)], capture_output=True, encoding="utf-8")
+    if p.returncode == 2 and not out.exists():
+        error = json.loads(p.stdout)["error"]
+        if error["kind"] == "unsupported" and "Open CASCADE" in error["message"]:
+            print("FCAD_28A_RECIPE_NO_KERNEL", json.dumps(error))
+            sys.exit(0)
+    assert p.returncode == 0, (args, p.returncode, p.stdout, p.stderr)
+    return json.loads(p.stdout)
+
+def cells(path):
+    db = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    out = {}
+    for (t,) in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"):
+        cur = db.execute(f'SELECT * FROM "{t}"')
+        names = [d[0] for d in cur.description]
+        out[t] = [dict(zip(names, row)) for row in cur.fetchall()]
+    db.close()
+    return out
+
+def allowlist(source, copy, body):
+    """Every source cell survives, except the Body's payload/payload_hash and
+    its old tip edge; the copy adds one object, two edges, seven names and
+    capabilities, and stamps modified_at. Nothing else moves."""
+    bid = bytes.fromhex(body.replace("-", ""))
+    a, b = cells(source), cells(copy)
+    assert a.keys() == b.keys()
+    for t in a:
+        def key(row):
+            d = dict(row)
+            if t == "objects" and d["id"] == bid:
+                d.pop("payload"); d.pop("payload_hash")
+            if t == "meta":
+                d.pop("modified_at", None)
+            return repr(sorted(d.items()))
+        mine = {key(r) for r in b[t]}
+        for row in a[t]:
+            old_tip = t == "deps" and bid in row.values()
+            assert key(row) in mine or old_tip, f"{t}: a source cell moved"
+        added = len(b[t]) - len(a[t])
+        expected = {"objects": 1, "deps": 1, "topology_refs": 7}.get(t)
+        if expected is not None:
+            assert added == expected, (t, added)
+        elif t not in ("capabilities",):
+            assert added == 0, (t, added)
+    names = {r["name"] for r in b["capabilities"]} - {r["name"] for r in a["capabilities"]}
+    assert "feature.fillet.v1" in {r["name"] for r in b["capabilities"]}
+    assert names <= {"feature.fillet.v1", "topology.origin-face.v1",
+                     "feature.predecessor.v1"}, names
+
+def stl(path):
+    data = path.read_bytes()
+    (count,) = struct.unpack_from("<I", data, 80)
+    assert len(data) == 84 + 50 * count
+    six, points = 0.0, []
+    for i in range(count):
+        a, b, c = (struct.unpack_from("<3f", data, 84 + 50 * i + 12 + 12 * k) for k in range(3))
+        six += (a[0] * (b[1] * c[2] - b[2] * c[1]) + a[1] * (b[2] * c[0] - b[0] * c[2])
+                + a[2] * (b[0] * c[1] - b[1] * c[0]))
+        points += [a, b, c]
+    return six / 6, points
+
+# 1. An asymmetric plate, translated off the origin, with fractional sizes.
+X0, Y0, W, D, H = -4.5, 3.25, 37.5, 12.25, 6.75
+CORNERS = [[X0, Y0], [X0 + W, Y0], [X0 + W, Y0 + D], [X0, Y0 + D]]
+create = root / "create.json"
+create.write_text(json.dumps({"request_version": 1, "points_mm": CORNERS, "height_mm": H}))
+source = root / "plate.fcad"
+geometry(["create-sketch-extrude", create, "-o", source, "--json"], source)
+catalog = inspect(source)
+body = catalog["bodies"][0]
+found = body["fillet_edge"]
+assert found["available"] is True, found
+target = found["target"]
+assert len(target["candidates"]) == 4
+# 2. Choose the corner by its label; the identity is the pair of Line UUIDs.
+corner = [X0 + W, Y0 + D]
+chosen = next(c for c in target["candidates"] if c["corner_mm"] == corner)
+r = 3.0625
+assert r <= chosen["max_radius_mm"]
+a, b = chosen["edge"]["joint"]
+request = root / "fillet.json"
+request.write_text(json.dumps({"request_version": 1,
+                               "edge": {"feature_id": chosen["edge"]["feature_id"],
+                                        "joint": [b, a]},
+                               "radius_mm": r}))
+source_bytes = source.read_bytes()
+copy = root / "rounded.fcad"
+done = geometry([OP, source, "--body", body["body_id"], "--expect-version",
+                 catalog["content_version"], "--request", request, "-o", copy, "--json"], copy)
+result = done["result"]
+assert result["edge"] == chosen["edge"], result
+assert result["corner_mm"] == corner and result["radius_mm"] == r
+assert source.read_bytes() == source_bytes
+allowlist(source, copy, body["body_id"])
+assert run(["validate", copy, "--json"])["result"]["valid"] is True
+text = run(["rebuild", copy, "--cold"])
+assert "tip Fillet" in text and "10 of 10 stored references resolved" in text, text
+# 3. Independent measurements: volume, and the rounded corner alone.
+out = copy.with_suffix(".stl")
+run(["export-stl", copy, "-o", out, "--linear-deflection", "0.01", "--json"])
+volume, points = stl(out)
+exact = W * D * H - (1 - math.pi / 4) * r * r * H
+assert exact - math.pi / 2 * r * 0.01 * H - 1e-3 <= volume <= exact + 1e-3, (volume, exact)
+def near(p, q):
+    return abs(p[0] - q[0]) < 1e-4 and abs(p[1] - q[1]) < 1e-4
+for c in CORNERS:
+    assert any(near(p, c) for p in points) == (c != corner), c
+fbx = run(["export-fbx", copy, "-o", copy.with_suffix(".fbx"), "--json"])["result"]
+assert fbx["complete"] is True, fbx
+# 4. Refusals leave every file as it was.
+before = sorted(p.name for p in root.iterdir())
+never = root / "never.fcad"
+request.write_text(json.dumps({"request_version": 1, "edge": chosen["edge"],
+                               "radius_mm": chosen["max_radius_mm"] + 0.5}))
+refused = run([OP, source, "--body", body["body_id"], "--expect-version",
+               catalog["content_version"], "--request", request, "-o", never, "--json"], 2)
+assert refused["error"]["kind"] == "input", refused
+again = inspect(copy)["bodies"][0]["fillet_edge"]
+assert again["available"] is False and result["feature_id"] in again["refusal"], again
+request.write_text(json.dumps({"request_version": 1, "edge": chosen["edge"], "radius_mm": 1}))
+run([OP, copy, "--body", body["body_id"], "--expect-version",
+     inspect(copy)["content_version"], "--request", request, "-o", never, "--json"], 2)
+assert sorted(p.name for p in root.iterdir()) == before and not never.exists()
+print("FCAD_28A_RECIPE_OK", f"volume={volume:.6f}", f"exact={exact:.6f}", f"r={r}")
+```

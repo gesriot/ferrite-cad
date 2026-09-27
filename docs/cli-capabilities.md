@@ -158,6 +158,28 @@ escape) и массивы на месте объектов отказывают�
 `axis_curve_id`.
 [Контракт §27H и исполняемый рецепт](axis-closed-revolve-constraints.md).
 
+§28A: `fillet-edge-copy <source.fcad> --body UUID --expect-version HASH
+--request <request.json> -o <copy.fcad> [--json]` скругляет одно вертикальное
+ребро сохранённой прямоугольной плиты и публикует новую копию. Тело копии
+заканчивается именованным `feature.fillet`. Плита — это ровно одна
+непреобразованная XY-плоскость, один Sketch из четырёх Lines без ограничений,
+образующий осевой прямоугольник, прямой Blind/NewBody Extrude с литеральной
+высотой и одно Body.
+
+Ребро называется producer'ом и парой Line UUID угла (`edge.feature_id`,
+`edge.joint`, в любом порядке) — не индексом и не координатами. Радиус
+принимается от 0,01 мм до ½ меньшей из двух смежных Lines. Ничто не
+обрезается и не подменяется.
+
+Новая capability `feature.fillet.v1`: prior-main открывает такую копию только
+для чтения. Stub-сборка находит кандидатов и отказывает геометрии
+(`unsupported`). PlaneGCS не нужен.
+
+Все прежние редакторы отказывают скруглённой детали с причиной, называющей
+Fillet: высота, координаты и ограничения эскиза, Cut, Revolve, а также второй
+Fillet.
+[Контракт §28A и исполняемый рецепт](single-edge-fillet.md).
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.
