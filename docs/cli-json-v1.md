@@ -467,7 +467,8 @@ Request этого маршрута строже прежнего:
 Та же команда `edit-sketch-constraints-copy`, тот же request v1 и тот же
 result (`added_constraints`, `removed_constraint_ids`, `solve`). У строки
 `sketches[]` профиля Revolve `constraint_edit.available` теперь `true` для
-полного оборота и сектора с отверстием. `constraint_edit` аддитивно получает
+полного оборота и сектора с отверстием (и, с §27H, для замкнутых на оси —
+ниже). `constraint_edit` аддитивно получает
 `profile_feature`: `null` ровно тогда, когда `curves` равен `null`, иначе
 объект прежних видов `profile_feature`:
 
@@ -491,6 +492,26 @@ result (`added_constraints`, `removed_constraint_ids`, `solve`). У строки
 Request этой команды отказывает JSON-массиву на месте запроса или
 добавления (`input`). Дубли ключей, включая escape, отказывались и раньше.
 [Контракт §27G и исполняемый рецепт](revolve-profile-constraints.md).
+
+### Ограничения замкнутого на оси профиля Revolve (§27H)
+
+Та же команда, тот же request v1 и тот же result. У сплошной детали,
+замкнутой на оси вдоль заявленной Line, `constraint_edit.available` теперь
+`true`, а `constraint_edit.profile_feature` — существующий вид с
+`axis_curve_id`, равным `revolves[].axis_curve_id`:
+
+```json
+{"kind":"partial_turn_revolve_axis_closed","feature_id":"…","body_id":"…",
+ "axis":"sketch_y","extent":"partial_turn","angle_deg":137.5,
+ "axis_curve_id":"…","off_axis_clearance_mm":1e-6}
+```
+
+Имена и типы полей не менялись. Решённая Line с этим `axis_curve_id` должна
+лежать ровно на X = 0.0; клиент удерживает её там Fixed одного из концов
+(`x_mm: 0`) и `vertical`. Иначе — `input` с причиной («not strictly on the
+positive radial side and not on the axis» или «no longer touches the axis»),
+ничего не записано. Конфликт остаётся `constraint` с `constraint_conflict`.
+[Контракт §27H и исполняемый рецепт](axis-closed-revolve-constraints.md).
 
 ## Правка сохранённой кольцевой пары (§25M)
 

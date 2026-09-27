@@ -41,8 +41,9 @@ the same shared `revolve_document` frame:
 
 This slice accepts **radial-clear** profiles only: the Revolve states no
 `axis_segment`. A profile closed on the axis, whether full turn (v2) or
-sector (v4), is refused explicitly with the reason. The slice does not snap
-anything to the axis and adds no seam points.
+sector (v4), was refused explicitly with the reason; §27H accepts it
+([contract](axis-closed-revolve-constraints.md)). Neither slice snaps
+anything to the axis or adds seam points.
 
 Also refused, each with its own reason: Circles and Arcs, booleans, other
 axes and extents, multibody and other document shapes. A Sketch that a

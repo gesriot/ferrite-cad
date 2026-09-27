@@ -198,12 +198,14 @@ fn unsupported(message: &str) -> CadError {
 }
 
 /// The frame and the owning feature of a profile the constraint editor may
-/// manage (§25E, widened by §27G).
+/// manage (§25E, widened by §27G and §27H).
 ///
 /// A Sketch that a Revolve turns is judged by the shared Revolve frame alone,
 /// exactly as the coordinate editor judges it, and never by the Extrude frame
-/// as a fallback. Of the Revolve classes, only a part with a bore is accepted:
-/// a profile closed on the axis is refused here, before anything is solved.
+/// as a fallback. Both Revolve classes are accepted: a part with a bore
+/// (§27G) and a solid part closed on the axis along its stated Line (§27H).
+/// The stated `axis_segment` travels in the returned use, so the stored and
+/// every solved profile are judged against that same Line and no other.
 pub(crate) fn constraint_frame<'a>(
     document: &Document,
     objects: &'a [ObjectRecord],
@@ -213,22 +215,7 @@ pub(crate) fn constraint_frame<'a>(
         .iter()
         .any(|o| matches!(&o.payload, ObjectPayload::Revolve(r) if r.profile == object.id))
     {
-        let (sketch, profile_use) = revolve_frame(document, objects, object)?;
-        if let SketchProfileUse::FullTurnRevolve {
-            axis_segment: Some(axis),
-            ..
-        }
-        | SketchProfileUse::PartialRevolve {
-            axis_segment: Some(axis),
-            ..
-        } = profile_use
-        {
-            return Err(CadError::unsupported(format!(
-                "constraint editing supports a Revolve profile with a bore; this profile is \
-                 closed on the axis along Line {axis}, which is not supported"
-            )));
-        }
-        return Ok((sketch, profile_use));
+        return revolve_frame(document, objects, object);
     }
     let (sketch, height, feature) = extrude_frame(document, objects, object)?;
     Ok((

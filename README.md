@@ -78,6 +78,11 @@ endpoint, equal length, Parallel, Perpendicular — through the same editor or
 `edit-sketch-constraints-copy`. The Body turns the solved profile, keeps its
 angle, axis and every face and cap UUID, and a solution that reaches the
 axis is refused. [Revolve constraint contract and recipe](docs/revolve-profile-constraints.md).
+A solid cylinder, cone, stepped shaft or solid sector takes the same
+dimensions. Its axis Line stays the saved one and still raises no face; the
+request keeps it on the axis by pinning one of its ends at X = 0 and making it
+vertical, and nothing is snapped. A solution that leaves the axis is refused.
+[Solid Revolve constraint contract and recipe](docs/axis-closed-revolve-constraints.md).
 Existing vertices can be selected and dragged in either sketch editor;
 [gesture rules](docs/sketch-vertex-drag.md) include one Undo step per drag.
 An opt-in canvas Snap (Off / 0.1 / 1 / 5 / 10 mm) rounds pointer input to

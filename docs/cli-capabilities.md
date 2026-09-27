@@ -136,13 +136,27 @@ escape) и массивы на месте объектов отказывают�
 - все UUID объектов, Lines и имён, оба `RevolveCap`.
 
 Меняются только payload/payload_hash/schema_version строки Sketch и строка
-`sketch.constraints.v1`. Замкнутый на оси профиль (v2/v4), окружности,
-booleans и иные документы отказываются. Discovery аддитивна:
+`sketch.constraints.v1`. Замкнутый на оси профиль (v2/v4) отказывался в
+§27G и принимается с §27H (ниже); окружности, booleans и иные документы
+отказываются. Discovery аддитивна:
 `constraint_edit.profile_feature` называет Revolve теми же видами, что
 `profile_feature`, без выдуманной высоты. Правка угла сектора принимает
 профиль с ограничениями и сохраняет их. Request этой команды теперь
 отказывает массиву на месте запроса или добавления (`input`).
 [Контракт §27G и исполняемый рецепт](revolve-profile-constraints.md).
+
+§27H: та же команда и тот же request v1 принимают и замкнутый на оси профиль
+сплошной детали — полного оборота (v2) и сектора (v4) — с тем же
+`axis_segment`. Новой capability нет. Решённая осевая Line должна лежать ровно
+на X = 0.0: ничего не притягивается к оси, осевая Line не подменяется, шов
+или грань не выдумываются. Удерживает её на оси сам request: Fixed одного из
+её концов с X 0 и V на ней. Решение, уводящее её с оси или пересекающее ось,
+отказывается (`input`) до публикации. Осевая Line по-прежнему не даёт грани;
+оба `RevolveCap` сектора сохраняют имена. Discovery аддитивна:
+`constraint_edit.profile_feature` имеет вид
+`full_turn_revolve_axis_closed` / `partial_turn_revolve_axis_closed` с
+`axis_curve_id`.
+[Контракт §27H и исполняемый рецепт](axis-closed-revolve-constraints.md).
 
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
