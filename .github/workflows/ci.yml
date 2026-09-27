@@ -123,7 +123,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - name: Require the Apple Silicon macOS toolchain
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64 || { echo '::error::macOS requires native Apple Silicon'; exit 1; }
+          test "$(rustc -vV | sed -n 's/^host: //p')" = aarch64-apple-darwin || {
+            echo '::error::macOS requires the aarch64-apple-darwin Rust host'; exit 1;
+          }
+
       - uses: Swatinem/rust-cache@v2
+      - name: Check macOS architecture refusals
+        if: runner.os == 'macOS'
+        run: bash tools/check-macos-architecture.sh
       - run: cargo build --workspace --all-targets
 
       # A passive trap, armed before the tests and touching nothing about how

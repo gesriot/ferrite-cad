@@ -181,6 +181,9 @@ viewer is $(basename "$viewer")"
     # signed again afterwards; the bundle was signed after that, and a seal
     # that had stopped covering the shipped libraries would verify at the top
     # level and be wrong underneath.
+    macos_bundle_arm64_ok "$staging/FerriteCAD.app" \
+        || die 'the staged macOS images are not arm64-only'
+    fact "layout macos-bundle architecture=arm64-only"
     macos_bundle_signed_ok "$staging/FerriteCAD.app" "$work/codesign.txt"
     case $? in
         0) fact "layout macos-bundle ad-hoc-signature=verified" ;;

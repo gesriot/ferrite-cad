@@ -15,6 +15,18 @@
 # planegcs itself, which is the file the licence is about.
 
 cmake_minimum_required(VERSION 3.16)
+# macOS product policy: one arm64 image, no Intel/universal delivery.
+# Keep this before project(), which initializes the compiler and ABI checks.
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
+   (NOT CMAKE_SYSTEM_NAME AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin"))
+  if(NOT CMAKE_OSX_ARCHITECTURES)
+    set(CMAKE_OSX_ARCHITECTURES arm64 CACHE STRING "FerriteCAD macOS architecture" FORCE)
+  endif()
+  if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+    message(FATAL_ERROR "FerriteCAD macOS supports only arm64 (Apple Silicon); Intel/universal builds are unsupported")
+  endif()
+endif()
+
 project(ferritecad_planegcs_bridge LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)

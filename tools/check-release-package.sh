@@ -695,6 +695,9 @@ runtime_probe_require_inspector "$platform"
 # fixtures of made-up bytes, which no signature covers and none should, and it
 # passes --no-execute.
 if [ "$platform" = macos ]; then
+    macos_bundle_arm64_ok "$bundle" \
+        || package_die 'the extracted macOS images are not arm64-only'
+    fact "package macos-bundle architecture=arm64-only"
     macos_bundle_signed_ok "$bundle" "$work/codesign.txt"
     case $? in
         0) fact "package macos-bundle ad-hoc-signature=verified-after-extraction" ;;

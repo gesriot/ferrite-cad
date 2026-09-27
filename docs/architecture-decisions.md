@@ -8,7 +8,7 @@
 
 **Лицензирование собственного кода:** MIT.
 
-Все три платформы продуктовые и равноправные: падение macOS-задания в CI блокирует merge так же, как падение Windows или Linux. Практические следствия для macOS (install name `@rpath` у `libTK*.dylib`, выбор между universal binary и `lipo`, подпись и нотаризация каждой динамической библиотеки) зафиксированы в [build-occt.md](build-occt.md) и должны быть решены до первой сборки релиза, а не после.
+Все три платформы продуктовые и равноправные: падение macOS-задания в CI блокирует merge так же, как падение Windows или Linux. macOS поддерживается только на Apple Silicon: Rust target `aarch64-apple-darwin`, один Mach-O slice `arm64` у приложения и всех поставляемых библиотек. Intel macOS, Rosetta и universal-сборки в продуктовую матрицу не входят; объединение архитектур через `lipo` не требуется. Полная матрица записана в [platform-support.md](platform-support.md). Install name `@rpath` у `libTK*.dylib`, подпись вложенных Mach-O и нотаризация поставки описаны в [build-occt.md](build-occt.md); отказ от Intel не отменяет эти требования перед публичным релизом.
 
 ## Цель
 

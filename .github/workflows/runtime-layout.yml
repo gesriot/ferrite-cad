@@ -53,6 +53,7 @@ on:
       - 'tools/fbx/**'
       - 'tools/unity-fbx-smoke/scripts/**'
       - 'tools/macos-bundle.sh'
+      - 'tools/check-macos-architecture.sh'
       - 'tools/macos-bundle-plist.py'
       - 'tools/build-planegcs.sh'
       - 'tools/planegcs/**'
@@ -118,7 +119,7 @@ jobs:
           - os: macos-latest
             name: macos
             planegcs_library: libplanegcs.dylib
-            cmake_extra: ''
+            cmake_extra: -DCMAKE_OSX_ARCHITECTURES=arm64
           - os: windows-latest
             name: windows
             planegcs_library: planegcs.dll
@@ -135,6 +136,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - name: Require the Apple Silicon macOS toolchain
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64 || { echo '::error::macOS requires native Apple Silicon'; exit 1; }
+          test "$(rustc -vV | sed -n 's/^host: //p')" = aarch64-apple-darwin || {
+            echo '::error::macOS requires the aarch64-apple-darwin Rust host'; exit 1;
+          }
+
       - uses: Swatinem/rust-cache@v2
 
       - name: Check explicit opt-in for macOS loader failures without launching binaries
@@ -2687,6 +2698,10 @@ jobs:
               'the staged command line tool ran with a toolkit taken away'
             require '^staged staged both restored=true' \
               'the package was never shown to work again after the libraries came back'
+            if [ "$platform" = macos ]; then
+              require '^staged layout macos-bundle architecture=arm64-only' \
+                'the staged macOS executable/dylib architectures were not verified'
+            fi
           done
           [ "$missing" -eq 0 ] || exit 1
 
