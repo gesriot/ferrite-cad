@@ -57,6 +57,7 @@ mod cut_edit;
 mod document;
 mod edit;
 mod fillet;
+mod fillet_radius;
 mod height_edit;
 mod polygon;
 mod revolve;
@@ -79,6 +80,10 @@ pub use fillet::{
     EdgeFillet, FilletChoice, FilletCorner, MAX_RADIUS_FRACTION, MIN_RADIUS_MM, PreparedEdgeFillet,
     SavedFilletTarget, corner_for, evaluable_fillet, fillet_choices, prepare_edge_fillet,
     rectangle_corners,
+};
+pub use fillet_radius::{
+    FilletRadiusChoice, PreparedFilletRadius, SavedFillet, fillet_radius_choices,
+    prepare_fillet_radius,
 };
 pub use polygon::{
     AnnularExtrusion, CircleExtrusion, FullTurnRevolution, PolygonExtrusion, RevolutionClosure,

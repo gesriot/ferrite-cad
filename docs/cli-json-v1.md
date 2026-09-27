@@ -562,6 +562,45 @@ Discovery аддитивна: у каждого `bodies[]` появляется 
 называет UUID Fillet'а.
 [Контракт §28A и исполняемый рецепт](single-edge-fillet.md).
 
+### Правка радиуса сохранённого Fillet (§28B)
+
+Discovery аддитивна: верхний уровень `inspect` получает `fillets[]`, по
+строке на сохранённый Fillet, из того же снимка и без ядра:
+
+```json
+{"fillets":[{"feature_id":"…","name":"Fillet","body_id":"…",
+  "previous_feature_id":"…","edge":{"feature_id":"…","joint":["…","…"]},
+  "corner_mm":[-4.5,15.5],"radius_mm":2.375,
+  "radius_edit":{"available":true,"refusal":null,"document_refusal":null,
+   "min_radius_mm":0.01,"max_radius_mm":6.125}}]}
+```
+
+`body_id`, `corner_mm` и `max_radius_mm` — `null`, если Fillet вне класса;
+тогда `available` равно `false`, а `refusal` называет причину. Ни одно
+прежнее поле не меняется.
+
+Команда `edit-fillet-radius` принимает request v1 (не более 65536 байт):
+
+```json
+{"request_version":1,"radius_mm":4.8125}
+```
+
+Разбор строгий: неизвестные ключи и дубли (включая дубли через escape),
+не-объект и нечисловой радиус — `input`; другая `request_version` —
+`unsupported`. Радиус вне политики — `input` с числами.
+
+`operation:"edit-fillet-radius"`. Result содержит `destination`,
+`document_id`, `body_id`, `feature_id` (тот же Fillet), сохранённый `edge`,
+`corner_mm`, `previous_radius_mm` и `radius_mm`.
+
+Коды выхода: 0 — опубликовано; 2 — отказ, ничего не записано; 7 — копия
+опубликована, но отчёт потерян.
+
+Порядок проверок в stub-сборке: сначала читается и разбирается запрос, затем
+запрашивается ядро. Поэтому некорректный запрос — `input` и там, а
+корректный — `unsupported` до структурных проверок.
+[Контракт §28B и исполняемый рецепт](edit-fillet-radius.md).
+
 ## Правка сохранённой кольцевой пары (§25M)
 
 `ferritecad edit-annular <source.fcad> --sketch UUID --expect-version HASH

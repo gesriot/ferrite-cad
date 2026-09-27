@@ -1308,6 +1308,45 @@ impl Document {
         )
     }
 
+    /// §28B: the saved Fillet with only its radius changed. The prepared row
+    /// is derived again inside the transaction and compared whole, so a stale
+    /// version or any other change is refused before a byte is written.
+    pub fn write_fillet_radius(&mut self, prepared: &crate::PreparedFilletRadius) -> Result<()> {
+        let record = prepared.feature();
+        let bytes = record.payload.to_storage_bytes()?;
+        let hash = ContentHash::of_bytes(&bytes);
+        self.write_checked_transaction(
+            |document| crate::fillet_radius::rederive(document, prepared),
+            |writer| {
+                let changed = writer
+                    .tx
+                    .execute(
+                        "UPDATE objects SET payload=?1,payload_hash=?2 WHERE id=?3",
+                        params![
+                            bytes,
+                            hash.as_bytes().as_slice(),
+                            record.id.to_bytes().as_slice()
+                        ],
+                    )
+                    .map_err(|e| CadError::io("writing Fillet radius", e))?;
+                if changed != 1 {
+                    return Err(CadError::input(
+                        "selected Fillet disappeared before radius write",
+                    ));
+                }
+                writer
+                    .tx
+                    .execute(
+                        &format!("UPDATE meta SET modified_at = {NOW_UTC} WHERE id = 1"),
+                        [],
+                    )
+                    .map_err(|e| CadError::io("stamping Fillet radius edit", e))?;
+                Ok(())
+            },
+            false,
+        )
+    }
+
     fn write_transaction<T>(
         &mut self,
         edit: impl FnOnce(&mut DocumentWriter<'_>) -> Result<T>,

@@ -261,6 +261,23 @@ impl Edits {
     ) -> Option<PathBuf> {
         self.finish_path(generation, result.map(|r| r.destination))
     }
+    pub(crate) fn start_fillet_radius(
+        &mut self,
+        request: ferritecad_jobs::EditFilletRadiusRequest,
+        spawn: impl FnOnce(ferritecad_jobs::EditFilletRadiusRequest, u64, CancelToken) -> JoinHandle<()>,
+    ) -> Option<u64> {
+        let destination = request.destination.clone();
+        self.start_at(&destination, |generation, cancel| {
+            spawn(request, generation, cancel)
+        })
+    }
+    pub(crate) fn finish_fillet_radius(
+        &mut self,
+        generation: u64,
+        result: Result<ferritecad_jobs::EditedFilletRadius>,
+    ) -> Option<PathBuf> {
+        self.finish_path(generation, result.map(|r| r.destination))
+    }
     pub(crate) fn start_cut_edit(
         &mut self,
         request: ferritecad_jobs::EditCircularCutRequest,
@@ -470,6 +487,20 @@ pub(crate) fn spawn_fillet(
         move |context| {
             let mut kernel = ferritecad_occt::OcctKernel::new()?;
             ferritecad_jobs::fillet_edge_copy(&request, &mut kernel, context)
+        },
+        deliver,
+    )
+}
+pub(crate) fn spawn_fillet_radius(
+    request: ferritecad_jobs::EditFilletRadiusRequest,
+    cancel: CancelToken,
+    deliver: impl FnOnce(Result<ferritecad_jobs::EditedFilletRadius>) + Send + 'static,
+) -> JoinHandle<()> {
+    spawn_job(
+        cancel,
+        move |context| {
+            let mut kernel = ferritecad_occt::OcctKernel::new()?;
+            ferritecad_jobs::edit_fillet_radius_copy(&request, &mut kernel, context)
         },
         deliver,
     )

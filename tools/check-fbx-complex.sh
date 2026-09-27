@@ -509,4 +509,23 @@ if [ -n "${FCAD_FILLET_FBX_DIR:-}" ]; then
         grep -q '^FCAD_STL_FBX_MATCH triangles=[1-9][0-9]* ' "$work/$name-match.txt"
     done
     echo "FCAD_FILLET_UFBX_EXECUTED"
+    # §28B: the same Fillet after its radius was edited up and then down, in
+    # both windings and from another starting segment.
+    for name in radius-ccw-up radius-ccw-down radius-cw-up radius-cw-down radius-third-up radius-third-down; do
+        "$reader" --identity "$FCAD_FILLET_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=[1-9][0-9]* failures=0$' "$work/$name-reader.txt"; then
+            echo "error: re-radiused plate FBX was not independently read: $name" >&2
+            exit 1
+        fi
+        "$reader" --triangles "$FCAD_FILLET_FBX_DIR/$name.fbx" > "$work/$name-triangles.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=[0-9]* failures=0$' "$work/$name-triangles.txt"; then
+            echo "error: re-radiused plate FBX triangles were not read: $name" >&2
+            exit 1
+        fi
+        "$python" "$(native "$root/tools/fbx/stl-matches-fbx.py")" \
+            "$FCAD_FILLET_FBX_DIR/$name.stl" "$(native "$work/$name-triangles.txt")" \
+            | tee "$work/$name-match.txt"
+        grep -q '^FCAD_STL_FBX_MATCH triangles=[1-9][0-9]* ' "$work/$name-match.txt"
+    done
+    echo "FCAD_FILLET_RADIUS_UFBX_EXECUTED"
 fi

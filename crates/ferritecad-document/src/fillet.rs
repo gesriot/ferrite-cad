@@ -224,8 +224,9 @@ pub(crate) fn refuse_filleted(objects: &[ObjectRecord]) -> Result<()> {
         .find(|o| matches!(o.payload, ObjectPayload::Fillet(_)))
     {
         return Err(unsupported(format!(
-            "this Body ends in Fillet {} (§28A); editing a filleted part, and adding a second \
-             Fillet or a Cut after one, are not supported yet",
+            "this Body ends in Fillet {} (§28A); only its radius can be edited \
+             (edit-fillet-radius, §28B). Editing the rest of a filleted part, and adding a \
+             second Fillet or a Cut after one, are not supported yet",
             fillet.id
         )));
     }
@@ -316,7 +317,7 @@ impl PreparedEdgeFillet {
 /// What the finished part is called after one fillet: the new face under the
 /// edge it replaced, and every face the plate had, as the fillet leaves it,
 /// qualified by the plate's own Extrude.
-fn fillet_references(
+pub(crate) fn fillet_references(
     feature: ObjectId,
     base: ObjectId,
     joint: ProfileJoint,

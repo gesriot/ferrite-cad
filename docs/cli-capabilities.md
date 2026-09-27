@@ -180,6 +180,20 @@ Fillet: высота, координаты и ограничения эскиз�
 Fillet.
 [Контракт §28A и исполняемый рецепт](single-edge-fillet.md).
 
+§28B: `edit-fillet-radius <source.fcad> --feature UUID --expect-version HASH
+--request <request.json> -o <copy.fcad> [--json]` меняет радиус сохранённого
+Fillet §28A и публикует новую копию. Фича остаётся той же фичей на том же
+именованном ребре; ребро в запрос не входит. Меняется только `radius_mm`
+в payload этого Fillet'а (вместе с `payload_hash`) и `meta.modified_at`;
+все UUID, имена, зависимости и capabilities сохраняются. Политика радиуса —
+та же, что в §28A. Тот же радиус принимается и даёт тот же payload.
+
+Discovery — аддитивный `fillets[]` в `inspect --json`, без ядра. Stub-сборка
+находит Fillet, разбирает запрос и затем отказывает геометрии
+(`unsupported`). PlaneGCS не нужен. Второй Fillet, смена ребра, радиус 0 как
+удаление, Chamfer и правка детали под Fillet'ом по-прежнему отказывают.
+[Контракт §28B и исполняемый рецепт](edit-fillet-radius.md).
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.

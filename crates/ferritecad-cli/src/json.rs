@@ -37,6 +37,7 @@ pub enum Operation {
     EditCircularCut,
     EditRevolveAngle,
     FilletEdgeCopy,
+    EditFilletRadius,
     Create,
     CreateSketchExtrude,
     CreateSketchRevolve,
@@ -106,6 +107,66 @@ pub struct Inspection {
     /// keeps listing Extrudes only, so no consumer of that array can take a
     /// Revolve for one.
     revolves: Vec<RevolveDiscovery>,
+    /// §28B, additive: every saved Fillet, with whether `edit-fillet-radius`
+    /// accepts it. Not a `features` entry, for the reason `revolves` is not.
+    fillets: Vec<FilletFeatureDiscovery>,
+}
+
+/// One saved Fillet (§28A), as the pinned reading found it, and what
+/// `edit-fillet-radius` (§28B) would accept about it. The edge, corner and
+/// radius are the stored ones even when the edit is refused.
+#[derive(Serialize)]
+struct FilletFeatureDiscovery {
+    feature_id: ObjectId,
+    name: Option<String>,
+    body_id: Option<ObjectId>,
+    previous_feature_id: ObjectId,
+    edge: FilletEdgeDto,
+    /// The corner of the rounded edge; `null` when the frame is refused.
+    corner_mm: Option<[f64; 2]>,
+    radius_mm: f64,
+    radius_edit: FilletRadiusEditDiscovery,
+}
+
+/// `available` folds in the document-wide refusal, which keeps its priority;
+/// `refusal` is this Fillet's own reason and `document_refusal` the shared
+/// one. The bounds are the domain's, both inclusive, for this corner; `null`
+/// when the frame is refused.
+#[derive(Serialize)]
+struct FilletRadiusEditDiscovery {
+    available: bool,
+    refusal: Option<String>,
+    document_refusal: Option<String>,
+    min_radius_mm: f64,
+    max_radius_mm: Option<f64>,
+}
+
+impl FilletFeatureDiscovery {
+    fn new(
+        choice: ferritecad_document::FilletRadiusChoice,
+        document_refusal: Option<String>,
+    ) -> Self {
+        let saved = choice.saved.as_ref();
+        Self {
+            feature_id: choice.feature,
+            name: choice.name,
+            body_id: saved.map(|s| s.body),
+            previous_feature_id: choice.stored.previous,
+            edge: FilletEdgeDto {
+                feature_id: choice.stored.edge.feature,
+                joint: choice.stored.edge.joint.segments(),
+            },
+            corner_mm: saved.map(|s| s.corner.corner_mm),
+            radius_mm: choice.stored.radius_mm,
+            radius_edit: FilletRadiusEditDiscovery {
+                available: choice.refusal.is_none() && document_refusal.is_none(),
+                refusal: choice.refusal,
+                document_refusal,
+                min_radius_mm: ferritecad_document::MIN_RADIUS_MM,
+                max_radius_mm: saved.map(|s| s.corner.max_radius_mm),
+            },
+        }
+    }
 }
 
 /// One saved Revolve, as the pinned reading found it. Its profile's
@@ -1240,6 +1301,11 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
             RevolveDiscovery::new(r, AngleEditDiscovery::new(angle, source.refusal.clone()))
         })
         .collect();
+    let fillets = source
+        .fillet_features
+        .into_iter()
+        .map(|c| FilletFeatureDiscovery::new(c, source.refusal.clone()))
+        .collect();
     let result = Inspection {
         document_id: source.version.document_id,
         content_version: source.version.content,
@@ -1363,6 +1429,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 .collect()
         },
         revolves,
+        fillets,
     };
     document.close()?;
     Ok(result)

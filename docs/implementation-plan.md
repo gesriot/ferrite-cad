@@ -3799,3 +3799,35 @@ The historical fillet-corpus OOM is not claimed fixed.
 
 [Contract and executable recipe](single-edge-fillet.md),
 [verification](single-edge-fillet-verification.md).
+
+**§28B — change the radius of the saved Fillet, in a new copy.** The Fillet
+§28A saved stays the same feature on the same named edge; only its radius
+changes. The 5C milestone stays open: a second Fillet, retargeting the edge,
+radius zero as deletion, cap edges, chains, a variable radius, Chamfer,
+editing the part under a Fillet, preview, picking and in-place Save are not
+part of this slice.
+
+A person opens a rounded plate, presses **Edit Fillet radius**, enters a new
+radius and saves a new `.fcad`. An agent finds the same Fillet in
+`inspect --json` `fillets[]` and gets the same copy from `edit-fillet-radius`.
+
+The contract, including the exact SQL allowlist, was recorded before
+implementation:
+- The only model change is `radius_mm` in the selected Fillet's payload,
+  with its `payload_hash`, and `meta.modified_at`. Every UUID, name,
+  dependency, capability and other cell is kept; row counts are equal.
+- The frame is read by the one shared reader (`cut_edit::saved_history`),
+  asked about the history under the Fillet; the seven §28A names must match
+  by meaning. There is no second frame reader.
+- The radius policy is §28A's, unchanged and shared. The same radius is
+  accepted and publishes an identical payload.
+- The writer re-derives the whole prepared value in its transaction and
+  refuses a stale or forged one. The copy goes through the existing
+  `edit_object_copy`: snapshot, version, no-clobber, aliases, cancellation,
+  a strict cold rebuild in which every saved name resolves, atomic
+  publication, exit 7 on a lost report.
+- Nothing new is keyed: `eval.fillet.named` already holds the radius bits,
+  so the Fillet misses and the plate is reused.
+
+[Contract and executable recipe](edit-fillet-radius.md),
+[verification](edit-fillet-radius-verification.md).
