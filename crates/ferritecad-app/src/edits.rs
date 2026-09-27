@@ -72,7 +72,10 @@ impl Edits {
                         distance_mm: f.distance_mm,
                         refusal: f.refusal.clone(),
                         context: f.cut_history.as_ref().map(|h| format!(
-                            "Base of {} circular Cuts. Blind depths stay fixed; Through all follows the plate thickness. Saved pocket floors must stay inside the plate.", h.tools.len())),
+                            "Base of {} circular Cuts. Blind depths stay fixed; Through all follows the plate thickness. Saved pocket floors must stay inside the plate.", h.tools.len()))
+                            .or_else(|| f.fillet.as_ref().map(|r| format!(
+                                "Rounded by Fillet {} at ({}, {}), r {} mm. The Fillet keeps its edge and radius; only the plate's height changes.",
+                                r.feature, r.corner.corner_mm[0], r.corner.corner_mm[1], r.radius_mm))),
                     })
                     .collect(),
                 selected: None,

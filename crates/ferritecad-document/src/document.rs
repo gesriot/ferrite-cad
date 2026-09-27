@@ -1218,7 +1218,10 @@ impl Document {
         let record = prepared.feature();
         let bytes = record.payload.to_storage_bytes()?;
         let hash = ContentHash::of_bytes(&bytes);
-        let history = prepared.history().is_some();
+        // A Cut history (§26G) or a Fillet over the plate (§28C): the row is
+        // updated in place and nothing else is rewritten. Only a plate with
+        // neither keeps the legacy standalone writer below.
+        let history = prepared.history().is_some() || prepared.fillet().is_some();
         self.write_checked_transaction(
             |document| crate::height_edit::rederive(document, prepared),
             |writer| {

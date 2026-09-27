@@ -1507,9 +1507,9 @@ fn native_fillet_refusals_and_cancellation_are_atomic() {
     assert_eq!(std::fs::read(&f.source).expect("source bytes"), before);
 }
 
-/// A filleted copy is refused by every editor by name, a second fillet is
-/// refused, and the unsupported histories made by the shipped creators and
-/// Cut are refused by discovery.
+/// A filleted copy is refused by every editor but its plate's height (§28C)
+/// by name, a second fillet is refused, and the unsupported histories made by
+/// the shipped creators and Cut are refused by discovery.
 #[test]
 fn native_a_filleted_copy_and_other_histories_are_refused_by_name() {
     if !native() {
@@ -1534,7 +1534,7 @@ fn native_a_filleted_copy_and_other_histories_are_refused_by_name() {
     };
     names_it(&catalog["bodies"][0]["fillet_edge"]["refusal"]);
     names_it(&catalog["bodies"][0]["cut_edit"]["refusal"]);
-    names_it(&catalog["edit_extrude"]["refusal"]);
+    assert_eq!(catalog["edit_extrude"]["available"], true, "§28C");
     names_it(&catalog["sketches"][0]["refusal"]);
     names_it(&catalog["sketches"][0]["constraint_edit"]["refusal"]);
     names_it(&catalog["sketches"][0]["circle_edit"]["refusal"]);
@@ -1578,10 +1578,12 @@ fn native_a_filleted_copy_and_other_histories_are_refused_by_name() {
         2,
     );
     assert_eq!(refused(&v), "unsupported", "a Cut after a Fillet: {v}");
+    // The height is the plate's (§28C); the Fillet itself is no extrusion.
+    assert_eq!(catalog["features"][0]["feature_id"], base.as_str());
     let raised = cli()
         .arg("edit-extrude")
         .arg(&copy)
-        .args(["--feature", &base, "--distance-mm", "9"])
+        .args(["--feature", &fillet_id, "--distance-mm", "9"])
         .arg("-o")
         .arg(&out)
         .output()

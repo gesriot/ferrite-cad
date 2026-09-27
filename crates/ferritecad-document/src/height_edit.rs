@@ -154,6 +154,9 @@ impl ExtrudeChoice {
 pub struct PreparedExtrudeHeight {
     pub(crate) feature: ObjectRecord,
     pub(crate) history: Option<BaseHeightContext>,
+    /// §28C: the saved Fillet over this plate, exactly as the radius edit
+    /// reads it. It keeps its row; only the plate under it changes.
+    pub(crate) fillet: Option<crate::SavedFillet>,
     pub(crate) added_references: Vec<TopologyRef>,
     // Covers current tool data, refs and SQL facts even if the selected row did
     // not change. A backup keeps this version; any intervening edit does not.
@@ -165,6 +168,9 @@ impl PreparedExtrudeHeight {
     }
     pub fn history(&self) -> Option<&BaseHeightContext> {
         self.history.as_ref()
+    }
+    pub fn fillet(&self) -> Option<&crate::SavedFillet> {
+        self.fillet.as_ref()
     }
     pub fn added_references(&self) -> &[TopologyRef] {
         &self.added_references
@@ -186,7 +192,22 @@ pub fn prepare_extrude_height(
             CadError::input(format!("feature {feature} does not exist in this document"))
         })?;
     crate::editable_extrude(document, &record)?;
-    let history = if has_history(document, &objects)? {
+    let (history, fillet) = if !has_history(document, &objects)? {
+        (None, None)
+    } else if let Some(saved) = crate::fillet_radius::fillet_over_plate(document, &objects)? {
+        // §28C: the plate under the one saved Fillet, through the frame the
+        // radius edit reads. The Fillet adds no bound on the height: OCCT
+        // rounds the edge at any height the plate can have that it can round
+        // at all, and refuses the rest itself.
+        if saved.previous != feature {
+            return Err(CadError::unsupported(format!(
+                "select the base Extrude {} under Fillet {}; only the rounded plate's height \
+                 can be edited",
+                saved.previous, saved.feature
+            )));
+        }
+        (None, Some(saved))
+    } else {
         let history = crate::cut_edit::saved_history(document, &objects)?;
         if history.target.base_feature != feature || history.target.tools.is_empty() {
             return Err(CadError::unsupported(
@@ -195,9 +216,7 @@ pub fn prepare_extrude_height(
         }
         let context = history.height_context();
         context.validate_height(height_mm)?;
-        Some(context)
-    } else {
-        None
+        (Some(context), None)
     };
     let ObjectPayload::Extrude(extrude) = &mut record.payload else {
         unreachable!("checked extrusion")
@@ -212,6 +231,7 @@ pub fn prepare_extrude_height(
     Ok(PreparedExtrudeHeight {
         feature: record,
         history,
+        fillet,
         added_references,
         source_version: document.content_version()?,
     })

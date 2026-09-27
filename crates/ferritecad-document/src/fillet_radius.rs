@@ -57,8 +57,10 @@ impl FilletRadiusChoice {
     }
 }
 
-/// The class, read from the saved history around one Fillet object.
-fn saved_fillet(
+/// The class, read from the saved history around one Fillet object. Shared
+/// by the radius edit and the base height edit (§28C), which change different
+/// rows of the same frame.
+pub(crate) fn saved_fillet(
     document: &Document,
     objects: &[ObjectRecord],
     fillet: &ObjectRecord,
@@ -76,14 +78,13 @@ fn saved_fillet(
         .count();
     if fillets != 1 {
         return Err(CadError::unsupported(format!(
-            "this slice edits the radius of the one Fillet of a plate, and this document holds \
-             {fillets}"
+            "this slice edits a plate with one Fillet, and this document holds {fillets}"
         )));
     }
     let history = saved_history_under_fillet(document, objects, fillet)?;
     if !history.cuts.is_empty() {
         return Err(CadError::unsupported(
-            "this slice edits the Fillet of a plate with no Cut",
+            "this slice edits a plate with a Fillet and no Cut",
         ));
     }
     let target = history.target;
@@ -141,6 +142,21 @@ fn saved_fillet(
         height_mm: target.height_mm,
         radius_mm: stored.radius_mm,
     })
+}
+
+/// The Fillet that tips the document's plate: `None` when the document holds
+/// no Fillet, the §28B frame when it holds, and the frame's reason otherwise.
+pub(crate) fn fillet_over_plate(
+    document: &Document,
+    objects: &[ObjectRecord],
+) -> Result<Option<SavedFillet>> {
+    let Some(fillet) = objects
+        .iter()
+        .find(|o| matches!(o.payload, ObjectPayload::Fillet(_)))
+    else {
+        return Ok(None);
+    };
+    saved_fillet(document, objects, fillet).map(Some)
 }
 
 /// One row per saved Fillet, each editable or with its reason, from one

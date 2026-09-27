@@ -1014,6 +1014,36 @@ struct Feature {
     base_height_edit: Option<BaseHeightDiscovery<BlindDepth>>,
     base_height_edit_v2: Option<BaseHeightDiscovery<ExplicitEnd>>,
     base_height_edit_v3: Option<BaseHeightDiscovery<ExplicitEnd, PolygonBoundary>>,
+    /// §28C, additive: the saved Fillet over this plate when this is the base
+    /// Extrude under it and `edit-extrude` may change its height. The Fillet
+    /// keeps its edge and radius. `null` on every other row. Not a Cut
+    /// history: the `base_height_edit*` fields stay `null`.
+    fillet_base: Option<FilletBaseDiscovery>,
+}
+
+/// The Fillet a height edit keeps, as the pinned reading found it (§28C).
+#[derive(Serialize)]
+struct FilletBaseDiscovery {
+    fillet_feature_id: ObjectId,
+    body_id: ObjectId,
+    edge: FilletEdgeDto,
+    corner_mm: [f64; 2],
+    radius_mm: f64,
+}
+
+impl FilletBaseDiscovery {
+    fn of(saved: &ferritecad_document::SavedFillet) -> Self {
+        Self {
+            fillet_feature_id: saved.feature,
+            body_id: saved.body,
+            edge: FilletEdgeDto {
+                feature_id: saved.edge.feature,
+                joint: saved.edge.joint.segments(),
+            },
+            corner_mm: saved.corner.corner_mm,
+            radius_mm: saved.radius_mm,
+        }
+    }
 }
 
 /// Absolute tools and protected historical/descendant floor UUIDs for base height edits.
@@ -1395,6 +1425,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                         .cut_history
                         .as_ref()
                         .and_then(BaseHeightDiscovery::of),
+                    fillet_base: feature.fillet.as_ref().map(FilletBaseDiscovery::of),
                     feature_id: feature.feature,
                     name: feature.name,
                     distance_mm: feature.distance_mm,
