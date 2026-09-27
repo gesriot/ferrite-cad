@@ -1139,6 +1139,7 @@ impl TopologyMap {
     ///
     /// Nothing here looks at geometry. A face the history does not account
     /// for refuses, as it does for a boolean.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_fillet(
         &mut self,
         producer: ObjectId,

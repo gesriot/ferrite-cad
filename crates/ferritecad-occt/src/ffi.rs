@@ -2547,7 +2547,7 @@ mod tests {
         ] {
             let declared = header
                 .split_once(entry)
-                .unwrap_or_else(|| panic!("the header declares {entry}"))
+                .expect("the header declares both fillet entry points")
                 .1
                 .split_once(';')
                 .expect("the declaration ends")

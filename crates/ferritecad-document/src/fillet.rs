@@ -535,6 +535,7 @@ pub fn evaluable_fillet(objects: &[ObjectRecord], fillet: &Fillet) -> Result<Fil
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
     use crate::{
