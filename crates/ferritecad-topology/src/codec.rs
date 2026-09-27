@@ -907,6 +907,10 @@ mod tests {
             ("origin start cap", TAG_ORIGIN_START_CAP),
             ("origin end cap", TAG_ORIGIN_END_CAP),
             ("origin side", TAG_ORIGIN_SIDE),
+            ("revolved face", TAG_REVOLVED_FACE),
+            ("revolved start cap", TAG_REVOLVED_START_CAP),
+            ("revolved end cap", TAG_REVOLVED_END_CAP),
+            ("edge fillet face", TAG_EDGE_FILLET_FACE),
         ];
         for (index, (what, tag)) in tags.iter().enumerate() {
             for (other_what, other) in &tags[index + 1..] {
@@ -935,6 +939,7 @@ mod tests {
             ],
             [7, 8, 9, 10, 11]
         );
+        assert_eq!(TAG_EDGE_FILLET_FACE, 18, "§28A appends; it never reuses");
         // v2 appended the removed-name list, which is a layout change and not
         // only a wider vocabulary; see the note on `FORMAT_VERSION`.
         assert_eq!(FORMAT_VERSION, 3, "predecessor provenance requires v3");
@@ -1022,6 +1027,76 @@ mod tests {
                 .expect_err("old provenance rejected");
             assert!(err.to_string().contains("discard the entry and rebuild"));
         }
+    }
+
+    /// §28A: a Fillet's face comes back under its producer and its joint, a
+    /// swapped joint is refused rather than sorted, and a reader that does not
+    /// know the tag refuses the entry rather than restoring part of it.
+    #[test]
+    fn an_edge_fillet_face_survives_its_byte_form_and_nothing_else_reads_as_it() {
+        let kernel = MockKernel::new();
+        let identity = kernel.identity().clone();
+        let blob = BrepBlob::new(identity.clone(), vec![5, 5, 5, 5]);
+        let hash = blob.content_hash();
+        let producer = ObjectId::new();
+        let base = ObjectId::new();
+        let joint = a_joint();
+        let name = BoundName::EdgeFilletFace {
+            edge_feature: base,
+            joint,
+        };
+        let mut archive = ArchivedFeature::from_parts_with_removed(
+            producer,
+            blob,
+            hash,
+            [
+                (name, ArchiveSlot::new(1)),
+                (
+                    BoundName::OriginCap {
+                        origin_feature: base,
+                        side: ferritecad_document::CapSide::Start,
+                    },
+                    ArchiveSlot::new(2),
+                ),
+            ],
+            [],
+        )
+        .expect("parts");
+        archive.previous = Some(base);
+        let bytes = archive.encode().expect("encodes");
+        let restored = ArchivedFeature::decode(&bytes, producer, &identity).expect("reads back");
+        assert_eq!(restored, archive);
+        assert_eq!(restored.slot(name).map(|s| s.index()), Some(1));
+        assert_eq!(
+            restored.slot(BoundName::EdgeFilletFace {
+                edge_feature: ObjectId::new(),
+                joint,
+            }),
+            None,
+            "the producer of the edge is part of the name"
+        );
+
+        let [one, other] = joint.segments();
+        let mut needle = TAG_EDGE_FILLET_FACE.to_le_bytes().to_vec();
+        needle.extend_from_slice(&base.to_bytes());
+        needle.extend_from_slice(&one.to_bytes());
+        needle.extend_from_slice(&other.to_bytes());
+        let at = bytes
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .expect("the face is written as its tag, its producer and both segments");
+        let mut swapped = bytes.clone();
+        swapped[at + 18..at + 34].copy_from_slice(&other.to_bytes());
+        swapped[at + 34..at + 50].copy_from_slice(&one.to_bytes());
+        reseal(&mut swapped);
+        let refusal = ArchivedFeature::decode(&swapped, producer, &identity)
+            .expect_err("a swapped pair is not the pair that was written");
+        assert!(refusal.to_string().contains("canonical order"), "{refusal}");
+
+        let mut unknown = bytes.clone();
+        unknown[at..at + 2].copy_from_slice(&99u16.to_le_bytes());
+        reseal(&mut unknown);
+        assert!(ArchivedFeature::decode(&unknown, producer, &identity).is_err());
     }
 
     fn reseal(bytes: &mut [u8]) {

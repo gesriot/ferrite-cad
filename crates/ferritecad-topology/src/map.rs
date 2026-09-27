@@ -1317,6 +1317,112 @@ mod tests {
             .expect("the mock builds")
     }
 
+    /// §28A: a fillet's own face is filed under the edge it replaced, every
+    /// face of the plate is carried only through the fillet's history, and a
+    /// history that is silent or contradictory is refused.
+    #[test]
+    fn a_fillet_is_named_by_its_edge_and_carries_only_what_its_history_says() {
+        use ferritecad_kernel::{CarriedOutcome, FilletResult, ShapeHandle};
+        let square = square();
+        let mut kernel = MockKernel::new();
+        let result = built(&mut kernel, &square);
+        let base = ObjectId::new();
+        let fillet = ObjectId::new();
+        let mut map = TopologyMap::new();
+        map.record_extrude(base, square.request.profile(), &result)
+            .expect("the plate");
+        let names = map.feature(base).expect("names").clone();
+        let joint = ProfileJoint::new(square.labels[0], square.labels[1]).expect("joint");
+        let edge = SubShapeHandle::new(result.shape, SubShapeKind::Edge, 999);
+        let shape = ShapeHandle::new(SessionId::new(), 1);
+        let face = |index| SubShapeHandle::new(shape, SubShapeKind::Face, index);
+        let mut inputs: Vec<SubShapeHandle> = names
+            .cap(CapSide::Start)
+            .into_iter()
+            .flatten()
+            .chain(names.cap(CapSide::End).into_iter().flatten())
+            .collect();
+        for label in &square.labels {
+            inputs.extend(names.side(*label));
+        }
+        let honest = || {
+            let mut history = History::new();
+            let mut carried = BTreeMap::from([(edge, CarriedOutcome::Deleted)]);
+            for (k, input) in inputs.iter().enumerate() {
+                history.record_modified(HistoryInput::SubShape(*input), face(10 + k as u64));
+                carried.insert(*input, CarriedOutcome::Modified);
+            }
+            FilletResult {
+                shape,
+                history,
+                carried,
+                fillet_faces: vec![face(1)],
+                removed_volume: 1.0,
+            }
+        };
+
+        let mut good = map.clone();
+        good.record_fillet(fillet, base, base, joint, &names, edge, &honest())
+            .expect("an honest fillet");
+        let recorded = good.feature(fillet).expect("the fillet's names");
+        assert_eq!(
+            recorded.fillet_face(base, joint).collect::<Vec<_>>(),
+            [face(1)]
+        );
+        assert_eq!(
+            recorded.named_fillet_edges().collect::<Vec<_>>(),
+            [(base, joint)]
+        );
+        assert_eq!(recorded.previous(), Some(base));
+        for label in &square.labels {
+            assert_eq!(
+                recorded.origin_faces(base, CarriedName::Side(*label)).len(),
+                1
+            );
+        }
+        for side in [CapSide::Start, CapSide::End] {
+            assert_eq!(recorded.origin_faces(base, CarriedName::Cap(side)).len(), 1);
+        }
+        // The base keeps its own, historical names; nothing was repointed.
+        assert_eq!(good.feature(base), Some(&names));
+
+        // A named face the history does not mention, a face that is both the
+        // fillet and a carried face, another edge, and a base with no shape.
+        let mut silent = honest();
+        silent.carried.remove(&inputs[0]);
+        let mut twice = honest();
+        twice
+            .history
+            .record_modified(HistoryInput::SubShape(inputs[0]), face(1));
+        for (why, bad) in [("silent", silent), ("twice", twice)] {
+            let mut m = map.clone();
+            assert!(
+                m.record_fillet(fillet, base, base, joint, &names, edge, &bad)
+                    .is_err(),
+                "{why}"
+            );
+        }
+        let other = SubShapeHandle::new(result.shape, SubShapeKind::Edge, 998);
+        let mut m = map.clone();
+        assert!(
+            m.record_fillet(fillet, base, base, joint, &names, other, &honest())
+                .is_err()
+        );
+        let mut m = map.clone();
+        assert!(
+            m.record_fillet(
+                fillet,
+                base,
+                base,
+                joint,
+                &FeatureNames::default(),
+                edge,
+                &honest()
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn an_extrusion_is_recorded_by_role() {
         let square = square();

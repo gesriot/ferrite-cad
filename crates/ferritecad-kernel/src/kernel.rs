@@ -334,6 +334,63 @@ mod tests {
         )
     }
 
+    /// §28A: every part of a fillet's meaning is in its key, and the joint's
+    /// two spellings are one key because they are one joint.
+    #[test]
+    fn a_fillet_keys_by_target_edge_meaning_and_radius_bits() {
+        let kernel = KernelIdentity::new("occt", "8.0.1", "").expect("valid");
+        let context = OperationContext::default();
+        let target = ContentHash::of_bytes(b"target");
+        let [a, b, c] = [(); 3].map(|_| StableEntityId::new());
+        let joint = ferritecad_types::ProfileJoint::new(a, b).expect("joint");
+        let key = |kernel: &KernelIdentity, target: &ContentHash, feature: &[u8], joint, r| {
+            fillet_cache_key(kernel, target, feature, joint, r, &context)
+        };
+        let base = key(&kernel, &target, b"feature", joint, 2.5);
+        assert_eq!(
+            base,
+            key(
+                &kernel,
+                &target,
+                b"feature",
+                ferritecad_types::ProfileJoint::new(b, a).expect("joint"),
+                2.5
+            )
+        );
+        for changed in [
+            key(
+                &kernel,
+                &ContentHash::of_bytes(b"other"),
+                b"feature",
+                joint,
+                2.5,
+            ),
+            key(&kernel, &target, b"another", joint, 2.5),
+            key(
+                &kernel,
+                &target,
+                b"feature",
+                ferritecad_types::ProfileJoint::new(a, c).expect("joint"),
+                2.5,
+            ),
+            key(&kernel, &target, b"feature", joint, 2.5000000000000004),
+            key(
+                &KernelIdentity::new("occt", "8.0.2", "").expect("valid"),
+                &target,
+                b"feature",
+                joint,
+                2.5,
+            ),
+        ] {
+            assert_ne!(base, changed);
+        }
+        let loose = OperationContext::new(Tolerance::new(1e-3, 1e-6).expect("positive"));
+        assert_ne!(
+            base,
+            fillet_cache_key(&kernel, &target, b"feature", joint, 2.5, &loose)
+        );
+    }
+
     #[test]
     fn a_revolution_keys_apart_from_an_extrusion_and_by_its_profile() {
         let kernel = KernelIdentity::new("occt", "8.0.1", "").expect("valid");

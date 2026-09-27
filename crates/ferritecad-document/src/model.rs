@@ -2267,7 +2267,7 @@ impl ObjectPayload {
             },
             // One finite positive radius. Whether it fits the edge is a
             // question about geometry, asked by the policy that knows the
-            // part (`fillet::FilletPolicy`) and again by the evaluator.
+            // part (`fillet::FilletCorner::check_radius`) and again by the evaluator.
             Self::Fillet(fillet) => {
                 let radius = normalize_f64(fillet.radius_mm)?;
                 if radius <= 0.0 {

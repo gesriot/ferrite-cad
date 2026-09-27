@@ -857,6 +857,91 @@ mod tests {
         SubShapeHandle::new(shape, SubShapeKind::Face, index)
     }
 
+    /// §28A: a fillet speaks only about its target, reports the rounded edge
+    /// gone, names exactly one face of its own result, and removes material.
+    #[test]
+    fn a_fillet_result_is_held_to_one_deleted_edge_one_face_and_real_removal() {
+        let target = ShapeHandle::new(SessionId::new(), 0);
+        let shape = ShapeHandle::new(SessionId::new(), 1);
+        let edge = SubShapeHandle::new(target, SubShapeKind::Edge, 7);
+        let side = SubShapeHandle::new(target, SubShapeKind::Face, 1);
+        let out = |kind, index| SubShapeHandle::new(shape, kind, index);
+        let good = || {
+            let mut history = History::new();
+            history.record_modified(HistoryInput::SubShape(side), out(SubShapeKind::Face, 2));
+            FilletResult {
+                shape,
+                history,
+                carried: BTreeMap::from([
+                    (side, CarriedOutcome::Modified),
+                    (edge, CarriedOutcome::Deleted),
+                ]),
+                fillet_faces: vec![out(SubShapeKind::Face, 3)],
+                removed_volume: 1.5,
+            }
+        };
+        assert!(good().validate(target, edge).is_ok());
+        let other = SubShapeHandle::new(target, SubShapeKind::Edge, 8);
+        assert!(good().validate(target, other).is_err(), "another edge");
+        let foreign = ShapeHandle::new(SessionId::new(), 2);
+        assert!(good().validate(foreign, edge).is_err(), "another target");
+        let mut broken: Vec<(&str, FilletResult)> = Vec::new();
+        let mut r = good();
+        r.carried.insert(edge, CarriedOutcome::Modified);
+        broken.push(("the edge kept", r));
+        let mut r = good();
+        r.history
+            .record_modified(HistoryInput::SubShape(edge), out(SubShapeKind::Face, 3));
+        broken.push(("the edge deleted and produced", r));
+        let mut r = good();
+        r.carried.remove(&edge);
+        broken.push(("the edge unreported", r));
+        let mut r = good();
+        r.fillet_faces.clear();
+        broken.push(("no face", r));
+        let mut r = good();
+        r.fillet_faces.push(out(SubShapeKind::Face, 4));
+        broken.push(("two faces", r));
+        let mut r = good();
+        r.fillet_faces = vec![out(SubShapeKind::Edge, 3)];
+        broken.push(("an edge for a face", r));
+        let mut r = good();
+        r.fillet_faces = vec![SubShapeHandle::new(foreign, SubShapeKind::Face, 3)];
+        broken.push(("a face of another shape", r));
+        let mut r = good();
+        r.history.record_modified(
+            HistoryInput::SubShape(side),
+            SubShapeHandle::new(foreign, SubShapeKind::Face, 9),
+        );
+        broken.push(("an output of another shape", r));
+        let mut r = good();
+        r.carried.insert(
+            SubShapeHandle::new(foreign, SubShapeKind::Face, 1),
+            CarriedOutcome::Deleted,
+        );
+        broken.push(("an outcome about another shape", r));
+        let mut r = good();
+        r.carried.insert(
+            SubShapeHandle::new(target, SubShapeKind::Face, 5),
+            CarriedOutcome::Kept,
+        );
+        broken.push(("kept with no geometry", r));
+        let mut r = good();
+        r.history.record_generated(
+            HistoryInput::Segment(StableEntityId::new()),
+            out(SubShapeKind::Face, 6),
+        );
+        broken.push(("a profile segment", r));
+        for removed in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mut r = good();
+            r.removed_volume = removed;
+            broken.push(("no removal", r));
+        }
+        for (why, result) in broken {
+            assert!(result.validate(target, edge).is_err(), "{why}");
+        }
+    }
+
     /// §27D: a revolution's caps are none (a full turn) or one of each,
     /// faces of its own result, distinct, and never a segment's face.
     #[test]

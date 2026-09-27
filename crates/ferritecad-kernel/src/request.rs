@@ -314,6 +314,31 @@ fn positive(value: f64, what: &str) -> Result<f64> {
 mod tests {
     use super::*;
 
+    /// §28A: only an edge of the target, and only a finite positive radius.
+    #[test]
+    fn a_fillet_request_names_an_edge_of_its_target_and_a_real_radius() {
+        use crate::handle::{SessionId, ShapeHandle, SubShapeHandle, SubShapeKind};
+        let target = ShapeHandle::new(SessionId::new(), 0);
+        let edge = SubShapeHandle::new(target, SubShapeKind::Edge, 3);
+        let request = FilletRequest::new(target, edge, 2.5).expect("valid");
+        assert_eq!(
+            (request.target(), request.edge(), request.radius_mm()),
+            (target, edge, 2.5)
+        );
+        let foreign =
+            SubShapeHandle::new(ShapeHandle::new(SessionId::new(), 0), SubShapeKind::Edge, 3);
+        assert!(FilletRequest::new(target, foreign, 2.5).is_err());
+        for kind in [SubShapeKind::Face, SubShapeKind::Vertex] {
+            assert!(FilletRequest::new(target, SubShapeHandle::new(target, kind, 3), 2.5).is_err());
+        }
+        for radius in [0.0, -0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(
+                FilletRequest::new(target, edge, radius).is_err(),
+                "{radius}"
+            );
+        }
+    }
+
     #[test]
     fn a_non_positive_extent_is_refused() {
         assert!(ExtrudeExtent::blind(0.0).is_err());
