@@ -13,6 +13,7 @@ mod edit_annular;
 mod edit_circle;
 mod edit_constraints;
 mod edit_cut;
+mod edit_fillet_radius;
 mod edit_revolve_angle;
 mod edit_sketch;
 mod export;
@@ -138,6 +139,9 @@ enum Command {
     /// Round one vertical edge of a saved rectangular plate to a constant
     /// radius, publishing a new FCAD copy whose Body ends in a named Fillet.
     FilletEdgeCopy(fillet::FilletArgs),
+    /// Change the radius of the saved Fillet in a new identity-preserving
+    /// FCAD copy. The edge, every UUID and every name are kept.
+    EditFilletRadius(edit_fillet_radius::EditFilletRadiusArgs),
     /// Show a document's metadata, objects, graph and references.
     Inspect(InspectArgs),
     /// Check stored consistency without writes, migration or a geometry kernel.
@@ -368,6 +372,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::EditSketchCopy(args) => edit_sketch::run(args),
         Command::EditRevolveAngle(args) => edit_revolve_angle::run(args),
         Command::FilletEdgeCopy(args) => fillet::run(args),
+        Command::EditFilletRadius(args) => edit_fillet_radius::run(args),
         Command::EditCircle(args) => edit_circle::run(args),
         Command::EditAnnular(args) => edit_annular::run(args),
         Command::CutCircularCopy(args) => cut::run(args),

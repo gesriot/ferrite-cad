@@ -259,6 +259,10 @@ enum AppEvent {
         generation: u64,
         result: Result<ferritecad_jobs::AddedEdgeFillet>,
     },
+    FilletRadiusEdited {
+        generation: u64,
+        result: Result<ferritecad_jobs::EditedFilletRadius>,
+    },
     Edited {
         generation: u64,
         result: Result<ferritecad_jobs::EditedDocument>,
@@ -2423,6 +2427,18 @@ impl ApplicationHandler<AppEvent> for App {
                 self.input.request_redraw();
                 self.request_frame_now(event_loop);
             }
+            AppEvent::FilletRadiusEdited { generation, result } => {
+                if let Some(path) = fillets::finish_fillet_radius(
+                    &mut self.creates.sketch,
+                    &mut self.edits,
+                    generation,
+                    result,
+                ) {
+                    self.open(path);
+                }
+                self.input.request_redraw();
+                self.request_frame_now(event_loop);
+            }
             AppEvent::CutEdited { generation, result } => {
                 if let Some(path) = cuts::finish_cut_edit(
                     &mut self.creates.sketch,
@@ -2683,6 +2699,9 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         if let Some(request) = self.creates.sketch.take_fillet_request() {
                             self.ask_where_to_fillet(request);
+                        }
+                        if let Some(request) = self.creates.sketch.take_fillet_radius_request() {
+                            self.ask_where_to_edit_fillet_radius(request);
                         }
                         if let Some(content) = self.creates.sketch.take_request() {
                             self.ask_where_to_create(content);
@@ -3259,6 +3278,38 @@ impl App {
             .start_fillet(request, move |request, generation, cancel| {
                 edits::spawn_fillet(request, cancel, move |result| {
                     let _ = proxy.send_event(AppEvent::Filleted { generation, result });
+                })
+            });
+        self.input.request_redraw();
+    }
+
+    fn ask_where_to_edit_fillet_radius(
+        &mut self,
+        mut request: ferritecad_jobs::EditFilletRadiusRequest,
+    ) {
+        if self.edits.running() {
+            return;
+        }
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Some(chosen) = self.dialogs.choose(
+            dialogs::Action::Edit,
+            rfd::FileDialog::new()
+                .add_filter("FerriteCAD document", &[DOCUMENT_EXTENSION])
+                .set_directory(request.source.parent().unwrap_or(Path::new(".")))
+                .set_file_name("edited-fillet.fcad")
+                .set_parent(live.window.as_ref()),
+            &mut self.input,
+        ) else {
+            return;
+        };
+        request.destination = chosen;
+        let proxy = self.proxy.clone();
+        self.edits
+            .start_fillet_radius(request, move |request, generation, cancel| {
+                edits::spawn_fillet_radius(request, cancel, move |result| {
+                    let _ = proxy.send_event(AppEvent::FilletRadiusEdited { generation, result });
                 })
             });
         self.input.request_redraw();

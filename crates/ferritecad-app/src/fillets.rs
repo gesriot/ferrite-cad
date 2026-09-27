@@ -9,8 +9,9 @@
 //! control that suggested otherwise would be promising it.
 use ferritecad_document::{
     DocumentVersion, EdgeFillet, ExtrudeEditSource, FilletChoice, FilletCorner, FilletEdge,
+    FilletRadiusChoice, SavedFillet,
 };
-use ferritecad_jobs::EdgeFilletRequest;
+use ferritecad_jobs::{EdgeFilletRequest, EditFilletRadiusRequest};
 use ferritecad_types::{CadError, ObjectId, Result};
 use std::path::{Path, PathBuf};
 
@@ -68,21 +69,79 @@ impl Draft {
     }
 }
 
+/// §28B: a new radius for the saved Fillet, as typed. The edge is the saved
+/// one and is shown, never chosen: this form cannot retarget the Fillet.
+#[derive(Debug, Clone)]
+struct RadiusDraft {
+    source: PathBuf,
+    version: DocumentVersion,
+    choice: FilletRadiusChoice,
+    typed: String,
+    /// The radius a confirmed Apply accepted, as typed.
+    applied: Option<String>,
+    refusal: Option<String>,
+}
+
+impl RadiusDraft {
+    fn saved(&self) -> Option<&SavedFillet> {
+        self.choice.saved.as_ref()
+    }
+
+    /// The typed radius, judged by the document's own rule.
+    fn radius(&self, typed: &str) -> Result<f64> {
+        let radius_mm = typed
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| CadError::input("enter a finite fillet radius in mm"))?;
+        self.choice.validate(radius_mm)?;
+        Ok(radius_mm)
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Editor {
     draft: Option<Draft>,
     pending: Option<EdgeFilletRequest>,
+    radius: Option<RadiusDraft>,
+    pending_radius: Option<EditFilletRadiusRequest>,
 }
 
 impl Editor {
     pub(crate) fn active(&self) -> bool {
-        self.draft.is_some()
+        self.draft.is_some() || self.radius.is_some()
     }
     pub(crate) fn dismiss(&mut self) {
         *self = Self::default();
     }
     pub(crate) fn take_request(&mut self) -> Option<EdgeFilletRequest> {
         self.pending.take()
+    }
+    pub(crate) fn take_radius_request(&mut self) -> Option<EditFilletRadiusRequest> {
+        self.pending_radius.take()
+    }
+
+    /// Begin changing the radius of one saved Fillet. The form opens on the
+    /// stored radius.
+    fn begin_radius(&mut self, path: &Path, source: &ExtrudeEditSource, feature: ObjectId) -> bool {
+        if self.active() || source.refusal.is_some() {
+            return false;
+        }
+        let Some(choice) = source
+            .fillet_features
+            .iter()
+            .find(|c| c.feature == feature && c.refusal.is_none() && c.saved.is_some())
+        else {
+            return false;
+        };
+        self.radius = Some(RadiusDraft {
+            source: path.to_path_buf(),
+            version: source.version,
+            typed: choice.stored.radius_mm.to_string(),
+            choice: choice.clone(),
+            applied: None,
+            refusal: None,
+        });
+        true
     }
 
     fn begin(&mut self, path: &Path, source: &ExtrudeEditSource, body: ObjectId) -> bool {
@@ -139,9 +198,129 @@ impl Editor {
                 response.on_hover_text(reason);
             }
         }
+        // §28B: one per saved Fillet, with the shared domain reason on the
+        // ones this build cannot edit.
+        for choice in &source.fillet_features {
+            let refusal = source.refusal.as_ref().or(choice.refusal.as_ref());
+            let response = ui.add_enabled(
+                can_begin && refusal.is_none(),
+                egui::Button::new(format!(
+                    "Edit Fillet radius {} — {}…",
+                    choice.name.as_deref().unwrap_or("Unnamed fillet"),
+                    choice.feature
+                )),
+            );
+            if response.clicked() {
+                self.begin_radius(path, source, choice.feature);
+            }
+            if let Some(reason) = refusal {
+                response.on_hover_text(reason);
+            }
+        }
+    }
+
+    fn draw_radius(&mut self, ui: &mut egui::Ui, running: bool) {
+        let Some(draft) = &mut self.radius else {
+            return;
+        };
+        let Some(saved) = draft.saved().cloned() else {
+            return;
+        };
+        let mut cancel = false;
+        egui::Window::new("Edit Fillet radius — new copy")
+            .default_width(600.)
+            .resizable(false)
+            .show(ui.ctx(), |ui| {
+                ui.label(
+                    "Changes only the radius. The Fillet keeps its edge, its UUID and every \
+                     name; the edge cannot be changed here.",
+                );
+                ui.small(format!(
+                    "Fillet {} · Body {} · base Extrude {} · {}",
+                    saved.feature,
+                    saved.body,
+                    saved.previous,
+                    draft.source.display()
+                ));
+                ui.small(format!("Edge: {}", describe(&saved.corner)));
+                ui.small(format!(
+                    "Saved radius {} mm; from {} mm to {} mm here.",
+                    saved.radius_mm,
+                    ferritecad_document::MIN_RADIUS_MM,
+                    saved.corner.max_radius_mm
+                ));
+                ui.add_enabled_ui(!running, |ui| {
+                    if ui.button("Cancel radius draft").clicked() {
+                        cancel = true;
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("New radius (mm):");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut draft.typed)
+                                .id_salt("fillet-new-radius")
+                                .char_limit(32)
+                                .desired_width(110.),
+                        );
+                    });
+                    if ui.button("Apply radius").clicked() {
+                        match draft.radius(&draft.typed) {
+                            Ok(_) => {
+                                draft.applied = Some(draft.typed.clone());
+                                draft.refusal = None;
+                            }
+                            Err(error) => draft.refusal = Some(error.to_string()),
+                        }
+                    }
+                    if let Some(refusal) = &draft.refusal {
+                        egui::ScrollArea::vertical()
+                            .id_salt("fillet-radius-refusal")
+                            .max_height(72.)
+                            .show(ui, |ui| {
+                                ui.colored_label(ui.visuals().error_fg_color, refusal);
+                            });
+                    }
+                    let confirmed = draft
+                        .applied
+                        .as_ref()
+                        .filter(|applied| **applied == draft.typed)
+                        .and_then(|applied| draft.radius(applied).ok());
+                    match confirmed {
+                        Some(radius_mm) => {
+                            ui.small(format!(
+                                "Ready: radius {} mm -> {radius_mm} mm at ({}, {})",
+                                saved.radius_mm,
+                                saved.corner.corner_mm[0],
+                                saved.corner.corner_mm[1]
+                            ));
+                            if ui.button("Save radius copy…").clicked() {
+                                self.pending_radius = Some(EditFilletRadiusRequest {
+                                    source: draft.source.clone(),
+                                    expected: draft.version,
+                                    feature: saved.feature,
+                                    radius_mm,
+                                    destination: PathBuf::new(),
+                                });
+                            }
+                        }
+                        None => {
+                            ui.small("Apply a radius before saving.");
+                        }
+                    }
+                });
+                if running {
+                    ui.label("Saving… Draft retained until publication. Cancel job in toolbar.");
+                }
+            });
+        if cancel {
+            self.dismiss();
+        }
     }
 
     pub(crate) fn draw(&mut self, ui: &mut egui::Ui, running: bool) {
+        if self.radius.is_some() {
+            self.draw_radius(ui, running);
+            return;
+        }
         let Some(draft) = &mut self.draft else {
             return;
         };
@@ -267,6 +446,22 @@ pub(crate) fn finish_fillet(
         editor.draft_published(&saved.destination);
     }
     edits.finish_fillet(generation, result)
+}
+
+/// §28B's completion, through exactly the same two steps and retention as
+/// the Fillet's own.
+pub(crate) fn finish_fillet_radius(
+    editor: &mut crate::sketch::Editor,
+    edits: &mut crate::edits::Edits,
+    generation: u64,
+    result: Result<ferritecad_jobs::EditedFilletRadius>,
+) -> Option<PathBuf> {
+    if edits.accepts(generation)
+        && let Ok(saved) = &result
+    {
+        editor.draft_published(&saved.destination);
+    }
+    edits.finish_fillet_radius(generation, result)
 }
 
 #[cfg(test)]

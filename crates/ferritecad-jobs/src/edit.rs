@@ -147,6 +147,72 @@ pub fn edit_revolve_angle_copy<K: GeometryKernel + ?Sized>(
     })
 }
 
+/// §28B: a new radius for the one saved Fillet. The edge is the saved one
+/// and cannot be named here.
+#[derive(Debug, Clone)]
+pub struct EditFilletRadiusRequest {
+    pub source: PathBuf,
+    pub expected: DocumentVersion,
+    pub feature: ObjectId,
+    pub radius_mm: f64,
+    pub destination: PathBuf,
+}
+
+/// What one published radius edit is, from the prepared edit itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditedFilletRadius {
+    pub destination: PathBuf,
+    pub document_id: ferritecad_types::DocumentId,
+    pub body: ObjectId,
+    pub feature: ObjectId,
+    /// The saved edge and corner, unchanged by this edit.
+    pub edge: ferritecad_document::FilletEdge,
+    pub corner_mm: [f64; 2],
+    pub previous_radius_mm: f64,
+    pub radius_mm: f64,
+}
+
+/// Change the radius of the one saved Fillet in a new copy.
+///
+/// The same snapshot, baseline rebuild, reference check, version recheck and
+/// atomic publication every other copy edit uses. Nothing is minted, so every
+/// saved name, and only those, must resolve after the edit.
+pub fn edit_fillet_radius_copy<K: GeometryKernel + ?Sized>(
+    request: &EditFilletRadiusRequest,
+    kernel: &mut K,
+    context: &OperationContext,
+) -> Result<EditedFilletRadius> {
+    context.check_cancelled()?;
+    edit_object_copy(
+        &request.source,
+        request.expected,
+        &request.destination,
+        kernel,
+        context,
+        |source| {
+            ferritecad_document::prepare_fillet_radius(source, request.feature, request.radius_mm)
+                .map(Box::new)
+                .map(CopyWrite::FilletRadius)
+        },
+        |prepared, _| {
+            let CopyWrite::FilletRadius(prepared) = prepared else {
+                return Err(CadError::input("missing prepared Fillet radius edit"));
+            };
+            let saved = prepared.saved();
+            Ok(EditedFilletRadius {
+                destination: request.destination.clone(),
+                document_id: request.expected.document_id,
+                body: saved.body,
+                feature: saved.feature,
+                edge: saved.edge,
+                corner_mm: saved.corner.corner_mm,
+                previous_radius_mm: saved.radius_mm,
+                radius_mm: prepared.radius_mm(),
+            })
+        },
+    )
+}
+
 #[derive(Debug, Clone)]
 pub struct EditCircleRequest {
     pub source: PathBuf,
@@ -534,6 +600,8 @@ enum CopyWrite {
     RevolveAngle(ferritecad_document::PreparedRevolveAngle),
     /// §28A; boxed for the reason Cut is.
     Fillet(Box<ferritecad_document::PreparedEdgeFillet>),
+    /// §28B; boxed for the reason Cut is.
+    FilletRadius(Box<ferritecad_document::PreparedFilletRadius>),
 }
 impl CopyWrite {
     fn object(&self) -> &ferritecad_document::ObjectRecord {
@@ -541,6 +609,7 @@ impl CopyWrite {
             Self::Coordinates(o) | Self::Circle(o) | Self::Annulus(o) => o,
             Self::Height(p) => p.feature(),
             Self::RevolveAngle(p) => p.feature(),
+            Self::FilletRadius(p) => p.feature(),
             Self::Constraints(p) => p.object(),
             // The body is the one object a cut changes; the two it adds did
             // not exist to be read.
@@ -626,6 +695,7 @@ fn edit_object_copy<K: GeometryKernel + ?Sized, T>(
         CopyWrite::Height(p) => document.write_extrude_height(p)?,
         CopyWrite::RevolveAngle(p) => document.write_revolve_angle(p)?,
         CopyWrite::Fillet(p) => document.write_edge_fillet(p)?,
+        CopyWrite::FilletRadius(p) => document.write_fillet_radius(p)?,
     }
     // A solve is asked for only when the edited sketch still has something to
     // solve. Taking the last constraint off a circle leaves a drawing with no

@@ -1024,8 +1024,31 @@ pub(crate) fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Re
     // Named first, so every editor built on this reader says why a filleted
     // part is not its target rather than reporting a shape mismatch.
     crate::fillet::refuse_filleted(objects)?;
-    if objects.len() < 4
-        || objects.len() > 4 + 2 * MAX_CIRCULAR_CUTS
+    read_history(document, objects, None)
+}
+
+/// §28B: the same reader, asked about the history under one saved Fillet
+/// that is the Body's tip. The Fillet is part of the exact object and
+/// dependency sets checked here — its row, its predecessor edge and the
+/// Body's tip edge to it — and the chain below it is read exactly as
+/// [`saved_history`] reads a plate. Its own payload, names and radius are the
+/// caller's to check.
+pub(crate) fn saved_history_under_fillet(
+    document: &Document,
+    objects: &[ObjectRecord],
+    fillet: &ObjectRecord,
+) -> Result<CutHistory> {
+    read_history(document, objects, Some(fillet))
+}
+
+fn read_history(
+    document: &Document,
+    objects: &[ObjectRecord],
+    fillet: Option<&ObjectRecord>,
+) -> Result<CutHistory> {
+    let own = usize::from(fillet.is_some());
+    if objects.len() < 4 + own
+        || objects.len() > 4 + own + 2 * MAX_CIRCULAR_CUTS
         || objects.iter().any(|o| o.parent.is_some())
     {
         return Err(unsupported(
@@ -1065,7 +1088,23 @@ pub(crate) fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Re
     let tip = b
         .tip_feature
         .ok_or_else(|| unsupported("Body has no tip"))?;
-    let mut cursor = tip;
+    let under = match fillet {
+        None => None,
+        Some(fillet) => {
+            let ObjectPayload::Fillet(f) = &fillet.payload else {
+                return Err(unsupported("the selected feature is not a Fillet"));
+            };
+            if tip != fillet.id {
+                return Err(unsupported(format!(
+                    "Fillet {} is not the Body's tip, and this slice edits the Fillet that ends \
+                     the Body",
+                    fillet.id
+                )));
+            }
+            Some((fillet.id, f.previous))
+        }
+    };
+    let mut cursor = under.map_or(tip, |(_, previous)| previous);
     let mut chain = Vec::new();
     let mut seen = BTreeSet::new();
     loop {
@@ -1143,6 +1182,14 @@ pub(crate) fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Re
         },
     ]);
     let mut covered = BTreeSet::from([body.id, base.id, profile.id, plane.id]);
+    if let Some((id, previous)) = under {
+        expected.insert(Dependency {
+            dependent: id,
+            dependency: previous,
+            role: DependencyRole::Predecessor,
+        });
+        covered.insert(id);
+    }
     let mut saved: Vec<SavedCircularCut> = Vec::new();
     for record in chain {
         let ObjectPayload::Extrude(cut) = &record.payload else {
@@ -1303,7 +1350,7 @@ pub(crate) fn saved_history(document: &Document, objects: &[ObjectRecord]) -> Re
 
 /// Two references that name the same thing. Identity is deliberately absent:
 /// that is what is being looked up, and everything else is what is checked.
-fn same_meaning(a: &TopologyRef, b: &TopologyRef) -> bool {
+pub(crate) fn same_meaning(a: &TopologyRef, b: &TopologyRef) -> bool {
     a.owner == b.owner
         && a.producer_feature == b.producer_feature
         && a.expected_kind == b.expected_kind

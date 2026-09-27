@@ -282,6 +282,11 @@ impl Editor {
     pub(crate) fn take_fillet_request(&mut self) -> Option<ferritecad_jobs::EdgeFilletRequest> {
         self.fillets.take_request()
     }
+    pub(crate) fn take_fillet_radius_request(
+        &mut self,
+    ) -> Option<ferritecad_jobs::EditFilletRadiusRequest> {
+        self.fillets.take_radius_request()
+    }
     /// Begin editing one saved pair of concentric circles of the accepted scene.
     ///
     /// The path and the version come from the reading that was accepted, so a

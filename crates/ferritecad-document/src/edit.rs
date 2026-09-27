@@ -57,6 +57,9 @@ pub struct ExtrudeEditSource {
     /// §28A: which saved Bodies a Fillet can round one vertical edge of, and
     /// their candidate edges, from that same pinned reading.
     pub fillet_bodies: Vec<crate::FilletChoice>,
+    /// §28B: every saved Fillet, with whether its radius can be edited, from
+    /// that same pinned reading.
+    pub fillet_features: Vec<crate::FilletRadiusChoice>,
     /// §28A: why no editor of this build changes the document, when a Body
     /// ends in a Fillet. Kept apart from `refusal`, which is about the file
     /// being written at all: discovery still reports the saved Fillet.
@@ -139,6 +142,7 @@ impl ExtrudeEditSource {
             revolves: crate::revolve_choices(document, &objects),
             revolve_angles: crate::revolve_angle_choices(document, &objects),
             fillet_bodies: crate::fillet_choices(document, &objects),
+            fillet_features: crate::fillet_radius_choices(document, &objects),
             filleted: crate::fillet::refuse_filleted(&objects)
                 .err()
                 .map(|e| e.to_string()),
@@ -851,6 +855,7 @@ mod tests {
             revolves: crate::revolve_choices(document, &objects),
             revolve_angles: crate::revolve_angle_choices(document, &objects),
             fillet_bodies: crate::fillet_choices(document, &objects),
+            fillet_features: crate::fillet_radius_choices(document, &objects),
             filleted: crate::fillet::refuse_filleted(&objects)
                 .err()
                 .map(|e| e.to_string()),
