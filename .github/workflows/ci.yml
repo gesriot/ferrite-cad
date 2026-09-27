@@ -242,6 +242,32 @@ jobs:
           FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-28b-recipe.py | tee fillet-radius-recipe-stub.log
           grep -q '^FCAD_28B_RECIPE_NO_KERNEL ' fillet-radius-recipe-stub.log
 
+      - name: Discover and refuse rounded-plate height edits without native geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          gate=height::height_discovery_and_protocol_without_native
+          cargo test -p ferritecad-cli --test fillet "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-height-discovery.log
+          if grep -q 'skipped:' fillet-height-discovery.log || ! grep -Fq "test $gate ... ok" fillet-height-discovery.log; then exit 1; fi
+          gate=edits::tests::fillet_base_height_widgets_show_the_fillet_and_keep_the_draft
+          cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-height-widgets.log
+          if grep -q 'skipped:' fillet-height-widgets.log || ! grep -Fq "test $gate ... ok" fillet-height-widgets.log; then exit 1; fi
+          for gate in fillet_radius::tests::the_base_height_changes_alone_and_interleaves_with_the_radius \
+            fillet_radius::tests::the_height_writer_refuses_a_forged_or_stale_preparation \
+            fillet_radius::tests::a_height_under_a_fillet_outside_the_frame_is_refused_with_its_reason
+          do
+            cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-height-writer.log
+            if grep -q 'skipped:' fillet-height-writer.log || ! grep -Fq "test $gate ... ok" fillet-height-writer.log; then exit 1; fi
+          done
+          python3 - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/edit-fillet-base-height.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_28C_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-28c-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-28c-recipe.py | tee fillet-height-recipe-stub.log
+          grep -q '^FCAD_28C_RECIPE_NO_KERNEL ' fillet-height-recipe-stub.log
+
       - name: Discover sequential cuts without native geometry
         shell: bash
         run: |

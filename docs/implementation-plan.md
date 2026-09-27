@@ -3831,3 +3831,32 @@ implementation:
 
 [Contract and executable recipe](edit-fillet-radius.md),
 [verification](edit-fillet-radius-verification.md).
+
+**§28C — change the height of a rounded plate, in a new copy.** The plate
+under the one saved Fillet takes a new Blind height through the existing
+**Edit extrusion** form and `edit-extrude`; the Fillet keeps its UUID,
+`previous`, edge, radius and every name. No command, request, pipeline,
+capability, schema, cache key or kernel route is added. The 5C milestone
+stays open: the profile, the radius here, the edge, a second Fillet, a Cut
+with a Fillet, preview, picking and in-place Save are not part of this slice.
+
+The contract, with the measured heights and the exact SQL allowlist, was
+recorded before implementation:
+- The frame is the one the radius edit reads (`fillet_radius::saved_fillet`
+  over `cut_edit::saved_history_under_fillet` and the §28A names), shared
+  as `fillet_over_plate`. Only the Fillet's `previous` may be selected.
+- Measured on pinned OCCT 8.0.1 through `fillet_edge`: every height from
+  2e-5 to 1e5 mm, h < r included, rounds validly for r 0.01 to 6.125 mm;
+  1e-5 mm and below is refused by OCCT whatever r is. So no height bound is
+  added: the policy stays positive and finite, and OCCT's own refusal
+  publishes nothing.
+- Only the base Extrude row's `payload`/`payload_hash` and
+  `meta.modified_at` change. The writer takes the checked-history branch
+  and re-derives the whole preparation, Fillet facts included.
+- Every saved name must resolve after the strict cold rebuild. The legacy
+  exemption of a standalone height edit is named for a plate with neither a
+  Cut history nor a Fillet, and does not reach this one.
+- Every other editor keeps refusing a filleted part by name.
+
+[Contract and executable recipe](edit-fillet-base-height.md),
+[verification](edit-fillet-base-height-verification.md).

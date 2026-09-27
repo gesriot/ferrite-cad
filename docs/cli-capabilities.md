@@ -194,6 +194,20 @@ Discovery — аддитивный `fillets[]` в `inspect --json`, без яд�
 удаление, Chamfer и правка детали под Fillet'ом по-прежнему отказывают.
 [Контракт §28B и исполняемый рецепт](edit-fillet-radius.md).
 
+§28C: прежний `edit-extrude` меняет высоту плиты под сохранённым Fillet
+§28B-формы и публикует новую копию. Выбирается базовый Extrude (его UUID
+есть в `inspect --json`, у строки `features[]` — аддитивный `fillet_base`).
+Меняется только Blind-расстояние базы (`payload`/`payload_hash` её строки)
+и `meta.modified_at`; строка Fillet, его ребро, радиус, все UUID, имена,
+зависимости и capabilities сохраняются. Политика высоты прежняя: конечное
+положительное число. Измерено на OCCT 8.0.1: высоты от 2e-5 до 1e5 мм, в том
+числе меньше радиуса, скругляются; при 1e-5 мм и ниже OCCT сам отказывает
+(`kernel`), ничего не публикуется. Все сохранённые имена обязаны
+разрешиться после холодной пересборки. Остальные редакторы по-прежнему
+отказывают скруглённой детали. Stub-сборка отвечает `unsupported` на любой
+корректный запрос, discovery работает.
+[Контракт §28C и исполняемый рецепт](edit-fillet-base-height.md).
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.
