@@ -3893,3 +3893,908 @@ mod sketch {
         assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
     }
 }
+
+/// §28E: the Line constraints of the rectangle under the saved Fillet,
+/// through the existing `edit-sketch-constraints-copy`. The stored Lines stay
+/// the solver's starting guess; the part, and the Fillet's corner and radius,
+/// are the solved plate's.
+mod constraints {
+    use super::radius::{filleted_by_cli, filleted_without_kernel, stored_refs};
+    use super::*;
+
+    const OP: &str = "edit-sketch-constraints-copy";
+
+    /// A kernel and a solver, or why this build has none. A build required
+    /// to link PlaneGCS must have it: this never skips there.
+    fn solving() -> bool {
+        if !super::native() {
+            return false;
+        }
+        if ferritecad_eval::solver_available() {
+            return true;
+        }
+        assert_ne!(
+            std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+            Ok("1")
+        );
+        eprintln!("skipped: constrained geometry requires PlaneGCS");
+        false
+    }
+
+    impl Fixture {
+        fn constraint_row(&self) -> &Value {
+            &self.catalog["sketches"][0]["constraint_edit"]
+        }
+        fn plate_sketch_id(&self) -> &str {
+            self.catalog["sketches"][0]["sketch_id"]
+                .as_str()
+                .expect("Sketch UUID")
+        }
+        /// The stored Line `i`, in stored order.
+        fn line(&self, i: usize) -> Value {
+            self.constraint_row()["curves"][i]["curve_id"].clone()
+        }
+        fn stored_starts(&self) -> Vec<[f64; 2]> {
+            self.constraint_row()["curves"]
+                .as_array()
+                .expect("curves")
+                .iter()
+                .map(|c| {
+                    let p = &c["start_mm"];
+                    [p[0].as_f64().expect("x"), p[1].as_f64().expect("y")]
+                })
+                .collect()
+        }
+        fn ask_constraints(&self, remove: &[Value], add: &[Value]) {
+            write(
+                &self.request,
+                &json!({"request_version": 1, "remove": remove, "add": add}),
+            );
+        }
+        fn constrain(&self, output: &Path) -> Command {
+            let mut c = cli();
+            c.arg(OP)
+                .arg(&self.source)
+                .arg("--sketch")
+                .arg(self.plate_sketch_id())
+                .arg("--expect-version")
+                .arg(self.version())
+                .arg("--request")
+                .arg(&self.request)
+                .arg("-o")
+                .arg(output)
+                .arg("--json");
+            c
+        }
+        /// The same fixture, reading `path` instead.
+        fn at_copy(&self, path: &Path) -> Fixture {
+            Fixture {
+                root: tempfile::tempdir().expect("directory"),
+                source: path.to_path_buf(),
+                request: self.request.clone(),
+                catalog: inspect(path),
+            }
+        }
+    }
+
+    fn rule(line: &Value, rule: &str) -> Value {
+        json!({"curve_id": line, "rule": rule})
+    }
+    fn length(line: &Value, mm: f64) -> Value {
+        json!({"curve_id": line, "rule": "distance", "distance_mm": mm})
+    }
+    fn pin(line: &Value, x: f64, y: f64) -> Value {
+        json!({"curve_id": line, "rule": "fixed", "at": "start", "x_mm": x, "y_mm": y})
+    }
+
+    /// Which stored Lines run along X, by index.
+    fn horizontal(starts: &[[f64; 2]]) -> Vec<bool> {
+        (0..starts.len())
+            .map(|i| starts[i][1] == starts[(i + 1) % starts.len()][1])
+            .collect()
+    }
+
+    /// Where a stored vertex lands when the stored rectangle is solved to one
+    /// whose first Line starts at `at`, `width` along X and `depth` along Y,
+    /// every side kept.
+    fn solved_vertex(
+        starts: &[[f64; 2]],
+        v: [f64; 2],
+        at: [f64; 2],
+        width: f64,
+        depth: f64,
+    ) -> [f64; 2] {
+        let s = starts[0];
+        [
+            if v[0] == s[0] {
+                at[0]
+            } else {
+                at[0] + (v[0] - s[0]).signum() * width
+            },
+            if v[1] == s[1] {
+                at[1]
+            } else {
+                at[1] + (v[1] - s[1]).signum() * depth
+            },
+        ]
+    }
+
+    /// `[x0, y0, width, depth]` of the rectangle through these vertices.
+    fn rect_of(vertices: &[[f64; 2]]) -> [f64; 4] {
+        let lo = |k: usize| vertices.iter().map(|v| v[k]).fold(f64::INFINITY, f64::min);
+        let hi = |k: usize| {
+            vertices
+                .iter()
+                .map(|v| v[k])
+                .fold(f64::NEG_INFINITY, f64::max)
+        };
+        [lo(0), lo(1), hi(0) - lo(0), hi(1) - lo(1)]
+    }
+
+    /// The Line starts the rebuild built the plate from, and the solve's
+    /// degrees of freedom, read in-process from a cold rebuild.
+    fn solved(path: &Path) -> (Vec<[f64; 2]>, usize) {
+        let d = Document::open_read_only(path).expect("reopen");
+        let objects = d.objects().expect("objects");
+        let sketch = objects
+            .iter()
+            .find(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
+            .expect("the plate's Sketch");
+        let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+        let built = ferritecad_eval::rebuild_cold(&d, &mut k, &OperationContext::default())
+            .expect("cold rebuild");
+        let report = built.solve_report(sketch.id).expect("a solve report");
+        assert!(report.redundant().is_empty(), "{report:?}");
+        let starts = built
+            .sketch_presentation(sketch.id)
+            .expect("presentation")
+            .curves()
+            .iter()
+            .map(|c| match c.geometry() {
+                ferritecad_document::SketchGeometry::Line { start, .. } => [start.x, start.y],
+                other => panic!("a Line, not {other:?}"),
+            })
+            .collect();
+        let dof = report.degrees_of_freedom();
+        built.release_all(&mut k);
+        d.close().expect("close");
+        (starts, dof)
+    }
+
+    /// Every SQL cell survives except the selected Sketch row's schema
+    /// version, payload and hash, and the `sketch.constraints` capability the
+    /// existing policy records; rows keep their counts but for that one row.
+    /// Returns how many cells moved.
+    fn only_this_sketch_changed(source: &Path, copy: &Path, sketch: &str) -> usize {
+        let before = tables(source);
+        let after = tables(copy);
+        assert_eq!(
+            before.keys().collect::<Vec<_>>(),
+            after.keys().collect::<Vec<_>>()
+        );
+        let id: ferritecad_types::ObjectId = sketch.parse().expect("UUID");
+        let selected = rusqlite::types::Value::Blob(id.to_bytes().to_vec());
+        let mut moved = 0;
+        for (table, (columns, rows)) in &before {
+            let (theirs, mine) = &after[table];
+            assert_eq!(columns, theirs, "{table} columns");
+            if table == "capabilities" {
+                let text = |r: &Vec<rusqlite::types::Value>| format!("{r:?}");
+                let kept: Vec<_> = rows.iter().map(text).collect();
+                let new: Vec<_> = mine.iter().map(text).collect();
+                assert!(kept.iter().all(|r| new.contains(r)), "a capability changed");
+                assert!(
+                    new.iter()
+                        .filter(|r| !kept.contains(r))
+                        .all(|r| r.contains("sketch.constraints.v1")),
+                    "{new:?}"
+                );
+                assert!(mine.len() <= rows.len() + 1);
+                continue;
+            }
+            assert_eq!(rows.len(), mine.len(), "{table} rows");
+            for (a, b) in rows.iter().zip(mine) {
+                for (i, column) in columns.iter().enumerate() {
+                    if a[i] == b[i] {
+                        continue;
+                    }
+                    moved += 1;
+                    let allowed = match (table.as_str(), column.as_str()) {
+                        ("objects", "schema_version" | "payload" | "payload_hash") => {
+                            a.contains(&selected)
+                        }
+                        ("meta", "modified_at") => true,
+                        _ => false,
+                    };
+                    assert!(allowed, "{table}.{column} changed");
+                }
+            }
+        }
+        assert!(
+            capability_names(copy).contains(&"sketch.constraints.v1".to_owned()),
+            "{:?}",
+            capability_names(copy)
+        );
+        moved
+    }
+
+    fn exact([_, _, w, d]: [f64; 4], r: f64, h: f64) -> f64 {
+        (w * d - (1. - PI / 4.) * r * r) * h
+    }
+
+    /// The axis a Fillet of radius `r` at `corner` of `rect` has: r inward
+    /// along both sides.
+    fn axis_of(rect: [f64; 4], corner: [f64; 2], r: f64) -> [f64; 2] {
+        let [x0, y0, w, d] = rect;
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert!(near(corner[0], x0) || near(corner[0], x0 + w));
+        assert!(near(corner[1], y0) || near(corner[1], y0 + d));
+        [
+            corner[0] + if near(corner[0], x0) { r } else { -r },
+            corner[1] + if near(corner[1], y0) { r } else { -r },
+        ]
+    }
+
+    /// One published constraint copy of `f` measured against the rectangle
+    /// it must solve to: identities, SQL, the stored guess, the solve, the
+    /// B-Rep, the cache, the mesh and FBX. Returns the copy and its rect.
+    #[allow(clippy::too_many_arguments)]
+    fn published(
+        f: &Fixture,
+        corner: [f64; 2],
+        r: f64,
+        expected: &[[f64; 2]],
+        dof: usize,
+        name: &str,
+    ) -> PathBuf {
+        let before = std::fs::read(&f.source).expect("source bytes");
+        let refs = stored_refs(&f.source);
+        let stored = f.stored_starts();
+        let fillet_before = f.catalog["fillets"][0].clone();
+        let copy = f.root.path().join(format!("{name}.fcad"));
+        let v = reply(f.constrain(&copy).output().expect("process"), OP, 0);
+        assert_eq!(v["result"]["sketch_id"], f.plate_sketch_id());
+        assert_eq!(v["result"]["solve"]["degrees_of_freedom"], dof, "{v}");
+        assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
+        only_this_sketch_changed(&f.source, &copy, f.plate_sketch_id());
+        assert_eq!(stored_refs(&copy), refs, "every name and its UUID kept");
+
+        // The stored Lines are still the starting guess, UUID for UUID; the
+        // Fillet row is the saved one.
+        let after = inspect(&copy);
+        let g = f.at_copy(&copy);
+        assert_eq!(g.stored_starts(), stored, "stored coordinates are kept");
+        for i in 0..4 {
+            assert_eq!(g.line(i), f.line(i), "Line {i}");
+        }
+        let fillet = &after["fillets"][0];
+        for key in ["feature_id", "edge", "radius_mm", "previous_feature_id"] {
+            assert_eq!(fillet[key], fillet_before[key], "{key}");
+        }
+        assert_eq!(fillet["profile_constrained"], true);
+        assert_eq!(fillet["radius_edit"]["max_radius_mm"], Value::Null);
+        let context = &g.constraint_row()["fillet_base"];
+        assert_eq!(context["fillet_feature_id"], fillet_before["feature_id"]);
+        assert_eq!(context["stored_corner_mm"], json!(corner));
+        assert_eq!(context["radius_mm"], r);
+
+        // The solve, measured: the solved plate is the expected rectangle,
+        // Line for Line, with no snapping and no residue beyond 1e-9 mm.
+        let (starts, measured_dof) = solved(&copy);
+        assert_eq!(measured_dof, dof, "DOF of the cold rebuild");
+        let mut worst: f64 = 0.;
+        for (s, e) in starts.iter().zip(expected) {
+            worst = worst.max((s[0] - e[0]).abs()).max((s[1] - e[1]).abs());
+        }
+        eprintln!("FCAD_28E_SOLVED {name} worst_mm={worst:e}");
+        assert!(worst < 1e-9, "{starts:?} is not {expected:?}");
+        let rect = rect_of(expected);
+        let moved = expected[stored.iter().position(|v| *v == corner).expect("corner")];
+
+        // The B-Rep: 7 faces, the analytic volume, the same named face a
+        // cylinder of the saved radius about an axis r inward of the solved
+        // corner.
+        let n = refs.len();
+        let rebuilt = cli()
+            .arg("rebuild")
+            .arg(&copy)
+            .arg("--cold")
+            .output()
+            .expect("rebuild");
+        let text = String::from_utf8(rebuilt.stdout).expect("UTF-8");
+        assert!(
+            text.contains(&format!("{n} of {n} stored references resolved")),
+            "{text}"
+        );
+        let cold = measure(&copy, None);
+        let cache = copy.with_extension("fcad-cache");
+        cold.same_as(&measure(
+            &copy,
+            Some((&cache, ferritecad_eval::CacheOutcome::Miss)),
+        ));
+        cold.same_as(&measure(
+            &copy,
+            Some((&cache, ferritecad_eval::CacheOutcome::Hit)),
+        ));
+        assert_eq!(cold.faces, 7);
+        let volume = exact(rect, r, H);
+        assert!(
+            (cold.volume - volume).abs() < 1e-9 * volume,
+            "{} is not {volume}",
+            cold.volume
+        );
+        assert_eq!(cold.fillet, FaceSurface::Cylinder { radius: r });
+        let axis = axis_of(rect, moved, r);
+        assert!(
+            (cold.axis_origin[0] - axis[0]).abs() < 1e-9
+                && (cold.axis_origin[1] - axis[1]).abs() < 1e-9
+                && cold.axis_direction[0].abs() < 1e-12
+                && cold.axis_direction[1].abs() < 1e-12,
+            "the axis {:?} is not r inward of {moved:?}",
+            cold.axis_origin
+        );
+        let m = mesh(&copy, &copy.with_extension("stl"));
+        check_mesh_in(&m, rect, moved, r, H);
+        fbx(&copy, name);
+        copy
+    }
+
+    /// The full dimensioning of `f`'s rectangle: H/V on every Line, the first
+    /// Line's start pinned at `at`, the width and the depth.
+    fn dimensioned(f: &Fixture, at: [f64; 2], width: f64, depth: f64) -> Vec<Value> {
+        let starts = f.stored_starts();
+        let across = horizontal(&starts);
+        let mut add: Vec<Value> = (0..4)
+            .map(|i| {
+                rule(
+                    &f.line(i),
+                    if across[i] { "horizontal" } else { "vertical" },
+                )
+            })
+            .collect();
+        add.push(pin(&f.line(0), at[0], at[1]));
+        let h = across.iter().position(|a| *a).expect("a horizontal Line");
+        let v = across.iter().position(|a| !*a).expect("a vertical Line");
+        add.push(length(&f.line(h), width));
+        add.push(length(&f.line(v), depth));
+        add
+    }
+
+    /// Discovery on a rounded plate whose Sketch carries constraints, and the
+    /// protocol, with no kernel or solver needed: the stored corner is named
+    /// as stored, the bound is deferred, the coordinate editor refuses, the
+    /// constraint editor offers the Sketch, and a build without the kernel or
+    /// the solver refuses a well-formed request before writing anything.
+    #[test]
+    fn constraint_discovery_and_protocol_without_native() {
+        let plain = filleted_without_kernel(CCW, [X0 + W, Y0], 2.375);
+        let row = plain.constraint_row();
+        assert_eq!(row["available"], true, "{row}");
+        assert_eq!(row["fillet_base"]["stored_corner_mm"], json!([X0 + W, Y0]));
+        assert_eq!(
+            row["fillet_base"]["fillet_feature_id"],
+            plain.catalog["fillets"][0]["feature_id"]
+        );
+        assert_eq!(plain.catalog["fillets"][0]["profile_constrained"], false);
+        assert_eq!(
+            plain.catalog["fillets"][0]["radius_edit"]["max_radius_mm"],
+            6.125
+        );
+        assert_eq!(
+            plain.catalog["features"][0]["fillet_base"]["profile_constrained"],
+            false
+        );
+
+        // Constraints written by the shipped preparation and writer, no kernel.
+        let mut d = Document::open(&plain.source).expect("writable");
+        let sketch: ferritecad_types::ObjectId = plain.plate_sketch_id().parse().expect("UUID");
+        let line = |i: usize| -> ferritecad_types::StableEntityId {
+            plain.line(i).as_str().expect("UUID").parse().expect("UUID")
+        };
+        let edits = ferritecad_document::SketchConstraintEdits {
+            remove: Vec::new(),
+            add: vec![ferritecad_document::AddSketchConstraint::Line(
+                ferritecad_document::AddLineConstraint::Line {
+                    curve: line(0),
+                    kind: ferritecad_document::LineConstraintKind::Horizontal,
+                },
+            )],
+        };
+        let prepared =
+            ferritecad_document::prepare_sketch_constraints(&d, sketch, &edits).expect("prepared");
+        d.write_sketch_constraints(&prepared).expect("written");
+        d.close().expect("close");
+        let f = Fixture {
+            catalog: inspect(&plain.source),
+            ..plain
+        };
+        let row = f.constraint_row();
+        assert_eq!(row["available"], true);
+        assert_eq!(
+            row["constraints"].as_array().expect("list").len(),
+            5,
+            "{row}"
+        );
+        let fillet = &f.catalog["fillets"][0];
+        assert_eq!(fillet["profile_constrained"], true);
+        assert_eq!(
+            fillet["corner_mm"],
+            json!([X0 + W, Y0]),
+            "the stored corner"
+        );
+        assert_eq!(fillet["radius_edit"]["available"], true);
+        assert_eq!(fillet["radius_edit"]["max_radius_mm"], Value::Null);
+        assert_eq!(
+            f.catalog["features"][0]["fillet_base"]["profile_constrained"],
+            true
+        );
+        assert_eq!(f.catalog["edit_extrude"]["available"], true, "§28C");
+        let sketch_row = &f.catalog["sketches"][0];
+        assert_eq!(
+            sketch_row["editable"], false,
+            "coordinates of a constrained Sketch"
+        );
+        assert!(
+            sketch_row["refusal"]
+                .as_str()
+                .expect("reason")
+                .contains("unconstrained"),
+            "{sketch_row}"
+        );
+
+        // The protocol. Without a kernel the kernel is asked for after the
+        // request is read; with a kernel and no solver the solve is refused;
+        // with both, this example publishes (covered natively).
+        let before = std::fs::read(&f.source).expect("bytes");
+        let never = f.root.path().join("never.fcad");
+        f.ask_constraints(&[], &[length(&f.line(1), 11.5)]);
+        let names = entries(f.root.path());
+        let solver = ferritecad_occt::is_available() && ferritecad_eval::solver_available();
+        if !solver {
+            let v = reply(f.constrain(&never).output().expect("process"), OP, 2);
+            assert_eq!(refused(&v), "unsupported", "{v}");
+            if !ferritecad_occt::is_available() {
+                assert!(v.to_string().contains("Open CASCADE"), "{v}");
+            }
+        }
+        // A malformed request is refused before any kernel is asked for.
+        write(
+            &f.request,
+            &json!({"request_version": 1, "remove": [], "add": [], "radius_mm": 1}),
+        );
+        let v = reply(f.constrain(&never).output().expect("process"), OP, 2);
+        assert_eq!(refused(&v), "input", "{v}");
+        // Closure links are not removable, on this plate as on any other.
+        let closure = f.constraint_row()["constraints"]
+            .as_array()
+            .expect("list")
+            .iter()
+            .find(|c| c["rule"]["kind"] == "coincident")
+            .expect("a closure link")["constraint_id"]
+            .clone();
+        f.ask_constraints(&[closure], &[]);
+        let v = reply(f.constrain(&never).output().expect("process"), OP, 2);
+        assert_eq!(refused(&v), "input", "{v}");
+        assert_eq!(entries(f.root.path()), names, "a refusal left something");
+        assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
+    }
+
+    /// OCCT without PlaneGCS: the unconstrained rounded plate still builds,
+    /// and a constraint copy of it is refused, typed, publishing nothing.
+    #[test]
+    fn occt_without_solver_refuses_a_constrained_rounded_plate() {
+        if !super::native() {
+            return;
+        }
+        assert!(
+            !ferritecad_eval::solver_available(),
+            "the mixed gate must not link a solver"
+        );
+        let f = filleted_by_cli(CCW, [X0 + W, Y0], 2.375, "rounded");
+        let m = measure(&f.source, None);
+        assert_eq!(m.faces, 7);
+        let before = std::fs::read(&f.source).expect("bytes");
+        let names = entries(f.root.path());
+        f.ask_constraints(&[], &dimensioned(&f, [1.5, 2.25], 30.25, 9.5));
+        let never = f.root.path().join("never.fcad");
+        let v = reply(f.constrain(&never).output().expect("process"), OP, 2);
+        assert_eq!(refused(&v), "unsupported", "{v}");
+        assert!(
+            v["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("constraint"),
+            "{v}"
+        );
+        assert_eq!(entries(f.root.path()), names, "no destination or scratch");
+        assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
+    }
+
+    /// Fully dimensioned in both windings and from another starting Line, on
+    /// two different corners: translated and with both sides changed to
+    /// fractional sizes. Stored and solved differ; the rounded face is the
+    /// same named face of the same radius, at the corner its two Lines now
+    /// meet. DOF 0, measured.
+    #[test]
+    fn native_constraints_solve_the_rounded_plate_and_keep_every_identity() {
+        if !solving() {
+            return;
+        }
+        let r = 3.0625;
+        for (label, corners, corner) in [
+            ("ccw", CCW, [X0 + W, Y0]),
+            ("cw", CW_FROM_UPPER_RIGHT, [X0, Y0 + D]),
+            ("third", CCW_FROM_THIRD, [X0 + W, Y0]),
+        ] {
+            let f = filleted_by_cli(corners, corner, r, &format!("rounded-{label}"));
+            let (at, width, depth) = ([-9.25, -2.5], 41.125, 15.625);
+            f.ask_constraints(&[], &dimensioned(&f, at, width, depth));
+            let starts = f.stored_starts();
+            let expected: Vec<_> = starts
+                .iter()
+                .map(|v| solved_vertex(&starts, *v, at, width, depth))
+                .collect();
+            assert_ne!(expected, starts, "the solve moves the plate");
+            published(&f, corner, r, &expected, 0, &format!("constraints-{label}"));
+        }
+    }
+
+    /// Replace length (one removal and one addition, atomically), then the
+    /// exact pin UUID removed, then every user constraint: closure remains,
+    /// the coordinate editor refuses, and nothing is dropped. The cache
+    /// under one path misses on the plate and the Fillet and never returns
+    /// the old part.
+    #[test]
+    fn native_replace_length_and_exact_removals_resize_the_rounded_plate() {
+        if !solving() {
+            return;
+        }
+        let r = 2.375;
+        let corner = [X0 + W, Y0 + D];
+        let f = filleted_by_cli(CCW, corner, r, "rounded");
+        let (at, width, depth) = ([0.5, 1.25], 30.75, 10.5);
+        f.ask_constraints(&[], &dimensioned(&f, at, width, depth));
+        let starts = f.stored_starts();
+        let map = |w: f64, d: f64| -> Vec<[f64; 2]> {
+            starts
+                .iter()
+                .map(|v| solved_vertex(&starts, *v, at, w, d))
+                .collect()
+        };
+        let first = published(&f, corner, r, &map(width, depth), 0, "constraints-first");
+
+        // Replace the width: the stored distance UUID out, a new one in.
+        let g = f.at_copy(&first);
+        let listed = g.constraint_row()["constraints"]
+            .as_array()
+            .expect("list")
+            .clone();
+        let width_rule = listed
+            .iter()
+            .find(|c| c["rule"]["kind"] == "distance" && c["rule"]["distance"] == width)
+            .expect("the width")["constraint_id"]
+            .clone();
+        g.ask_constraints(&[width_rule.clone()], &[length(&g.line(0), 22.25)]);
+        let place = g.root.path().join("in-place.fcad");
+        std::fs::copy(&first, &place).expect("copy");
+        let cache = place.with_extension("fcad-cache");
+        let (old, _) = measure_events(&place, Some(&cache));
+        let replaced = published(&g, corner, r, &map(22.25, depth), 0, "constraints-replaced");
+        let listed_now = inspect(&replaced)["sketches"][0]["constraint_edit"]["constraints"]
+            .as_array()
+            .expect("list")
+            .clone();
+        assert!(!listed_now.iter().any(|c| c["constraint_id"] == width_rule));
+        assert_eq!(listed_now.len(), listed.len(), "one out, one in");
+        // In place: the plate and the Fillet miss; neither is the old part.
+        std::fs::copy(&replaced, &place).expect("replace in place");
+        let (changed, events) = measure_events(&place, Some(&cache));
+        assert!(
+            events
+                .iter()
+                .all(|e| e.outcome == ferritecad_eval::CacheOutcome::Miss),
+            "{events:?}"
+        );
+        assert!(
+            (changed.volume - old.volume).abs() > 1.0,
+            "not the old part"
+        );
+        let (hit, events) = measure_events(&place, Some(&cache));
+        assert!(
+            events
+                .iter()
+                .all(|e| e.outcome == ferritecad_eval::CacheOutcome::Hit)
+        );
+        changed.same_as(&hit);
+
+        // The exact pin UUID removed: two degrees of freedom, measured.
+        let k = g.at_copy(&replaced);
+        let pin_rule = k.constraint_row()["constraints"]
+            .as_array()
+            .expect("list")
+            .iter()
+            .find(|c| c["rule"]["kind"] == "fixed")
+            .expect("the pin")["constraint_id"]
+            .clone();
+        k.ask_constraints(&[pin_rule], &[]);
+        let unpinned = k.root.path().join("unpinned.fcad");
+        let v = reply(k.constrain(&unpinned).output().expect("process"), OP, 0);
+        assert_eq!(v["result"]["solve"]["degrees_of_freedom"], 2);
+        let (_, dof) = solved(&unpinned);
+        assert_eq!(dof, 2);
+        let m = measure(&unpinned, None);
+        assert_eq!(m.faces, 7);
+        assert!((m.volume - exact([0., 0., 22.25, depth], r, H)).abs() < 1e-9 * m.volume);
+
+        // Every user constraint removed: the four closure links remain, the
+        // part is the stored plate again, and the coordinate editor refuses
+        // a constrained Sketch as it always has.
+        let u = k.at_copy(&unpinned);
+        let user: Vec<Value> = u.constraint_row()["constraints"]
+            .as_array()
+            .expect("list")
+            .iter()
+            .filter(|c| c["rule"]["kind"] != "coincident")
+            .map(|c| c["constraint_id"].clone())
+            .collect();
+        assert_eq!(user.len(), 6, "H/V on four Lines, the width and the depth");
+        u.ask_constraints(&user, &[]);
+        let bare = u.root.path().join("closure-only.fcad");
+        let v = reply(u.constrain(&bare).output().expect("process"), OP, 0);
+        assert_eq!(v["result"]["solve"]["degrees_of_freedom"], 8);
+        let catalog = inspect(&bare);
+        let left = catalog["sketches"][0]["constraint_edit"]["constraints"]
+            .as_array()
+            .expect("list")
+            .clone();
+        assert_eq!(left.len(), 4);
+        assert!(left.iter().all(|c| c["rule"]["kind"] == "coincident"));
+        assert_eq!(catalog["sketches"][0]["editable"], false);
+        assert_eq!(catalog["sketches"][0]["constraint_edit"]["available"], true);
+        let (starts_now, _) = solved(&bare);
+        assert_eq!(
+            starts_now, starts,
+            "closure alone solves to the stored plate"
+        );
+        let m = measure(&bare, None);
+        assert!((m.volume - exact([X0, Y0, W, D], r, H)).abs() < 1e-9 * m.volume);
+    }
+
+    /// Radius and height after constraints, on the same UUIDs. The radius
+    /// bound is the solved plate's: a radius the stored rectangle would
+    /// refuse publishes when the solved one fits it, and one the stored
+    /// rectangle would accept is refused when the solved one does not. The
+    /// constraints are kept byte for byte.
+    #[test]
+    fn native_radius_and_height_after_constraints_answer_to_the_solved_plate() {
+        if !solving() {
+            return;
+        }
+        let r = 2.375;
+        let corner = [X0 + W, Y0];
+        let f = filleted_by_cli(CCW, corner, r, "rounded");
+        let starts = f.stored_starts();
+        // Wider and deeper than stored: half the shorter side is 7.75 mm,
+        // where the stored rectangle allows 6.125 mm.
+        let (at, width, depth) = ([-6.0, 2.0], 41.25, 15.5);
+        f.ask_constraints(&[], &dimensioned(&f, at, width, depth));
+        let wide = f.root.path().join("wide.fcad");
+        reply(f.constrain(&wide).output().expect("process"), OP, 0);
+        let g = f.at_copy(&wide);
+        let sketch_bytes = |p: &Path| {
+            let t = tables(p);
+            let (columns, rows) = &t["objects"];
+            let at = columns
+                .iter()
+                .position(|c| c == "payload")
+                .expect("payload");
+            let id: ferritecad_types::ObjectId = g.plate_sketch_id().parse().expect("UUID");
+            let key = rusqlite::types::Value::Blob(id.to_bytes().to_vec());
+            rows.iter()
+                .find(|r| r.contains(&key))
+                .expect("the Sketch row")[at]
+                .clone()
+        };
+        let constrained_payload = sketch_bytes(&wide);
+        g.ask_radius(7.0);
+        let rounder = g.root.path().join("rounder.fcad");
+        reply(
+            g.edit(&rounder).output().expect("process"),
+            "edit-fillet-radius",
+            0,
+        );
+        assert_eq!(
+            sketch_bytes(&rounder),
+            constrained_payload,
+            "constraints kept"
+        );
+        let m = measure(&rounder, None);
+        assert_eq!(m.fillet, FaceSurface::Cylinder { radius: 7.0 });
+        let rect = rect_of(
+            &starts
+                .iter()
+                .map(|v| solved_vertex(&starts, *v, at, width, depth))
+                .collect::<Vec<_>>(),
+        );
+        assert!((m.volume - exact(rect, 7.0, H)).abs() < 1e-9 * m.volume);
+
+        // Narrower than stored: 4.25 mm allowed, where the stored rectangle
+        // would allow 6.125 mm. 5 mm is refused by the rebuild, atomically.
+        let (at, width, depth) = ([1.0, 1.0], 30.0, 8.5);
+        f.ask_constraints(&[], &dimensioned(&f, at, width, depth));
+        let narrow = f.root.path().join("narrow.fcad");
+        reply(f.constrain(&narrow).output().expect("process"), OP, 0);
+        let k = f.at_copy(&narrow);
+        k.ask_radius(5.0);
+        let names = entries(k.root.path());
+        let never = k.root.path().join("never.fcad");
+        let v = reply(
+            k.edit(&never).output().expect("process"),
+            "edit-fillet-radius",
+            2,
+        );
+        assert_eq!(refused(&v), "input", "{v}");
+        let message = v["error"]["message"].as_str().expect("message");
+        assert!(
+            message.contains("solve") && message.contains("too short"),
+            "{message}"
+        );
+        assert_eq!(entries(k.root.path()), names);
+
+        // The height, on the constrained plate: the Sketch row is untouched.
+        let taller = k.root.path().join("taller.fcad");
+        let mut c = cli();
+        c.arg("edit-extrude")
+            .arg(&narrow)
+            .arg("--feature")
+            .arg(
+                k.catalog["features"][0]["feature_id"]
+                    .as_str()
+                    .expect("base"),
+            )
+            .arg("--distance-mm")
+            .arg("9.75")
+            .arg("--expect-version")
+            .arg(k.version())
+            .arg("-o")
+            .arg(&taller)
+            .arg("--json");
+        reply(c.output().expect("process"), "edit-extrude", 0);
+        assert_eq!(sketch_bytes(&taller), sketch_bytes(&narrow));
+        let m = measure(&taller, None);
+        let rect = rect_of(
+            &starts
+                .iter()
+                .map(|v| solved_vertex(&starts, *v, at, width, depth))
+                .collect::<Vec<_>>(),
+        );
+        assert!((m.volume - exact(rect, r, 9.75)).abs() < 1e-9 * m.volume);
+        assert_eq!(stored_refs(&taller), stored_refs(&f.source));
+    }
+
+    /// Refusals, each atomic: the solved rectangle too narrow for the saved
+    /// radius; a solve that turns a Line off its side; a real solver
+    /// conflict naming its UUIDs; a stale version; an occupied destination.
+    #[test]
+    fn native_constraint_refusals_under_a_fillet_are_atomic() {
+        if !solving() {
+            return;
+        }
+        let r = 2.375;
+        let f = filleted_by_cli(CCW, [X0 + W, Y0], r, "rounded");
+        let before = std::fs::read(&f.source).expect("bytes");
+        let names = entries(f.root.path());
+        let never = f.root.path().join("never.fcad");
+        let refuse = |add: &[Value], kind: &str, words: &[&str]| {
+            f.ask_constraints(&[], add);
+            let v = reply(f.constrain(&never).output().expect("process"), OP, 2);
+            assert_eq!(refused(&v), kind, "{v}");
+            let text = v.to_string();
+            for w in words {
+                assert!(text.contains(w), "{w}: {v}");
+            }
+            assert_eq!(entries(f.root.path()), names, "a refusal left something");
+            assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
+            v
+        };
+        // 4.5 mm deep leaves 2.25 mm for a radius of 2.375 mm.
+        refuse(
+            &dimensioned(&f, [0., 0.], 30., 4.5),
+            "input",
+            &["too short", "4.5"],
+        );
+        // The first Line's start pinned 5 mm beyond its own end, the sides
+        // held H/V: the solved plate is a rectangle 5 mm wide whose first
+        // Line runs the other way, which is not the corner that was rounded.
+        let starts = f.stored_starts();
+        let across = horizontal(&starts);
+        let mut add: Vec<Value> = (0..4)
+            .map(|i| {
+                rule(
+                    &f.line(i),
+                    if across[i] { "horizontal" } else { "vertical" },
+                )
+            })
+            .collect();
+        add.push(pin(&f.line(0), starts[1][0] + 5.0, starts[0][1]));
+        let v = refuse(&add, "input", &["side"]);
+        eprintln!("FCAD_28E_SIDE_REFUSAL {v}");
+        // One length and nothing to hold the sides: the solve shortens the
+        // first Line and slants its neighbours, so the plate is no longer an
+        // axis-aligned rectangle.
+        let v = refuse(&[length(&f.line(0), 30.)], "unsupported", &["rectangle"]);
+        eprintln!("FCAD_28E_CLASS_REFUSAL {v}");
+        // A real conflict: both horizontal sides dimensioned, differently,
+        // on a plate whose sides are held H/V.
+        let mut conflict = dimensioned(&f, [0., 0.], 30., 10.);
+        let opposite = (1..4)
+            .find(|i| across[*i])
+            .expect("the other horizontal Line");
+        conflict.push(length(&f.line(opposite), 20.));
+        let v = refuse(&conflict, "constraint", &[]);
+        eprintln!("FCAD_28E_CONFLICT {v}");
+        let named = v["error"]["constraint_conflict"]["constraints"]
+            .as_array()
+            .expect("the conflicting constraints")
+            .clone();
+        assert!(!named.is_empty(), "{v}");
+        assert!(named.iter().all(|c| c["constraint_id"].is_string()), "{v}");
+        // Stale version and an occupied destination.
+        f.ask_constraints(&[], &[length(&f.line(1), 11.5)]);
+        let mut c = cli();
+        c.arg(OP)
+            .arg(&f.source)
+            .arg("--sketch")
+            .arg(f.plate_sketch_id())
+            .arg("--expect-version")
+            .arg("0".repeat(64))
+            .arg("--request")
+            .arg(&f.request)
+            .arg("-o")
+            .arg(&never)
+            .arg("--json");
+        assert_eq!(
+            refused(&reply(c.output().expect("process"), OP, 2)),
+            "input"
+        );
+        let taken = f.root.path().join("taken.fcad");
+        std::fs::write(&taken, b"another process owns this").expect("occupied");
+        let v = reply(f.constrain(&taken).output().expect("process"), OP, 2);
+        assert_eq!(refused(&v), "input", "{v}");
+        assert_eq!(
+            std::fs::read(&taken).expect("kept"),
+            b"another process owns this"
+        );
+        std::fs::remove_file(&taken).expect("tidy");
+        assert_eq!(entries(f.root.path()), names);
+        assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
+    }
+
+    /// The radius bound on the solved plate, on both sides of it: a solved
+    /// depth of exactly 2 r publishes, 1e-7 mm less is refused with the
+    /// numbers, publishing nothing.
+    #[test]
+    fn native_the_radius_bound_is_exact_on_the_solved_plate() {
+        if !solving() {
+            return;
+        }
+        let r = 2.375;
+        let corner = [X0 + W, Y0];
+        let f = filleted_by_cli(CCW, corner, r, "rounded");
+        let starts = f.stored_starts();
+        let (at, width) = ([2.5, -1.5], 28.5);
+        f.ask_constraints(&[], &dimensioned(&f, at, width, 2. * r));
+        let expected: Vec<_> = starts
+            .iter()
+            .map(|v| solved_vertex(&starts, *v, at, width, 2. * r))
+            .collect();
+        published(&f, corner, r, &expected, 0, "constraints-bound");
+        f.ask_constraints(&[], &dimensioned(&f, at, width, 2. * r - 1e-7));
+        let names = entries(f.root.path());
+        let never = f.root.path().join("never.fcad");
+        let v = reply(f.constrain(&never).output().expect("process"), OP, 2);
+        assert_eq!(refused(&v), "input", "{v}");
+        assert!(v.to_string().contains("too short"), "{v}");
+        assert_eq!(entries(f.root.path()), names);
+    }
+}

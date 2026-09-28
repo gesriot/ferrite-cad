@@ -653,12 +653,25 @@ pub fn evaluable_fillet(
         return Ok(corner);
     }
     solved_corner(sketch, built, base.id, fillet).map_err(|e| {
-        let message = format!("as its constraints solve it, the rounded plate {e}");
+        let message = format!(
+            "as its constraints solve it, the rounded plate {}",
+            bare(&e)
+        );
         match e.kind() {
             ferritecad_types::ErrorKind::Input => CadError::input(message),
             _ => unsupported(message),
         }
     })
+}
+
+/// A refusal's sentence without the kind its display starts with, for a
+/// refusal that is quoted inside another one.
+fn bare(e: &CadError) -> String {
+    let text = e.to_string();
+    ["invalid input: ", "unsupported: "]
+        .iter()
+        .find_map(|p| text.strip_prefix(p))
+        .map_or(text.clone(), str::to_owned)
 }
 
 /// The Fillet's policy on the solved Lines of a constrained plate.
@@ -674,8 +687,12 @@ fn solved_corner(
             "is not drawn by the same four Lines in their stored order",
         ));
     }
-    let corners = corners_of_lines(feature, built)
-        .map_err(|e| unsupported(format!("is no longer an axis-aligned rectangle ({e})")))?;
+    let corners = corners_of_lines(feature, built).map_err(|e| {
+        unsupported(format!(
+            "is no longer an axis-aligned rectangle ({})",
+            bare(&e)
+        ))
+    })?;
     let start = |c: &crate::SketchCurve| match c.geometry {
         SketchGeometry::Line { start, .. } => [start.x, start.y],
         _ => [f64::NAN; 2],
@@ -685,13 +702,15 @@ fn solved_corner(
         &stored.curves.iter().map(start).collect::<Vec<_>>(),
         &built.iter().map(start).collect::<Vec<_>>(),
     )
-    .map_err(|e| CadError::input(format!("moves a Line off its side: {e}")))?;
+    .map_err(|e| CadError::input(format!("moves a Line off its side: {}", bare(&e))))?;
     let corner = corner_for(&corners, fillet.edge)
-        .map_err(|e| CadError::input(format!("no longer has the rounded corner: {e}")))?;
+        .map_err(|e| CadError::input(format!("no longer has the rounded corner: {}", bare(&e))))?;
     corner.check_radius(fillet.radius_mm).map_err(|e| {
         CadError::input(format!(
-            "has sides of {} and {} mm at the rounded corner, too short for the saved radius: {e}",
-            corner.adjacent_lengths_mm[0], corner.adjacent_lengths_mm[1]
+            "has sides of {} and {} mm at the rounded corner, too short for the saved radius: {}",
+            corner.adjacent_lengths_mm[0],
+            corner.adjacent_lengths_mm[1],
+            bare(&e)
         ))
     })?;
     Ok(corner)
