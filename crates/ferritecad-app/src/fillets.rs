@@ -871,7 +871,7 @@ pub(crate) mod tests {
     }
 
     type Rows = Vec<Vec<rusqlite::types::Value>>;
-    fn tables(path: &Path) -> std::collections::BTreeMap<String, (Vec<String>, Rows)> {
+    pub(crate) fn tables(path: &Path) -> std::collections::BTreeMap<String, (Vec<String>, Rows)> {
         let c =
             rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
                 .expect("SQL");

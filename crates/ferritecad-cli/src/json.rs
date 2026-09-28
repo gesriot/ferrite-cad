@@ -324,6 +324,11 @@ struct Sketch {
     /// so which policy `edit-sketch-copy` applies. Null exactly when
     /// `vertices` is.
     profile_feature: Option<ProfileFeature>,
+    /// §28D, additive: the saved Fillet over the plate this Sketch profiles,
+    /// when `edit-sketch-copy` may move or resize it; the same object
+    /// `features[].fillet_base` carries. The Fillet keeps its corner and
+    /// radius. `null` on every other row.
+    fillet_base: Option<FilletBaseDiscovery>,
 }
 
 /// The feature a coordinate-editable profile feeds, stated by kind.
@@ -1380,6 +1385,7 @@ pub fn inspect(path: &Path) -> Result<Inspection> {
                 cut_history_v2: s.cut_history.as_ref().and_then(SketchCutHistory::of),
                 cut_history_v3: s.cut_history.as_ref().and_then(SketchCutHistory::of),
                 profile_feature: s.profile_use.map(ProfileFeature::of),
+                fillet_base: s.fillet.as_ref().map(FilletBaseDiscovery::of),
                 vertices: s.vertices.map(|vs| {
                     vs.into_iter()
                         .map(|v| SketchVertex {

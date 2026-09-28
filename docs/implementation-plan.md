@@ -3860,3 +3860,36 @@ recorded before implementation:
 
 [Contract and executable recipe](edit-fillet-base-height.md),
 [verification](edit-fillet-base-height-verification.md).
+
+**§28D — move or resize the rectangle under a rounded plate, in a new copy.**
+The base Sketch under the one saved Fillet takes new Line coordinates through
+the existing **Edit Sketch** form, canvas drag and Undo/Redo, and through
+`edit-sketch-copy`; the Fillet keeps its UUID, `previous`, joint, radius and
+every name, and rounds the same corner of the moved rectangle. No command,
+request, pipeline, capability, schema, cache key or kernel route is added.
+The 5C milestone stays open: an arbitrary quadrilateral, constraints,
+reordering or reversing the loop, a rotated plane, a second Fillet, Chamfer,
+a Cut with a Fillet, preview, picking and in-place Save are not part of this
+slice.
+
+The contract, with the exact SQL allowlist, was recorded before
+implementation:
+- The frame is the one §28B and §28C read (`fillet_over_plate`); only that
+  Fillet's profile Sketch may be selected, and the coordinate editor's rules
+  (every Line once in saved order, closed, same winding) still apply.
+- The candidate is judged by the functions the Fillet uses: an axis-aligned
+  rectangle (`rectangle_corners`), the joint found again by its two Line UUIDs
+  (`corner_for`), the saved radius under §28A's unchanged policy
+  (`check_radius`, never clamped). In addition every Line keeps its side
+  (axis and direction), so the rounded corner is the same corner of the
+  part.
+- Only the Sketch row's `payload`/`payload_hash` change (the coordinate
+  writer does not stamp `meta.modified_at`). The writer re-derives inside its
+  transaction against the Fillet as it is then; the job's content version
+  covers the Fillet row and every name.
+- Every saved name must resolve after the strict cold rebuild.
+- `sketches[]` gains the additive `fillet_base`; the constraint, circle and
+  annulus editors keep refusing a filleted part by name.
+
+[Contract and executable recipe](edit-fillet-base-sketch.md),
+[verification](edit-fillet-base-sketch-verification.md).

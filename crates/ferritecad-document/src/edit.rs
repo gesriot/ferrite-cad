@@ -166,12 +166,9 @@ impl ExtrudeEditSource {
             revolve_angles: crate::revolve_angle_choices(document, &objects),
             fillet_bodies: crate::fillet_choices(document, &objects),
             fillet_features: crate::fillet_radius_choices(document, &objects),
-            filleted: match fillet {
-                Ok(_) => None,
-                Err(reason) => crate::fillet::refuse_filleted(&objects).err().map(|e| {
-                    format!("{e}. This Fillet is outside the frame those edits read: {reason}")
-                }),
-            },
+            filleted: fillet
+                .err()
+                .map(|reason| crate::fillet::filleted_outside_frame(&objects, &reason).to_string()),
             refusal,
         })
     }
