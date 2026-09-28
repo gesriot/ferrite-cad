@@ -907,12 +907,12 @@ pub(crate) fn finish_edit(
 
 #[cfg(test)]
 #[allow(clippy::panic)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use ferritecad_document::Document;
     use ferritecad_kernel::OperationContext;
     /// §27G: the same editor on the profile of a Revolve with a bore.
-    mod revolve;
+    pub(crate) mod revolve;
     /// The single-Line halves of a pending request, in the request's own words.
     fn kind_of(add: &AddSketchConstraint) -> LineConstraintKind {
         match *add {

@@ -47,7 +47,12 @@ const SHAFT_WIDE: [[f64; 2]; 6] = [
 
 /// The standalone Revolve frame, written without a kernel. `axis` is the
 /// index of the stated axis Line of a solid part.
-fn write_sector(path: &Path, points: &[[f64; 2]], degrees: f64, axis: Option<usize>) -> ObjectId {
+pub(crate) fn write_sector(
+    path: &Path,
+    points: &[[f64; 2]],
+    degrees: f64,
+    axis: Option<usize>,
+) -> ObjectId {
     let mut d = Document::create(path).expect("document");
     let [plane, sketch, revolve, body] = std::array::from_fn(|_| ObjectId::new());
     let n = points.len();
@@ -126,7 +131,7 @@ fn write_sector(path: &Path, points: &[[f64; 2]], degrees: f64, axis: Option<usi
     d.close().expect("close");
     revolve
 }
-fn reading(path: &Path) -> ExtrudeEditSource {
+pub(crate) fn reading(path: &Path) -> ExtrudeEditSource {
     let d = Document::open_read_only(path).expect("open");
     let source = ExtrudeEditSource::read(&d).expect("catalog");
     d.close().expect("close");

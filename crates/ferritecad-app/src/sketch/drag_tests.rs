@@ -1833,3 +1833,103 @@ fn native_partial_revolve_profile_widgets_drag_worker_and_cli_edit_one_copy() {
     assert_eq!(export(&ui), export(&peer), "STL and FBX bytes, no mapping");
     assert_eq!(std::fs::read(&source).expect("source"), source_bytes);
 }
+
+/// Restore uses the same gesture gate as Undo. A drag that is already owned
+/// stays one checkpoint when its release lands on the button, and a press on
+/// the button during that drag does not write the saved snapshot.
+#[test]
+fn restore_saved_vertices_stays_out_of_one_drag() {
+    let (_root, path, reading) = crate::fillets::tests::rounded(2.375);
+    let id = reading.sketches[0].sketch;
+    let bytes = std::fs::read(&path).expect("source");
+    let mut e = Editor::default();
+    assert!(e.begin_edit(&path, &reading, id));
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut e, vec![]);
+    frame(&ctx, &mut e, vec![]);
+    let saved = Editor::saved_coordinate_text(&e.editing.as_ref().expect("request").0.vertices);
+    replace_field(&ctx, &mut e, "33", "36");
+    replace_field(&ctx, &mut e, "-4.5", "-2");
+    let pre = e.draft.clone().expect("two edited vertices");
+    assert_eq!(pre.points[0][0], "36");
+    assert_eq!(pre.points[2][0], "-2");
+    assert_ne!(pre.points, saved);
+    let undo_n = e.undo.len();
+    let out = frame(&ctx, &mut e, vec![]);
+    let button_at = text_at(&out, "Restore saved vertices");
+    let at = vertex(&ctx, &mut e, 1);
+
+    press(&ctx, &mut e, at);
+    move_to(&ctx, &mut e, at + egui::vec2(48., 0.));
+    assert!(e.canvas.gesture.is_some());
+    assert_eq!(e.undo.len(), undo_n, "preview is not a step");
+    button(&ctx, &mut e, at + egui::vec2(48., 0.), false);
+    assert!(e.gesture_finished());
+    assert_eq!(e.undo.len(), undo_n + 1, "one drag, one checkpoint");
+    assert_eq!(e.draft.as_ref().expect("draft").points[0][0], "36");
+    assert_eq!(e.draft.as_ref().expect("draft").points[2][0], "-2");
+    assert_ne!(
+        e.draft.as_ref().expect("draft").points[1][0],
+        pre.points[1][0]
+    );
+    assert_ne!(e.draft.as_ref().expect("draft").points, saved);
+    choose(&ctx, &mut e, "Undo draft");
+    assert_eq!(e.draft.as_ref(), Some(&pre));
+    assert_eq!(e.redo.len(), 1);
+
+    // Release of the owned drag arrives over Restore. The drag remains the only step.
+    press(&ctx, &mut e, at);
+    move_to(&ctx, &mut e, at + egui::vec2(48., 0.));
+    let during = e.undo.len();
+    frame(
+        &ctx,
+        &mut e,
+        vec![
+            egui::Event::PointerMoved(button_at),
+            egui::Event::PointerButton {
+                pos: button_at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            },
+        ],
+    );
+    assert!(e.gesture_finished());
+    assert_eq!(e.undo.len(), during + 1);
+    assert_ne!(e.draft.as_ref().expect("draft").points, saved);
+    assert_eq!(e.draft.as_ref().expect("draft").points[0][0], "36");
+    assert_eq!(e.draft.as_ref().expect("draft").points[2][0], "-2");
+    choose(&ctx, &mut e, "Undo draft");
+    assert_eq!(e.draft.as_ref(), Some(&pre));
+
+    // A press on Restore while the drag is owned cancels that drag and does not restore.
+    press(&ctx, &mut e, at);
+    move_to(&ctx, &mut e, at + egui::vec2(48., 0.));
+    assert_ne!(e.draft.as_ref(), Some(&pre));
+    let during = e.undo.len();
+    frame(
+        &ctx,
+        &mut e,
+        vec![
+            egui::Event::PointerMoved(button_at),
+            egui::Event::PointerButton {
+                pos: button_at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+            egui::Event::PointerButton {
+                pos: button_at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            },
+        ],
+    );
+    assert_eq!(e.undo.len(), during);
+    assert_eq!(e.draft.as_ref(), Some(&pre));
+    assert_ne!(pre.points, saved);
+    assert!(e.gesture_finished());
+    assert!(e.take_edit_request().is_none());
+    assert_eq!(std::fs::read(&path).expect("source"), bytes);
+}
