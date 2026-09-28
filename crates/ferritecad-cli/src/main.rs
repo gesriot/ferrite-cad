@@ -146,7 +146,7 @@ enum Command {
     Inspect(InspectArgs),
     /// Check stored consistency without writes, migration or a geometry kernel.
     Validate(ValidateArgs),
-    /// Print the dependency graph.
+    /// Print the dependency graph without migration or writes.
     DumpGraph(DumpGraphArgs),
     /// Delete a document's regenerable cache sidecar.
     ClearCache(DocumentArgs),
@@ -343,6 +343,7 @@ struct CreateArgs {
 
 #[derive(Debug, Args)]
 struct DumpGraphArgs {
+    /// Existing current-schema document, opened read-only.
     path: PathBuf,
 
     #[arg(long, value_enum, default_value_t = GraphFormat::Text)]
@@ -414,7 +415,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::from(validation_exit(&checked.report)))
         }
         Command::DumpGraph(args) => {
-            let document = Document::open(&args.path)?;
+            let document = Document::open_read_only(&args.path)?;
             match args.format {
                 GraphFormat::Text => render::graph_text(&document)?,
                 GraphFormat::Dot => render::graph_dot(&document)?,

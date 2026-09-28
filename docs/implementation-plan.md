@@ -2399,6 +2399,25 @@ STEP или complete FBX. Между validate/export нет общего snapsho
 ошибкой. Обновлён перечень JSON-команд. Локальные повторные проверки и результаты
 CI опубликованного head/merge фиксируются отдельно от отчёта реализации.
 
+**§24J-1 — реализовано: read-only dump-graph.**
+`Command::DumpGraph` открывает документ существующим `Document::open_read_only`
+и печатает прежние `render::graph_text` / `graph_dot`. Второго открытия, мигратора,
+kernel, content version, своей SQLite-конфигурации и нового jobs/API слоя нет.
+Текущий документ сохраняет прежний text/DOT stdout и exit 0; default text равен
+явному `--format text`; файл и соседние sidecars не меняются. Старая схема, WAL,
+существующие WAL/SHM при DELETE-заголовке и несовместимый minimum reader дают
+прежний отказ общего reader: exit 2, пустой stdout, без миграции и repair.
+Missing/broken путь не создаёт файл, sidecar или каталог. Права чтения достаточны;
+отказ записи не мешает dump, отказ чтения остаётся operational error.
+`--format json` и clap usage не меняются, JSON не вводится. Порядок графа,
+диагностика, DOT-экранирование и `clear-cache` не входят в срез: `clear-cache`
+по-прежнему идёт через `Document::open`.
+[Проверки и независимое ревью](dump-graph-read-only-verification.md).
+Ревью подтвердило прежние байты stdout/stderr/exit на текущем документе и
+сохранность v2 при отказе обеих форм. Пять process tests, четыре validate tests,
+девять CLI unit tests, fmt и workspace clippy прошли без skips.
+Production-код не потребовал исправлений. CI опубликованного commit учитывается отдельно.
+
 ## 14.25. Создание собственных моделей
 
 **§25A — реализован ограниченный контур → Extrude → новый FCAD.**
