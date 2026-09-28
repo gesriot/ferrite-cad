@@ -5096,12 +5096,18 @@ pub(crate) mod tests {
     /// stored guess unchanged — and byte-identical STL and FBX.
     #[test]
     fn native_fillet_base_constraint_worker_and_cli_publish_the_same_part() {
-        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
+        // Each requirement is asserted only for what is actually missing: a
+        // build with OCCT and no PlaneGCS is not an OCCT failure.
+        if !ferritecad_occt::is_available() {
             assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+        }
+        if !ferritecad_sketch_solver::is_available() {
             assert_ne!(
                 std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
                 Ok("1")
             );
+        }
+        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
             eprintln!("skipped: the constraint worker needs OCCT and PlaneGCS");
             return;
         }
@@ -5196,7 +5202,6 @@ pub(crate) mod tests {
         same_publication(&ui, &peer, &stored, 11);
         // The solved plate: 41 x 14.25, the rounded corner pinned at
         // (36.5, 1.25), measured by its volume.
-        use ferritecad_kernel::GeometryKernel;
         let d = Document::open_read_only(&ui).expect("worker copy");
         let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
         let built = ferritecad_eval::rebuild_cold(&d, &mut k, &OperationContext::default())

@@ -4485,7 +4485,10 @@ mod constraints {
             .find(|c| c["rule"]["kind"] == "distance" && c["rule"]["distance"] == width)
             .expect("the width")["constraint_id"]
             .clone();
-        g.ask_constraints(&[width_rule.clone()], &[length(&g.line(0), 22.25)]);
+        g.ask_constraints(
+            std::slice::from_ref(&width_rule),
+            &[length(&g.line(0), 22.25)],
+        );
         let place = g.root.path().join("in-place.fcad");
         std::fs::copy(&first, &place).expect("copy");
         let cache = place.with_extension("fcad-cache");

@@ -358,7 +358,7 @@ pub fn edit_sketch_constraints_copy<K: GeometryKernel + ?Sized>(
         context,
         |source| {
             ferritecad_document::prepare_sketch_constraints(source, request.sketch, &request.edits)
-                .map(CopyWrite::Constraints)
+                .map(|p| CopyWrite::Constraints(Box::new(p)))
         },
         |prepared, solve| {
             let CopyWrite::Constraints(prepared) = prepared else {
@@ -594,7 +594,9 @@ enum CopyWrite {
     /// Boxed for the same reason as the one above it.
     CutParameters(Box<ferritecad_document::PreparedCutParameters>),
     Coordinates(ferritecad_document::ObjectRecord),
-    Constraints(ferritecad_document::PreparedSketchConstraints),
+    /// Boxed since §28E carries the Fillet the frame read, for the reason Cut
+    /// is.
+    Constraints(Box<ferritecad_document::PreparedSketchConstraints>),
     Circle(ferritecad_document::ObjectRecord),
     Annulus(ferritecad_document::ObjectRecord),
     RevolveAngle(ferritecad_document::PreparedRevolveAngle),
