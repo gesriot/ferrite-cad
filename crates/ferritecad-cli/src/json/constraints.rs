@@ -173,6 +173,21 @@ pub(crate) struct Discovery {
     /// policy its solved drawing must satisfy. Null exactly when `curves` is.
     /// No height is reported for a Revolve, which has none.
     profile_feature: Option<super::ProfileFeature>,
+    /// §28E, additive: the saved Fillet over the plate when this is its base
+    /// Sketch; `null` on every other row. `stored_corner_mm` is the corner in
+    /// the stored coordinates — the solver's starting guess — and not the
+    /// part's: whether the radius fits the solved plate is checked when a copy
+    /// is rebuilt.
+    fillet_base: Option<FilletContext>,
+}
+/// The Fillet a constraint edit of its base Sketch keeps (§28E).
+#[derive(Serialize)]
+struct FilletContext {
+    fillet_feature_id: ObjectId,
+    body_id: ObjectId,
+    edge: super::FilletEdgeDto,
+    radius_mm: f64,
+    stored_corner_mm: [f64; 2],
 }
 impl Discovery {
     pub(crate) fn new(choice: ConstraintSketchChoice, document_refusal: Option<String>) -> Self {
@@ -224,6 +239,16 @@ impl Discovery {
                 .as_ref()
                 .map(|s| s.constraints.iter().map(Constraint::from).collect()),
             profile_feature: choice.profile_use.map(super::ProfileFeature::of),
+            fillet_base: choice.fillet.as_ref().map(|f| FilletContext {
+                fillet_feature_id: f.feature,
+                body_id: f.body,
+                edge: super::FilletEdgeDto {
+                    feature_id: f.edge.feature,
+                    joint: f.edge.joint.segments(),
+                },
+                radius_mm: f.radius_mm,
+                stored_corner_mm: f.corner.corner_mm,
+            }),
         }
     }
 }

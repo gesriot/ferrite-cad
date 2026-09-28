@@ -225,6 +225,28 @@ Sketch (его UUID есть в `inspect --json`, у строки `sketches[]` �
 отвечает `unsupported` на любой корректный запрос, discovery работает.
 [Контракт §28D и исполняемый рецепт](edit-fillet-base-sketch.md).
 
+§28E: прежний `edit-sketch-constraints-copy` задаёт, меняет и снимает
+существующие Line-ограничения (H/V, длина и Replace length, одна Fixed-точка,
+равные длины, Parallel/Perpendicular) базового Sketch плиты под сохранённым
+Fillet и публикует новую копию. В `inspect --json` у строки
+`sketches[].constraint_edit` базового Sketch — `available: true` и аддитивный
+`fillet_base` (Fillet, ребро, радиус, `stored_corner_mm`). Хранимые координаты
+остаются начальным приближением решателя; деталь строится из решения PlaneGCS.
+Fillet проверяется при каждой пересборке на решённых Line: тот же
+осепараллельный прямоугольник тех же Line в прежнем порядке, каждая Line на
+своей стороне, стык по двум UUID, `r ≤ ½` меньшей соседней стороны. Хранимые
+длины ограниченной плиты ничего не доказывают: у `fillets[]` появляется
+`profile_constrained`, а `radius_edit.max_radius_mm` тогда `null` — граница
+проверяется при публикации копии. Меняются только `schema_version`/`payload`/
+`payload_hash` строки Sketch и строка capability `sketch.constraints.v1`;
+Fillet, его ребро, радиус, все UUID, имена и зависимости сохраняются. Правка
+радиуса и высоты после ограничений сохраняет их; редактор координат честно
+отказывает Sketch с ограничениями. Слишком узкая решённая плита, Line на
+другой стороне — `input`; потеря прямоугольника — `unsupported`; противоречие
+решателя — `constraint` с UUID. Без ядра — `unsupported` «Open CASCADE»; с
+ядром без PlaneGCS — `unsupported`; discovery работает везде.
+[Контракт §28E и исполняемый рецепт](fillet-base-constraints.md).
+
 §25A добавляет [собственный Line-полигон → Blind Extrude](sketch-extrude-create.md):
 UI `Create sketch + Extrude…` и CLI `create-sketch-extrude request.json -o new.fcad [--json]`
 используют `PolygonExtrusion` + `CreateDocumentRequest` / `create_document_with_kernel`.

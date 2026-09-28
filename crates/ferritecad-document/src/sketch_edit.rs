@@ -239,16 +239,48 @@ fn unsupported(message: &str) -> CadError {
 /// (§27G) and a solid part closed on the axis along its stated Line (§27H).
 /// The stated `axis_segment` travels in the returned use, so the stored and
 /// every solved profile are judged against that same Line and no other.
+///
+/// §28E: the base Sketch of the plate under the one saved Fillet, read by the
+/// frame §28B–§28D read, with that Fillet returned beside it. Its solved
+/// drawing is judged by the Extrude's polygon policy here and by the Fillet's
+/// own policy in the rebuild. Any other Sketch of a filleted part, and a
+/// Fillet outside that frame, are refused naming the Fillet.
 pub(crate) fn constraint_frame<'a>(
     document: &Document,
     objects: &'a [ObjectRecord],
     object: &'a ObjectRecord,
-) -> Result<(&'a crate::Sketch, SketchProfileUse)> {
+) -> Result<(
+    &'a crate::Sketch,
+    SketchProfileUse,
+    Option<crate::SavedFillet>,
+)> {
     if objects
         .iter()
         .any(|o| matches!(&o.payload, ObjectPayload::Revolve(r) if r.profile == object.id))
     {
-        return revolve_frame(document, objects, object);
+        let (sketch, profile_use) = revolve_frame(document, objects, object)?;
+        return Ok((sketch, profile_use, None));
+    }
+    match crate::fillet_radius::fillet_over_plate(document, objects) {
+        Ok(None) => {}
+        Ok(Some(saved)) => {
+            if object.id != saved.profile {
+                return Err(unsupported(&format!(
+                    "constraint editing of the plate under Fillet {} requires its base Sketch {}",
+                    saved.feature, saved.profile
+                )));
+            }
+            require_lossless_payload(object)?;
+            let ObjectPayload::Sketch(sketch) = &object.payload else {
+                return Err(unsupported("selected object is not a Sketch"));
+            };
+            let profile_use = SketchProfileUse::BlindExtrude {
+                feature: saved.previous,
+                height_mm: saved.height_mm,
+            };
+            return Ok((sketch, profile_use, Some(saved)));
+        }
+        Err(reason) => return Err(crate::fillet::filleted_outside_frame(objects, &reason)),
     }
     let (sketch, height, feature) = extrude_frame(document, objects, object)?;
     Ok((
@@ -257,6 +289,7 @@ pub(crate) fn constraint_frame<'a>(
             feature,
             height_mm: height,
         },
+        None,
     ))
 }
 
@@ -686,45 +719,10 @@ fn validate_coordinates(
 
 /// §28D: each Line runs along the same axis in the same direction as saved.
 fn keeps_every_side(original: &[SketchVertex], points: &[Point2]) -> Result<()> {
-    let sign = |v: f64| (v > 0.) as i8 - (v < 0.) as i8;
-    // Both profiles already passed the shared rectangle/radius checks.
-    // Their dominant component identifies the side; a sub-tolerance
-    // component on the other axis must not invent a diagonal direction.
-    // Keep the supplied coordinates and leave tolerance to that one reader.
-    let side = |dx: f64, dy: f64| {
-        if dx.abs() >= dy.abs() {
-            (sign(dx), 0)
-        } else {
-            (0, sign(dy))
-        }
-    };
-    let n = original.len();
-    for i in 0..n {
-        let (a, b) = (original[i].start_mm, original[(i + 1) % n].start_mm);
-        let (p, q) = (points[i], points[(i + 1) % n]);
-        let saved = side(b[0] - a[0], b[1] - a[1]);
-        let candidate = side(q.x - p.x, q.y - p.y);
-        if saved != candidate {
-            return Err(CadError::input(format!(
-                "Line {} of the rounded plate must keep its side: it ran {} and would run {}; \
-                 moving or resizing the rectangle keeps every Line on its side",
-                original[i].curve_id,
-                direction(saved),
-                direction(candidate)
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn direction((x, y): (i8, i8)) -> &'static str {
-    match (x, y) {
-        (1, 0) => "+X",
-        (-1, 0) => "-X",
-        (0, 1) => "+Y",
-        (0, -1) => "-Y",
-        _ => "diagonally",
-    }
+    let ids: Vec<_> = original.iter().map(|v| v.curve_id).collect();
+    let saved: Vec<_> = original.iter().map(|v| v.start_mm).collect();
+    let candidate: Vec<_> = points.iter().map(|p| [p.x, p.y]).collect();
+    crate::fillet::keeps_every_side(&ids, &saved, &candidate)
 }
 
 fn winding(points: &[Point2]) -> bool {

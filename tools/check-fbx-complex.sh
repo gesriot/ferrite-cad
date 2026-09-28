@@ -569,4 +569,24 @@ if [ -n "${FCAD_FILLET_FBX_DIR:-}" ]; then
         grep -q '^FCAD_STL_FBX_MATCH triangles=[1-9][0-9]* ' "$work/$name-match.txt"
     done
     echo "FCAD_FILLET_SKETCH_UFBX_EXECUTED"
+    # §28E: the same Fillet on a plate whose base Sketch is dimensioned and
+    # solved: both windings, another starting Line, Replace length and the
+    # solved plate exactly 2 r deep.
+    for name in constraints-ccw constraints-cw constraints-third constraints-first constraints-replaced constraints-bound; do
+        "$reader" --identity "$FCAD_FILLET_FBX_DIR/$name.fbx" | tee "$work/$name-reader.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=[1-9][0-9]* failures=0$' "$work/$name-reader.txt"; then
+            echo "error: constrained plate FBX was not independently read: $name" >&2
+            exit 1
+        fi
+        "$reader" --triangles "$FCAD_FILLET_FBX_DIR/$name.fbx" > "$work/$name-triangles.txt"
+        if ! grep -q '^FCAD_PRODUCTION_FBX_UFBX_EXECUTED checks=[0-9]* failures=0$' "$work/$name-triangles.txt"; then
+            echo "error: constrained plate FBX triangles were not read: $name" >&2
+            exit 1
+        fi
+        "$python" "$(native "$root/tools/fbx/stl-matches-fbx.py")" \
+            "$FCAD_FILLET_FBX_DIR/$name.stl" "$(native "$work/$name-triangles.txt")" \
+            | tee "$work/$name-match.txt"
+        grep -q '^FCAD_STL_FBX_MATCH triangles=[1-9][0-9]* ' "$work/$name-match.txt"
+    done
+    echo "FCAD_FILLET_CONSTRAINTS_UFBX_EXECUTED"
 fi

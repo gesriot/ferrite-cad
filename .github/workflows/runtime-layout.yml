@@ -631,6 +631,23 @@ jobs:
           EXTRACT
           FERRITECAD="$recipe_cli" "$py" ferrite-28d-recipe.py | tee fillet-sketch-recipe-no-solver.log
           grep -q '^FCAD_28D_RECIPE_OK ' fillet-sketch-recipe-no-solver.log
+          # §28E: without a solver the rounded plate still builds, its
+          # constraints are discovered, and a constraint copy is refused.
+          for gate in constraints::constraint_discovery_and_protocol_without_native \
+            constraints::occt_without_solver_refuses_a_constrained_rounded_plate
+          do
+            FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release --no-default-features -p ferritecad-cli --test fillet "$gate" \
+              -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-constraints-no-solver.log
+            if grep -q 'skipped:' fillet-constraints-no-solver.log || ! grep -Fq "test $gate ... ok" fillet-constraints-no-solver.log; then exit 1; fi
+          done
+          "$py" - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/fillet-base-constraints.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_28E_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-28e-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$recipe_cli" "$py" ferrite-28e-recipe.py | tee fillet-constraints-recipe-no-solver.log
+          grep -q '^FCAD_28E_RECIPE_NO_SOLVER ' fillet-constraints-recipe-no-solver.log
 
       - name: Build the real application and the command line tool against both
         id: build
@@ -1874,7 +1891,13 @@ jobs:
             sketch::native_sketch_edits_move_the_rounded_corner_and_keep_every_identity \
             sketch::native_the_same_rectangle_publishes_the_same_model \
             sketch::native_a_moved_rectangle_misses_in_place_and_interleaves_with_height_and_radius \
-            sketch::native_sketch_refusals_races_cancellation_and_report_loss_are_atomic
+            sketch::native_sketch_refusals_races_cancellation_and_report_loss_are_atomic \
+            constraints::constraint_discovery_and_protocol_without_native \
+            constraints::native_constraints_solve_the_rounded_plate_and_keep_every_identity \
+            constraints::native_replace_length_and_exact_removals_resize_the_rounded_plate \
+            constraints::native_radius_and_height_after_constraints_answer_to_the_solved_plate \
+            constraints::native_constraint_refusals_under_a_fillet_are_atomic \
+            constraints::native_the_radius_bound_is_exact_on_the_solved_plate
           do
             cargo test --release --features planegcs -p ferritecad-cli --test fillet "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-cli.log
@@ -1920,7 +1943,10 @@ jobs:
             fillet_radius::tests::the_base_rectangle_moves_and_resizes_alone_and_interleaves \
             fillet_radius::tests::a_candidate_rectangle_that_does_not_keep_the_rounded_corner_is_refused \
             fillet_radius::tests::the_sketch_writer_refuses_a_forged_or_stale_preparation \
-            fillet_radius::tests::a_sketch_under_a_fillet_outside_the_frame_is_refused_with_its_reason
+            fillet_radius::tests::a_sketch_under_a_fillet_outside_the_frame_is_refused_with_its_reason \
+            fillet_radius::tests::constraints_on_the_rounded_plate_change_only_the_sketch_and_defer_the_bound \
+            fillet_radius::tests::the_constraint_writer_rederives_the_edit_under_a_fillet \
+            fillet_radius::tests::the_evaluator_judges_the_fillet_on_the_built_lines
           do
             FERRITECAD_REQUIRE_PLANEGCS=0 cargo test --release -p ferritecad-document --lib "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-domain.log
@@ -1941,12 +1967,28 @@ jobs:
             edits::tests::fillet_base_height_widgets_show_the_fillet_and_keep_the_draft \
             edits::tests::native_fillet_base_height_widgets_worker_and_cli_publish_the_same_part \
             sketch::tests::fillet_base_sketch_widgets_show_the_corner_and_keep_the_draft \
-            sketch::tests::native_fillet_base_sketch_widgets_worker_and_cli_publish_the_same_part
+            sketch::tests::native_fillet_base_sketch_widgets_worker_and_cli_publish_the_same_part \
+            constraints::tests::fillet_base_constraint_widgets_name_the_fillet_and_keep_the_draft \
+            constraints::tests::native_fillet_base_constraint_worker_and_cli_publish_the_same_part
           do
             cargo test --release --features planegcs -p ferritecad-app "$gate" \
               -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-ui.log
             if grep -q 'skipped:' fillet-ui.log || ! grep -Fq "test $gate ... ok" fillet-ui.log; then exit 1; fi
           done
+          # §28E: the public recipe, against this step's own CLI with PlaneGCS.
+          py="$(command -v python3 || command -v python)"
+          recipe_cli="$PWD/target/release/ferritecad"
+          case '${{ matrix.name }}' in
+            windows) recipe_cli="$(cygpath -w "$recipe_cli.exe")" ;;
+          esac
+          "$py" - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/fillet-base-constraints.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_28E_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-28e-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$recipe_cli" "$py" ferrite-28e-recipe.py | tee fillet-constraints-recipe.log
+          grep -q '^FCAD_28E_RECIPE_OK ' fillet-constraints-recipe.log
           echo "FCAD_FILLET_FBX_DIR=$artifacts" >> "$GITHUB_ENV"
 
       - name: Create, discover, edit and export through the JSON v1 CLI contract
@@ -2061,6 +2103,7 @@ jobs:
           grep -q '^FCAD_FILLET_RADIUS_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_HEIGHT_UFBX_EXECUTED$' fbx-json-tests.log
           grep -q '^FCAD_FILLET_SKETCH_UFBX_EXECUTED$' fbx-json-tests.log
+          grep -q '^FCAD_FILLET_CONSTRAINTS_UFBX_EXECUTED$' fbx-json-tests.log
 
       - name: Export one native Body through both STL clients
         env:

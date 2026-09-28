@@ -3948,3 +3948,49 @@ suite (44) and edit workers (11) passed without skips. A real macOS window
 verified invalid-text Restore, one Undo/Redo, drag, no-op Redo preservation,
 Save Cancel and publication. GUI/CLI SQL and STL/FBX agreed; pinned ufbx and
 the oriented-triangle join passed. Viewer peak 207.251 MiB, swap 0, exit 0.
+
+**§28E — dimension the rectangle under a rounded plate, in a new copy.** The
+base Sketch under the one saved Fillet takes the existing Line constraints
+(H/V, length and Replace length, one Fixed endpoint, equal length, Parallel,
+Perpendicular) through the existing **Edit constraints** form and worker and
+`edit-sketch-constraints-copy`. The Fillet keeps its UUID, joint, radius and
+every name and rounds the same corner of the **solved** plate; the stored Lines
+stay the solver's starting guess. No command, request, pipeline, constraint
+family, capability, payload version or schema is added. The 5C milestone
+stays open: creating a Fillet on a constrained profile, a second Fillet, Cut
+with Fillet, Chamfer, another quadrilateral or plane, preview and picking are
+not part of this slice.
+
+The contract, with the exact SQL allowlist, was recorded before
+implementation:
+- One frame reader (`fillet_over_plate`) now admits the constraint editor's
+  managed Line family on the base; the stored Lines must still be the
+  rectangle the Fillet names.
+- Structure and solved geometry are separate facts. The evaluator asks the
+  Fillet's policy (rectangle of the same Lines by the shared reader at its
+  unchanged 1e-7 mm tolerance, every Line on its side, the joint by its two
+  UUIDs, `r ≤ ½` the shorter adjacent side) of the Lines the predecessor was
+  built from — the drawing the rebuild already solved, cold and cached, with
+  no second solve. Stored lengths of a constrained plate bound nothing, in
+  either direction.
+- Only the Sketch row's `schema_version`/`payload`/`payload_hash` and the
+  `sketch.constraints.v1` capability row change. The constraint writer now
+  derives the edit again inside its transaction instead of trusting the
+  prepared payload.
+- Radius (§28B) and height (§28C) edits keep the constraints; the radius bound
+  of a constrained plate is judged by the rebuild. The coordinate editor
+  (§28D) honestly refuses a constrained Sketch; the closure links remain after
+  the last user constraint is removed.
+- Additive JSON: `constraint_edit.fillet_base` with `stored_corner_mm`, and
+  `profile_constrained` on the Fillet rows; `radius_edit.max_radius_mm` is
+  `null` for a constrained plate.
+- An older build refuses to rebuild such a document by name (its Fillet reader
+  requires an unconstrained profile); no new capability is needed.
+
+[Contract and executable recipe](fillet-base-constraints.md),
+[verification](fillet-base-constraints-verification.md).
+
+Independent review found no production defect. Pinned native checks and the
+real macOS window scenario passed, including refusal recovery, Save Cancel,
+Replace length and two publications. GUI/CLI SQL and STL/FBX agreed; independent
+ufbx/triangle checks passed. Viewer peak 206.111 MiB, swap 0, exit 0.

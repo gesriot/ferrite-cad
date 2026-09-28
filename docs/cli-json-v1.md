@@ -646,8 +646,10 @@ Sketch в `sketches[]` — `editable`, с `vertices` и `profile_feature`, ка�
 ```
 
 У остальных строк и в остальных документах `fillet_base` равно `null`.
-`cut_history_v3` остаётся `null`. Редакторы связей, окружности и кольца
-этого Sketch по-прежнему отказывают, называя UUID Fillet'а. Если Fillet вне
+`cut_history_v3` остаётся `null`. Редакторы окружности и кольца этого Sketch
+по-прежнему отказывают, называя UUID Fillet'а; Line-ограничения — §28E. Если
+Sketch несёт ограничения, редактор координат отказывает, как любому
+ограниченному профилю. Если Fillet вне
 класса, строка остаётся `editable: false`, а причина называет UUID Fillet'а
 и то, почему класс не выполнен.
 
@@ -659,6 +661,39 @@ UUID не базового Sketch (в том числе самого Fillet'а) 
 UTF-8-пути, затем чтение и разбор запроса, затем источник, затем ядро,
 поэтому любой корректный запрос — `unsupported`.
 [Контракт §28D и исполняемый рецепт](edit-fillet-base-sketch.md).
+
+### Ограничения скруглённой плиты (§28E)
+
+Отдельной команды нет: прежний `edit-sketch-constraints-copy` с прежними
+аргументами, запросом, envelope, result (`solve.degrees_of_freedom`) и
+кодами выхода (0, 2, 7).
+
+Discovery аддитивна. На поддержанной скруглённой плите
+`sketches[].constraint_edit` базового Sketch — `available: true`, с его
+хранимыми `curves` и `constraints`, как у любого управляемого Line-профиля, и
+получает `fillet_base`:
+
+```json
+{"fillet_base":{"fillet_feature_id":"…","body_id":"…",
+  "edge":{"feature_id":"…","joint":["…","…"]},
+  "radius_mm":2.375,"stored_corner_mm":[33.0,3.25]}}
+```
+
+`stored_corner_mm` — угол в **хранимых** координатах, не в решённой детали.
+У остальных строк `fillet_base` равно `null`. Аддитивно
+`profile_constrained` у `fillets[]`, `features[].fillet_base` и
+`sketches[].fillet_base`: если `true`, их `corner_mm` — хранимое приближение,
+а `fillets[].radius_edit.max_radius_mm` равно `null`: граница радиуса —
+решённой плиты и проверяется при публикации копии.
+
+Отказы при публикации (ничего не записывается): решённая плита слишком узка
+для сохранённого радиуса или Line сменила сторону — `input` с числами;
+решение не осепараллельный прямоугольник — `unsupported`; противоречивые
+ограничения — `constraint` с `constraint_conflict` и UUID; без PlaneGCS —
+`unsupported`; устаревшая версия, занятый выход, неверный запрос — `input`.
+Порядок проверок в stub-сборке прежний: запрос разбирается до ядра, поэтому
+корректный запрос — `unsupported` «Open CASCADE».
+[Контракт §28E и исполняемый рецепт](fillet-base-constraints.md).
 
 ## Правка сохранённой кольцевой пары (§25M)
 

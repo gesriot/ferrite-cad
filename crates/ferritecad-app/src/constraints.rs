@@ -196,6 +196,23 @@ impl Editor {
                 if let Some(owner) = draft.choice.profile_use.and_then(revolve_owner) {
                     ui.label(owner);
                 }
+                // §28E: the Fillet these Lines carry, and what the new copy
+                // has to be before it is saved.
+                if let Some(fillet) = &draft.choice.fillet {
+                    let [a, b] = fillet.edge.joint.segments();
+                    ui.label(format!(
+                        "Rounded by Fillet {} at the corner of Lines {a} | {b}, r {} mm \
+                         (stored corner ({}, {})). The Fillet keeps its corner and radius: \
+                         the new copy is saved only if the solved plate is still a rectangle \
+                         with every Line on its side and each side at that corner at least \
+                         {} mm.",
+                        fillet.feature,
+                        fillet.radius_mm,
+                        fillet.corner.corner_mm[0],
+                        fillet.corner.corner_mm[1],
+                        fillet.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION
+                    ));
+                }
                 ui.add_enabled_ui(!running, |ui| {
                     ui.horizontal(|ui| {
                         if ui.button("Cancel constraints draft").clicked() {
@@ -5004,5 +5021,206 @@ pub(crate) mod tests {
         assert!((volume6.abs() / 6. - 16500.).abs() < 0.02);
         assert_eq!(std::fs::read(&ui).expect("source"), original_constrained);
         assert_ne!(new_ui.expect("UI length"), new_cli.expect("CLI length"));
+    }
+
+    /// §28E: the form on the base Sketch of a rounded plate names the Fillet,
+    /// the two Lines of its corner and its radius, says the coordinates are
+    /// the stored ones and what the solved plate must be; it builds the usual
+    /// requests (H/V, length, Replace length) with bounded Undo/Redo, and keeps
+    /// the draft through a cancelled Save and a worker refusal about the
+    /// solved plate. No kernel is involved.
+    #[test]
+    fn fillet_base_constraint_widgets_name_the_fillet_and_keep_the_draft() {
+        let (_root, path, source) = crate::fillets::tests::rounded(2.375);
+        let choice = source.constraint_sketches[0].clone();
+        assert_eq!(choice.refusal, None);
+        let fillet = choice.fillet.clone().expect("the Fillet as context");
+        let [a, b] = fillet.edge.joint.segments();
+        let mut e = Editor::default();
+        assert!(e.begin(&path, &source, choice.sketch));
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut e, vec![]);
+        let out = frame(&ctx, &mut e, vec![]);
+        let context = format!(
+            "Rounded by Fillet {} at the corner of Lines {a} | {b}, r 2.375 mm (stored corner \
+             (33, 3.25)).",
+            fillet.feature
+        );
+        assert!(
+            out.shapes.iter().any(|s| matches!(&s.shape,
+                egui::Shape::Text(t) if t.galley.text().starts_with(&context)
+                    && t.galley.text().contains("at least 4.75 mm"))),
+            "{context}"
+        );
+        assert!(painted(
+            &out,
+            "Coordinates below are stored inputs, not the solved drawing."
+        ));
+        // Segment 2 runs along X on this plate.
+        click(&ctx, &mut e, "Segment 2");
+        click(&ctx, &mut e, "Add Horizontal");
+        enter_length(&ctx, &mut e, "30.5", false);
+        click(&ctx, &mut e, "Add length");
+        let kept = history_state(&e).0;
+        assert_eq!(kept.add.len(), 2);
+        click(&ctx, &mut e, "Undo");
+        assert_eq!(history_state(&e).0.add.len(), 1);
+        click(&ctx, &mut e, "Redo");
+        assert_eq!(history_state(&e).0, kept);
+        click(&ctx, &mut e, "Save constraints copy…");
+        let request = e.take_request().expect("the widgets' request");
+        assert!(e.take_request().is_none(), "one press, one request");
+        assert_eq!(request.sketch, choice.sketch);
+        assert_eq!(request.expected, source.version);
+        assert_eq!(request.edits, kept);
+        // A cancelled Save started nothing; a refusal about the solved plate
+        // keeps the draft for another try.
+        assert_eq!(history_state(&e).0, kept);
+        let mut state = crate::edits::Edits::default();
+        let generation = state
+            .start_constraints(request, |_, _, _| std::thread::spawn(|| {}))
+            .expect("started");
+        let refusal = ferritecad_types::CadError::input(
+            "as its constraints solve it, the rounded plate has sides of 30.5 and 4 mm at the \
+             rounded corner, too short for the saved radius",
+        );
+        assert!(finish_edit(&mut e, &mut state, generation, Err(refusal)).is_none());
+        assert!(e.active(), "a refusal keeps the draft");
+        assert_eq!(history_state(&e).0, kept);
+    }
+
+    /// §28E, native with PlaneGCS: the widgets' request on the rounded plate
+    /// through the app's worker and the same request through the shipped
+    /// `edit-sketch-constraints-copy` publish one document — every SQL row
+    /// equal once the newly minted constraint UUIDs are matched off, the
+    /// stored guess unchanged — and byte-identical STL and FBX.
+    #[test]
+    fn native_fillet_base_constraint_worker_and_cli_publish_the_same_part() {
+        // Each requirement is asserted only for what is actually missing: a
+        // build with OCCT and no PlaneGCS is not an OCCT failure.
+        if !ferritecad_occt::is_available() {
+            assert_ne!(std::env::var("FERRITECAD_REQUIRE_OCCT").as_deref(), Ok("1"));
+        }
+        if !ferritecad_sketch_solver::is_available() {
+            assert_ne!(
+                std::env::var("FERRITECAD_REQUIRE_PLANEGCS").as_deref(),
+                Ok("1")
+            );
+        }
+        if !ferritecad_occt::is_available() || !ferritecad_sketch_solver::is_available() {
+            eprintln!("skipped: the constraint worker needs OCCT and PlaneGCS");
+            return;
+        }
+        let (root, path, source) = crate::fillets::tests::rounded(2.375);
+        let before = std::fs::read(&path).expect("source");
+        let choice = source.constraint_sketches[0].clone();
+        let stored = choice.stored.clone().expect("stored").curves;
+        let mut e = Editor::default();
+        let ctx = egui::Context::default();
+        assert!(e.begin(&path, &source, choice.sketch));
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        // Clockwise from (33, 15.5): Segments 1 and 3 run along Y, 2 and 4
+        // along X. Pin the rounded corner, then the width and the depth.
+        for (segment, rule) in [
+            ("Segment 1", "Add Vertical"),
+            ("Segment 2", "Add Horizontal"),
+            ("Segment 3", "Add Vertical"),
+            ("Segment 4", "Add Horizontal"),
+        ] {
+            click(&ctx, &mut e, segment);
+            click(&ctx, &mut e, rule);
+        }
+        click(&ctx, &mut e, "Segment 2");
+        enter_field(&ctx, &mut e, "Fixed X (mm):", "36.5", false);
+        enter_field(&ctx, &mut e, "Fixed Y (mm):", "1.25", false);
+        click(&ctx, &mut e, "Add Fixed point");
+        enter_length(&ctx, &mut e, "41", false);
+        click(&ctx, &mut e, "Add length");
+        click(&ctx, &mut e, "Segment 1");
+        enter_length(&ctx, &mut e, "14.25", false);
+        click(&ctx, &mut e, "Add length");
+        click(&ctx, &mut e, "Save constraints copy…");
+        let mut request = e.take_request().expect("widget request");
+        assert_eq!(request.edits.add.len(), 7, "{:?}", request.edits);
+        let additions = request
+            .edits
+            .add
+            .iter()
+            .map(peer_addition)
+            .collect::<Vec<_>>()
+            .join(",");
+        let ui = root.path().join("worker.fcad");
+        request.destination = ui.clone();
+        let mut state = crate::edits::Edits::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        state
+            .start_constraints(request, move |r, g, c| {
+                crate::edits::spawn_constraint_edit(r, c, move |result| {
+                    tx.send((g, result)).expect("reply")
+                })
+            })
+            .expect("worker");
+        let (g, result) = rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("worker response");
+        assert_eq!(
+            result
+                .as_ref()
+                .expect("published")
+                .solve
+                .as_ref()
+                .expect("solve")
+                .degrees_of_freedom(),
+            0
+        );
+        assert_eq!(finish_edit(&mut e, &mut state, g, result), Some(ui.clone()));
+        let input = root.path().join("request.json");
+        std::fs::write(
+            &input,
+            format!(r#"{{"request_version":1,"remove":[],"add":[{additions}]}}"#),
+        )
+        .expect("input");
+        let peer = root.path().join("peer.fcad");
+        let result = std::process::Command::new(crate::creates::tests::ferritecad())
+            .arg("edit-sketch-constraints-copy")
+            .arg(&path)
+            .arg("--sketch")
+            .arg(choice.sketch.to_string())
+            .arg("--expect-version")
+            .arg(source.version.content.to_string())
+            .arg("--request")
+            .arg(input)
+            .arg("-o")
+            .arg(&peer)
+            .arg("--json")
+            .output()
+            .expect("peer");
+        assert!(result.status.success(), "{result:?}");
+        // Four closure links, four H/V, the pin and two lengths.
+        same_publication(&ui, &peer, &stored, 11);
+        // The solved plate: 41 x 14.25, the rounded corner pinned at
+        // (36.5, 1.25), measured by its volume.
+        let d = Document::open_read_only(&ui).expect("worker copy");
+        let mut k = ferritecad_occt::OcctKernel::new().expect("kernel");
+        let built = ferritecad_eval::rebuild_cold(&d, &mut k, &OperationContext::default())
+            .expect("cold rebuild");
+        let objects = d.objects().expect("objects");
+        let body = objects
+            .iter()
+            .find(|o| matches!(o.payload, ferritecad_document::ObjectPayload::Body(_)))
+            .expect("Body");
+        let (_, volume) = k
+            .shape_stats(built.shape(body.id).expect("built"))
+            .expect("stats");
+        let exact = (41. * 14.25 - (1. - std::f64::consts::PI / 4.) * 2.375 * 2.375) * 6.75;
+        assert!(
+            (volume - exact).abs() < 1e-9 * exact,
+            "{volume} is not {exact}"
+        );
+        built.release_all(&mut k);
+        d.close().expect("close");
+        assert_eq!(std::fs::read(&path).expect("source"), before);
     }
 }
