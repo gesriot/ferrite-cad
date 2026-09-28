@@ -4394,10 +4394,13 @@ mod constraints {
         if !super::native() {
             return;
         }
-        assert!(
-            !ferritecad_eval::solver_available(),
-            "the mixed gate must not link a solver"
-        );
+        // N/A where a solver is linked. The mixed CI step runs this by exact
+        // name and fails on any `skipped:`, so a solver that crept into that
+        // build is caught there rather than asserted here.
+        if ferritecad_eval::solver_available() {
+            eprintln!("skipped: the mixed gate needs a build without PlaneGCS");
+            return;
+        }
         let f = filleted_by_cli(CCW, [X0 + W, Y0], 2.375, "rounded");
         let m = measure(&f.source, None);
         assert_eq!(m.faces, 7);
