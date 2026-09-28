@@ -701,6 +701,38 @@ impl Editor {
             number(&self.annulus.height)?,
         )?))
     }
+    /// The coordinate strings `begin_edit` showed, from the vertices the request
+    /// already holds. Compared as text, so `33.0` and `33` are not the same draft.
+    fn saved_coordinate_text(vertices: &[SketchVertex]) -> Vec<[String; 2]> {
+        vertices
+            .iter()
+            .map(|vertex| vertex.start_mm.map(|n| n.to_string()))
+            .collect()
+    }
+    fn saved_coordinates_current(&self) -> bool {
+        let (Some(draft), Some((request, _))) = (&self.draft, &self.editing) else {
+            return false;
+        };
+        draft.points == Self::saved_coordinate_text(&request.vertices)
+    }
+    /// One history step back to that snapshot. A draft that already matches is
+    /// not a step, and its redo stack stays.
+    fn restore_saved_vertices(&mut self) {
+        let Some((request, _)) = &self.editing else {
+            return;
+        };
+        let saved = Self::saved_coordinate_text(&request.vertices);
+        let Some(before) = self.draft.clone() else {
+            return;
+        };
+        if before.points == saved {
+            return;
+        }
+        if let Some(draft) = &mut self.draft {
+            draft.points = saved;
+        }
+        self.record(before);
+    }
     fn record(&mut self, before: State) {
         if self.draft.as_ref() != Some(&before) {
             self.push_undo(before);
@@ -1416,6 +1448,16 @@ impl Editor {
                     .clicked()
                 {
                     self.redo();
+                }
+                if self.editing.is_some()
+                    && ui
+                        .add_enabled(
+                            !self.saved_coordinates_current(),
+                            egui::Button::new("Restore saved vertices"),
+                        )
+                        .clicked()
+                {
+                    self.restore_saved_vertices();
                 }
                 if ui.button("Cancel draft").clicked() {
                     self.dismiss();
@@ -2218,6 +2260,31 @@ mod tests {
                 egui::Event::Text(value.into()),
             ],
         );
+    }
+    /// Replaces one coordinate through the same widgets, including an empty box.
+    pub(super) fn set_coordinate(ctx: &egui::Context, e: &mut Editor, label: &str, value: &str) {
+        let out = frame(ctx, e, vec![]);
+        click(ctx, e, text_at(&out, label));
+        let mut events = vec![
+            egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            },
+            egui::Event::Key {
+                key: egui::Key::Backspace,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            },
+        ];
+        if !value.is_empty() {
+            events.push(egui::Event::Text(value.into()));
+        }
+        frame(ctx, e, events);
     }
     /// Real egui widgets and pointer input, without winit/GPU or modal panels.
     fn draw_l_through_widgets(e: &mut Editor) -> NewDocument {
@@ -5616,6 +5683,597 @@ mod tests {
             assert_eq!(exports[0], exports[1], "worker and CLI {format}");
         }
         assert_eq!(std::fs::read(&path).expect("source"), before);
+    }
+
+    fn click_label(ctx: &egui::Context, e: &mut Editor, label: &str) {
+        let out = frame(ctx, e, vec![]);
+        click(ctx, e, text_at(&out, label));
+    }
+
+    fn open_saved(
+        path: &Path,
+        reading: &ExtrudeEditSource,
+        id: ferritecad_types::ObjectId,
+    ) -> (egui::Context, Editor) {
+        let mut e = Editor::default();
+        assert!(e.begin_edit(path, reading, id), "saved Line sketch");
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut e, vec![]);
+        frame(&ctx, &mut e, vec![]);
+        let out = frame(&ctx, &mut e, vec![]);
+        assert!(
+            painted(&out, "Edit saved Sketch — new copy"),
+            "the coordinate editor"
+        );
+        text_at(&out, "Restore saved vertices");
+        (ctx, e)
+    }
+
+    /// §28D-1. Real widgets on the light rounded-plate fixture: several vertices,
+    /// including text that does not parse, come back in one Undo step. A draft
+    /// that already matches the `to_string()` snapshot does not spend Redo.
+    #[test]
+    fn restore_saved_vertices_is_one_widget_step_and_publishes_nothing() {
+        let (root, path, reading) = crate::fillets::tests::rounded(2.375);
+        let bytes = std::fs::read(&path).expect("source");
+        let choice = reading.sketches[0].clone();
+        let saved_ids: Vec<_> = choice
+            .vertices
+            .as_ref()
+            .expect("lines")
+            .iter()
+            .map(|v| v.curve_id)
+            .collect();
+        let (ctx, mut e) = open_saved(&path, &reading, choice.sketch);
+        let opened = e.draft.clone().expect("opened on the snapshot");
+        assert_eq!(
+            opened.points,
+            Editor::saved_coordinate_text(&e.editing.as_ref().expect("request").0.vertices)
+        );
+        let view = (e.canvas.minimum, e.canvas.scale);
+        let identity = e.editing.clone().expect("request");
+
+        // Already the snapshot: the control is painted and does not touch Redo.
+        replace_field(&ctx, &mut e, "33", "40");
+        click_label(&ctx, &mut e, "Undo draft");
+        assert_eq!(e.draft.as_ref(), Some(&opened));
+        assert!(e.undo.is_empty());
+        assert_eq!(e.redo.len(), 1);
+        click_label(&ctx, &mut e, "Restore saved vertices");
+        assert_eq!(e.draft.as_ref(), Some(&opened));
+        assert!(e.undo.is_empty(), "a matching draft is not a step");
+        assert_eq!(e.redo.len(), 1, "Redo survives the no-op");
+        click_label(&ctx, &mut e, "Redo draft");
+        assert_eq!(e.draft.as_ref().expect("draft").points[0][0], "40");
+        click_label(&ctx, &mut e, "Undo draft");
+        assert_eq!(e.redo.len(), 1);
+
+        // Parsable click selects a vertex. Invalid text would hide the contour.
+        let out = frame(&ctx, &mut e, vec![]);
+        let canvas = out
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Rect(r)
+                    if (r.rect.width() - 510.).abs() < 1.
+                        && (r.rect.height() - 250.).abs() < 1. =>
+                {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .expect("canvas");
+        let at = e.canvas.screen(
+            canvas,
+            Canvas::points(e.draft.as_ref().expect("draft")).expect("numbers")[0],
+        );
+        click(&ctx, &mut e, at);
+        assert_eq!(e.canvas.selected, Some(0));
+        assert_eq!(e.redo.len(), 1, "selecting does not edit");
+
+        // Three vertices, four strings. `33.0` is not the stored `33`.
+        set_coordinate(&ctx, &mut e, "33", "33.0");
+        set_coordinate(&ctx, &mut e, "15.5", "-");
+        set_coordinate(&ctx, &mut e, "3.25", "");
+        set_coordinate(&ctx, &mut e, "-4.5", "1.");
+        let dirty = e.draft.clone().expect("dirty");
+        assert_eq!(
+            dirty.points,
+            [["33.0", "-"], ["33", ""], ["1.", "3.25"], ["-4.5", "15.5"],]
+                .map(|p| p.map(str::to_owned))
+                .to_vec()
+        );
+        assert_eq!(e.undo.len(), 4, "one step per field, not per vertex yet");
+        assert!(e.redo.is_empty(), "a real edit clears Redo");
+        assert!(e.edit_request().is_err(), "the draft need not parse");
+        assert!(e.take_edit_request().is_none());
+        assert!(e.take_request().is_none());
+
+        click_label(&ctx, &mut e, "Restore saved vertices");
+        assert_eq!(
+            e.undo.len(),
+            5,
+            "every vertex is one checkpoint, not one each"
+        );
+        assert_eq!(e.draft.as_ref().map(|d| &d.points), Some(&opened.points));
+        assert_eq!(e.draft.as_ref().map(|d| d.feature), Some(opened.feature));
+        assert_eq!(
+            e.draft.as_ref().map(|d| d.height.as_str()),
+            Some(opened.height.as_str())
+        );
+        assert_eq!(
+            e.draft.as_ref().map(|d| d.angle.as_str()),
+            Some(opened.angle.as_str())
+        );
+        assert_eq!(e.draft.as_ref().map(|d| d.closed), Some(true));
+        assert_eq!(e.canvas.selected, Some(0));
+        assert_eq!((e.canvas.minimum, e.canvas.scale), view);
+        let (request, kept_choice) = e.editing.as_ref().expect("still editing");
+        assert_eq!(request.source, identity.0.source);
+        assert_eq!(request.expected, identity.0.expected);
+        assert_eq!(request.sketch, identity.0.sketch);
+        assert_eq!(
+            request
+                .vertices
+                .iter()
+                .map(|v| v.curve_id)
+                .collect::<Vec<_>>(),
+            saved_ids
+        );
+        assert_eq!(request.vertices, identity.0.vertices);
+        assert_eq!(kept_choice.fillet, choice.fillet);
+        let built = e.edit_request().expect("the snapshot is editable");
+        assert_eq!(built.source, path);
+        assert_eq!(built.expected, reading.version);
+        assert_eq!(
+            built
+                .vertices
+                .iter()
+                .map(|v| v.curve_id)
+                .collect::<Vec<_>>(),
+            saved_ids
+        );
+        assert_eq!(
+            built
+                .vertices
+                .iter()
+                .map(|v| v.start_mm)
+                .collect::<Vec<_>>(),
+            identity
+                .0
+                .vertices
+                .iter()
+                .map(|v| v.start_mm)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            e.take_edit_request().is_none(),
+            "Restore does not ask to save"
+        );
+        assert!(e.take_request().is_none());
+        assert_eq!(std::fs::read(&path).expect("source"), bytes);
+        let out = frame(&ctx, &mut e, vec![]);
+        assert!(painted(&out, "Rounded by Fillet"));
+        assert!(painted(&out, "no side may be shorter than"));
+
+        // One Undo returns every invalid string. One Redo returns the snapshot.
+        click_label(&ctx, &mut e, "Undo draft");
+        assert_eq!(e.draft.as_ref(), Some(&dirty));
+        assert_eq!(e.redo.len(), 1);
+        assert!(e.edit_request().is_err());
+        click_label(&ctx, &mut e, "Redo draft");
+        assert_eq!(e.draft.as_ref().map(|d| &d.points), Some(&opened.points));
+
+        // A running job ignores the control. The same control works once it stops.
+        replace_field(&ctx, &mut e, "33", "40");
+        let held = e.draft.clone();
+        let history = (e.undo.clone(), e.redo.clone());
+        let out = frame_running(&ctx, &mut e, vec![], true);
+        let restore_at = text_at(&out, "Restore saved vertices");
+        frame_running(
+            &ctx,
+            &mut e,
+            vec![egui::Event::PointerMoved(restore_at)],
+            true,
+        );
+        for pressed in [true, false] {
+            frame_running(
+                &ctx,
+                &mut e,
+                vec![egui::Event::PointerButton {
+                    pos: restore_at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                }],
+                true,
+            );
+        }
+        assert_eq!(e.draft, held);
+        assert_eq!((e.undo.clone(), e.redo.clone()), history);
+        click_label(&ctx, &mut e, "Restore saved vertices");
+        assert_eq!(e.draft.as_ref().map(|d| &d.points), Some(&opened.points));
+
+        // An ordinary edit after Restore keeps source, version, UUID and order.
+        replace_field(&ctx, &mut e, "33", "36.5");
+        replace_field(&ctx, &mut e, "33", "36.5");
+        let moved = e.draft.clone();
+        click_label(&ctx, &mut e, "Save edited copy…");
+        let request = e.take_edit_request().expect("Save edited copy");
+        assert!(e.take_edit_request().is_none());
+        assert_eq!(
+            e.draft, moved,
+            "Cancel Save keeps the restored-then-edited draft"
+        );
+        assert_eq!(request.source, path);
+        assert_eq!(request.expected, reading.version);
+        assert_eq!(
+            request
+                .vertices
+                .iter()
+                .map(|v| v.curve_id)
+                .collect::<Vec<_>>(),
+            saved_ids
+        );
+        assert_eq!(request.vertices[0].start_mm, [36.5, 15.5]);
+        assert_eq!(request.vertices[1].start_mm, [36.5, 3.25]);
+        assert_eq!(request.vertices[2].start_mm, [-4.5, 3.25]);
+        assert_eq!(request.vertices[3].start_mm, [-4.5, 15.5]);
+        assert_eq!(std::fs::read(&path).expect("source"), bytes);
+        assert!(!root.path().join("not-written.fcad").exists());
+
+        let mut pending = request.clone();
+        pending.destination = root.path().join("refused.fcad");
+        let mut edits = crate::edits::Edits::default();
+        let generation = edits
+            .start_sketch(pending, |_, _, _| std::thread::spawn(|| {}))
+            .expect("worker");
+        assert!(
+            finish_edit(
+                &mut e,
+                &mut edits,
+                generation,
+                Err(CadError::input("refused"))
+            )
+            .is_none()
+        );
+        assert_eq!(e.draft, moved, "a refusal keeps the draft");
+        assert!(!e.undo.is_empty(), "and its history");
+
+        let mut pending = request;
+        let published = root.path().join("not-written.fcad");
+        pending.destination = published.clone();
+        let generation = edits
+            .start_sketch(pending, |_, _, _| std::thread::spawn(|| {}))
+            .expect("worker");
+        assert_eq!(
+            finish_edit(
+                &mut e,
+                &mut edits,
+                generation,
+                Ok(ferritecad_jobs::EditedSketch {
+                    destination: published.clone(),
+                    document_id: reading.version.document_id,
+                    sketch: choice.sketch,
+                })
+            ),
+            Some(published.clone())
+        );
+        assert!(
+            !published.exists(),
+            "the button's test does not write a file"
+        );
+        assert!(!e.active());
+        e.draft_load_finished(&published, false);
+        assert_eq!(e.draft, moved, "a failed Open gives the draft back");
+        assert!(!e.undo.is_empty());
+        e.draft_published(&published);
+        e.draft_load_finished(&published, true);
+        assert!(!e.active(), "an accepted Open ends the draft history");
+        assert_eq!(std::fs::read(&path).expect("source"), bytes);
+    }
+
+    fn plate_with_one_cut() -> (tempfile::TempDir, std::path::PathBuf, ExtrudeEditSource) {
+        let (root, path, source) = crate::fillets::tests::plate();
+        let body = source
+            .cut_bodies
+            .iter()
+            .find(|c| c.refusal.is_none())
+            .unwrap_or_else(|| {
+                panic!(
+                    "plate is not a cut target: {:?}",
+                    source
+                        .cut_bodies
+                        .iter()
+                        .map(|c| c.refusal.clone())
+                        .collect::<Vec<_>>()
+                )
+            })
+            .body;
+        let mut document = ferritecad_document::Document::open(&path).expect("plate");
+        let prepared = ferritecad_document::prepare_circular_cut(
+            &document,
+            body,
+            &ferritecad_document::CircularCut {
+                center_mm: [14., 9.],
+                radius_mm: 1.,
+                extent: ferritecad_document::CutExtent::Blind { depth_mm: 2. },
+            },
+        )
+        .expect("one cut");
+        document.write_circular_cut(&prepared).expect("write");
+        let reading = ferritecad_document::ExtrudeEditSource::read(&document).expect("catalogue");
+        document.close().expect("close");
+        (root, path, reading)
+    }
+
+    /// The same button on a kernel-free Revolve and on a plate with one Cut.
+    /// Two edited vertices are still one checkpoint.
+    #[test]
+    fn restore_saved_vertices_on_a_revolve_and_a_cut_base() {
+        let root = tempfile::tempdir().expect("dir");
+        let path = root.path().join("sector.fcad");
+        crate::constraints::tests::revolve::write_sector(
+            &path,
+            &[[4.5, 0.25], [10.5, 0.25], [10.5, 15.25], [4.5, 15.25]],
+            90.0,
+            None,
+        );
+        let reading = crate::constraints::tests::revolve::reading(&path);
+        let choice = reading
+            .sketches
+            .iter()
+            .find(|s| s.refusal.is_none() && s.vertices.is_some())
+            .expect("profile")
+            .clone();
+        assert!(matches!(
+            choice.profile_use,
+            Some(SketchProfileUse::PartialRevolve { .. })
+        ));
+        let (ctx, mut e) = open_saved(&path, &reading, choice.sketch);
+        let opened = e.draft.clone().expect("draft");
+        assert_eq!(opened.feature, Feature::RevolveAngle);
+        assert_eq!(opened.height, "");
+        set_coordinate(&ctx, &mut e, "4.5", "6.5");
+        set_coordinate(&ctx, &mut e, "15.25", "-");
+        let dirty = e.draft.clone().expect("two vertices");
+        assert_eq!(dirty.points[0][0], "6.5");
+        assert_eq!(dirty.points[2][1], "-");
+        assert_eq!(e.undo.len(), 2);
+        assert!(e.edit_request().is_err());
+        click_label(&ctx, &mut e, "Restore saved vertices");
+        assert_eq!(e.undo.len(), 3, "both vertices, one step");
+        assert_eq!(e.draft.as_ref().map(|d| &d.points), Some(&opened.points));
+        assert_eq!(
+            e.draft.as_ref().map(|d| d.feature),
+            Some(Feature::RevolveAngle)
+        );
+        assert_eq!(e.draft.as_ref().map(|d| d.height.as_str()), Some(""));
+        assert_eq!(
+            e.draft.as_ref().map(|d| d.angle.as_str()),
+            Some(opened.angle.as_str())
+        );
+        assert!(e.draft.as_ref().expect("draft").closed);
+        let built = e.edit_request().expect("snapshot");
+        assert_eq!(built.source, path);
+        assert_eq!(built.expected, reading.version);
+        assert_eq!(
+            built
+                .vertices
+                .iter()
+                .map(|v| v.curve_id)
+                .collect::<Vec<_>>(),
+            choice
+                .vertices
+                .expect("ids")
+                .iter()
+                .map(|v| v.curve_id)
+                .collect::<Vec<_>>()
+        );
+        assert!(e.take_edit_request().is_none());
+        click_label(&ctx, &mut e, "Undo draft");
+        assert_eq!(e.draft.as_ref(), Some(&dirty));
+        click_label(&ctx, &mut e, "Redo draft");
+        assert_eq!(e.draft.as_ref().map(|d| &d.points), Some(&opened.points));
+
+        let (_cut_root, path, reading) = plate_with_one_cut();
+        let choice = reading
+            .sketches
+            .iter()
+            .find(|s| s.cut_history.is_some() && s.refusal.is_none())
+            .expect("cut base")
+            .clone();
+        let (ctx, mut e) = open_saved(&path, &reading, choice.sketch);
+        let opened = e.draft.clone().expect("draft");
+        let out = frame(&ctx, &mut e, vec![]);
+        assert!(painted(&out, "Base of 1 circular Cuts"));
+        set_coordinate(&ctx, &mut e, "33", "36");
+        set_coordinate(&ctx, &mut e, "-4.5", "-");
+        let dirty = e.draft.clone().expect("two vertices");
+        assert_eq!(dirty.points[0][0], "36");
+        assert_eq!(dirty.points[2][0], "-");
+        assert_eq!(e.undo.len(), 2);
+        assert!(
+            e.edit_request().is_err(),
+            "a cut base restores without parsing"
+        );
+        click_label(&ctx, &mut e, "Restore saved vertices");
+        assert_eq!(e.undo.len(), 3);
+        assert_eq!(e.draft.as_ref().map(|d| &d.points), Some(&opened.points));
+        assert_eq!(
+            e.draft.as_ref().map(|d| d.height.as_str()),
+            Some(opened.height.as_str())
+        );
+        assert!(e.draft.as_ref().expect("draft").closed);
+        assert_eq!(
+            e.editing
+                .as_ref()
+                .expect("edit")
+                .1
+                .cut_history
+                .as_ref()
+                .map(|h| h.tools.len()),
+            Some(1)
+        );
+        let built = e.edit_request().expect("snapshot");
+        assert_eq!(built.source, path);
+        assert_eq!(built.expected, reading.version);
+        assert_eq!(
+            built
+                .vertices
+                .iter()
+                .map(|v| v.curve_id)
+                .collect::<Vec<_>>(),
+            choice
+                .vertices
+                .expect("ids")
+                .iter()
+                .map(|v| v.curve_id)
+                .collect::<Vec<_>>()
+        );
+        assert!(e.take_edit_request().is_none());
+        let out = frame(&ctx, &mut e, vec![]);
+        assert!(painted(&out, "Base of 1 circular Cuts"));
+        click_label(&ctx, &mut e, "Undo draft");
+        assert_eq!(e.draft.as_ref(), Some(&dirty));
+    }
+
+    fn click_text(
+        ctx: &egui::Context,
+        e: &mut Editor,
+        path: &Path,
+        source: &ExtrudeEditSource,
+        needle: &str,
+    ) {
+        let mut at = None;
+        for _ in 0..8 {
+            let out = document_frame(ctx, e, path, source, vec![]);
+            at = out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t)
+                    if t.galley.text().contains(needle)
+                        && s.clip_rect.contains_rect(t.visual_bounding_rect()) =>
+                {
+                    Some(t.visual_bounding_rect().center())
+                }
+                _ => None,
+            });
+            if at.is_some() {
+                break;
+            }
+        }
+        let at = at.unwrap_or_else(|| panic!("{needle} was not painted"));
+        document_frame(ctx, e, path, source, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            document_frame(
+                ctx,
+                e,
+                path,
+                source,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                }],
+            );
+        }
+        for _ in 0..3 {
+            document_frame(ctx, e, path, source, vec![]);
+        }
+    }
+
+    /// The control belongs only to a saved Line sketch.
+    #[test]
+    fn restore_saved_vertices_is_absent_from_other_forms() {
+        let mut e = Editor::default();
+        let ctx = egui::Context::default();
+        let out = frame(&ctx, &mut e, vec![]);
+        click(&ctx, &mut e, text_at(&out, "Create sketch + Extrude…"));
+        for _ in 0..3 {
+            frame(&ctx, &mut e, vec![]);
+        }
+        let out = frame(&ctx, &mut e, vec![]);
+        assert!(painted(&out, "Add point"));
+        assert!(painted(&out, "Undo draft"));
+        assert!(!painted(&out, "Restore saved vertices"));
+        click(&ctx, &mut e, text_at(&out, "Circle"));
+        let out = frame(&ctx, &mut e, vec![]);
+        assert!(painted(&out, "Save circle extrusion…"));
+        assert!(!painted(&out, "Restore saved vertices"));
+        click(&ctx, &mut e, text_at(&out, "Circle with hole"));
+        let out = frame(&ctx, &mut e, vec![]);
+        assert!(painted(&out, "Save annular extrusion…"));
+        assert!(!painted(&out, "Restore saved vertices"));
+
+        let root = tempfile::tempdir().expect("dir");
+        let path = root.path().join("sector.fcad");
+        crate::constraints::tests::revolve::write_sector(
+            &path,
+            &[[4.5, 0.25], [10.5, 0.25], [10.5, 15.25], [4.5, 15.25]],
+            90.0,
+            None,
+        );
+        let reading = crate::constraints::tests::revolve::reading(&path);
+        let angle = reading
+            .revolve_angles
+            .iter()
+            .find(|c| c.refusal.is_none())
+            .expect("angle")
+            .feature;
+        let mut e = Editor::default();
+        assert!(e.begin_angle_edit(&path, &reading, angle));
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut e, vec![]);
+        let out = frame(&ctx, &mut e, vec![]);
+        assert!(painted(&out, "Saved partial Revolve · angle only"));
+        assert!(painted(&out, "Undo draft"));
+        assert!(!painted(&out, "Restore saved vertices"));
+
+        let sketch = reading
+            .constraint_sketches
+            .iter()
+            .find(|c| c.refusal.is_none())
+            .unwrap_or_else(|| {
+                panic!(
+                    "no constraint editor: {:?}",
+                    reading
+                        .constraint_sketches
+                        .iter()
+                        .map(|c| c.refusal.clone())
+                        .collect::<Vec<_>>()
+                )
+            })
+            .sketch;
+        let mut e = Editor::default();
+        let ctx = egui::Context::default();
+        click_text(&ctx, &mut e, &path, &reading, "Edit constraints");
+        let out = document_frame(&ctx, &mut e, &path, &reading, vec![]);
+        assert!(painted(&out, "Cancel constraints draft"));
+        assert!(painted(&out, &sketch.to_string()));
+        assert!(!painted(&out, "Restore saved vertices"));
+
+        let (_cut_root, path, reading) = plate_with_one_cut();
+        let cut = reading
+            .cut_features
+            .iter()
+            .find(|c| c.refusal.is_none() && c.saved.is_some())
+            .unwrap_or_else(|| {
+                panic!(
+                    "no cut editor: {:?}",
+                    reading
+                        .cut_features
+                        .iter()
+                        .map(|c| c.refusal.clone())
+                        .collect::<Vec<_>>()
+                )
+            })
+            .feature;
+        let mut e = Editor::default();
+        let ctx = egui::Context::default();
+        click_text(&ctx, &mut e, &path, &reading, &cut.to_string());
+        let out = document_frame(&ctx, &mut e, &path, &reading, vec![]);
+        assert!(painted(&out, "Cancel cut draft"));
+        assert!(!painted(&out, "Restore saved vertices"));
     }
 }
 

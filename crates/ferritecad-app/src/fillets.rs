@@ -572,7 +572,7 @@ pub(crate) mod tests {
 
     /// The plate written straight into a document: no kernel is needed to
     /// discover it, and the native gate below rebuilds exactly this.
-    fn plate() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
+    pub(crate) fn plate() -> (tempfile::TempDir, PathBuf, ExtrudeEditSource) {
         let root = tempfile::tempdir().expect("dir");
         let path = root.path().join("плита.fcad");
         let mut d = Document::create(&path).expect("document");
