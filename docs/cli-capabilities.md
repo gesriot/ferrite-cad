@@ -1,6 +1,6 @@
 # Карта предметных возможностей: UI ↔ CLI ↔ общий API
 
-Срез §24A, обновлён срезами §24B–§24J и §25A–§25H. Это описание **текущих** команд и владельцев, а не проект нового протокола.
+Срез §24A, обновлён срезами §24B–§24J-1 и §25A–§25H. Это описание **текущих** команд и владельцев, а не проект нового протокола.
 
 Документ нужен агенту и человеку, которым дали задачу и публичный CLI: что уже можно получить тем же предметным результатом, что в UI, что умеет только один клиент, и где библиотечный метод ещё не является пользовательской операцией. Архитектурное правило — [§4.5 плана](implementation-plan.md): UI и CLI — два клиента общих операций; равенство считается по сохранённой модели и экспортируемым артефактам, а не по hover, жестам мыши или промежуточным кадрам.
 
@@ -309,7 +309,7 @@ JSON v1 доступен только явно перечисленным ком
 | Координаты сохранённого Line Sketch → новая копия | `Edit Sketch <name> — <UUID>…`, прежний canvas/draft и async edit worker | `edit-sketch-copy source.fcad --sketch UUID --expect-version TOKEN --request coordinates.json -o copy.fcad [--json]` | document `SketchChoice`/polygon policy → jobs `edit_sketch_copy` → общий snapshot/cold/Keep путь | Тот же набор curve IDs в прежнем порядке и winding; [контракт](edit-sketch-copy.md). |
 | Проверить документ без ядра | Нет отдельной команды. Неоткрываемый файл даёт `Open failed`; это отказ загрузки, не отчёт `validate`. | `ferritecad validate <path> [--json]` | Общий [`validate_document`](../crates/ferritecad-jobs/src/validate.rs): один `Document::open_read_only`, UUID и `Document::validate` из закреплённого снимка, закрытие SQLite до owned результата. Правила и stable codes принадлежат document. | Без writes/миграции/kernel. JSON ok:true и valid:true/false дают 0/1; operational error — 2, delivery failure — 7. Warnings сохраняются. Старые schema/WAL/minimum reader теперь честно отказывают также в text validate. Это не гарантия геометрии/STEP/FBX complete; UI validate/repair отсутствуют. [Протокол](read-only-validation.md). |
 | Cold rebuild нативного графа | Не команда. Open/Export сами делают холодное перестроение как часть чтения. | `ferritecad rebuild --cold <path>` | [`rebuild_cold`](../crates/ferritecad-eval/src/cold.rs) в `ferritecad-eval` против [`OcctKernel`](../crates/ferritecad-occt/src/kernel.rs) / [`GeometryKernel`](../crates/ferritecad-kernel/src/kernel.rs). Документ — `open_read_only`. | Без `--cold` команда отказывает (exit 2, **измерено**). [`rebuild_cached`](../crates/ferritecad-eval/src/cold.rs) есть в библиотеке и тестах и **не** предлагается CLI/UI. Публичного cached-rebuild нет. |
-| Граф зависимостей | Нет. Список определений во вьюере — не dump графа. | `ferritecad dump-graph <path> [--format <text\|dot>]` | [`Document::evaluation_order`](../crates/ferritecad-document/src/document.rs), [`evaluation_order`](../crates/ferritecad-document/src/graph.rs), печать — [`render::graph_text` / `graph_dot`](../crates/ferritecad-cli/src/render.rs). | `dot` — Graphviz, не JSON-контракт всех команд. `--format json` нет (**измерено**, clap exit 2). |
+| Граф зависимостей | Нет. Список определений во вьюере — не dump графа. | `ferritecad dump-graph <path> [--format <text\|dot>]` | [`Document::open_read_only`](../crates/ferritecad-document/src/document.rs), затем прежние [`evaluation_order`](../crates/ferritecad-document/src/graph.rs) и [`render::graph_text` / `graph_dot`](../crates/ferritecad-cli/src/render.rs). | Без миграции и записи (§24J-1, **измерено**). Старая схема, WAL и minimum reader — отказ общего reader, exit 2, пустой stdout. `dot` — Graphviz, не JSON. `--format json` нет (**измерено**, clap exit 2). |
 | Topology references: что документ назвал и держится ли это | Клик по именованной грани/ребру/углу нативного тела показывает переносимое имя в инспекторе. Это просмотр, не отчёт по всем ссылкам. | `ferritecad print-topology <path>` | Хранение — [`Document::topology_refs`](../crates/ferritecad-document/src/document.rs). Разрешение — `RebuildResult::resolve` после `rebuild_cold`. Отчёт и коды — [`topology::print_topology`](../crates/ferritecad-cli/src/topology.rs). *Из кода:* lost → exit 3, invalid → 1, unsupported/прочее → 2. | Нет команды «добавить/изменить ссылку». Роль сегмента эскиза как самостоятельной ссылки в плане помечена как граница, не упущение CLI. Импортированная топология не именуется durably. |
 | STEP → новый `.fcad` (байты источника внутри) | Нет. Open принимает `.fcad`, не STEP. Отдельное продолжение после §23 это признаёт. | `ferritecad import-step <file.step> -o <out.fcad> [--name <name>] [--force] [--json]` | Общий [`import_step_document`](../crates/ferritecad-jobs/src/import.rs): одно чтение STEP, kernel factory/import callback, владение handles, `Document::store_step_import`, закрытие SQLite и атомарный publish через `Temporary`. Text/JSON CLI готовят один request и отображают owned outcome; JSON 0/4 — publication, 5 — typed reader rejection, 2 — operational error, 7 — delivery failure. [Протокол request/outcome/отмены](shared-step-import.md). | UI не импортирует STEP; CLI cancellation flags отсутствуют. Импорт не делает сборку редактируемой. Нет STEP-экспорта (команды `export-step` нет). |
 | Binary STL одного тела | `Export STL…` → явный UUID при нескольких Body → параметры → `Save STL…`; Cancel и подтверждение Replace. | `ferritecad export-stl <path> -o <file.stl> [--solid <name-or-id>] [--linear-deflection <mm>] [--angular-deflection <rad>] [--force] [--json]` | Общий [`export_document_as_stl`](../crates/ferritecad-jobs/src/stl.rs): выбор Body, одно read-only чтение, cold rebuild, `GeometryKernel::tessellate`, `binary_stl`, `Temporary`. CLI — адаптер, UI — owned worker. | Только один native Body; imported-only, сборки и несколько тел одним STL не поддерживаются. JSON сообщает опубликованные destination/Body/triangles/bytes (§24F). [§24E: протокол и границы наблюдения](stl-export-verification.md). |
@@ -410,7 +410,7 @@ JSON v1 доступен только явно перечисленным ком
 
 ### Чтение и возможная запись документа
 
-`dump-graph` и `clear-cache` используют `Document::open`, который может мигрировать старую схему и настраивает SQLite connection. Эти команды не обещают неизменность файла во всех случаях. Измерение неизменных байтов/mtime текущего документа не доказывает read-only контракт старых файлов. `validate` (с §24J), `inspect` (с §24C), Viewer, `rebuild --cold`, `print-topology` и оба экспорта используют `open_read_only`: старую схему или WAL-состояние отказывают, а не мигрируют (*из кода*).
+`clear-cache` использует `Document::open`, который может мигрировать старую схему и настраивает SQLite connection. Эта команда не обещает неизменность файла во всех случаях. Измерение неизменных байтов/mtime текущего документа не доказывает read-only контракт старых файлов для `clear-cache`. `dump-graph` (с §24J-1), `validate` (с §24J), `inspect` (с §24C), Viewer, `rebuild --cold`, `print-topology` и оба экспорта используют `open_read_only`: старую схему или WAL-состояние отказывают, а не мигрируют. `dump-graph` **измерен** в §24J-1. `validate` и `inspect` измерены своими срезами. Viewer, `rebuild --cold`, `print-topology` и оба экспорта остаются *из кода*.
 
 §24J: общий read-only reader также отказывает при существующих WAL/SHM sidecars
 с DELETE-заголовком (включая resolved symlink target): иначе SQLite может менять
@@ -547,6 +547,8 @@ Keep сохраняет появившееся назначение, Replace п�
 
 Локальные измерения §24J, включая JSON validate и исправление сохранности WAL/SHM,
 записаны в [новом протоколе](read-only-validation-verification.md).
+Локальные измерения §24J-1 (`dump-graph` через тот же read-only reader) записаны в
+[протоколе проверок](dump-graph-read-only-verification.md). CI опубликованного commit учитывается отдельно.
 
 ## Найденные пробелы
 
@@ -617,7 +619,7 @@ reopen; при работе от результата прежнего inspect �
 получите hash новым inspect. Если дополнительная таблица затеняет все три rowid
 alias, полное чтение версии отказывает с её именем.
 `inspect` теперь также read-only: старую схему/WAL отказывает. Старое описание записи
-через `Document::open` выше по-прежнему относится к dump-graph/clear-cache.
+через `Document::open` выше относится к `clear-cache`. `dump-graph` с §24J-1 тоже read-only.
 
 Текстовый CLI: успех — exit 0 и `saved …`; отказ — exit 2 с `error [kind]` на stderr.
 JSON v1: успех/отказ выполнения — структурированный stdout, диагностика — stderr.
