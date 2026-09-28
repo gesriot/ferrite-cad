@@ -308,6 +308,32 @@ jobs:
           FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-28d-recipe.py | tee fillet-sketch-recipe-stub.log
           grep -q '^FCAD_28D_RECIPE_NO_KERNEL ' fillet-sketch-recipe-stub.log
 
+      - name: Discover and refuse rounded-plate constraint edits without native geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          gate=constraints::constraint_discovery_and_protocol_without_native
+          cargo test -p ferritecad-cli --test fillet "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-constraints-discovery.log
+          if grep -q 'skipped:' fillet-constraints-discovery.log || ! grep -Fq "test $gate ... ok" fillet-constraints-discovery.log; then exit 1; fi
+          gate=constraints::tests::fillet_base_constraint_widgets_name_the_fillet_and_keep_the_draft
+          cargo test -p ferritecad-app "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-constraints-widgets.log
+          if grep -q 'skipped:' fillet-constraints-widgets.log || ! grep -Fq "test $gate ... ok" fillet-constraints-widgets.log; then exit 1; fi
+          for gate in fillet_radius::tests::constraints_on_the_rounded_plate_change_only_the_sketch_and_defer_the_bound \
+            fillet_radius::tests::the_constraint_writer_rederives_the_edit_under_a_fillet \
+            fillet_radius::tests::the_evaluator_judges_the_fillet_on_the_built_lines
+          do
+            cargo test -p ferritecad-document --lib "$gate" -- --exact --nocapture --test-threads=1 2>&1 | tee fillet-constraints-writer.log
+            if grep -q 'skipped:' fillet-constraints-writer.log || ! grep -Fq "test $gate ... ok" fillet-constraints-writer.log; then exit 1; fi
+          done
+          python3 - <<'EXTRACT'
+          from pathlib import Path
+          text = Path("docs/fillet-base-constraints.md").read_text(encoding="utf-8")
+          code = text.split("# FCAD_28E_AGENT_RECIPE\n", 1)[1].split("\n```", 1)[0]
+          Path("ferrite-28e-recipe.py").write_text(code, encoding="utf-8")
+          EXTRACT
+          FERRITECAD="$PWD/target/debug/ferritecad" python3 ferrite-28e-recipe.py | tee fillet-constraints-recipe-stub.log
+          grep -q '^FCAD_28E_RECIPE_NO_KERNEL ' fillet-constraints-recipe-stub.log
+
       - name: Discover sequential cuts without native geometry
         shell: bash
         run: |
