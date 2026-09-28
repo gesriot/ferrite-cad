@@ -11,8 +11,11 @@ the evidence of §28A–§28D or of the Line constraint editor.
   `bcd0d37f0d147bfb13ebb382fe686067fafac190` (PR #67). `main` locally was
   behind and was not used; the branch `fillet-base-constraints` was created
   from `origin/main`. PR #65 (§28D, merged with the reviewer's fix to the
-  side rule), #66 and #67 are merged; PR #68 was open at `6ffb4a1` and is not
-  part of this base (see [CI](#ci) for the state at publication).
+  side rule), #66 and #67 are merged. PR #68 was open at `6ffb4a1` while this
+  work was done; it merged as `fd83f09` before publication and was brought in
+  by an ordinary merge (`c11136a`, see [CI](#ci)). The local results below
+  were measured on the `bcd0d37` base; after the merge the affected checks
+  were rerun (see [CI](#ci)).
 * **Merge-triggered CI on the base** is reported in [CI](#ci), separately from
   this change's runs.
 * **Cloud container.** Linux x86_64, 4 CPUs, 15 GiB RAM, the session's existing
@@ -249,10 +252,45 @@ triangles. No silent wrong shape, so no new capability or payload version.
   `main`, on `4e0e5ca`
   ([run 36402274919](https://github.com/gesriot/ferrite-cad/actions/runs/36402274919)),
   succeeded.
-* **PR #68** was still open (head `6ffb4a1`) when this branch was published;
-  `origin/main` was fetched again and was still `bcd0d37`. It is not merged
-  into this branch and nothing of it was cherry-picked.
-* **This change:** recorded in a later documentation-only commit.
+* **PR #68** merged into `main` as `fd83f09` while this branch was in CI.
+  Its merge-triggered CI
+  ([run 36455639717](https://github.com/gesriot/ferrite-cad/actions/runs/36455639717)),
+  combined runtime layout
+  ([run 36455639383](https://github.com/gesriot/ferrite-cad/actions/runs/36455639383)),
+  product sbom, rust sbom and rust notices concluded success. `origin/main`
+  was fetched again and merged into this branch with an ordinary merge
+  commit, `c11136a` (no rebase, amend or cherry-pick). It touched only the
+  CLI's `render.rs`/`dump_graph` test and two docs this change also edits;
+  there was no conflict. After the merge, locally: `cargo fmt --check`,
+  `cargo clippy -p ferritecad-cli --features planegcs --all-targets -D
+  warnings`, and `tests/fillet.rs` with the solver (29 passed). PR #68's
+  `read_only_permissions_still_dump_when_the_file_can_be_read` fails in
+  this container only because it runs as root (the test refuses privileged
+  chmod as evidence); it is unchanged by this branch and green in CI.
+* **This change, first run (`9a5c514`):** CI
+  ([run 36455428739](https://github.com/gesriot/ferrite-cad/actions/runs/36455428739))
+  and planegcs pin
+  ([run 36455391325](https://github.com/gesriot/ferrite-cad/actions/runs/36455391325))
+  succeeded. The combined runtime layout
+  ([run 36455391479](https://github.com/gesriot/ferrite-cad/actions/runs/36455391479))
+  failed on Linux and macOS in "Round one vertical edge of a saved plate
+  into a named Fillet": `fillet process gate
+  constraints::native_constraints_solve_the_rounded_plate_and_keep_every_identity
+  did not execute`. The test passed, but its diagnostic `eprintln!`
+  (`FCAD_28E_SOLVED … worst_mm=3.55e-15 / 0 / 0`, the same values as the
+  local run) was interleaved into the `test … ... ok` line, which the
+  exact-name gate reads. `d034074` removed those prints; no gate was
+  weakened. The run was then cancelled by the newer push.
+* **This change, code head `c11136a`** (the merge with `fd83f09`): CI
+  ([run 36458511064](https://github.com/gesriot/ferrite-cad/actions/runs/36458511064))
+  and the combined runtime layout
+  ([run 36458509339](https://github.com/gesriot/ferrite-cad/actions/runs/36458509339):
+  Linux, macOS on Apple Silicon and Windows, and the platform comparison)
+  concluded success, including the no-solver step and the Fillet step with
+  the new exact-name gates and the FBX campaign. No planegcs-pin path
+  changed after `9a5c514`, so its run 36455391325 is the pin evidence for
+  this code. This documentation-only commit changes no workflow input of the
+  runtime layout or the pin; CI runs on it.
 
 ## Limits
 
