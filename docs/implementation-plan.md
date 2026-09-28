@@ -3893,3 +3893,23 @@ implementation:
 
 [Contract and executable recipe](edit-fillet-base-sketch.md),
 [verification](edit-fillet-base-sketch-verification.md).
+
+**§28D-1 — restore the saved vertices of the open Line draft.** In **Edit saved
+Sketch — new copy**, **Restore saved vertices** sits with Undo and Redo. It
+writes every coordinate string back to the `to_string()` snapshot `begin_edit`
+already keeps on the edit request: one bounded history step, and a draft whose
+strings already match is not a step and does not clear Redo. `33.0` returning
+to `33` is a text change. Invalid text is restored without being parsed.
+Feature, height or angle, closure, Line UUIDs and order, source, expected
+version, the selected vertex and the view stay; Fit and Reset are not called.
+The control is off while a job runs or a pointer gesture owns the draft, on
+the same gate as Undo. It is absent from a new contour, Circle, Annulus, the
+angle editor, and the constraint and cut forms. It does not save or publish;
+Save edited copy and the publication rules are unchanged.
+[Verification](restore-sketch-draft-vertices-verification.md).
+
+Independent review found no production defect. The full native sketch/drag
+suite (44) and edit workers (11) passed without skips. A real macOS window
+verified invalid-text Restore, one Undo/Redo, drag, no-op Redo preservation,
+Save Cancel and publication. GUI/CLI SQL and STL/FBX agreed; pinned ufbx and
+the oriented-triangle join passed. Viewer peak 207.251 MiB, swap 0, exit 0.
