@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 //! Human-readable output for the inspection commands.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use ferritecad_document::{
-    Access, Document, EndCondition, ObjectPayload, ObjectRecord, SemanticRole, ValidationReport,
+    Access, Dependency, Document, EndCondition, ObjectPayload, ObjectRecord, SemanticRole,
+    ValidationReport,
 };
 use ferritecad_types::{ObjectId, Result};
 
@@ -89,16 +90,29 @@ pub fn graph_text(document: &Document) -> Result<()> {
     let objects = document.objects()?;
     let names = name_index(&objects);
     let deps = document.dependencies()?;
+    let order = document.evaluation_order()?;
 
-    for id in document.evaluation_order()? {
+    // Group rows already read. Push order is the `needs` order, so two roles
+    // of one pair stay two lines and nothing is sorted again here.
+    let mut needs_by_dependent: HashMap<_, Vec<&Dependency>> = HashMap::new();
+    for dep in &deps {
+        needs_by_dependent
+            .entry(dep.dependent)
+            .or_default()
+            .push(dep);
+    }
+
+    for id in order {
         println!("{} {}", id, label(&names, id));
-        for dep in deps.iter().filter(|d| d.dependent == id) {
-            println!(
-                "    needs {} {} [{}]",
-                dep.dependency,
-                label(&names, dep.dependency),
-                dep.role.as_str()
-            );
+        if let Some(needs) = needs_by_dependent.get(&id) {
+            for dep in needs {
+                println!(
+                    "    needs {} {} [{}]",
+                    dep.dependency,
+                    label(&names, dep.dependency),
+                    dep.role.as_str()
+                );
+            }
         }
     }
     Ok(())

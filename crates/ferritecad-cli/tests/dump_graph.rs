@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::SystemTime;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, params};
 
 fn cli() -> Command {
     Command::new(env!("CARGO_BIN_EXE_ferritecad"))
@@ -359,6 +359,320 @@ fn read_only_permissions_still_dump_when_the_file_can_be_read() {
             .expect("restore readability for the snapshot");
         assert_stored(root.path(), &before, "unreadable dump-graph");
     }
+}
+
+fn object_id(last: u8) -> [u8; 16] {
+    [
+        0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        last,
+    ]
+}
+
+fn object_text(last: u8) -> String {
+    format!("01900000-0000-7000-8000-{last:012x}")
+}
+
+fn create_empty(path: &Path) {
+    let output = cli()
+        .arg("create")
+        .arg(path)
+        .output()
+        .expect("create process");
+    assert!(output.status.success(), "create failed: {output:?}");
+}
+
+/// Replace a sample's objects with copied datum-plane rows. Foreign keys stay
+/// on unless the case is an endpoint the product writer would have rejected.
+fn replace_with_planes(
+    path: &Path,
+    rows: &[([u8; 16], Option<&str>, i64)],
+    edges: &[([u8; 16], [u8; 16], &str)],
+    foreign_keys: bool,
+) {
+    let connection = Connection::open(path).expect("fixture writer");
+    connection
+        .pragma_update(
+            None,
+            "foreign_keys",
+            if foreign_keys { "ON" } else { "OFF" },
+        )
+        .expect("foreign keys");
+    let template: (String, i64, Option<Vec<u8>>, Vec<u8>, Vec<u8>) = connection
+        .query_row(
+            "SELECT kind, schema_version, parent_id, payload, payload_hash
+             FROM objects WHERE kind = 'datum.plane'",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .expect("datum plane template");
+    connection
+        .execute_batch("DELETE FROM topology_refs; DELETE FROM deps; DELETE FROM objects;")
+        .expect("clear sample graph");
+    for (id, name, ordinal) in rows {
+        connection
+            .execute(
+                "INSERT INTO objects
+                    (id, kind, schema_version, parent_id, ordinal, name, payload, payload_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    id.as_slice(),
+                    &template.0,
+                    template.1,
+                    &template.2,
+                    ordinal,
+                    name,
+                    &template.3,
+                    &template.4
+                ],
+            )
+            .expect("insert object");
+    }
+    for (dependent, dependency, role) in edges {
+        connection
+            .execute(
+                "INSERT INTO deps (dependent_id, dependency_id, role) VALUES (?1, ?2, ?3)",
+                params![dependent.as_slice(), dependency.as_slice(), role],
+            )
+            .expect("insert dependency");
+    }
+}
+
+fn assert_dump_bytes(root: &Path, path: &Path, text: &[u8], dot: &[u8]) {
+    let before = files(root);
+    let mut seen = None;
+    for format in [None, Some("text")] {
+        let output = dump(path, format);
+        assert_eq!(output.status.code(), Some(0), "{format:?} {output:?}");
+        assert!(output.stderr.is_empty(), "{format:?} {output:?}");
+        assert_eq!(output.stdout, text, "{format:?}");
+        seen = Some(output.stdout);
+        assert_stored(root, &before, "text dump-graph");
+    }
+    assert_eq!(seen.expect("text"), text);
+    let output = dump(path, Some("dot"));
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(output.stdout, dot);
+    assert_stored(root, &before, "dot dump-graph");
+}
+
+fn assert_text_refusal(root: &Path, path: &Path, stderr: &str) {
+    let before = files(root);
+    for format in [None, Some("text")] {
+        let output = dump(path, format);
+        assert_eq!(output.status.code(), Some(2), "{format:?} {output:?}");
+        assert!(
+            output.stdout.is_empty(),
+            "{format:?} printed {} stdout bytes before refusing",
+            output.stdout.len()
+        );
+        assert_eq!(output.stderr, stderr.as_bytes(), "{format:?}");
+        assert_stored(root, &before, "refused text graph");
+    }
+}
+
+fn assert_dot_bytes(root: &Path, path: &Path, exit: i32, stdout: &[u8], stderr: &[u8]) {
+    let before = files(root);
+    let output = dump(path, Some("dot"));
+    assert_eq!(output.status.code(), Some(exit), "{output:?}");
+    assert_eq!(output.stdout, stdout);
+    assert_eq!(output.stderr, stderr);
+    assert_stored(root, &before, "dot dump-graph");
+}
+
+#[test]
+fn text_keeps_evaluation_order_and_every_stored_need() {
+    let root = tempfile::tempdir().expect("directory");
+    let path = root.path().join("graph.fcad");
+    create_sample(&path);
+    // Neither object read order (5,2,3,4,1,6) nor UUID order is topological:
+    // 1 must wait for 3 and 5. Initially-ready 2 and 5 use the UUID tie-break.
+    let ids = [5, 2, 3, 4, 1, 6].map(object_id);
+    // Edges are inserted out of read order. Every stored role must survive.
+    replace_with_planes(
+        &path,
+        &[
+            (ids[0], Some("plane α"), 0),
+            (ids[1], None, 1),
+            (ids[2], Some("sketch line"), 2),
+            (ids[3], Some("side wall"), 3),
+            (ids[4], Some("boss 板"), 4),
+            (ids[5], Some("tip body"), 5),
+        ],
+        &[
+            (ids[4], ids[2], "profile"),
+            (ids[5], ids[4], "predecessor"),
+            (ids[2], ids[0], "plane"),
+            (ids[3], ids[2], "profile"),
+            (ids[4], ids[0], "plane"),
+            (ids[4], ids[2], "predecessor"),
+        ],
+        true,
+    );
+
+    let text = [
+        format!("{} datum.plane", object_text(2)),
+        format!("{} plane α", object_text(5)),
+        format!("{} sketch line", object_text(3)),
+        format!("    needs {} plane α [plane]", object_text(5)),
+        format!("{} boss 板", object_text(1)),
+        format!("    needs {} sketch line [predecessor]", object_text(3)),
+        format!("    needs {} sketch line [profile]", object_text(3)),
+        format!("    needs {} plane α [plane]", object_text(5)),
+        format!("{} side wall", object_text(4)),
+        format!("    needs {} sketch line [profile]", object_text(3)),
+        format!("{} tip body", object_text(6)),
+        format!("    needs {} boss 板 [predecessor]", object_text(1)),
+    ]
+    .join("\n")
+        + "\n";
+
+    let mut dot = String::from(
+        "digraph features {\n  rankdir=LR;\n  node [shape=box, fontname=\"sans-serif\"];\n",
+    );
+    for (last, name) in [
+        (5, "plane α"),
+        (2, "-"),
+        (3, "sketch line"),
+        (4, "side wall"),
+        (1, "boss 板"),
+        (6, "tip body"),
+    ] {
+        dot.push_str(&format!(
+            "  \"{}\" [label=\"{name}\\ndatum.plane\"];\n",
+            object_text(last)
+        ));
+    }
+    for (dependency, dependent, role) in [
+        (3, 1, "predecessor"),
+        (3, 1, "profile"),
+        (5, 1, "plane"),
+        (5, 3, "plane"),
+        (3, 4, "profile"),
+        (1, 6, "predecessor"),
+    ] {
+        dot.push_str(&format!(
+            "  \"{}\" -> \"{}\" [label=\"{role}\"];\n",
+            object_text(dependency),
+            object_text(dependent)
+        ));
+    }
+    dot.push_str("}\n");
+
+    assert_dump_bytes(root.path(), &path, text.as_bytes(), dot.as_bytes());
+    assert_eq!(schema_version(&path), 3);
+}
+
+#[test]
+fn empty_document_text_is_empty_and_dot_is_only_the_header() {
+    let root = tempfile::tempdir().expect("directory");
+    let path = root.path().join("empty.fcad");
+    create_empty(&path);
+    assert_eq!(schema_version(&path), 3);
+    let dot =
+        "digraph features {\n  rankdir=LR;\n  node [shape=box, fontname=\"sans-serif\"];\n}\n";
+    assert_dump_bytes(root.path(), &path, b"", dot.as_bytes());
+}
+
+#[test]
+fn cycle_missing_endpoint_and_unknown_role_print_nothing() {
+    let cycle_root = tempfile::tempdir().expect("directory");
+    let cycle = cycle_root.path().join("cycle.fcad");
+    create_sample(&cycle);
+    let left = object_id(1);
+    let right = object_id(2);
+    replace_with_planes(
+        &cycle,
+        &[
+            (left, Some("cycle left"), 0),
+            (right, Some("cycle right"), 1),
+        ],
+        &[(left, right, "plane"), (right, left, "plane")],
+        true,
+    );
+    let cycle_error = format!(
+        "error [input]: invalid input: the feature graph contains a cycle among: {}, {}\n",
+        object_text(1),
+        object_text(2)
+    );
+    assert_text_refusal(cycle_root.path(), &cycle, &cycle_error);
+    // DOT never asks for evaluation order, so a cycle is still a drawing.
+    assert_dot_bytes(
+        cycle_root.path(),
+        &cycle,
+        0,
+        format!(
+            "digraph features {{\n  rankdir=LR;\n  node [shape=box, fontname=\"sans-serif\"];\n  \"{left}\" [label=\"cycle left\\ndatum.plane\"];\n  \"{right}\" [label=\"cycle right\\ndatum.plane\"];\n  \"{right}\" -> \"{left}\" [label=\"plane\"];\n  \"{left}\" -> \"{right}\" [label=\"plane\"];\n}}\n",
+            left = object_text(1),
+            right = object_text(2)
+        )
+        .as_bytes(),
+        b"",
+    );
+
+    let missing_root = tempfile::tempdir().expect("directory");
+    let missing = missing_root.path().join("missing.fcad");
+    create_sample(&missing);
+    replace_with_planes(
+        &missing,
+        &[(left, Some("has a hole"), 0)],
+        &[(left, object_id(9), "plane")],
+        false,
+    );
+    let missing_error = format!(
+        "error [input]: invalid input: object {} depends on {}, which is not in the graph\n",
+        object_text(1),
+        object_text(9)
+    );
+    assert_text_refusal(missing_root.path(), &missing, &missing_error);
+    assert_dot_bytes(
+        missing_root.path(),
+        &missing,
+        0,
+        format!(
+            "digraph features {{\n  rankdir=LR;\n  node [shape=box, fontname=\"sans-serif\"];\n  \"{present}\" [label=\"has a hole\\ndatum.plane\"];\n  \"{absent}\" -> \"{present}\" [label=\"plane\"];\n}}\n",
+            present = object_text(1),
+            absent = object_text(9)
+        )
+        .as_bytes(),
+        b"",
+    );
+
+    let role_root = tempfile::tempdir().expect("directory");
+    let role = role_root.path().join("role.fcad");
+    create_sample(&role);
+    replace_with_planes(
+        &role,
+        &[
+            (left, Some("role source"), 0),
+            (right, Some("role target"), 1),
+        ],
+        &[(right, left, "not_a_role")],
+        true,
+    );
+    let role_error = "error [input]: invalid input: unknown dependency role \"not_a_role\"\n";
+    assert_text_refusal(role_root.path(), &role, role_error);
+    // The role is parsed with the edge list, after DOT has already printed nodes.
+    assert_dot_bytes(
+        role_root.path(),
+        &role,
+        2,
+        format!(
+            "digraph features {{\n  rankdir=LR;\n  node [shape=box, fontname=\"sans-serif\"];\n  \"{source}\" [label=\"role source\\ndatum.plane\"];\n  \"{target}\" [label=\"role target\\ndatum.plane\"];\n",
+            source = object_text(1),
+            target = object_text(2)
+        )
+        .as_bytes(),
+        role_error.as_bytes(),
+    );
 }
 
 struct ResetPermissions {
