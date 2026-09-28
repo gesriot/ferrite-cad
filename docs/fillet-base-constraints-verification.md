@@ -114,7 +114,10 @@ the evidence of §28A–§28D or of the Line constraint editor.
   `skipped:` but the mixed gate's (N/A where a solver is linked).
 * Solved against expected, worst coordinate error: 3.55e-15 mm (CCW), 0 in
   the other five copies — nine orders of magnitude inside the rectangle
-  reader's 1e-7 mm. The class is not widened and nothing is snapped.
+  reader's 1e-7 mm; the first CI run printed the same values on macOS with
+  the pinned PlaneGCS. The class is not widened and nothing is snapped. The
+  tests assert `< 1e-9 mm`; the diagnostic print was removed because it broke
+  the gate's `test … ... ok` line (see [CI](#ci)).
 * DOF measured (not computed): 0 fully dimensioned, 2 after removing the
   exact pin UUID, 8 with the four closure links alone.
 * Refusals (typed, nothing written): a solved plate 4.5 mm deep for r 2.375

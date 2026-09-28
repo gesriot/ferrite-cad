@@ -4188,7 +4188,6 @@ mod constraints {
         for (s, e) in starts.iter().zip(expected) {
             worst = worst.max((s[0] - e[0]).abs()).max((s[1] - e[1]).abs());
         }
-        eprintln!("FCAD_28E_SOLVED {name} worst_mm={worst:e}");
         assert!(worst < 1e-9, "{starts:?} is not {expected:?}");
         let rect = rect_of(expected);
         let moved = expected[stored.iter().position(|v| *v == corner).expect("corner")];
@@ -4731,13 +4730,11 @@ mod constraints {
             })
             .collect();
         add.push(pin(&f.line(0), starts[1][0] + 5.0, starts[0][1]));
-        let v = refuse(&add, "input", &["side"]);
-        eprintln!("FCAD_28E_SIDE_REFUSAL {v}");
+        refuse(&add, "input", &["side"]);
         // One length and nothing to hold the sides: the solve shortens the
         // first Line and slants its neighbours, so the plate is no longer an
         // axis-aligned rectangle.
-        let v = refuse(&[length(&f.line(0), 30.)], "unsupported", &["rectangle"]);
-        eprintln!("FCAD_28E_CLASS_REFUSAL {v}");
+        refuse(&[length(&f.line(0), 30.)], "unsupported", &["rectangle"]);
         // A real conflict: both horizontal sides dimensioned, differently,
         // on a plate whose sides are held H/V.
         let mut conflict = dimensioned(&f, [0., 0.], 30., 10.);
@@ -4746,7 +4743,6 @@ mod constraints {
             .expect("the other horizontal Line");
         conflict.push(length(&f.line(opposite), 20.));
         let v = refuse(&conflict, "constraint", &[]);
-        eprintln!("FCAD_28E_CONFLICT {v}");
         let named = v["error"]["constraint_conflict"]["constraints"]
             .as_array()
             .expect("the conflicting constraints")
