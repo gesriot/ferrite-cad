@@ -2418,6 +2418,22 @@ Missing/broken путь не создаёт файл, sidecar или катал�
 девять CLI unit tests, fmt и workspace clippy прошли без skips.
 Production-код не потребовал исправлений. CI опубликованного commit учитывается отдельно.
 
+**§24J-2 — реализовано: локальный индекс `needs` для текстового dump-graph.**
+`render::graph_text` группирует уже прочитанные строки `Dependency` по `dependent`
+в `HashMap<ObjectId, Vec<&Dependency>>` на время одного вызова. Объекты печатаются
+в прежнем `Document::evaluation_order()`. Внутри объекта `needs` идут в порядке
+этого вектора: роли одной пары не схлопываются и заново не сортируются.
+`graph_dot` не менялся. Схема, SQL, `Document` и read-only открытие не менялись;
+`evaluation_order` по-прежнему сам читает objects и dependencies ещё раз.
+Заменённый проход был Θ(V·E) сравнений. Построение индекса — ожидаемо O(E),
+затем O(V) поисков; дополнительная память — E ссылок на уже прочитанные строки,
+без копирования `Dependency`.
+[Проверки](graph-text-dependency-index-verification.md).
+
+Независимое ревью не потребовало исправлений рабочего кода. Все 21 CLI tests,
+fmt и workspace clippy прошли; 15 old/new process comparisons сохранили bytes,
+exit и исходные файлы. Отдельный замер 10 000 узлов: 178.56 → 118.93 ms.
+
 ## 14.25. Создание собственных моделей
 
 **§25A — реализован ограниченный контур → Extrude → новый FCAD.**
