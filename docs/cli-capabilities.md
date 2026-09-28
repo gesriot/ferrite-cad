@@ -571,6 +571,8 @@ Keep сохраняет появившееся назначение, Replace п�
 записаны в [новом протоколе](read-only-validation-verification.md).
 Локальные измерения §24J-1 (`dump-graph` через тот же read-only reader) записаны в
 [протоколе проверок](dump-graph-read-only-verification.md). CI опубликованного commit учитывается отдельно.
+Локальные измерения §24J-2 (тот же text/DOT, индекс `needs` только внутри `graph_text`) записаны в
+[протоколе проверок](graph-text-dependency-index-verification.md). CI опубликованного commit учитывается отдельно.
 
 ## Найденные пробелы
 
