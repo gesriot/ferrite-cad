@@ -3989,3 +3989,8 @@ implementation:
 
 [Contract and executable recipe](fillet-base-constraints.md),
 [verification](fillet-base-constraints-verification.md).
+
+Independent review found no production defect. Pinned native checks and the
+real macOS window scenario passed, including refusal recovery, Save Cancel,
+Replace length and two publications. GUI/CLI SQL and STL/FBX agreed; independent
+ufbx/triangle checks passed. Viewer peak 206.111 MiB, swap 0, exit 0.

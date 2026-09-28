@@ -309,6 +309,44 @@ triangles. No silent wrong shape, so no new capability or payload version.
   downloaded through this container's proxy, so no gate count is claimed from
   them.
 
+## Independent review on macOS arm64 (2026-09-28)
+
+Reviewed code head `68bef1fa1decf3268d89265e46b1ec307aaeca6c`; no production
+defect found. The review follow-up changes documentation only. All commits
+have the user's author and committer identity and no AI trailers; the generated
+attribution footer was removed from the PR description.
+
+The pinned local OCCT/PlaneGCS release build passed 466 document/jobs/eval
+tests (one existing timing benchmark ignored), 28 executed CLI Fillet tests
+plus the explicit mixed-build N/A, and 25 app constraint tests without skips.
+The linked solver reports FreeCAD 1.0.1 archive
+`f62bc07c477544eff62b6ab0fc3bb63fa7f1e6f94763c51b0049507842d444f3`.
+Workspace all-target/all-feature clippy with `-D warnings` and fmt passed.
+
+A freshly staged, strictly signature-verified bundle ran the window scenario
+below: Open, seven additions, Undo/Redo, Save Cancel, too-small-plate refusal
+(no `never.fcad`), corrected publication and async Open, both exports, Replace
+length, second publication and both exports. The stored-corner explanation and
+fully-constrained/zero-DOF result were visible. The comparator reported
+`FCAD_28E_GUI_COMPARE_OK cells=242 constraints=11/11`: source unchanged, SQL
+allowlists satisfied, GUI/CLI STL and FBX byte-identical. Pinned ufbx 0.23.0
+read both window FBX files (6 checks/0 failures each); the oriented-triangle
+join matched each to its 64-triangle STL, worst error `6.94e-18 m`.
+
+One viewer, PID 82536, was watched throughout: peak footprint **206.111 MiB**,
+normal pressure, swap 0 throughout, exit 0, watchdog not triggered. After Quit
+only the PID was checked; no CUA app lookup relaunched it. The first sandboxed
+watchdog attempt was refused access to memory sysctl before launching a viewer;
+the completed run used the same watchdog with that access. The old OOM remains
+unexplained. Local evidence: `/private/tmp/ferrite-pr69-review/`.
+
+The reviewer downloaded all three runtime job logs from run `36458509339` and
+confirmed the new exact-name tests, no-solver gate, recipe and constrained-FBX
+reader marker on each OS. Its code matches the reviewed head; only this
+verification file changed after `c11136a`. The paths of planegcs-pin are also
+unchanged after its successful `9a5c514` run. The final-head ordinary CI is
+tracked separately from that native evidence.
+
 ## macOS fixtures and window scenario (for the reviewer's Mac)
 
 Nothing here was run in this container, which has no window system. The
