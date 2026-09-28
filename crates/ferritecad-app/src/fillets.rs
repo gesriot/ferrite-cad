@@ -243,12 +243,26 @@ impl Editor {
                     draft.source.display()
                 ));
                 ui.small(format!("Edge: {}", describe(&saved.corner)));
-                ui.small(format!(
-                    "Saved radius {} mm; from {} mm to {} mm here.",
-                    saved.radius_mm,
-                    ferritecad_document::MIN_RADIUS_MM,
-                    saved.corner.max_radius_mm
-                ));
+                if saved.constrained {
+                    // §28E: the stored corner is the solver's starting guess.
+                    // The bound is the solved plate's and is checked when the
+                    // copy is built, never read off the stored lengths.
+                    ui.small(format!(
+                        "Saved radius {} mm; at least {} mm. The plate's Sketch has \
+                         constraints: the corner shown is its stored position, and the new \
+                         copy is saved only if the radius is at most half of each side \
+                         meeting at the corner of the solved plate.",
+                        saved.radius_mm,
+                        ferritecad_document::MIN_RADIUS_MM,
+                    ));
+                } else {
+                    ui.small(format!(
+                        "Saved radius {} mm; from {} mm to {} mm here.",
+                        saved.radius_mm,
+                        ferritecad_document::MIN_RADIUS_MM,
+                        saved.corner.max_radius_mm
+                    ));
+                }
                 ui.add_enabled_ui(!running, |ui| {
                     if ui.button("Cancel radius draft").clicked() {
                         cancel = true;

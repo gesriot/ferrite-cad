@@ -229,6 +229,11 @@ pub struct ConstraintSketchChoice {
     /// policy its solved drawing must satisfy. Present exactly when `stored`
     /// is.
     pub profile_use: Option<SketchProfileUse>,
+    /// §28E: the one saved Fillet over this plate, when this is its base
+    /// Sketch. Its `corner` is read from the stored Lines; the part's corner,
+    /// and whether the radius fits it, are the solved plate's, checked when a
+    /// copy is rebuilt.
+    pub fillet: Option<crate::SavedFillet>,
     pub refusal: Option<String>,
 }
 
@@ -240,7 +245,7 @@ pub fn constraint_sketch_choices(
         .iter()
         .filter(|o| matches!(o.payload, ObjectPayload::Sketch(_)))
         .map(|o| match supported_family(document, objects, o) {
-            Ok((_, profile_use)) => {
+            Ok((_, profile_use, fillet)) => {
                 let ObjectPayload::Sketch(sketch) = &o.payload else {
                     unreachable!("checked")
                 };
@@ -250,6 +255,7 @@ pub fn constraint_sketch_choices(
                     stored: Some(sketch.clone()),
                     height_mm: extrusion_height(&profile_use),
                     profile_use: Some(profile_use),
+                    fillet,
                     refusal: None,
                 }
             }
@@ -259,6 +265,7 @@ pub fn constraint_sketch_choices(
                 stored: None,
                 height_mm: None,
                 profile_use: None,
+                fillet: None,
                 refusal: Some(e.to_string()),
             },
         })
@@ -277,13 +284,19 @@ fn supported_family(
     document: &Document,
     objects: &[ObjectRecord],
     object: &ObjectRecord,
-) -> Result<(Family, SketchProfileUse)> {
+) -> Result<(Family, SketchProfileUse, Option<crate::SavedFillet>)> {
     // The frame every copy edit of a saved profile requires is checked once,
     // in the one place that owns it, before either family is considered. It
     // also says which feature uses the profile (§27G): an Extrude and its
     // height, or a Revolve with a bore and its stated turn.
-    let (sketch, profile_use) = crate::sketch_edit::constraint_frame(document, objects, object)?;
+    let (sketch, profile_use, fillet) =
+        crate::sketch_edit::constraint_frame(document, objects, object)?;
     let family = classify(sketch)?;
+    if fillet.is_some() && family != Family::Lines {
+        return Err(CadError::unsupported(
+            "the plate under a Fillet is four Lines, and this Sketch holds something else",
+        ));
+    }
     let height = extrusion_height(&profile_use);
     match (family, height) {
         // The Line editor's own class, checked by its own code against the
@@ -316,7 +329,18 @@ fn supported_family(
         }
     }
     managed(sketch, family)?;
-    Ok((family, profile_use))
+    Ok((family, profile_use, fillet))
+}
+
+/// §28E: the managed Line family, asked of a Sketch whose other readers — the
+/// Fillet frame and the evaluator — accept only it.
+pub(crate) fn managed_lines(sketch: &Sketch) -> Result<()> {
+    if classify(sketch)? != Family::Lines {
+        return Err(CadError::unsupported(
+            "constraints are managed here on a profile of Lines only",
+        ));
+    }
+    managed(sketch, Family::Lines)
 }
 
 /// Which family this sketch's curves make it, or why it is neither.
@@ -805,6 +829,8 @@ pub struct PreparedSketchConstraints {
     /// payload, so no caller can swap the policy a copy is judged by.
     profile_use: SketchProfileUse,
     roles: Option<(StableEntityId, StableEntityId)>,
+    /// §28E: the Fillet the frame read with this Sketch, if any.
+    fillet: Option<crate::SavedFillet>,
 }
 impl PreparedSketchConstraints {
     pub fn object(&self) -> &ObjectRecord {
@@ -827,6 +853,12 @@ impl PreparedSketchConstraints {
     /// way round.
     pub fn circle_roles(&self) -> Option<(StableEntityId, StableEntityId)> {
         self.roles
+    }
+
+    /// §28E: the saved Fillet over the plate this Sketch bounds, as read with
+    /// the frame.
+    pub fn fillet(&self) -> Option<&crate::SavedFillet> {
+        self.fillet.as_ref()
     }
 }
 
@@ -854,7 +886,7 @@ pub fn prepare_sketch_constraints(
         .find(|o| o.id == id)
         .cloned()
         .ok_or_else(|| CadError::input("selected Sketch UUID does not exist"))?;
-    let (family, profile_use) = supported_family(document, &objects, &object)?;
+    let (family, profile_use, fillet) = supported_family(document, &objects, &object)?;
     let ObjectPayload::Sketch(sketch) = &mut object.payload else {
         unreachable!("checked")
     };
@@ -969,5 +1001,84 @@ pub fn prepare_sketch_constraints(
         removed: edits.remove.clone(),
         profile_use,
         roles,
+        fillet,
     })
+}
+
+/// The writer's re-derivation (§28E): the prepared edit is derived again from
+/// the document the write consumes, and nothing in it is taken on trust.
+///
+/// The frame and the family are read again, so a Fillet or a feature that
+/// changed since preparation refuses. The written constraint list must be
+/// exactly the stored one without the removed UUIDs, followed by the added
+/// constraints; each removal named a removable stored constraint and each
+/// addition is new; the curves and the plane are the stored ones; and the
+/// result is inside the managed family.
+pub(crate) fn rederive(document: &Document, prepared: &PreparedSketchConstraints) -> Result<()> {
+    let objects = document.objects()?;
+    let current = objects
+        .iter()
+        .find(|o| o.id == prepared.object.id)
+        .ok_or_else(|| CadError::input("selected Sketch disappeared before constraint write"))?;
+    let (family, profile_use, fillet) = supported_family(document, &objects, current)?;
+    if profile_use != prepared.profile_use || fillet != prepared.fillet {
+        return Err(CadError::input(
+            "the feature or the Fillet around this Sketch changed after constraint preparation",
+        ));
+    }
+    let (ObjectPayload::Sketch(stored), ObjectPayload::Sketch(written)) =
+        (&current.payload, &prepared.object.payload)
+    else {
+        return Err(CadError::input(
+            "constraint preparation must contain a Sketch",
+        ));
+    };
+    if written.plane != stored.plane || written.curves != stored.curves {
+        return Err(CadError::input(
+            "a constraint edit may not change the Sketch's plane or curves",
+        ));
+    }
+    let removed: BTreeSet<_> = prepared.removed.iter().copied().collect();
+    if removed.len() != prepared.removed.len() {
+        return Err(CadError::input("duplicate constraint removal UUID"));
+    }
+    for id in &removed {
+        let c = stored
+            .constraints
+            .iter()
+            .find(|c| c.id == *id)
+            .ok_or_else(|| {
+                CadError::input(format!(
+                    "removed constraint {id} is not in the stored Sketch"
+                ))
+            })?;
+        if family_slot_of(family, c.rule).is_none() {
+            return Err(CadError::input(format!(
+                "removed constraint {id} is a closure link, which constraint editing retains"
+            )));
+        }
+    }
+    if prepared
+        .added
+        .iter()
+        .any(|a| stored.constraints.iter().any(|c| c.id == a.id))
+    {
+        return Err(CadError::input(
+            "an added constraint reuses a stored constraint UUID",
+        ));
+    }
+    let expected: Vec<_> = stored
+        .constraints
+        .iter()
+        .filter(|c| !removed.contains(&c.id))
+        .chain(prepared.added.iter())
+        .copied()
+        .collect();
+    if written.constraints != expected {
+        return Err(CadError::input(
+            "the prepared constraint list is not the stored list with these removals and \
+             additions",
+        ));
+    }
+    managed(written, family)
 }

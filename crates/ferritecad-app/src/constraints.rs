@@ -196,6 +196,23 @@ impl Editor {
                 if let Some(owner) = draft.choice.profile_use.and_then(revolve_owner) {
                     ui.label(owner);
                 }
+                // §28E: the Fillet these Lines carry, and what the new copy
+                // has to be before it is saved.
+                if let Some(fillet) = &draft.choice.fillet {
+                    let [a, b] = fillet.edge.joint.segments();
+                    ui.label(format!(
+                        "Rounded by Fillet {} at the corner of Lines {a} | {b}, r {} mm \
+                         (stored corner ({}, {})). The Fillet keeps its corner and radius: \
+                         the new copy is saved only if the solved plate is still a rectangle \
+                         with every Line on its side and each side at that corner at least \
+                         {} mm.",
+                        fillet.feature,
+                        fillet.radius_mm,
+                        fillet.corner.corner_mm[0],
+                        fillet.corner.corner_mm[1],
+                        fillet.radius_mm / ferritecad_document::MAX_RADIUS_FRACTION
+                    ));
+                }
                 ui.add_enabled_ui(!running, |ui| {
                     ui.horizontal(|ui| {
                         if ui.button("Cancel constraints draft").clicked() {

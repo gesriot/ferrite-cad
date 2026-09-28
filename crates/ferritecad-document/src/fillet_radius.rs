@@ -10,7 +10,7 @@
 use ferritecad_types::{CadError, ContentHash, ObjectId, Result, StableEntityId};
 
 use crate::cut_edit::{same_meaning, saved_history_under_fillet};
-use crate::fillet::{fillet_references, rectangle_corners};
+use crate::fillet::{corners_of_lines, fillet_references, rectangle_corners};
 use crate::{Document, Fillet, FilletCorner, FilletEdge, ObjectPayload, ObjectRecord};
 
 /// The saved Fillet a radius edit changes, exactly as stored.
@@ -26,12 +26,23 @@ pub struct SavedFillet {
     pub profile: ObjectId,
     pub height_mm: f64,
     pub radius_mm: f64,
+    /// §28E: whether the base Sketch carries constraints. Then `corner` is read
+    /// from the **stored** Lines — the solver's starting guess — and its
+    /// lengths and bound say nothing about the part: the radius bound is asked
+    /// of the solved plate by the rebuild, at every rebuild.
+    pub constrained: bool,
 }
 
 impl SavedFillet {
-    /// The radius policy this Fillet's corner answers to.
+    /// The radius policy this Fillet's corner answers to. For a constrained
+    /// plate only the corner-free part of it ([`crate::check_radius_value`]):
+    /// the stored lengths are not the part's, in either direction.
     pub fn check_radius(&self, radius_mm: f64) -> Result<()> {
-        self.corner.check_radius(radius_mm)
+        if self.constrained {
+            crate::fillet::check_radius_value(radius_mm)
+        } else {
+            self.corner.check_radius(radius_mm)
+        }
     }
 
     /// §28D: this Fillet's corner on a candidate profile of the same Lines,
@@ -117,9 +128,17 @@ pub(crate) fn saved_fillet(
     let ObjectPayload::Sketch(sketch) = &profile.payload else {
         return Err(CadError::unsupported("the part's profile is not a Sketch"));
     };
-    let corners = rectangle_corners(target.base_feature, sketch)?;
+    // The stored Lines are the rectangle the Fillet was made on, and they say
+    // which two Lines meet at its corner. Only for an unconstrained plate are
+    // they also the part, so only then is the radius bound asked of them.
+    let constrained = !sketch.constraints.is_empty();
+    let corners = corners_of_lines(target.base_feature, &sketch.curves)?;
     let corner = crate::corner_for(&corners, stored.edge)?;
-    corner.check_radius(stored.radius_mm)?;
+    if constrained {
+        crate::fillet::check_radius_value(stored.radius_mm)?;
+    } else {
+        corner.check_radius(stored.radius_mm)?;
+    }
     // Exactly the seven names §28A gives this Fillet, by meaning, and no other
     // name owned by it. Their UUIDs are what the copy keeps.
     let wanted = fillet_references(
@@ -158,6 +177,7 @@ pub(crate) fn saved_fillet(
         profile: target.profile,
         height_mm: target.height_mm,
         radius_mm: stored.radius_mm,
+        constrained,
     })
 }
 
@@ -874,13 +894,11 @@ mod tests {
             ErrorKind::Input
         );
         let reading = crate::ExtrudeEditSource::read(&d).expect("catalogue");
-        // The base Sketch is the Sketch edit's (§28D); the constraint editor
-        // still refuses the filleted plate by name.
+        // The base Sketch is the Sketch edit's (§28D) and the constraint
+        // editor's (§28E), with this Fillet as context.
         assert!(reading.sketches.iter().all(|s| s.fillet.is_some()));
         assert!(reading.constraint_sketches.iter().all(|s| {
-            s.refusal
-                .as_deref()
-                .is_some_and(|r| r.contains(&fillet.to_string()))
+            s.refusal.is_none() && s.fillet.as_ref().is_some_and(|f| f.feature == fillet)
         }));
         assert!(reading.cut_bodies.iter().all(|c| c.refusal.is_some()));
 

@@ -122,9 +122,15 @@ struct FilletFeatureDiscovery {
     body_id: Option<ObjectId>,
     previous_feature_id: ObjectId,
     edge: FilletEdgeDto,
-    /// The corner of the rounded edge; `null` when the frame is refused.
+    /// The corner of the rounded edge; `null` when the frame is refused. In
+    /// the stored coordinates when `profile_constrained`.
     corner_mm: Option<[f64; 2]>,
     radius_mm: f64,
+    /// §28E, additive: whether the plate's base Sketch carries constraints.
+    /// Then `corner_mm` is the stored approximation, and
+    /// `radius_edit.max_radius_mm` is `null`: the bound is the solved plate's,
+    /// checked when a copy is rebuilt. `false` when the frame is refused.
+    profile_constrained: bool,
     radius_edit: FilletRadiusEditDiscovery,
 }
 
@@ -158,12 +164,15 @@ impl FilletFeatureDiscovery {
             },
             corner_mm: saved.map(|s| s.corner.corner_mm),
             radius_mm: choice.stored.radius_mm,
+            profile_constrained: saved.is_some_and(|s| s.constrained),
             radius_edit: FilletRadiusEditDiscovery {
                 available: choice.refusal.is_none() && document_refusal.is_none(),
                 refusal: choice.refusal,
                 document_refusal,
                 min_radius_mm: ferritecad_document::MIN_RADIUS_MM,
-                max_radius_mm: saved.map(|s| s.corner.max_radius_mm),
+                max_radius_mm: saved
+                    .filter(|s| !s.constrained)
+                    .map(|s| s.corner.max_radius_mm),
             },
         }
     }
@@ -1034,6 +1043,9 @@ struct FilletBaseDiscovery {
     edge: FilletEdgeDto,
     corner_mm: [f64; 2],
     radius_mm: f64,
+    /// §28E, additive: whether the base Sketch carries constraints; then
+    /// `corner_mm` is in the stored coordinates, not the solved part's.
+    profile_constrained: bool,
 }
 
 impl FilletBaseDiscovery {
@@ -1047,6 +1059,7 @@ impl FilletBaseDiscovery {
             },
             corner_mm: saved.corner.corner_mm,
             radius_mm: saved.radius_mm,
+            profile_constrained: saved.constrained,
         }
     }
 }

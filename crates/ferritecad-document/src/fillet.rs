@@ -65,19 +65,27 @@ pub struct FilletCorner {
     pub max_radius_mm: f64,
 }
 
+/// The part of the radius policy that holds at every corner: a finite radius
+/// of at least [`MIN_RADIUS_MM`]. The bound that depends on the corner is
+/// [`FilletCorner::check_radius`].
+pub fn check_radius_value(radius_mm: f64) -> Result<()> {
+    if !radius_mm.is_finite() {
+        return Err(CadError::input(format!(
+            "a fillet radius must be a finite number of millimetres, found {radius_mm}"
+        )));
+    }
+    if radius_mm < MIN_RADIUS_MM {
+        return Err(CadError::input(format!(
+            "a fillet radius must be at least {MIN_RADIUS_MM} mm, found {radius_mm} mm"
+        )));
+    }
+    Ok(())
+}
+
 impl FilletCorner {
     /// The radius policy, with the numbers in the refusal.
     pub fn check_radius(&self, radius_mm: f64) -> Result<()> {
-        if !radius_mm.is_finite() {
-            return Err(CadError::input(format!(
-                "a fillet radius must be a finite number of millimetres, found {radius_mm}"
-            )));
-        }
-        if radius_mm < MIN_RADIUS_MM {
-            return Err(CadError::input(format!(
-                "a fillet radius must be at least {MIN_RADIUS_MM} mm, found {radius_mm} mm"
-            )));
-        }
+        check_radius_value(radius_mm)?;
         if radius_mm > self.max_radius_mm {
             return Err(CadError::input(format!(
                 "a fillet of {radius_mm} mm at corner {} is too large: this build rounds up to \
@@ -105,8 +113,18 @@ pub fn rectangle_corners(feature: ObjectId, sketch: &Sketch) -> Result<Vec<Fille
              constraints",
         ));
     }
-    let lines: Vec<(StableEntityId, [f64; 2], [f64; 2])> = sketch
-        .curves
+    corners_of_lines(feature, &sketch.curves)
+}
+
+/// [`rectangle_corners`] of any set of Lines, whatever produced them: the
+/// stored ones, or the ones a rebuild solved and built the plate from
+/// (§28E). The geometry alone; whether the profile may carry constraints is
+/// the caller's structural question.
+pub(crate) fn corners_of_lines(
+    feature: ObjectId,
+    curves: &[crate::SketchCurve],
+) -> Result<Vec<FilletCorner>> {
+    let lines: Vec<(StableEntityId, [f64; 2], [f64; 2])> = curves
         .iter()
         .map(|c| match c.geometry {
             SketchGeometry::Line { start, end } if !c.construction => {
@@ -118,7 +136,7 @@ pub fn rectangle_corners(feature: ObjectId, sketch: &Sketch) -> Result<Vec<Fille
             )),
         })
         .collect::<Result<_>>()?;
-    let boundary = CutBoundary::read(&sketch.curves, 1.0)?;
+    let boundary = CutBoundary::read(curves, 1.0)?;
     if lines.len() != 4 || boundary.rectangle_mm().is_none() {
         return Err(unsupported(
             "this slice rounds a vertical edge of an axis-aligned rectangular plate, and this \
@@ -147,6 +165,60 @@ pub fn rectangle_corners(feature: ObjectId, sketch: &Sketch) -> Result<Vec<Fille
             })
         })
         .collect()
+}
+
+/// §28D/§28E: each Line of `candidate` runs along the same axis in the same
+/// direction as in `saved`, both given as starts in the same stored order.
+///
+/// Both profiles have already passed the shared rectangle reader. The
+/// dominant component of a Line identifies its side; a component within the
+/// reader's tolerance on the other axis does not invent a diagonal direction.
+/// The coordinates are read as they are: nothing is snapped.
+pub(crate) fn keeps_every_side(
+    ids: &[StableEntityId],
+    saved: &[[f64; 2]],
+    candidate: &[[f64; 2]],
+) -> Result<()> {
+    let sign = |v: f64| (v > 0.) as i8 - (v < 0.) as i8;
+    let side = |dx: f64, dy: f64| {
+        if dx.abs() >= dy.abs() {
+            (sign(dx), 0)
+        } else {
+            (0, sign(dy))
+        }
+    };
+    let n = ids.len();
+    if saved.len() != n || candidate.len() != n {
+        return Err(CadError::input(
+            "the rounded plate keeps its four Lines in their stored order",
+        ));
+    }
+    for i in 0..n {
+        let (a, b) = (saved[i], saved[(i + 1) % n]);
+        let (p, q) = (candidate[i], candidate[(i + 1) % n]);
+        let was = side(b[0] - a[0], b[1] - a[1]);
+        let now = side(q[0] - p[0], q[1] - p[1]);
+        if was != now {
+            return Err(CadError::input(format!(
+                "Line {} of the rounded plate must keep its side: it ran {} and would run {}; \
+                 the Fillet's corner is where two particular sides meet",
+                ids[i],
+                direction(was),
+                direction(now)
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn direction((x, y): (i8, i8)) -> &'static str {
+    match (x, y) {
+        (1, 0) => "+X",
+        (-1, 0) => "-X",
+        (0, 1) => "+Y",
+        (0, -1) => "-Y",
+        _ => "nowhere",
+    }
 }
 
 /// The corner a stated edge means, or why it means none.
@@ -224,10 +296,12 @@ pub(crate) fn refuse_filleted(objects: &[ObjectRecord]) -> Result<()> {
         .find(|o| matches!(o.payload, ObjectPayload::Fillet(_)))
     {
         return Err(unsupported(format!(
-            "this Body ends in Fillet {} (§28A); only its radius (edit-fillet-radius, §28B) \
-             and the rounded plate's height (edit-extrude, §28C) can be edited. Editing the \
-             rest of a filleted part, and adding a second Fillet or a Cut after one, are not \
-             supported yet",
+            "this Body ends in Fillet {} (§28A); only its radius (edit-fillet-radius, §28B), \
+             the rounded plate's height (edit-extrude, §28C), its base Sketch's coordinates \
+             (edit-sketch-copy, §28D) and that Sketch's Line constraints \
+             (edit-sketch-constraints-copy, §28E) can be edited. Editing the rest of a \
+             filleted part, and adding a second Fillet or a Cut after one, are not supported \
+             yet",
             fillet.id
         )));
     }
@@ -505,11 +579,25 @@ pub(crate) fn rederive(document: &Document, prepared: &PreparedEdgeFillet) -> Re
     Ok(())
 }
 
-/// The evaluator's statement of the class: the Fillet rounds a vertical edge
-/// of the rectangular NewBody Extrude it consumes, at a radius the policy
-/// accepts. Asked of the saved objects at every rebuild, so a document this
-/// build did not write is refused by the same rule that wrote this one.
-pub fn evaluable_fillet(objects: &[ObjectRecord], fillet: &Fillet) -> Result<FilletCorner> {
+/// The Fillet's class and radius policy, asked by the evaluator at every
+/// cold and cached rebuild.
+///
+/// Two separate facts (§28E). The **structure** is read from the saved
+/// objects: a forward Blind NewBody Extrude, whose stored profile is an
+/// axis-aligned rectangle of four Lines with the saved joint at one of its
+/// corners, and which carries no constraints or only the constraint editor's
+/// managed Line family. The **geometry** is `built`: the Lines the rebuild
+/// actually built the predecessor from — the stored ones for an
+/// unconstrained profile, the solved ones otherwise. On those, the same Lines
+/// in stored order must still be an axis-aligned rectangle, keep every side,
+/// have the saved joint as a corner, and leave room for the saved radius. The
+/// stored numbers of a constrained profile are its solver's starting guess and
+/// prove nothing about the part.
+pub fn evaluable_fillet(
+    objects: &[ObjectRecord],
+    fillet: &Fillet,
+    built: Option<&[crate::SketchCurve]>,
+) -> Result<FilletCorner> {
     if fillet.edge.feature != fillet.previous {
         return Err(unsupported(
             "this build rounds an edge of the feature a Fillet consumes, and this Fillet names \
@@ -542,9 +630,70 @@ pub fn evaluable_fillet(objects: &[ObjectRecord], fillet: &Fillet) -> Result<Fil
     let ObjectPayload::Sketch(sketch) = &profile.payload else {
         return Err(unsupported("the base Extrude's profile is not a Sketch"));
     };
-    let corners = rectangle_corners(base.id, sketch)?;
-    let corner = corner_for(&corners, fillet.edge)?;
-    corner.check_radius(fillet.radius_mm)?;
+    if !sketch.constraints.is_empty() {
+        crate::sketch_constraints::managed_lines(sketch).map_err(|e| {
+            unsupported(format!(
+                "the rounded plate's constraints are outside what this build edits: {e}"
+            ))
+        })?;
+    }
+    let stored = corners_of_lines(base.id, &sketch.curves)?;
+    corner_for(&stored, fillet.edge)?;
+    let Some(built) = built else {
+        return Err(CadError::input(format!(
+            "the plate the Fillet rounds was built from no profile {}",
+            extrude.profile
+        )));
+    };
+    if sketch.constraints.is_empty() {
+        // Built from the stored Lines themselves: exactly §28A's check.
+        let corners = corners_of_lines(base.id, built)?;
+        let corner = corner_for(&corners, fillet.edge)?;
+        corner.check_radius(fillet.radius_mm)?;
+        return Ok(corner);
+    }
+    solved_corner(sketch, built, base.id, fillet).map_err(|e| {
+        let message = format!("as its constraints solve it, the rounded plate {e}");
+        match e.kind() {
+            ferritecad_types::ErrorKind::Input => CadError::input(message),
+            _ => unsupported(message),
+        }
+    })
+}
+
+/// The Fillet's policy on the solved Lines of a constrained plate.
+fn solved_corner(
+    stored: &Sketch,
+    built: &[crate::SketchCurve],
+    feature: ObjectId,
+    fillet: &Fillet,
+) -> Result<FilletCorner> {
+    let ids: Vec<_> = stored.curves.iter().map(|c| c.id).collect();
+    if built.iter().map(|c| c.id).collect::<Vec<_>>() != ids {
+        return Err(unsupported(
+            "is not drawn by the same four Lines in their stored order",
+        ));
+    }
+    let corners = corners_of_lines(feature, built)
+        .map_err(|e| unsupported(format!("is no longer an axis-aligned rectangle ({e})")))?;
+    let start = |c: &crate::SketchCurve| match c.geometry {
+        SketchGeometry::Line { start, .. } => [start.x, start.y],
+        _ => [f64::NAN; 2],
+    };
+    keeps_every_side(
+        &ids,
+        &stored.curves.iter().map(start).collect::<Vec<_>>(),
+        &built.iter().map(start).collect::<Vec<_>>(),
+    )
+    .map_err(|e| CadError::input(format!("moves a Line off its side: {e}")))?;
+    let corner = corner_for(&corners, fillet.edge)
+        .map_err(|e| CadError::input(format!("no longer has the rounded corner: {e}")))?;
+    corner.check_radius(fillet.radius_mm).map_err(|e| {
+        CadError::input(format!(
+            "has sides of {} and {} mm at the rounded corner, too short for the saved radius: {e}",
+            corner.adjacent_lengths_mm[0], corner.adjacent_lengths_mm[1]
+        ))
+    })?;
     Ok(corner)
 }
 
@@ -945,15 +1094,13 @@ mod tests {
             |f| f.refusal.is_none() && f.fillet.as_ref().is_some_and(|r| r.feature == saved.id)
         ));
         assert!(reading.cut_bodies.iter().all(|c| c.refusal.is_some()));
-        // Its base Sketch is editable (§28D), with the Fillet as context; the
-        // constraint editor still refuses it by name.
+        // Its base Sketch is editable (§28D), with the Fillet as context, and
+        // so are its Line constraints (§28E).
         assert!(reading.sketches.iter().all(|s| {
             s.refusal.is_none() && s.fillet.as_ref().is_some_and(|r| r.feature == saved.id)
         }));
         assert!(reading.constraint_sketches.iter().all(|s| {
-            s.refusal
-                .as_deref()
-                .is_some_and(|r| r.contains("ends in Fillet"))
+            s.refusal.is_none() && s.fillet.as_ref().is_some_and(|r| r.feature == saved.id)
         }));
     }
 

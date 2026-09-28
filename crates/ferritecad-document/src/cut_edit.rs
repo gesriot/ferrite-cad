@@ -1151,8 +1151,18 @@ fn read_history(
     let ObjectPayload::Sketch(part) = &profile.payload else {
         return Err(unsupported("the part's profile is not a Sketch"));
     };
+    // §28E: under the one Fillet, the base may carry the constraint editor's
+    // own managed Line family; its stored Lines are still read below as the
+    // rectangle the Fillet names. A Cut history stays unconstrained.
     if !part.constraints.is_empty() {
-        return Err(unsupported("this slice edits an unconstrained part"));
+        if fillet.is_none() {
+            return Err(unsupported("this slice edits an unconstrained part"));
+        }
+        crate::sketch_constraints::managed_lines(part).map_err(|e| {
+            unsupported(format!(
+                "the rounded plate's constraints are outside what this build edits: {e}"
+            ))
+        })?;
     }
     let plane = get(part.plane)?;
     if !matches!(&plane.payload, ObjectPayload::DatumPlane(p) if p.placement == Transform::IDENTITY)

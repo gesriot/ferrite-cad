@@ -900,7 +900,11 @@ impl Document {
         // one: the general index rebuild deletes optional rows and reissues
         // rowids, and no other declaration changed.
         let declared = sketch.required_capabilities();
-        self.write_transaction(|writer| {
+        // §28E: the edit is derived again from the snapshot the write consumes
+        // rather than trusted: the frame (a Fillet over the plate included),
+        // the family, and the written list as exactly the stored one with these
+        // removals and additions.
+        self.write_checked_transaction(|document| crate::sketch_constraints::rederive(document, prepared), |writer| {
             let changed = writer.tx.execute(
                 "UPDATE objects SET schema_version=?1,payload=?2,payload_hash=?3 WHERE id=?4",
                 params![version,bytes,hash.as_bytes().as_slice(),selected.id.to_bytes().as_slice()],

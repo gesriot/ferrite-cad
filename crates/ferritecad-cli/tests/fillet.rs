@@ -1546,7 +1546,10 @@ fn native_a_filleted_copy_and_other_histories_are_refused_by_name() {
     names_it(&catalog["bodies"][0]["cut_edit"]["refusal"]);
     assert_eq!(catalog["edit_extrude"]["available"], true, "§28C");
     assert_eq!(catalog["sketches"][0]["editable"], true, "§28D");
-    names_it(&catalog["sketches"][0]["constraint_edit"]["refusal"]);
+    assert_eq!(
+        catalog["sketches"][0]["constraint_edit"]["available"], true,
+        "§28E"
+    );
     names_it(&catalog["sketches"][0]["circle_edit"]["refusal"]);
     names_it(&catalog["sketches"][0]["annulus_edit"]["refusal"]);
     let version = catalog["content_version"].as_str().expect("version");
@@ -2528,7 +2531,10 @@ mod height {
         names_it(&f.catalog["bodies"][0]["fillet_edge"]["refusal"]);
         names_it(&f.catalog["bodies"][0]["cut_edit"]["refusal"]);
         assert_eq!(f.catalog["sketches"][0]["editable"], true, "§28D");
-        names_it(&f.catalog["sketches"][0]["constraint_edit"]["refusal"]);
+        assert_eq!(
+            f.catalog["sketches"][0]["constraint_edit"]["available"], true,
+            "§28E"
+        );
 
         // The protocol. A build without a kernel reads the source and then
         // asks for the kernel before any other check, so every well-formed
@@ -3225,8 +3231,10 @@ mod sketch {
         assert_eq!(row["fillet_base"], f.base_row()["fillet_base"]);
         assert_eq!(row["fillet_base"]["corner_mm"], json!([X0 + W, Y0]));
         assert_eq!(row["fillet_base"]["radius_mm"], 2.375);
-        // The other editors of this Sketch still refuse the filleted plate.
-        for editor in ["constraint_edit", "circle_edit", "annulus_edit"] {
+        // The circle editors of this Sketch still refuse the filleted plate;
+        // its Line constraints are §28E's.
+        assert_eq!(row["constraint_edit"]["available"], true);
+        for editor in ["circle_edit", "annulus_edit"] {
             let reason = row[editor]["refusal"].as_str().expect("a reason");
             assert!(reason.contains(f.fillet_id()), "{editor}: {reason}");
         }

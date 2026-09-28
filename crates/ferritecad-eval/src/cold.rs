@@ -555,10 +555,29 @@ fn run<K: GeometryKernel + ?Sized>(
             ObjectPayload::Fillet(fillet) => {
                 let previous = fillet.previous;
                 let joint = fillet.edge.joint;
-                // The class and the radius policy, asked of the saved objects
-                // at every rebuild — not only when this build wrote them.
+                // The class, asked of the saved objects, and the radius
+                // policy, asked of the Lines the predecessor was built from:
+                // the drawing this rebuild already solved for it (§28E), cold
+                // or cached alike, and never a second solve. For an
+                // unconstrained profile those are the stored Lines.
                 let saved: Vec<_> = objects.values().cloned().collect();
-                ferritecad_document::evaluable_fillet(&saved, fillet)?;
+                let built: Option<Vec<ferritecad_document::SketchCurve>> =
+                    match objects.get(&previous).map(|o| &o.payload) {
+                        Some(ObjectPayload::Extrude(e)) => {
+                            state.presentations.get(&e.profile).map(|p| {
+                                p.curves()
+                                    .iter()
+                                    .map(|c| ferritecad_document::SketchCurve {
+                                        id: c.id(),
+                                        construction: c.is_construction(),
+                                        geometry: c.geometry().clone(),
+                                    })
+                                    .collect()
+                            })
+                        }
+                        _ => None,
+                    };
+                ferritecad_document::evaluable_fillet(&saved, fillet, built.as_deref())?;
                 let target_key = state.keys.get(&previous).copied().ok_or_else(|| {
                     CadError::input(format!(
                         "fillet {id} rounds an edge of {previous}, which produced no result"

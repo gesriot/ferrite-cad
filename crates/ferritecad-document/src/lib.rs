@@ -78,8 +78,8 @@ pub use cut_edit::{
 };
 pub use fillet::{
     EdgeFillet, FilletChoice, FilletCorner, MAX_RADIUS_FRACTION, MIN_RADIUS_MM, PreparedEdgeFillet,
-    SavedFilletTarget, corner_for, evaluable_fillet, fillet_choices, prepare_edge_fillet,
-    rectangle_corners,
+    SavedFilletTarget, check_radius_value, corner_for, evaluable_fillet, fillet_choices,
+    prepare_edge_fillet, rectangle_corners,
 };
 pub use fillet_radius::{
     FilletRadiusChoice, PreparedFilletRadius, SavedFillet, fillet_radius_choices,
