@@ -2521,6 +2521,8 @@ mod height {
                 "edge": fillet["edge"],
                 "corner_mm": [X0 + W, Y0 + D],
                 "radius_mm": 2.375,
+                // §28E, additive.
+                "profile_constrained": false,
             })
         );
         // Every other editor still refuses the filleted plate by name.
@@ -4364,7 +4366,8 @@ mod constraints {
         );
         let v = reply(f.constrain(&never).output().expect("process"), OP, 2);
         assert_eq!(refused(&v), "input", "{v}");
-        // Closure links are not removable, on this plate as on any other.
+        // Closure links are not removable, on this plate as on any other; a
+        // build without a kernel asks for it first, as it always has.
         let closure = f.constraint_row()["constraints"]
             .as_array()
             .expect("list")
@@ -4374,7 +4377,12 @@ mod constraints {
             .clone();
         f.ask_constraints(&[closure], &[]);
         let v = reply(f.constrain(&never).output().expect("process"), OP, 2);
-        assert_eq!(refused(&v), "input", "{v}");
+        let expected = if ferritecad_occt::is_available() {
+            "input"
+        } else {
+            "unsupported"
+        };
+        assert_eq!(refused(&v), expected, "{v}");
         assert_eq!(entries(f.root.path()), names, "a refusal left something");
         assert_eq!(std::fs::read(&f.source).expect("bytes"), before);
     }
